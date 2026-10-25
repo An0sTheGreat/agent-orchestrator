@@ -134,8 +134,7 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_implementer_sees_current_files_and_missing_ones(self):
         text = orchestrator.allowed_files_context({"a.js": "let x = 1;", "b.js": None})
-        self.assertIn("--- a.js ---
-let x = 1;", text)
+        self.assertIn("--- a.js ---\nlet x = 1;", text)
         self.assertIn("b.js --- (does not exist yet; create it with write_file)", text)
 
     def test_reading_a_missing_allowed_file_says_to_create_it(self):
