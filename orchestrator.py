@@ -183,6 +183,7 @@ class ApiClient:
                     print(f"[{role}] loading {self.auto_load['model_path']} ...")
                     emit("loading", role=role, path=self.auto_load["model_path"])
                     self._request_at(self.management_url, "POST", "/api/inference/load", self.auto_load)
+                    LOADED_BY_RUN[self.auto_load["model_path"]] = self
                     model = self.model_id()
                     if not self.expected or self.expected in model.lower():
                         print(f"[{role}] {model}")
@@ -780,23 +781,20 @@ def _run() -> int:
 PROJECT_ROOT_ARG: Path = ROOT
 
 
+# Models this run loaded itself (path -> client). Models that were already loaded, e.g. by the user in
+# Unsloth Desktop, are never in here and so are never unloaded.
+LOADED_BY_RUN: dict[str, "ApiClient"] = {}
+
+
 def unload_models() -> None:
-    """Free VRAM/RAM: ask Unsloth to unload every role's model, ignoring failures."""
-    try:
-        config = json.loads(load_text(PROJECT_ROOT_ARG / "config.json"))
-    except (OSError, ValueError):
-        return
-    seen = set()
-    for role, settings in config.get("roles", {}).items():
-        path = (settings.get("auto_load") or {}).get("model_path")
-        if not path or path in seen or not settings.get("management_url"):
-            continue
-        seen.add(path)
+    """Free VRAM/RAM: unload only the models this run loaded, ignoring failures."""
+    for path, client in LOADED_BY_RUN.items():
         try:
-            ApiClient(settings)._request_at(settings["management_url"].rstrip("/"), "POST", "/api/inference/unload", {"model_path": path})
-            print(f"[{role}] unloaded {path}")
+            client._request_at(client.management_url, "POST", "/api/inference/unload", {"model_path": path})
+            print(f"[{client.role}] unloaded {path}")
         except WorkflowError:
-            pass  # not loaded or server unreachable
+            pass  # already unloaded or server unreachable
+    LOADED_BY_RUN.clear()
 
 
 def main() -> int:

@@ -124,6 +124,14 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
+    def test_unload_only_models_loaded_by_this_run(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://x", "api_key": "k"})
+        client.role = "reviewer"
+        mine = {"mine.gguf": client}
+        with patch.object(orchestrator, "LOADED_BY_RUN", mine),                 patch.object(orchestrator.ApiClient, "_request_at", return_value={}) as request:
+            orchestrator.unload_models()
+        self.assertEqual([c.args[3] for c in request.call_args_list], [{"model_path": "mine.gguf"}])
+
     def test_text_tool_calls_recovered_from_json_blocks(self):
         text = 'x {"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}} y {"name": "nope", "arguments": {}}'
         calls = orchestrator.text_tool_calls(text, {"write_file"})

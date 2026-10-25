@@ -34,6 +34,7 @@ public partial class MainWindow : Window
     private readonly Queue<StreamBlock> _pendingTools = new();
     private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
+    private readonly HashSet<string> _loadedByRun = new(); // only these are unloaded on Stop/close
     private bool _followTail = true;
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
@@ -176,7 +177,7 @@ public partial class MainWindow : Window
         }
         catch (InvalidOperationException) { }
         // The killed orchestrator cannot run its own cleanup, so release the models from here.
-        await UnloadModelsAsync(SelectedProjectPath());
+        await UnloadModelsAsync();
     }
 
     private void ResetRunView()
@@ -186,6 +187,7 @@ public partial class MainWindow : Window
         _stream = null;
         _pendingTools.Clear();
         _lines.Clear();
+        _loadedByRun.Clear();
         _followTail = true;
         _transcript.Clear();
         _log.Clear();
@@ -291,6 +293,7 @@ public partial class MainWindow : Window
             case "loading":
                 EndStream(false);
                 Activate(role, "Loading model");
+                _loadedByRun.Add(Str(ev, "path"));
                 Log($"[{role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
@@ -754,16 +757,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task UnloadModelsAsync(string project)
+    // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
+    private async Task UnloadModelsAsync()
     {
+        var paths = _loadedByRun.ToList();
+        _loadedByRun.Clear();
         try
         {
-            using var config = ReadConfig(project);
-            if (config is null || !config.RootElement.TryGetProperty("roles", out var roles))
-                return;
-            var paths = roles.EnumerateObject()
-                .Select(r => r.Value.TryGetProperty("auto_load", out var l) && l.TryGetProperty("model_path", out var p) ? p.GetString() : null)
-                .Where(p => !string.IsNullOrEmpty(p)).Distinct().ToList();
             foreach (var path in paths)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Post, _apiBase + "/api/inference/unload")
@@ -776,7 +776,7 @@ public partial class MainWindow : Window
                     Log($"Unloaded {path}");
             }
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException) { }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
     }
 
     private bool TryLoadApiKeyFile()
@@ -1398,7 +1398,7 @@ public partial class MainWindow : Window
         if (_process is { HasExited: false })
         {
             _process.Kill(entireProcessTree: true);
-            UnloadModelsAsync(SelectedProjectPath()).Wait(TimeSpan.FromSeconds(4));
+            UnloadModelsAsync().Wait(TimeSpan.FromSeconds(4));
         }
         _settings.Save();
     }
