@@ -12,6 +12,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
@@ -412,17 +413,6 @@ public partial class MainWindow : Window
     {
         AddRoleHeaderIfNeeded(role);
         var block = new StreamBlock { Role = role, Kind = kind, Index = index };
-        if (kind == "text")
-        {
-            var panel = new StackPanel { Margin = new Thickness(2, 0, 0, 10) };
-            block.Label = Label("RESPONSE");
-            block.Body = BodyText("", mono: false, muted: false);
-            panel.Children.Add(block.Label);
-            panel.Children.Add(block.Body);
-            AddBlock(panel, "\n[response]\n");
-            return block;
-        }
-
         UIElement body;
         if (kind == "tool")
         {
@@ -438,14 +428,30 @@ public partial class MainWindow : Window
             body = panel;
         }
         else
-            body = block.Body = BodyText("", mono: false, muted: true);
+            body = block.Body = BodyText("", mono: false, muted: kind == "thinking");
 
-        block.Expander = BuildExpander(kind == "tool" ? "TOOL" : "THINKING", "", body, out block.Preview);
-        block.Expander.IsExpanded = true; // visible while it streams, folded away once it finishes
+        var title = kind == "tool" ? "TOOL" : kind == "text" ? "RESPONSE" : "THINKING";
+        block.Expander = BuildExpander(title, "", body, out block.Preview); // collapsed; the user opens what they want to read
+        block.Label = (TextBlock)((StackPanel)block.Expander.Header).Children[0];
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
-        AddBlock(block.Expander, kind == "tool" ? "\n[tool call]\n" : "\n[thinking]\n");
+        AddBlock(block.Expander, kind == "tool" ? "\n[tool call]\n" : kind == "text" ? "\n[response]\n" : "\n[thinking]\n");
+        SetPulse(block, true);
         return block;
+    }
+
+    // The section that is currently receiving text pulses (header and body) until its model call ends.
+    private static void SetPulse(StreamBlock block, bool on)
+    {
+        foreach (var target in new[] { block.Expander?.Header as UIElement, block.Body })
+        {
+            if (target is null)
+                continue;
+            target.BeginAnimation(UIElement.OpacityProperty, on
+                ? new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(700))
+                    { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() }
+                : null);
+        }
     }
 
     private void Fold(StreamBlock block)
@@ -463,6 +469,7 @@ public partial class MainWindow : Window
         if (_stream is not { } block)
             return;
         _stream = null;
+        SetPulse(block, false);
         if (block.Preview is not null)
             block.Preview.Text = PreviewFor(block);
         switch (block.Kind)
@@ -523,10 +530,10 @@ public partial class MainWindow : Window
         if (text.Trim().Length == 0)
             return;
         AddRoleHeaderIfNeeded(role);
-        var panel = new StackPanel { Margin = new Thickness(2, 0, 0, 10) };
-        panel.Children.Add(Label(final ? "FINAL RESPONSE" : "RESPONSE", accent: final));
-        panel.Children.Add(BodyText(text, mono: false, muted: false));
-        AddBlock(panel, $"[{(final ? "final" : "response")}]\n{text}\n");
+        var expander = BuildExpander(final ? "FINAL RESPONSE" : "RESPONSE", Preview(text), BodyText(text, mono: false, muted: false), out _);
+        if (final)
+            ((TextBlock)((StackPanel)expander.Header).Children[0]).SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
+        AddBlock(expander, $"[{(final ? "final" : "response")}]\n{text}\n");
     }
 
     private void AddNote(string title, string text)
