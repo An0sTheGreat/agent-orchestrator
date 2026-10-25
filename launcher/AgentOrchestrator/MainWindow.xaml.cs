@@ -1013,6 +1013,12 @@ public partial class MainWindow : Window
         e.Effects = e.Data.GetData(typeof(RoleCard)) is RoleCard ? DragDropEffects.Move : DragDropEffects.None;
         if (e.Effects == DragDropEffects.Move && ((FrameworkElement)sender).DataContext is RoleCard target)
             target.DropHover = true;
+        // scroll the list while dragging near its top or bottom edge
+        var y = e.GetPosition(DetailsScroll).Y;
+        if (y < 40)
+            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset - 12);
+        else if (y > DetailsScroll.ActualHeight - 40)
+            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 12);
         e.Handled = true;
     }
 

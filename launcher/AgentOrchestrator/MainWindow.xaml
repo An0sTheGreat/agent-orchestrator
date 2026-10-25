@@ -244,7 +244,7 @@
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="24" /><ColumnDefinition Width="*" MinWidth="120" /></Grid.ColumnDefinitions>
                                 <TextBlock x:Name="Check" Text="&#x2713;" Foreground="{DynamicResource AccentLight}" FontWeight="Bold"
                                            VerticalAlignment="Center" Visibility="Collapsed" />
-                                <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="True" VerticalAlignment="Center" />
+                                <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="False" VerticalAlignment="Center" />
                             </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -576,7 +576,7 @@
 
             <!-- Right column: model details -->
             <Border Grid.Column="3" Background="{DynamicResource Panel}">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="17">
                         <TextBlock Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" Margin="0,0,0,12" />
                         <ItemsControl x:Name="CardsList" ItemTemplate="{StaticResource RoleCardTemplate}" />

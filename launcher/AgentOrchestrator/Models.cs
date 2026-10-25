@@ -112,8 +112,11 @@ internal sealed class AppSettings
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
 
+    // AGENT_ORCHESTRATOR_DATA redirects the settings folder (used by UI tests so real settings stay untouched).
     private static string FilePath => Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator", "settings.json");
+        Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator"),
+        "settings.json");
 
     public static AppSettings Load()
     {
