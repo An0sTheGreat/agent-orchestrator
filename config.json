@@ -1,0 +1,76 @@
+{
+  "max_tasks": 20,
+  "max_review_rounds": 2,
+  "max_tool_steps": 30,
+  "project_configured": false,
+  "validation_commands": {},
+  "roles": {
+    "planner": {
+      "base_url": "http://127.0.0.1:8888/v1",
+      "management_url": "http://127.0.0.1:8888",
+      "api_key_env": "UNSLOTH_API_KEY",
+      "expected_model_contains": "AgentWorld-35B-A3B",
+      "timeout_seconds": 600,
+      "auto_load": {
+        "model_path": "unsloth/Qwen-AgentWorld-35B-A3B-GGUF",
+        "gguf_variant": "UD-Q2_K_XL",
+        "max_seq_length": 32768,
+        "cache_type_kv": "q8_0",
+        "n_parallel": 1,
+        "n_batch": 1024,
+        "n_ubatch": 256,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": -1,
+        "speculative_type": "auto",
+        "reasoning_budget": 8192,
+        "disable_vision": true,
+        "llama_extra_args": ["--flash-attn", "on"]
+      },
+      "sampling": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 8192, "extra_body": {"top_k": 20}}
+    },
+    "implementer": {
+      "base_url": "http://127.0.0.1:8888/v1",
+      "management_url": "http://127.0.0.1:8888",
+      "api_key_env": "UNSLOTH_API_KEY",
+      "expected_model_contains": "Qwen2.5 Coder 14B",
+      "timeout_seconds": 600,
+      "auto_load": {
+        "model_path": "Y:\\.llm_models\\2. CODE - Qwen2.5 Coder 14B｜Instruct Q5_K_M.gguf",
+        "max_seq_length": 32768,
+        "cache_type_kv": "q8_0",
+        "n_parallel": 1,
+        "n_batch": 1024,
+        "n_ubatch": 256,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": -1,
+        "speculative_type": "off",
+        "reasoning_budget": 0,
+        "disable_vision": true,
+        "llama_extra_args": ["--flash-attn", "on"]
+      },
+      "sampling": {"temperature": 0.4, "top_p": 0.8, "max_tokens": 8192, "extra_body": {"top_k": 20, "repetition_penalty": 1.05}}
+    },
+    "reviewer": {
+      "base_url": "http://127.0.0.1:8888/v1",
+      "management_url": "http://127.0.0.1:8888",
+      "api_key_env": "UNSLOTH_API_KEY",
+      "expected_model_contains": "Qwen3.5 9B",
+      "timeout_seconds": 600,
+      "auto_load": {
+        "model_path": "Y:\\.llm_models\\Qwen3.5 9B｜Q8_0.gguf",
+        "max_seq_length": 32768,
+        "cache_type_kv": "q8_0",
+        "n_parallel": 1,
+        "n_batch": 1024,
+        "n_ubatch": 256,
+        "gpu_memory_mode": "manual",
+        "gpu_layers": -1,
+        "speculative_type": "off",
+        "reasoning_budget": 4096,
+        "disable_vision": true,
+        "llama_extra_args": ["--flash-attn", "on"]
+      },
+      "sampling": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 8192, "extra_body": {"top_k": 20}}
+    }
+  }
+}

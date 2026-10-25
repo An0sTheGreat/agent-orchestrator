@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+launcher/**/bin/
+launcher/**/obj/
+api_key.txt
+dist/api_key.txt

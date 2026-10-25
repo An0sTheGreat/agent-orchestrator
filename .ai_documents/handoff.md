@@ -1,0 +1,97 @@
+# Agent Setup handoff
+
+## Context
+
+- Last agent: OpenAI Codex
+- Date: 2026-10-25
+- Project root: `Y:\Programs\Agent Setup`
+- Tracking: ordinary non-Git folder; no `.ai-handoff` baseline exists
+- Documentation location intentionally requested as `.ai_documents\`
+- Credential note: `api_key.txt` exists locally, is Git-ignored, and must never be read into reports or copied into prompts
+
+## Active goal
+
+Maintain a portable Windows UI around a bounded local Unsloth Planner/Implementer/Reviewer workflow. The application should initialize independent target projects, protect workflow records, load models sequentially, expose live logs, and stop safely at bounded failure points.
+
+There is no active source-edit request at this checkpoint. The latest user request was to create durable README and handoff documentation.
+
+## Current implementation
+
+- `dist\Agent Orchestrator.exe` is the user-facing self-contained .NET launcher.
+- Python 3.11+ on `PATH` remains required for `orchestrator.py`.
+- The custom WPF window has a dark title bar, target selector, project initializer, masked API-key input, `--once` toggle, live output, full-log copy, stop control, and selected-project `PROJECT.md` editing.
+- The launcher auto-detects one-line `api_key.txt` beside the EXE, then in the Agent Setup root. It never logs the key.
+- Initialization copies seven project-local files without overwriting existing files: `PROJECT.md`, `STATE.md`, `TASK.md`, `RESULT.md`, `REVIEW.md`, `ISSUES.md`, and `config.json`.
+- Initialization optionally accepts user-supplied `PROJECT.md` and `config.json`; custom config must define Planner, Implementer, and Reviewer roles.
+- The Configurator derives project-local validation commands from `PROJECT.md`, a bounded inventory, and recognized build manifests.
+- Empty validation commands are allowed for greenfield projects and configuration is reconsidered after project files change.
+- The Planner is constrained to one to three allowed files and one to seven required-work items.
+- Models cannot edit workflow files or `config.json` through tools.
+- Malformed JSON gets up to two correction turns.
+- Invalid Planner contracts and invalid Reviewer verdicts get up to two semantic correction turns.
+- Reviewer failures get bounded implementation-repair rounds; only `PASS` advances `STATE.md`.
+
+## Durable decisions
+
+- Keep model/runtime settings in each initialized project's copied `config.json`, but allow the Configurator to update only `validation_commands` and configuration metadata.
+- Use argument-array validation commands with `shell=False`; reject shells and inline evaluation flags.
+- Never silently overwrite initialized workflow files or user-supplied project files.
+- Keep the API key out of config, project files, logs, and documentation.
+- Prefer one reviewed task per launcher run; the UI enables `--once` by default.
+- Keep Planner tasks intentionally small even when a project phase spans more than three files.
+
+## Key files
+
+- `orchestrator.py` — runtime behavior and safety boundaries
+- `test_orchestrator.py` — nine unit tests as of this checkpoint
+- `config.json` — model and limit template
+- `prompts\configurator.txt` — validation-command generation contract
+- `prompts\planner.txt` — bounded task schema
+- `prompts\implementer.txt` — implementation behavior
+- `prompts\reviewer.txt` — independent verdict schema
+- `launcher\AgentOrchestrator\MainWindow.xaml` — launcher layout and theme
+- `launcher\AgentOrchestrator\MainWindow.xaml.cs` — UI behavior and process lifecycle
+- `launcher\AgentOrchestrator\LauncherLogic.cs` — discovery, initialization, API-key loading, process construction, and self-test
+
+## Verification history
+
+- Python unit suite most recently passed with nine tests.
+- `python -m py_compile orchestrator.py` passed after the structured-output correction work.
+- Runtime-specific and framework-dependent WPF builds passed with zero warnings and zero errors.
+- Launcher `--self-test` passed with exit code `0` after project initialization, custom-file, API-key, and process-construction checks were added.
+- Published EXE was inspected through the real Windows UI.
+- Live UI checks covered the themed title bar, `--once` toggle, missing-folder prompt, initialization, seven-file output, custom-file controls, full-log clipboard copying, API-key masking, and maximize/restore behavior.
+- Real end-to-end project completion has not been verified; individual local-model runs have exposed recoverable output-contract failures.
+
+## Known limitations and risks
+
+- This is bounded orchestration, not a security sandbox; generated source can still be harmful.
+- `api_key.txt` is plaintext on disk even though it is excluded from Git and hidden in the UI.
+- The launcher is self-contained for .NET only; Python remains an external prerequisite.
+- Model compliance is probabilistic. The workflow stops after bounded correction or review attempts rather than looping indefinitely.
+- Validation commands generated by a model should be inspected before use on valuable projects.
+- Automatic model loading depends on the installed Unsloth Studio management API and the configured local model identifiers.
+- The project is not tracked by Git and no snapshot baseline was requested, so historical diffs cannot be reconstructed from this handoff alone.
+
+## Next recommended action
+
+1. Read `.ai_documents\readme.md` for operation and architecture.
+2. Run the Python unit suite and launcher self-test before changing behavior.
+3. Reproduce any reported failure against the current source and target project's workflow records.
+4. Make the narrowest fix in shared logic, add one focused regression test, rebuild, republish, and perform a live UI check when the launcher changes.
+5. Do not inspect or print `api_key.txt` while diagnosing authentication behavior.
+
+## Read next
+
+1. `.ai_documents\readme.md`
+2. `orchestrator.py`
+3. `test_orchestrator.py`
+4. `launcher\AgentOrchestrator\LauncherLogic.cs`
+5. `launcher\AgentOrchestrator\MainWindow.xaml.cs`
+6. `config.json`
+7. The affected target project's `PROJECT.md`, `STATE.md`, `TASK.md`, `RESULT.md`, `REVIEW.md`, and `ISSUES.md`
+
+## Files changed in this checkpoint
+
+- `.ai_documents\readme.md` — durable operating and architecture guide
+- `.ai_documents\handoff.md` — compact current-state handoff for the next agent
