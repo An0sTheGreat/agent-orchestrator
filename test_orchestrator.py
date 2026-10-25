@@ -132,6 +132,17 @@ class OrchestratorTests(unittest.TestCase):
             orchestrator.unload_models()
         self.assertEqual([c.args[3] for c in request.call_args_list], [{"model_path": "mine.gguf"}])
 
+    def test_implementer_sees_current_files_and_missing_ones(self):
+        text = orchestrator.allowed_files_context({"a.js": "let x = 1;", "b.js": None})
+        self.assertIn("--- a.js ---
+let x = 1;", text)
+        self.assertIn("b.js --- (does not exist yet; create it with write_file)", text)
+
+    def test_reading_a_missing_allowed_file_says_to_create_it(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result = orchestrator.execute_tool("read_file", {"path": "new.js"}, Path(folder), ["new.js"], {}, True)
+        self.assertIn("create it with write_file", result)
+
     def test_text_tool_calls_recovered_from_json_blocks(self):
         text = 'x {"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}} y {"name": "nope", "arguments": {}}'
         calls = orchestrator.text_tool_calls(text, {"write_file"})

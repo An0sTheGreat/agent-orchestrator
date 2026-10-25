@@ -402,7 +402,7 @@ def execute_tool(
     if name == "read_file":
         path = path_is_allowed(str(arguments["path"]), allowed, project_root)
         if not path.is_file():
-            return "ERROR: file does not exist"
+            return "ERROR: file does not exist yet; if the task needs it, create it with write_file"
         return load_text(path)
     if name == "write_file" and writable:
         path = path_is_allowed(str(arguments["path"]), allowed, project_root)
@@ -437,6 +437,17 @@ def execute_tool(
         output = (completed.stdout + completed.stderr)[-12000:]
         return f"exit_code={completed.returncode}\n{output}"
     return f"ERROR: tool {name!r} is unavailable"
+
+
+def allowed_files_context(files: dict[str, str | None]) -> str:
+    """What the implementer starts from: each allowed file's current content, or a note that it must be created."""
+    parts = []
+    for name, content in files.items():
+        if content is None:
+            parts.append(f"--- {name} --- (does not exist yet; create it with write_file)")
+        else:
+            parts.append(f"--- {name} ---\n{content[:20_000]}")
+    return "\n\n".join(parts)
 
 
 def text_tool_calls(text: str, tool_names: set[str]) -> list[dict[str, Any]]:
@@ -729,6 +740,7 @@ def _run() -> int:
         config = configure_project(config, project_root, project, interactive)
         planner_input = (
             f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
+            f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
             f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
         )
         plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
@@ -745,6 +757,7 @@ def _run() -> int:
         for review_round in range(max_review_rounds + 1):
             implementer_input = (
                 f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
+                f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
                 f"REVIEWER FEEDBACK\n{reviewer_feedback}"
             )
             result = run_agent(config, "implementer", prompts["implementer"], implementer_input, project_root, allowed, True, interactive)
