@@ -65,6 +65,7 @@ public partial class MainWindow : Window
         ThemeOledRadio.IsChecked = _settings.Theme == "Oled";
         ApplyTheme();
         _initializing = false;
+        RestoreWindowBounds();
 
         Closing += OnClosing;
         StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
@@ -1393,8 +1394,31 @@ public partial class MainWindow : Window
     private void SetThemeBrush(string key, string color) =>
         Resources[key] = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)!);
 
+    // Reopen where the user left the window, as long as it would still be reachable on the current screens.
+    private void RestoreWindowBounds()
+    {
+        if (_settings.WindowLeft is not { } left || _settings.WindowTop is not { } top ||
+            _settings.WindowWidth is not { } width || _settings.WindowHeight is not { } height)
+            return;
+        var screenLeft = SystemParameters.VirtualScreenLeft;
+        var screenTop = SystemParameters.VirtualScreenTop;
+        var screenRight = screenLeft + SystemParameters.VirtualScreenWidth;
+        var screenBottom = screenTop + SystemParameters.VirtualScreenHeight;
+        if (width < MinWidth || height < MinHeight || left + width < screenLeft + 100 || left > screenRight - 100 ||
+            top < screenTop - 5 || top > screenBottom - 60)
+            return;
+        WindowStartupLocation = WindowStartupLocation.Manual;
+        (Left, Top, Width, Height) = (left, top, width, height);
+        if (_settings.WindowMaximized)
+            WindowState = WindowState.Maximized;
+    }
+
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
+        if (!bounds.IsEmpty)
+            (_settings.WindowLeft, _settings.WindowTop, _settings.WindowWidth, _settings.WindowHeight) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);
+        _settings.WindowMaximized = WindowState == WindowState.Maximized;
         if (_process is { HasExited: false })
         {
             _process.Kill(entireProcessTree: true);

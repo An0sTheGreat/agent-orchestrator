@@ -113,6 +113,12 @@ internal sealed class AppSettings
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
     public bool Compact { get; set; }
+    // Window position and size in device-independent pixels; null until the window has been closed once.
+    public double? WindowLeft { get; set; }
+    public double? WindowTop { get; set; }
+    public double? WindowWidth { get; set; }
+    public double? WindowHeight { get; set; }
+    public bool WindowMaximized { get; set; }
 
     // AGENT_ORCHESTRATOR_DATA redirects the settings folder (used by UI tests so real settings stay untouched).
     private static string FilePath => Path.Combine(
