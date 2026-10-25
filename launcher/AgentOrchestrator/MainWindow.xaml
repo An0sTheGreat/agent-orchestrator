@@ -357,7 +357,7 @@
 
         <DataTemplate x:Key="RoleCardTemplate">
             <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="14,12" Margin="0,0,0,10"
-                    BorderThickness="2" AllowDrop="True" DragOver="Card_DragOver" DragLeave="Card_DragLeave" Drop="Card_Drop">
+                    BorderThickness="2" Tag="CardRoot">
                 <Border.Style>
                     <Style TargetType="Border">
                         <Setter Property="BorderBrush" Value="Transparent" />
@@ -370,7 +370,7 @@
                 <StackPanel>
                     <DockPanel>
                         <TextBlock DockPanel.Dock="Left" Text="&#x2630;" Foreground="{DynamicResource Muted}" FontSize="14" Margin="0,0,10,0" VerticalAlignment="Center"
-                                   Cursor="SizeAll" ToolTip="Drag to reorder" Background="Transparent" PreviewMouseMove="Handle_MouseMove" />
+                                   Cursor="SizeAll" ToolTip="Drag to reorder" Background="Transparent" PreviewMouseLeftButtonDown="Handle_Down" />
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="&#x2715;" Padding="7,2" Margin="4,0,0,0" FontSize="11"
                                 ToolTip="Remove this worker" Visibility="{Binding IsCustom, Converter={StaticResource BoolVis}}" Click="RemoveWorker_Click" />
                         <Border DockPanel.Dock="Right" CornerRadius="9" Padding="9,2" VerticalAlignment="Center">
@@ -579,7 +579,8 @@
 
             <!-- Right column: model details -->
             <Border x:Name="DetailsPanel" Grid.Column="3" Background="{DynamicResource Panel}">
-                <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                              MouseMove="Drag_Move" MouseLeftButtonUp="Drag_Up" LostMouseCapture="Drag_Up">
                     <StackPanel Margin="17">
                         <TextBlock Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" Margin="0,0,0,12" />
                         <ItemsControl x:Name="CardsList" ItemTemplate="{StaticResource RoleCardTemplate}" />
@@ -600,6 +601,11 @@
                 </StackPanel>
             </ScrollViewer>
         </Grid>
+
+        <!-- A picture of the worker card being dragged follows the pointer on this layer -->
+        <Canvas x:Name="DragLayer" Grid.RowSpan="4" IsHitTestVisible="False" Visibility="Collapsed">
+            <Image x:Name="DragGhost" Opacity="0.85" />
+        </Canvas>
 
         <!-- Status bar -->
         <Border Grid.Row="3" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">

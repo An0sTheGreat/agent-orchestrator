@@ -50,7 +50,6 @@ public partial class MainWindow : Window
         LoadWorkers();
         CardsList.ItemsSource = _cards;
         _pump.Tick += (_, _) => DrainLines();
-        PreviewDragOver += Window_PreviewDragOver;
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
 
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 640));
@@ -1005,99 +1004,83 @@ public partial class MainWindow : Window
         SaveWorkers();
     }
 
-    // ---- drag-and-drop reordering
+    // ---- drag-and-drop reordering: the card follows the pointer and the others make room live
 
-    private Popup? _ghost;
+    private RoleCard? _dragCard;
     private Point _grab;
 
-    private void Handle_MouseMove(object sender, MouseEventArgs e)
+    private void Handle_Down(object sender, MouseButtonEventArgs e)
     {
-        if (e.LeftButton != MouseButtonState.Pressed || ((FrameworkElement)sender).DataContext is not RoleCard card || _ghost is not null)
+        if (((FrameworkElement)sender).DataContext is not RoleCard card)
             return;
         DependencyObject? d = (DependencyObject)sender;
-        while (d is not null && !(d is Border { AllowDrop: true }))
+        while (d is not null && d is not FrameworkElement { Tag: "CardRoot" })
             d = VisualTreeHelper.GetParent(d);
-        if (d is not Border root)
+        if (d is not FrameworkElement root)
             return;
 
-        // a picture of the card follows the pointer so it stays visible while it is moved
         var dpi = VisualTreeHelper.GetDpi(root);
         var bitmap = new RenderTargetBitmap(
             Math.Max(1, (int)(root.ActualWidth * dpi.DpiScaleX)), Math.Max(1, (int)(root.ActualHeight * dpi.DpiScaleY)),
             dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
         bitmap.Render(root);
         _grab = e.GetPosition(root);
-        _ghost = new Popup
-        {
-            AllowsTransparency = true, IsHitTestVisible = false, Placement = PlacementMode.Absolute,
-            Child = new Border
-            {
-                CornerRadius = (CornerRadius)FindResource("PanelRadius"), Opacity = 0.9,
-                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 4, Opacity = 0.6 },
-                Child = new Image { Source = bitmap, Width = root.ActualWidth, Height = root.ActualHeight },
-            },
-        };
-        PositionGhost(e.GetPosition(this));
-        _ghost.IsOpen = true;
+        DragGhost.Source = bitmap;
+        DragGhost.Width = root.ActualWidth;
+        DragGhost.Height = root.ActualHeight;
+        _dragCard = card;
         card.IsDragging = true;
-        try { DragDrop.DoDragDrop((DependencyObject)sender, card, DragDropEffects.Move); }
-        finally
-        {
-            card.IsDragging = false;
-            _ghost.IsOpen = false;
-            _ghost = null;
-            foreach (var other in _cards)
-                other.DropHover = false;
-        }
+        PositionGhost(e.GetPosition(this));
+        DragLayer.Visibility = Visibility.Visible;
+        DetailsScroll.CaptureMouse(); // stays valid while the list re-creates cards as they move
+        e.Handled = true;
     }
 
     private void PositionGhost(Point windowPoint)
     {
-        if (_ghost is null)
-            return;
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var screen = PointToScreen(windowPoint);
-        _ghost.HorizontalOffset = screen.X / dpi.DpiScaleX - _grab.X;
-        _ghost.VerticalOffset = screen.Y / dpi.DpiScaleY - _grab.Y;
+        Canvas.SetLeft(DragGhost, windowPoint.X - _grab.X);
+        Canvas.SetTop(DragGhost, windowPoint.Y - _grab.Y);
     }
 
-    // Runs for every drag position over the window: move the picture and scroll the list near its top or bottom edge.
-    private void Window_PreviewDragOver(object sender, DragEventArgs e)
+    private void Drag_Move(object sender, MouseEventArgs e)
     {
+        if (_dragCard is null)
+            return;
         PositionGhost(e.GetPosition(this));
-        var at = e.GetPosition(DetailsScroll);
-        if (at.X < 0 || at.X > DetailsScroll.ActualWidth)
-            return;
-        if (at.Y < 50)
+
+        var inScroll = e.GetPosition(DetailsScroll).Y;
+        if (inScroll < 50)
             DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset - 14);
-        else if (at.Y > DetailsScroll.ActualHeight - 50)
+        else if (inScroll > DetailsScroll.ActualHeight - 50)
             DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 14);
-    }
-    private void Card_DragOver(object sender, DragEventArgs e)
-    {
-        e.Effects = e.Data.GetData(typeof(RoleCard)) is RoleCard ? DragDropEffects.Move : DragDropEffects.None;
-        if (e.Effects == DragDropEffects.Move && ((FrameworkElement)sender).DataContext is RoleCard target)
-            target.DropHover = true;
-        e.Handled = true;
-    }
 
-    private void Card_DragLeave(object sender, DragEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is RoleCard target)
-            target.DropHover = false;
-    }
-
-    private void Card_Drop(object sender, DragEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is not RoleCard target)
-            return;
-        target.DropHover = false;
-        if (e.Data.GetData(typeof(RoleCard)) is RoleCard source && source != target)
+        // swap as soon as the pointer passes the middle of a neighbouring card
+        var y = e.GetPosition(CardsList).Y;
+        var current = _cards.IndexOf(_dragCard);
+        var target = current;
+        double Middle(int index) => CardsList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item
+            ? item.TranslatePoint(new Point(0, 0), CardsList).Y + item.ActualHeight / 2
+            : double.NaN;
+        for (var i = current + 1; i < _cards.Count && y > Middle(i); i++)
+            target = i;
+        for (var i = current - 1; i >= 0 && y < Middle(i); i--)
+            target = i;
+        if (target != current)
         {
-            _cards.Move(_cards.IndexOf(source), _cards.IndexOf(target));
-            SaveWorkers();
+            _cards.Move(current, target);
+            CardsList.UpdateLayout();
         }
-        e.Handled = true;
+    }
+
+    private void Drag_Up(object sender, MouseEventArgs e)
+    {
+        if (_dragCard is not { } card)
+            return;
+        _dragCard = null;
+        card.IsDragging = false;
+        DragLayer.Visibility = Visibility.Collapsed;
+        DetailsScroll.ReleaseMouseCapture();
+        SaveWorkers();
     }
 
     // ---- model assignment
