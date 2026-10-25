@@ -357,10 +357,10 @@
         </Style>
 
         <ItemsPanelTemplate x:Key="StandardPanel">
-            <local:CardGridPanel MinItemWidth="300" MaxItemWidth="440" MaxColumns="2" Spacing="10" />
+            <local:CardGridPanel MinItemWidth="300" MaxItemWidth="300" MaxColumns="2" Spacing="10" />
         </ItemsPanelTemplate>
         <ItemsPanelTemplate x:Key="CompactPanel">
-            <local:CardGridPanel MinItemWidth="120" MaxItemWidth="180" MaxColumns="3" Spacing="10" Square="True" />
+            <local:CardGridPanel MinItemWidth="190" MaxItemWidth="190" MaxColumns="3" Spacing="10" />
         </ItemsPanelTemplate>
 
         <!-- Small square card: title plus a pulsing status dot -->
@@ -418,8 +418,19 @@
                             </Ellipse.Style>
                         </Ellipse>
                     </Grid>
-                    <TextBlock Text="{Binding Title}" VerticalAlignment="Bottom" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" FontSize="12"
-                               Style="{StaticResource SectionHeader}" Foreground="{DynamicResource AccentLight}" />
+                    <StackPanel>
+                        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" FontSize="11" Margin="0,0,24,0"
+                                   Style="{StaticResource SectionHeader}" Foreground="{DynamicResource AccentLight}" />
+                        <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" Margin="0,8,0,0" />
+                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
+                            <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Weights}" FontSize="10" /></Border>
+                            <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Quant}" FontSize="10" /></Border>
+                        </StackPanel>
+                        <TextBlock Text="{Binding TokensPerSec}" FontFamily="Consolas" FontSize="11" FontWeight="SemiBold" Margin="0,8,0,0" />
+                        <TextBlock FontFamily="Consolas" FontSize="10" Foreground="{DynamicResource Muted}" Margin="0,1,0,0">
+                            <Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
+                        </TextBlock>
+                    </StackPanel>
                 </Grid>
             </Border>
         </DataTemplate>
