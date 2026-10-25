@@ -48,11 +48,14 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         LoadWorkers();
+        ApplyCompact();
         CardsList.ItemsSource = _cards;
         _pump.Tick += (_, _) => DrainLines();
+        SizeChanged += (_, _) => FitDetailsColumn();
+        Loaded += (_, _) => FitDetailsColumn();
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
 
-        DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 640));
+        DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
         OnceToggle.IsChecked = _settings.Once;
         _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" ? _settings.Theme : "Flat";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
@@ -64,7 +67,6 @@ public partial class MainWindow : Window
 
         Closing += OnClosing;
         StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
-        ProjectPathBox.TextChanged += (_, _) => { RefreshInitializationPrompt(); PrefillCards(); RefreshPrimary(); };
         _poll.Tick += Poll_Tick;
 
         if (_workflowRoot is null)
@@ -75,7 +77,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            ProjectPathBox.Text = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
+            ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
             Log($"Workflow: {_workflowRoot}");
             TryLoadApiKeyFile();
             RefreshInitializationPrompt();
@@ -106,6 +108,7 @@ public partial class MainWindow : Window
         {
             SetStatus("API key required", "#FF667A");
             Log("Enter your Unsloth API key.");
+            ShowView(options: true);
             ApiKeyBox.Focus();
             return;
         }
@@ -203,7 +206,7 @@ public partial class MainWindow : Window
         StartButton.IsEnabled = !running && _workflowRoot is not null;
         StopButton.IsEnabled = running;
         ApiKeyBox.IsEnabled = !running;
-        ProjectPathBox.IsEnabled = !running;
+        ProjectButton.IsEnabled = !running;
         OnceToggle.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
         foreach (var card in _cards)
@@ -805,10 +808,10 @@ public partial class MainWindow : Window
         var dialog = new OpenFolderDialog
         {
             Title = "Select the target project folder",
-            InitialDirectory = Directory.Exists(ProjectPathBox.Text) ? ProjectPathBox.Text : _workflowRoot,
+            InitialDirectory = Directory.Exists(ProjectPath) ? ProjectPath : _workflowRoot,
         };
         if (dialog.ShowDialog(this) == true)
-            ProjectPathBox.Text = dialog.FolderName;
+            ProjectPath = dialog.FolderName;
     }
 
     private void InitializeProject_Click(object sender, RoutedEventArgs e)
@@ -906,9 +909,29 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
+    private string _projectPath = "";
+
+    // The project folder is chosen with the folder picker; setting it refreshes everything that depends on it.
+    private string ProjectPath
+    {
+        get => _projectPath;
+        set
+        {
+            _projectPath = value;
+            var shown = SelectedProjectPath();
+            ProjectName.Text = shown.Length == 0 ? "Choose project folder…" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
+            ProjectPathText.Text = shown;
+            ProjectPathText.Visibility = shown.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            ProjectButton.ToolTip = shown.Length == 0 ? "Choose the project folder" : shown;
+            RefreshInitializationPrompt();
+            PrefillCards();
+            RefreshPrimary();
+        }
+    }
+
     private string SelectedProjectPath()
     {
-        var path = ProjectPathBox.Text.Trim().Trim('"');
+        var path = _projectPath.Trim().Trim('"');
         if (path.Length == 0)
             return "";
         try
@@ -1054,21 +1077,20 @@ public partial class MainWindow : Window
         else if (inScroll > DetailsScroll.ActualHeight - 50)
             DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 14);
 
-        // swap as soon as the pointer passes the middle of a neighbouring card
-        var y = e.GetPosition(CardsList).Y;
+        // swap when the pointer reaches the inner half of another card (works for one or several columns)
+        var p = e.GetPosition(CardsList);
         var current = _cards.IndexOf(_dragCard);
-        var target = current;
-        double Middle(int index) => CardsList.ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement item
-            ? item.TranslatePoint(new Point(0, 0), CardsList).Y + item.ActualHeight / 2
-            : double.NaN;
-        for (var i = current + 1; i < _cards.Count && y > Middle(i); i++)
-            target = i;
-        for (var i = current - 1; i >= 0 && y < Middle(i); i--)
-            target = i;
-        if (target != current)
+        for (var i = 0; i < _cards.Count; i++)
         {
-            _cards.Move(current, target);
+            if (i == current || CardsList.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement item)
+                continue;
+            var rect = new Rect(item.TranslatePoint(new Point(0, 0), CardsList), item.RenderSize);
+            rect.Inflate(-rect.Width / 4, -rect.Height / 4);
+            if (!rect.Contains(p))
+                continue;
+            _cards.Move(current, i);
             CardsList.UpdateLayout();
+            break;
         }
     }
 
@@ -1230,14 +1252,38 @@ public partial class MainWindow : Window
 
     // ---------------------------------------------------------------- navigation, theme, window chrome
 
-    private void Nav_Click(object sender, RoutedEventArgs e)
+    private void Nav_Click(object sender, RoutedEventArgs e) =>
+        ShowView(((FrameworkElement)sender).Tag as string == "Options");
+
+    private void ShowView(bool options)
     {
-        var options = ((FrameworkElement)sender).Tag as string == "Options";
         NavWorkspace.IsChecked = !options;
         NavOptions.IsChecked = options;
         foreach (UIElement part in new UIElement[] { WorkArea, SplitterBar, DetailsPanel })
             part.Visibility = options ? Visibility.Collapsed : Visibility.Visible;
         OptionsView.Visibility = options ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ---- compact worker cards
+
+    private void Compact_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.Compact = CompactToggle.IsChecked == true;
+        ApplyCompact();
+        _settings.Save();
+    }
+
+    private void ApplyCompact()
+    {
+        CompactToggle.IsChecked = _settings.Compact;
+        CardsList.ItemsPanel = (ItemsPanelTemplate)FindResource(_settings.Compact ? "CompactPanel" : "StandardPanel");
+        CardsList.ItemTemplate = (DataTemplate)FindResource(_settings.Compact ? "CompactCardTemplate" : "RoleCardTemplate");
+    }
+
+    // The details pane may grow, but never past what leaves the sidebar and a usable output column on screen.
+    private void FitDetailsColumn()
+    {
+        DetailsColumn.MaxWidth = Math.Max(DetailsColumn.MinWidth, ActualWidth - 260 - 380 - 6);
     }
 
     private void Splitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
@@ -1302,6 +1348,12 @@ public partial class MainWindow : Window
         SetThemeBrush("AccentLight", accent.Light);
         SetThemeBrush("OnAccent", accent.On);
         AccentLabel.Text = "Accent: " + accent.Label;
+        var strong = (Color)ColorConverter.ConvertFromString(accent.Accent)!;
+        var soft = (Color)ColorConverter.ConvertFromString(accent.Light)!;
+        GlassA1.Color = Color.FromArgb(0x70, strong.R, strong.G, strong.B);
+        GlassA2.Color = Color.FromArgb(0x00, strong.R, strong.G, strong.B);
+        GlassB1.Color = Color.FromArgb(0x50, soft.R, soft.G, soft.B);
+        GlassB2.Color = Color.FromArgb(0x00, soft.R, soft.G, soft.B);
     }
 
     private void Accent_Click(object sender, RoutedEventArgs e)

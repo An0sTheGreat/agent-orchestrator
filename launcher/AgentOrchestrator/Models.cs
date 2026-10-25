@@ -112,6 +112,7 @@ internal sealed class AppSettings
     public double DetailsWidth { get; set; } = 340;
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
+    public bool Compact { get; set; }
 
     // AGENT_ORCHESTRATOR_DATA redirects the settings folder (used by UI tests so real settings stay untouched).
     private static string FilePath => Path.Combine(
