@@ -361,7 +361,10 @@
                 <Border.Style>
                     <Style TargetType="Border">
                         <Setter Property="BorderBrush" Value="Transparent" />
-                        <Style.Triggers><DataTrigger Binding="{Binding DropHover}" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></DataTrigger></Style.Triggers>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding DropHover}" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></DataTrigger>
+                            <DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger>
+                        </Style.Triggers>
                     </Style>
                 </Border.Style>
                 <StackPanel>
@@ -531,7 +534,7 @@
             </Border>
 
             <!-- Left column: model output + execution log -->
-            <Grid Grid.Column="1">
+            <Grid x:Name="WorkArea" Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -571,11 +574,11 @@
                 </Border>
             </Grid>
 
-            <GridSplitter Grid.Column="2" Width="6" HorizontalAlignment="Stretch" ResizeDirection="Columns"
+            <GridSplitter x:Name="SplitterBar" Grid.Column="2" Width="6" HorizontalAlignment="Stretch" ResizeDirection="Columns"
                           Background="{DynamicResource Hover}" ShowsPreview="False" DragCompleted="Splitter_DragCompleted" />
 
             <!-- Right column: model details -->
-            <Border Grid.Column="3" Background="{DynamicResource Panel}">
+            <Border x:Name="DetailsPanel" Grid.Column="3" Background="{DynamicResource Panel}">
                 <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                     <StackPanel Margin="17">
                         <TextBlock Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" Margin="0,0,0,12" />
@@ -584,20 +587,19 @@
                     </StackPanel>
                 </ScrollViewer>
             </Border>
+            <!-- Options -->
+            <ScrollViewer x:Name="OptionsView" Grid.Column="1" Grid.ColumnSpan="3" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="40,28" MaxWidth="760" HorizontalAlignment="Left">
+                    <TextBlock Text="OPTIONS" Style="{StaticResource SectionHeader}" />
+                    <TextBlock Text="Theme" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,0" />
+                    <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme (default)" Margin="0,14,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Checked="Theme_Checked" />
+                    <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
+                </StackPanel>
+            </ScrollViewer>
         </Grid>
-
-        <!-- Options -->
-        <ScrollViewer x:Name="OptionsView" Grid.Row="2" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-            <StackPanel Margin="40,28" MaxWidth="760" HorizontalAlignment="Left">
-                <TextBlock Text="OPTIONS" Style="{StaticResource SectionHeader}" />
-                <TextBlock Text="Theme" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,0" />
-                <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme (default)" Margin="0,14,0,8" Checked="Theme_Checked" />
-                <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
-                <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
-                <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Checked="Theme_Checked" />
-                <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
-            </StackPanel>
-        </ScrollViewer>
 
         <!-- Status bar -->
         <Border Grid.Row="3" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">

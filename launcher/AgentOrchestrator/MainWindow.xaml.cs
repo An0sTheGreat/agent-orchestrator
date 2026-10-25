@@ -9,8 +9,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using Microsoft.Win32;
 
@@ -48,6 +50,7 @@ public partial class MainWindow : Window
         LoadWorkers();
         CardsList.ItemsSource = _cards;
         _pump.Tick += (_, _) => DrainLines();
+        PreviewDragOver += Window_PreviewDragOver;
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
 
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 640));
@@ -743,6 +746,8 @@ public partial class MainWindow : Window
             if (!roles.TryGetProperty(card.Role, out var r) || !r.TryGetProperty("auto_load", out var load) ||
                 !load.TryGetProperty("model_path", out var path) || path.GetString() is not { } id)
                 continue;
+            if (r.TryGetProperty("display_name", out var label) && label.GetString() is { Length: > 0 } shown)
+                id = shown;
             card.SetModel(LauncherLogic.DescribeModel(id, load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null));
         }
     }
@@ -1002,23 +1007,77 @@ public partial class MainWindow : Window
 
     // ---- drag-and-drop reordering
 
+    private Popup? _ghost;
+    private Point _grab;
+
     private void Handle_MouseMove(object sender, MouseEventArgs e)
     {
-        if (e.LeftButton == MouseButtonState.Pressed && ((FrameworkElement)sender).DataContext is RoleCard card)
-            DragDrop.DoDragDrop((DependencyObject)sender, card, DragDropEffects.Move);
+        if (e.LeftButton != MouseButtonState.Pressed || ((FrameworkElement)sender).DataContext is not RoleCard card || _ghost is not null)
+            return;
+        DependencyObject? d = (DependencyObject)sender;
+        while (d is not null && !(d is Border { AllowDrop: true }))
+            d = VisualTreeHelper.GetParent(d);
+        if (d is not Border root)
+            return;
+
+        // a picture of the card follows the pointer so it stays visible while it is moved
+        var dpi = VisualTreeHelper.GetDpi(root);
+        var bitmap = new RenderTargetBitmap(
+            Math.Max(1, (int)(root.ActualWidth * dpi.DpiScaleX)), Math.Max(1, (int)(root.ActualHeight * dpi.DpiScaleY)),
+            dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+        bitmap.Render(root);
+        _grab = e.GetPosition(root);
+        _ghost = new Popup
+        {
+            AllowsTransparency = true, IsHitTestVisible = false, Placement = PlacementMode.Absolute,
+            Child = new Border
+            {
+                CornerRadius = (CornerRadius)FindResource("PanelRadius"), Opacity = 0.9,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 4, Opacity = 0.6 },
+                Child = new Image { Source = bitmap, Width = root.ActualWidth, Height = root.ActualHeight },
+            },
+        };
+        PositionGhost(e.GetPosition(this));
+        _ghost.IsOpen = true;
+        card.IsDragging = true;
+        try { DragDrop.DoDragDrop((DependencyObject)sender, card, DragDropEffects.Move); }
+        finally
+        {
+            card.IsDragging = false;
+            _ghost.IsOpen = false;
+            _ghost = null;
+            foreach (var other in _cards)
+                other.DropHover = false;
+        }
     }
 
+    private void PositionGhost(Point windowPoint)
+    {
+        if (_ghost is null)
+            return;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var screen = PointToScreen(windowPoint);
+        _ghost.HorizontalOffset = screen.X / dpi.DpiScaleX - _grab.X;
+        _ghost.VerticalOffset = screen.Y / dpi.DpiScaleY - _grab.Y;
+    }
+
+    // Runs for every drag position over the window: move the picture and scroll the list near its top or bottom edge.
+    private void Window_PreviewDragOver(object sender, DragEventArgs e)
+    {
+        PositionGhost(e.GetPosition(this));
+        var at = e.GetPosition(DetailsScroll);
+        if (at.X < 0 || at.X > DetailsScroll.ActualWidth)
+            return;
+        if (at.Y < 50)
+            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset - 14);
+        else if (at.Y > DetailsScroll.ActualHeight - 50)
+            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 14);
+    }
     private void Card_DragOver(object sender, DragEventArgs e)
     {
         e.Effects = e.Data.GetData(typeof(RoleCard)) is RoleCard ? DragDropEffects.Move : DragDropEffects.None;
         if (e.Effects == DragDropEffects.Move && ((FrameworkElement)sender).DataContext is RoleCard target)
             target.DropHover = true;
-        // scroll the list while dragging near its top or bottom edge
-        var y = e.GetPosition(DetailsScroll).Y;
-        if (y < 40)
-            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset - 12);
-        else if (y > DetailsScroll.ActualHeight - 40)
-            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 12);
         e.Handled = true;
     }
 
@@ -1115,6 +1174,7 @@ public partial class MainWindow : Window
             else
                 load["gguf_variant"] = choice.Variant;
             settings["expected_model_contains"] = choice.Expected;
+            settings["display_name"] = choice.Display; // the launcher's label; load paths for local models are opaque ids
             File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
             {
                 WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -1192,7 +1252,8 @@ public partial class MainWindow : Window
         var options = ((FrameworkElement)sender).Tag as string == "Options";
         NavWorkspace.IsChecked = !options;
         NavOptions.IsChecked = options;
-        WorkspaceView.Visibility = options ? Visibility.Collapsed : Visibility.Visible;
+        foreach (UIElement part in new UIElement[] { WorkArea, SplitterBar, DetailsPanel })
+            part.Visibility = options ? Visibility.Collapsed : Visibility.Visible;
         OptionsView.Visibility = options ? Visibility.Visible : Visibility.Collapsed;
     }
 

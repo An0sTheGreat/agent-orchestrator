@@ -9,7 +9,7 @@ namespace AgentOrchestrator;
 internal sealed class RoleCard : INotifyPropertyChanged
 {
     private string _modelName = "Not loaded", _weights = "—", _quant = "—", _status = "Idle", _tps = "—";
-    private bool _isActive, _dropHover, _editable = true;
+    private bool _isActive, _dropHover, _dragging, _editable = true;
     private string _title;
     private long _bankedPrompt, _bankedCompletion, _livePrompt, _liveCompletion;
 
@@ -24,6 +24,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public string Role { get; }
     public bool IsCustom { get; }
     public string Title { get => _title; set => Set(ref _title, IsCustom ? value : _title); }
+    public bool IsDragging { get => _dragging; set => Set(ref _dragging, value); }
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
     public bool DropHover { get => _dropHover; set => Set(ref _dropHover, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
