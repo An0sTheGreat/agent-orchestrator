@@ -667,6 +667,51 @@ public partial class MainWindow : Window
             LogBox.ScrollToEnd();
     }
 
+    // --ui-smoke: stream a fake turn and flip every animated state, so a broken template or storyboard fails a
+    // check instead of the user. Hover and press storyboards need real pointer input and are not covered.
+    internal async Task<bool> RunUiSmokeAsync()
+    {
+        static Task Settle() => Task.Delay(400);
+        foreach (var json in new[]
+        {
+            """{"e":"model","role":"planner","id":"smoke-model Q4_K_M"}""",
+            """{"e":"delta","role":"planner","kind":"thinking","text":"thinking about it"}""",
+            """{"e":"delta","role":"planner","kind":"tool","index":0,"name":"read_file","text":"{\"path\":\"a.js\"}"}""",
+            """{"e":"done","role":"planner","final":false}""",
+            """{"e":"tool","role":"planner","name":"read_file","args":"{\"path\":\"a.js\"}","result":"OK"}""",
+            """{"e":"delta","role":"planner","kind":"text","text":"the answer"}""",
+            """{"e":"done","role":"planner","final":true}""",
+            """{"e":"usage","role":"planner","prompt":10,"completion":5,"tps":50}""",
+        })
+            _lines.Enqueue(LauncherLogic.EventPrefix + json);
+        _lines.Enqueue("plain log line");
+        DrainLines();
+        await Settle();
+
+        var expanders = OutputPanel.Children.OfType<Expander>().ToList();
+        if (expanders.Count < 3)
+            return false; // thinking, tool call and response
+        foreach (var expander in expanders)
+            expander.IsExpanded = true;
+        await Settle();
+        foreach (var expander in expanders)
+            expander.IsExpanded = false;
+        await Settle();
+        foreach (var open in new[] { true, false })
+        {
+            LogToggle.IsChecked = open;
+            LogToggle_Click(LogToggle, new RoutedEventArgs());
+            await Settle();
+            ShowView(options: open);
+            await Settle();
+            OnceToggle.IsChecked = !OnceToggle.IsChecked;
+            _settings.Compact = open;
+            ApplyCompact();
+            await Settle();
+        }
+        return true;
+    }
+
     private void LogToggle_Click(object sender, RoutedEventArgs e)
     {
         Reveal(LogBox, LogToggle.IsChecked == true, slide: 12);

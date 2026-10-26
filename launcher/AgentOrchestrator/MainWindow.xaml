@@ -36,12 +36,12 @@
         <Storyboard x:Key="HoverIn"><DoubleAnimation Storyboard.TargetName="HoverFill" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12" /></Storyboard>
         <Storyboard x:Key="HoverOut"><DoubleAnimation Storyboard.TargetName="HoverFill" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.15" /></Storyboard>
         <Storyboard x:Key="PressIn">
-            <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="0.97" Duration="0:0:0.08" />
-            <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="0.97" Duration="0:0:0.08" />
+            <DoubleAnimation Storyboard.TargetName="RootScale" Storyboard.TargetProperty="ScaleX" To="0.97" Duration="0:0:0.08" />
+            <DoubleAnimation Storyboard.TargetName="RootScale" Storyboard.TargetProperty="ScaleY" To="0.97" Duration="0:0:0.08" />
         </Storyboard>
         <Storyboard x:Key="PressOut">
-            <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleX)" To="1" Duration="0:0:0.12" />
-            <DoubleAnimation Storyboard.TargetName="Root" Storyboard.TargetProperty="(UIElement.RenderTransform).(ScaleTransform.ScaleY)" To="1" Duration="0:0:0.12" />
+            <DoubleAnimation Storyboard.TargetName="RootScale" Storyboard.TargetProperty="ScaleX" To="1" Duration="0:0:0.12" />
+            <DoubleAnimation Storyboard.TargetName="RootScale" Storyboard.TargetProperty="ScaleY" To="1" Duration="0:0:0.12" />
         </Storyboard>
 
         <Style TargetType="Button">
@@ -56,7 +56,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
-                            <Grid.RenderTransform><ScaleTransform /></Grid.RenderTransform>
+                            <Grid.RenderTransform><ScaleTransform x:Name="RootScale" /></Grid.RenderTransform>
                             <Border x:Name="ButtonBorder" Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
                                     CornerRadius="{DynamicResource ControlRadius}">
@@ -92,7 +92,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
-                            <Grid.RenderTransform><ScaleTransform /></Grid.RenderTransform>
+                            <Grid.RenderTransform><ScaleTransform x:Name="RootScale" /></Grid.RenderTransform>
                             <Border x:Name="ButtonBorder" Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
                                     CornerRadius="{DynamicResource ControlRadius}">
@@ -135,7 +135,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid x:Name="Root" Background="Transparent" RenderTransformOrigin="0.5,0.5">
-                            <Grid.RenderTransform><ScaleTransform /></Grid.RenderTransform>
+                            <Grid.RenderTransform><ScaleTransform x:Name="RootScale" /></Grid.RenderTransform>
                             <Border x:Name="HoverFill" Background="#C42B1C" Opacity="0" />
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Grid>
@@ -247,7 +247,7 @@
                                     BorderThickness="1" CornerRadius="12" Opacity="0" />
                             <!-- The knob slides the 19 px between its off (left 3) and on (right 3) positions in the 42 px track. -->
                             <Grid x:Name="Knob" Width="17" Height="17" HorizontalAlignment="Left" Margin="3,0,0,0">
-                                <Grid.RenderTransform><TranslateTransform /></Grid.RenderTransform>
+                                <Grid.RenderTransform><TranslateTransform x:Name="KnobShift" /></Grid.RenderTransform>
                                 <Ellipse Fill="{DynamicResource Muted}" />
                                 <Ellipse x:Name="KnobOn" Fill="White" Opacity="0" />
                             </Grid>
@@ -257,7 +257,7 @@
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Knob" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="19" Duration="0:0:0.16">
+                                            <DoubleAnimation Storyboard.TargetName="KnobShift" Storyboard.TargetProperty="X" To="19" Duration="0:0:0.16">
                                                 <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut" /></DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
                                             <DoubleAnimation Storyboard.TargetName="TrackOn" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.16" />
@@ -268,7 +268,7 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Knob" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" To="0" Duration="0:0:0.16">
+                                            <DoubleAnimation Storyboard.TargetName="KnobShift" Storyboard.TargetProperty="X" To="0" Duration="0:0:0.16">
                                                 <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut" /></DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
                                             <DoubleAnimation Storyboard.TargetName="TrackOn" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.16" />
@@ -401,7 +401,7 @@
                                 <Grid DockPanel.Dock="Left" Width="16">
                                     <TextBlock x:Name="Glyph" Text="&#x25B8;" Foreground="{DynamicResource Muted}" HorizontalAlignment="Left" VerticalAlignment="Center"
                                                RenderTransformOrigin="0.5,0.5">
-                                        <TextBlock.RenderTransform><RotateTransform /></TextBlock.RenderTransform>
+                                        <TextBlock.RenderTransform><RotateTransform x:Name="GlyphTurn" /></TextBlock.RenderTransform>
                                     </TextBlock>
                                 </Grid>
                                 <ContentPresenter VerticalAlignment="Center" />
@@ -416,7 +416,7 @@
                                 <Trigger.EnterActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Glyph" Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)" To="90" Duration="0:0:0.15">
+                                            <DoubleAnimation Storyboard.TargetName="GlyphTurn" Storyboard.TargetProperty="Angle" To="90" Duration="0:0:0.15">
                                                 <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut" /></DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
                                         </Storyboard>
@@ -425,7 +425,7 @@
                                 <Trigger.ExitActions>
                                     <BeginStoryboard>
                                         <Storyboard>
-                                            <DoubleAnimation Storyboard.TargetName="Glyph" Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)" To="0" Duration="0:0:0.15">
+                                            <DoubleAnimation Storyboard.TargetName="GlyphTurn" Storyboard.TargetProperty="Angle" To="0" Duration="0:0:0.15">
                                                 <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut" /></DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
                                         </Storyboard>
@@ -449,7 +449,7 @@
                                     <ContentPresenter ContentSource="Header" />
                                 </ToggleButton>
                                 <ContentPresenter x:Name="Body" Margin="14,0,14,12" Visibility="Collapsed">
-                                    <ContentPresenter.RenderTransform><TranslateTransform /></ContentPresenter.RenderTransform>
+                                    <ContentPresenter.RenderTransform><TranslateTransform x:Name="BodyShift" /></ContentPresenter.RenderTransform>
                                 </ContentPresenter>
                             </DockPanel>
                         </Border>
@@ -461,7 +461,7 @@
                                     <BeginStoryboard>
                                         <Storyboard>
                                             <DoubleAnimation Storyboard.TargetName="Body" Storyboard.TargetProperty="Opacity" From="0" To="1" Duration="0:0:0.18" />
-                                            <DoubleAnimation Storyboard.TargetName="Body" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.Y)" From="-6" To="0" Duration="0:0:0.18">
+                                            <DoubleAnimation Storyboard.TargetName="BodyShift" Storyboard.TargetProperty="Y" From="-6" To="0" Duration="0:0:0.18">
                                                 <DoubleAnimation.EasingFunction><CubicEase EasingMode="EaseOut" /></DoubleAnimation.EasingFunction>
                                             </DoubleAnimation>
                                         </Storyboard>
@@ -501,7 +501,7 @@
                 <Grid>
                     <Grid HorizontalAlignment="Right" VerticalAlignment="Top" Width="26" Height="26" Margin="0,-4,-4,0">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
-                            <Ellipse.RenderTransform><ScaleTransform /></Ellipse.RenderTransform>
+                            <Ellipse.RenderTransform><ScaleTransform x:Name="RingScale" /></Ellipse.RenderTransform>
                             <Ellipse.Style>
                                 <Style TargetType="Ellipse">
                                     <Style.Triggers>
@@ -522,7 +522,7 @@
                             </Ellipse.Style>
                         </Ellipse>
                         <Ellipse Width="12" Height="12" RenderTransformOrigin="0.5,0.5">
-                            <Ellipse.RenderTransform><ScaleTransform /></Ellipse.RenderTransform>
+                            <Ellipse.RenderTransform><ScaleTransform x:Name="CoreScale" /></Ellipse.RenderTransform>
                             <Ellipse.Style>
                                 <Style TargetType="Ellipse">
                                     <Setter Property="Fill" Value="#4A4D57" />
