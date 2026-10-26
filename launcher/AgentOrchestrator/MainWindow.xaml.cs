@@ -703,6 +703,25 @@ public partial class MainWindow : Window
     internal async Task<bool> RunUiSmokeAsync()
     {
         static Task Settle() => Task.Delay(400);
+        // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
+        var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
+        void Snap(string name)
+        {
+            if (string.IsNullOrEmpty(snapshots))
+                return;
+            var dpi = VisualTreeHelper.GetDpi(this);
+            var bitmap = new RenderTargetBitmap((int)(ActualWidth * dpi.DpiScaleX), (int)(ActualHeight * dpi.DpiScaleY),
+                dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+            bitmap.Render(this);
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(bitmap));
+            Directory.CreateDirectory(snapshots);
+            using var file = File.Create(Path.Combine(snapshots, name + ".png"));
+            encoder.Save(file);
+        }
+
+        await Settle();
+        Snap("1-idle");
         foreach (var json in new[]
         {
             """{"e":"model","role":"planner","id":"smoke-model Q4_K_M"}""",
@@ -725,6 +744,7 @@ public partial class MainWindow : Window
         foreach (var expander in expanders)
             expander.IsExpanded = true;
         await Settle();
+        Snap("2-expanded");
         foreach (var expander in expanders)
             expander.IsExpanded = false;
         await Settle();
@@ -743,8 +763,28 @@ public partial class MainWindow : Window
         }
         SetRunning(true); // status ring and header shimmer
         await Settle();
+        Snap("3-running");
+        _settings.Compact = true;
+        ApplyCompact();
+        await Settle();
+        Snap("4-compact");
+        _settings.Compact = false;
+        ApplyCompact();
         SetRunning(false);
         await Settle();
+        if (!string.IsNullOrEmpty(snapshots))
+        {
+            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Flat" })
+            {
+                _settings.Theme = theme;
+                ApplyTheme();
+                await Settle();
+                Snap("5-theme-" + theme);
+            }
+            ShowView(options: true);
+            await Settle();
+            Snap("6-options");
+        }
         return true;
     }
 
