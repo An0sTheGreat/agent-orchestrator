@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -59,6 +60,8 @@ public partial class MainWindow : Window
 
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
         OnceToggle.IsChecked = _settings.Once;
+        SetSidebar(_settings.SidebarCollapsed, animate: false);
+        SidePane.SizeChanged += (_, _) => FitDetailsColumn();
         _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" ? _settings.Theme : "Flat";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
@@ -180,24 +183,49 @@ public partial class MainWindow : Window
 
     private async void Stop_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is null || _process.HasExited)
+        var p = _process;
+        if (p is null || p.HasExited)
             return;
         try
         {
-            _process.Kill(entireProcessTree: true);
+            var activity = StopActivity();
+            p.Kill(entireProcessTree: true);
             _stopRequested = true;
             Log("Stop requested.");
             SetStatus("Stopping…", "#F7C873");
+            // Kill returns before the process is gone; let it finish so it cannot overwrite the note.
+            try { await Task.WhenAny(p.WaitForExitAsync(), Task.Delay(2000)); }
+            catch (InvalidOperationException) { } // already disposed by the run's cleanup
+            RecordStopNote(activity);
         }
         catch (InvalidOperationException) { }
         // The killed orchestrator cannot run its own cleanup, so release the models from here.
         await UnloadModelsAsync();
     }
 
+    // What the run was doing when stopped: the active worker and its status, else the overall status text.
+    private string StopActivity() =>
+        _activeRole is { } role && CardFor(role) is { } card ? $"{card.Title} — {card.Status}" : StatusText.Text;
+
+    private void RecordStopNote(string activity)
+    {
+        try
+        {
+            Log(LauncherLogic.RecordStop(SelectedProjectPath(), DateTime.Now, activity));
+            Toast("Handoff saved");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not save the handoff note: {exception.Message}");
+        }
+    }
+
     private void ResetRunView()
     {
         OutputPanel.Children.Clear();
         EmptyState.Visibility = Visibility.Visible;
+        if (_stream is { } live)
+            SetPulse(live, false);
         _stream = null;
         _pendingTools.Clear();
         _lines.Clear();
@@ -377,6 +405,12 @@ public partial class MainWindow : Window
                 AddNote($"TASK  {Str(ev, "id")}", Str(ev, "outcome"));
                 RefreshPrimary();
                 break;
+            case "resume":
+                EndStream(false);
+                Log($"Resuming task {Str(ev, "id")} at review round {Num(ev, "round") + 1}");
+                AddNote($"RESUMED  {Str(ev, "id")}", $"Continuing at review round {Num(ev, "round") + 1}");
+                RefreshPrimary();
+                break;
             case "verdict":
                 EndStream(false);
                 Log($"Review round {Num(ev, "round")}: {Str(ev, "verdict")}");
@@ -488,18 +522,16 @@ public partial class MainWindow : Window
         return block;
     }
 
-    // The section that is currently receiving text pulses (header and body) until its model call ends.
+    // While its model call is active, only the title pulses; the streamed text (body and collapsed preview) is held
+    // at a static dim so it stays readable, then eases back to full opacity once the call ends.
     private static void SetPulse(StreamBlock block, bool on)
     {
-        foreach (var target in new[] { block.Expander?.Header as UIElement, block.Body })
-        {
-            if (target is null)
-                continue;
-            target.BeginAnimation(UIElement.OpacityProperty, on
-                ? new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(700))
-                    { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() }
-                : null);
-        }
+        block.Label?.BeginAnimation(UIElement.OpacityProperty, on
+            ? new DoubleAnimation(1, 0.35, TimeSpan.FromMilliseconds(700))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase() }
+            : null);
+        foreach (UIElement? text in new UIElement?[] { block.Body, block.Preview })
+            text?.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(on ? 0.55 : 1, TimeSpan.FromMilliseconds(250)) { EasingFunction = Decelerate });
     }
 
     private void Fold(StreamBlock block)
@@ -730,7 +762,7 @@ public partial class MainWindow : Window
     // check instead of the user. Hover and press storyboards need real pointer input and are not covered.
     internal async Task<bool> RunUiSmokeAsync()
     {
-        static bool Fail(int line) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         static Task Settle() => Task.Delay(400);
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
@@ -751,6 +783,15 @@ public partial class MainWindow : Window
 
         await Settle();
         Snap("1-idle");
+        SetSidebar(true);
+        await Settle();
+        if (SidePane.ActualWidth > 60 || SidebarFull.IsVisible || !SidebarRail.IsVisible)
+            return Fail();
+        Snap("5-collapsed");
+        SetSidebar(false);
+        await Settle();
+        if (Math.Abs(SidePane.ActualWidth - SidebarWidth) > 2 || !SidebarFull.IsVisible || SidebarRail.IsVisible)
+            return Fail();
         foreach (var json in new[]
         {
             """{"e":"model","role":"planner","id":"smoke-model Q4_K_M"}""",
@@ -764,24 +805,27 @@ public partial class MainWindow : Window
         })
             _lines.Enqueue(LauncherLogic.EventPrefix + json);
         _lines.Enqueue("plain log line");
+        _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"resume","id":"T0","round":1}""");
         DrainLines();
         await Settle();
+        if (!_transcript.ToString().Contains("[RESUMED  T0] Continuing at review round 2"))
+            return Fail();
 
         var expanders = OutputPanel.Children.OfType<Expander>().ToList();
         if (expanders.Count < 3)
-            return Fail(772); // thinking, tool call and response
+            return Fail(); // thinking, tool call and response
         SetAllExpanded(true);
         await Settle();
         if (!expanders.All(x => x.IsExpanded))
-            return Fail(776);
+            return Fail();
         Snap("2-expanded");
         SetAllExpanded(false);
         await Settle();
         if (expanders.Any(x => x.IsExpanded))
-            return Fail(781);
+            return Fail();
         var tool = SectionText(expanders.First(x => ((TextBlock)((StackPanel)x.Header).Children[0]).Text == "TOOL"));
         if (!(tool.StartsWith("TOOL") && tool.Contains("ARGUMENTS") && tool.Contains("a.js") && tool.Contains("RESULT") && tool.EndsWith("OK")))
-            return Fail(784);
+            return Fail();
         foreach (var open in new[] { true, false })
         {
             LogToggle.IsChecked = open;
@@ -802,20 +846,22 @@ public partial class MainWindow : Window
         Toast("Something failed", "#FF667A");
         await Settle();
         if (!JumpPill.IsVisible || !JumpPill.IsHitTestVisible || ToastStack.Children.Count != 2)
-            return Fail(805);
+            return Fail();
         Snap("2b-toast-and-jump");
         JumpToLatest_Click(JumpPill, new RoutedEventArgs());
         await Settle();
         if (!_followTail || JumpPill.IsVisible)
-            return Fail(810);
+            return Fail();
         await Task.Delay(3200); // toasts leave on their own
         if (ToastStack.Children.Count != 0)
-            return Fail(813);
+            return Fail();
         // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
         if (LogBox.Visibility != Visibility.Collapsed)
-            return Fail(817);
+            return Fail();
         SetRunning(true); // status ring and header shimmer
         await Settle();
+        if (RailProjectButton.IsEnabled || RailOnceToggle.IsEnabled)
+            return Fail();
         Snap("3-running");
         _settings.Compact = true;
         ApplyCompact();
@@ -825,6 +871,8 @@ public partial class MainWindow : Window
         ApplyCompact();
         SetRunning(false);
         await Settle();
+        if (!RailProjectButton.IsEnabled || !RailOnceToggle.IsEnabled)
+            return Fail();
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Flat" })
@@ -872,6 +920,8 @@ public partial class MainWindow : Window
     private void ClearOutput_Click(object sender, RoutedEventArgs e)
     {
         OutputPanel.Children.Clear();
+        if (_stream is { } live)
+            SetPulse(live, false);
         _stream = null;
         _pendingTools.Clear();
         _transcript.Clear();
@@ -1310,6 +1360,9 @@ public partial class MainWindow : Window
             case Key.D2 or Key.NumPad2 when !shift:
                 ShowView(options: true);
                 break;
+            case Key.B when !shift:
+                SetSidebar(!_settings.SidebarCollapsed);
+                break;
             case Key.E:
                 SetAllExpanded(!shift);
                 break;
@@ -1386,6 +1439,8 @@ public partial class MainWindow : Window
     {
         if (((FrameworkElement)sender).DataContext is not RoleCard card)
             return;
+        if (LauncherLogic.IsInsideButton(e.OriginalSource as DependencyObject))
+            return; // a button inside the card (compact Change or Settings) is a click, not a drag
         DependencyObject? d = (DependencyObject)sender;
         while (d is not null && d is not FrameworkElement { Tag: "CardRoot" })
             d = VisualTreeHelper.GetParent(d);
@@ -1453,6 +1508,111 @@ public partial class MainWindow : Window
         DragLayer.Visibility = Visibility.Collapsed;
         DetailsScroll.ReleaseMouseCapture();
         SaveWorkers();
+    }
+
+    // ---- generation settings
+
+    private void RoleSettings_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is not null || ((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: false } card)
+            return;
+        var project = SelectedProjectPath();
+        var path = Path.Combine(project, "config.json");
+        if (project.Length == 0 || !File.Exists(path))
+        {
+            SetStatus("Initialize the project first", "#F7C873");
+            return;
+        }
+        LauncherLogic.RoleSettings current;
+        try
+        {
+            current = LauncherLogic.ReadRoleSettings(path, card.Role);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
+        {
+            Log($"Could not read config.json: {exception.Message}");
+            SetStatus("Could not read config.json", "#FF667A");
+            return;
+        }
+
+        var dialog = new Window
+        {
+            Title = $"{card.Title} settings", Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
+            FontFamily = FontFamily, FontSize = FontSize,
+        };
+        dialog.Resources.MergedDictionaries.Add(Resources);
+        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
+        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
+
+        var fields = new (string Label, string Hint, string Value)[]
+        {
+            ("Temperature", "0 to 2; empty = unchanged", current.Temperature),
+            ("Max tokens", "1 to 262144; empty = unchanged", current.MaxTokens),
+            ("Repetition penalty", "1.0 to 2.0, empty = off", current.RepetitionPenalty),
+            ("Reasoning budget", "0 or more; empty = unchanged", current.ReasoningBudget),
+            ("Context length", "512 to 262144; empty = unchanged", current.ContextLength),
+        };
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var boxes = new TextBox[fields.Length];
+        for (var i = 0; i < fields.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var label = new TextBlock { Text = fields[i].Label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 14, 4) };
+            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
+            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            boxes[i] = new TextBox { Text = fields[i].Value, Margin = new Thickness(0, 4, 0, 4) };
+            UIElement[] row = [label, boxes[i], hint];
+            for (var column = 0; column < row.Length; column++)
+            {
+                Grid.SetRow(row[column], i);
+                Grid.SetColumn(row[column], column);
+                grid.Children.Add(row[column]);
+            }
+        }
+
+        var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 11, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 6, 0, 0) };
+        note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        save.Click += (_, _) =>
+        {
+            LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text);
+            try
+            {
+                var problem = LauncherLogic.WriteRoleSettings(path, card.Role, values);
+                if (problem is not null)
+                {
+                    error.Text = problem;
+                    error.Visibility = Visibility.Visible;
+                    return;
+                }
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
+            {
+                Log($"Could not update config.json: {exception.Message}");
+                SetStatus("Could not update config.json", "#FF667A");
+                dialog.Close();
+                return;
+            }
+            Log($"{card.Title}: generation settings saved");
+            Toast($"{card.Title}: settings saved");
+            dialog.DialogResult = true;
+        };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        dialog.Content = new StackPanel { Margin = new Thickness(20, 16, 20, 16), Children = { grid, note, error, buttons } };
+        dialog.Loaded += (_, _) =>
+        {
+            boxes[0].Focus();
+            boxes[0].SelectAll();
+        };
+        dialog.ShowDialog();
     }
 
     // ---- model assignment
@@ -1615,6 +1775,45 @@ public partial class MainWindow : Window
         Reveal(OptionsView, options);
     }
 
+    // ---- collapsible sidebar
+
+    private const double SidebarWidth = 260, RailWidth = 54;
+
+    private void SidebarToggle_Click(object sender, RoutedEventArgs e) => SetSidebar(!_settings.SidebarCollapsed);
+
+    // The pane's width slides between the full sidebar and the icon rail while the two layouts cross-fade.
+    private void SetSidebar(bool collapsed, bool animate = true)
+    {
+        _settings.SidebarCollapsed = collapsed;
+        var focusMoves = animate && SidePane.IsKeyboardFocusWithin;
+        if (animate)
+            _settings.Save();
+        var width = collapsed ? RailWidth : SidebarWidth;
+        if (animate)
+        {
+            Reveal(SidebarFull, !collapsed);
+            Reveal(SidebarRail, collapsed);
+            SidePane.BeginAnimation(WidthProperty, new DoubleAnimation(width, TimeSpan.FromMilliseconds(240)) { EasingFunction = Decelerate });
+            // The focused button is going away; keep keyboard users on the opposite toggle.
+            if (focusMoves)
+                Dispatcher.BeginInvoke(DispatcherPriority.Input, () => (collapsed ? SidebarExpandButton : SidebarCollapseButton).Focus());
+            return;
+        }
+        SidePane.BeginAnimation(WidthProperty, null);
+        SidePane.Width = width;
+        SidebarFull.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        SidebarRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // The rail has no room for the initialization form, so a project that needs it reopens the sidebar instead.
+    private void RailProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (InitializationPanel.Visibility == Visibility.Visible)
+            SetSidebar(false);
+        else
+            Browse_Click(sender, e);
+    }
+
     // ---- compact worker cards
 
     private void Compact_Click(object sender, RoutedEventArgs e)
@@ -1634,7 +1833,7 @@ public partial class MainWindow : Window
     // The details pane may grow, but never past what leaves the sidebar and a usable output column on screen.
     private void FitDetailsColumn()
     {
-        DetailsColumn.MaxWidth = Math.Max(DetailsColumn.MinWidth, ActualWidth - 260 - 380 - 6);
+        DetailsColumn.MaxWidth = Math.Max(DetailsColumn.MinWidth, ActualWidth - SidePane.ActualWidth - 380 - 6);
     }
 
     private void Splitter_DragCompleted(object sender, System.Windows.Controls.Primitives.DragCompletedEventArgs e)
@@ -1788,9 +1987,12 @@ public partial class MainWindow : Window
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))
             (_settings.WindowLeft, _settings.WindowTop, _settings.WindowWidth, _settings.WindowHeight) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);
         _settings.WindowMaximized = WindowState == WindowState.Maximized;
-        if (_process is { HasExited: false })
+        if (_process is { HasExited: false } p)
         {
-            _process.Kill(entireProcessTree: true);
+            var activity = StopActivity();
+            p.Kill(entireProcessTree: true);
+            p.WaitForExit(2000); // let it finish so it cannot overwrite the note
+            RecordStopNote(activity);
             UnloadModelsAsync().Wait(TimeSpan.FromSeconds(4));
         }
         _settings.Save();

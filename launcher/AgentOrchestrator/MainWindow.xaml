@@ -253,6 +253,13 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Icon in the collapsed sidebar rail; takes its colour from the button that hosts it. -->
+        <Style x:Key="RailGlyph" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
+            <Setter Property="FontSize" Value="16" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
         <Style x:Key="ToggleSwitch" TargetType="ToggleButton">
             <Setter Property="Width" Value="42" /><Setter Property="Height" Value="23" /><Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -595,6 +602,13 @@
                             <Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
                         </TextBlock>
                     </StackPanel>
+                    <StackPanel HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-6,-6">
+                        <Button Style="{StaticResource GhostButton}" Content="Change" Padding="7,2" FontSize="10" HorizontalAlignment="Right"
+                                IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
+                        <Button Style="{StaticResource GhostButton}" Content="Settings" Padding="7,2" FontSize="10" HorizontalAlignment="Right" Margin="0,2,0,0"
+                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more"
+                                Visibility="{Binding IsBuiltIn, Converter={StaticResource BoolVis}}" Click="RoleSettings_Click" />
+                    </StackPanel>
                 </Grid>
             </Border>
             <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
@@ -668,6 +682,9 @@
 
                     <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
                     <DockPanel Margin="0,2,0,0">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Settings" Padding="9,3" FontSize="11" Margin="8,0,0,0"
+                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more"
+                                Visibility="{Binding IsBuiltIn, Converter={StaticResource BoolVis}}" Click="RoleSettings_Click" />
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Change" Padding="9,3" FontSize="11" Margin="8,0,0,0"
                                 IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
                         <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" VerticalAlignment="Center" />
@@ -777,46 +794,81 @@
         <!-- Workspace -->
         <Grid x:Name="WorkspaceView" Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" MinWidth="380" />
                 <ColumnDefinition Width="6" />
                 <ColumnDefinition x:Name="DetailsColumn" Width="340" MinWidth="260" MaxWidth="1400" />
             </Grid.ColumnDefinitions>
 
-            <!-- Left-side navigation + project setup -->
-            <Border Grid.Column="0" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
-                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="12,20,12,20">
-                        <TextBlock Text="VIEW" Style="{StaticResource SectionHeader}" Margin="8,0,0,8" />
-                        <ToggleButton x:Name="NavWorkspace" Style="{StaticResource NavToggle}" Content="Workspace" IsChecked="True" Click="Nav_Click" Tag="Workspace" ToolTip="Workspace (Ctrl+1)" />
-                        <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+2)" />
+            <!-- Left-side navigation + project setup. Its width is animated; it collapses to an icon rail. -->
+            <Border x:Name="SidePane" Grid.Column="0" Width="260" ClipToBounds="True" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
+                <Grid>
+                    <Grid x:Name="SidebarFull" Width="259" HorizontalAlignment="Left">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Margin="12,20,12,20">
+                                <TextBlock Text="VIEW" Style="{StaticResource SectionHeader}" Margin="8,0,0,8" />
+                                <ToggleButton x:Name="NavWorkspace" Style="{StaticResource NavToggle}" Content="Workspace" IsChecked="True" Click="Nav_Click" Tag="Workspace" ToolTip="Workspace (Ctrl+1)" />
+                                <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+2)" />
 
-                        <TextBlock Text="PROJECT" Style="{StaticResource SubHeader}" />
-                        <Button x:Name="ProjectButton" Click="Browse_Click" Padding="12,9" ToolTip="Choose the project folder">
-                            <StackPanel>
-                                <TextBlock x:Name="ProjectName" Text="Choose project folder…" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextAlignment="Center" />
-                                <TextBlock x:Name="ProjectPathText" Foreground="{DynamicResource Muted}" FontSize="10" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,2,0,0" Visibility="Collapsed" />
+                                <TextBlock Text="PROJECT" Style="{StaticResource SubHeader}" />
+                                <Button x:Name="ProjectButton" Click="Browse_Click" Padding="12,9" ToolTip="Choose the project folder">
+                                    <StackPanel>
+                                        <TextBlock x:Name="ProjectName" Text="Choose project folder…" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextAlignment="Center" />
+                                        <TextBlock x:Name="ProjectPathText" Foreground="{DynamicResource Muted}" FontSize="10" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,2,0,0" Visibility="Collapsed" />
+                                    </StackPanel>
+                                </Button>
+                                <Border x:Name="InitializationPanel" Visibility="Collapsed" Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}" Padding="12" Margin="0,10,0,0"
+                                        BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
+                                    <StackPanel>
+                                        <TextBlock x:Name="InitializationText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
+                                        <Button Content="Initialize Project" Style="{StaticResource PrimaryButton}" Margin="0,10,0,0" Click="InitializeProject_Click" />
+                                        <Button Content="Use custom PROJECT.md…" Margin="0,6,0,0" Click="ChooseProjectFile_Click" />
+                                        <Button Content="Use custom config.json…" Margin="0,6,0,0" Click="ChooseConfigFile_Click" />
+                                        <TextBlock x:Name="CustomFilesText" Text="Using Agent Setup templates." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <Button Content="Edit PROJECT.md" Margin="0,8,0,0" Click="EditProject_Click" />
+
+                                <TextBlock Text="RUN" Style="{StaticResource SubHeader}" />
+                                <DockPanel Margin="8,0,0,0">
+                                    <ToggleButton x:Name="OnceToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="Once_Click" />
+                                    <TextBlock Text="Run one reviewed task, then stop" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,10,0" />
+                                </DockPanel>
                             </StackPanel>
+                        </ScrollViewer>
+                        <Button x:Name="SidebarCollapseButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,14,10,0"
+                                Click="SidebarToggle_Click" ToolTip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar (Ctrl+B)">
+                            <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
-                        <Border x:Name="InitializationPanel" Visibility="Collapsed" Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}" Padding="12" Margin="0,10,0,0"
-                                BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
-                            <StackPanel>
-                                <TextBlock x:Name="InitializationText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
-                                <Button Content="Initialize Project" Style="{StaticResource PrimaryButton}" Margin="0,10,0,0" Click="InitializeProject_Click" />
-                                <Button Content="Use custom PROJECT.md…" Margin="0,6,0,0" Click="ChooseProjectFile_Click" />
-                                <Button Content="Use custom config.json…" Margin="0,6,0,0" Click="ChooseConfigFile_Click" />
-                                <TextBlock x:Name="CustomFilesText" Text="Using Agent Setup templates." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,0" />
-                            </StackPanel>
-                        </Border>
-                        <Button Content="Edit PROJECT.md" Margin="0,8,0,0" Click="EditProject_Click" />
-
-                        <TextBlock Text="RUN" Style="{StaticResource SubHeader}" />
-                        <DockPanel Margin="8,0,0,0">
-                            <ToggleButton x:Name="OnceToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="Once_Click" />
-                            <TextBlock Text="Run one reviewed task, then stop" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,10,0" />
-                        </DockPanel>
+                    </Grid>
+                    <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,14,0,0" Visibility="Collapsed">
+                        <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
+                            <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Workspace" Click="Nav_Click" ToolTip="Workspace (Ctrl+1)" AutomationProperties.Name="Workspace (Ctrl+1)"
+                                      IsChecked="{Binding IsChecked, ElementName=NavWorkspace, Mode=TwoWay}">
+                            <TextBlock Text="&#xE80F;" Style="{StaticResource RailGlyph}" />
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+2)" AutomationProperties.Name="Options (Ctrl+2)"
+                                      IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
+                            <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
+                        </ToggleButton>
+                        <Border Height="1" Background="{DynamicResource Border}" Margin="14,10,14,14" />
+                        <Button x:Name="RailProjectButton" Style="{StaticResource GhostButton}" Height="38" Margin="6,0,6,4" Padding="0" Click="RailProject_Click" ToolTip="{Binding ToolTip, ElementName=ProjectButton}" AutomationProperties.Name="Choose the project folder"
+                                IsEnabled="{Binding IsEnabled, ElementName=ProjectButton}">
+                            <TextBlock Text="&#xE8B7;" Style="{StaticResource RailGlyph}" />
+                        </Button>
+                        <Button Style="{StaticResource GhostButton}" Height="38" Margin="6,0,6,4" Padding="0" Click="EditProject_Click" ToolTip="Edit PROJECT.md" AutomationProperties.Name="Edit PROJECT.md">
+                            <TextBlock Text="&#xE70F;" Style="{StaticResource RailGlyph}" />
+                        </Button>
+                        <Border Height="1" Background="{DynamicResource Border}" Margin="14,10,14,14" />
+                        <ToggleButton x:Name="RailOnceToggle" Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Click="Once_Click" ToolTip="Run one reviewed task, then stop" AutomationProperties.Name="Run one reviewed task, then stop"
+                                      IsEnabled="{Binding IsEnabled, ElementName=OnceToggle}"
+                                      IsChecked="{Binding IsChecked, ElementName=OnceToggle, Mode=TwoWay}">
+                            <TextBlock Text="&#xE8ED;" Style="{StaticResource RailGlyph}" />
+                        </ToggleButton>
                     </StackPanel>
-                </ScrollViewer>
+                </Grid>
             </Border>
 
             <!-- Left column: model output + execution log -->
