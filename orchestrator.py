@@ -18,13 +18,20 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
-WORKFLOW_FILES = {"PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md", "ISSUES.md", "config.json"}
+WORKFLOW_FILES = {"PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md", "ISSUES.md", "config.json"}  # required to run
+CHECKPOINT_FILE = ".ao_checkpoint.json"
+HANDOFF_FILE = "HANDOFF.md"
+COMPLETION_PHASES = ("passed", "blocked")
+CHECKPOINT_PHASES = ("implementing", "reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
+_ATOMIC_FILES = WORKFLOW_FILES | {HANDOFF_FILE, CHECKPOINT_FILE}  # everything write_atomic can write
+PROTECTED_FILES = _ATOMIC_FILES | {name + ".tmp" for name in _ATOMIC_FILES}  # models may not edit
 
 
 class WorkflowError(RuntimeError):
@@ -72,7 +79,7 @@ def safe_relative_path(raw: str, project_root: Path) -> Path:
 def path_is_allowed(raw: str, allowed: list[str], project_root: Path) -> Path:
     path = safe_relative_path(raw, project_root)
     normalized = path.relative_to(project_root.resolve()).as_posix()
-    if normalized in WORKFLOW_FILES or not any(fnmatch.fnmatch(normalized, pattern) for pattern in allowed):
+    if normalized in PROTECTED_FILES or not any(fnmatch.fnmatch(normalized, pattern) for pattern in allowed):
         raise WorkflowError(f"Path is outside this task's file scope: {raw}")
     return path
 
@@ -162,7 +169,7 @@ class ApiClient:
 
     def model_id(self) -> str:
         payload = self._request("GET", "/models")
-        models = payload.get("data", [])
+        models = [m for m in payload.get("data", []) if m.get("loaded", True) is not False]  # Unsloth lists installed models too
         if not models:
             raise WorkflowError("The API returned no loaded models")
         return str(models[0]["id"])
@@ -465,6 +472,13 @@ def text_tool_calls(text: str, tool_names: set[str]) -> list[dict[str, Any]]:
     return calls
 
 
+def _parsed_arguments(raw: str) -> Any:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
 def run_agent(
     config: dict[str, Any],
     role: str,
@@ -484,10 +498,26 @@ def run_agent(
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
     nudges = 0
+    prev_text_calls = None
     for _ in range(max_steps):
-        response = client.complete(model, messages, sampling, tools)
+        try:
+            response = client.complete(model, messages, sampling, tools)
+        except WorkflowError as exc:
+            if not tools or '"param":"tools"' not in str(exc):
+                raise
+            print(f"[{role}] model template does not support tool calling; continuing without tools ...")
+            tools = []
+            response = client.complete(model, messages, sampling, tools)
         messages.append(response)
         calls = response.get("tool_calls") or text_tool_calls(str(response.get("content") or ""), tool_names)
+        native = bool(response.get("tool_calls"))
+        if not native:
+            signature = [(c["function"]["name"], _parsed_arguments(c["function"]["arguments"])) for c in calls]
+            if calls and signature == prev_text_calls:
+                calls = []
+            prev_text_calls = signature
+        else:
+            prev_text_calls = None
         if not calls:
             if writable and not ran_tools and nudges < 2:
                 nudges += 1
@@ -495,9 +525,10 @@ def run_agent(
                 messages.append({"role": "user", "content": "No file was changed. Use the provided tool-calling interface to write the files; do not print JSON."})
                 continue
             if writable and not ran_tools:
-                raise WorkflowError(f"{role} never executed a tool; no files were written")
+                reply = str(response.get("content") or "").strip()
+                save_text(project_root / "RESULT.md", f"BLOCKED; {role} never executed a tool; no files were written.\n\nLast {role} reply:\n{reply}")
+                raise WorkflowError(f"{role} never executed a tool; no files were written. Last reply: {reply[:500]}")
             return str(response.get("content") or "")
-        native = bool(response.get("tool_calls"))
         results = []
         for call in calls:
             try:
@@ -518,20 +549,53 @@ def run_agent(
     raise WorkflowError(f"{role} exceeded max_tool_steps={max_steps}")
 
 
-def validate_task(task: dict[str, Any], project_root: Path) -> None:
+def task_limits(config: dict[str, Any]) -> tuple[int, int]:
+    raw = config.get("task_limits", {})
+    if not isinstance(raw, dict):
+        raise WorkflowError("config task_limits must be an object")
+    limits = []
+    for key, default in (("max_allowed_files", 3), ("max_required_work", 7)):
+        value = raw.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise WorkflowError(f"config task_limits.{key} must be a positive integer, got {value!r}")
+        limits.append(value)
+    return limits[0], limits[1]
+
+
+def team_context(config: dict[str, Any]) -> str:
+    lines = ["TEAM"]
+    for role in ("implementer", "reviewer"):
+        r = config.get("roles", {}).get(role) or {}
+        auto = r.get("auto_load") or {}
+        name = r.get("display_name") or auto.get("model_path") or r.get("expected_model_contains")
+        parts = [str(name) if name else "unknown model"]
+        if auto.get("gguf_variant"):
+            parts.append(f"quant {auto['gguf_variant']}")
+        if auto.get("max_seq_length"):
+            parts.append(f"context {auto['max_seq_length']} tokens")
+        if (r.get("sampling") or {}).get("max_tokens"):
+            parts.append(f"max output {r['sampling']['max_tokens']} tokens")
+        lines.append(f"{role.capitalize()}: " + ", ".join(parts))
+    files, work = task_limits(config)
+    lines.append(f"Task limits: at most {files} allowed files and {work} required-work items per task")
+    return "\n".join(lines)
+
+
+def validate_task(task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7)) -> None:
+    max_files, max_work = limits
     required = ["id", "outcome", "allowed_files", "required_work", "validation", "stop_condition"]
     missing = [name for name in required if not task.get(name)]
     if missing:
         raise WorkflowError(f"Planner task is missing: {', '.join(missing)}")
     allowed = task["allowed_files"]
-    if not isinstance(allowed, list) or not 1 <= len(allowed) <= 3:
+    if not isinstance(allowed, list) or not 1 <= len(allowed) <= max_files:
         count = len(allowed) if isinstance(allowed, list) else "a non-list value"
-        raise WorkflowError(f"Planner must allow 1-3 files; received {count}")
+        raise WorkflowError(f"Planner must allow 1-{max_files} files; received {count}")
     for raw in allowed:
         path_is_allowed(str(raw), [str(raw)], project_root)
     steps = task["required_work"]
-    if not isinstance(steps, list) or not 1 <= len(steps) <= 7:
-        raise WorkflowError("Planner must provide 1-7 required-work items")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= max_work:
+        raise WorkflowError(f"Planner must provide 1-{max_work} required-work items")
 
 
 def request_plan(
@@ -545,7 +609,7 @@ def request_plan(
                 return plan
             if plan.get("status") != "TASK" or not isinstance(plan.get("task"), dict):
                 raise WorkflowError("Planner must return status TASK with a task, or status COMPLETE")
-            validate_task(plan["task"], project_root)
+            validate_task(plan["task"], project_root, task_limits(config))
             return plan
         except WorkflowError as exc:
             if repair == max_repairs:
@@ -603,7 +667,8 @@ def snapshot(project_root: Path, allowed: list[str]) -> dict[str, str | None]:
         for path in matches:
             if path.is_file():
                 relative = path.resolve().relative_to(project_root.resolve()).as_posix()
-                result[relative] = load_text(path)
+                if relative not in PROTECTED_FILES:
+                    result[relative] = load_text(path)
         if not matches:
             result[pattern] = None
         elif not any(path.is_file() for path in matches) and not any(ch in pattern for ch in "*?["):
@@ -620,11 +685,16 @@ def make_diff(before: dict[str, str | None], after: dict[str, str | None]) -> st
     return "".join(chunks) or "(no file changes)\n"
 
 
-def append_passed_state(task: dict[str, Any], result: str, project_root: Path) -> None:
+def completion_marker(token: str) -> str:
+    return f"<!-- ao-completion: {token} -->"
+
+
+def append_passed_state(task: dict[str, Any], result: str, project_root: Path, token: str | None = None) -> None:
     state = load_text(project_root / "STATE.md").rstrip()
     stamp = dt.datetime.now().astimezone().isoformat(timespec="seconds")
-    entry = f"\n\n## Passed: {task['id']}\n- Time: {stamp}\n- Outcome: {task['outcome']}\n- Implementer: {result.strip()}"
-    save_text(project_root / "STATE.md", state + entry)
+    marker = f"\n{completion_marker(token)}" if token else ""
+    entry = f"\n\n## Passed: {task['id']}{marker}\n- Time: {stamp}\n- Outcome: {task['outcome']}\n- Implementer: {result.strip()}"
+    write_atomic(project_root / "STATE.md", state + entry)
 
 
 def project_configuration_context(project_root: Path) -> str:
@@ -642,7 +712,7 @@ def project_configuration_context(project_root: Path) -> str:
         directories[:] = [] if depth >= 2 else [name for name in directories if name.lower() not in excluded]
         for name in sorted(files):
             relative = (relative_directory / name).as_posix()
-            if relative not in WORKFLOW_FILES and len(inventory) < 300:
+            if relative not in PROTECTED_FILES and len(inventory) < 300:
                 inventory.append(relative)
             lowered = name.lower()
             if depth <= 2 and (lowered in manifest_names or Path(name).suffix.lower() in {".sln", ".csproj", ".fsproj", ".vbproj"}):
@@ -701,10 +771,164 @@ def configure_project(config: dict[str, Any], project_root: Path, project: str, 
     _, response = extract_json_with_repair(config, "planner", response, interactive)
     configured = apply_project_configuration(config, response)
     configured["configuration_fingerprint"] = fingerprint
-    save_text(project_root / "config.json", json.dumps(configured, indent=2))
+    write_atomic(project_root / "config.json", json.dumps(configured, indent=2))
     names = ", ".join(configured["validation_commands"]) or "none"
     print(f"[configurator] saved validation commands: {names}")
     return configured
+
+
+def write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text.rstrip() + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_handoff(project_root: Path, checkpoint: dict[str, Any] | None, total_rounds: int = 0) -> None:
+    if checkpoint:
+        task = checkpoint["task"]
+        phase = {
+            "reviewing": "Reviewer checking", "passed": "Passed, recording result", "blocked": "Blocked, recording issue",
+        }.get(checkpoint["phase"], "Implementer working")
+        label = {"passed": "Implementer result", "blocked": "Final review"}.get(checkpoint["phase"], "Last reviewer feedback")
+        feedback = str(checkpoint["reviewer_feedback"])[:2000]
+        text = (
+            f"# Handoff\n\n## In progress: {task['id']}\n- Outcome: {task['outcome']}\n"
+            f"- Allowed files: {', '.join(str(f) for f in task['allowed_files'])}\n"
+            f"- Phase: {phase}\n- Review round {int(checkpoint['round']) + 1} of {total_rounds}\n"
+            f"- Updated: {checkpoint['updated']}\n\n## {label}\n{feedback}\n\n"
+            "The next run resumes this task automatically. Delete .ao_checkpoint.json to discard it and plan a new task."
+        )
+    else:
+        state = load_text(project_root / "STATE.md")
+        # Real entries carry a completion marker under the heading; a "## Passed:" line inside an implementer
+        # result body never does. Older entries without markers are only used when no marked entry exists.
+        passed = (re.findall(r"^## Passed: (.+?)[ \t]*\r?\n<!-- ao-completion: [0-9a-f]+ -->", state, re.M)
+                  or re.findall(r"^## Passed: (.+)$", state, re.M))
+        text = "# Handoff\n\nNo task in progress." + (f"\nLast passed task: {passed[-1].strip()}" if passed else "")
+    path = project_root / HANDOFF_FILE
+    if not path.is_file() or load_text(path) != text.rstrip() + "\n":
+        write_atomic(path, text)
+
+
+def save_checkpoint(
+    project_root: Path, task: dict[str, Any], before: dict[str, str | None], review_round: int,
+    feedback: str, phase: str, total_rounds: int,
+) -> str | None:
+    """Persist the checkpoint; a passed/blocked save mints and returns the completion token for that outcome."""
+    checkpoint = {
+        "version": 1, "task": task, "before": before, "round": review_round, "reviewer_feedback": feedback,
+        "phase": phase, "updated": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+    }
+    token = uuid.uuid4().hex if phase in COMPLETION_PHASES else None
+    if token:
+        checkpoint["completion"] = token
+    write_atomic(project_root / CHECKPOINT_FILE, json.dumps(checkpoint, indent=2, ensure_ascii=False))
+    write_handoff(project_root, checkpoint, total_rounds)
+    return token
+
+
+def clear_checkpoint(project_root: Path) -> None:
+    (project_root / CHECKPOINT_FILE).unlink(missing_ok=True)
+    write_handoff(project_root, None)
+
+
+def load_checkpoint(project_root: Path, limits: tuple[int, int], total_rounds: int) -> dict[str, Any] | None:
+    """Return a valid checkpoint to resume, or None (warning and deleting a corrupt one)."""
+    path = project_root / CHECKPOINT_FILE
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(load_text(path))
+        if not isinstance(data, dict) or data.get("version") != 1:
+            raise WorkflowError("unsupported version")
+        if not isinstance(data["task"], dict) or not isinstance(data["before"], dict):
+            raise WorkflowError("bad task or snapshot")
+        if not all(isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in data["before"].items()):
+            raise WorkflowError("bad snapshot entries")
+        if not isinstance(data["reviewer_feedback"], str) or data["phase"] not in CHECKPOINT_PHASES:
+            raise WorkflowError("bad feedback or phase")
+        if data["phase"] in COMPLETION_PHASES:
+            # Only what recording needs: limits may have changed since the task finished.
+            if not all(isinstance(data["task"].get(key), (str, int)) and data["task"].get(key) != "" for key in ("id", "outcome")):
+                raise WorkflowError("completed task lacks id or outcome")
+            if not isinstance(data.get("completion"), str) or not data["completion"]:
+                raise WorkflowError("missing completion token")
+            return data
+        if not isinstance(data["round"], int) or not 0 <= data["round"] < total_rounds:
+            raise WorkflowError("round out of range")
+        validate_task(data["task"], project_root, limits)
+        return data
+    except (WorkflowError, KeyError, ValueError) as exc:
+        print(f"[resume] discarding invalid {CHECKPOINT_FILE}: {exc}")
+        clear_checkpoint(project_root)
+        return None
+
+
+def complete_task(task: dict[str, Any], phase: str, text: str, project_root: Path, token: str) -> None:
+    """Idempotently record a finished task ("passed" or "blocked"), then clear the checkpoint.
+
+    The token is minted when the completion checkpoint is saved and written into the entry as a marker, so a
+    re-run after a kill finds its own entry and skips the append; ids are never used to detect duplicates.
+    """
+    marker = completion_marker(token)
+    if phase == "passed":
+        if marker not in load_text(project_root / "STATE.md"):
+            append_passed_state(task, text, project_root, token)
+    else:
+        issues_path = project_root / "ISSUES.md"
+        issues = load_text(issues_path)
+        if marker not in issues:
+            write_atomic(issues_path, issues + f"\n\n## {task['id']} blocked\n{marker}\n{text}")
+    clear_checkpoint(project_root)
+
+
+def run_review_loop(
+    config: dict[str, Any], prompts: dict[str, str], task: dict[str, Any], before: dict[str, str | None],
+    start_round: int, reviewer_feedback: str, phase: str, max_review_rounds: int, project_root: Path, interactive: bool,
+) -> None:
+    """Implement/review until PASS (state appended, checkpoint cleared) or raise WorkflowError when blocked.
+
+    Resume: rounds before start_round count as used. With phase "reviewing" the implementer is re-run for
+    start_round only if RESULT.md is missing; otherwise the existing RESULT.md goes straight to the reviewer.
+    """
+    allowed = [str(item) for item in task["allowed_files"]]
+    total = max_review_rounds + 1
+    for review_round in range(start_round, total):
+        if phase == "reviewing" and review_round == start_round and (project_root / "RESULT.md").is_file():
+            result = load_text(project_root / "RESULT.md").strip()
+        else:
+            save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "implementing", total)
+            implementer_input = (
+                f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
+                f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
+                f"REVIEWER FEEDBACK\n{reviewer_feedback}"
+            )
+            result = run_agent(config, "implementer", prompts["implementer"], implementer_input, project_root, allowed, True, interactive)
+            save_text(project_root / "RESULT.md", result)
+        after = snapshot(project_root, allowed)
+        diff = make_diff(before, after)
+        reviewer_input = (
+            f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
+            f"CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
+        )
+        save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
+        review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
+        review, review_text = extract_review_with_repair(
+            config, prompts["reviewer"], reviewer_input, review_text, interactive
+        )
+        save_text(project_root / "REVIEW.md", review_text)
+        verdict = str(review.get("verdict", "")).upper()
+        emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
+        if verdict == "PASS":
+            token = save_checkpoint(project_root, task, before, review_round, result, "passed", total)
+            complete_task(task, "passed", result, project_root, str(token))
+            print(f"\n{task['id']}: PASS")
+            return
+        reviewer_feedback = review_text
+        if review_round == max_review_rounds:
+            token = save_checkpoint(project_root, task, before, review_round, review_text, "blocked", total)
+            complete_task(task, "blocked", review_text, project_root, str(token))
+            raise WorkflowError(f"{task['id']} failed after {total} reviews")
 
 
 def _run() -> int:
@@ -728,6 +952,7 @@ def _run() -> int:
     if missing:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
     config = json.loads(load_text(project_root / "config.json"))
+    task_limits(config)
     project = load_text(project_root / "PROJECT.md").strip()
     if not project or "REPLACE THIS" in project or "[Describe the project" in project:
         raise WorkflowError("Describe the real goal in PROJECT.md before running")
@@ -736,56 +961,53 @@ def _run() -> int:
     max_tasks = int(config.get("max_tasks", 20))
     max_review_rounds = int(config.get("max_review_rounds", 2))
 
-    for _ in range(max_tasks):
-        config = configure_project(config, project_root, project, interactive)
-        planner_input = (
-            f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
-            f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
-            f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
-        )
-        plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
-        if plan.get("status") == "COMPLETE":
-            print(f"\nCOMPLETE: {plan.get('summary', 'Project goal complete')}")
-            return 0
-        task = plan["task"]
-        save_text(project_root / "TASK.md", task_markdown(task))
-        emit("task", id=str(task["id"]), outcome=str(task["outcome"]))
-        allowed = [str(item) for item in task["allowed_files"]]
-        before = snapshot(project_root, allowed)
-        reviewer_feedback = "None; this is the first attempt."
-
-        for review_round in range(max_review_rounds + 1):
-            implementer_input = (
-                f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
-                f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
-                f"REVIEWER FEEDBACK\n{reviewer_feedback}"
-            )
-            result = run_agent(config, "implementer", prompts["implementer"], implementer_input, project_root, allowed, True, interactive)
-            save_text(project_root / "RESULT.md", result)
-            after = snapshot(project_root, allowed)
-            diff = make_diff(before, after)
-            reviewer_input = (
-                f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
-                f"CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
-            )
-            review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
-            review, review_text = extract_review_with_repair(
-                config, prompts["reviewer"], reviewer_input, review_text, interactive
-            )
-            save_text(project_root / "REVIEW.md", review_text)
-            verdict = str(review.get("verdict", "")).upper()
-            emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
-            if verdict == "PASS":
-                append_passed_state(task, result, project_root)
+    limits = task_limits(config)
+    total_rounds = max_review_rounds + 1
+    remaining = max_tasks
+    while remaining > 0:
+        remaining -= 1
+        checkpoint = load_checkpoint(project_root, limits, total_rounds)
+        if checkpoint:
+            task, before = checkpoint["task"], checkpoint["before"]
+            start_round, reviewer_feedback, phase = checkpoint["round"], checkpoint["reviewer_feedback"], checkpoint["phase"]
+            if phase in COMPLETION_PHASES:
+                remaining += 1  # recording only, no model work: not a task iteration
+                print(f"[resume] recording finished task {task['id']} ({phase})")
+                complete_task(task, phase, reviewer_feedback, project_root, checkpoint["completion"])
+                if phase == "blocked":
+                    raise WorkflowError(f"{task['id']} failed after {total_rounds} reviews")
                 print(f"\n{task['id']}: PASS")
                 if args.once:
                     return 0
-                break
-            reviewer_feedback = review_text
-            if review_round == max_review_rounds:
-                issues_path = project_root / "ISSUES.md"
-                save_text(issues_path, load_text(issues_path) + f"\n\n## {task['id']} blocked\n{review_text}")
-                raise WorkflowError(f"{task['id']} failed after {max_review_rounds + 1} reviews")
+                project = load_text(project_root / "PROJECT.md").strip()
+                continue
+            print(f"[resume] continuing {task['id']} at review round {start_round + 1}")
+            emit("resume", id=str(task["id"]), round=start_round)
+            save_text(project_root / "TASK.md", task_markdown(task))
+        else:
+            write_handoff(project_root, None)  # a kill inside clear_checkpoint can leave a stale handoff
+            config = configure_project(config, project_root, project, interactive)
+            planner_input = (
+                f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
+                f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
+                f"{team_context(config)}\n\n"
+                f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
+            )
+            plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
+            if plan.get("status") == "COMPLETE":
+                print(f"\nCOMPLETE: {plan.get('summary', 'Project goal complete')}")
+                return 0
+            task = plan["task"]
+            save_text(project_root / "TASK.md", task_markdown(task))
+            emit("task", id=str(task["id"]), outcome=str(task["outcome"]))
+            before = snapshot(project_root, [str(item) for item in task["allowed_files"]])
+            start_round, reviewer_feedback, phase = 0, "None; this is the first attempt.", "implementing"
+            save_checkpoint(project_root, task, before, 0, reviewer_feedback, "implementing", total_rounds)
+        run_review_loop(
+            config, prompts, task, before, start_round, reviewer_feedback, phase, max_review_rounds, project_root, interactive
+        )
+        if args.once:
+            return 0
         project = load_text(project_root / "PROJECT.md").strip()
 
     raise WorkflowError(f"Stopped at max_tasks={max_tasks}; raise the limit only after checking STATE.md")

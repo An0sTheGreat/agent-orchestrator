@@ -23,6 +23,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
 
     public string Role { get; }
     public bool IsCustom { get; }
+    public bool IsBuiltIn => !IsCustom;
     public string Title { get => _title; set => Set(ref _title, IsCustom ? value : _title); }
     public bool IsDragging { get => _dragging; set => Set(ref _dragging, value); }
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
@@ -113,6 +114,7 @@ internal sealed class AppSettings
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
     public bool Compact { get; set; }
+    public bool SidebarCollapsed { get; set; }
     // Window position and size in device-independent pixels; null until the window has been closed once.
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }

@@ -9,11 +9,11 @@
       "base_url": "http://127.0.0.1:8888/v1",
       "management_url": "http://127.0.0.1:8888",
       "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "AgentWorld-35B-A3B",
+      "expected_model_contains": "Qwen3.5-4B-GGUF",
       "timeout_seconds": 600,
       "auto_load": {
-        "model_path": "unsloth/Qwen-AgentWorld-35B-A3B-GGUF",
-        "gguf_variant": "UD-Q2_K_XL",
+        "model_path": "unsloth/Qwen3.5-4B-GGUF",
+        "gguf_variant": "Q4_K_M",
         "max_seq_length": 32768,
         "cache_type_kv": "q8_0",
         "n_parallel": 1,
@@ -24,18 +24,29 @@
         "speculative_type": "auto",
         "reasoning_budget": 8192,
         "disable_vision": true,
-        "llama_extra_args": ["--flash-attn", "on"]
+        "llama_extra_args": [
+          "--flash-attn",
+          "on"
+        ]
       },
-      "sampling": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 8192, "extra_body": {"top_k": 20}}
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "max_tokens": 8192,
+        "extra_body": {
+          "top_k": 20
+        }
+      },
+      "display_name": "unsloth/Qwen3.5-4B-GGUF"
     },
     "implementer": {
       "base_url": "http://127.0.0.1:8888/v1",
       "management_url": "http://127.0.0.1:8888",
       "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "Qwen2.5 Coder 14B",
+      "expected_model_contains": "Qwen2.5-Coder-3B-Instruct-GGUF",
       "timeout_seconds": 600,
       "auto_load": {
-        "model_path": "Y:\\.llm_models\\2. CODE - Qwen2.5 Coder 14B｜Instruct Q5_K_M.gguf",
+        "model_path": "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF",
         "max_seq_length": 32768,
         "cache_type_kv": "q8_0",
         "n_parallel": 1,
@@ -46,18 +57,31 @@
         "speculative_type": "off",
         "reasoning_budget": 0,
         "disable_vision": true,
-        "llama_extra_args": ["--flash-attn", "on"]
+        "llama_extra_args": [
+          "--flash-attn",
+          "on"
+        ],
+        "gguf_variant": "Q8_0"
       },
-      "sampling": {"temperature": 0.4, "top_p": 0.8, "max_tokens": 8192, "extra_body": {"top_k": 20, "repetition_penalty": 1.05}}
+      "sampling": {
+        "temperature": 0.4,
+        "top_p": 0.8,
+        "max_tokens": 8192,
+        "extra_body": {
+          "top_k": 20,
+          "repetition_penalty": 1.05
+        }
+      },
+      "display_name": "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF"
     },
     "reviewer": {
       "base_url": "http://127.0.0.1:8888/v1",
       "management_url": "http://127.0.0.1:8888",
       "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "Qwen3.5 9B",
+      "expected_model_contains": "Phi-4-mini-instruct-GGUF",
       "timeout_seconds": 600,
       "auto_load": {
-        "model_path": "Y:\\.llm_models\\Qwen3.5 9B｜Q8_0.gguf",
+        "model_path": "unsloth/Phi-4-mini-instruct-GGUF",
         "max_seq_length": 32768,
         "cache_type_kv": "q8_0",
         "n_parallel": 1,
@@ -68,9 +92,21 @@
         "speculative_type": "off",
         "reasoning_budget": 4096,
         "disable_vision": true,
-        "llama_extra_args": ["--flash-attn", "on"]
+        "llama_extra_args": [
+          "--flash-attn",
+          "on"
+        ],
+        "gguf_variant": "Q5_K_M"
       },
-      "sampling": {"temperature": 0.6, "top_p": 0.95, "max_tokens": 8192, "extra_body": {"top_k": 20}}
+      "sampling": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "max_tokens": 8192,
+        "extra_body": {
+          "top_k": 20
+        }
+      },
+      "display_name": "unsloth/Phi-4-mini-instruct-GGUF"
     }
   }
 }
