@@ -69,7 +69,11 @@ public partial class MainWindow : Window
         RestoreWindowBounds();
 
         Closing += OnClosing;
-        StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
+        StateChanged += (_, _) =>
+        {
+            MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
+            EmptyState_IsVisibleChanged(EmptyState, default); // pause or resume the idle emblem
+        };
         _poll.Tick += Poll_Tick;
 
         if (_workflowRoot is null)
@@ -251,7 +255,7 @@ public partial class MainWindow : Window
     {
         DoubleAnimation? Breath(double from, double to)
         {
-            if (!EmptyState.IsVisible)
+            if (!EmptyState.IsVisible || WindowState == WindowState.Minimized)
                 return null;
             var breath = new DoubleAnimation(from, to, TimeSpan.FromSeconds(4))
                 { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } };
@@ -1277,15 +1281,14 @@ public partial class MainWindow : Window
             toast.BeginAnimation(UIElement.OpacityProperty, fade);
             shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(24, TimeSpan.FromMilliseconds(180)));
         };
-        toast.MouseEnter += (_, _) => timer.Stop();
-        toast.MouseLeave += (_, _) => timer.Start();
         timer.Start();
     }
 
     // Window shortcuts. They arrive after the focused control, so a key a text box uses itself never reaches here.
-    protected override void OnKeyDown(KeyEventArgs e)
+    // Preview, so a focused button (which clicks on Enter regardless of modifiers) cannot swallow a shortcut.
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
-        base.OnKeyDown(e);
+        base.OnPreviewKeyDown(e);
         if (e.Handled || (Keyboard.Modifiers & ModifierKeys.Control) == 0 || (Keyboard.Modifiers & ModifierKeys.Alt) != 0)
             return;
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
@@ -1294,7 +1297,7 @@ public partial class MainWindow : Window
             case Key.Enter when !shift && StartButton.IsEnabled:
                 Start_Click(StartButton, e);
                 break;
-            case Key.X when shift && StopButton.IsEnabled:
+            case Key.X when shift && StopButton.IsEnabled && Keyboard.FocusedElement is not (TextBox or PasswordBox):
                 Stop_Click(StopButton, e);
                 break;
             case Key.L when !shift:

@@ -38,7 +38,7 @@ public partial class App : Application
                 try { ok = await window.RunUiSmokeAsync(); }
                 catch (Exception exception) { Console.Error.WriteLine(exception); }
                 window.Close();
-                try { System.IO.Directory.Delete(data, recursive: true); } catch (System.IO.IOException) { }
+                try { System.IO.Directory.Delete(data, recursive: true); } catch (Exception) { } // never let cleanup hang the run
                 Environment.Exit(ok && !failed ? 0 : 1); // the generated Main ignores Shutdown's exit code
             });
             return;

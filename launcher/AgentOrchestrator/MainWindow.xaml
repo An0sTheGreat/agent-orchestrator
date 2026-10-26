@@ -470,7 +470,7 @@
                                         <ContentPresenter ContentSource="Header" />
                                     </ToggleButton>
                                     <!-- Copy this section; shown while the section is hovered (only then can it be reached). -->
-                                    <Button x:Name="SectionCopy" Content="Copy" FontSize="11" Padding="10,3" Margin="0,0,8,0" Opacity="0"
+                                    <Button x:Name="SectionCopy" Focusable="False" Content="Copy" FontSize="11" Padding="10,3" Margin="0,0,8,0" Opacity="0"
                                             HorizontalAlignment="Right" VerticalAlignment="Center" ToolTip="Copy this section" Click="SectionCopy_Click" />
                                 </Grid>
                                 <ContentPresenter x:Name="Body" Margin="14,0,14,12" Visibility="Collapsed">
@@ -921,7 +921,7 @@
         </Canvas>
 
         <!-- Toasts (MainWindow.Toast): newest at the bottom, just above the status bar -->
-        <StackPanel x:Name="ToastStack" Grid.Row="2" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
+        <StackPanel x:Name="ToastStack" Grid.Row="2" IsHitTestVisible="False" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
 
         <!-- Status bar -->
         <Border Grid.Row="3" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
