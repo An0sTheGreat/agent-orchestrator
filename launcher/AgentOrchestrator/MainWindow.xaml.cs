@@ -36,7 +36,7 @@ public partial class MainWindow : Window
     private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
     private readonly HashSet<string> _loadedByRun = new(); // only these are unloaded on Stop/close
-    private bool _followTail = true;
+    private bool _followTail = true, _stopRequested;
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(500) };
@@ -142,11 +142,18 @@ public partial class MainWindow : Window
             EndStream(false);
             Log($"Process exited with code {exitCode}.");
             SetStatus(exitCode == 0 ? "Completed" : "Stopped with an error", exitCode == 0 ? "#5BD6A2" : "#FF667A");
+            if (exitCode == 0)
+                Toast("Run finished");
+            else if (_stopRequested)
+                Toast("Run stopped", "#F7C873");
+            else
+                Toast($"Run failed (exit code {exitCode})", "#FF667A");
         }
         catch (Exception exception)
         {
             Log($"ERROR: {exception.Message}");
             SetStatus("Could not start", "#FF667A");
+            Toast("Run could not start", "#FF667A");
         }
         finally
         {
@@ -174,6 +181,7 @@ public partial class MainWindow : Window
         try
         {
             _process.Kill(entireProcessTree: true);
+            _stopRequested = true;
             Log("Stop requested.");
             SetStatus("Stopping…", "#F7C873");
         }
@@ -191,6 +199,8 @@ public partial class MainWindow : Window
         _lines.Clear();
         _loadedByRun.Clear();
         _followTail = true;
+        _stopRequested = false;
+        Reveal(JumpPill, false, slide: 10);
         _transcript.Clear();
         _log.Clear();
         LogBox.Clear();
@@ -367,6 +377,7 @@ public partial class MainWindow : Window
                 EndStream(false);
                 Log($"Review round {Num(ev, "round")}: {Str(ev, "verdict")}");
                 AddNote($"REVIEW  {Str(ev, "verdict")}", $"Task {Str(ev, "id")}, round {Num(ev, "round")}");
+                Toast($"Review {Str(ev, "verdict")}: task {Str(ev, "id")}, round {Num(ev, "round")}", Str(ev, "verdict") == "PASS" ? null : "#FF667A");
                 RefreshPrimary();
                 break;
         }
@@ -432,6 +443,8 @@ public partial class MainWindow : Window
             _stream.Name = name;
         _stream.Text.Append(text);
         _stream.Body.AppendText(text);
+        if (!_followTail)
+            Reveal(JumpPill, true, slide: 10); // returns at once while the pill is already showing
         _transcript.Append(text);
         if (_stream.Preview is not null && _stream.Text.Length <= 300)
             _stream.Preview.Text = PreviewFor(_stream);
@@ -581,6 +594,8 @@ public partial class MainWindow : Window
         EmptyState.Visibility = Visibility.Collapsed;
         OutputPanel.Children.Add(block);
         _transcript.Append(transcript);
+        if (!_followTail)
+            Reveal(JumpPill, true, slide: 10);
         // Each section fades and slides in once when it is added; streamed text never comes through here.
         var time = TimeSpan.FromMilliseconds(180);
         var shift = new TranslateTransform();
@@ -669,7 +684,11 @@ public partial class MainWindow : Window
     private void OutputScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
+        {
             _followTail = OutputScroll.VerticalOffset >= OutputScroll.ScrollableHeight - 8;
+            if (_followTail)
+                Reveal(JumpPill, false, slide: 10);
+        }
         else if (_followTail && (e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0))
             OutputScroll.ScrollToEnd();
     }
@@ -741,13 +760,18 @@ public partial class MainWindow : Window
         var expanders = OutputPanel.Children.OfType<Expander>().ToList();
         if (expanders.Count < 3)
             return false; // thinking, tool call and response
-        foreach (var expander in expanders)
-            expander.IsExpanded = true;
+        SetAllExpanded(true);
         await Settle();
+        if (!expanders.All(x => x.IsExpanded))
+            return false;
         Snap("2-expanded");
-        foreach (var expander in expanders)
-            expander.IsExpanded = false;
+        SetAllExpanded(false);
         await Settle();
+        if (expanders.Any(x => x.IsExpanded))
+            return false;
+        var tool = SectionText(expanders.First(x => ((TextBlock)((StackPanel)x.Header).Children[0]).Text == "TOOL"));
+        if (!(tool.StartsWith("TOOL") && tool.Contains("ARGUMENTS") && tool.Contains("a.js") && tool.Contains("RESULT") && tool.EndsWith("OK")))
+            return false;
         foreach (var open in new[] { true, false })
         {
             LogToggle.IsChecked = open;
@@ -761,6 +785,22 @@ public partial class MainWindow : Window
             await Settle();
             PlayHoverStoryboards(this); // both card layouts
         }
+        // Scrolled away from the end: new output brings in the jump pill, which returns to following.
+        _followTail = false;
+        _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"verdict","role":"reviewer","id":"T1","verdict":"PASS","round":1}""");
+        DrainLines(); // the verdict also raises a toast
+        Toast("Something failed", "#FF667A");
+        await Settle();
+        if (!JumpPill.IsVisible || !JumpPill.IsHitTestVisible || ToastStack.Children.Count != 2)
+            return false;
+        Snap("2b-toast-and-jump");
+        JumpToLatest_Click(JumpPill, new RoutedEventArgs());
+        await Settle();
+        if (!_followTail || JumpPill.IsVisible)
+            return false;
+        await Task.Delay(3200); // toasts leave on their own
+        if (ToastStack.Children.Count != 0)
+            return false;
         SetRunning(true); // status ring and header shimmer
         await Settle();
         Snap("3-running");
@@ -824,6 +864,44 @@ public partial class MainWindow : Window
         _transcript.Clear();
         _blockRole = null;
         EmptyState.Visibility = Visibility.Visible;
+        JumpToLatest_Click(JumpPill, e);
+    }
+
+    // ---- output navigation: jump-to-latest pill, expand / collapse all, per-section copy
+
+    private void JumpToLatest_Click(object sender, RoutedEventArgs e)
+    {
+        _followTail = true;
+        OutputScroll.ScrollToEnd();
+        Reveal(JumpPill, false, slide: 10);
+    }
+
+    private void ExpandAll_Click(object sender, RoutedEventArgs e) => SetAllExpanded(true);
+
+    private void CollapseAll_Click(object sender, RoutedEventArgs e) => SetAllExpanded(false);
+
+    // Counts as the user's choice (StreamBlock.Touched), so a finishing section is not folded back afterwards.
+    private void SetAllExpanded(bool open)
+    {
+        foreach (var expander in OutputPanel.Children.OfType<Expander>())
+            expander.IsExpanded = open;
+    }
+
+    // The copy button sits in the BlockExpander template, so its templated parent is the section.
+    private void SectionCopy_Click(object sender, RoutedEventArgs e)
+    {
+        if (((FrameworkElement)sender).TemplatedParent is Expander expander)
+            CopyToClipboard(SectionText(expander), "Section copied", "Section is empty");
+    }
+
+    // Kind label, then each visible body part: the text, or for a tool call ARGUMENTS / RESULT and their contents.
+    private static string SectionText(Expander expander)
+    {
+        var parts = new List<string> { ((TextBlock)((StackPanel)expander.Header).Children[0]).Text };
+        IEnumerable<UIElement> pieces = expander.Content is Panel panel ? panel.Children.OfType<UIElement>() : new[] { (UIElement)expander.Content };
+        foreach (var piece in pieces.Where(p => p.Visibility == Visibility.Visible))
+            parts.Add(piece switch { TextBox box => box.Text, TextBlock label => label.Text, _ => "" });
+        return string.Join("\n", parts);
     }
 
     private void CopyToClipboard(string text, string done, string empty)
@@ -831,17 +909,20 @@ public partial class MainWindow : Window
         if (text.Length == 0)
         {
             SetStatus(empty, "#F7C873");
+            Toast(empty, "#F7C873");
             return;
         }
         try
         {
             Clipboard.SetText(text);
             SetStatus(done, "#5BD6A2");
+            Toast(done);
         }
         catch (Exception exception)
         {
             Log($"Could not copy: {exception.Message}");
             SetStatus("Could not copy", "#FF667A");
+            Toast("Could not copy", "#FF667A");
         }
     }
 
@@ -1021,6 +1102,7 @@ public partial class MainWindow : Window
             if (_customConfigFile is not null && !copied.Contains("config.json"))
                 Log("Existing config.json was preserved; the selected custom file was not copied.");
             SetStatus("Project initialized", "#5BD6A2");
+            Toast("Project initialized");
             RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
@@ -1147,6 +1229,82 @@ public partial class MainWindow : Window
             ? ""
             : $"This folder needs {missing.Length} workflow file{(missing.Length == 1 ? "" : "s")}. Existing files will not be overwritten.";
         InitializationPanel.Visibility = missing.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    // Bottom-right toasts slide and fade in and leave after about three seconds (hovering one holds it).
+    // At most four are on screen; a fifth pushes out the oldest. No colour means the theme accent.
+    private void Toast(string text, string? color = null)
+    {
+        while (ToastStack.Children.Count >= 4)
+            ToastStack.Children.RemoveAt(0);
+        var dot = new System.Windows.Shapes.Ellipse { Width = 8, Height = 8, Margin = new Thickness(0, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center };
+        if (color is null)
+            dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "Accent");
+        else
+            dot.Fill = (Brush)new BrushConverter().ConvertFromString(color)!;
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(dot);
+        row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
+        var shift = new TranslateTransform(0, 14);
+        var toast = new Border
+        {
+            Child = row, Padding = new Thickness(13, 9, 16, 9), Margin = new Thickness(0, 8, 0, 0), BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 380, Opacity = 0, RenderTransform = shift,
+        };
+        toast.SetResourceReference(Border.BackgroundProperty, "Card");
+        toast.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
+        toast.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
+        ToastStack.Children.Add(toast);
+        var time = TimeSpan.FromMilliseconds(200);
+        toast.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, time) { EasingFunction = Decelerate });
+        shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, time) { EasingFunction = Decelerate });
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(180));
+            fade.Completed += (_, _) => ToastStack.Children.Remove(toast);
+            toast.BeginAnimation(UIElement.OpacityProperty, fade);
+            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(24, TimeSpan.FromMilliseconds(180)));
+        };
+        toast.MouseEnter += (_, _) => timer.Stop();
+        toast.MouseLeave += (_, _) => timer.Start();
+        timer.Start();
+    }
+
+    // Window shortcuts. They arrive after the focused control, so a key a text box uses itself never reaches here.
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.Handled || (Keyboard.Modifiers & ModifierKeys.Control) == 0 || (Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+            return;
+        var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
+        switch (e.Key)
+        {
+            case Key.Enter when !shift && StartButton.IsEnabled:
+                Start_Click(StartButton, e);
+                break;
+            case Key.X when shift && StopButton.IsEnabled:
+                Stop_Click(StopButton, e);
+                break;
+            case Key.L when !shift:
+                LogToggle.IsChecked = LogToggle.IsChecked != true;
+                LogToggle_Click(LogToggle, e);
+                break;
+            case Key.D1 or Key.NumPad1 when !shift:
+                ShowView(options: false);
+                break;
+            case Key.D2 or Key.NumPad2 when !shift:
+                ShowView(options: true);
+                break;
+            case Key.E:
+                SetAllExpanded(!shift);
+                break;
+            default:
+                return;
+        }
+        e.Handled = true;
     }
 
     private void SetStatus(string text, string color)
@@ -1336,6 +1494,7 @@ public partial class MainWindow : Window
         card.ModelVariant = choice.Variant;
         card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
         Log($"{card.Title}: model set to {choice.Label}");
+        Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
     }
 
