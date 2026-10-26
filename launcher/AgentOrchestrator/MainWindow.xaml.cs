@@ -606,13 +606,18 @@ public partial class MainWindow : Window
 
     private static readonly IEasingFunction Decelerate = new CubicEase { EasingMode = EasingMode.EaseOut };
 
+    // Wanted visibility per element for Reveal. IsHitTestVisible cannot hold it: WPF forces it false on every
+    // child of a parent whose IsHitTestVisible is false (the log box while Options hides the work area).
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UIElement, System.Runtime.CompilerServices.StrongBox<bool>> RevealWanted = new();
+
     // Fades an element in or out (sliding it by `slide` px when given) instead of snapping its visibility.
-    // IsHitTestVisible records the wanted state, so a fade-out still running cannot be clicked and does not
-    // collapse an element that was shown again before it finished.
+    // A fade-out still running cannot be clicked and does not collapse an element shown again before it finished.
     private static void Reveal(UIElement element, bool show, double slide = 0)
     {
-        if (show == (element.Visibility == Visibility.Visible && element.IsHitTestVisible))
+        var shown = RevealWanted.TryGetValue(element, out var wanted) ? wanted.Value : element.Visibility == Visibility.Visible;
+        if (show == shown)
             return;
+        RevealWanted.AddOrUpdate(element, new System.Runtime.CompilerServices.StrongBox<bool>(show));
         var time = TimeSpan.FromMilliseconds(show ? 160 : 120);
         var fade = new DoubleAnimation(show ? 1 : 0, time) { EasingFunction = Decelerate };
         if (show && element.Visibility != Visibility.Visible)
@@ -621,7 +626,7 @@ public partial class MainWindow : Window
             element.Visibility = Visibility.Visible;
         }
         else if (!show)
-            fade.Completed += (_, _) => { if (!element.IsHitTestVisible) element.Visibility = Visibility.Collapsed; };
+            fade.Completed += (_, _) => { if (RevealWanted.TryGetValue(element, out var now) && !now.Value) element.Visibility = Visibility.Collapsed; };
         element.IsHitTestVisible = show;
         element.BeginAnimation(UIElement.OpacityProperty, fade);
         if (slide == 0)
@@ -721,6 +726,7 @@ public partial class MainWindow : Window
     // check instead of the user. Hover and press storyboards need real pointer input and are not covered.
     internal async Task<bool> RunUiSmokeAsync()
     {
+        static bool Fail(int line) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         static Task Settle() => Task.Delay(400);
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
@@ -759,19 +765,19 @@ public partial class MainWindow : Window
 
         var expanders = OutputPanel.Children.OfType<Expander>().ToList();
         if (expanders.Count < 3)
-            return false; // thinking, tool call and response
+            return Fail(772); // thinking, tool call and response
         SetAllExpanded(true);
         await Settle();
         if (!expanders.All(x => x.IsExpanded))
-            return false;
+            return Fail(776);
         Snap("2-expanded");
         SetAllExpanded(false);
         await Settle();
         if (expanders.Any(x => x.IsExpanded))
-            return false;
+            return Fail(781);
         var tool = SectionText(expanders.First(x => ((TextBlock)((StackPanel)x.Header).Children[0]).Text == "TOOL"));
         if (!(tool.StartsWith("TOOL") && tool.Contains("ARGUMENTS") && tool.Contains("a.js") && tool.Contains("RESULT") && tool.EndsWith("OK")))
-            return false;
+            return Fail(784);
         foreach (var open in new[] { true, false })
         {
             LogToggle.IsChecked = open;
@@ -792,15 +798,18 @@ public partial class MainWindow : Window
         Toast("Something failed", "#FF667A");
         await Settle();
         if (!JumpPill.IsVisible || !JumpPill.IsHitTestVisible || ToastStack.Children.Count != 2)
-            return false;
+            return Fail(805);
         Snap("2b-toast-and-jump");
         JumpToLatest_Click(JumpPill, new RoutedEventArgs());
         await Settle();
         if (!_followTail || JumpPill.IsVisible)
-            return false;
+            return Fail(810);
         await Task.Delay(3200); // toasts leave on their own
         if (ToastStack.Children.Count != 0)
-            return false;
+            return Fail(813);
+        // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
+        if (LogBox.Visibility != Visibility.Collapsed)
+            return Fail(817);
         SetRunning(true); // status ring and header shimmer
         await Settle();
         Snap("3-running");
