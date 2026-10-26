@@ -1196,8 +1196,28 @@ public partial class MainWindow : Window
             if (_customConfigFile is not null)
                 LauncherLogic.ValidateConfigFile(_customConfigFile);
             var existed = Directory.Exists(project);
+            string? backup = null;
+            var existingMd = Path.Combine(project, "PROJECT.md");
+            var keptExisting = false;
+            if (File.Exists(existingMd))
+            {
+                var choice = AskExistingProjectMd(existingMd, _customProjectFile is not null);
+                if (choice == ExistingProjectMdChoice.Cancel)
+                {
+                    SetStatus("Initialization cancelled", "#F7C873");
+                    return;
+                }
+                if (choice == ExistingProjectMdChoice.Replace)
+                    backup = LauncherLogic.BackupProjectMd(project);
+                else
+                    keptExisting = true;
+            }
             var copied = LauncherLogic.InitializeProject(_workflowRoot, project, _customProjectFile, _customConfigFile);
             Log($"{(existed ? "Initialized" : "Created and initialized")} {project}");
+            if (backup is not null)
+                Log($"PROJECT.md replaced; previous saved as {backup}");
+            else if (keptExisting)
+                Log("Using existing PROJECT.md");
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
             if (_customProjectFile is not null && !copied.Contains("PROJECT.md"))
@@ -1205,7 +1225,8 @@ public partial class MainWindow : Window
             if (_customConfigFile is not null && !copied.Contains("config.json"))
                 Log("Existing config.json was preserved; the selected custom file was not copied.");
             SetStatus("Project initialized", "#5BD6A2");
-            Toast("Project initialized");
+            Toast(backup is not null ? $"PROJECT.md replaced; previous saved as {backup}" :
+                keptExisting ? "Using existing PROJECT.md" : "Project initialized");
             RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
@@ -1215,6 +1236,71 @@ public partial class MainWindow : Window
             Log($"Initialization failed: {exception.Message}");
             SetStatus("Initialization failed", "#FF667A");
         }
+    }
+
+    private enum ExistingProjectMdChoice { Use, Replace, Cancel }
+
+    private ExistingProjectMdChoice AskExistingProjectMd(string path, bool customSelected)
+    {
+        var heading = "";
+        long size = 0;
+        try
+        {
+            size = new FileInfo(path).Length;
+            heading = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line))?.Trim() ?? "";
+        }
+        catch (IOException) { }
+        var dialog = new Window
+        {
+            Title = "PROJECT.md already exists", Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
+            FontFamily = FontFamily, FontSize = FontSize,
+        };
+        dialog.Resources.MergedDictionaries.Add(Resources);
+        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
+        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
+
+        TextBlock Line(string text, bool muted, double top)
+        {
+            var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 460, Margin = new Thickness(0, top, 0, 0) };
+            if (muted)
+            {
+                block.FontSize = 11;
+                block.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            }
+            return block;
+        }
+
+        var details = $"{path}  ({size:N0} bytes)" + (heading.Length > 0 ? $"\nStarts with: {heading[..Math.Min(heading.Length, 80)]}" : "");
+        var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
+        panel.Children.Add(Line("This folder already has a PROJECT.md. Do you want to use it?", false, 0));
+        panel.Children.Add(Line(details, true, 8));
+        panel.Children.Add(Line("Replace keeps your current file as PROJECT.md.bak, then installs " +
+            (customSelected ? "the PROJECT.md you selected." : "the template PROJECT.md."), true, 8));
+        if (customSelected)
+            panel.Children.Add(Line("Using the existing file means the custom PROJECT.md you selected will not be used.", true, 4));
+
+        var result = ExistingProjectMdChoice.Cancel;
+        Button Make(string text, string style, ExistingProjectMdChoice value, bool isDefault = false, bool isCancel = false)
+        {
+            var button = new Button
+            {
+                Content = text, Padding = new Thickness(14, 5, 14, 5),
+                Margin = new Thickness(8, 0, 0, 0), IsDefault = isDefault, IsCancel = isCancel,
+            };
+            if (style.Length > 0)
+                button.Style = (Style)FindResource(style);
+            button.Click += (_, _) => { result = value; dialog.Close(); };
+            return button;
+        }
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(Make("Cancel", "GhostButton", ExistingProjectMdChoice.Cancel, isCancel: true));
+        buttons.Children.Add(Make("Replace it", "", ExistingProjectMdChoice.Replace));
+        buttons.Children.Add(Make("Use existing PROJECT.md", "PrimaryButton", ExistingProjectMdChoice.Use, isDefault: true));
+        panel.Children.Add(buttons);
+        dialog.Content = panel;
+        dialog.ShowDialog();
+        return result;
     }
 
     private void ChooseProjectFile_Click(object sender, RoutedEventArgs e)

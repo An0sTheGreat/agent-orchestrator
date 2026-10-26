@@ -154,6 +154,19 @@ internal static class LauncherLogic
         return copied.ToArray();
     }
 
+    /// <summary>Moves an existing PROJECT.md aside (never overwriting a prior backup) and returns the backup's file name.</summary>
+    public static string BackupProjectMd(string projectRoot)
+    {
+        var source = Path.Combine(projectRoot, "PROJECT.md");
+        var backup = "PROJECT.md.bak";
+        if (File.Exists(Path.Combine(projectRoot, backup)))
+            backup = $"PROJECT.md.bak-{DateTime.Now:yyyyMMdd-HHmmss-fff}";
+        for (var n = 2; File.Exists(Path.Combine(projectRoot, backup)); n++)
+            backup = $"PROJECT.md.bak-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{n}";
+        File.Move(source, Path.Combine(projectRoot, backup));
+        return backup;
+    }
+
     public static void ValidateConfigFile(string path)
     {
         using var document = JsonDocument.Parse(File.ReadAllText(path));
@@ -429,6 +442,27 @@ internal static class LauncherLogic
             InitializeProject(root, testProject);
             if (File.ReadAllText(Path.Combine(testProject, "PROJECT.md")) != "preserve-me")
                 throw new InvalidOperationException("Project initialization overwrote an existing file.");
+
+            // Existing PROJECT.md: keep-existing still creates the rest; replace backs up and never clobbers a backup.
+            var mdProject = Path.Combine(testArea, "md-existing");
+            Directory.CreateDirectory(mdProject);
+            File.WriteAllText(Path.Combine(mdProject, "PROJECT.md"), "user-one");
+            var keptCopied = InitializeProject(root, mdProject, customProject);
+            if (File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != "user-one" || keptCopied.Contains("PROJECT.md") ||
+                keptCopied.Length != ProjectFiles.Length - 1 || MissingProjectFiles(mdProject).Length != 0)
+                throw new InvalidOperationException("Keep-existing PROJECT.md initialization failed.");
+            var backupOne = BackupProjectMd(mdProject);
+            InitializeProject(root, mdProject, customProject);
+            if (backupOne != "PROJECT.md.bak" || File.ReadAllText(Path.Combine(mdProject, backupOne)) != "user-one" ||
+                File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != "custom-project")
+                throw new InvalidOperationException("Replacing PROJECT.md did not back up and install the new file.");
+            File.WriteAllText(Path.Combine(mdProject, "PROJECT.md"), "user-two");
+            var backupTwo = BackupProjectMd(mdProject);
+            InitializeProject(root, mdProject);
+            if (backupTwo == backupOne || File.ReadAllText(Path.Combine(mdProject, backupOne)) != "user-one" ||
+                File.ReadAllText(Path.Combine(mdProject, backupTwo)) != "user-two" ||
+                File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != File.ReadAllText(Path.Combine(root, "PROJECT.md")))
+                throw new InvalidOperationException("A second PROJECT.md replacement overwrote the first backup.");
             if (PrimaryLabel(testProject) != "Start Task")
                 throw new InvalidOperationException("Fresh project should offer Start Task.");
             File.WriteAllText(Path.Combine(testProject, "STATE.md"), "# Verified state\n\n## Passed: PHASE-0\n- x\n");
