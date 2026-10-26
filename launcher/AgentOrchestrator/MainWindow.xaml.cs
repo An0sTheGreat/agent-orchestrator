@@ -854,7 +854,9 @@ public partial class MainWindow : Window
         await Settle();
         if (!_followTail || JumpPill.IsVisible)
             return Fail();
-        await Task.Delay(3200); // toasts leave on their own
+        // toasts leave on their own: 3 s on screen + a 180 ms fade, with margin for a busy dispatcher
+        for (var waited = 0; waited < 5000 && ToastStack.Children.Count != 0; waited += 100)
+            await Task.Delay(100);
         if (ToastStack.Children.Count != 0)
             return Fail();
         // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
