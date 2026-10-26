@@ -550,6 +550,40 @@ public partial class MainWindow : Window
         EmptyState.Visibility = Visibility.Collapsed;
         OutputPanel.Children.Add(block);
         _transcript.Append(transcript);
+        // Each section fades and slides in once when it is added; streamed text never comes through here.
+        var time = TimeSpan.FromMilliseconds(180);
+        var shift = new TranslateTransform();
+        block.RenderTransform = shift;
+        block.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(0, 1, time) { EasingFunction = Decelerate, FillBehavior = FillBehavior.Stop });
+        shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(10, 0, time) { EasingFunction = Decelerate, FillBehavior = FillBehavior.Stop });
+    }
+
+    private static readonly IEasingFunction Decelerate = new CubicEase { EasingMode = EasingMode.EaseOut };
+
+    // Fades an element in or out (sliding it by `slide` px when given) instead of snapping its visibility.
+    // IsHitTestVisible records the wanted state, so a fade-out still running cannot be clicked and does not
+    // collapse an element that was shown again before it finished.
+    private static void Reveal(UIElement element, bool show, double slide = 0)
+    {
+        if (show == (element.Visibility == Visibility.Visible && element.IsHitTestVisible))
+            return;
+        var time = TimeSpan.FromMilliseconds(show ? 160 : 120);
+        var fade = new DoubleAnimation(show ? 1 : 0, time) { EasingFunction = Decelerate };
+        if (show && element.Visibility != Visibility.Visible)
+        {
+            fade.From = 0;
+            element.Visibility = Visibility.Visible;
+        }
+        else if (!show)
+            fade.Completed += (_, _) => { if (!element.IsHitTestVisible) element.Visibility = Visibility.Collapsed; };
+        element.IsHitTestVisible = show;
+        element.BeginAnimation(UIElement.OpacityProperty, fade);
+        if (slide == 0)
+            return;
+        if (element.RenderTransform is not TranslateTransform shift)
+            element.RenderTransform = shift = new TranslateTransform();
+        shift.BeginAnimation(TranslateTransform.YProperty,
+            new DoubleAnimation(show ? 0 : slide, time) { From = fade.From is null ? null : slide, EasingFunction = Decelerate });
     }
 
     private Expander BuildExpander(string kind, string summary, UIElement body, out TextBlock preview)
@@ -635,7 +669,7 @@ public partial class MainWindow : Window
 
     private void LogToggle_Click(object sender, RoutedEventArgs e)
     {
-        LogBox.Visibility = LogToggle.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        Reveal(LogBox, LogToggle.IsChecked == true, slide: 12);
         if (LogToggle.IsChecked == true)
             LogBox.ScrollToEnd();
     }
@@ -1268,8 +1302,8 @@ public partial class MainWindow : Window
         NavWorkspace.IsChecked = !options;
         NavOptions.IsChecked = options;
         foreach (UIElement part in new UIElement[] { WorkArea, SplitterBar, DetailsPanel })
-            part.Visibility = options ? Visibility.Collapsed : Visibility.Visible;
-        OptionsView.Visibility = options ? Visibility.Visible : Visibility.Collapsed;
+            Reveal(part, !options);
+        Reveal(OptionsView, options);
     }
 
     // ---- compact worker cards
