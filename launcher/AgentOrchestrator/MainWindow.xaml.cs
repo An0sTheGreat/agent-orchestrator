@@ -255,6 +255,7 @@ public partial class MainWindow : Window
         ProjectButton.IsEnabled = !running;
         OnceToggle.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
+        PresetsButton.IsEnabled = !running;
         foreach (var card in _cards)
             card.Editable = !running;
         if (running)
@@ -766,14 +767,15 @@ public partial class MainWindow : Window
         static Task Settle() => Task.Delay(400);
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
-        void Snap(string name)
+        void Snap(string name, FrameworkElement? target = null) // target: a popup such as a menu, which the window picture leaves out
         {
             if (string.IsNullOrEmpty(snapshots))
                 return;
+            target ??= this;
             var dpi = VisualTreeHelper.GetDpi(this);
-            var bitmap = new RenderTargetBitmap((int)(ActualWidth * dpi.DpiScaleX), (int)(ActualHeight * dpi.DpiScaleY),
+            var bitmap = new RenderTargetBitmap((int)(target.ActualWidth * dpi.DpiScaleX), (int)(target.ActualHeight * dpi.DpiScaleY),
                 dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-            bitmap.Render(this);
+            bitmap.Render(target);
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(bitmap));
             Directory.CreateDirectory(snapshots);
@@ -858,6 +860,44 @@ public partial class MainWindow : Window
         // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
         if (LogBox.Visibility != Visibility.Collapsed)
             return Fail();
+        // Presets: save, change the workers and the config, then apply; both come back as saved.
+        var presetProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
+        var previousProject = _projectPath;
+        try
+        {
+            Directory.CreateDirectory(presetProject);
+            var presetConfig = Path.Combine(presetProject, "config.json");
+            string Config(string temperature) => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """}},"implementer":{},"reviewer":{}}}""";
+            string Cards() => string.Join("|", _cards.Select(c => $"{c.Role}:{c.Title}"));
+            File.WriteAllText(presetConfig, Config("0.3"));
+            ProjectPath = presetProject;
+            var saved = Cards();
+            SavePreset("Smoke");
+            AddWorker_Click(AddWorkerButton, new RoutedEventArgs());
+            File.WriteAllText(presetConfig, Config("0.9"));
+            if (Cards() == saved || _settings.Presets.Count(p => p.Name == "Smoke") != 1)
+                return Fail();
+            var menu = BuildPresetsMenu();
+            menu.IsOpen = true;
+            await Settle();
+            if (!menu.IsOpen || menu.Items.OfType<MenuItem>().All(i => i.Header as string != "Smoke"))
+                return Fail();
+            Snap("7-presets-menu", menu);
+            menu.IsOpen = false;
+            ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            await Settle();
+            if (Cards() != saved || (double)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["sampling"]!["temperature"]! != 0.3)
+                return Fail();
+            DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            if (_settings.Presets.Any(p => p.Name == "Smoke"))
+                return Fail();
+        }
+        finally
+        {
+            ProjectPath = previousProject;
+            if (Directory.Exists(presetProject))
+                Directory.Delete(presetProject, recursive: true);
+        }
         SetRunning(true); // status ring and header shimmer
         await Settle();
         if (RailProjectButton.IsEnabled || RailOnceToggle.IsEnabled)
@@ -1397,13 +1437,179 @@ public partial class MainWindow : Window
         }
     }
 
+    private List<WorkerSetting> CurrentWorkers() => _cards.Select(c => new WorkerSetting
+    {
+        Id = c.Role, Title = c.Title, Custom = c.IsCustom, ModelId = c.ModelId, ModelVariant = c.ModelVariant,
+    }).ToList();
+
     private void SaveWorkers()
     {
-        _settings.Workers = _cards.Select(c => new WorkerSetting
-        {
-            Id = c.Role, Title = c.Title, Custom = c.IsCustom, ModelId = c.ModelId, ModelVariant = c.ModelVariant,
-        }).ToList();
+        _settings.Workers = CurrentWorkers();
         _settings.Save();
+    }
+
+    // ---- presets: named sets of workers plus the built-in roles' config.json objects
+
+    private string ProjectConfigPath() => SelectedProjectPath() is { Length: > 0 } project ? Path.Combine(project, "config.json") : "";
+
+    private void Presets_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is null)
+            BuildPresetsMenu().IsOpen = true;
+    }
+
+    private ContextMenu NewPresetMenu() => new() { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = PresetsButton, Placement = PlacementMode.Bottom };
+
+    private MenuItem PresetItem(string header, Action click, bool enabled = true)
+    {
+        var item = new MenuItem { Header = header, Style = (Style)FindResource(typeof(MenuItem)), IsEnabled = enabled, Opacity = enabled ? 1 : 0.45 };
+        item.Click += (_, _) => click();
+        return item;
+    }
+
+    private ContextMenu BuildPresetsMenu()
+    {
+        var menu = NewPresetMenu();
+        foreach (var preset in _settings.Presets)
+            menu.Items.Add(PresetItem(preset.Name, () => ApplyPreset(preset)));
+        if (_settings.Presets.Count == 0)
+            menu.Items.Add(PresetItem("No saved presets", () => { }, enabled: false));
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        menu.Items.Add(PresetItem("Save current as preset…", SavePresetPrompt));
+        menu.Items.Add(PresetItem("Delete preset…", () => Dispatcher.InvokeAsync(DeletePresetMenu, DispatcherPriority.Background), _settings.Presets.Count > 0));
+        return menu;
+    }
+
+    // A second menu (the item template has no submenus) listing what can be deleted.
+    private void DeletePresetMenu()
+    {
+        var menu = NewPresetMenu();
+        foreach (var preset in _settings.Presets)
+            menu.Items.Add(PresetItem($"Delete  {preset.Name}", () =>
+            {
+                if (AskDialog("Delete preset", $"Delete the preset \"{preset.Name}\"?", "Delete") is null)
+                    return;
+                DeletePreset(preset);
+            }));
+        menu.IsOpen = true;
+    }
+
+    // Themed prompt: a name box when input is not null (empty names rejected), otherwise a plain confirmation.
+    // Returns the entered text ("" for a confirmation), or null when cancelled.
+    private string? AskDialog(string title, string message, string okLabel, string? input = null)
+    {
+        var dialog = new Window
+        {
+            Title = title, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
+            FontFamily = FontFamily, FontSize = FontSize,
+        };
+        dialog.Resources.MergedDictionaries.Add(Resources);
+        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
+        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
+        var box = input is null ? null : new TextBox { Text = input, MaxLength = 60, Margin = new Thickness(0, 10, 0, 0) };
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var ok = new Button { Content = okLabel, Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        ok.Click += (_, _) =>
+        {
+            if (box is not null && box.Text.Trim().Length == 0)
+            {
+                error.Text = "Enter a name.";
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            dialog.DialogResult = true;
+        };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16), MinWidth = 320 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
+        if (box is not null)
+            panel.Children.Add(box);
+        panel.Children.Add(error);
+        panel.Children.Add(buttons);
+        dialog.Content = panel;
+        dialog.Loaded += (_, _) =>
+        {
+            box?.Focus();
+            box?.SelectAll();
+        };
+        return dialog.ShowDialog() == true ? box?.Text.Trim() ?? "" : null;
+    }
+
+    private bool SamePreset(WorkerPreset preset, string name) => string.Equals(preset.Name, name, StringComparison.OrdinalIgnoreCase);
+
+    private void SavePresetPrompt()
+    {
+        if (_process is not null || AskDialog("Save preset", "Name this set of workers and their settings.", "Save", "") is not { } name)
+            return;
+        if (_settings.Presets.Any(p => SamePreset(p, name)) &&
+            AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
+            return;
+        SavePreset(name);
+    }
+
+    private void SavePreset(string name)
+    {
+        WorkerPreset preset;
+        try
+        {
+            preset = LauncherLogic.CapturePreset(name, ProjectConfigPath(), CurrentWorkers());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not read config.json: {exception.Message}");
+            SetStatus("Could not read config.json", "#FF667A");
+            return;
+        }
+        var index = _settings.Presets.FindIndex(p => SamePreset(p, name));
+        if (index >= 0)
+            _settings.Presets[index] = preset;
+        else
+            _settings.Presets.Add(preset);
+        _settings.Save();
+        Log($"Preset saved: {name}");
+        Toast($"Preset saved: {name}");
+    }
+
+    private void ApplyPreset(WorkerPreset preset)
+    {
+        if (_process is not null)
+            return;
+        bool rolesApplied;
+        try
+        {
+            rolesApplied = LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not update config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+            return;
+        }
+        _settings.Workers = preset.Workers;
+        _cards.Clear();
+        LoadWorkers(); // keeps only valid entries and re-adds any missing built-in worker
+        SaveWorkers();
+        PrefillCards();
+        Log($"Preset applied: {preset.Name}");
+        if (preset.Roles.Count > 0 && !rolesApplied)
+        {
+            SetStatus("Initialize the project first", "#F7C873");
+            Toast($"Preset applied: {preset.Name}. Built-in model settings need an initialized project.", "#F7C873");
+        }
+        else
+            Toast($"Preset applied: {preset.Name}");
+    }
+
+    private void DeletePreset(WorkerPreset preset)
+    {
+        _settings.Presets.Remove(preset);
+        _settings.Save();
+        Log($"Preset deleted: {preset.Name}");
+        Toast($"Preset deleted: {preset.Name}");
     }
 
     private void AddWorker_Click(object sender, RoutedEventArgs e)

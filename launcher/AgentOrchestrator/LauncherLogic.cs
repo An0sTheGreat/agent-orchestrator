@@ -242,6 +242,42 @@ internal static class LauncherLogic
         return null;
     }
 
+    public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
+
+    // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
+    public static WorkerPreset CapturePreset(string name, string configPath, IEnumerable<WorkerSetting> workers)
+    {
+        var preset = new WorkerPreset
+        {
+            Name = name,
+            Workers = workers.Select(w => new WorkerSetting { Id = w.Id, Title = w.Title, Custom = w.Custom, ModelId = w.ModelId, ModelVariant = w.ModelVariant }).ToList(),
+        };
+        if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath))?["roles"] is JsonObject roles)
+            foreach (var role in BuiltInRoles)
+                if (roles[role] is JsonObject stored)
+                    preset.Roles[role] = stored.ToJsonString();
+        return preset;
+    }
+
+    // Replaces only the stored roles.<role> objects; every other key and role in the config stays.
+    // Returns false when there is no config to write to.
+    public static bool ApplyPresetRoles(string configPath, WorkerPreset preset)
+    {
+        if (!File.Exists(configPath))
+            return false;
+        if (preset.Roles.Count == 0)
+            return true;
+        var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
+        var roles = (root["roles"] ??= new JsonObject()).AsObject();
+        foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
+            roles[role] = JsonNode.Parse(json);
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return true;
+    }
+
     // True when the node, or any ancestor, is a button. A Run inside a TextBlock is not a Visual and
     // VisualTreeHelper.GetParent throws for it, so non-visuals (and visuals not yet in a visual tree) use the logical tree.
     public static bool IsInsideButton(System.Windows.DependencyObject? source)
@@ -354,6 +390,27 @@ internal static class LauncherLogic
                 WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("0.9", "", "", "0", "")) is null ||
                 File.ReadAllText(roleConfig) != untouched)
                 throw new InvalidOperationException("Context length or reasoning budget without auto_load model_path was accepted.");
+            // Presets: capture from config A, apply to config B; B keeps its own project keys.
+            var configA = Path.Combine(testArea, "preset-a.json");
+            var configB = Path.Combine(testArea, "preset-b.json");
+            File.WriteAllText(configA, "{\"validation_commands\":[\"a\"],\"roles\":{\"planner\":{\"display_name\":\"PA\",\"sampling\":{\"temperature\":0.1},\"auto_load\":{\"model_path\":\"ma\"}},\"implementer\":{\"display_name\":\"IA\"},\"reviewer\":{\"display_name\":\"RA\"}}}");
+            File.WriteAllText(configB, "{\"validation_commands\":[\"b\"],\"roles\":{\"planner\":{\"display_name\":\"PB\"},\"implementer\":{\"display_name\":\"IB\"},\"reviewer\":{\"display_name\":\"RB\"},\"extra\":{\"x\":1}}}");
+            var workersA = new[] { new WorkerSetting { Id = "planner", Title = "PLANNER" }, new WorkerSetting { Id = "c1", Title = "MINE", Custom = true, ModelId = "m", ModelVariant = "Q4" } };
+            var preset = CapturePreset("p", configA, workersA);
+            if (preset.Workers.Count != 2 || preset.Workers[1].Title != "MINE" || preset.Workers[1].ModelVariant != "Q4" || preset.Roles.Count != 3)
+                throw new InvalidOperationException("Preset capture failed.");
+            var bBefore = File.ReadAllText(configB);
+            if (CapturePreset("none", Path.Combine(testArea, "missing.json"), workersA).Roles.Count != 0 ||
+                !ApplyPresetRoles(configB, new WorkerPreset { Name = "none" }) || File.ReadAllText(configB) != bBefore ||
+                ApplyPresetRoles(Path.Combine(testArea, "missing.json"), preset))
+                throw new InvalidOperationException("A preset without roles must leave the config untouched.");
+            if (!ApplyPresetRoles(configB, preset))
+                throw new InvalidOperationException("Preset roles were not applied.");
+            var rolesA = JsonNode.Parse(File.ReadAllText(configA))!["roles"]!;
+            var presetApplied = JsonNode.Parse(File.ReadAllText(configB))!;
+            if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
+                presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
+                throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
             var run = new System.Windows.Documents.Run("12 tokens");
             var tokens = new System.Windows.Controls.TextBlock();
             tokens.Inlines.Add(run);

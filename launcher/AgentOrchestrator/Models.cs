@@ -108,6 +108,8 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
+    // Named worker sets, global across projects.
+    public List<WorkerPreset> Presets { get; set; } = new();
     public string Theme { get; set; } = "Flat";
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
@@ -152,4 +154,12 @@ internal sealed class WorkerSetting
     public bool Custom { get; set; }
     public string? ModelId { get; set; }      // custom workers only
     public string? ModelVariant { get; set; } // custom workers only
+}
+
+// A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.
+internal sealed class WorkerPreset
+{
+    public string Name { get; set; } = "";
+    public List<WorkerSetting> Workers { get; set; } = new();
+    public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
 }
