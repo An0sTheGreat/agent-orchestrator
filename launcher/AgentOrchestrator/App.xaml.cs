@@ -33,7 +33,10 @@ public partial class App : Application
             window.Show();
             window.Dispatcher.InvokeAsync(async () =>
             {
-                var ok = await window.RunUiSmokeAsync();
+                var ok = false;
+                // An exception here would stay inside InvokeAsync's Task and hang the run, so report it.
+                try { ok = await window.RunUiSmokeAsync(); }
+                catch (Exception exception) { Console.Error.WriteLine(exception); }
                 window.Close();
                 try { System.IO.Directory.Delete(data, recursive: true); } catch (System.IO.IOException) { }
                 Environment.Exit(ok && !failed ? 0 : 1); // the generated Main ignores Shutdown's exit code

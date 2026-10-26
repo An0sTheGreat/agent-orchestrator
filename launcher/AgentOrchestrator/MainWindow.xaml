@@ -5,7 +5,7 @@
         xmlns:local="clr-namespace:AgentOrchestrator"
         Title="Agent Orchestrator" Width="1400" Height="860" MinWidth="1040" MinHeight="620"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
-        Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI"
+        Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
         TextOptions.TextFormattingMode="Ideal">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0"
@@ -29,6 +29,15 @@
         <CornerRadius x:Key="CardRadius">14</CornerRadius>
         <CornerRadius x:Key="PanelRadius">14</CornerRadius>
         <CornerRadius x:Key="SmallRadius">10</CornerRadius>
+        <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI</FontFamily>
+
+        <!-- Material: raised surfaces carry a 1 px EdgeHighlight rim (light at the top edge, fading out), and fade in an
+             AccentEdge rim on hover through an overlay named HoverFill. ApplyTheme / ApplyAccent build these brushes,
+             and AccentGradient, AccentGlow and ShimmerBrush, so they follow the theme and accent. -->
+        <Style x:Key="HoverRim" TargetType="Border">
+            <Setter Property="BorderThickness" Value="1" /><Setter Property="BorderBrush" Value="{DynamicResource AccentEdge}" />
+            <Setter Property="Opacity" Value="0" /><Setter Property="IsHitTestVisible" Value="False" />
+        </Style>
 
         <!-- State motion shared by the control templates: a per-control overlay named HoverFill fades in and out,
              and a template root named Root carrying a ScaleTransform shrinks slightly while pressed.
@@ -84,9 +93,9 @@
             </Setter>
         </Style>
         <Style x:Key="PrimaryButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
-            <Setter Property="Background" Value="{DynamicResource Accent}" />
+            <Setter Property="Background" Value="{DynamicResource AccentGradient}" />
             <Setter Property="Foreground" Value="{DynamicResource OnAccent}" />
-            <Setter Property="BorderBrush" Value="{DynamicResource Accent}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource EdgeHighlight}" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Template">
                 <Setter.Value>
@@ -97,7 +106,10 @@
                                     BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}"
                                     CornerRadius="{DynamicResource ControlRadius}">
                                 <Grid>
-                                    <Border x:Name="HoverFill" Background="{DynamicResource AccentLight}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                                    <!-- Hover lays a light sheen over the accent gradient, brightening it toward the top. -->
+                                    <Border x:Name="HoverFill" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
+                                        <Border.Background><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#40FFFFFF" Offset="0" /><GradientStop Color="#14FFFFFF" Offset="1" /></LinearGradientBrush></Border.Background>
+                                    </Border>
                                     <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Grid>
                             </Border>
@@ -155,11 +167,17 @@
             </Setter>
         </Style>
         <Style x:Key="SectionHeader" TargetType="TextBlock">
-            <Setter Property="FontFamily" Value="Consolas" /><Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="FontSize" Value="11" /><Setter Property="Foreground" Value="{DynamicResource Muted}" />
         </Style>
         <Style x:Key="SubHeader" TargetType="TextBlock" BasedOn="{StaticResource SectionHeader}">
-            <Setter Property="FontSize" Value="10" /><Setter Property="Margin" Value="8,16,0,6" />
+            <Setter Property="Margin" Value="8,24,0,8" />
+        </Style>
+        <!-- Large figures on the worker cards: tabular digits so streaming numbers do not jitter. -->
+        <Style x:Key="CardValue" TargetType="TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource DisplayFont}" /><Setter Property="FontSize" Value="22" />
+            <Setter Property="FontWeight" Value="SemiBold" /><Setter Property="Typography.NumeralAlignment" Value="Tabular" />
+            <Setter Property="Margin" Value="0,1,0,0" />
         </Style>
         <Style TargetType="TextBox">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /><Setter Property="Background" Value="{DynamicResource Card}" />
@@ -442,7 +460,9 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Expander">
-                        <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}">
+                        <Grid>
+                        <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}"
+                                BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
                             <DockPanel>
                                 <ToggleButton DockPanel.Dock="Top" Style="{StaticResource BlockHeaderToggle}"
                                               IsChecked="{Binding IsExpanded, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
@@ -453,7 +473,13 @@
                                 </ContentPresenter>
                             </DockPanel>
                         </Border>
+                        <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource SmallRadius}" />
+                        </Grid>
                         <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
+                            </Trigger>
                             <!-- Opening fades and slides the body in; closing stays instant. -->
                             <Trigger Property="IsExpanded" Value="True">
                                 <Setter TargetName="Body" Property="Visibility" Value="Visible" />
@@ -491,13 +517,14 @@
 
         <!-- Small square card: title plus a pulsing status dot -->
         <DataTemplate x:Key="CompactCardTemplate">
-            <Border Tag="CardRoot" Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="14" Cursor="SizeAll"
-                    ToolTip="Drag to reorder" PreviewMouseLeftButtonDown="Handle_Down">
-                <Border.Style>
-                    <Style TargetType="Border">
+            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder" PreviewMouseLeftButtonDown="Handle_Down">
+                <Grid.Style>
+                    <Style TargetType="Grid">
                         <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
                     </Style>
-                </Border.Style>
+                </Grid.Style>
+            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="14"
+                    BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
                 <Grid>
                     <Grid HorizontalAlignment="Right" VerticalAlignment="Top" Width="26" Height="26" Margin="0,-4,-4,0">
                         <Ellipse Width="12" Height="12" Fill="{DynamicResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
@@ -552,24 +579,36 @@
                             <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Weights}" FontSize="10" /></Border>
                             <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Quant}" FontSize="10" /></Border>
                         </StackPanel>
-                        <TextBlock Text="{Binding TokensPerSec}" FontFamily="Consolas" FontSize="11" FontWeight="SemiBold" Margin="0,8,0,0" />
-                        <TextBlock FontFamily="Consolas" FontSize="10" Foreground="{DynamicResource Muted}" Margin="0,1,0,0">
+                        <TextBlock Text="{Binding TokensPerSec}" Style="{StaticResource CardValue}" FontSize="15" Margin="0,8,0,0" />
+                        <TextBlock FontSize="11" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" Margin="0,1,0,0">
                             <Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
                         </TextBlock>
                     </StackPanel>
                 </Grid>
             </Border>
+            <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
+            </Grid>
+            <DataTemplate.Triggers>
+                <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
+                    <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
+                    <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
+                </Trigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
 
         <DataTemplate x:Key="RoleCardTemplate">
-            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="14,12"
-                    BorderThickness="2" Tag="CardRoot">
+            <Grid x:Name="CardRoot" Tag="CardRoot">
+                <Grid.Style>
+                    <Style TargetType="Grid">
+                        <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
+                    </Style>
+                </Grid.Style>
+            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="16,14" BorderThickness="1">
                 <Border.Style>
                     <Style TargetType="Border">
-                        <Setter Property="BorderBrush" Value="Transparent" />
+                        <Setter Property="BorderBrush" Value="{DynamicResource EdgeHighlight}" />
                         <Style.Triggers>
                             <DataTrigger Binding="{Binding DropHover}" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></DataTrigger>
-                            <DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger>
                         </Style.Triggers>
                     </Style>
                 </Border.Style>
@@ -604,7 +643,7 @@
                                     </Style>
                                 </TextBlock.Style>
                             </TextBlock>
-                            <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontWeight="Bold" FontSize="11" Padding="8,3"
+                            <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}" FontWeight="SemiBold" FontSize="11" Padding="8,3"
                                      Background="{DynamicResource Hover}" ToolTip="Worker title (editable)" LostFocus="TitleBox_LostFocus" MaxLength="32">
                                 <TextBox.Style>
                                     <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
@@ -616,26 +655,34 @@
                         </Grid>
                     </DockPanel>
 
-                    <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="9" Margin="0,12,0,0" />
-                    <DockPanel Margin="0,3,0,0">
+                    <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
+                    <DockPanel Margin="0,2,0,0">
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Change" Padding="9,3" FontSize="11" Margin="8,0,0,0"
                                 IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
                         <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" VerticalAlignment="Center" />
                     </DockPanel>
 
-                    <TextBlock Text="WEIGHTS / QUANTIZATION" Style="{StaticResource SectionHeader}" FontSize="9" Margin="0,10,0,0" />
-                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                    <TextBlock Text="WEIGHTS / QUANTIZATION" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
+                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
                         <Border Style="{StaticResource Chip}"><TextBlock Text="{Binding Weights}" FontSize="12" /></Border>
                         <Border Style="{StaticResource Chip}"><TextBlock Text="{Binding Quant}" FontSize="12" /></Border>
                     </StackPanel>
 
-                    <TextBlock Text="TOKENS / SEC" Style="{StaticResource SectionHeader}" FontSize="9" Margin="0,12,0,0" />
-                    <TextBlock Text="{Binding TokensPerSec}" FontSize="18" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,2,0,0" />
-                    <TextBlock Text="TURN TOKENS" Style="{StaticResource SectionHeader}" FontSize="9" Margin="0,12,0,0" />
-                    <TextBlock Text="{Binding TurnTotal}" FontSize="18" FontWeight="SemiBold" FontFamily="Consolas" Margin="0,2,0,0" />
+                    <TextBlock Text="TOKENS / SEC" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
+                    <TextBlock Text="{Binding TokensPerSec}" Style="{StaticResource CardValue}" />
+                    <TextBlock Text="TURN TOKENS" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,12,0,0" />
+                    <TextBlock Text="{Binding TurnTotal}" Style="{StaticResource CardValue}" />
                     <TextBlock Text="{Binding TurnDetail}" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,2,0,0" />
                 </StackPanel>
             </Border>
+            <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
+            </Grid>
+            <DataTemplate.Triggers>
+                <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
+                    <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
+                    <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
+                </Trigger>
+            </DataTemplate.Triggers>
         </DataTemplate>
     </Window.Resources>
 
@@ -672,6 +719,16 @@
 
         <!-- Header: project control -->
         <Border Grid.Row="1" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1">
+            <Grid>
+            <!-- While a run is in progress a light sweeps along the header's lower edge (SetRunning starts and stops it).
+                 The Viewbox stretches a fixed 100-unit track to the header width, so the sweep needs no resize handling. -->
+            <Viewbox x:Name="Shimmer" Stretch="Fill" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-1" Opacity="0" IsHitTestVisible="False">
+                <Canvas Width="100" Height="2" ClipToBounds="True">
+                    <Rectangle Width="34" Height="2" Fill="{DynamicResource ShimmerBrush}">
+                        <Rectangle.RenderTransform><TranslateTransform x:Name="ShimmerShift" X="-34" /></Rectangle.RenderTransform>
+                    </Rectangle>
+                </Canvas>
+            </Viewbox>
             <Grid Margin="14,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
@@ -680,10 +737,20 @@
                         Padding="22,10" MinWidth="170" VerticalAlignment="Center" Click="Start_Click" />
                 <Button x:Name="StopButton" Grid.Column="1" Content="Stop" Margin="8,0,0,0" Padding="18,10" VerticalAlignment="Center"
                         IsEnabled="False" Click="Stop_Click" />
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0">
-                    <Ellipse x:Name="StatusDot" Width="9" Height="9" Fill="#667085" Margin="0,0,8,0" />
-                    <TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource Muted}" />
-                </StackPanel>
+                <!-- Status pill: while running, a ring in the dot's colour swells and fades from behind the dot. -->
+                <Border Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="16,0,0,0" Padding="11,5,13,5"
+                        Background="{DynamicResource Card}" BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1"
+                        CornerRadius="{DynamicResource ControlRadius}">
+                    <StackPanel Orientation="Horizontal">
+                        <Grid Width="9" Height="9" Margin="0,0,8,0" VerticalAlignment="Center">
+                            <Ellipse x:Name="StatusRing" Fill="{Binding Fill, ElementName=StatusDot}" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                                <Ellipse.RenderTransform><ScaleTransform x:Name="StatusRingScale" /></Ellipse.RenderTransform>
+                            </Ellipse>
+                            <Ellipse x:Name="StatusDot" Fill="#667085" />
+                        </Grid>
+                        <TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
                 <Button x:Name="AccentButton" Grid.Column="3" Padding="11,8" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
                     <StackPanel Orientation="Horizontal">
                         <Ellipse Width="10" Height="10" Fill="{DynamicResource Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
@@ -691,6 +758,7 @@
                     </StackPanel>
                     <Button.ContextMenu><ContextMenu x:Name="AccentMenu" Opened="AccentMenu_Opened" /></Button.ContextMenu>
                 </Button>
+            </Grid>
             </Grid>
         </Border>
 
@@ -706,7 +774,7 @@
             <!-- Left-side navigation + project setup -->
             <Border Grid.Column="0" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                    <StackPanel Margin="12,16,12,16">
+                    <StackPanel Margin="12,20,12,20">
                         <TextBlock Text="VIEW" Style="{StaticResource SectionHeader}" Margin="8,0,0,8" />
                         <ToggleButton x:Name="NavWorkspace" Style="{StaticResource NavToggle}" Content="Workspace" IsChecked="True" Click="Nav_Click" Tag="Workspace" />
                         <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" />
@@ -718,7 +786,8 @@
                                 <TextBlock x:Name="ProjectPathText" Foreground="{DynamicResource Muted}" FontSize="10" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,2,0,0" Visibility="Collapsed" />
                             </StackPanel>
                         </Button>
-                        <Border x:Name="InitializationPanel" Visibility="Collapsed" Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}" Padding="12" Margin="0,10,0,0">
+                        <Border x:Name="InitializationPanel" Visibility="Collapsed" Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}" Padding="12" Margin="0,10,0,0"
+                                BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
                             <StackPanel>
                                 <TextBlock x:Name="InitializationText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
                                 <Button Content="Initialize Project" Style="{StaticResource PrimaryButton}" Margin="0,10,0,0" Click="InitializeProject_Click" />
@@ -752,9 +821,18 @@
                     <ScrollViewer x:Name="OutputScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="OutputScroll_ScrollChanged">
                         <StackPanel x:Name="OutputPanel" Margin="20,0,12,12" />
                     </ScrollViewer>
-                    <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
-                        <TextBlock Text="◈" FontSize="66" Foreground="{DynamicResource Border}" HorizontalAlignment="Center" />
-                        <TextBlock Text="No output yet" FontSize="20" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,10,0,6" />
+                    <!-- Emblem: an accent halo that breathes slowly (EmptyState_IsVisibleChanged) behind a lit disc. -->
+                    <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
+                                IsVisibleChanged="EmptyState_IsVisibleChanged">
+                        <Grid Width="160" Height="160" HorizontalAlignment="Center">
+                            <Ellipse x:Name="EmblemGlow" Fill="{DynamicResource AccentGlow}" Opacity="0.6" RenderTransformOrigin="0.5,0.5">
+                                <Ellipse.RenderTransform><ScaleTransform x:Name="EmblemScale" /></Ellipse.RenderTransform>
+                            </Ellipse>
+                            <Ellipse Width="116" Height="116" Stroke="{DynamicResource Border}" StrokeThickness="1" />
+                            <Ellipse Width="84" Height="84" Fill="{DynamicResource Card}" Stroke="{DynamicResource AccentEdge}" StrokeThickness="1.5" />
+                            <TextBlock Text="◈" FontSize="38" Foreground="{DynamicResource AccentLight}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,3" />
+                        </Grid>
+                        <TextBlock Text="No output yet" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,6,0,6" />
                         <TextBlock Text="Thinking, tool calls and responses appear here as the agents work." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
                     </StackPanel>
                 </Grid>
@@ -802,13 +880,13 @@
             <ScrollViewer x:Name="OptionsView" Grid.Column="1" Grid.ColumnSpan="3" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="40,28" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="OPTIONS" Style="{StaticResource SectionHeader}" />
-                    <TextBlock Text="Theme" FontSize="18" FontWeight="SemiBold" Margin="0,16,0,0" />
+                    <TextBlock Text="Theme" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
                     <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme (default)" Margin="0,14,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Checked="Theme_Checked" />
                     <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
-                    <TextBlock Text="Unsloth API key" FontSize="18" FontWeight="SemiBold" Margin="0,36,0,0" />
+                    <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
                     <PasswordBox x:Name="ApiKeyBox" Width="460" HorizontalAlignment="Left" Margin="0,14,0,0" />
                     <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"
                                Foreground="{DynamicResource Muted}" Margin="0,8,0,0" MaxWidth="460" HorizontalAlignment="Left" />

@@ -219,7 +219,38 @@ public partial class MainWindow : Window
             SetStatus("Running", "#8B7CFF");
         else if (!preserveStatus)
             SetStatus("Ready", "#667085");
+        SetActivity(running);
         RefreshPrimary();
+    }
+
+    // While a run is in progress the status dot sends out a ring and a light sweeps along the header's lower edge.
+    // Idle removes both animations, so nothing keeps ticking between runs.
+    private void SetActivity(bool on)
+    {
+        static DoubleAnimation Loop(double from, double to, double seconds, IEasingFunction ease) =>
+            new(from, to, TimeSpan.FromSeconds(seconds)) { RepeatBehavior = RepeatBehavior.Forever, EasingFunction = ease };
+        StatusRing.BeginAnimation(OpacityProperty, on ? Loop(0.6, 0, 1.6, Decelerate) : null);
+        StatusRingScale.BeginAnimation(ScaleTransform.ScaleXProperty, on ? Loop(1, 2.2, 1.6, Decelerate) : null);
+        StatusRingScale.BeginAnimation(ScaleTransform.ScaleYProperty, on ? Loop(1, 2.2, 1.6, Decelerate) : null);
+        ShimmerShift.BeginAnimation(TranslateTransform.XProperty, on ? Loop(-34, 100, 1.8, new SineEase { EasingMode = EasingMode.EaseInOut }) : null);
+        Shimmer.BeginAnimation(OpacityProperty, new DoubleAnimation(on ? 1 : 0, TimeSpan.FromMilliseconds(250)));
+    }
+
+    // The empty-state emblem breathes slowly, at a reduced frame rate, and only while it is on screen.
+    private void EmptyState_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        DoubleAnimation? Breath(double from, double to)
+        {
+            if (!EmptyState.IsVisible)
+                return null;
+            var breath = new DoubleAnimation(from, to, TimeSpan.FromSeconds(4))
+                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } };
+            Timeline.SetDesiredFrameRate(breath, 30);
+            return breath;
+        }
+        EmblemGlow.BeginAnimation(OpacityProperty, Breath(0.45, 0.9));
+        EmblemScale.BeginAnimation(ScaleTransform.ScaleXProperty, Breath(0.92, 1.06));
+        EmblemScale.BeginAnimation(ScaleTransform.ScaleYProperty, Breath(0.92, 1.06));
     }
 
     // "Start Task" for a project with no tasks yet, otherwise "Resume Project — <active or last completed task>".
@@ -618,7 +649,7 @@ public partial class MainWindow : Window
             Background = Brushes.Transparent,
             BorderThickness = new Thickness(0),
             Padding = new Thickness(0),
-            FontFamily = mono ? new FontFamily("Consolas") : new FontFamily("Segoe UI"),
+            FontFamily = mono ? new FontFamily("Consolas") : FontFamily,
             FontSize = mono ? 12 : 13,
             FontStyle = muted ? FontStyles.Italic : FontStyles.Normal,
             Cursor = Cursors.IBeam,
@@ -708,8 +739,30 @@ public partial class MainWindow : Window
             _settings.Compact = open;
             ApplyCompact();
             await Settle();
+            PlayHoverStoryboards(this); // both card layouts
         }
+        SetRunning(true); // status ring and header shimmer
+        await Settle();
+        SetRunning(false);
+        await Settle();
         return true;
+    }
+
+    // Real hover cannot be faked, so begin every IsMouseOver storyboard of each control and data template directly:
+    // a target name missing from its template throws here instead of on the user's first hover.
+    private static void PlayHoverStoryboards(DependencyObject node)
+    {
+        if (node is FrameworkElement element && VisualTreeHelper.GetChildrenCount(element) > 0) // never-shown elements have no template yet
+        {
+            FrameworkTemplate? template = element switch { Control c => c.Template, ContentPresenter p => p.ContentTemplate, _ => null };
+            var triggers = template switch { ControlTemplate t => t.Triggers, DataTemplate d => d.Triggers, _ => null };
+            foreach (var trigger in triggers?.OfType<Trigger>().Where(t => t.Property == IsMouseOverProperty) ?? [])
+                foreach (var action in trigger.EnterActions.Concat(trigger.ExitActions).OfType<BeginStoryboard>())
+                    try { action.Storyboard.Begin(element, template!); }
+                    catch (InvalidOperationException e) { throw new InvalidOperationException($"{element.GetType().Name} '{element.Name}' hover: {e.Message}", e); }
+        }
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++)
+            PlayHoverStoryboards(VisualTreeHelper.GetChild(node, i));
     }
 
     private void LogToggle_Click(object sender, RoutedEventArgs e)
@@ -1402,6 +1455,10 @@ public partial class MainWindow : Window
         SetThemeBrush("Border", oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35");
         SetThemeBrush("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35");
         SetThemeBrush("Muted", oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
+        var rim = (byte)(glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A);
+        SetBrush("EdgeHighlight", new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
+            { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();
         Resources["ControlRadius"] = new CornerRadius(flat ? 17 : 7);
         Resources["CardRadius"] = new CornerRadius(flat ? 14 : 5);
@@ -1441,6 +1498,21 @@ public partial class MainWindow : Window
         GlassA2.Color = Color.FromArgb(0x00, strong.R, strong.G, strong.B);
         GlassB1.Color = Color.FromArgb(0x50, soft.R, soft.G, soft.B);
         GlassB2.Color = Color.FromArgb(0x00, soft.R, soft.G, soft.B);
+
+        static Color Alpha(Color c, byte a) => Color.FromArgb(a, c.R, c.G, c.B);
+        // Primary fill: lifted a third of the way toward the light accent at the top-left, so text contrast holds.
+        var lifted = Color.FromRgb((byte)((strong.R * 2 + soft.R) / 3), (byte)((strong.G * 2 + soft.G) / 3), (byte)((strong.B * 2 + soft.B) / 3));
+        SetBrush("AccentGradient", new LinearGradientBrush(lifted, strong, new Point(0, 0), new Point(1, 1)));
+        SetBrush("AccentEdge", new LinearGradientBrush(Alpha(soft, 0xC0), Alpha(strong, 0x30), 90));
+        SetBrush("AccentGlow", new RadialGradientBrush(Alpha(strong, 0x66), Alpha(strong, 0)));
+        SetBrush("ShimmerBrush", new LinearGradientBrush(
+            new GradientStopCollection { new(Alpha(soft, 0), 0), new(soft, 0.5), new(Alpha(soft, 0), 1) }, 0));
+    }
+
+    private void SetBrush(string key, Brush brush)
+    {
+        brush.Freeze();
+        Resources[key] = brush;
     }
 
     private void Accent_Click(object sender, RoutedEventArgs e)
