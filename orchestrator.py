@@ -155,6 +155,7 @@ class ApiClient:
         self.management_url = settings.get("management_url", "").rstrip("/")
         self.auto_load = settings.get("auto_load")
         self.role = ""
+        self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -233,10 +234,16 @@ class ApiClient:
                     load_error = f"load completed but API reports {model!r}"
                 except WorkflowError as exc:
                     load_error = str(exc)
-                    if matched:  # the right model is still serving; settings differ but that beats failing
-                        print(f"[{role}] reload failed ({load_error}); continuing with the loaded model")
-                        emit("model", role=role, id=model)
-                        return model
+                    if matched:
+                        # A failed reload may already have unloaded the old model (OOM, timeout mid-load): re-check.
+                        try:
+                            model = self.model_id()
+                        except WorkflowError:
+                            model = ""
+                        if model and (not self.expected or self.expected in model.lower()):
+                            print(f"[{role}] reload failed ({load_error}); continuing with the loaded model")
+                            emit("model", role=role, id=model)
+                            return model
             expected = self.expected or "the configured model"
             if not interactive:
                 raise WorkflowError(f"{role}: expected {expected!r}, loaded {model or 'nothing'!r}; {load_error}")
@@ -255,6 +262,9 @@ class ApiClient:
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
+        if self.thinking_off:
+            body["enable_thinking"] = False
+        fell_back = False
         while True:
             started = time.time()
             streamed = False
@@ -272,6 +282,8 @@ class ApiClient:
                 if body.get("enable_thinking") is not False:
                     print(f"[{self.role}] reply cut off while thinking; retrying without thinking")
                     body = {**body, "enable_thinking": False}
+                    fell_back = True
+                    emit("done", role=self.role, final=False)  # close the discarded streamed attempt in the launcher
                     continue
                 raise WorkflowError(
                     f"{self.role}: the output limit was reached while thinking and the reply was empty. "
@@ -279,6 +291,9 @@ class ApiClient:
                 )
             if EVENTS:
                 self._emit_turn(message, payload, started, streamed)
+            if fell_back and not self.thinking_off:
+                self.thinking_off = True
+                print(f"[{self.role}] thinking disabled for the rest of this run")
             return message
 
     def _stream_chat(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -1169,8 +1184,8 @@ def _run() -> int:
 PROJECT_ROOT_ARG: Path = ROOT
 
 
-# Models this run loaded itself (path -> client). Models that were already loaded, e.g. by the user in
-# Unsloth Desktop, are never in here and so are never unloaded.
+# Models this run loaded itself (path -> client). A model the user loaded in Unsloth Desktop is not in
+# here, unless this run reloads it for a role's load settings; then it is added and unloaded at exit.
 LOADED_BY_RUN: dict[str, "ApiClient"] = {}
 
 

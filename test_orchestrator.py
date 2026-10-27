@@ -163,6 +163,65 @@ class OrchestratorTests(unittest.TestCase):
             self._ensure(client)
             self.assertFalse([c for c in calls if c[1] == "/api/inference/load"], status)
 
+    def _failed_reload(self, models_after):
+        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        seq = iter(["u/M"] + models_after)
+
+        def model_id():
+            try:
+                value = next(seq)
+            except StopIteration:
+                value = ""
+            if not value:
+                raise orchestrator.WorkflowError("none loaded")
+            return value
+
+        client.model_id = model_id
+        inner = client._request_at
+
+        def fake(base, method, route, body=None):
+            if route == "/api/inference/load":
+                raise orchestrator.WorkflowError("OOM")
+            return inner(base, method, route, body)
+
+        client._request_at = fake
+        return client
+
+    def _ensure_ret(self, client):
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit"):
+            return client.ensure_model("implementer", False)
+
+    def test_failed_reload_continues_only_if_model_still_loaded(self):
+        self.assertEqual(self._ensure_ret(self._failed_reload(["u/M"])), "u/M")
+        for after in ([""], ["other"]):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "OOM"):
+                self._ensure_ret(self._failed_reload(after))
+
+    def test_thinking_fallback_is_sticky(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="a"), self._reply("stop", content="ok"), self._reply("stop", content="ok")])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            client.complete("m", [], {})
+            client.complete("m", [], {})
+        self.assertNotIn("enable_thinking", bodies[0])
+        self.assertIs(bodies[2]["enable_thinking"], False)
+
+    def test_discarded_attempt_is_closed_before_retry(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "planner"
+        order = []
+        replies = [self._reply("length", reasoning="a"), self._reply("stop", content="ok")]
+
+        def stream(body):
+            order.append("delta")
+            return replies[order.count("delta") - 1]
+
+        client._stream_chat = stream
+        with patch.object(orchestrator, "EVENTS", True), patch.object(client, "_monitor_row", return_value={}), \
+                patch.object(orchestrator, "emit", side_effect=lambda e, **k: order.append((e, k.get("final")))):
+            client.complete("m", [], {})
+        self.assertEqual(order[:3], ["delta", ("done", False), "delta"])
+
     def _fake_stream(self, replies):
         bodies = []
 
