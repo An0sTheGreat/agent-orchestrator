@@ -335,9 +335,23 @@ internal static class LauncherLogic
         return null;
     }
 
+    // Why the orchestrator would ignore this custom worker (it needs a model, a system prompt, and for a
+    // Specialist a description), or null. Shared by the Settings dialog, the card warning and WriteCustomWorkers.
+    public static string? CustomWorkerProblem(WorkerSetting w)
+    {
+        if (string.IsNullOrWhiteSpace(w.ModelPath))
+            return string.IsNullOrWhiteSpace(w.ModelId) ? "no model assigned (Change model)" : "pick the model again (Change model)";
+        if (string.IsNullOrWhiteSpace(w.SystemPrompt))
+            return "the system prompt is empty (Settings)";
+        if (w.Kind != "reviewer" && string.IsNullOrWhiteSpace(w.Description))
+            return "a Specialist needs a description (Settings)";
+        return null;
+    }
+
     // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
     // connection settings, auto_load defaults and sampling, then applies its own model and settings.
-    // Returns the titles skipped because no model is assigned. A missing implementer just means nothing to copy.
+    // Workers the orchestrator would ignore are not written; returns "Title: reason" for each.
+    // A missing implementer just means nothing to copy.
     public static string[] WriteCustomWorkers(string configPath, IEnumerable<WorkerSetting> workers)
     {
         var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
@@ -347,9 +361,9 @@ internal static class LauncherLogic
         var array = new JsonArray();
         foreach (var w in workers.Where(w => w.Custom))
         {
-            if (string.IsNullOrWhiteSpace(w.ModelPath))
+            if (CustomWorkerProblem(w) is { } problem)
             {
-                skipped.Add(w.Title);
+                skipped.Add($"{w.Title.Trim()}: {problem}");
                 continue;
             }
             var entry = new JsonObject
@@ -357,7 +371,7 @@ internal static class LauncherLogic
                 ["id"] = w.Id, ["title"] = w.Title.Trim(), ["kind"] = w.Kind == "reviewer" ? "reviewer" : "specialist",
                 ["description"] = w.Description, ["system_prompt"] = w.SystemPrompt,
             };
-            foreach (var key in new[] { "base_url", "management_url", "api_key_env" })
+            foreach (var key in new[] { "base_url", "management_url", "api_key_env", "api_key" })
                 if (implementer?[key] is { } value)
                     entry[key] = value.DeepClone();
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
@@ -549,7 +563,7 @@ internal static class LauncherLogic
                 throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
             // Custom workers: contract of the written custom_workers array.
             var cwConfig = Path.Combine(testArea, "cw.json");
-            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
+            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"api_key\":\"sk\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
             var rolesBefore = JsonNode.Parse(File.ReadAllText(cwConfig))!["roles"]!.ToJsonString();
             var cwWorkers = new[]
             {
@@ -557,8 +571,11 @@ internal static class LauncherLogic
                 new WorkerSetting { Id = "s1", Title = " Tester ", Custom = true, Kind = "specialist", Description = "Runs tests", SystemPrompt = "You test.\nBe brief.",
                     ModelId = "org/Model-GGUF", ModelVariant = "Q4_K_M", ModelPath = "org/Model-GGUF", ModelExpected = "Model-GGUF",
                     Temperature = "0.2", MaxTokens = "2048", RepetitionPenalty = "1.2", ReasoningBudget = "0", ContextLength = "16384", Thinking = "Off" },
-                new WorkerSetting { Id = "r1", Title = "Security", Custom = true, Kind = "reviewer", ModelId = "local.gguf", ModelPath = "C:\\m\\local.gguf", ModelExpected = "local.gguf" },
-                new WorkerSetting { Id = "n1", Title = "NoModel", Custom = true },
+                new WorkerSetting { Id = "r1", Title = "Security", Custom = true, Kind = "reviewer", SystemPrompt = "You review.", ModelId = "local.gguf", ModelPath = "C:\\m\\local.gguf", ModelExpected = "local.gguf" },
+                new WorkerSetting { Id = "n1", Title = "NoModel", Custom = true, Kind = "reviewer", SystemPrompt = "p" },
+                new WorkerSetting { Id = "n2", Title = "NoPrompt", Custom = true, ModelPath = "m", ModelId = "m", Description = "d" },
+                new WorkerSetting { Id = "n3", Title = "NoDesc", Custom = true, Kind = "specialist", ModelPath = "m", ModelId = "m", SystemPrompt = "p" },
+                new WorkerSetting { Id = "n4", Title = "OldSaved", Custom = true, Kind = "reviewer", ModelId = "org/Old", SystemPrompt = "p" },
             };
             var skippedTitles = WriteCustomWorkers(cwConfig, cwWorkers);
             var cw = JsonNode.Parse(File.ReadAllText(cwConfig))!;
@@ -568,11 +585,11 @@ internal static class LauncherLogic
             var specSampling = spec["sampling"]!;
             var specLoad = spec["auto_load"]!;
             var revSampling = rev["sampling"]!;
-            if (skippedTitles.Length != 1 || skippedTitles[0] != "NoModel" || cwArray.Count != 2 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
+            if (skippedTitles.Length != 4 || !skippedTitles[0].StartsWith("NoModel: no model") || !skippedTitles[1].StartsWith("NoPrompt: ") || !skippedTitles[2].StartsWith("NoDesc: ") || !skippedTitles[3].Contains("pick the model again") || cwArray.Count != 2 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
                 throw new InvalidOperationException("Custom workers: skipping, array size or untouched keys failed.");
             if ((string)spec["id"]! != "s1" || (string)spec["title"]! != "Tester" || (string)spec["kind"]! != "specialist" || (string)spec["description"]! != "Runs tests" ||
                 (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" || (string)spec["management_url"]! != "http://h" ||
-                (string)spec["api_key_env"]! != "K" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
+                (string)spec["api_key_env"]! != "K" || (string)spec["api_key"]! != "sk" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
                 throw new InvalidOperationException("Custom workers: specialist fields do not match the contract.");
             if ((string)specLoad["model_path"]! != "org/Model-GGUF" || (string)specLoad["gguf_variant"]! != "Q4_K_M" || (int)specLoad["reasoning_budget"]! != 0 ||
                 (int)specLoad["max_seq_length"]! != 16384 || (int)specLoad["n_parallel"]! != 1)
