@@ -544,7 +544,8 @@
 
         <!-- Small square card: title plus a pulsing status dot -->
         <DataTemplate x:Key="CompactCardTemplate">
-            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder" PreviewMouseLeftButtonDown="Handle_Down">
+            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder; right-click for model, settings and more"
+                  PreviewMouseLeftButtonDown="Handle_Down" MouseRightButtonUp="CompactCard_RightClick" Background="Transparent">
                 <Grid.Style>
                     <Style TargetType="Grid">
                         <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
@@ -610,13 +611,6 @@
                         <TextBlock FontSize="11" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" Margin="0,1,0,0">
                             <Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
                         </TextBlock>
-                    </StackPanel>
-                    <StackPanel HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,-6,-6">
-                        <Button Style="{StaticResource GhostButton}" Content="Change" Padding="7,2" FontSize="10" HorizontalAlignment="Right"
-                                IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
-                        <Button Style="{StaticResource GhostButton}" Content="Settings" Padding="7,2" FontSize="10" HorizontalAlignment="Right" Margin="0,2,0,0"
-                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more"
-                                Visibility="{Binding IsBuiltIn, Converter={StaticResource BoolVis}}" Click="RoleSettings_Click" />
                     </StackPanel>
                 </Grid>
             </Border>

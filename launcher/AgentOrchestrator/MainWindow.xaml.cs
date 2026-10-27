@@ -893,6 +893,47 @@ public partial class MainWindow : Window
             DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             if (_settings.Presets.Any(p => p.Name == "Smoke"))
                 return Fail();
+
+            // Compact card context menu: items per worker kind.
+            var planner = CardFor("planner")!;
+            var extra = new RoleCard("smoke-custom", "SMOKE", custom: true);
+            _cards.Add(extra);
+            string Items(RoleCard c) => string.Join("|", BuildCardMenu(c, this).Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)")));
+            if (Items(planner) != "Change model…|Settings…" || Items(extra) != "Change model…|Rename…|Remove")
+                return Fail();
+            var cardMenu = BuildCardMenu(planner, this);
+            cardMenu.IsOpen = true;
+            await Settle();
+            if (!cardMenu.IsOpen)
+                return Fail();
+            Snap("8-card-menu", cardMenu);
+            cardMenu.IsOpen = false;
+            planner.Editable = false;
+            var locked = Items(planner);
+            planner.Editable = true;
+            if (locked != "Change model… (off)|Settings… (off)")
+                return Fail();
+            RemoveWorker(extra);
+            if (_cards.Contains(extra))
+                return Fail();
+
+            // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
+            async Task<bool> Show(DialogShell dialog, string name)
+            {
+                dialog.ShowActivated = false;
+                dialog.Show();
+                await Settle();
+                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.ActualWidth > 100 && dialog.ActualHeight > 60;
+                Snap(name, dialog);
+                dialog.Close();
+                return shown && !dialog.IsVisible;
+            }
+            var mdFile = Path.Combine(presetProject, "PROJECT.md");
+            File.WriteAllText(mdFile, "# Smoke project\n");
+            var settingsDialog = BuildRoleSettingsDialog(planner, presetConfig, LauncherLogic.ReadRoleSettings(presetConfig, "planner"));
+            if (!await Show(settingsDialog, "9-settings-dialog") || !await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
+                || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
+                return Fail();
         }
         finally
         {
@@ -1244,6 +1285,13 @@ public partial class MainWindow : Window
 
     private ExistingProjectMdChoice AskExistingProjectMd(string path, bool customSelected)
     {
+        var (dialog, result) = BuildExistingProjectMdDialog(path, customSelected);
+        dialog.ShowDialog();
+        return result();
+    }
+
+    private (DialogShell Dialog, Func<ExistingProjectMdChoice> Result) BuildExistingProjectMdDialog(string path, bool customSelected)
+    {
         var heading = "";
         long size = 0;
         try
@@ -1252,16 +1300,6 @@ public partial class MainWindow : Window
             heading = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line))?.Trim() ?? "";
         }
         catch (IOException) { }
-        var dialog = new Window
-        {
-            Title = "PROJECT.md already exists", Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
-            FontFamily = FontFamily, FontSize = FontSize,
-        };
-        dialog.Resources.MergedDictionaries.Add(Resources);
-        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
-        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
-
         TextBlock Line(string text, bool muted, double top)
         {
             var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 460, Margin = new Thickness(0, top, 0, 0) };
@@ -1274,7 +1312,7 @@ public partial class MainWindow : Window
         }
 
         var details = $"{path}  ({size:N0} bytes)" + (heading.Length > 0 ? $"\nStarts with: {heading[..Math.Min(heading.Length, 80)]}" : "");
-        var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16) };
+        var panel = new StackPanel();
         panel.Children.Add(Line("This folder already has a PROJECT.md. Do you want to use it?", false, 0));
         panel.Children.Add(Line(details, true, 8));
         panel.Children.Add(Line("Replace keeps your current file as PROJECT.md.bak, then installs " +
@@ -1283,6 +1321,7 @@ public partial class MainWindow : Window
             panel.Children.Add(Line("Using the existing file means the custom PROJECT.md you selected will not be used.", true, 4));
 
         var result = ExistingProjectMdChoice.Cancel;
+        DialogShell? dialog = null;
         Button Make(string text, string style, ExistingProjectMdChoice value, bool isDefault = false, bool isCancel = false)
         {
             var button = new Button
@@ -1292,7 +1331,7 @@ public partial class MainWindow : Window
             };
             if (style.Length > 0)
                 button.Style = (Style)FindResource(style);
-            button.Click += (_, _) => { result = value; dialog.Close(); };
+            button.Click += (_, _) => { result = value; dialog!.Close(); };
             return button;
         }
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
@@ -1300,9 +1339,8 @@ public partial class MainWindow : Window
         buttons.Children.Add(Make("Replace it", "", ExistingProjectMdChoice.Replace));
         buttons.Children.Add(Make("Use existing PROJECT.md", "PrimaryButton", ExistingProjectMdChoice.Use, isDefault: true));
         panel.Children.Add(buttons);
-        dialog.Content = panel;
-        dialog.ShowDialog();
-        return result;
+        dialog = new DialogShell(this, "PROJECT.md already exists", panel);
+        return (dialog, () => result);
     }
 
     private void ChooseProjectFile_Click(object sender, RoutedEventArgs e)
@@ -1584,21 +1622,29 @@ public partial class MainWindow : Window
 
     // Themed prompt: a name box when input is not null (empty names rejected), otherwise a plain confirmation.
     // Returns the entered text ("" for a confirmation), or null when cancelled.
-    private string? AskDialog(string title, string message, string okLabel, string? input = null)
+    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60)
     {
-        var dialog = new Window
-        {
-            Title = title, Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
-            FontFamily = FontFamily, FontSize = FontSize,
-        };
-        dialog.Resources.MergedDictionaries.Add(Resources);
-        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
-        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
-        var box = input is null ? null : new TextBox { Text = input, MaxLength = 60, Margin = new Thickness(0, 10, 0, 0) };
+        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength);
+        dialog.ShowDialog();
+        return result();
+    }
+
+    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60)
+    {
+        var box = input is null ? null : new TextBox { Text = input, MaxLength = maxLength, Margin = new Thickness(0, 10, 0, 0) };
         var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
         var ok = new Button { Content = okLabel, Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
         var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        var panel = new StackPanel { MinWidth = 320 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
+        if (box is not null)
+            panel.Children.Add(box);
+        panel.Children.Add(error);
+        panel.Children.Add(buttons);
+        var dialog = new DialogShell(this, title, panel);
         ok.Click += (_, _) =>
         {
             if (box is not null && box.Text.Trim().Length == 0)
@@ -1609,22 +1655,12 @@ public partial class MainWindow : Window
             }
             dialog.DialogResult = true;
         };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(ok);
-        var panel = new StackPanel { Margin = new Thickness(20, 16, 20, 16), MinWidth = 320 };
-        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
-        if (box is not null)
-            panel.Children.Add(box);
-        panel.Children.Add(error);
-        panel.Children.Add(buttons);
-        dialog.Content = panel;
         dialog.Loaded += (_, _) =>
         {
             box?.Focus();
             box?.SelectAll();
         };
-        return dialog.ShowDialog() == true ? box?.Text.Trim() ?? "" : null;
+        return (dialog, () => dialog.DialogResult == true ? box?.Text.Trim() ?? "" : null);
     }
 
     private bool SamePreset(WorkerPreset preset, string name) => string.Equals(preset.Name, name, StringComparison.OrdinalIgnoreCase);
@@ -1709,11 +1745,53 @@ public partial class MainWindow : Window
 
     private void RemoveWorker_Click(object sender, RoutedEventArgs e)
     {
-        if (((FrameworkElement)sender).DataContext is RoleCard { IsCustom: true } card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            RemoveWorker(card);
+    }
+
+    private void RemoveWorker(RoleCard card)
+    {
+        if (card.IsCustom)
         {
             _cards.Remove(card);
             SaveWorkers();
         }
+    }
+
+    // Same rules as the standard card's title box: custom workers only, at most 32 characters, never empty.
+    private void RenameWorker(RoleCard card)
+    {
+        if (_process is not null || !card.IsCustom || AskDialog("Rename worker", "Worker title", "Rename", card.Title, maxLength: 32) is not { } title)
+            return;
+        card.Title = title;
+        SaveWorkers();
+    }
+
+    // ---- compact card context menu (right-click): what the standard card offers as buttons and a title box
+
+    private void CompactCard_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: RoleCard card } root)
+            return;
+        BuildCardMenu(card, root).IsOpen = true;
+        e.Handled = true;
+    }
+
+    private ContextMenu BuildCardMenu(RoleCard card, FrameworkElement anchor)
+    {
+        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor, Placement = PlacementMode.MousePoint };
+        var idle = _process is null && card.Editable;
+        menu.Items.Add(PresetItem("Change model…", () => ChangeModel(card, anchor), idle));
+        if (card.IsBuiltIn)
+            menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
+                idle && File.Exists(ProjectConfigPath())));
+        else
+        {
+            menu.Items.Add(PresetItem("Rename…", () => Dispatcher.InvokeAsync(() => RenameWorker(card), DispatcherPriority.Background), idle));
+            menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+            menu.Items.Add(PresetItem("Remove", () => RemoveWorker(card), idle));
+        }
+        return menu;
     }
 
     private void TitleBox_LostFocus(object sender, RoutedEventArgs e)
@@ -1734,7 +1812,7 @@ public partial class MainWindow : Window
         if (((FrameworkElement)sender).DataContext is not RoleCard card)
             return;
         if (LauncherLogic.IsInsideButton(e.OriginalSource as DependencyObject))
-            return; // a button inside the card (compact Change or Settings) is a click, not a drag
+            return; // a button inside the card is a click, not a drag
         DependencyObject? d = (DependencyObject)sender;
         while (d is not null && d is not FrameworkElement { Tag: "CardRoot" })
             d = VisualTreeHelper.GetParent(d);
@@ -1808,7 +1886,13 @@ public partial class MainWindow : Window
 
     private void RoleSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is not null || ((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: false } card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            ShowRoleSettings(card);
+    }
+
+    private void ShowRoleSettings(RoleCard card)
+    {
+        if (_process is not null || card.IsCustom)
             return;
         var project = SelectedProjectPath();
         var path = Path.Combine(project, "config.json");
@@ -1828,51 +1912,50 @@ public partial class MainWindow : Window
             SetStatus("Could not read config.json", "#FF667A");
             return;
         }
+        BuildRoleSettingsDialog(card, path, current).ShowDialog();
+    }
 
-        var dialog = new Window
-        {
-            Title = $"{card.Title} settings", Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
-            FontFamily = FontFamily, FontSize = FontSize,
-        };
-        dialog.Resources.MergedDictionaries.Add(Resources);
-        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
-        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
-
+    private DialogShell BuildRoleSettingsDialog(RoleCard card, string path, LauncherLogic.RoleSettings current)
+    {
         var fields = new (string Label, string Hint, string Value)[]
         {
             ("Temperature", "0 to 2; empty = unchanged", current.Temperature),
             ("Max tokens", "1 to 262144; empty = unchanged", current.MaxTokens),
-            ("Repetition penalty", "1.0 to 2.0, empty = off", current.RepetitionPenalty),
+            ("Repetition penalty", "1.0 to 2.0; empty = off", current.RepetitionPenalty),
             ("Reasoning budget", "0 or more; empty = unchanged", current.ReasoningBudget),
             ("Context length", "512 to 262144; empty = unchanged", current.ContextLength),
         };
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var grid = new Grid { MinWidth = 340 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
         var boxes = new TextBox[fields.Length];
         for (var i = 0; i < fields.Length; i++)
         {
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var label = new TextBlock { Text = fields[i].Label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 14, 4) };
-            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
+            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 10.5 };
             hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            boxes[i] = new TextBox { Text = fields[i].Value, Margin = new Thickness(0, 4, 0, 4) };
-            UIElement[] row = [label, boxes[i], hint];
-            for (var column = 0; column < row.Length; column++)
+            var label = new StackPanel
             {
-                Grid.SetRow(row[column], i);
-                Grid.SetColumn(row[column], column);
-                grid.Children.Add(row[column]);
-            }
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 12, 0),
+                Children = { new TextBlock { Text = fields[i].Label, FontWeight = FontWeights.SemiBold, FontSize = 12 }, hint },
+            };
+            boxes[i] = new TextBox { Text = fields[i].Value, Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 0, 0) };
+            Grid.SetRow(label, i);
+            Grid.SetRow(boxes[i], i);
+            Grid.SetColumn(boxes[i], 1);
+            grid.Children.Add(label);
+            grid.Children.Add(boxes[i]);
         }
 
-        var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 11, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 6, 0, 0) };
+        var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 12, 0, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
-        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, note, error, buttons } });
         save.Click += (_, _) =>
         {
             LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text);
@@ -1897,27 +1980,29 @@ public partial class MainWindow : Window
             Toast($"{card.Title}: settings saved");
             dialog.DialogResult = true;
         };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(save);
-        dialog.Content = new StackPanel { Margin = new Thickness(20, 16, 20, 16), Children = { grid, note, error, buttons } };
         dialog.Loaded += (_, _) =>
         {
             boxes[0].Focus();
             boxes[0].SelectAll();
         };
-        dialog.ShowDialog();
+        return dialog;
     }
 
     // ---- model assignment
 
     private sealed record ModelChoice(string Label, string Display, string LoadPath, string? Variant, string Expected);
 
-    private async void ChangeModel_Click(object sender, RoutedEventArgs e)
+    private void ChangeModel_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is not null || ((FrameworkElement)sender).DataContext is not RoleCard card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            ChangeModel(card, (FrameworkElement)sender);
+    }
+
+    // anchor: the control the model list opens beneath (a standard card's button, or a compact card itself)
+    private async void ChangeModel(RoleCard card, FrameworkElement anchor)
+    {
+        if (_process is not null)
             return;
-        var button = (Button)sender;
         SetStatus("Loading installed models…", "#F7C873");
         List<ModelChoice> choices;
         try
@@ -1937,7 +2022,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = button };
+        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor };
         foreach (var choice in choices)
         {
             var current = LauncherLogic.DescribeModel(choice.Display, choice.Variant);
