@@ -959,6 +959,17 @@ public partial class MainWindow : Window
             if (_settings.Presets.Any(p => p.Name == "Smoke"))
                 return Fail();
 
+            // The workflow root's config.json is the project template: syncing with it selected must leave it untouched.
+            var templatePath = Path.Combine(_workflowRoot ?? "", "config.json");
+            var templateBefore = File.ReadAllBytes(templatePath);
+            ProjectPath = _workflowRoot ?? "";
+            SyncCustomWorkers();
+            ProjectPath = presetProject;
+            if (!File.ReadAllBytes(templatePath).SequenceEqual(templateBefore))
+            {
+                File.WriteAllBytes(templatePath, templateBefore);
+                return Fail();
+            }
             // Compact card context menu: items per worker kind.
             var planner = CardFor("planner")!;
             var extra = new RoleCard("smoke-custom", "SMOKE", custom: true);
@@ -1830,7 +1841,7 @@ public partial class MainWindow : Window
     {
         RefreshSetupProblems();
         var path = ProjectConfigPath();
-        if (!File.Exists(path))
+        if (!File.Exists(path) || LauncherLogic.IsTemplateConfig(path, _workflowRoot)) // chat without a project uses a temp copy
             return true;
         try
         {
@@ -1987,7 +1998,7 @@ public partial class MainWindow : Window
         bool rolesApplied;
         try
         {
-            rolesApplied = LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
+            rolesApplied = !LauncherLogic.IsTemplateConfig(ProjectConfigPath(), _workflowRoot) && LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2004,7 +2015,7 @@ public partial class MainWindow : Window
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
         {
-            SetStatus("Initialize the project first", "#F7C873");
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
             Toast($"Preset applied: {preset.Name}. Built-in model settings need an initialized project.", "#F7C873");
         }
         else
@@ -2207,6 +2218,11 @@ public partial class MainWindow : Window
         if (project.Length == 0 || !File.Exists(path))
         {
             SetStatus("Initialize the project first", "#F7C873");
+            return;
+        }
+        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
+        {
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
             return;
         }
         LauncherLogic.RoleSettings current;
@@ -2498,6 +2514,11 @@ public partial class MainWindow : Window
         if (project.Length == 0 || !File.Exists(path))
         {
             SetStatus("Initialize the project first", "#F7C873");
+            return false;
+        }
+        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
+        {
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
             return false;
         }
         try

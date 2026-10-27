@@ -200,7 +200,7 @@ public partial class MainWindow
         foreach (var reason in skipped)
             Log($"Not written to config.json, so it will not take part: {reason}");
 
-        var folder = LauncherLogic.ChatFolder(SelectedProjectPath(), _workflowRoot);
+        var folder = "";
         var requestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
         var exitCode = -1;
         string? failure = null;
@@ -208,6 +208,10 @@ public partial class MainWindow
         ChatInput.Clear();
         try
         {
+            folder = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out var tempSkipped);
+            if (folder != SelectedProjectPath())
+                foreach (var reason in tempSkipped)
+                    Log($"Not written to config.json, so it will not take part: {reason}");
             var request = LauncherLogic.BuildChatRequest(_settings.ChatMode, target.Role,
                 _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)));
             File.WriteAllText(requestFile, request);
@@ -239,6 +243,8 @@ public partial class MainWindow
             _chatProcess?.Dispose();
             _chatProcess = null;
             try { File.Delete(requestFile); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            if (folder.Length > 0 && folder != SelectedProjectPath()) // the temp copy made for a chat without a project
+                try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         }
         FinishChatTurn(exitCode, _chatStopRequested, failure);
         if (_chatStopRequested)
