@@ -18,7 +18,7 @@ public partial class MainWindow
     private bool _chatBusy, _chatFollow = true, _chatStopRequested;
     private string? _chatError;
     private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
-    private readonly HashSet<string> _loadedByChat = new(); // models stay loaded between messages; unloaded when the app closes
+    private readonly HashSet<(string Url, string Path)> _loadedByChat = new(); // models stay loaded between messages; unloaded when the app closes
     private readonly List<LauncherLogic.ChatMessage> _chatHistory = new();
     private ChatReply? _reply;
 
@@ -376,7 +376,7 @@ public partial class MainWindow
                 EndChatBlock();
                 Activate(role, "Loading model");
                 if (Str(ev, "path").Length > 0)
-                    _loadedByChat.Add(Str(ev, "path"));
+                    _loadedByChat.Add(LoadedOn(ev));
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
                 break;
