@@ -69,6 +69,7 @@ public partial class MainWindow : Window
         ThemeOledRadio.IsChecked = _settings.Theme == "Oled";
         ApplyTheme();
         _initializing = false;
+        InitChat();
         RestoreWindowBounds();
 
         Closing += OnClosing;
@@ -100,7 +101,7 @@ public partial class MainWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
-        if (_workflowRoot is null)
+        if (_workflowRoot is null || _chatBusy) // a chat reply is using the models
             return;
 
         var project = SelectedProjectPath();
@@ -284,6 +285,7 @@ public partial class MainWindow : Window
             SetStatus("Ready", "#667085");
         SetActivity(running);
         RefreshPrimary();
+        RefreshChatInput();
     }
 
     // While a run is in progress the status dot sends out a ring and a light sweeps along the header's lower edge.
@@ -348,7 +350,10 @@ public partial class MainWindow : Window
         {
             if (key is { } k && pending.Length > 0)
             {
-                AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
+                if (_chatBusy)
+                    AppendChatDelta(k.Role, k.Kind, pending.ToString());
+                else
+                    AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
                 CardFor(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
             }
             chunks = 0;
@@ -376,7 +381,11 @@ public partial class MainWindow : Window
                 if (ev is { } other)
                     HandleEvent(other);
                 else
+                {
+                    if (_chatBusy)
+                        NoteChatLine(line);
                     Log(line);
+                }
             }
             catch (Exception exception) when (exception is KeyNotFoundException or InvalidOperationException or FormatException)
             {
@@ -388,6 +397,11 @@ public partial class MainWindow : Window
 
     private void HandleEvent(JsonElement ev)
     {
+        if (_chatBusy) // a chat reply streams into the conversation, not into Model Output
+        {
+            HandleChatEvent(ev);
+            return;
+        }
         var role = Str(ev, "role");
         var card = CardFor(role);
         switch (Str(ev, "e"))
@@ -659,7 +673,12 @@ public partial class MainWindow : Window
         _transcript.Append(transcript);
         if (!_followTail)
             Reveal(JumpPill, true, slide: 10);
-        // Each section fades and slides in once when it is added; streamed text never comes through here.
+        FadeIn(block);
+    }
+
+    // Each section fades and slides in once when it is added; streamed text never comes through here.
+    private static void FadeIn(UIElement block)
+    {
         var time = TimeSpan.FromMilliseconds(180);
         var shift = new TranslateTransform();
         block.RenderTransform = shift;
@@ -722,7 +741,7 @@ public partial class MainWindow : Window
     }
 
     // Read-only TextBox so the text is selectable; wheel input is passed on to the output scroller.
-    private TextBox BodyText(string text, bool mono, bool muted)
+    private TextBox BodyText(string text, bool mono, bool muted, bool chat = false)
     {
         var box = new TextBox
         {
@@ -738,12 +757,15 @@ public partial class MainWindow : Window
             Cursor = Cursors.IBeam,
         };
         box.SetResourceReference(TextBox.ForegroundProperty, muted ? "Muted" : "TextPrimary");
+        var scroller = chat ? ChatScroll : OutputScroll;
         box.PreviewMouseWheel += (_, e) =>
         {
             e.Handled = true;
             if (e.Delta > 0)
-                _followTail = false;
-            OutputScroll.ScrollToVerticalOffset(OutputScroll.VerticalOffset - e.Delta);
+            {
+                if (chat) _chatFollow = false; else _followTail = false;
+            }
+            scroller.ScrollToVerticalOffset(scroller.VerticalOffset - e.Delta);
         };
         return box;
     }
@@ -1190,7 +1212,7 @@ public partial class MainWindow : Window
 
     private async void Poll_Tick(object? sender, EventArgs e)
     {
-        if (_polling || _process is null || _activeRole is null || CardFor(_activeRole) is not { } card)
+        if (_polling || (_process ?? _chatProcess) is null || _activeRole is null || CardFor(_activeRole) is not { } card)
             return;
         _polling = true;
         try
@@ -1212,7 +1234,7 @@ public partial class MainWindow : Window
                 if (started >= _runStart - 2 && started >= bestStart)
                     (best, bestStart) = (row, started);
             }
-            if (best is not { } live || _process is null)
+            if (best is not { } live || (_process ?? _chatProcess) is null)
                 return;
             var tps = Number(live, "tok_per_sec");
             var decodeMs = Number(live, "decode_ms");
@@ -1281,10 +1303,11 @@ public partial class MainWindow : Window
     }
 
     // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
-    private async Task UnloadModelsAsync()
+    private async Task UnloadModelsAsync(HashSet<string>? source = null)
     {
-        var paths = _loadedByRun.ToList();
-        _loadedByRun.Clear();
+        source ??= _loadedByRun;
+        var paths = source.ToList();
+        source.Clear();
         try
         {
             foreach (var path in paths)
@@ -1626,7 +1649,7 @@ public partial class MainWindow : Window
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
         {
-            case Key.Enter when !shift && StartButton.IsEnabled:
+            case Key.Enter when !shift && StartButton.IsEnabled && !ChatView.IsVisible:
                 Start_Click(StartButton, e);
                 break;
             case Key.X when shift && StopButton.IsEnabled && Keyboard.FocusedElement is not (TextBox or PasswordBox):
@@ -1641,6 +1664,9 @@ public partial class MainWindow : Window
                 break;
             case Key.D2 or Key.NumPad2 when !shift:
                 ShowView(options: true);
+                break;
+            case Key.D3 or Key.NumPad3 when !shift:
+                ShowView(options: false, chat: true);
                 break;
             case Key.B when !shift:
                 SetSidebar(!_settings.SidebarCollapsed);
@@ -2468,16 +2494,27 @@ public partial class MainWindow : Window
 
     // ---------------------------------------------------------------- navigation, theme, window chrome
 
-    private void Nav_Click(object sender, RoutedEventArgs e) =>
-        ShowView(((FrameworkElement)sender).Tag as string == "Options");
-
-    private void ShowView(bool options)
+    private void Nav_Click(object sender, RoutedEventArgs e)
     {
-        NavWorkspace.IsChecked = !options;
+        var tag = ((FrameworkElement)sender).Tag as string;
+        ShowView(tag == "Options", chat: tag == "Chat");
+    }
+
+    private void ShowView(bool options, bool chat = false)
+    {
+        NavWorkspace.IsChecked = !options && !chat;
+        NavChat.IsChecked = chat;
         NavOptions.IsChecked = options;
-        foreach (UIElement part in new UIElement[] { WorkArea, SplitterBar, DetailsPanel })
+        Reveal(WorkArea, !options && !chat);
+        Reveal(ChatView, chat);
+        foreach (UIElement part in new UIElement[] { SplitterBar, DetailsPanel })
             Reveal(part, !options);
         Reveal(OptionsView, options);
+        if (chat)
+        {
+            RefreshChatTarget();
+            ChatInput.Focus();
+        }
     }
 
     // ---- collapsible sidebar
@@ -2700,6 +2737,13 @@ public partial class MainWindow : Window
             RecordStopNote(activity);
             UnloadModelsAsync().Wait(TimeSpan.FromSeconds(4));
         }
+        if (_chatProcess is { HasExited: false } chat)
+        {
+            chat.Kill(entireProcessTree: true);
+            chat.WaitForExit(2000);
+        }
+        if (_loadedByChat.Count > 0) // models stay loaded between chat messages; release them with the app
+            UnloadModelsAsync(_loadedByChat).Wait(TimeSpan.FromSeconds(4));
         _settings.Save();
     }
 
