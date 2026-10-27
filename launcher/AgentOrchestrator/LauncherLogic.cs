@@ -73,13 +73,16 @@ internal static class LauncherLogic
 
     // The folder a chat runs in. An initialized project is used as is. Otherwise the template config is copied to a
     // fresh temp folder (the template itself is never written) and gets the custom workers; the caller deletes it
-    // when the chat ends. Returns "Title: reason" for each custom worker left out.
-    public static string PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped)
+    // when the chat ends. IsTemp says whether the folder was created here (and so is the caller's to delete); a real
+    // project folder is never IsTemp. Returns "Title: reason" for each custom worker left out.
+    public sealed record ChatFolder(string Path, bool IsTemp);
+
+    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped)
     {
         skipped = [];
         var projectConfig = Path.Combine(selectedProject, "config.json");
         if (selectedProject.Length > 0 && File.Exists(projectConfig) && !IsTemplateConfig(projectConfig, workflowRoot))
-            return selectedProject;
+            return new ChatFolder(selectedProject, false);
         var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
         try
         {
@@ -87,7 +90,7 @@ internal static class LauncherLogic
             var copy = Path.Combine(folder, "config.json");
             File.Copy(Path.Combine(workflowRoot, "config.json"), copy);
             skipped = WriteCustomWorkers(copy, workers);
-            return folder;
+            return new ChatFolder(folder, true);
         }
         catch
         {
@@ -605,17 +608,18 @@ internal static class LauncherLogic
             File.WriteAllText(rootConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\"}}}");
             var rootBytes = File.ReadAllBytes(rootConfig);
             var chatWorkers = new List<WorkerSetting> { Ok("c1", "Chat Docs") };
-            var chatFolder = PrepareChatFolder(testArea, rootDir, chatWorkers, out _);
+            var chatPrepared = PrepareChatFolder(testArea, rootDir, chatWorkers, out _);
+            var chatFolder = chatPrepared.Path;
             try
             {
                 var chatCopy = JsonNode.Parse(File.ReadAllText(Path.Combine(chatFolder, "config.json")))!;
-                if (chatFolder == rootDir || chatFolder == testArea || (int)chatCopy["keep"]! != 1 || chatCopy["custom_workers"]?.AsArray().Count != 1 ||
+                if (!chatPrepared.IsTemp || chatFolder == rootDir || chatFolder == testArea || (int)chatCopy["keep"]! != 1 || chatCopy["custom_workers"]?.AsArray().Count != 1 ||
                     !File.ReadAllBytes(rootConfig).SequenceEqual(rootBytes) || !IsTemplateConfig(rootConfig.ToUpperInvariant(), rootDir))
                     throw new InvalidOperationException("Chat folder without a project must be a temp copy of the template.");
             }
             finally { Directory.Delete(chatFolder, true); }
             File.WriteAllText(Path.Combine(testArea, "config.json"), "{}");
-            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _) != testArea)
+            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _) is not { Path: var initialized, IsTemp: false } || initialized != testArea)
                 throw new InvalidOperationException("Chat folder should be the initialized project.");
             File.Delete(Path.Combine(testArea, "config.json"));
             var roleConfig = Path.Combine(testArea, "role-config.json");

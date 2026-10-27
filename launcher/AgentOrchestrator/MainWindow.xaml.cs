@@ -1159,8 +1159,7 @@ public partial class MainWindow : Window
                 stages.Add(Delta(role, "text", $"{title} body"));
                 stages.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
             }
-            stages.Add(Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Answer"}"""));
-            stages.Add(Delta("reviewer", "text", "streamed final"));
+            // The real Multi protocol (orchestrator.py run_chat): plan, draft, review stages, then only chat_reply carries the answer.
             if (!await Turn("Build it", true, stages.ToArray(), "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
                 _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Contains("smoke/planner.gguf"))
                 return Fail();
@@ -1171,6 +1170,97 @@ public partial class MainWindow : Window
             if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
                 return Fail();
             ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+
+            // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop still discards the turn.
+            StartChatTurn("Race", false);
+            _lines.Enqueue(Ev("""{"e":"chat_reply","role":"reviewer","text":"Raced reply"}"""));
+            DrainLines();
+            if (FinishChatTurn(0, true, null) || _chatBusy || _chatHistory.Count != 2 || _chatHistory[1] != new LauncherLogic.ChatMessage("assistant", "Raced reply") ||
+                _reply!.Final != "Raced reply" || _reply.Answer?.Text != "Raced reply")
+                return Fail();
+            StartChatTurn("Really stopped", false);
+            if (!FinishChatTurn(-1, true, null) || _chatBusy || _chatHistory.Count != 2)
+                return Fail();
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+
+            // Closing mid-reply: the turn's request file and created temp folder are deleted, a real project is not touched.
+            var strayFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
+            var strayDir = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
+            File.WriteAllText(strayFile, "{}");
+            Directory.CreateDirectory(strayDir);
+            File.WriteAllText(Path.Combine(strayDir, "config.json"), "{}");
+            (_chatRequestFile, _chatTempFolder) = (strayFile, strayDir);
+            StartChatTurn("Busy", false);
+            _loadedByChat.Clear(); // the close path would unload these from a real server
+            OnClosing(this, new CancelEventArgs()); // the real close path: no chat process here, only the files
+            if (File.Exists(strayFile) || Directory.Exists(strayDir) || _chatRequestFile is not null || _chatTempFolder is not null)
+                return Fail();
+            CleanupChatTemp(); // idempotent: SendChat's own cleanup runs after this
+            FinishChatTurn(-1, true, null);
+            var realProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-project-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(realProject);
+            try
+            {
+                var projectConfigFile = Path.Combine(realProject, "config.json");
+                File.WriteAllText(projectConfigFile, "{\"keep\":1}");
+                var kept = LauncherLogic.PrepareChatFolder(realProject, _workflowRoot!, CurrentWorkers(), out _);
+                var made = LauncherLogic.PrepareChatFolder("", _workflowRoot!, CurrentWorkers(), out _);
+                var madeExists = made.IsTemp && Directory.Exists(made.Path);
+                if (made.IsTemp) Directory.Delete(made.Path, true);
+                if (kept.IsTemp || kept.Path != realProject || File.ReadAllText(projectConfigFile) != "{\"keep\":1}" || !made.IsTemp || !madeExists)
+                    return Fail();
+            }
+            finally { Directory.Delete(realProject, true); }
+
+            // Unload on close, called on the UI thread against a fake server: every tracked path from both sets arrives, and fast.
+            var seen = new System.Collections.Concurrent.ConcurrentBag<string>();
+            var fake = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            fake.Start();
+            var serving = Task.Run(async () =>
+            {
+                try
+                {
+                    while (true)
+                    {
+                        var client = await fake.AcceptTcpClientAsync();
+                        _ = Task.Run(async () =>
+                        {
+                            using var c = client;
+                            var stream = c.GetStream();
+                            var head = new StringBuilder();
+                            var one = new byte[1];
+                            while (!head.ToString().EndsWith("\r\n\r\n") && await stream.ReadAsync(one) == 1)
+                                head.Append((char)one[0]);
+                            var length = System.Text.RegularExpressions.Regex.Match(head.ToString(), @"Content-Length:\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                            var body = new byte[length.Success ? int.Parse(length.Groups[1].Value) : 0];
+                            for (var got = 0; got < body.Length;)
+                                got += await stream.ReadAsync(body.AsMemory(got));
+                            seen.Add(Encoding.UTF8.GetString(body));
+                            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+                        });
+                    }
+                }
+                catch (Exception) { } // the listener was stopped
+            });
+            var (savedBase, savedKey) = (_apiBase, _runKey);
+            (_apiBase, _runKey) = ($"http://127.0.0.1:{((System.Net.IPEndPoint)fake.LocalEndpoint).Port}", "smoke-key");
+            _loadedByChat.Clear();
+            _loadedByRun.Clear();
+            _loadedByChat.Add("smoke/a.gguf");
+            _loadedByChat.Add("smoke/b.gguf");
+            _loadedByRun.Add("smoke/c.gguf");
+            var clock = Stopwatch.StartNew();
+            var sent = UnloadOnClose(); // on the UI thread, like OnClosing
+            clock.Stop();
+            (_apiBase, _runKey) = (savedBase, savedKey);
+            fake.Stop();
+            await serving;
+            if (sent != 3 || seen.Count != 3 || new[] { "a", "b", "c" }.Any(n => !seen.Any(b => b.Contains($"smoke/{n}.gguf"))) ||
+                clock.Elapsed > TimeSpan.FromSeconds(2) || _loadedByChat.Count != 0 || _loadedByRun.Count != 0)
+            {
+                Console.Error.WriteLine($"ui-smoke: unload on close sent {sent}, server saw {seen.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
+                return Fail();
+            }
             ShowView(false);
             await Settle();
         }
@@ -1424,6 +1514,38 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
+    }
+
+    // The close-time unload. It runs on the UI thread inside Closing, so it must not await anything that needs the
+    // dispatcher (a Task.Wait on UnloadModelsAsync starves its own continuation and only the first POST goes out).
+    // Synchronous sends, each bounded, the whole thing bounded; every tracked path from both sets is attempted.
+    private int UnloadOnClose(double budgetSeconds = 4)
+    {
+        var paths = _loadedByRun.Concat(_loadedByChat).Distinct().ToList();
+        _loadedByRun.Clear();
+        _loadedByChat.Clear();
+        var deadline = DateTime.UtcNow.AddSeconds(budgetSeconds);
+        var unloaded = 0;
+        foreach (var path in paths)
+        {
+            var left = deadline - DateTime.UtcNow;
+            if (left <= TimeSpan.Zero)
+                break;
+            try
+            {
+                using var cancel = new CancellationTokenSource(left < TimeSpan.FromSeconds(2) ? left : TimeSpan.FromSeconds(2));
+                using var request = new HttpRequestMessage(HttpMethod.Post, _apiBase + "/api/inference/unload")
+                {
+                    Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
+                };
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
+                using var response = _http.Send(request, cancel.Token);
+                if (response.IsSuccessStatusCode)
+                    unloaded++;
+            }
+            catch (Exception e) when (e is HttpRequestException or OperationCanceledException) { } // try the next path
+        }
+        return unloaded;
     }
 
     private bool TryLoadApiKeyFile()
@@ -2846,15 +2968,14 @@ public partial class MainWindow : Window
             p.Kill(entireProcessTree: true);
             p.WaitForExit(2000); // let it finish so it cannot overwrite the note
             RecordStopNote(activity);
-            UnloadModelsAsync().Wait(TimeSpan.FromSeconds(4));
         }
         if (_chatProcess is { HasExited: false } chat)
         {
             chat.Kill(entireProcessTree: true);
             chat.WaitForExit(2000);
         }
-        if (_loadedByChat.Count > 0) // models stay loaded between chat messages; release them with the app
-            UnloadModelsAsync(_loadedByChat).Wait(TimeSpan.FromSeconds(4));
+        CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
+        UnloadOnClose(); // the models this run loaded, and those chat left loaded between messages
         _settings.Save();
     }
 

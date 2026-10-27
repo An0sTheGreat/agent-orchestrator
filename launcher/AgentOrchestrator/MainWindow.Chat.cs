@@ -17,6 +17,7 @@ public partial class MainWindow
     private Process? _chatProcess;
     private bool _chatBusy, _chatFollow = true, _chatStopRequested;
     private string? _chatError;
+    private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
     private readonly HashSet<string> _loadedByChat = new(); // models stay loaded between messages; unloaded when the app closes
     private readonly List<LauncherLogic.ChatMessage> _chatHistory = new();
     private ChatReply? _reply;
@@ -200,18 +201,21 @@ public partial class MainWindow
         foreach (var reason in skipped)
             Log($"Not written to config.json, so it will not take part: {reason}");
 
-        var folder = "";
-        var requestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
+        var requestFile = _chatRequestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
         var exitCode = -1;
         string? failure = null;
         StartChatTurn(text, ChatMulti);
         ChatInput.Clear();
         try
         {
-            folder = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out var tempSkipped);
-            if (folder != SelectedProjectPath())
+            var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out var tempSkipped);
+            var folder = prepared.Path;
+            if (prepared.IsTemp)
+            {
+                _chatTempFolder = folder;
                 foreach (var reason in tempSkipped)
                     Log($"Not written to config.json, so it will not take part: {reason}");
+            }
             var request = LauncherLogic.BuildChatRequest(_settings.ChatMode, target.Role,
                 _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)));
             File.WriteAllText(requestFile, request);
@@ -242,13 +246,22 @@ public partial class MainWindow
             DrainLines();
             _chatProcess?.Dispose();
             _chatProcess = null;
-            try { File.Delete(requestFile); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
-            if (folder.Length > 0 && folder != SelectedProjectPath()) // the temp copy made for a chat without a project
-                try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            CleanupChatTemp();
         }
-        FinishChatTurn(exitCode, _chatStopRequested, failure);
-        if (_chatStopRequested)
+        if (FinishChatTurn(exitCode, _chatStopRequested, failure))
             Toast("Chat stopped", "#F7C873");
+    }
+
+    // Deletes the turn's request file and the temp folder (never a real project). Idempotent: the app closing mid-reply
+    // and the turn's own cleanup may both run it.
+    private void CleanupChatTemp()
+    {
+        var (file, folder) = (_chatRequestFile, _chatTempFolder);
+        _chatRequestFile = _chatTempFolder = null;
+        if (file is not null)
+            try { File.Delete(file); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        if (folder is not null)
+            try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     // The user's message and an empty reply appear, and the GPU-sharing lock goes on.
@@ -294,13 +307,15 @@ public partial class MainWindow
     }
 
     // After the process ended (its output already applied): close the open section, show errors, remember the exchange.
-    private void FinishChatTurn(int exitCode, bool stopped, string? failure)
+    // Returns true when the turn counts as stopped: a clean exit with the final reply wins over a Stop that came too late.
+    private bool FinishChatTurn(int exitCode, bool stopped, string? failure)
     {
         if (_reply is { } reply)
         {
             EndChatBlock();
             reply.Status.Visibility = Visibility.Collapsed;
             var answer = reply.Final ?? (reply.AnswerText.Length > 0 ? reply.AnswerText.ToString() : null);
+            stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
             if (stopped)
                 AddChatNote(reply, "Stopped.");
             else if (failure is not null || exitCode != 0)
@@ -326,6 +341,7 @@ public partial class MainWindow
         SetChatBusy(false);
         if (ChatView.IsVisible)
             ChatInput.Focus();
+        return stopped;
     }
 
     private void SetChatBusy(bool busy)
