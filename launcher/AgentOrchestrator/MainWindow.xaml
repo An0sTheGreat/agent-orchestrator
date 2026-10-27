@@ -686,8 +686,8 @@
                     <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
                     <DockPanel Margin="0,2,0,0">
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Settings" Padding="9,3" FontSize="11" Margin="8,0,0,0"
-                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more"
-                                Visibility="{Binding IsBuiltIn, Converter={StaticResource BoolVis}}" Click="RoleSettings_Click" />
+                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more (custom workers: kind, description and system prompt too)"
+                                Click="RoleSettings_Click" />
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Change" Padding="9,3" FontSize="11" Margin="8,0,0,0"
                                 IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
                         <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" VerticalAlignment="Center" />

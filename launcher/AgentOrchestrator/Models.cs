@@ -31,6 +31,8 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
     public string? ModelId { get; set; }
     public string? ModelVariant { get; set; }
+    // Custom workers' settings (kind, prompt, sampling, model path); written back by MainWindow.CurrentWorkers.
+    public WorkerSetting Config { get; set; } = new();
     public string ModelName { get => _modelName; private set => Set(ref _modelName, value); }
     public string Weights { get => _weights; private set => Set(ref _weights, value); }
     public string Quant { get => _quant; private set => Set(ref _quant, value); }
@@ -154,6 +156,22 @@ internal sealed class WorkerSetting
     public bool Custom { get; set; }
     public string? ModelId { get; set; }      // custom workers only
     public string? ModelVariant { get; set; } // custom workers only
+    // Custom workers only. ModelPath/ModelExpected rebuild auto_load.model_path and expected_model_contains
+    // (ModelId is the display name, ModelVariant the gguf_variant).
+    public string? ModelPath { get; set; }
+    public string? ModelExpected { get; set; }
+    public string Kind { get; set; } = "specialist"; // "specialist" | "reviewer"
+    public string Description { get; set; } = "";
+    public string SystemPrompt { get; set; } = "";
+    // Same text form as the built-in Settings dialog; "" = inherit the Implementer's value.
+    public string Temperature { get; set; } = "";
+    public string MaxTokens { get; set; } = "";
+    public string RepetitionPenalty { get; set; } = "";
+    public string ReasoningBudget { get; set; } = "";
+    public string ContextLength { get; set; } = "";
+    public string Thinking { get; set; } = "Auto";
+
+    public WorkerSetting Clone() => (WorkerSetting)MemberwiseClone();
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.
