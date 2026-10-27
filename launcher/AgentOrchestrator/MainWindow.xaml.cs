@@ -122,7 +122,7 @@ public partial class MainWindow : Window
             ApiKeyBox.Focus();
             return;
         }
-        SyncCustomWorkers();
+        SyncCustomWorkers(announce: true);
         try
         {
             var python = LauncherLogic.FindPython();
@@ -971,7 +971,25 @@ public partial class MainWindow : Window
             tester.ModelId = tester.Config.ModelPath = "org/M-GGUF";
             tester.Config.ModelExpected = "M-GGUF";
             tester.Config.Kind = "reviewer";
+            // No system prompt yet: the card warns, nothing is written, and the Settings dialog refuses to save.
             SyncCustomWorkers();
+            if (!tester.HasSetupProblem || JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
+                return Fail();
+            var incompleteDialog = BuildCustomSettingsDialog(tester);
+            static T? FindIn<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
+                d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => FindIn(c, match)).FirstOrDefault(r => r is not null);
+            FindIn<Button>(incompleteDialog, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            var rejection = FindIn<TextBlock>(incompleteDialog, t => t.Visibility == Visibility.Visible && t.Text.StartsWith("Enter a system prompt"));
+            if (rejection is null || incompleteDialog.DialogResult is not null || tester.Config.SystemPrompt.Length != 0)
+                return Fail();
+            await Settle();
+            (CardsList.ItemContainerGenerator.ContainerFromItem(tester) as FrameworkElement)?.BringIntoView();
+            await Settle();
+            Snap("13-incomplete-worker");
+            tester.Config.SystemPrompt = "You test.";
+            SyncCustomWorkers();
+            if (tester.HasSetupProblem)
+                return Fail();
             var synced = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray();
             if (synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer")
                 return Fail();
@@ -1609,6 +1627,15 @@ public partial class MainWindow : Window
                 card.SetModel(LauncherLogic.DescribeModel(w.ModelId, w.ModelVariant));
             _cards.Add(card);
         }
+        RefreshSetupProblems();
+    }
+
+    // Cards of custom workers the orchestrator would ignore show a light warning.
+    private void RefreshSetupProblems()
+    {
+        foreach (var w in CurrentWorkers())
+            if (CardFor(w.Id) is { IsCustom: true } card)
+                card.SetupProblem = LauncherLogic.CustomWorkerProblem(w);
     }
 
     private List<WorkerSetting> CurrentWorkers() => _cards.Select(c =>
@@ -1629,15 +1656,19 @@ public partial class MainWindow : Window
     }
 
     // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
-    private void SyncCustomWorkers()
+    private void SyncCustomWorkers(bool announce = false)
     {
+        RefreshSetupProblems();
         var path = ProjectConfigPath();
         if (!File.Exists(path))
             return;
         try
         {
-            foreach (var title in LauncherLogic.WriteCustomWorkers(path, CurrentWorkers()))
-                Log($"{title}: no model assigned, so it is not written to config.json");
+            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers());
+            foreach (var reason in skipped)
+                Log($"Not written to config.json, so it will not take part: {reason}");
+            if (announce && skipped.Length > 0)
+                Toast($"Not taking part: {string.Join("; ", skipped)}", "#FFB74D");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -1822,6 +1853,7 @@ public partial class MainWindow : Window
             n++;
         _cards.Add(new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true));
         SaveWorkers();
+        RefreshSetupProblems();
     }
 
     private void RemoveWorker_Click(object sender, RoutedEventArgs e)
@@ -2194,7 +2226,16 @@ public partial class MainWindow : Window
                 error.Visibility = Visibility.Visible;
                 return;
             }
-            w.Kind = (string)kindChoices.First(r => r.IsChecked == true).Tag;
+            var kind = (string)kindChoices.First(r => r.IsChecked == true).Tag;
+            if (string.IsNullOrWhiteSpace(prompt.Text) || kind != "reviewer" && string.IsNullOrWhiteSpace(description.Text))
+            {
+                error.Text = string.IsNullOrWhiteSpace(prompt.Text)
+                    ? "Enter a system prompt: the orchestrator ignores a worker without one."
+                    : "Enter a description: the Planner assigns Specialist tasks based on it.";
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            w.Kind = kind;
             w.Description = description.Text.Trim();
             w.SystemPrompt = prompt.Text;
             (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) =

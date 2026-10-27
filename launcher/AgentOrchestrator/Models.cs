@@ -33,6 +33,11 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public string? ModelVariant { get; set; }
     // Custom workers' settings (kind, prompt, sampling, model path); written back by MainWindow.CurrentWorkers.
     public WorkerSetting Config { get; set; } = new();
+    // Why the orchestrator would ignore this custom worker (null = fine); refreshed by MainWindow.RefreshSetupProblems.
+    private string? _setupProblem;
+    public string? SetupProblem { get => _setupProblem; set { if (_setupProblem != value) { _setupProblem = value; Raise(nameof(SetupProblem)); Raise(nameof(HasSetupProblem)); Raise(nameof(SetupTip)); } } }
+    public bool HasSetupProblem => _setupProblem is not null;
+    public string SetupTip => $"The orchestrator will skip this worker: {_setupProblem}";
     public string ModelName { get => _modelName; private set => Set(ref _modelName, value); }
     public string Weights { get => _weights; private set => Set(ref _weights, value); }
     public string Quant { get => _quant; private set => Set(ref _quant, value); }
