@@ -122,6 +122,7 @@ public partial class MainWindow : Window
             ApiKeyBox.Focus();
             return;
         }
+        SyncCustomWorkers();
         try
         {
             var python = LauncherLogic.FindPython();
@@ -922,7 +923,7 @@ public partial class MainWindow : Window
             var extra = new RoleCard("smoke-custom", "SMOKE", custom: true);
             _cards.Add(extra);
             string Items(RoleCard c) => string.Join("|", BuildCardMenu(c, this).Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)")));
-            if (Items(planner) != "Change model…|Settings…" || Items(extra) != "Change model…|Rename…|Remove")
+            if (Items(planner) != "Change model…|Settings…" || Items(extra) != "Change model…|Settings…|Rename…|Remove")
                 return Fail();
             var cardMenu = BuildCardMenu(planner, this);
             cardMenu.IsOpen = true;
@@ -956,6 +957,30 @@ public partial class MainWindow : Window
             var settingsDialog = BuildRoleSettingsDialog(planner, presetConfig, LauncherLogic.ReadRoleSettings(presetConfig, "planner"));
             if (!await Show(settingsDialog, "9-settings-dialog") || !await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
                 || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
+                return Fail();
+
+            // Custom workers: reserved titles are refused, the settings dialog has the system prompt (built-ins do not),
+            // and the project's config.json receives the custom_workers entry.
+            static bool HasTag(DependencyObject d, string tag) =>
+                d is FrameworkElement { Tag: string t } && t == tag || LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Any(c => HasTag(c, tag));
+            var tester = new RoleCard("smoke-tester", "TESTER", custom: true);
+            _cards.Add(tester);
+            if (RenameTo(tester, "Reviewer") is null || RenameTo(tester, " planner ") is null || RenameTo(tester, "IMPLEMENTER") is null || tester.Title != "TESTER" ||
+                RenameTo(tester, "Docs") is not null || tester.Title != "Docs")
+                return Fail();
+            tester.ModelId = tester.Config.ModelPath = "org/M-GGUF";
+            tester.Config.ModelExpected = "M-GGUF";
+            tester.Config.Kind = "reviewer";
+            SyncCustomWorkers();
+            var synced = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray();
+            if (synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer")
+                return Fail();
+            var customDialog = BuildCustomSettingsDialog(tester);
+            if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") ||
+                !await Show(customDialog, "12-custom-settings-dialog"))
+                return Fail();
+            RemoveWorker(tester);
+            if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
                 return Fail();
         }
         finally
@@ -1579,22 +1604,46 @@ public partial class MainWindow : Window
             saved.Add(new WorkerSetting { Id = role });
         foreach (var w in saved)
         {
-            var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant };
+            var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
             if (w.Custom && w.ModelId is not null)
                 card.SetModel(LauncherLogic.DescribeModel(w.ModelId, w.ModelVariant));
             _cards.Add(card);
         }
     }
 
-    private List<WorkerSetting> CurrentWorkers() => _cards.Select(c => new WorkerSetting
+    private List<WorkerSetting> CurrentWorkers() => _cards.Select(c =>
     {
-        Id = c.Role, Title = c.Title, Custom = c.IsCustom, ModelId = c.ModelId, ModelVariant = c.ModelVariant,
+        var w = c.Config.Clone();
+        w.Id = c.Role;
+        w.Title = c.Title;
+        w.Custom = c.IsCustom;
+        w.ModelId = c.ModelId;
+        w.ModelVariant = c.ModelVariant;
+        return w;
     }).ToList();
 
     private void SaveWorkers()
     {
         _settings.Workers = CurrentWorkers();
         _settings.Save();
+    }
+
+    // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
+    private void SyncCustomWorkers()
+    {
+        var path = ProjectConfigPath();
+        if (!File.Exists(path))
+            return;
+        try
+        {
+            foreach (var title in LauncherLogic.WriteCustomWorkers(path, CurrentWorkers()))
+                Log($"{title}: no model assigned, so it is not written to config.json");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not write custom workers to config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+        }
     }
 
     // ---- presets: named sets of workers plus the built-in roles' config.json objects
@@ -1645,14 +1694,14 @@ public partial class MainWindow : Window
 
     // Themed prompt: a name box when input is not null (empty names rejected), otherwise a plain confirmation.
     // Returns the entered text ("" for a confirmation), or null when cancelled.
-    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60)
+    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60, Func<string, string?>? validate = null)
     {
-        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength);
+        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength, validate);
         dialog.ShowDialog();
         return result();
     }
 
-    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60)
+    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60, Func<string, string?>? validate = null)
     {
         var box = input is null ? null : new TextBox { Text = input, MaxLength = maxLength, Margin = new Thickness(0, 10, 0, 0) };
         var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
@@ -1673,6 +1722,12 @@ public partial class MainWindow : Window
             if (box is not null && box.Text.Trim().Length == 0)
             {
                 error.Text = "Enter a name.";
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            if (box is not null && validate?.Invoke(box.Text) is { } problem)
+            {
+                error.Text = problem;
                 error.Visibility = Visibility.Visible;
                 return;
             }
@@ -1740,6 +1795,7 @@ public partial class MainWindow : Window
         _cards.Clear();
         LoadWorkers(); // keeps only valid entries and re-adds any missing built-in worker
         SaveWorkers();
+        SyncCustomWorkers();
         PrefillCards();
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
@@ -1761,7 +1817,9 @@ public partial class MainWindow : Window
 
     private void AddWorker_Click(object sender, RoutedEventArgs e)
     {
-        var n = _cards.Count(c => c.IsCustom) + 1;
+        var n = 1;
+        while (_cards.Any(c => string.Equals(c.Title, $"WORKER {n}", StringComparison.OrdinalIgnoreCase)))
+            n++;
         _cards.Add(new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true));
         SaveWorkers();
     }
@@ -1778,16 +1836,28 @@ public partial class MainWindow : Window
         {
             _cards.Remove(card);
             SaveWorkers();
+            SyncCustomWorkers();
         }
     }
 
-    // Same rules as the standard card's title box: custom workers only, at most 32 characters, never empty.
+    // Same rules as the standard card's title box: custom workers only, at most 32 characters, never empty,
+    // never a reserved built-in title or another worker's title. Returns the problem (nothing changed) or null.
+    private string? RenameTo(RoleCard card, string title)
+    {
+        if (LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } problem)
+            return problem;
+        card.Title = title.Trim();
+        SaveWorkers();
+        SyncCustomWorkers();
+        return null;
+    }
+
     private void RenameWorker(RoleCard card)
     {
-        if (_process is not null || !card.IsCustom || AskDialog("Rename worker", "Worker title", "Rename", card.Title, maxLength: 32) is not { } title)
+        if (_process is not null || !card.IsCustom ||
+            AskDialog("Rename worker", "Worker title", "Rename", card.Title, maxLength: 32, validate: t => LauncherLogic.TitleProblem(t, card.Role, CurrentWorkers())) is not { } title)
             return;
-        card.Title = title;
-        SaveWorkers();
+        RenameTo(card, title);
     }
 
     // ---- compact card context menu (right-click): what the standard card offers as buttons and a title box
@@ -1805,10 +1875,9 @@ public partial class MainWindow : Window
         var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor, Placement = PlacementMode.MousePoint };
         var idle = _process is null && card.Editable;
         menu.Items.Add(PresetItem("Change model…", () => ChangeModel(card, anchor), idle));
-        if (card.IsBuiltIn)
-            menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
-                idle && File.Exists(ProjectConfigPath())));
-        else
+        menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
+            idle && (card.IsCustom || File.Exists(ProjectConfigPath()))));
+        if (card.IsCustom)
         {
             menu.Items.Add(PresetItem("Rename…", () => Dispatcher.InvokeAsync(() => RenameWorker(card), DispatcherPriority.Background), idle));
             menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
@@ -1821,8 +1890,14 @@ public partial class MainWindow : Window
     {
         if (((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: true } card)
             return;
-        card.Title = card.Title.Trim().Length == 0 ? "WORKER" : card.Title.Trim();
-        SaveWorkers();
+        if (LauncherLogic.TitleProblem(card.Title, card.Role, CurrentWorkers()) is { } problem)
+        {
+            // the box edits the card live, so put back the last saved title
+            card.Title = _settings.Workers.FirstOrDefault(w => w.Id == card.Role)?.Title ?? "WORKER";
+            Toast(problem, "#F7C873");
+            return;
+        }
+        RenameTo(card, card.Title);
     }
 
     // ---- drag-and-drop reordering: the card follows the pointer and the others make room live
@@ -1915,8 +1990,13 @@ public partial class MainWindow : Window
 
     private void ShowRoleSettings(RoleCard card)
     {
-        if (_process is not null || card.IsCustom)
+        if (_process is not null)
             return;
+        if (card.IsCustom)
+        {
+            BuildCustomSettingsDialog(card).ShowDialog();
+            return;
+        }
         var project = SelectedProjectPath();
         var path = Path.Combine(project, "config.json");
         if (project.Length == 0 || !File.Exists(path))
@@ -1940,51 +2020,7 @@ public partial class MainWindow : Window
 
     private DialogShell BuildRoleSettingsDialog(RoleCard card, string path, LauncherLogic.RoleSettings current)
     {
-        var fields = new (string Label, string Hint, string Value)[]
-        {
-            ("Temperature", "0 to 2; empty = unchanged", current.Temperature),
-            ("Max tokens", "1 to 262144; empty = unchanged", current.MaxTokens),
-            ("Repetition penalty", "1.0 to 2.0; empty = off", current.RepetitionPenalty),
-            ("Reasoning budget", "0 or more; empty = unchanged", current.ReasoningBudget),
-            ("Context length", "512 to 262144; empty = unchanged", current.ContextLength),
-        };
-        var grid = new Grid { MinWidth = 340 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
-        var boxes = new TextBox[fields.Length];
-        for (var i = 0; i < fields.Length; i++)
-        {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 10.5 };
-            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            var label = new StackPanel
-            {
-                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 12, 0),
-                Children = { new TextBlock { Text = fields[i].Label, FontWeight = FontWeights.SemiBold, FontSize = 12 }, hint },
-            };
-            boxes[i] = new TextBox { Text = fields[i].Value, Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 0, 0) };
-            Grid.SetRow(label, i);
-            Grid.SetRow(boxes[i], i);
-            Grid.SetColumn(boxes[i], 1);
-            grid.Children.Add(label);
-            grid.Children.Add(boxes[i]);
-        }
-
-        var thinkingHint = new TextBlock { Text = "Auto = model default. Off avoids long hidden reasoning; recommended for the Implementer on reasoning models.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left };
-        thinkingHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var thinkingChoices = LauncherLogic.ThinkingChoices.Select(choice => new RadioButton
-        {
-            Content = choice, GroupName = "Thinking", IsChecked = choice == current.Thinking, Margin = new Thickness(0, 0, 18, 0),
-        }).ToArray();
-        var thinkingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
-        foreach (var choice in thinkingChoices)
-            thinkingRow.Children.Add(choice);
-        var thinking = new StackPanel
-        {
-            Margin = new Thickness(0, 12, 0, 0),
-            Children = { new TextBlock { Text = "Thinking", FontWeight = FontWeights.SemiBold, FontSize = 12 }, thinkingHint, thinkingRow },
-        };
-
+        var (grid, boxes, thinkingChoices, thinking) = BuildSamplingFields(current, custom: false);
         var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 12, 0, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
@@ -1996,8 +2032,7 @@ public partial class MainWindow : Window
         var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, thinking, note, error, buttons } });
         save.Click += (_, _) =>
         {
-            LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text,
-                thinkingChoices.First(radio => radio.IsChecked == true).Content.ToString()!);
+            var values = ReadFields(boxes, thinkingChoices);
             try
             {
                 var problem = LauncherLogic.WriteRoleSettings(path, card.Role, values);
@@ -2024,6 +2059,153 @@ public partial class MainWindow : Window
             boxes[0].Focus();
             boxes[0].SelectAll();
         };
+        return dialog;
+    }
+
+    // The generation fields shared by both Settings dialogs. custom: empty means "use the Implementer's value".
+    private (Grid Grid, TextBox[] Boxes, RadioButton[] Choices, StackPanel Thinking) BuildSamplingFields(LauncherLogic.RoleSettings current, bool custom)
+    {
+        var empty = custom ? "empty = Implementer's" : "empty = unchanged";
+        var fields = new (string Label, string Hint, string Value)[]
+        {
+            ("Temperature", $"0 to 2; {empty}", current.Temperature),
+            ("Max tokens", $"1 to 262144; {empty}", current.MaxTokens),
+            ("Repetition penalty", custom ? "1.0 to 2.0; empty = Implementer's" : "1.0 to 2.0; empty = off", current.RepetitionPenalty),
+            ("Reasoning budget", $"0 or more; {empty}", current.ReasoningBudget),
+            ("Context length", $"512 to 262144; {empty}", current.ContextLength),
+        };
+        var grid = new Grid { MinWidth = 340 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
+        var boxes = new TextBox[fields.Length];
+        for (var i = 0; i < fields.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 10.5 };
+            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var label = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 12, 0),
+                Children = { new TextBlock { Text = fields[i].Label, FontWeight = FontWeights.SemiBold, FontSize = 12 }, hint },
+            };
+            boxes[i] = new TextBox { Text = fields[i].Value, Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 0, 0) };
+            Grid.SetRow(label, i);
+            Grid.SetRow(boxes[i], i);
+            Grid.SetColumn(boxes[i], 1);
+            grid.Children.Add(label);
+            grid.Children.Add(boxes[i]);
+        }
+
+        var thinkingHint = new TextBlock
+        {
+            Text = custom ? "Auto = model default. Off avoids long hidden reasoning, which suits Specialists that edit files."
+                          : "Auto = model default. Off avoids long hidden reasoning; recommended for the Implementer on reasoning models.",
+            FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        thinkingHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var choices = LauncherLogic.ThinkingChoices.Select(choice => new RadioButton
+        {
+            Content = choice, GroupName = "Thinking", IsChecked = choice == current.Thinking, Margin = new Thickness(0, 0, 18, 0),
+        }).ToArray();
+        var thinkingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var choice in choices)
+            thinkingRow.Children.Add(choice);
+        var thinking = new StackPanel
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            Children = { new TextBlock { Text = "Thinking", FontWeight = FontWeights.SemiBold, FontSize = 12 }, thinkingHint, thinkingRow },
+        };
+        return (grid, boxes, choices, thinking);
+    }
+
+    private static LauncherLogic.RoleSettings ReadFields(TextBox[] boxes, RadioButton[] thinking) =>
+        new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text, thinking.First(radio => radio.IsChecked == true).Content.ToString()!);
+
+    // Custom workers keep everything in the launcher's settings (and the generated custom_workers in config.json),
+    // so this dialog works without an initialized project. The system prompt exists only here.
+    private DialogShell BuildCustomSettingsDialog(RoleCard card)
+    {
+        var w = card.Config;
+        TextBlock Muted(string text, Thickness margin)
+        {
+            var t = new TextBlock { Text = text, FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = margin };
+            t.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            return t;
+        }
+        TextBlock Label(string text, double top) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, top, 0, 0) };
+        TextBox Editor(string text, double height) => new()
+        {
+            Text = text, Height = height, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalContentAlignment = VerticalAlignment.Top,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var kinds = new[] { ("specialist", "Specialist"), ("reviewer", "Extra reviewer") };
+        var kindExplanation = Muted("", new Thickness(0, 4, 0, 0));
+        var kindChoices = kinds.Select(k => new RadioButton { Content = k.Item2, Tag = k.Item1, GroupName = "WorkerKind", IsChecked = (w.Kind == "reviewer" ? "reviewer" : "specialist") == k.Item1, Margin = new Thickness(0, 0, 18, 0) }).ToArray();
+        void Explain() => kindExplanation.Text = kindChoices[0].IsChecked == true
+            ? "Specialist: the Planner can assign it tasks, and it edits files like the Implementer."
+            : "Extra reviewer: reviews every task alongside the Reviewer; its FAIL sends the task back.";
+        foreach (var choice in kindChoices)
+            choice.Checked += (_, _) => Explain();
+        Explain();
+        var kindRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var choice in kindChoices)
+            kindRow.Children.Add(choice);
+
+        var description = Editor(w.Description, 58);
+        description.Tag = "Description";
+        var prompt = Editor(w.SystemPrompt, 170);
+        prompt.Tag = "SystemPrompt";
+        prompt.FontFamily = new FontFamily("Consolas");
+
+        var (grid, boxes, thinkingChoices, thinking) = BuildSamplingFields(
+            new LauncherLogic.RoleSettings(w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking), custom: true);
+        grid.Margin = new Thickness(0, 12, 0, 0);
+        var note = Muted("Context length and reasoning budget apply when the orchestrator loads the model.", new Thickness(0, 12, 0, 0));
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+
+        var body = new StackPanel
+        {
+            MinWidth = 440,
+            Children =
+            {
+                Label("Kind", 0), kindRow, kindExplanation,
+                Label("Description", 12), Muted("Shown to the Planner: it assigns Specialist tasks based on this, so say what the worker is for.", new Thickness(0)), description,
+                Label("System prompt", 12), Muted("The worker's standing instructions. Only custom workers have an editable prompt.", new Thickness(0)), prompt,
+                grid, thinking, note, error,
+            },
+        };
+        var scroll = new ScrollViewer
+        {
+            Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 190), Padding = new Thickness(0, 0, 8, 0),
+        };
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { scroll, buttons } });
+        save.Click += (_, _) =>
+        {
+            var values = ReadFields(boxes, thinkingChoices);
+            if (LauncherLogic.ValidateRoleSettings(values) is { } problem)
+            {
+                error.Text = problem;
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            w.Kind = (string)kindChoices.First(r => r.IsChecked == true).Tag;
+            w.Description = description.Text.Trim();
+            w.SystemPrompt = prompt.Text;
+            (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) =
+                (values.Temperature.Trim(), values.MaxTokens.Trim(), values.RepetitionPenalty.Trim(), values.ReasoningBudget.Trim(), values.ContextLength.Trim(), values.Thinking);
+            SaveWorkers();
+            SyncCustomWorkers();
+            Log($"{card.Title}: worker settings saved");
+            Toast($"{card.Title}: settings saved");
+            dialog.DialogResult = true;
+        };
+        dialog.Loaded += (_, _) => prompt.Focus();
         return dialog;
     }
 
@@ -2083,9 +2265,16 @@ public partial class MainWindow : Window
         card.ModelId = choice.Display;
         card.ModelVariant = choice.Variant;
         card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
+        if (card.IsCustom)
+        {
+            card.Config.ModelPath = choice.LoadPath;
+            card.Config.ModelExpected = choice.Expected;
+        }
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
+        if (card.IsCustom)
+            SyncCustomWorkers();
     }
 
     // The orchestrator reads each built-in worker's model from the project's config.json.

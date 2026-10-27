@@ -207,9 +207,8 @@ internal static class LauncherLogic
             settings["sampling"]?["enable_thinking"] is JsonValue flag && flag.TryGetValue<bool>(out var on) ? (on ? "On" : "Off") : "Auto");
     }
 
-    // Validates every field, then writes; returns an error message (nothing written) or null on success.
-    // An empty repetition penalty removes the key; the other empty fields leave their key as it is.
-    public static string? WriteRoleSettings(string configPath, string role, RoleSettings values)
+    // The field rules shared by the built-in and custom Settings dialogs; null when every field is acceptable.
+    public static string? ValidateRoleSettings(RoleSettings values)
     {
         static bool Number(string text, double min, double max, out double result) =>
             double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out result) && double.IsFinite(result) && result >= min && result <= max;
@@ -218,6 +217,30 @@ internal static class LauncherLogic
 
         if (!ThinkingChoices.Contains(values.Thinking))
             return "Thinking must be Auto, On or Off.";
+        var temperatureText = values.Temperature.Trim();
+        var maxTokensText = values.MaxTokens.Trim();
+        var penaltyText = values.RepetitionPenalty.Trim();
+        var budgetText = values.ReasoningBudget.Trim();
+        var contextText = values.ContextLength.Trim();
+        if (temperatureText.Length > 0 && !Number(temperatureText, 0, 2, out _))
+            return "Temperature must be a number from 0 to 2.";
+        if (maxTokensText.Length > 0 && !Whole(maxTokensText, 1, 262144, out _))
+            return "Max tokens must be a whole number from 1 to 262144.";
+        if (penaltyText.Length > 0 && !Number(penaltyText, 1, 2, out _))
+            return "Repetition penalty must be a number from 1.0 to 2.0 (or empty).";
+        if (budgetText.Length > 0 && !Whole(budgetText, 0, int.MaxValue, out _))
+            return "Reasoning budget must be a whole number, 0 or more.";
+        if (contextText.Length > 0 && !Whole(contextText, 512, 262144, out _))
+            return "Context length must be a whole number from 512 to 262144.";
+        return null;
+    }
+
+    // Validates every field, then writes; returns an error message (nothing written) or null on success.
+    // An empty repetition penalty removes the key; the other empty fields leave their key as it is.
+    public static string? WriteRoleSettings(string configPath, string role, RoleSettings values)
+    {
+        if (ValidateRoleSettings(values) is { } problem)
+            return problem;
         double temperature = 0, penalty = 0;
         long maxTokens = 0, budget = 0, context = 0;
         var temperatureText = values.Temperature.Trim();
@@ -225,16 +248,11 @@ internal static class LauncherLogic
         var penaltyText = values.RepetitionPenalty.Trim();
         var budgetText = values.ReasoningBudget.Trim();
         var contextText = values.ContextLength.Trim();
-        if (temperatureText.Length > 0 && !Number(temperatureText, 0, 2, out temperature))
-            return "Temperature must be a number from 0 to 2.";
-        if (maxTokensText.Length > 0 && !Whole(maxTokensText, 1, 262144, out maxTokens))
-            return "Max tokens must be a whole number from 1 to 262144.";
-        if (penaltyText.Length > 0 && !Number(penaltyText, 1, 2, out penalty))
-            return "Repetition penalty must be a number from 1.0 to 2.0 (or empty).";
-        if (budgetText.Length > 0 && !Whole(budgetText, 0, int.MaxValue, out budget))
-            return "Reasoning budget must be a whole number, 0 or more.";
-        if (contextText.Length > 0 && !Whole(contextText, 512, 262144, out context))
-            return "Context length must be a whole number from 512 to 262144.";
+        _ = double.TryParse(temperatureText, NumberStyles.Float, CultureInfo.InvariantCulture, out temperature);
+        _ = long.TryParse(maxTokensText, NumberStyles.None, CultureInfo.InvariantCulture, out maxTokens);
+        _ = double.TryParse(penaltyText, NumberStyles.Float, CultureInfo.InvariantCulture, out penalty);
+        _ = long.TryParse(budgetText, NumberStyles.None, CultureInfo.InvariantCulture, out budget);
+        _ = long.TryParse(contextText, NumberStyles.None, CultureInfo.InvariantCulture, out context);
 
         var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
         var settings = root["roles"]![role]!.AsObject();
@@ -273,7 +291,7 @@ internal static class LauncherLogic
         var preset = new WorkerPreset
         {
             Name = name,
-            Workers = workers.Select(w => new WorkerSetting { Id = w.Id, Title = w.Title, Custom = w.Custom, ModelId = w.ModelId, ModelVariant = w.ModelVariant }).ToList(),
+            Workers = workers.Select(w => w.Clone()).ToList(),
         };
         if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath))?["roles"] is JsonObject roles)
             foreach (var role in BuiltInRoles)
@@ -300,6 +318,84 @@ internal static class LauncherLogic
             WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         }));
         return true;
+    }
+
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER"];
+
+    // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
+    public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
+    {
+        title = title.Trim();
+        if (title.Length == 0)
+            return "Enter a title.";
+        if (ReservedTitles.Contains(title, StringComparer.OrdinalIgnoreCase))
+            return $"\"{title}\" is reserved for a built-in worker. Choose another title.";
+        if (workers.Any(w => w.Id != selfId && string.Equals(w.Title.Trim(), title, StringComparison.OrdinalIgnoreCase)))
+            return $"Another worker is already titled \"{title}\".";
+        return null;
+    }
+
+    // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
+    // connection settings, auto_load defaults and sampling, then applies its own model and settings.
+    // Returns the titles skipped because no model is assigned. A missing implementer just means nothing to copy.
+    public static string[] WriteCustomWorkers(string configPath, IEnumerable<WorkerSetting> workers)
+    {
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
+        var implementer = root["roles"]?["implementer"] as JsonObject;
+        var skipped = new List<string>();
+        var array = new JsonArray();
+        foreach (var w in workers.Where(w => w.Custom))
+        {
+            if (string.IsNullOrWhiteSpace(w.ModelPath))
+            {
+                skipped.Add(w.Title);
+                continue;
+            }
+            var entry = new JsonObject
+            {
+                ["id"] = w.Id, ["title"] = w.Title.Trim(), ["kind"] = w.Kind == "reviewer" ? "reviewer" : "specialist",
+                ["description"] = w.Description, ["system_prompt"] = w.SystemPrompt,
+            };
+            foreach (var key in new[] { "base_url", "management_url", "api_key_env" })
+                if (implementer?[key] is { } value)
+                    entry[key] = value.DeepClone();
+            entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
+            entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
+            if (implementer?["timeout_seconds"] is { } timeout)
+                entry["timeout_seconds"] = timeout.DeepClone();
+
+            var load = implementer?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
+            load["model_path"] = w.ModelPath;
+            if (string.IsNullOrEmpty(w.ModelVariant))
+                load.Remove("gguf_variant");
+            else
+                load["gguf_variant"] = w.ModelVariant;
+            if (long.TryParse(w.ReasoningBudget.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var budget))
+                load["reasoning_budget"] = budget;
+            if (long.TryParse(w.ContextLength.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var context))
+                load["max_seq_length"] = context;
+            entry["auto_load"] = load;
+
+            var sampling = implementer?["sampling"]?.DeepClone() as JsonObject ?? new JsonObject();
+            sampling.Remove("enable_thinking");
+            if (double.TryParse(w.Temperature.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var temperature))
+                sampling["temperature"] = temperature;
+            if (long.TryParse(w.MaxTokens.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var maxTokens))
+                sampling["max_tokens"] = maxTokens;
+            if (double.TryParse(w.RepetitionPenalty.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var penalty))
+                (sampling["extra_body"] ??= new JsonObject()).AsObject()["repetition_penalty"] = penalty;
+            if (w.Thinking is "On" or "Off")
+                sampling["enable_thinking"] = w.Thinking == "On";
+            entry["sampling"] = sampling;
+            array.Add(entry);
+        }
+        root["custom_workers"] = array;
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return skipped.ToArray();
     }
 
     // True when the node, or any ancestor, is a button. A Run inside a TextBlock is not a Visual and
@@ -451,6 +547,49 @@ internal static class LauncherLogic
             if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
                 presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
                 throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
+            // Custom workers: contract of the written custom_workers array.
+            var cwConfig = Path.Combine(testArea, "cw.json");
+            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
+            var rolesBefore = JsonNode.Parse(File.ReadAllText(cwConfig))!["roles"]!.ToJsonString();
+            var cwWorkers = new[]
+            {
+                new WorkerSetting { Id = "planner", Title = "PLANNER" },
+                new WorkerSetting { Id = "s1", Title = " Tester ", Custom = true, Kind = "specialist", Description = "Runs tests", SystemPrompt = "You test.\nBe brief.",
+                    ModelId = "org/Model-GGUF", ModelVariant = "Q4_K_M", ModelPath = "org/Model-GGUF", ModelExpected = "Model-GGUF",
+                    Temperature = "0.2", MaxTokens = "2048", RepetitionPenalty = "1.2", ReasoningBudget = "0", ContextLength = "16384", Thinking = "Off" },
+                new WorkerSetting { Id = "r1", Title = "Security", Custom = true, Kind = "reviewer", ModelId = "local.gguf", ModelPath = "C:\\m\\local.gguf", ModelExpected = "local.gguf" },
+                new WorkerSetting { Id = "n1", Title = "NoModel", Custom = true },
+            };
+            var skippedTitles = WriteCustomWorkers(cwConfig, cwWorkers);
+            var cw = JsonNode.Parse(File.ReadAllText(cwConfig))!;
+            var cwArray = cw["custom_workers"]!.AsArray();
+            var spec = cwArray[0]!;
+            var rev = cwArray[1]!;
+            var specSampling = spec["sampling"]!;
+            var specLoad = spec["auto_load"]!;
+            var revSampling = rev["sampling"]!;
+            if (skippedTitles.Length != 1 || skippedTitles[0] != "NoModel" || cwArray.Count != 2 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
+                throw new InvalidOperationException("Custom workers: skipping, array size or untouched keys failed.");
+            if ((string)spec["id"]! != "s1" || (string)spec["title"]! != "Tester" || (string)spec["kind"]! != "specialist" || (string)spec["description"]! != "Runs tests" ||
+                (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" || (string)spec["management_url"]! != "http://h" ||
+                (string)spec["api_key_env"]! != "K" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
+                throw new InvalidOperationException("Custom workers: specialist fields do not match the contract.");
+            if ((string)specLoad["model_path"]! != "org/Model-GGUF" || (string)specLoad["gguf_variant"]! != "Q4_K_M" || (int)specLoad["reasoning_budget"]! != 0 ||
+                (int)specLoad["max_seq_length"]! != 16384 || (int)specLoad["n_parallel"]! != 1)
+                throw new InvalidOperationException("Custom workers: specialist model or auto_load failed.");
+            if ((double)specSampling["temperature"]! != 0.2 || (int)specSampling["max_tokens"]! != 2048 || specSampling["enable_thinking"]!.GetValue<bool>() ||
+                (double)specSampling["extra_body"]!["repetition_penalty"]! != 1.2 || (int)specSampling["extra_body"]!["top_k"]! != 20 || (double)specSampling["top_p"]! != 0.8)
+                throw new InvalidOperationException("Custom workers: specialist sampling failed.");
+            if ((string)rev["kind"]! != "reviewer" || (string)rev["auto_load"]!["model_path"]! != "C:\\m\\local.gguf" || rev["auto_load"]!["gguf_variant"] is not null ||
+                (string)rev["expected_model_contains"]! != "local.gguf" || revSampling["enable_thinking"] is not null || (double)revSampling["temperature"]! != 0.4)
+                throw new InvalidOperationException("Custom workers: reviewer fields failed.");
+            WriteCustomWorkers(cwConfig, cwWorkers.Take(1));
+            if (JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]!.AsArray().Count != 0)
+                throw new InvalidOperationException("Custom workers: rewriting must replace the previous array.");
+            var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
+            if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
+                TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)
+                throw new InvalidOperationException("Custom worker title validation failed.");
             var run = new System.Windows.Documents.Run("12 tokens");
             var tokens = new System.Windows.Controls.TextBlock();
             tokens.Inlines.Add(run);
