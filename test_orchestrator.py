@@ -1417,5 +1417,102 @@ class CustomWorkerTests(unittest.TestCase):
             self.assertEqual(sum("## Passed: T-9" in l for l in (root / "STATE.md").read_text(encoding="utf-8").splitlines()), 1)
 
 
+class ChatTests(unittest.TestCase):
+    """--chat: single worker or Planner -> Implementer -> Reviewer, in a folder holding only config.json."""
+
+    def chat(self, request, replies=None, workers=None):
+        replies = {k: list(v) for k, v in (replies or {}).items()}
+        roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model", "sampling": {"temperature": i}}
+                 for i, r in enumerate(("planner", "implementer", "reviewer"))}
+        config = {"roles": roles, **({"custom_workers": workers} if workers else {})}
+        log, events, unloaded = [], [], []
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role, self.title = settings, "", ""
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                log.append({"model": self.settings["expected_model_contains"], "system": messages[0]["content"],
+                            "input": "\n".join(m["content"] for m in messages[1:]), "sampling": sampling, "tools": tools})
+                return {"role": "assistant", "content": replies[self.role].pop(0) if replies.get(self.role) else f"{self.role} text"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            req = Path(folder) / "request.json"
+            req.write_text(json.dumps(request), encoding="utf-8")
+            argv = ["o", "--project", folder, "--chat", str(req), "--events", "--non-interactive"]
+            with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                    patch.object(orchestrator, "unload_models", lambda: unloaded.append(1)), patch.object(orchestrator.sys, "argv", argv):
+                code = orchestrator.main()
+            files = sorted(p.name for p in root.iterdir())
+        return code, log, events, unloaded, files
+
+    MSGS = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "explain X"}]
+
+    def test_single_builtin_uses_own_settings_and_streams_reply(self):
+        code, log, events, unloaded, files = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS},
+                                                       {"implementer": ["<think>hmm</think>the answer"]})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["model"], log[0]["sampling"], log[0]["tools"]), ("implementer-model", {"temperature": 1}, None))
+        self.assertIn((Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip(), log[0]["system"])
+        self.assertIn("Implementer worker", log[0]["system"])
+        self.assertIn("explain X", log[0]["input"])
+        self.assertEqual([e for e in events if e[0].startswith("chat_")],
+                         [("chat_stage", {"role": "implementer", "stage": "answer", "title": "implementer"}),
+                          ("chat_reply", {"role": "implementer", "text": "the answer"})])
+        # G3: no workflow files, models stay loaded
+        self.assertEqual(files, ["config.json", "request.json"])
+        self.assertEqual(unloaded, [])
+
+    def test_single_custom_worker_and_unknown_worker(self):
+        worker = {"id": "spec1", "title": "Tester", "kind": "specialist", "description": "d", "system_prompt": "Be a tester.",
+                  "base_url": "http://x", "expected_model_contains": "spec1-model"}
+        code, log, events, *_ = self.chat({"mode": "single", "worker": "spec1", "messages": self.MSGS}, workers=[worker])
+        self.assertEqual((code, log[0]["model"]), (0, "spec1-model"))
+        self.assertIn("=== YOUR ROLE: Tester ===\nBe a tester.", log[0]["system"])
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "Unknown chat worker"):
+            self.chat({"mode": "single", "worker": "nobody", "messages": self.MSGS})
+
+    def test_unknown_worker_prints_error_and_exits_1(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "config.json").write_text('{"roles": {}}', encoding="utf-8")
+            (Path(folder) / "r.json").write_text(json.dumps({"mode": "single", "worker": "nobody", "messages": self.MSGS}), encoding="utf-8")
+            done = subprocess.run([sys.executable, str(Path(orchestrator.__file__)), "--project", folder, "--chat", str(Path(folder) / "r.json"),
+                                   "--events", "--non-interactive"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("ERROR: Unknown chat worker", done.stderr)
+
+    def test_multi_runs_three_stages_in_order(self):
+        code, log, events, unloaded, files = self.chat(
+            {"mode": "multi", "worker": "ignored", "messages": self.MSGS},
+            {"planner": ["<think>x</think>PLAN-A"], "implementer": ["DRAFT-B"], "reviewer": ["FINAL-C"]})
+        self.assertEqual(code, 0)
+        self.assertEqual([(l["model"], l["sampling"]["temperature"]) for l in log],
+                         [("planner-model", 0), ("implementer-model", 1), ("reviewer-model", 2)])
+        self.assertNotIn("PLAN-A", log[0]["input"])
+        self.assertIn("PLAN-A", log[1]["input"])
+        self.assertNotIn("x</think>", log[1]["input"] + log[2]["input"])
+        self.assertTrue("PLAN-A" in log[2]["input"] and "DRAFT-B" in log[2]["input"] and "explain X" in log[2]["input"])
+        self.assertEqual([(d["stage"], d["role"]) for e, d in events if e == "chat_stage"],
+                         [("plan", "planner"), ("draft", "implementer"), ("review", "reviewer")])
+        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
+        self.assertEqual((files, unloaded), (["config.json", "request.json"], []))
+
+    def test_multi_falls_back_to_draft_when_reviewer_is_empty(self):
+        out = io.StringIO()
+        out.reconfigure = lambda **kw: None
+        with patch.object(orchestrator.sys, "stdout", out):
+            _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
+        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
+        self.assertIn("Reviewer returned nothing usable", out.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

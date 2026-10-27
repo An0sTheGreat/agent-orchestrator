@@ -81,6 +81,14 @@ If automatic loading is rejected, the controller reports the API error and falls
 
 Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
+## Chat mode
+
+`python orchestrator.py --project <folder with config.json> --chat <request.json> --events --non-interactive` answers one chat turn instead of running the workflow. It needs only `config.json` in the project folder (no `PROJECT.md`, `STATE.md`, ...), plans no tasks, writes no workflow files or checkpoints, and never runs the configurator. Workers have no tools in chat.
+
+`request.json` (UTF-8): `{"mode": "single"|"multi", "worker": "<role id>", "messages": [{"role": "user"|"assistant", "content": "..."}]}`. The last message must be the user's. `worker` (single mode) is `planner`, `implementer`, `reviewer` or a custom worker `id` (Specialists and Extra reviewers). Single mode streams one completion from that worker with `prompts/chat.txt` as the system prompt (plus the custom worker's own role section). Multi mode ignores `worker` and runs the three built-ins in turn: the Planner writes a plan (`prompts/chat_planner.txt`), the Implementer drafts the response from conversation and plan (`chat_implementer.txt`), and the Reviewer returns the final answer from conversation, plan and draft (`chat_reviewer.txt`); an empty Reviewer reply falls back to the draft.
+
+Events are the usual `@@AO` lines (`loading`, `model`, `delta`, `done`, `usage`) plus `{"e":"chat_stage","role","stage":"plan"|"draft"|"review"|"answer","title"}` before each model call and a final `{"e":"chat_reply","role","text"}` with the answer. Exit code 0 on success; on failure an `ERROR: ...` line is printed and the exit code is 1. Models stay loaded after the turn (the launcher unloads them when the app closes).
+
 ## Custom workers
 
 `config.json` may hold an optional top-level `custom_workers` array. Absent or empty, the run behaves exactly as before.

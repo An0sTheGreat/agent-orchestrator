@@ -1253,6 +1253,61 @@ def run_review_loop(
             raise WorkflowError(f"{task['id']} failed after {total} reviews")
 
 
+def answer_text(message: dict[str, Any]) -> str:
+    """The reply without reasoning (an unterminated <think> counts as reasoning)."""
+    return re.sub(r"<think>.*", "", split_reasoning(message)[1], flags=re.S).strip()
+
+
+def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]]) -> str:
+    client, sampling = role_settings(config, role)
+    emit("chat_stage", role=role, stage=stage, title=client.title or role)
+    model = client.ensure_model(role, False)
+    return answer_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
+
+
+def run_chat(config: dict[str, Any], request_path: Path) -> int:
+    """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No tools, no workflow files."""
+    request = json.loads(load_text(request_path))
+    messages = [
+        {"role": m["role"], "content": str(m["content"])}
+        for m in request.get("messages") or []
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
+    ]
+    if not messages or messages[-1]["role"] != "user":
+        raise WorkflowError("Chat request needs messages ending with a user message")
+    chat = load_text(ROOT / "prompts" / "chat.txt").strip()
+    if request.get("mode") == "multi":
+        missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
+        if missing:
+            raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
+        convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+        prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt")
+        plan = chat_call(config, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}])
+        draft = chat_call(config, "implementer", "draft", prompt("implementer"),
+                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}"}])
+        final = chat_call(config, "reviewer", "review", prompt("reviewer"),
+                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}\n\nDRAFT\n{draft}"}])
+        if not final:
+            print("[chat] the Reviewer returned nothing usable; answering with the draft")
+        role, text = ("reviewer", final) if final else ("implementer", draft)
+    elif request.get("mode") == "single":
+        role = str(request.get("worker") or "")
+        worker = next((w for w in custom_workers(config) if w["id"] == role), None)
+        if role not in BUILTIN_ROLES and not worker:
+            raise WorkflowError(f"Unknown chat worker {role!r}")
+        if worker:
+            system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
+        else:
+            system = f"{chat}\n\nYou are the {role.capitalize()} worker.\n"
+        text = chat_call(config, role, "answer", system, messages)
+    else:
+        raise WorkflowError(f"Unknown chat mode {request.get('mode')!r}")
+    if not text:
+        raise WorkflowError("The model returned an empty reply")
+    emit("chat_reply", role=role, text=text)
+    return 0
+
+
 def _run() -> int:
     # Piped stdout defaults to the ANSI codepage on Windows; model names can contain non-cp1252 characters.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1262,14 +1317,20 @@ def _run() -> int:
     parser.add_argument("--non-interactive", action="store_true", help="Fail instead of waiting for model swaps")
     parser.add_argument("--once", action="store_true", help="Stop after one task passes")
     parser.add_argument("--events", action="store_true", help="Emit structured @@AO event lines for the launcher UI")
+    parser.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
     args = parser.parse_args()
-    global PROJECT_ROOT_ARG, EVENTS
+    global PROJECT_ROOT_ARG, EVENTS, CHAT_MODE
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
+    CHAT_MODE = args.chat is not None
 
     project_root = args.project.resolve()
     if not project_root.is_dir():
         raise WorkflowError(f"Project folder does not exist: {project_root}")
+    if args.chat:
+        config = json.loads(load_text(project_root / "config.json"))
+        custom_workers(config, warn=True)
+        return run_chat(config, args.chat)
     missing = sorted(name for name in WORKFLOW_FILES if not (project_root / name).is_file())
     if missing:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
@@ -1337,6 +1398,7 @@ def _run() -> int:
 
 
 PROJECT_ROOT_ARG: Path = ROOT
+CHAT_MODE = False  # --chat: models stay loaded after the turn; the launcher unloads them when the app closes
 
 
 # Models this run loaded itself (path -> client). A model the user loaded in Unsloth Desktop is not in
@@ -1359,7 +1421,8 @@ def main() -> int:
     try:
         return _run()
     finally:
-        unload_models()
+        if not CHAT_MODE:
+            unload_models()
 
 
 if __name__ == "__main__":
