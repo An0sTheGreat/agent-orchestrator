@@ -360,7 +360,11 @@ class OrchestratorTests(unittest.TestCase):
                 with self.assertRaises(orchestrator.WorkflowError):
                     orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {}, 0, "", "implementing", 1, root, False)
             self.assertNotIn("reviewer", roles)
-            self.assertTrue(all("SYNTAX CHECK FAILED" in text and "a.json" in text for text in seen))
+            self.assertTrue(seen)
+            # Round 1 starts from a clean file, so its final send-back must carry the syntax error; later rounds start
+            # from the already-broken file (unchanged in their own turn) and are failed by the round gate instead.
+            self.assertIn("SYNTAX CHECK FAILED", seen[0])
+            self.assertIn("a.json", seen[0])
             review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
             self.assertEqual(review["verdict"], "FAIL")
             self.assertEqual(review["defects"][0]["file"], "a.json")
@@ -394,6 +398,66 @@ class OrchestratorTests(unittest.TestCase):
             ok = self._native("replace_text", path="a.txt", old="x", new="y")
             result, _ = self._scripted_agent([write, fail, done, ok, done], folder, ["a.txt"])
             self.assertEqual(result, "PASSED")
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_syntax_gate_js_non_ascii_error(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "u.js").write_text('const s = "\u0141\u00f3d\u017a \u00c1pp"; const s = 1;\n', encoding="utf-8")
+            defects, _ = orchestrator.syntax_gate(root, ["u.js"])
+            self.assertEqual([d["file"] for d in defects], ["u.js"])
+
+    def test_syntax_gate_bom_and_unchanged_files(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "b.json").write_text("\ufeff{}", encoding="utf-8")
+            (root / "b.py").write_text("\ufeffx = 1\n", encoding="utf-8")
+            self.assertEqual(orchestrator.syntax_gate(root, ["b.json", "b.py"])[0], [])
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 1}', encoding="utf-8")
+            before = {"tsconfig.json": (root / "tsconfig.json").read_text(encoding="utf-8")}
+            defects, line = orchestrator.syntax_gate(root, ["tsconfig.json"], before)
+            self.assertEqual(defects, [])
+            self.assertIn("pre-existing", line)
+            self.assertIn("tsconfig.json", line)
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 2}', encoding="utf-8")
+            self.assertEqual([d["file"] for d in orchestrator.syntax_gate(root, ["tsconfig.json"], before)[0]], ["tsconfig.json"])
+
+    def test_round_with_unchanged_broken_file_reaches_reviewer_with_syntax_line(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["tsconfig.json", "ok.json"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 1}', encoding="utf-8")
+            (root / "ok.json").write_text("{}", encoding="utf-8")
+            before = orchestrator.snapshot(root, task["allowed_files"])
+            inputs = []
+
+            def agent(config, role, system, user, *rest):
+                inputs.append((role, user))
+                return '{"verdict":"PASS"}' if role == "reviewer" else "PASSED"
+
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"):
+                orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, before, 0, "", "implementing", 1, root, False)
+            reviewer = [user for role, user in inputs if role == "reviewer"]
+            self.assertEqual(len(reviewer), 1)
+            self.assertIn("SYNTAX CHECK:", reviewer[0])
+            self.assertIn("pre-existing", reviewer[0])
+
+    def test_flagged_answer_on_last_step_returns_unverified(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        fail = self._native("replace_text", path="a.txt", old="zzz", new="y")
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, _ = self._scripted_agent([write, fail, done], folder, ["a.txt"], {"max_tool_steps": 3})
+        self.assertTrue(result.startswith("UNVERIFIED:"))
+
+    def test_harmless_failed_call_is_not_unverified(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        harmless = {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "run_validation", "arguments": json.dumps({"name": "nope"})}}]}
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, _ = self._scripted_agent([write, harmless, done], folder, ["a.txt"])
+        self.assertEqual(result, "PASSED")
 
     def _task(self, files=1, work=1):
         return {"id": "T", "outcome": "o", "allowed_files": [f"f{i}.txt" for i in range(files)],

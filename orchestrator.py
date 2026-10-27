@@ -480,9 +480,14 @@ def _parsed_arguments(raw: str) -> Any:
         return raw
 
 
-def syntax_gate(project_root: Path, allowed: list[str]) -> tuple[list[dict[str, str]], str]:
-    """Deterministic syntax check of the existing allowed files. Returns (defects, one-line summary)."""
+def syntax_gate(project_root: Path, allowed: list[str], before: dict[str, str | None] | None = None) -> tuple[list[dict[str, str]], str]:
+    """Deterministic syntax check of the existing allowed files. Returns (defects, one-line summary).
+
+    Only files whose content differs from `before` can produce defects; errors in unchanged files are
+    reported in the summary as pre-existing. Without `before`, every file counts as changed.
+    """
     defects: list[dict[str, str]] = []
+    preexisting: list[str] = []
     checked: list[str] = []
     node = shutil.which("node")
     skipped_js = False
@@ -496,32 +501,39 @@ def syntax_gate(project_root: Path, allowed: list[str]) -> tuple[list[dict[str, 
                 skipped_js = True
                 continue
             try:
-                done = subprocess.run([node, "--check", name], cwd=project_root, text=True, capture_output=True, timeout=30, shell=False)
-                error = (done.stderr or done.stdout).strip()[-1500:] if done.returncode else None
+                # Decode as UTF-8 ourselves: text=True uses the locale codepage on Windows and can lose the error text.
+                done = subprocess.run([node, "--check", name], cwd=project_root, capture_output=True, timeout=30, shell=False)
+                if done.returncode:
+                    output = (done.stderr or done.stdout).decode("utf-8", errors="replace").strip()[-1500:]
+                    error = output or f"node --check exited {done.returncode}"
             except (OSError, subprocess.TimeoutExpired) as exc:
                 print(f"[syntax] could not run node on {name}: {exc}")
                 continue
         elif suffix == ".py":
             try:
-                compile(content, name, "exec")
+                compile(content.lstrip("﻿"), name, "exec")
             except (SyntaxError, ValueError) as exc:
                 error = f"{type(exc).__name__}: {exc} (line {getattr(exc, 'lineno', '?')})"
         elif suffix == ".json":
             try:
-                json.loads(content)
+                json.loads(content.lstrip("﻿"))
             except json.JSONDecodeError as exc:
                 error = f"JSONDecodeError: {exc}"
         else:
             continue
         checked.append(name)
-        if error:
+        if error and before is not None and before.get(name) == content:
+            preexisting.append(name)
+        elif error:
             defects.append({"file": name, "defect": "Syntax error", "expected": "The file parses without errors", "evidence": error})
     if defects:
         summary = f"FAILED ({', '.join(d['file'] for d in defects)})"
     elif checked:
-        summary = f"passed ({', '.join(checked)})"
+        summary = f"passed ({', '.join(n for n in checked if n not in preexisting)})"
     else:
         summary = "skipped (node not found)" if skipped_js else "skipped (no checkable files)"
+    if preexisting:
+        summary += f"; pre-existing errors in unchanged files (not caused by this task): {', '.join(preexisting)}"
     print(f"[syntax] {summary}")
     return defects, f"SYNTAX CHECK: {summary}"
 
@@ -557,7 +569,8 @@ def run_agent(
     fixes = syntax_fixes = 0  # shared budget (3) for unverified-report and syntax send-backs; syntax uses at most 2
     last_error = False
     prev_text_calls = None
-    for _ in range(max_steps):
+    start = snapshot(project_root, allowed)
+    for step in range(max_steps):
         try:
             response = client.complete(model, messages, sampling, tools)
         except WorkflowError as exc:
@@ -595,13 +608,13 @@ def run_agent(
                 reasons.append("it printed a tool call that was not valid JSON (comments or trailing text) and was NOT executed")
             if last_error:
                 reasons.append("the last tool call failed and nothing succeeded after it")
-            if reasons and fixes < 3:
+            if reasons and fixes < 3 and step < max_steps - 1:
                 fixes += 1
                 print(f"[{role}] unverified report ({'; '.join(reasons)}); sending back ({fixes}/3) ...")
                 messages.append({"role": "user", "content": "Your report is not accepted: " + "; ".join(reasons) + ". Redo it through the tool-calling interface with strictly valid JSON (no comments, no trailing text), then report only what actually succeeded."})
                 continue
-            defects = [] if reasons else syntax_gate(project_root, allowed)[0]
-            if defects and fixes < 3 and syntax_fixes < 2:
+            defects = [] if reasons else syntax_gate(project_root, allowed, start)[0]
+            if defects and fixes < 3 and syntax_fixes < 2 and step < max_steps - 1:
                 fixes += 1
                 syntax_fixes += 1
                 print(f"[{role}] syntax errors remain; sending back ({syntax_fixes}/2) ...")
@@ -616,10 +629,11 @@ def run_agent(
                 result = execute_tool(function["name"], arguments, project_root, allowed, validations, writable)
                 emit("tool", role=role, name=function["name"], args=function.get("arguments") or "", result=result[:6000])
                 ran_tools = ran_tools or (function["name"] in {"write_file", "replace_text"} and result == "OK")
-                last_error = result.startswith("ERROR:")
+                if function["name"] in {"write_file", "replace_text"}:
+                    last_error = result.startswith("ERROR:")
             except (KeyError, TypeError, json.JSONDecodeError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
-                last_error = True
+                last_error = last_error or (isinstance(call, dict) and call.get("function", {}).get("name") in {"write_file", "replace_text"})
                 emit("tool", role=role, name=str(call.get("function", {}).get("name", "?")), args="", result=result)
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": result})
@@ -988,7 +1002,7 @@ def run_review_loop(
             save_text(project_root / "RESULT.md", result)
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
-        defects, syntax_line = syntax_gate(project_root, allowed)
+        defects, syntax_line = syntax_gate(project_root, allowed, before)
         if defects:
             review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)
             save_text(project_root / "REVIEW.md", review_text)
