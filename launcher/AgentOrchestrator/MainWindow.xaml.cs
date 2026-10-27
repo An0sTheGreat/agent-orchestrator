@@ -36,7 +36,7 @@ public partial class MainWindow : Window
     private readonly Queue<StreamBlock> _pendingTools = new();
     private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
-    private readonly HashSet<string> _loadedByRun = new(); // only these are unloaded on Stop/close
+    private readonly HashSet<(string Url, string Path)> _loadedByRun = new(); // only these are unloaded on Stop/close, each on the server it loaded on
     private bool _followTail = true, _stopRequested;
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
@@ -409,7 +409,7 @@ public partial class MainWindow : Window
             case "loading":
                 EndStream(false);
                 Activate(role, "Loading model");
-                _loadedByRun.Add(Str(ev, "path"));
+                _loadedByRun.Add(LoadedOn(ev));
                 Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
@@ -1140,7 +1140,7 @@ public partial class MainWindow : Window
                 Delta("reviewer", "text", "streamed answer"),
                 Ev("""{"e":"done","role":"reviewer","final":true}"""),
                 Ev("""{"e":"usage","role":"reviewer","prompt":321,"completion":45,"tps":30}"""),
-            }, "Final reviewed reply") || _chatHistory.Count != 2 || !_loadedByChat.Contains("smoke/chat-model.gguf") ||
+            }, "Final reviewed reply") || _chatHistory.Count != 2 || !_loadedByChat.Any(l => l.Path == "smoke/chat-model.gguf") ||
                 !reviewer.TurnDetail.Contains("321 prompt") || !reviewer.TurnDetail.Contains("45 generated") || OutputPanel.Children.Count != outputCount ||
                 _reply!.Content.Children.OfType<Expander>().Count() != 1)
                 return Fail();
@@ -1161,7 +1161,7 @@ public partial class MainWindow : Window
             }
             // The real Multi protocol (orchestrator.py run_chat): plan, draft, review stages, then only chat_reply carries the answer.
             if (!await Turn("Build it", true, stages.ToArray(), "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
-                _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Contains("smoke/planner.gguf"))
+                _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Any(l => l.Path == "smoke/planner.gguf"))
                 return Fail();
             await Settle();
             Snap("16-chat-multi");
@@ -1212,53 +1212,71 @@ public partial class MainWindow : Window
             }
             finally { Directory.Delete(realProject, true); }
 
-            // Unload on close, called on the UI thread against a fake server: every tracked path from both sets arrives, and fast.
-            var seen = new System.Collections.Concurrent.ConcurrentBag<string>();
-            var fake = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-            fake.Start();
-            var serving = Task.Run(async () =>
+            // Unload on close, called on the UI thread against two fake servers: each receives exactly its own paths, and fast.
+            (System.Net.Sockets.TcpListener Listener, System.Collections.Concurrent.ConcurrentBag<string> Seen, Task Serving) Fake()
             {
-                try
+                var bag = new System.Collections.Concurrent.ConcurrentBag<string>();
+                var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                listener.Start();
+                var task = Task.Run(async () =>
                 {
-                    while (true)
+                    try
                     {
-                        var client = await fake.AcceptTcpClientAsync();
-                        _ = Task.Run(async () =>
+                        while (true)
                         {
-                            using var c = client;
-                            var stream = c.GetStream();
-                            var head = new StringBuilder();
-                            var one = new byte[1];
-                            while (!head.ToString().EndsWith("\r\n\r\n") && await stream.ReadAsync(one) == 1)
-                                head.Append((char)one[0]);
-                            var length = System.Text.RegularExpressions.Regex.Match(head.ToString(), @"Content-Length:\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                            var body = new byte[length.Success ? int.Parse(length.Groups[1].Value) : 0];
-                            for (var got = 0; got < body.Length;)
-                                got += await stream.ReadAsync(body.AsMemory(got));
-                            seen.Add(Encoding.UTF8.GetString(body));
-                            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
-                        });
+                            var client = await listener.AcceptTcpClientAsync();
+                            _ = Task.Run(async () =>
+                            {
+                                using var c = client;
+                                var stream = c.GetStream();
+                                var head = new StringBuilder();
+                                var one = new byte[1];
+                                while (!head.ToString().EndsWith("\r\n\r\n") && await stream.ReadAsync(one) == 1)
+                                    head.Append((char)one[0]);
+                                var length = System.Text.RegularExpressions.Regex.Match(head.ToString(), @"Content-Length:\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                var body = new byte[length.Success ? int.Parse(length.Groups[1].Value) : 0];
+                                for (var got = 0; got < body.Length;)
+                                    got += await stream.ReadAsync(body.AsMemory(got));
+                                bag.Add(Encoding.UTF8.GetString(body));
+                                await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+                            });
+                        }
                     }
-                }
-                catch (Exception) { } // the listener was stopped
-            });
+                    catch (Exception) { } // the listener was stopped
+                });
+                return (listener, bag, task);
+            }
+            string UrlOf(System.Net.Sockets.TcpListener l) => $"http://127.0.0.1:{((System.Net.IPEndPoint)l.LocalEndpoint).Port}";
+            var (fakeA, seenA, servingA) = Fake();
+            var (fakeB, seenB, servingB) = Fake();
             var (savedBase, savedKey) = (_apiBase, _runKey);
-            (_apiBase, _runKey) = ($"http://127.0.0.1:{((System.Net.IPEndPoint)fake.LocalEndpoint).Port}", "smoke-key");
+            (_apiBase, _runKey) = (UrlOf(fakeA), "smoke-key"); // the fallback for a loading event without a url
             _loadedByChat.Clear();
             _loadedByRun.Clear();
-            _loadedByChat.Add("smoke/a.gguf");
-            _loadedByChat.Add("smoke/b.gguf");
-            _loadedByRun.Add("smoke/c.gguf");
+            _chatBusy = true;
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/a.gguf","url":"{{UrlOf(fakeA)}}"}""")); // chat, server A
+            _lines.Enqueue(Ev("""{"e":"loading","role":"planner","path":"smoke/b.gguf"}""")); // chat, no url: _apiBase (A)
+            DrainLines();
+            _chatBusy = false;
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"planner","path":"smoke/c.gguf","url":"{{UrlOf(fakeB)}}"}""")); // run, server B
+            // G3: a line still queued when closing begins is drained first, so it is unloaded too.
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"implementer","path":"smoke/d.gguf","url":"{{UrlOf(fakeB)}}"}"""));
+            if (_loadedByChat.Count != 2 || _loadedByRun.Count != 0 || _lines.Count != 2) // c and d are still queued, undrained
+                return Fail();
             var clock = Stopwatch.StartNew();
-            var sent = UnloadOnClose(); // on the UI thread, like OnClosing
+            OnClosing(this, new CancelEventArgs()); // the real close path (drain, then unload) on the UI thread
             clock.Stop();
             (_apiBase, _runKey) = (savedBase, savedKey);
-            fake.Stop();
-            await serving;
-            if (sent != 3 || seen.Count != 3 || new[] { "a", "b", "c" }.Any(n => !seen.Any(b => b.Contains($"smoke/{n}.gguf"))) ||
+            fakeA.Stop();
+            fakeB.Stop();
+            await servingA;
+            await servingB;
+            bool Only(System.Collections.Concurrent.ConcurrentBag<string> bag, params string[] names) =>
+                bag.Count == names.Length && names.All(n => bag.Count(b => b.Contains($"smoke/{n}.gguf")) == 1);
+            if (!Only(seenA, "a", "b") || !Only(seenB, "c", "d") ||
                 clock.Elapsed > TimeSpan.FromSeconds(2) || _loadedByChat.Count != 0 || _loadedByRun.Count != 0)
             {
-                Console.Error.WriteLine($"ui-smoke: unload on close sent {sent}, server saw {seen.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
+                Console.Error.WriteLine($"ui-smoke: unload on close: server A saw {seenA.Count}, server B saw {seenB.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
                 return Fail();
             }
             ShowView(false);
@@ -1493,17 +1511,19 @@ public partial class MainWindow : Window
         }
     }
 
+    // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.
+    private (string Url, string Path) LoadedOn(JsonElement ev) => (Str(ev, "url") is { Length: > 0 } u ? u : _apiBase, Str(ev, "path"));
+
     // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
-    private async Task UnloadModelsAsync(HashSet<string>? source = null)
+    private async Task UnloadModelsAsync()
     {
-        source ??= _loadedByRun;
-        var paths = source.ToList();
-        source.Clear();
+        var paths = _loadedByRun.ToList();
+        _loadedByRun.Clear();
         try
         {
-            foreach (var path in paths)
+            foreach (var (url, path) in paths)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, _apiBase + "/api/inference/unload")
+                using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
                 };
@@ -1526,7 +1546,7 @@ public partial class MainWindow : Window
         _loadedByChat.Clear();
         var deadline = DateTime.UtcNow.AddSeconds(budgetSeconds);
         var unloaded = 0;
-        foreach (var path in paths)
+        foreach (var (url, path) in paths)
         {
             var left = deadline - DateTime.UtcNow;
             if (left <= TimeSpan.Zero)
@@ -1534,7 +1554,7 @@ public partial class MainWindow : Window
             try
             {
                 using var cancel = new CancellationTokenSource(left < TimeSpan.FromSeconds(2) ? left : TimeSpan.FromSeconds(2));
-                using var request = new HttpRequestMessage(HttpMethod.Post, _apiBase + "/api/inference/unload")
+                using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
                 };
@@ -2975,6 +2995,7 @@ public partial class MainWindow : Window
             chat.WaitForExit(2000);
         }
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
+        DrainLines(); // a loading event that arrived just before the kill still counts
         UnloadOnClose(); // the models this run loaded, and those chat left loaded between messages
         _settings.Save();
     }
