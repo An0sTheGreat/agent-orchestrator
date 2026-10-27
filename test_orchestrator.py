@@ -406,6 +406,8 @@ class OrchestratorTests(unittest.TestCase):
             (root / "u.js").write_text('const s = "\u0141\u00f3d\u017a \u00c1pp"; const s = 1;\n', encoding="utf-8")
             defects, _ = orchestrator.syntax_gate(root, ["u.js"])
             self.assertEqual([d["file"] for d in defects], ["u.js"])
+            # Node's own message must survive decoding, not just the exit-code fallback.
+            self.assertIn("already been declared", defects[0]["evidence"])
 
     def test_syntax_gate_bom_and_unchanged_files(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
