@@ -1107,5 +1107,262 @@ class OrchestratorTests(unittest.TestCase):
                 if phase != "reviewing":
                     self.assertNotIn("Last reviewer feedback", text)
 
+PASS_JSON = json.dumps({"verdict": "PASS", "evidence": ["ok"]})
+
+
+def fail_json(*defects):
+    return json.dumps({"verdict": "FAIL", "defects": [{"file": "a.txt", "defect": d, "expected": "e", "evidence": "v"} for d in defects]})
+
+
+class CustomWorkerTests(unittest.TestCase):
+    """Specialists and Extra reviewers, driven through the real run loop with a fake API client."""
+
+    TASK = OrchestratorTests.TASK | {"allowed_files": ["a.txt"]}
+    PROMPTS = {r: (Path(orchestrator.ROOT) / "prompts" / f"{r}.txt").read_text(encoding="utf-8") for r in ("implementer", "reviewer")}
+
+    @staticmethod
+    def worker(wid, title, kind="specialist", **extra):
+        return {"id": wid, "title": title, "kind": kind, "description": f"{title} does things.", "system_prompt": f"You are {title}.",
+                "base_url": "http://x", "expected_model_contains": f"{wid}-model", **extra}
+
+    def config(self, workers=None, **extra):
+        roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in ("planner", "implementer", "reviewer")}
+        return {"roles": roles, **({"custom_workers": workers} if workers is not None else {}), **extra}
+
+    def run_loop(self, root, config, verdicts=None, task=None, once=True):
+        """Run orchestrator._run; replies for non-writable roles come from verdicts[role] (default PASS)."""
+        (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        for name in ("PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md", "ISSUES.md"):
+            if not (root / name).exists():
+                (root / name).write_text("Build a real thing\n" if name == "PROJECT.md" else "text\n", encoding="utf-8")
+        log, events, queues = [], [], {k: list(v) for k, v in (verdicts or {}).items()}
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role = settings, ""
+
+            def ensure_model(self, role, interactive):
+                orchestrator.emit("model", role=role, id=self.settings["expected_model_contains"])
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                writable = "write_file" in {t["function"]["name"] for t in tools or []}
+                log.append({"role": self.role, "model": self.settings["expected_model_contains"], "system": messages[0]["content"],
+                            "user": messages[1]["content"], "writable": writable, "sampling": sampling})
+                if writable:
+                    if any(m.get("role") == "tool" for m in messages):
+                        return {"role": "assistant", "content": "T-9 PASSED"}
+                    args = json.dumps({"path": "a.txt", "content": "x"})
+                    return {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": args}}]}
+                return {"role": "assistant", "content": queues[self.role].pop(0) if queues.get(self.role) else PASS_JSON}
+
+        argv = ["o", "--project", str(root), "--non-interactive", *(["--once"] if once else [])]
+        with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator, "request_plan", return_value={"status": "TASK", "task": task or self.TASK}), \
+                patch.object(orchestrator, "configure_project", side_effect=lambda c, *a: c), patch.object(orchestrator.sys, "argv", argv):
+            code = orchestrator._run()
+        return code, log, events
+
+    def test_custom_workers_parsing_ignores_invalid_entries_with_warning(self):
+        import contextlib
+        import io
+        good = [self.worker("s1", "Tester"), self.worker("r1", "Security", "reviewer")]
+        bad = [
+            self.worker("b1", "Reviewer"), self.worker("b2", "implementer"), self.worker("b3", "PLANNER"),  # reserved titles
+            self.worker("b4", "tester"),  # duplicate title (case-insensitive)
+            self.worker("s1", "Other"),  # duplicate id
+            self.worker("b5", "Odd", "boss"),  # unknown kind
+            {k: v for k, v in self.worker("b6", "NoUrl").items() if k != "base_url"},
+            {k: v for k, v in self.worker("b7", "NoModel").items() if k != "expected_model_contains"},
+            {k: v for k, v in self.worker("b8", "NoPrompt").items() if k != "system_prompt"},
+            {k: v for k, v in self.worker("b9", "NoDesc").items() if k != "description"},
+            "not an object",
+        ]
+        config = self.config(good[:1] + bad + good[1:])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            parsed = orchestrator.custom_workers(config, warn=True)
+        self.assertEqual([w["title"] for w in parsed], ["Tester", "Security"])
+        self.assertEqual(out.getvalue().count("[workers] ignoring"), len(bad))
+        with contextlib.redirect_stdout(io.StringIO()) as quiet:
+            orchestrator.custom_workers(config)
+        self.assertEqual(quiet.getvalue(), "")
+        self.assertEqual(orchestrator.custom_workers({"custom_workers": "x"}), [])
+        # a reviewer needs no description; a model may be named by auto_load alone
+        loaded = self.worker("r2", "Lint", "reviewer", auto_load={"model_path": "p"})
+        loaded.pop("description"), loaded.pop("expected_model_contains")
+        self.assertEqual(len(orchestrator.custom_workers(self.config([loaded]))), 1)
+
+    def test_team_context_lists_workers_and_is_unchanged_without_them(self):
+        plain = orchestrator.team_context(self.config())
+        self.assertEqual(plain, orchestrator.team_context(self.config([])))
+        self.assertNotIn("Specialists", plain)
+        text = orchestrator.team_context(self.config([self.worker("s1", "Tester"), self.worker("r1", "Security", "reviewer")]))
+        self.assertIn("Specialists", text)
+        self.assertIn("- Tester: Tester does things.", text)
+        self.assertIn("Extra reviewers", text)
+        self.assertIn("- Security: Security does things.", text)
+        self.assertEqual(text.splitlines()[-1], plain.splitlines()[-1])  # task limits stay last
+
+    def test_absent_or_empty_array_runs_identically(self):
+        runs = []
+        for workers in (None, []):
+            with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+                root = Path(folder)
+                code, log, events = self.run_loop(root, self.config(workers), {"reviewer": [fail_json("bad"), PASS_JSON]})
+                runs.append((code, log, events, (root / "STATE.md").read_text(encoding="utf-8").split("<!--")[0]))
+        self.assertEqual(runs[0][:3], runs[1][:3])
+        self.assertEqual(runs[0][3], runs[1][3])
+        log = runs[0][1]
+        self.assertEqual([e["role"] for e in log], ["implementer", "implementer", "reviewer", "implementer", "implementer", "reviewer"])
+        self.assertEqual(log[0]["system"], self.PROMPTS["implementer"])
+        self.assertEqual(log[2]["system"], self.PROMPTS["reviewer"])
+
+    def test_validate_task_worker_field(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            for ok in ({}, {"worker": None}, {"worker": ""}, {"worker": "Tester"}, {"worker": " tester "}):
+                orchestrator.validate_task(self.TASK | ok, root, (3, 7), ["Tester"])
+            for bad, titles in (("Ghost", ["Tester"]), ("Tester", []), ("Implementer", ["Tester"])):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    orchestrator.validate_task(self.TASK | {"worker": bad}, root, (3, 7), titles)
+                self.assertIn("unknown worker", str(ctx.exception))
+
+    def test_unknown_worker_gets_planner_correction(self):
+        bad = {"status": "TASK", "task": self.TASK | {"worker": "Ghost"}}
+        good = {"status": "TASK", "task": self.TASK | {"worker": "tester"}}
+        config = self.config([self.worker("s1", "Tester")])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            with patch.object(orchestrator, "ask_once", side_effect=[json.dumps(bad), json.dumps(good)]) as planner:
+                plan = orchestrator.request_plan(config, "system", "user", Path(folder), False)
+        self.assertEqual(plan["task"]["worker"], "tester")
+        self.assertEqual(planner.call_count, 2)
+        self.assertIn("unknown worker 'Ghost'", planner.call_args.args[3])
+
+    def test_specialist_does_the_task_instead_of_the_implementer(self):
+        tester = self.worker("s1", "Tester", sampling={"max_tokens": 123, "extra_body": {"top_k": 7}})
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            code, log, events = self.run_loop(root, self.config([tester]), task=self.TASK | {"worker": "tester"})
+            self.assertEqual(code, 0)
+            self.assertEqual((root / "a.txt").read_text(encoding="utf-8"), "x\n")
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+        self.assertEqual([e["role"] for e in log], ["s1", "s1", "reviewer"])  # tool call + report, then the main reviewer
+        work = log[0]
+        self.assertEqual(work["model"], "s1-model")
+        self.assertTrue(work["writable"])
+        self.assertEqual((work["sampling"]["max_tokens"], work["sampling"]["top_k"]), (123, 7))
+        self.assertTrue(work["system"].startswith(self.PROMPTS["implementer"].rstrip()))
+        self.assertIn("YOUR ROLE: Tester", work["system"])
+        self.assertTrue(work["system"].rstrip().endswith("You are Tester."))
+        self.assertEqual(log[2]["system"], self.PROMPTS["reviewer"])
+        self.assertIn(("model", {"role": "s1", "id": "s1-model"}), events)
+        self.assertEqual([d["role"] for e, d in events if e == "tool"], ["s1"])
+        self.assertNotIn("implementer", {d.get("role") for e, d in events})
+
+    def test_specialist_choice_survives_resume(self):
+        tester = self.worker("s1", "Tester")
+        task = self.TASK | {"worker": "Tester"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, task, {"a.txt": None}, 0, "fb", "implementing", 3)
+            code, log, _ = self.run_loop(root, self.config([tester]), task=dict(self.TASK, id="OTHER"))
+            self.assertEqual(code, 0)
+            self.assertEqual(log[0]["role"], "s1")  # the checkpointed task, not the planner's, ran
+            self.assertIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+            # a checkpoint whose Specialist was removed from config is discarded like any invalid task
+            orchestrator.save_checkpoint(root, task, {"a.txt": None}, 0, "fb", "implementing", 3)
+            self.assertIsNone(orchestrator.load_checkpoint(root, (3, 7), 3, []))
+            self.assertFalse((root / ".ao_checkpoint.json").exists())
+
+    def reviewers(self):
+        return [self.worker("r1", "Security", "reviewer"), self.worker("r2", "Perf", "reviewer")]
+
+    def test_extra_reviewer_fail_sends_task_back_with_titled_feedback(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            verdicts = {"r1": [fail_json("SQL injection"), PASS_JSON]}
+            code, log, events = self.run_loop(root, self.config(self.reviewers()), verdicts)
+            self.assertEqual(code, 0)
+            self.assertEqual([e["role"] for e in log if not e["writable"]], ["reviewer", "r1", "r2", "reviewer", "r1", "r2"])
+            second = [e for e in log if e["writable"]][-1]  # the round-2 implementer's last request
+            self.assertEqual(sum("Security: SQL injection" in e["user"] for e in log if e["role"] == "implementer"), 2)
+            self.assertIn("REVIEWER FEEDBACK\n{", second["user"])
+            self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["FAIL", "PASS"])
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+
+    def test_extra_reviewer_fail_is_recorded_in_review_md_and_blocks_at_the_limit(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            verdicts = {"r1": [fail_json("SQL injection")], "r2": [fail_json("slow loop", "n+1")]}
+            with self.assertRaises(orchestrator.WorkflowError):
+                self.run_loop(root, self.config(self.reviewers(), max_review_rounds=0), verdicts)
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+            self.assertEqual(review["verdict"], "FAIL")
+            self.assertEqual([d["defect"] for d in review["defects"]], ["Security: SQL injection", "Perf: slow loop", "Perf: n+1"])
+            self.assertIn("Security: SQL injection", (root / "ISSUES.md").read_text(encoding="utf-8"))
+            self.assertNotIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_extra_reviewers_all_pass_records_once_with_reviewer_rules(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            code, log, events = self.run_loop(root, self.config(self.reviewers()))
+            self.assertEqual(code, 0)
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+        extras = [e for e in log if e["role"] in ("r1", "r2")]
+        self.assertEqual([e["role"] for e in extras], ["r1", "r2"])
+        for e in extras:
+            self.assertFalse(e["writable"])
+            self.assertTrue(e["system"].startswith(self.PROMPTS["reviewer"].rstrip()))
+            self.assertIn("YOUR ROLE:", e["system"])
+            self.assertIn("IMPLEMENTER RESULT", e["user"])
+        self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["PASS"])
+
+    def test_main_reviewer_fail_skips_extra_reviewers_that_round(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            _, log, _ = self.run_loop(Path(folder), self.config(self.reviewers()), {"reviewer": [fail_json("nope"), PASS_JSON]})
+        self.assertEqual([e["role"] for e in log if not e["writable"]], ["reviewer", "reviewer", "r1", "r2"])
+
+    def test_extra_reviewer_verdict_repair_uses_its_own_model(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            _, log, _ = self.run_loop(Path(folder), self.config(self.reviewers()[:1]), {"r1": ["no json here", PASS_JSON]})
+        self.assertEqual([(e["role"], e["model"]) for e in log if e["role"] == "r1"], [("r1", "r1-model")] * 2)
+
+    def test_resume_in_extra_review_phase_skips_implementer_and_records_once(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, self.TASK, {"a.txt": None}, 0, "fb", "extra_reviewing", 3)
+            (root / "a.txt").write_text("x\n", encoding="utf-8")
+            (root / "RESULT.md").write_text("earlier result\n", encoding="utf-8")
+            (root / "REVIEW.md").write_text(PASS_JSON, encoding="utf-8")
+            self.assertIn("Extra reviewers checking", (root / "HANDOFF.md").read_text(encoding="utf-8"))
+            config = self.config(self.reviewers())
+            # killed right after the completion entry is written: the next run only clears the checkpoint
+            with patch.object(orchestrator, "clear_checkpoint", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_loop(root, config)
+            self.assertEqual(json.loads((root / ".ao_checkpoint.json").read_text(encoding="utf-8"))["phase"], "passed")
+            state = (root / "STATE.md").read_text(encoding="utf-8")
+            code, log, _ = self.run_loop(root, config)
+            self.assertEqual(code, 0)
+            self.assertEqual(log, [])  # recording only
+            self.assertEqual((root / "STATE.md").read_text(encoding="utf-8"), state)
+            self.assertEqual(state.count("## Passed: T-9"), 1)
+            self.assertFalse((root / ".ao_checkpoint.json").exists())
+
+    def test_resume_in_extra_review_phase_runs_only_the_extra_reviewers(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, self.TASK, {"a.txt": None}, 0, "fb", "extra_reviewing", 3)
+            (root / "a.txt").write_text("x\n", encoding="utf-8")
+            (root / "RESULT.md").write_text("earlier result\n", encoding="utf-8")
+            (root / "REVIEW.md").write_text(PASS_JSON, encoding="utf-8")
+            code, log, _ = self.run_loop(root, self.config(self.reviewers()), {"r2": [fail_json("late"), PASS_JSON]})
+            self.assertEqual(code, 0)
+            self.assertEqual([e["role"] for e in log if not e["writable"]], ["r1", "r2", "reviewer", "r1", "r2"])
+            self.assertIn("earlier result", log[0]["user"])  # the resumed round reviews the saved result
+            self.assertEqual(sum("## Passed: T-9" in l for l in (root / "STATE.md").read_text(encoding="utf-8").splitlines()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
