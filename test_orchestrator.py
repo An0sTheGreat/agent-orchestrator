@@ -479,6 +479,116 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("BLOCKED: nothing to do", (Path(folder) / "RESULT.md").read_text(encoding="utf-8"))
 
 
+    def test_prior_work_without_new_writes_reaches_reviewer(self):
+        class Client:
+            completions = 0
+            messages = None
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.completions += 1
+                self.messages = [dict(m) for m in messages]
+                return {"role": "assistant", "content": "The feature is already implemented."}
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            (root / "a.txt").write_text("new\n", encoding="utf-8")
+            client, reviewer = Client(), []
+
+            def agent(config, role, system, user, *rest):
+                if role == "reviewer":
+                    reviewer.append(user)
+                    return '{"verdict":"PASS"}'
+                with patch.object(orchestrator, "role_settings", return_value=(client, {})):
+                    return REAL_RUN_AGENT(config, role, system, user, *rest)
+
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"):
+                orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {"a.txt": "old\n"}, 0, "", "implementing", 1, root, False)
+            self.assertEqual(client.completions, 1)  # no "No file was changed" nudge
+            self.assertIn("PRIOR WORK", client.messages[1]["content"])
+            self.assertNotIn("BLOCKED", (root / "RESULT.md").read_text(encoding="utf-8"))
+            self.assertEqual(len(reviewer), 1)
+            self.assertIn("-old", reviewer[0])
+            self.assertIn("+new", reviewer[0])
+            # Files equal to the task-start snapshot: nothing was ever written, so the block still fires.
+            with patch.object(orchestrator, "role_settings", return_value=(Client(), {})), patch.object(orchestrator, "emit"):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt"], True, False, {"a.txt": "new\n"})
+            self.assertIn("never executed a tool", str(ctx.exception))
+
+    def test_truncated_tool_call_is_not_executed_and_repeats_fail(self):
+        cut = {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "write_file", "arguments": '{"path": "b.txt", "content": "hel'}}]}
+
+        class Client:
+            completions = 0
+
+            def __init__(self, replies):
+                self.replies, self.cut_off, self.messages = replies, False, None
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.completions += 1
+                self.messages = [dict(m) for m in messages]
+                reply = self.replies[min(self.completions - 1, len(self.replies) - 1)]
+                self.cut_off = reply is cut
+                return reply
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            client = Client([cut, self._native("write_file", path="a.txt", content="x"), {"role": "assistant", "content": "done"}])
+            with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+                result = REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt", "b.txt"], True, False)
+            self.assertEqual(result, "done")
+            self.assertFalse((root / "b.txt").exists())
+            self.assertIn("cut off at the output limit", client.messages[3]["content"])
+            self.assertNotIn("tool_calls", client.messages[2])  # the broken arguments are not replayed
+            client = Client([cut])
+            with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt", "b.txt"], True, False)
+            self.assertIn("max_tokens", str(ctx.exception))
+            self.assertIn("implementer", str(ctx.exception))
+            self.assertEqual(client.completions, 3)
+            self.assertFalse((root / "b.txt").exists())
+
+    def test_complete_reports_a_reply_cut_off_with_output(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "implementer"
+        client._request = lambda method, route, body=None: {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+        out = io.StringIO()
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(out):
+            client.complete("m", [], {"max_tokens": 5})
+        self.assertTrue(client.cut_off)
+        self.assertIn("[implementer] reply cut off at the output limit (max_tokens=5)", out.getvalue())
+
+    def test_context_overflow_names_max_seq_length(self):
+        from urllib.error import HTTPError
+
+        def overflow(*args, **kwargs):
+            raise HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"Prompt is too long for the context window"}}'))
+
+        def other(*args, **kwargs):
+            raise HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"bad temperature"}}'))
+
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "reviewer"
+        for events in (False, True):
+            with patch.object(orchestrator, "EVENTS", events), patch.object(orchestrator, "urlopen", side_effect=overflow):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    client.complete("m", [], {})
+            self.assertIn("reviewer", str(ctx.exception))
+            self.assertIn("auto_load.max_seq_length", str(ctx.exception))
+        with patch.object(orchestrator, "EVENTS", False), patch.object(orchestrator, "urlopen", side_effect=other):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                client.complete("m", [], {})
+        self.assertIn("API 400", str(ctx.exception))
+
     def _scripted_agent(self, replies, folder, allowed, config=None):
         """Run the writable implementer against scripted replies; returns (result, client)."""
         class Client:

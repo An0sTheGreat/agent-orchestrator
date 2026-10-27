@@ -119,6 +119,8 @@ Events are the usual `@@AO` lines (`loading`, `model`, `delta`, `done`, `usage`)
 - `STATE.md` changes only after reviewer PASS.
 - `TASK.md`, `RESULT.md`, and `REVIEW.md` preserve the latest handoff.
 - An implementer that prints tool calls as JSON text instead of calling the tools has them executed anyway; one that never writes a file is stopped rather than passed to the reviewer.
+- Unreviewed changes left by an interrupted attempt (resume) or an earlier round are flagged to the implementer as PRIOR WORK; if it reports them complete without writing, the reviewer still checks the full diff against the task start instead of the task being blocked.
+- A reply cut off at the output limit is logged; a truncated tool call is never executed and the model is sent back to write in smaller pieces, then the run stops asking to raise `sampling.max_tokens`. A prompt over the context window stops with a request to raise `auto_load.max_seq_length`.
 - Models are unloaded from Unsloth when a run ends, whether it passed, failed, or was stopped.
 - Stop with Ctrl+C. Re-run after inspecting the latest workflow records.
 

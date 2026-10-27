@@ -156,6 +156,7 @@ class ApiClient:
         self.role = ""
         self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
+        self.cut_off = False  # the last reply stopped at max_tokens
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -269,11 +270,20 @@ class ApiClient:
         while True:
             started = time.time()
             streamed = False
-            if EVENTS:  # the launcher renders output as it is generated
-                payload = self._stream_chat(body)
-                streamed = payload.pop("_streamed", False)
-            else:
-                payload = self._request("POST", "/chat/completions", body)
+            try:
+                if EVENTS:  # the launcher renders output as it is generated
+                    payload = self._stream_chat(body)
+                    streamed = payload.pop("_streamed", False)
+                else:
+                    payload = self._request("POST", "/chat/completions", body)
+            except WorkflowError as exc:
+                text = str(exc).lower()
+                if text.startswith("api 400") and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
+                    raise WorkflowError(
+                        f"{self.title or self.role}: the conversation exceeded the model's context length. "
+                        "Raise the role's auto_load.max_seq_length."
+                    ) from exc
+                raise
             try:
                 choice = payload["choices"][0]
                 message = choice["message"]
@@ -290,6 +300,9 @@ class ApiClient:
                     f"{self.title or self.role}: the output limit was reached while thinking and the reply was empty. "
                     "Raise sampling.max_tokens or lower the role's auto_load.reasoning_budget."
                 )
+            self.cut_off = choice.get("finish_reason") == "length"
+            if self.cut_off:
+                print(f"[{self.title or self.role}] reply cut off at the output limit (max_tokens={body.get('max_tokens', '?')})")
             if EVENTS:
                 self._emit_turn(message, payload, started, streamed)
             if fell_back and not self.thinking_off:
@@ -714,7 +727,9 @@ def run_agent(
     allowed: list[str],
     writable: bool,
     interactive: bool,
+    before: dict[str, str | None] | None = None,
 ) -> str:
+    """`before` is the task-start snapshot: allowed files already differing from it are prior (unreviewed) work."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, interactive)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -726,8 +741,11 @@ def run_agent(
     nudges = 0
     fixes = syntax_fixes = 0  # shared budget (3) for unverified-report and syntax send-backs; syntax uses at most 2
     last_error = False
+    cutoffs = 0
     prev_text_calls = None
     start = snapshot(project_root, allowed)
+    baseline = start if before is None else before
+    prior_work = any(start.get(n) != baseline.get(n) for n in start)  # a reply without writes goes on to review
     name = display_name(config, role)
     for step in range(max_steps):
         try:
@@ -749,13 +767,28 @@ def run_agent(
             prev_text_calls = signature
         else:
             prev_text_calls = None
+        # Fake clients in tests have no cut_off attribute.
+        if getattr(client, "cut_off", False) and (unexecuted or any(
+            not isinstance(_parsed_arguments((c.get("function") or {}).get("arguments") or "{}"), dict) for c in calls
+        )):
+            cutoffs += 1
+            if cutoffs > 2:
+                raise WorkflowError(
+                    f"{name}: the reply was cut off at the output limit {cutoffs} times in a row. "
+                    "Raise this role's sampling.max_tokens (or auto_load.max_seq_length if the context is full)."
+                )
+            print(f"[{name}] truncated tool call not executed; sending back ({cutoffs}/2) ...")
+            messages[-1] = {"role": "assistant", "content": str(response.get("content") or "")}  # never replay broken arguments
+            messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
+            continue
+        cutoffs = 0
         if not calls:
-            if writable and not ran_tools and nudges < 2:
+            if writable and not ran_tools and not prior_work and nudges < 2:
                 nudges += 1
                 print(f"[{name}] no tool was executed; requesting real tool calls ({nudges}/2) ...")
                 messages.append({"role": "user", "content": "No file was changed. Use the provided tool-calling interface to write the files; do not print JSON."})
                 continue
-            if writable and not ran_tools:
+            if writable and not ran_tools and not prior_work:
                 reply = str(response.get("content") or "").strip()
                 save_text(project_root / "RESULT.md", f"BLOCKED; {name} never executed a tool; no files were written.\n\nLast {name} reply:\n{reply}")
                 raise WorkflowError(f"{name} never executed a tool; no files were written. Last reply: {reply[:500]}")
@@ -772,7 +805,7 @@ def run_agent(
                 print(f"[{name}] unverified report ({'; '.join(reasons)}); sending back ({fixes}/3) ...")
                 messages.append({"role": "user", "content": "Your report is not accepted: " + "; ".join(reasons) + ". Redo it through the tool-calling interface with strictly valid JSON (no comments, no trailing text), then report only what actually succeeded."})
                 continue
-            defects = [] if reasons else syntax_gate(project_root, allowed, start)[0]
+            defects = [] if reasons else syntax_gate(project_root, allowed, baseline)[0]
             if defects and fixes < 3 and syntax_fixes < 2 and step < max_steps - 1:
                 fixes += 1
                 syntax_fixes += 1
@@ -1200,14 +1233,20 @@ def run_review_loop(
             result = load_text(project_root / "RESULT.md").strip()
         else:
             save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "implementing", total)
+            current = snapshot(project_root, allowed)
+            prior = [n for n in current if current[n] != before.get(n)]
+            prior_note = (
+                f"PRIOR WORK\n{', '.join(prior)} already contain unreviewed changes from an earlier attempt. Finish or fix "
+                "them; if the task is already complete, report so without rewriting the files.\n\n"
+            ) if prior else ""
             implementer_input = (
                 f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
-                f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
+                f"{prior_note}CURRENT ALLOWED FILES\n{allowed_files_context(current)}\n\n"
                 f"REVIEWER FEEDBACK\n{reviewer_feedback}"
             )
             impl_role, impl_system = ("implementer", prompts["implementer"]) if not specialist else (
                 specialist["id"], role_prompt(prompts["implementer"], specialist))
-            result = run_agent(config, impl_role, impl_system, implementer_input, project_root, allowed, True, interactive)
+            result = run_agent(config, impl_role, impl_system, implementer_input, project_root, allowed, True, interactive, before)
             save_text(project_root / "RESULT.md", result)
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
