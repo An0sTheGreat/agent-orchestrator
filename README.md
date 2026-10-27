@@ -81,6 +81,26 @@ If automatic loading is rejected, the controller reports the API error and falls
 
 Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
+## Custom workers
+
+`config.json` may hold an optional top-level `custom_workers` array. Absent or empty, the run behaves exactly as before.
+
+```json
+"custom_workers": [{
+  "id": "8f0c...", "title": "Tester", "kind": "specialist",
+  "description": "Writes and runs unit tests for a feature.",
+  "system_prompt": "You are a meticulous test engineer...",
+  "base_url": "...", "management_url": "...", "api_key_env": "UNSLOTH_API_KEY",
+  "expected_model_contains": "...", "display_name": "...", "timeout_seconds": 600,
+  "auto_load": {}, "sampling": {}
+}]
+```
+
+`id` is stable and unique and is the `role` of every event the worker emits. `title` is unique (case-insensitive) and never `Planner`, `Implementer` or `Reviewer`. The model fields (`base_url`, `expected_model_contains` or `auto_load.model_path`, `auto_load`, `sampling`, ...) have the same meaning as in `roles.<role>`, and the worker is loaded, reloaded and unloaded the same way. An entry with an unknown `kind`, a reserved or duplicate `id`/`title`, a missing `base_url`, model or `system_prompt`, or (for a specialist) a missing `description` is ignored with a `[workers]` warning.
+
+- **Specialist** (`"kind": "specialist"`): listed in the Planner's TEAM section with its description. The Planner may add `"worker": "<title>"` to a task (case-insensitive; an unknown name triggers the usual correction turn, and the choice is stored in the task, so it survives a resume). The Specialist then does that task instead of the Implementer, with the same tools, file scope, syntax check and unverified-report handling. Its system prompt is the standard implementer prompt followed by a `YOUR ROLE: <title>` section holding `system_prompt`.
+- **Extra reviewer** (`"kind": "reviewer"`): after the Reviewer passes a task and the syntax check passed, each Extra reviewer (config order, read-only) reviews it with the standard reviewer prompt followed by its own `YOUR ROLE` section. The task passes only when the Reviewer and every Extra reviewer pass. If any fail, the round fails: their defects, prefixed with the reviewer's title, go to the next round as feedback and into `REVIEW.md`. All Extra reviewers run each round so one round carries all their feedback; none run when the Reviewer fails. A run stopped while they check resumes there (checkpoint phase `extra_reviewing`) without re-running the Implementer or the Reviewer.
+
 ## Safety and recovery
 
 - Paths are resolved beneath `--project`; absolute paths and `..` escapes are rejected.

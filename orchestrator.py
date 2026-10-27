@@ -30,7 +30,7 @@ WORKFLOW_FILES = {"PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md",
 CHECKPOINT_FILE = ".ao_checkpoint.json"
 HANDOFF_FILE = "HANDOFF.md"
 COMPLETION_PHASES = ("passed", "blocked")
-CHECKPOINT_PHASES = ("implementing", "reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
+CHECKPOINT_PHASES = ("implementing", "reviewing", "extra_reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
 _ATOMIC_FILES = WORKFLOW_FILES | {HANDOFF_FILE, CHECKPOINT_FILE}  # everything write_atomic can write
 PROTECTED_FILES = _ATOMIC_FILES | {name + ".tmp" for name in _ATOMIC_FILES}  # models may not edit
 
@@ -393,8 +393,85 @@ class ApiClient:
         )
 
 
+BUILTIN_ROLES = ("planner", "implementer", "reviewer")
+
+
+def custom_workers(config: dict[str, Any], warn: bool = False) -> list[dict[str, Any]]:
+    """Valid entries of config["custom_workers"] in config order; invalid ones are skipped (logged when warn)."""
+    raw = config.get("custom_workers")
+    if not raw:
+        return []
+
+    def skip(label: str, why: str) -> None:
+        if warn:
+            print(f"[workers] ignoring custom worker {label}: {why}")
+
+    if not isinstance(raw, list):
+        skip("list", "custom_workers must be an array")
+        return []
+    workers: list[dict[str, Any]] = []
+    ids: set[str] = set(BUILTIN_ROLES) | set(config.get("roles") or {})
+    titles: set[str] = set(BUILTIN_ROLES)
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            skip(f"#{index + 1}", "not an object")
+            continue
+
+        def text(key: str) -> str:
+            value = item.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        title = text("title")
+        auto = item.get("auto_load")
+        problems = [
+            why for bad, why in (
+                (not text("id") or text("id") in ids, "missing, duplicate or reserved id"),
+                (not title or title.lower() in titles, "missing, duplicate or reserved title"),
+                (item.get("kind") not in ("specialist", "reviewer"), "kind must be 'specialist' or 'reviewer'"),
+                (not text("base_url"), "missing base_url"),
+                (not (text("expected_model_contains") or (isinstance(auto, dict) and auto.get("model_path"))),
+                 "no model (expected_model_contains or auto_load.model_path)"),
+                (not text("system_prompt"), "missing system_prompt"),
+                (item.get("kind") == "specialist" and not text("description"), "a specialist needs a description"),
+                (auto is not None and not isinstance(auto, dict), "auto_load must be an object"),
+                (not isinstance(item.get("sampling", {}), dict), "sampling must be an object"),
+            ) if bad
+        ]
+        if problems:
+            skip(repr(title or f"#{index + 1}"), "; ".join(problems))
+            continue
+        ids.add(text("id"))
+        titles.add(title.lower())
+        workers.append({**item, "title": title})
+    return workers
+
+
+def specialist_titles(config: dict[str, Any]) -> list[str]:
+    return [w["title"] for w in custom_workers(config) if w["kind"] == "specialist"]
+
+
+def find_specialist(task: dict[str, Any], workers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The Specialist a task is assigned to (title match is case-insensitive); None means the Implementer."""
+    name = task.get("worker")
+    if not name:
+        return None
+    for worker in workers:
+        if worker["kind"] == "specialist" and worker["title"].lower() == str(name).strip().lower():
+            return worker
+    raise WorkflowError(f"Planner task names unknown worker {name!r}")
+
+
+def role_prompt(base: str, worker: dict[str, Any]) -> str:
+    """The built-in role prompt unchanged, followed by the custom worker's own section."""
+    return f"{base.rstrip()}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
+
+
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
-    settings = config["roles"][role]
+    """Client + sampling for a built-in role, or for a custom worker when `role` is its id."""
+    if role in (config.get("roles") or {}):
+        settings = config["roles"][role]
+    else:
+        settings = next((w for w in custom_workers(config) if w["id"] == role), None) or config["roles"][role]
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
     client = ApiClient(settings)
@@ -736,12 +813,23 @@ def team_context(config: dict[str, Any]) -> str:
         if (r.get("sampling") or {}).get("max_tokens"):
             parts.append(f"max output {r['sampling']['max_tokens']} tokens")
         lines.append(f"{role.capitalize()}: " + ", ".join(parts))
+    workers = custom_workers(config)
+    for kind, heading in (
+        ("specialist", 'Specialists (set "worker" to a title to give a task to one instead of the Implementer)'),
+        ("reviewer", "Extra reviewers (they review every task after the Reviewer; you cannot assign them)"),
+    ):
+        group = [w for w in workers if w["kind"] == kind]
+        if group:
+            lines.append(heading + ":")
+            lines.extend(f"- {w['title']}: {w.get('description') or 'no description'}" for w in group)
     files, work = task_limits(config)
     lines.append(f"Task limits: at most {files} allowed files and {work} required-work items per task")
     return "\n".join(lines)
 
 
-def validate_task(task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7)) -> None:
+def validate_task(
+    task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7), specialists: list[str] = (),
+) -> None:
     max_files, max_work = limits
     required = ["id", "outcome", "allowed_files", "required_work", "validation", "stop_condition"]
     missing = [name for name in required if not task.get(name)]
@@ -756,6 +844,10 @@ def validate_task(task: dict[str, Any], project_root: Path, limits: tuple[int, i
     steps = task["required_work"]
     if not isinstance(steps, list) or not 1 <= len(steps) <= max_work:
         raise WorkflowError(f"Planner must provide 1-{max_work} required-work items")
+    worker = task.get("worker")
+    if worker and str(worker).strip().lower() not in {title.lower() for title in specialists}:
+        known = ", ".join(specialists) or "none"
+        raise WorkflowError(f'Planner task names unknown worker {worker!r}; Specialists: {known}. Omit "worker" for the Implementer')
 
 
 def request_plan(
@@ -769,7 +861,7 @@ def request_plan(
                 return plan
             if plan.get("status") != "TASK" or not isinstance(plan.get("task"), dict):
                 raise WorkflowError("Planner must return status TASK with a task, or status COMPLETE")
-            validate_task(plan["task"], project_root, task_limits(config))
+            validate_task(plan["task"], project_root, task_limits(config), specialist_titles(config))
             return plan
         except WorkflowError as exc:
             if repair == max_repairs:
@@ -787,19 +879,20 @@ def request_plan(
 
 
 def extract_review_with_repair(
-    config: dict[str, Any], system: str, user: str, response: str, interactive: bool, max_repairs: int = 2
+    config: dict[str, Any], system: str, user: str, response: str, interactive: bool, max_repairs: int = 2,
+    role: str = "reviewer",
 ) -> tuple[dict[str, Any], str]:
     for repair in range(max_repairs + 1):
-        review, response = extract_json_with_repair(config, "reviewer", response, interactive)
+        review, response = extract_json_with_repair(config, role, response, interactive)
         verdict = str(review.get("verdict", "")).upper()
         if verdict in {"PASS", "FAIL"}:
             return review, response
         if repair == max_repairs:
             raise WorkflowError(f"Reviewer verdict remained invalid after {max_repairs} corrections")
-        print(f"[reviewer] invalid verdict; requesting correction ({repair + 1}/{max_repairs}) ...")
+        print(f"[{role}] invalid verdict; requesting correction ({repair + 1}/{max_repairs}) ...")
         response = ask_once(
             config,
-            "reviewer",
+            role,
             system,
             f"{user}\n\nCORRECTION REQUIRED\nThe previous response must contain verdict PASS or FAIL.\n"
             f"Return corrected JSON only.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}",
@@ -947,7 +1040,7 @@ def write_handoff(project_root: Path, checkpoint: dict[str, Any] | None, total_r
     if checkpoint:
         task = checkpoint["task"]
         phase = {
-            "reviewing": "Reviewer checking", "passed": "Passed, recording result", "blocked": "Blocked, recording issue",
+            "reviewing": "Reviewer checking", "extra_reviewing": "Extra reviewers checking", "passed": "Passed, recording result", "blocked": "Blocked, recording issue",
         }.get(checkpoint["phase"], "Implementer working")
         label = {"passed": "Implementer result", "blocked": "Final review"}.get(checkpoint["phase"], "Last reviewer feedback")
         feedback = str(checkpoint["reviewer_feedback"])[:2000]
@@ -992,7 +1085,9 @@ def clear_checkpoint(project_root: Path) -> None:
     write_handoff(project_root, None)
 
 
-def load_checkpoint(project_root: Path, limits: tuple[int, int], total_rounds: int) -> dict[str, Any] | None:
+def load_checkpoint(
+    project_root: Path, limits: tuple[int, int], total_rounds: int, specialists: list[str] = (),
+) -> dict[str, Any] | None:
     """Return a valid checkpoint to resume, or None (warning and deleting a corrupt one)."""
     path = project_root / CHECKPOINT_FILE
     if not path.is_file():
@@ -1016,7 +1111,7 @@ def load_checkpoint(project_root: Path, limits: tuple[int, int], total_rounds: i
             return data
         if not isinstance(data["round"], int) or not 0 <= data["round"] < total_rounds:
             raise WorkflowError("round out of range")
-        validate_task(data["task"], project_root, limits)
+        validate_task(data["task"], project_root, limits, specialists)
         return data
     except (WorkflowError, KeyError, ValueError) as exc:
         print(f"[resume] discarding invalid {CHECKPOINT_FILE}: {exc}")
@@ -1042,6 +1137,27 @@ def complete_task(task: dict[str, Any], phase: str, text: str, project_root: Pat
     clear_checkpoint(project_root)
 
 
+def run_extra_reviewers(
+    config: dict[str, Any], base_prompt: str, extras: list[dict[str, Any]], reviewer_input: str,
+    project_root: Path, allowed: list[str], interactive: bool,
+) -> str:
+    """Run every Extra reviewer in config order. Returns "" when all PASS, else a FAIL review (JSON) whose
+    defects are prefixed with the failing reviewer's title; all reviewers run so one round carries all feedback."""
+    defects: list[Any] = []
+    for worker in extras:
+        system = role_prompt(base_prompt, worker)
+        text = run_agent(config, worker["id"], system, reviewer_input, project_root, allowed, False, interactive)
+        review, _ = extract_review_with_repair(config, system, reviewer_input, text, interactive, role=worker["id"])
+        verdict = str(review.get("verdict", "")).upper()
+        print(f"[{worker['title']}] {verdict}")
+        if verdict == "FAIL":
+            found = review.get("defects")
+            for item in (found if isinstance(found, list) and found else [{}]):
+                item = item if isinstance(item, dict) else {"defect": str(item)}
+                defects.append({**item, "defect": f"{worker['title']}: {item.get('defect') or 'failed the task without listing a defect'}"})
+    return json.dumps({"verdict": "FAIL", "defects": defects}, indent=2, ensure_ascii=False) if defects else ""
+
+
 def run_review_loop(
     config: dict[str, Any], prompts: dict[str, str], task: dict[str, Any], before: dict[str, str | None],
     start_round: int, reviewer_feedback: str, phase: str, max_review_rounds: int, project_root: Path, interactive: bool,
@@ -1053,8 +1169,12 @@ def run_review_loop(
     """
     allowed = [str(item) for item in task["allowed_files"]]
     total = max_review_rounds + 1
+    workers = custom_workers(config)
+    specialist = find_specialist(task, workers)
+    extras = [w for w in workers if w["kind"] == "reviewer"]
     for review_round in range(start_round, total):
-        if phase == "reviewing" and review_round == start_round and (project_root / "RESULT.md").is_file():
+        resumed = phase in ("reviewing", "extra_reviewing") and review_round == start_round and (project_root / "RESULT.md").is_file()
+        if resumed:
             result = load_text(project_root / "RESULT.md").strip()
         else:
             save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "implementing", total)
@@ -1063,7 +1183,9 @@ def run_review_loop(
                 f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
                 f"REVIEWER FEEDBACK\n{reviewer_feedback}"
             )
-            result = run_agent(config, "implementer", prompts["implementer"], implementer_input, project_root, allowed, True, interactive)
+            impl_role, impl_system = ("implementer", prompts["implementer"]) if not specialist else (
+                specialist["id"], role_prompt(prompts["implementer"], specialist))
+            result = run_agent(config, impl_role, impl_system, implementer_input, project_root, allowed, True, interactive)
             save_text(project_root / "RESULT.md", result)
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
@@ -1079,13 +1201,22 @@ def run_review_loop(
                 f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
                 f"{syntax_line}\n\nCHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
             )
-            save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
-            review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
-            review, review_text = extract_review_with_repair(
-                config, prompts["reviewer"], reviewer_input, review_text, interactive
-            )
-            save_text(project_root / "REVIEW.md", review_text)
-            verdict = str(review.get("verdict", "")).upper()
+            if resumed and phase == "extra_reviewing":
+                verdict, review_text = "PASS", load_text(project_root / "REVIEW.md")  # the main Reviewer already passed this round
+            else:
+                save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
+                review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
+                review, review_text = extract_review_with_repair(
+                    config, prompts["reviewer"], reviewer_input, review_text, interactive
+                )
+                save_text(project_root / "REVIEW.md", review_text)
+                verdict = str(review.get("verdict", "")).upper()
+            if verdict == "PASS" and extras:
+                save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "extra_reviewing", total)
+                extra_failure = run_extra_reviewers(config, prompts["reviewer"], extras, reviewer_input, project_root, allowed, interactive)
+                if extra_failure:
+                    verdict, review_text = "FAIL", extra_failure
+                    save_text(project_root / "REVIEW.md", review_text)
             emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
         if verdict == "PASS":
             token = save_checkpoint(project_root, task, before, review_round, result, "passed", total)
@@ -1121,6 +1252,7 @@ def _run() -> int:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
     config = json.loads(load_text(project_root / "config.json"))
     task_limits(config)
+    custom_workers(config, warn=True)
     project = load_text(project_root / "PROJECT.md").strip()
     if not project or "REPLACE THIS" in project or "[Describe the project" in project:
         raise WorkflowError("Describe the real goal in PROJECT.md before running")
@@ -1134,7 +1266,7 @@ def _run() -> int:
     remaining = max_tasks
     while remaining > 0:
         remaining -= 1
-        checkpoint = load_checkpoint(project_root, limits, total_rounds)
+        checkpoint = load_checkpoint(project_root, limits, total_rounds, specialist_titles(config))
         if checkpoint:
             task, before = checkpoint["task"], checkpoint["before"]
             start_round, reviewer_feedback, phase = checkpoint["round"], checkpoint["reviewer_feedback"], checkpoint["phase"]
