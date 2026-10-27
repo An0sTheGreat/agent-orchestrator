@@ -18,7 +18,11 @@ public partial class MainWindow
     private bool _chatBusy, _chatFollow = true, _chatStopRequested;
     private string? _chatError;
     private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
-    private readonly HashSet<(string Url, string Path)> _loadedByChat = new(); // models stay loaded between messages; unloaded when the app closes
+    private readonly HashSet<(string Url, string Path)> _loadedByChat = new(); // unloaded when the app closes, or after each turn when ChatKeepLoaded is off
+    private HashSet<(string Url, string Path)> _turnLoaded = new(); // what the current turn's loading events added; a fresh set per turn so a late unload never touches the next turn
+    private Task _chatUnload = Task.CompletedTask;
+    private int _unloadsPending; // end-of-turn unloads in flight: Send waits so they cannot unload what the next turn loads
+    private bool _unloading => _unloadsPending > 0;
     private readonly List<LauncherLogic.ChatMessage> _chatHistory = new();
     private ChatReply? _reply;
 
@@ -42,6 +46,7 @@ public partial class MainWindow
             _settings.ChatMode = "single";
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "implementer";
+        ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
         RefreshChatTarget();
         RefreshChatInput();
     }
@@ -69,11 +74,11 @@ public partial class MainWindow
     {
         var runActive = _process is not null;
         ChatInput.IsEnabled = !_chatBusy;
-        ChatPlus.IsEnabled = ChatTargetChip.IsEnabled = ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = !_chatBusy;
+        ChatPlus.IsEnabled = ChatTargetChip.IsEnabled = ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         ChatSend.Content = _chatBusy ? "Stop" : "Send";
-        ChatSend.IsEnabled = _chatBusy || (!runActive && _workflowRoot is not null && ChatInput.Text.Trim().Length > 0);
+        ChatSend.IsEnabled = _chatBusy || (!runActive && !_unloading && _workflowRoot is not null && ChatInput.Text.Trim().Length > 0);
         ChatHint.Text = runActive ? "A project run is using the models; chat is available when it finishes."
-            : _chatBusy ? "Replying…" : "Enter to send  ·  Shift+Enter for a new line";
+            : _chatBusy ? "Replying…" : _unloading ? "Unloading models…" : "Enter to send  ·  Shift+Enter for a new line";
     }
 
     // ---- worker menu (+ button and target chip)
@@ -123,6 +128,43 @@ public partial class MainWindow
         _settings.ChatMode = ((FrameworkElement)sender).Tag as string == "multi" ? "multi" : "single";
         _settings.Save();
         RefreshChatTarget();
+    }
+
+    // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
+    private void ChatKeep_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ChatKeepLoaded = ChatKeepToggle.IsChecked == true;
+        _settings.Save();
+        if (!_settings.ChatKeepLoaded)
+            UnloadChat(_loadedByChat.ToList());
+    }
+
+    // Unloads the given chat-loaded models, each on the server that loaded it, without blocking the UI thread. Only models
+    // chat itself still tracks (never ones a project run loaded or the user loaded beforehand).
+    private void UnloadChat(List<(string Url, string Path)> wanted)
+    {
+        var pairs = wanted.Where(_loadedByChat.Remove).Where(p => !_loadedByRun.Contains(p)).ToList();
+        if (pairs.Count == 0)
+            return;
+        _unloadsPending++;
+        RefreshChatInput();
+        _chatUnload = UnloadChatAsync(pairs, _runKey);
+    }
+
+    // The POSTs run on the thread pool; the log line and the Send lock are updated back on the UI thread.
+    private async Task UnloadChatAsync(List<(string Url, string Path)> pairs, string key)
+    {
+        var unloaded = await Task.Run(async () =>
+        {
+            var count = 0;
+            foreach (var (url, path) in pairs)
+                if (await PostUnloadAsync(url, path, key).ConfigureAwait(false))
+                    count++;
+            return count;
+        });
+        Log($"Unloaded {unloaded} chat model(s)");
+        _unloadsPending--;
+        RefreshChatInput();
     }
 
     // ---- input
@@ -270,6 +312,7 @@ public partial class MainWindow
     private void StartChatTurn(string text, bool multi)
     {
         _pendingUser = text;
+        _turnLoaded = new();
         var box = BodyText(text, mono: false, muted: false, chat: true);
         box.FontSize = 14;
         var bubble = new Border
@@ -338,6 +381,10 @@ public partial class MainWindow
             card.Status = "Idle";
         }
         _activeRole = null;
+        var loadedThisTurn = _turnLoaded.ToList();
+        _turnLoaded = new();
+        if (!_settings.ChatKeepLoaded)
+            UnloadChat(loadedThisTurn);
         SetChatBusy(false);
         if (ChatView.IsVisible)
             ChatInput.Focus();
@@ -376,7 +423,10 @@ public partial class MainWindow
                 EndChatBlock();
                 Activate(role, "Loading model");
                 if (Str(ev, "path").Length > 0)
+                {
                     _loadedByChat.Add(LoadedOn(ev));
+                    _turnLoaded.Add(LoadedOn(ev));
+                }
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
                 break;

@@ -153,6 +153,8 @@ internal sealed class AppSettings
     // Chat view: "single" (one worker) or "multi" (Planner -> Implementer -> Reviewer), and the single-mode target worker id.
     public string ChatMode { get; set; } = "single";
     public string ChatWorker { get; set; } = "implementer";
+    // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
+    public bool ChatKeepLoaded { get; set; } = true;
     // Window position and size in device-independent pixels; null until the window has been closed once.
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }

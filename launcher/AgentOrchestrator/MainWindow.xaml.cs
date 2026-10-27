@@ -1279,6 +1279,47 @@ public partial class MainWindow : Window
                 Console.Error.WriteLine($"ui-smoke: unload on close: server A saw {seenA.Count}, server B saw {seenB.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
                 return Fail();
             }
+
+            // Keep models loaded: On leaves them tracked and unposted; Off unloads exactly what the turn loaded, on its server;
+            // switching On to Off unloads the tracked ones once; a model chat did not load is never touched.
+            var (fakeC, seenC, servingC) = Fake();
+            (_apiBase, _runKey) = (UrlOf(fakeC), "smoke-key");
+            _loadedByChat.Clear();
+            _loadedByRun.Clear();
+            async Task KeepTurn(params string[] names)
+            {
+                StartChatTurn("K", false);
+                foreach (var n in names)
+                    _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/{{n}}.gguf","url":"{{UrlOf(fakeC)}}"}"""));
+                DrainLines();
+                FinishChatTurn(-1, true, null);
+                await _chatUnload;
+            }
+            bool Posted(params string[] names) => Only(seenC, names) && names.All(n => _loadedByChat.All(l => l.Path != $"smoke/{n}.gguf"));
+            _settings.ChatKeepLoaded = true;
+            ChatKeepToggle.IsChecked = true;
+            await KeepTurn("k1", "k2");
+            var keepOk = seenC.IsEmpty && _loadedByChat.Count == 2 && !_unloading;
+            ChatKeepToggle.IsChecked = false;
+            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs());
+            var sentWhileBusy = _unloading && !ChatSend.IsEnabled; // Send waits for the unload
+            await _chatUnload;
+            var switchOk = keepOk && sentWhileBusy && !_settings.ChatKeepLoaded && Posted("k1", "k2") && _loadedByChat.Count == 0 && !_unloading;
+            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs()); // already Off: nothing more to unload
+            await _chatUnload;
+            await KeepTurn("k3", "k4");
+            var offOk = switchOk && Posted("k1", "k2", "k3", "k4") && _loadedByChat.Count == 0;
+            await KeepTurn(); // a model that was already loaded sends no loading event: nothing is unloaded
+            _settings.ChatKeepLoaded = true;
+            ChatKeepToggle.IsChecked = true;
+            fakeC.Stop();
+            await servingC;
+            (_apiBase, _runKey) = (savedBase, savedKey);
+            if (!offOk || !Only(seenC, "k1", "k2", "k3", "k4") || _loadedByChat.Count != 0)
+            {
+                Console.Error.WriteLine($"ui-smoke: keep loaded: keep={keepOk} switch={switchOk} off={offOk}, server saw {seenC.Count}");
+                return Fail();
+            }
             ShowView(false);
             await Settle();
         }
@@ -1519,21 +1560,25 @@ public partial class MainWindow : Window
     {
         var paths = _loadedByRun.ToList();
         _loadedByRun.Clear();
+        foreach (var (url, path) in paths)
+            if (await PostUnloadAsync(url, path, _runKey))
+                Log($"Unloaded {path}");
+    }
+
+    // One unload POST; false when the server is unreachable or refuses. Touches no UI, so it is safe off the UI thread.
+    private async Task<bool> PostUnloadAsync(string url, string path, string key)
+    {
         try
         {
-            foreach (var (url, path) in paths)
+            using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
-                };
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
-                using var response = await _http.SendAsync(request);
-                if (response.IsSuccessStatusCode)
-                    Log($"Unloaded {path}");
-            }
+                Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return false; }
     }
 
     // The close-time unload. It runs on the UI thread inside Closing, so it must not await anything that needs the

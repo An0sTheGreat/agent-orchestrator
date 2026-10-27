@@ -1033,6 +1033,11 @@
                                           ToolTip="Planner → Implementer → Reviewer, answering with the reviewed result" AutomationProperties.Name="Multi-worker mode" />
                         </StackPanel>
                     </Border>
+                    <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center" Margin="0,0,16,0"
+                                  ToolTip="On: models stay loaded between messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
+                                  AutomationProperties.Name="Keep models loaded" />
+                    <TextBlock DockPanel.Dock="Right" Text="Keep models loaded" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"
+                               ToolTip="{Binding ToolTip, ElementName=ChatKeepToggle}" />
                 </DockPanel>
                 <Grid Grid.Row="1">
                     <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged">
