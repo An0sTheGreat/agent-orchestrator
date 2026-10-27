@@ -293,7 +293,7 @@ class ApiClient:
                 self._emit_turn(message, payload, started, streamed)
             if fell_back and not self.thinking_off:
                 self.thinking_off = True
-                print(f"[{self.role}] thinking disabled for the rest of this run")
+                print(f"[{self.role}] thinking disabled for the rest of this turn")
             return message
 
     def _stream_chat(self, body: dict[str, Any]) -> dict[str, Any]:
