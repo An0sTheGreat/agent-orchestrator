@@ -1,4 +1,7 @@
+import contextlib
+import io
 import json
+import os
 import shutil
 import tempfile
 import unittest
@@ -1221,9 +1224,10 @@ class CustomWorkerTests(unittest.TestCase):
     def test_validate_task_worker_field(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = Path(folder)
-            for ok in ({}, {"worker": None}, {"worker": ""}, {"worker": "Tester"}, {"worker": " tester "}):
+            for ok in ({}, {"worker": None}, {"worker": ""}, {"worker": "Tester"}, {"worker": " tester "},
+                       {"worker": "Implementer"}, {"worker": " implementer "}):
                 orchestrator.validate_task(self.TASK | ok, root, (3, 7), ["Tester"])
-            for bad, titles in (("Ghost", ["Tester"]), ("Tester", []), ("Implementer", ["Tester"])):
+            for bad, titles in (("Ghost", ["Tester"]), ("Tester", [])):
                 with self.assertRaises(orchestrator.WorkflowError) as ctx:
                     orchestrator.validate_task(self.TASK | {"worker": bad}, root, (3, 7), titles)
                 self.assertIn("unknown worker", str(ctx.exception))
@@ -1270,10 +1274,59 @@ class CustomWorkerTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(log[0]["role"], "s1")  # the checkpointed task, not the planner's, ran
             self.assertIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
-            # a checkpoint whose Specialist was removed from config is discarded like any invalid task
-            orchestrator.save_checkpoint(root, task, {"a.txt": None}, 0, "fb", "implementing", 3)
-            self.assertIsNone(orchestrator.load_checkpoint(root, (3, 7), 3, []))
-            self.assertFalse((root / ".ao_checkpoint.json").exists())
+
+    def test_plan_stores_worker_id_and_implementer_means_none(self):
+        config = self.config([self.worker("s1", "Tester")])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            for name, expect in (("tester", "s1"), ("Implementer", None), (None, None)):
+                plan = {"status": "TASK", "task": self.TASK | {"worker": name}}
+                with patch.object(orchestrator, "ask_once", return_value=json.dumps(plan)):
+                    task = orchestrator.request_plan(config, "s", "u", Path(folder), False)["task"]
+                self.assertEqual(task.get("worker_id"), expect)
+
+    def test_renamed_specialist_resumes_by_id_and_removed_one_falls_back(self):
+        task = self.TASK | {"worker": "Tester", "worker_id": "s1"}
+        before = {"a.txt": None}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            renamed = self.config([self.worker("s1", "QA Lead")])
+            code, log, _ = self.run_loop(root, renamed, task=dict(self.TASK, id="OTHER"))
+            self.assertEqual((code, log[0]["role"]), (0, "s1"))
+            self.assertIn("YOUR ROLE: QA Lead", log[0]["system"])
+            self.assertIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+            # round and snapshot survive the rename
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            data = orchestrator.load_checkpoint(root, (3, 7), 3)
+            self.assertEqual((data["round"], data["before"], data["task"]["worker_id"]), (1, before, "s1"))
+            # Specialist removed (or turned into a reviewer): the Implementer continues, checkpoint kept
+            for workers in ([], [self.worker("s1", "Tester", "reviewer")]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertIsNone(orchestrator.find_specialist(data["task"], orchestrator.custom_workers(self.config(workers))))
+                self.assertIn("no longer exists", out.getvalue())
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            out = type("Out", (io.StringIO,), {"reconfigure": lambda self, **kw: None})()
+            with contextlib.redirect_stdout(out):
+                code, log, _ = self.run_loop(root, self.config([]), task=dict(self.TASK, id="OTHER"))
+            self.assertEqual((code, log[0]["role"]), (0, "implementer"))
+            self.assertIn("no longer exists", out.getvalue())
+            self.assertNotIn("discarding", out.getvalue())
+
+    def test_log_lines_show_title_but_events_keep_id(self):
+        tester = self.worker("s1-guid", "Tester")
+        with patch.dict(os.environ, {"AO_TEST_KEY": "k"}):
+            settings = dict(tester, api_key_env="AO_TEST_KEY")
+            client = orchestrator.ApiClient(settings)
+            client.title = orchestrator.display_name(self.config([tester]), "s1-guid")
+            events = []
+            out = io.StringIO()
+            with patch.object(client, "model_id", return_value="s1-guid-model"), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                    contextlib.redirect_stdout(out):
+                client.ensure_model("s1-guid", False)
+        self.assertIn("[Tester] s1-guid-model", out.getvalue())
+        self.assertNotIn("[s1-guid]", out.getvalue())
+        self.assertEqual(events, [("model", {"role": "s1-guid", "id": "s1-guid-model"})])
 
     def reviewers(self):
         return [self.worker("r1", "Security", "reviewer"), self.worker("r2", "Perf", "reviewer")]
