@@ -280,7 +280,8 @@ internal static class LauncherLogic
             return false;
         if (preset.Roles.Count == 0)
             return true;
-        var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
         var roles = (root["roles"] ??= new JsonObject()).AsObject();
         foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
             roles[role] = JsonNode.Parse(json);

@@ -1299,7 +1299,7 @@ public partial class MainWindow : Window
             size = new FileInfo(path).Length;
             heading = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line))?.Trim() ?? "";
         }
-        catch (IOException) { }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // details are optional
         TextBlock Line(string text, bool muted, double top)
         {
             var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 460, Margin = new Thickness(0, top, 0, 0) };
@@ -1315,7 +1315,7 @@ public partial class MainWindow : Window
         var panel = new StackPanel();
         panel.Children.Add(Line("This folder already has a PROJECT.md. Do you want to use it?", false, 0));
         panel.Children.Add(Line(details, true, 8));
-        panel.Children.Add(Line("Replace keeps your current file as PROJECT.md.bak, then installs " +
+        panel.Children.Add(Line("Replace keeps your current file as a PROJECT.md.bak backup, then installs " +
             (customSelected ? "the PROJECT.md you selected." : "the template PROJECT.md."), true, 8));
         if (customSelected)
             panel.Children.Add(Line("Using the existing file means the custom PROJECT.md you selected will not be used.", true, 4));
