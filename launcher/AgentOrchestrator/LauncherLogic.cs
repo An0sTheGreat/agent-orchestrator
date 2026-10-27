@@ -336,7 +336,7 @@ internal static class LauncherLogic
     }
 
     // Why the orchestrator would ignore this custom worker (it needs a model, a system prompt, and for a
-    // Specialist a description), or null. Shared by the Settings dialog, the card warning and WriteCustomWorkers.
+    // Specialist a description), or null. Shared by the Settings dialog and CustomProblems.
     public static string? CustomWorkerProblem(WorkerSetting w)
     {
         if (string.IsNullOrWhiteSpace(w.ModelPath))
@@ -346,6 +346,36 @@ internal static class LauncherLogic
         if (w.Kind != "reviewer" && string.IsNullOrWhiteSpace(w.Description))
             return "a Specialist needs a description (Settings)";
         return null;
+    }
+
+    // The orchestrator's acceptance rules for every worker in order (null = accepted or not a custom worker):
+    // the title may not be empty, reserved, or used by an earlier accepted worker, and the project's
+    // implementer needs a base_url (custom workers copy it). Used by the writer and by the card warnings.
+    public static string?[] CustomProblems(IReadOnlyList<WorkerSetting> workers, bool implementerHasBaseUrl)
+    {
+        var problems = new string?[workers.Count];
+        var used = new HashSet<string>(ReservedTitles, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < workers.Count; i++)
+        {
+            var w = workers[i];
+            if (!w.Custom)
+                continue;
+            var title = w.Title.Trim();
+            problems[i] = !implementerHasBaseUrl ? "the project's implementer has no base_url in config.json" :
+                title.Length == 0 ? "the title is empty — rename it" :
+                ReservedTitles.Contains(title, StringComparer.OrdinalIgnoreCase) ? $"title '{title}' is reserved for a built-in worker — rename it" :
+                used.Contains(title) ? $"title '{title}' is already used — rename it" :
+                CustomWorkerProblem(w);
+            if (problems[i] is null)
+                used.Add(title);
+        }
+        return problems;
+    }
+
+    public static bool ImplementerHasBaseUrl(string configPath)
+    {
+        try { return !string.IsNullOrWhiteSpace((JsonNode.Parse(File.ReadAllText(configPath)))?["roles"]?["implementer"]?["base_url"]?.ToString()); }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return false; }
     }
 
     // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
@@ -359,9 +389,14 @@ internal static class LauncherLogic
         var implementer = root["roles"]?["implementer"] as JsonObject;
         var skipped = new List<string>();
         var array = new JsonArray();
-        foreach (var w in workers.Where(w => w.Custom))
+        var all = workers.ToList();
+        var problems = CustomProblems(all, !string.IsNullOrWhiteSpace(implementer?["base_url"]?.ToString()));
+        for (var i = 0; i < all.Count; i++)
         {
-            if (CustomWorkerProblem(w) is { } problem)
+            var w = all[i];
+            if (!w.Custom)
+                continue;
+            if (problems[i] is { } problem)
             {
                 skipped.Add($"{w.Title.Trim()}: {problem}");
                 continue;
@@ -603,6 +638,19 @@ internal static class LauncherLogic
             WriteCustomWorkers(cwConfig, cwWorkers.Take(1));
             if (JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]!.AsArray().Count != 0)
                 throw new InvalidOperationException("Custom workers: rewriting must replace the previous array.");
+            // Title rules and the implementer's base_url, as the orchestrator applies them.
+            WorkerSetting Ok(string id, string title) => new() { Id = id, Title = title, Custom = true, Kind = "reviewer", SystemPrompt = "p", ModelId = "m", ModelPath = "m" };
+            var titled = new[] { Ok("t1", "Worker 2"), Ok("t2", "WORKER 2"), Ok("t3", "Reviewer"), Ok("t4", " planner "), Ok("t5", "Fine") };
+            var titledSkipped = WriteCustomWorkers(cwConfig, titled);
+            var titledWritten = JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]!.AsArray();
+            if (titledSkipped.Length != 3 || !titledSkipped[0].Contains("already used") || !titledSkipped[1].Contains("reserved") || !titledSkipped[2].Contains("reserved") ||
+                titledWritten.Count != 2 || (string)titledWritten[0]!["id"]! != "t1" || (string)titledWritten[1]!["id"]! != "t5")
+                throw new InvalidOperationException("Custom workers: duplicate and reserved titles must not be written.");
+            var noUrlConfig = Path.Combine(testArea, "nourl.json");
+            File.WriteAllText(noUrlConfig, "{\"roles\":{\"implementer\":{}}}");
+            if (ImplementerHasBaseUrl(noUrlConfig) || !ImplementerHasBaseUrl(cwConfig) || WriteCustomWorkers(noUrlConfig, [Ok("u1", "Docs")]) is not [var noUrl] || !noUrl.Contains("base_url") ||
+                JsonNode.Parse(File.ReadAllText(noUrlConfig))!["custom_workers"]!.AsArray().Count != 0)
+                throw new InvalidOperationException("Custom workers: a project without an implementer base_url must report and write nothing.");
             var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
             if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
                 TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)

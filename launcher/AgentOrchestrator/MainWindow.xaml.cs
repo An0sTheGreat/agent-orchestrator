@@ -122,7 +122,8 @@ public partial class MainWindow : Window
             ApiKeyBox.Focus();
             return;
         }
-        SyncCustomWorkers(announce: true);
+        if (!PrepareRun())
+            return;
         try
         {
             var python = LauncherLogic.FindPython();
@@ -133,7 +134,6 @@ public partial class MainWindow : Window
 
             _settings.LastProject = project;
             _settings.Save();
-            ResetRunView();
             _apiBase = ManagementUrl(project) ?? _apiBase;
             _runStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             Log($"Starting workflow for {project}");
@@ -219,6 +219,25 @@ public partial class MainWindow : Window
         {
             Log($"Could not save the handoff note: {exception.Message}");
         }
+    }
+
+    // Before a run: write the custom workers to config.json, clear the view, then say which workers will not take
+    // part (after the clear, so the lines stay). False (nothing started) when config.json could not be written,
+    // since the run would otherwise use whatever custom_workers is on disk.
+    private bool PrepareRun()
+    {
+        var skipped = new List<string>();
+        if (!SyncCustomWorkers(skipped))
+        {
+            Toast("Run not started: config.json could not be updated", "#FF667A");
+            return false;
+        }
+        ResetRunView();
+        foreach (var reason in skipped)
+            Log($"Not written to config.json, so it will not take part: {reason}");
+        if (skipped.Count > 0)
+            Toast($"Not taking part: {string.Join("; ", skipped)}", "#FFB74D");
+        return true;
     }
 
     private void ResetRunView()
@@ -377,13 +396,13 @@ public partial class MainWindow : Window
                 EndStream(false);
                 Activate(role, "Loading model");
                 _loadedByRun.Add(Str(ev, "path"));
-                Log($"[{role}] loading {Str(ev, "path")} ...");
+                Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
                 EndStream(false);
                 Activate(role, "Working");
                 card?.SetModel(LauncherLogic.DescribeModel(Str(ev, "id"), ConfiguredVariant(role)));
-                Log($"[{role}] {Str(ev, "id")}");
+                Log($"[{card?.Title ?? role}] {Str(ev, "id")}");
                 break;
             case "done":
                 EndStream(ev.TryGetProperty("final", out var f) && f.ValueKind == JsonValueKind.True);
@@ -893,7 +912,7 @@ public partial class MainWindow : Window
         {
             Directory.CreateDirectory(presetProject);
             var presetConfig = Path.Combine(presetProject, "config.json");
-            string Config(string temperature) => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """}},"implementer":{},"reviewer":{}}}""";
+            string Config(string temperature) => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """}},"implementer":{"base_url":"http://h/v1"},"reviewer":{}}}""";
             string Cards() => string.Join("|", _cards.Select(c => $"{c.Role}:{c.Title}"));
             File.WriteAllText(presetConfig, Config("0.3"));
             ProjectPath = presetProject;
@@ -1000,6 +1019,35 @@ public partial class MainWindow : Window
             RemoveWorker(tester);
             if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
                 return Fail();
+
+            // Legacy duplicate titles: the second card warns and is not written.
+            var first = new RoleCard("smoke-d1", "Dup", custom: true);
+            var second = new RoleCard("smoke-d2", "DUP", custom: true);
+            foreach (var card in new[] { first, second })
+            {
+                card.ModelId = card.Config.ModelPath = "org/M-GGUF";
+                card.Config.Kind = "reviewer";
+                card.Config.SystemPrompt = "p";
+                _cards.Add(card);
+            }
+            // Start's pre-run step: the skipped worker's line survives the view reset, and a toast is raised.
+            Log("stale line");
+            if (!PrepareRun() || first.HasSetupProblem || !second.HasSetupProblem || !second.SetupTip.Contains("already used") ||
+                LogBox.Text.Contains("stale line") || !LogBox.Text.Contains("DUP: title 'DUP' is already used") || ToastStack.Children.Count == 0 ||
+                JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 1)
+                return Fail();
+            // config.json cannot be written: the start is aborted before anything is cleared or launched.
+            Log("kept line");
+            File.SetAttributes(presetConfig, FileAttributes.ReadOnly);
+            bool started;
+            try { started = PrepareRun(); }
+            finally { File.SetAttributes(presetConfig, FileAttributes.Normal); }
+            if (started || _process is not null || StatusText.Text != "Could not update config.json" || !LogBox.Text.Contains("kept line") ||
+                !LogBox.Text.Contains("Could not write custom workers") || ToastStack.Children.OfType<Border>().All(t => !((TextBlock)((StackPanel)t.Child).Children[1]).Text.StartsWith("Run not started")))
+                return Fail();
+            RemoveWorker(first);
+            RemoveWorker(second);
+            SetStatus("Ready", "#667085");
         }
         finally
         {
@@ -1199,6 +1247,8 @@ public partial class MainWindow : Window
 
     private string? ConfiguredVariant(string role)
     {
+        if (CardFor(role) is { IsCustom: true } custom) // custom workers live outside "roles"
+            return custom.ModelVariant;
         using var config = ReadConfig(SelectedProjectPath());
         return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(role, out var r) &&
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
@@ -1539,12 +1589,12 @@ public partial class MainWindow : Window
             dot.Fill = (Brush)new BrushConverter().ConvertFromString(color)!;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(dot);
-        row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
+        row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 420 });
         var shift = new TranslateTransform(0, 14);
         var toast = new Border
         {
             Child = row, Padding = new Thickness(13, 9, 16, 9), Margin = new Thickness(0, 8, 0, 0), BorderThickness = new Thickness(1),
-            HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 380, Opacity = 0, RenderTransform = shift,
+            HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 480, Opacity = 0, RenderTransform = shift,
         };
         toast.SetResourceReference(Border.BackgroundProperty, "Card");
         toast.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
@@ -1633,9 +1683,12 @@ public partial class MainWindow : Window
     // Cards of custom workers the orchestrator would ignore show a light warning.
     private void RefreshSetupProblems()
     {
-        foreach (var w in CurrentWorkers())
-            if (CardFor(w.Id) is { IsCustom: true } card)
-                card.SetupProblem = LauncherLogic.CustomWorkerProblem(w);
+        var workers = CurrentWorkers();
+        var path = ProjectConfigPath();
+        var problems = LauncherLogic.CustomProblems(workers, !File.Exists(path) || LauncherLogic.ImplementerHasBaseUrl(path));
+        for (var i = 0; i < workers.Count; i++)
+            if (CardFor(workers[i].Id) is { IsCustom: true } card)
+                card.SetupProblem = problems[i];
     }
 
     private List<WorkerSetting> CurrentWorkers() => _cards.Select(c =>
@@ -1656,24 +1709,28 @@ public partial class MainWindow : Window
     }
 
     // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
-    private void SyncCustomWorkers(bool announce = false)
+    // Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
+    private bool SyncCustomWorkers(List<string>? collectSkipped = null)
     {
         RefreshSetupProblems();
         var path = ProjectConfigPath();
         if (!File.Exists(path))
-            return;
+            return true;
         try
         {
             var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers());
-            foreach (var reason in skipped)
-                Log($"Not written to config.json, so it will not take part: {reason}");
-            if (announce && skipped.Length > 0)
-                Toast($"Not taking part: {string.Join("; ", skipped)}", "#FFB74D");
+            if (collectSkipped is not null)
+                collectSkipped.AddRange(skipped);
+            else
+                foreach (var reason in skipped)
+                    Log($"Not written to config.json, so it will not take part: {reason}");
+            return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
             Log($"Could not write custom workers to config.json: {exception.Message}");
             SetStatus("Could not update config.json", "#FF667A");
+            return false;
         }
     }
 
