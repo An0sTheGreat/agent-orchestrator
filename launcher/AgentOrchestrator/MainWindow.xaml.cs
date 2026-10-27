@@ -1077,6 +1077,92 @@ public partial class MainWindow : Window
             if (Directory.Exists(presetProject))
                 Directory.Delete(presetProject, recursive: true);
         }
+        // Chat view, driven without Python: worker menu, target chip, Single and Multi turns fed by fake events.
+        {
+            var outputCount = OutputPanel.Children.Count;
+            ShowView(false, chat: true);
+            await Settle();
+            if (!ChatView.IsVisible)
+                return Fail();
+            var stray = new RoleCard("smoke-chat-custom", "Smoke chat", custom: true);
+            _cards.Add(stray);
+            var workerMenu = BuildWorkerMenu(ChatPlus);
+            var headers = workerMenu.Items.OfType<MenuItem>().ToList();
+            var names = headers.Select(i => (string)i.Header).ToList();
+            var broken = headers.FirstOrDefault(i => ((string)i.Header).StartsWith("Smoke chat"));
+            if (new[] { "Planner", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
+                return Fail();
+            workerMenu.IsOpen = true;
+            await Settle();
+            Snap("14-chat-plus-menu", workerMenu);
+            workerMenu.IsOpen = false;
+            RemoveWorker(stray);
+
+            PickChatWorker("reviewer");
+            if (ChatMulti || !((string)ChatTargetChip.Content).Contains("Reviewer"))
+                return Fail();
+            string Ev(string json) => LauncherLogic.EventPrefix + json;
+            string Delta(string role, string kind, string text) => Ev($$"""{"e":"delta","role":"{{role}}","kind":"{{kind}}","text":"{{text}}"}""");
+
+            async Task<bool> Turn(string text, bool multi, string[] events, string reply)
+            {
+                StartChatTurn(text, multi);
+                if (!_chatBusy || StartButton.IsEnabled)
+                    return false;
+                foreach (var line in events)
+                    _lines.Enqueue(line);
+                _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"reviewer","text":"{{reply}}"}"""));
+                DrainLines();
+                var current = _reply!;
+                await Settle();
+                FinishChatTurn(0, false, null);
+                return current.Answer?.Text == reply && current.Final == reply && !_chatBusy && StartButton.IsEnabled == (_workflowRoot is not null);
+            }
+
+            var reviewer = CardFor("reviewer")!;
+            if (!await Turn("Hello", false, new[]
+            {
+                Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""),
+                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf"}"""),
+                Ev("""{"e":"model","role":"reviewer","id":"chat-model Q4_K_M"}"""),
+                Delta("reviewer", "thinking", "hmm"),
+                Delta("reviewer", "text", "streamed answer"),
+                Ev("""{"e":"done","role":"reviewer","final":true}"""),
+                Ev("""{"e":"usage","role":"reviewer","prompt":321,"completion":45,"tps":30}"""),
+            }, "Final reviewed reply") || _chatHistory.Count != 2 || !_loadedByChat.Contains("smoke/chat-model.gguf") ||
+                !reviewer.TurnDetail.Contains("321 prompt") || !reviewer.TurnDetail.Contains("45 generated") || OutputPanel.Children.Count != outputCount ||
+                _reply!.Content.Children.OfType<Expander>().Count() != 1)
+                return Fail();
+            await Settle();
+            Snap("15-chat-single");
+
+            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
+            if (!ChatMulti || (string)ChatTargetChip.Content != ChainLabel)
+                return Fail();
+            var stages = new List<string>();
+            foreach (var (role, stage, title) in new[] { ("planner", "plan", "Plan"), ("implementer", "draft", "Draft"), ("reviewer", "review", "Review") })
+            {
+                stages.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
+                stages.Add(Ev($$"""{"e":"loading","role":"{{role}}","path":"smoke/{{role}}.gguf"}"""));
+                stages.Add(Ev($$"""{"e":"model","role":"{{role}}","id":"{{role}}-model"}"""));
+                stages.Add(Delta(role, "text", $"{title} body"));
+                stages.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
+            }
+            stages.Add(Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Answer"}"""));
+            stages.Add(Delta("reviewer", "text", "streamed final"));
+            if (!await Turn("Build it", true, stages.ToArray(), "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
+                _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Contains("smoke/planner.gguf"))
+                return Fail();
+            await Settle();
+            Snap("16-chat-multi");
+
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+            if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
+                return Fail();
+            ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+            ShowView(false);
+            await Settle();
+        }
         SetRunning(true); // status ring and header shimmer
         await Settle();
         if (RailProjectButton.IsEnabled || RailOnceToggle.IsEnabled)
@@ -1100,6 +1186,10 @@ public partial class MainWindow : Window
                 ApplyTheme();
                 await Settle();
                 Snap("5-theme-" + theme);
+                ShowView(false, chat: true);
+                await Settle();
+                Snap("17-chat-theme-" + theme);
+                ShowView(false);
             }
             ShowView(options: true);
             await Settle();
