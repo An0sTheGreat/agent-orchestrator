@@ -32,6 +32,47 @@ internal static class LauncherLogic
 
     public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, string apiKey, bool once)
     {
+        var info = NewStartInfo(python, workflowRoot, apiKey);
+        info.ArgumentList.Add("--project");
+        info.ArgumentList.Add(projectRoot);
+        info.ArgumentList.Add("--non-interactive");
+        info.ArgumentList.Add("--events");
+        if (once)
+            info.ArgumentList.Add("--once");
+        return info;
+    }
+
+    // ---- chat: one orchestrator process per user message, fed the whole conversation through a request file
+
+    public sealed record ChatMessage(string Role, string Content);
+
+    // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
+    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages) =>
+        JsonSerializer.Serialize(new
+        {
+            mode = mode == "multi" ? "multi" : "single",
+            worker,
+            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+    public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
+    {
+        var info = NewStartInfo(python, workflowRoot, apiKey);
+        info.ArgumentList.Add("--project");
+        info.ArgumentList.Add(folder);
+        info.ArgumentList.Add("--chat");
+        info.ArgumentList.Add(requestFile);
+        info.ArgumentList.Add("--events");
+        info.ArgumentList.Add("--non-interactive");
+        return info;
+    }
+
+    // The selected project when it is initialized (has config.json), else the workflow root.
+    public static string ChatFolder(string selectedProject, string workflowRoot) =>
+        selectedProject.Length > 0 && File.Exists(Path.Combine(selectedProject, "config.json")) ? selectedProject : workflowRoot;
+
+    private static ProcessStartInfo NewStartInfo(string python, string workflowRoot, string apiKey)
+    {
         var info = new ProcessStartInfo
         {
             FileName = python,
@@ -45,12 +86,6 @@ internal static class LauncherLogic
             CreateNoWindow = true,
         };
         info.ArgumentList.Add(Path.Combine(workflowRoot, "orchestrator.py"));
-        info.ArgumentList.Add("--project");
-        info.ArgumentList.Add(projectRoot);
-        info.ArgumentList.Add("--non-interactive");
-        info.ArgumentList.Add("--events");
-        if (once)
-            info.ArgumentList.Add("--once");
         info.Environment["UNSLOTH_API_KEY"] = apiKey;
         info.Environment["PYTHONUNBUFFERED"] = "1";
         return info;
@@ -498,6 +533,23 @@ internal static class LauncherLogic
         if (info.Environment["UNSLOTH_API_KEY"] != "test-key")
             throw new InvalidOperationException("API key environment handling failed.");
 
+        var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\req.json");
+        var chatArgs = chatInfo.ArgumentList;
+        if (chatArgs.IndexOf("--chat") < 0 || chatArgs[chatArgs.IndexOf("--chat") + 1] != @"Y:\req.json" || !chatArgs.Contains("--events") ||
+            !chatArgs.Contains("--non-interactive") || chatArgs[chatArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || chatArgs.Contains("--once") ||
+            chatInfo.Environment["UNSLOTH_API_KEY"] != "test-key" || chatInfo.Environment["PYTHONUNBUFFERED"] != "1")
+            throw new InvalidOperationException("Chat start info failed.");
+        var chat = new[] { new ChatMessage("user", "hi \"there\"\nline2 é"), new ChatMessage("assistant", "hello"), new ChatMessage("user", "again") };
+        var single = JsonNode.Parse(BuildChatRequest("single", "implementer", chat))!;
+        var customId = Guid.NewGuid().ToString("N");
+        var multi = JsonNode.Parse(BuildChatRequest("multi", customId, chat.Take(1)))!;
+        var sm = single["messages"]!.AsArray();
+        if ((string)single["mode"]! != "single" || (string)single["worker"]! != "implementer" || sm.Count != 3 ||
+            (string)sm[0]!["role"]! != "user" || (string)sm[0]!["content"]! != "hi \"there\"\nline2 é" || (string)sm[1]!["role"]! != "assistant" ||
+            (string)sm[2]!["content"]! != "again" || (string)multi["mode"]! != "multi" || (string)multi["worker"]! != customId || multi["messages"]!.AsArray().Count != 1 ||
+            (string)JsonNode.Parse(BuildChatRequest("bogus", "planner", chat))!["mode"]! != "single")
+            throw new InvalidOperationException("Chat request failed.");
+
         var gguf = DescribeModel(@"Y:\.llm_models\Qwen3.5 9B｜Q8_0.gguf");
         if (gguf.Name != "Qwen3.5 9B" || gguf.Weights != "9B" || gguf.Quant != "Q8_0")
             throw new InvalidOperationException($"Model description failed: {gguf}");
@@ -522,6 +574,12 @@ internal static class LauncherLogic
             if (detectedKey?.Key != "test-api-key")
                 throw new InvalidOperationException("API key file detection failed.");
             ValidateConfigFile(customConfig);
+            if (ChatFolder(testArea, root) != root || ChatFolder("", root) != root)
+                throw new InvalidOperationException("Chat folder fallback failed.");
+            File.WriteAllText(Path.Combine(testArea, "config.json"), "{}");
+            if (ChatFolder(testArea, root) != testArea)
+                throw new InvalidOperationException("Chat folder should be the initialized project.");
+            File.Delete(Path.Combine(testArea, "config.json"));
             var roleConfig = Path.Combine(testArea, "role-config.json");
             File.WriteAllText(roleConfig, "{\"keep\":1,\"roles\":{\"planner\":{\"display_name\":\"P\",\"sampling\":{\"temperature\":0.6,\"top_p\":0.9,\"extra_body\":{\"repetition_penalty\":1.1,\"top_k\":20}},\"auto_load\":{\"model_path\":\"m\"}},\"reviewer\":{\"sampling\":{\"temperature\":0.2}}}}");
             var before = ReadRoleSettings(roleConfig, "planner");
