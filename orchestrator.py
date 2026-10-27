@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -479,6 +480,61 @@ def _parsed_arguments(raw: str) -> Any:
         return raw
 
 
+def syntax_gate(project_root: Path, allowed: list[str]) -> tuple[list[dict[str, str]], str]:
+    """Deterministic syntax check of the existing allowed files. Returns (defects, one-line summary)."""
+    defects: list[dict[str, str]] = []
+    checked: list[str] = []
+    node = shutil.which("node")
+    skipped_js = False
+    for name, content in snapshot(project_root, allowed).items():
+        if content is None:
+            continue
+        suffix = Path(name).suffix.lower()
+        error = None
+        if suffix in {".js", ".mjs", ".cjs"}:
+            if not node:
+                skipped_js = True
+                continue
+            try:
+                done = subprocess.run([node, "--check", name], cwd=project_root, text=True, capture_output=True, timeout=30, shell=False)
+                error = (done.stderr or done.stdout).strip()[-1500:] if done.returncode else None
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                print(f"[syntax] could not run node on {name}: {exc}")
+                continue
+        elif suffix == ".py":
+            try:
+                compile(content, name, "exec")
+            except (SyntaxError, ValueError) as exc:
+                error = f"{type(exc).__name__}: {exc} (line {getattr(exc, 'lineno', '?')})"
+        elif suffix == ".json":
+            try:
+                json.loads(content)
+            except json.JSONDecodeError as exc:
+                error = f"JSONDecodeError: {exc}"
+        else:
+            continue
+        checked.append(name)
+        if error:
+            defects.append({"file": name, "defect": "Syntax error", "expected": "The file parses without errors", "evidence": error})
+    if defects:
+        summary = f"FAILED ({', '.join(d['file'] for d in defects)})"
+    elif checked:
+        summary = f"passed ({', '.join(checked)})"
+    else:
+        summary = "skipped (node not found)" if skipped_js else "skipped (no checkable files)"
+    print(f"[syntax] {summary}")
+    return defects, f"SYNTAX CHECK: {summary}"
+
+
+def syntax_message(defects: list[dict[str, str]]) -> str:
+    return "SYNTAX CHECK FAILED. Fix these errors with the file tools, then answer again:\n" + "\n".join(
+        f"- {d['file']}: {d['evidence']}" for d in defects
+    )
+
+
+TOOL_CALL_TEXT = re.compile(r'"name"\s*:\s*"(?:write_file|replace_text|read_file|run_validation)"')
+
+
 def run_agent(
     config: dict[str, Any],
     role: str,
@@ -498,6 +554,8 @@ def run_agent(
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
     nudges = 0
+    fixes = syntax_fixes = 0  # shared budget (3) for unverified-report and syntax send-backs; syntax uses at most 2
+    last_error = False
     prev_text_calls = None
     for _ in range(max_steps):
         try:
@@ -511,6 +569,7 @@ def run_agent(
         messages.append(response)
         calls = response.get("tool_calls") or text_tool_calls(str(response.get("content") or ""), tool_names)
         native = bool(response.get("tool_calls"))
+        unexecuted = not native and not calls and bool(TOOL_CALL_TEXT.search(str(response.get("content") or "")))
         if not native:
             signature = [(c["function"]["name"], _parsed_arguments(c["function"]["arguments"])) for c in calls]
             if calls and signature == prev_text_calls:
@@ -528,7 +587,27 @@ def run_agent(
                 reply = str(response.get("content") or "").strip()
                 save_text(project_root / "RESULT.md", f"BLOCKED; {role} never executed a tool; no files were written.\n\nLast {role} reply:\n{reply}")
                 raise WorkflowError(f"{role} never executed a tool; no files were written. Last reply: {reply[:500]}")
-            return str(response.get("content") or "")
+            reply = str(response.get("content") or "")
+            if not writable:
+                return reply
+            reasons = []
+            if unexecuted:
+                reasons.append("it printed a tool call that was not valid JSON (comments or trailing text) and was NOT executed")
+            if last_error:
+                reasons.append("the last tool call failed and nothing succeeded after it")
+            if reasons and fixes < 3:
+                fixes += 1
+                print(f"[{role}] unverified report ({'; '.join(reasons)}); sending back ({fixes}/3) ...")
+                messages.append({"role": "user", "content": "Your report is not accepted: " + "; ".join(reasons) + ". Redo it through the tool-calling interface with strictly valid JSON (no comments, no trailing text), then report only what actually succeeded."})
+                continue
+            defects = [] if reasons else syntax_gate(project_root, allowed)[0]
+            if defects and fixes < 3 and syntax_fixes < 2:
+                fixes += 1
+                syntax_fixes += 1
+                print(f"[{role}] syntax errors remain; sending back ({syntax_fixes}/2) ...")
+                messages.append({"role": "user", "content": syntax_message(defects)})
+                continue
+            return f"UNVERIFIED: {'; '.join(reasons)}.\n\n{reply}" if reasons else reply
         results = []
         for call in calls:
             try:
@@ -537,8 +616,10 @@ def run_agent(
                 result = execute_tool(function["name"], arguments, project_root, allowed, validations, writable)
                 emit("tool", role=role, name=function["name"], args=function.get("arguments") or "", result=result[:6000])
                 ran_tools = ran_tools or (function["name"] in {"write_file", "replace_text"} and result == "OK")
+                last_error = result.startswith("ERROR:")
             except (KeyError, TypeError, json.JSONDecodeError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
+                last_error = True
                 emit("tool", role=role, name=str(call.get("function", {}).get("name", "?")), args="", result=result)
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": result})
@@ -907,18 +988,26 @@ def run_review_loop(
             save_text(project_root / "RESULT.md", result)
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
-        reviewer_input = (
-            f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
-            f"CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
-        )
-        save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
-        review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
-        review, review_text = extract_review_with_repair(
-            config, prompts["reviewer"], reviewer_input, review_text, interactive
-        )
-        save_text(project_root / "REVIEW.md", review_text)
-        verdict = str(review.get("verdict", "")).upper()
-        emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
+        defects, syntax_line = syntax_gate(project_root, allowed)
+        if defects:
+            review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)
+            save_text(project_root / "REVIEW.md", review_text)
+            verdict = "FAIL"
+            emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
+            print(f"[syntax] round {review_round + 1} failed the syntax check; reviewer skipped")
+        else:
+            reviewer_input = (
+                f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
+                f"{syntax_line}\n\nCHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
+            )
+            save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
+            review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
+            review, review_text = extract_review_with_repair(
+                config, prompts["reviewer"], reviewer_input, review_text, interactive
+            )
+            save_text(project_root / "REVIEW.md", review_text)
+            verdict = str(review.get("verdict", "")).upper()
+            emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
         if verdict == "PASS":
             token = save_checkpoint(project_root, task, before, review_round, result, "passed", total)
             complete_task(task, "passed", result, project_root, str(token))
