@@ -104,6 +104,14 @@ def split_reasoning(message: dict[str, Any]) -> tuple[str, str]:
     return thinking, content
 
 
+def has_output(message: dict[str, Any]) -> bool:
+    """True if the reply carries tool calls or any answer text outside reasoning (an unterminated <think> is reasoning)."""
+    if message.get("tool_calls"):
+        return True
+    answer = split_reasoning(message)[1]
+    return bool(re.sub(r"<think>.*", "", answer, flags=re.S).strip())
+
+
 class ThinkSplitter:
     """Splits streamed content into (kind, text) pieces, honouring inline <think>...</think> blocks."""
 
@@ -175,6 +183,26 @@ class ApiClient:
             raise WorkflowError("The API returned no loaded models")
         return str(models[0]["id"])
 
+    def load_mismatch(self) -> str:
+        """Why the loaded model's load settings differ from this role's auto_load ("" if same or unknowable)."""
+        if not (self.management_url and self.auto_load):
+            return ""
+        try:
+            status = self._request_at(self.management_url, "GET", "/api/inference/status")
+        except WorkflowError:
+            return ""
+        # requested_* hold what the active load was invoked with; the unprefixed reasoning_budget is the effective value.
+        have = {
+            "max_seq_length": status.get("requested_context_length"),
+            "reasoning_budget": status.get("requested_reasoning_budget", status.get("reasoning_budget")),
+        }
+        diffs = [
+            f"{key} {have[key]} -> {self.auto_load[key]}"
+            for key in have
+            if key in self.auto_load and isinstance(have[key], int) and have[key] != self.auto_load[key]
+        ]
+        return ", ".join(diffs)
+
     def ensure_model(self, role: str, interactive: bool) -> str:
         load_error = ""
         while True:
@@ -182,15 +210,20 @@ class ApiClient:
                 model = self.model_id()
             except WorkflowError:
                 model = ""
-            if model and (not self.expected or self.expected in model.lower()):
+            matched = bool(model) and (not self.expected or self.expected in model.lower())
+            reason = self.load_mismatch() if matched else ""
+            if matched and not reason:
                 print(f"[{role}] {model}")
                 emit("model", role=role, id=model)
                 return model
             if self.management_url and self.auto_load:
                 try:
+                    if reason:
+                        print(f"[{role}] {model} is loaded with other settings ({reason}); reloading ...")
                     print(f"[{role}] loading {self.auto_load['model_path']} ...")
                     emit("loading", role=role, path=self.auto_load["model_path"])
                     self._request_at(self.management_url, "POST", "/api/inference/load", self.auto_load)
+                    # A model the user had loaded and we reloaded is ours from here on, so it is unloaded at exit.
                     LOADED_BY_RUN[self.auto_load["model_path"]] = self
                     model = self.model_id()
                     if not self.expected or self.expected in model.lower():
@@ -200,6 +233,10 @@ class ApiClient:
                     load_error = f"load completed but API reports {model!r}"
                 except WorkflowError as exc:
                     load_error = str(exc)
+                    if matched:  # the right model is still serving; settings differ but that beats failing
+                        print(f"[{role}] reload failed ({load_error}); continuing with the loaded model")
+                        emit("model", role=role, id=model)
+                        return model
             expected = self.expected or "the configured model"
             if not interactive:
                 raise WorkflowError(f"{role}: expected {expected!r}, loaded {model or 'nothing'!r}; {load_error}")
@@ -218,20 +255,31 @@ class ApiClient:
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
-        started = time.time()
-        streamed = False
-        if EVENTS:  # the launcher renders output as it is generated
-            payload = self._stream_chat(body)
-            streamed = payload.pop("_streamed", False)
-        else:
-            payload = self._request("POST", "/chat/completions", body)
-        try:
-            message = payload["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise WorkflowError(f"Unexpected API response: {payload}") from exc
-        if EVENTS:
-            self._emit_turn(message, payload, started, streamed)
-        return message
+        while True:
+            started = time.time()
+            streamed = False
+            if EVENTS:  # the launcher renders output as it is generated
+                payload = self._stream_chat(body)
+                streamed = payload.pop("_streamed", False)
+            else:
+                payload = self._request("POST", "/chat/completions", body)
+            try:
+                choice = payload["choices"][0]
+                message = choice["message"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise WorkflowError(f"Unexpected API response: {payload}") from exc
+            if choice.get("finish_reason") == "length" and not has_output(message):
+                if body.get("enable_thinking") is not False:
+                    print(f"[{self.role}] reply cut off while thinking; retrying without thinking")
+                    body = {**body, "enable_thinking": False}
+                    continue
+                raise WorkflowError(
+                    f"{self.role}: the output limit was reached while thinking and the reply was empty. "
+                    "Raise sampling.max_tokens or lower the role's auto_load.reasoning_budget."
+                )
+            if EVENTS:
+                self._emit_turn(message, payload, started, streamed)
+            return message
 
     def _stream_chat(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST with stream=true; emit delta events as they arrive and return a normal-shaped response."""
@@ -245,6 +293,7 @@ class ApiClient:
         reasoning: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
+        finish = None
         splitter = ThinkSplitter()
 
         def put(kind: str, text: str) -> None:
@@ -267,6 +316,7 @@ class ApiClient:
                         raise WorkflowError(f"API stream error: {chunk['error']}")
                     usage = chunk.get("usage") or usage
                     for choice in chunk.get("choices") or []:
+                        finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
                         if thought:
@@ -295,7 +345,7 @@ class ApiClient:
                 {"id": slot["id"] or f"call_{index}", "type": "function", "function": {"name": slot["name"], "arguments": slot["arguments"]}}
                 for index, slot in sorted(calls.items())
             ]
-        return {"choices": [{"message": message}], "usage": usage, "_streamed": True}
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage, "_streamed": True}
 
     def _monitor_row(self, started: float) -> dict[str, Any]:
         """Unsloth's own per-request stats (same source as the live-TPS mod); empty if unavailable."""

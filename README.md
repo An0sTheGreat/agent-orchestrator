@@ -77,7 +77,9 @@ Use `--once` to complete one reviewed task. Use `--non-interactive` for three in
 
 The default config calls this installed Unsloth build's `POST /api/inference/load` route. It sequentially swaps the Planner, Implementer, and Reviewer on the same 16 GB GPU, using the settings already proven by your Unsloth logs. No three-model simultaneous load is attempted.
 
-If automatic loading is rejected, the controller reports the API error and falls back to asking you to load the role in Desktop. `--non-interactive` instead fails immediately. To disable automatic swaps, remove `management_url` or `auto_load` from each role.
+If automatic loading is rejected, the controller reports the API error and falls back to asking you to load the role in Desktop. `--non-interactive` instead fails immediately. To disable automatic swaps, remove `management_url` or `auto_load` from each role. When a role's model is already loaded but with a different `max_seq_length` or `reasoning_budget` than the role's `auto_load` (for example the same model shared by two roles), it is reloaded with the role's settings, and a model reloaded this way is unloaded at exit like any other this run loaded.
+
+Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
 ## Safety and recovery
 

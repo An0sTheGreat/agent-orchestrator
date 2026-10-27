@@ -127,6 +127,108 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
+    def _managed_client(self, status, **auto):
+        auto = {"model_path": "u/M", "max_seq_length": 32768, "reasoning_budget": 0, **auto}
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://m", "api_key": "k",
+                                         "expected_model_contains": "m", "auto_load": auto})
+        calls = []
+
+        def fake(base, method, route, body=None):
+            calls.append((method, route, body))
+            if route == "/api/inference/status":
+                if status is None:
+                    raise orchestrator.WorkflowError("down")
+                return status
+            return {}
+
+        client._request_at = fake
+        client.model_id = lambda: "u/M"
+        return client, calls
+
+    def _ensure(self, client):
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}) as mine, patch.object(orchestrator, "emit"):
+            client.ensure_model("implementer", False)
+        return mine
+
+    def test_reloads_when_loaded_settings_differ(self):
+        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        mine = self._ensure(client)
+        loads = [c for c in calls if c[1] == "/api/inference/load"]
+        self.assertEqual(loads[0][2], client.auto_load)
+        self.assertIn("u/M", mine)
+
+    def test_no_reload_when_settings_match_or_status_unreadable(self):
+        for status in ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, None, {}):
+            client, calls = self._managed_client(status)
+            self._ensure(client)
+            self.assertFalse([c for c in calls if c[1] == "/api/inference/load"], status)
+
+    def _fake_stream(self, replies):
+        bodies = []
+
+        def stream(body):
+            bodies.append(body)
+            return replies[len(bodies) - 1]
+
+        return stream, bodies
+
+    def _reply(self, finish, content="", reasoning="", calls=None):
+        message = {"role": "assistant", "content": content}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if calls:
+            message["tool_calls"] = calls
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": {}, "_streamed": True}
+
+    def test_cut_off_while_thinking_retries_without_thinking(self):
+        call = [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="hmm"), self._reply("tool_calls", calls=call)])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            message = client.complete("m", [], {})
+        self.assertNotIn("enable_thinking", bodies[0])
+        self.assertIs(bodies[1]["enable_thinking"], False)
+        self.assertEqual(message["tool_calls"], call)
+
+    def test_still_empty_after_retry_raises_output_limit_error(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="a")] * 2)
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "output limit"):
+                client.complete("m", [], {})
+        self.assertEqual(len(bodies), 2)
+
+    def test_truncated_but_non_empty_reply_is_not_retried(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", content="partial answer")])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            self.assertEqual(client.complete("m", [], {})["content"], "partial answer")
+        self.assertEqual(len(bodies), 1)
+
+    def test_stream_chat_reports_finish_reason(self):
+        class Response:
+            headers = type("H", (), {"get_content_type": staticmethod(lambda: "text/event-stream")})()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def __iter__(self):
+                yield b'data: {"choices": [{"delta": {"reasoning_content": "x"}}]}\n'
+                yield b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n'
+                yield b"data: [DONE]\n"
+
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        with patch.object(orchestrator, "urlopen", return_value=Response()), patch.object(orchestrator, "emit"):
+            self.assertEqual(client._stream_chat({})["choices"][0]["finish_reason"], "length")
+
+    def test_enable_thinking_is_sent_top_level_only_when_configured(self):
+        for sampling, expected in (({"enable_thinking": False, "max_tokens": 5}, False), ({"max_tokens": 5}, "absent")):
+            config = {"roles": {"planner": {"base_url": "http://x/v1", "api_key": "k", "sampling": sampling}}}
+            client, extra = orchestrator.role_settings(config, "planner")
+            sent = []
+            client._request = lambda method, route, body=None: sent.append(body) or {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+            with patch.object(orchestrator, "EVENTS", False):
+                client.complete("m", [], extra)
+            self.assertEqual(sent[0].get("enable_thinking", "absent"), expected)
+
     def test_unload_only_models_loaded_by_this_run(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://x", "api_key": "k"})
         client.role = "reviewer"
