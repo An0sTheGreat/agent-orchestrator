@@ -108,8 +108,7 @@ def has_output(message: dict[str, Any]) -> bool:
     """True if the reply carries tool calls or any answer text outside reasoning (an unterminated <think> is reasoning)."""
     if message.get("tool_calls"):
         return True
-    answer = split_reasoning(message)[1]
-    return bool(re.sub(r"<think>.*", "", answer, flags=re.S).strip())
+    return bool(answer_text(message))
 
 
 class ThinkSplitter:

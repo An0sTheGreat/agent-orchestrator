@@ -325,6 +325,14 @@ class OrchestratorTests(unittest.TestCase):
             result = orchestrator.execute_tool("read_file", {"path": "new.js"}, Path(folder), ["new.js"], {}, True)
         self.assertIn("create it with write_file", result)
 
+    def test_has_output_keeps_text_before_a_literal_think_tag(self):
+        msg = {"content": "Use the <think> tag like this <think>scratch</think> and more text"}
+        self.assertTrue(orchestrator.has_output(msg))
+        self.assertTrue(orchestrator.has_output({"content": "answer then <think>unfinished"}))
+        self.assertFalse(orchestrator.has_output({"content": "<think>only reasoning"}))
+        # two reasoning blocks before the answer: the answer must still count as output
+        self.assertTrue(orchestrator.has_output({"content": "<think>a</think><think>b</think>real answer"}))
+
     def test_text_tool_calls_recovered_from_json_blocks(self):
         text = 'x {"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}} y {"name": "nope", "arguments": {}}'
         calls = orchestrator.text_tool_calls(text, {"write_file"})
