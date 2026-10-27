@@ -153,6 +153,22 @@ class OrchestratorTests(unittest.TestCase):
             client.ensure_model("implementer", False)
         return mine
 
+    def test_loading_event_carries_management_url(self):
+        client, _ = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit") as emit:
+            client.ensure_model("implementer", False)
+        emit.assert_any_call("loading", role="implementer", path="u/M", url=client.management_url)
+        self.assertEqual(client.management_url, "http://m")
+
+    def test_answer_text_strips_every_think_block_and_only_a_trailing_open_one(self):
+        def answer(content):
+            return orchestrator.answer_text({"content": content})
+        self.assertEqual(answer("<think>a</think>one <think>b</think>two"), "one two")
+        self.assertEqual(answer("pre <think>a</think> mid <think>b</think> post"), "pre  mid  post")
+        self.assertEqual(answer("keep <think>x</think> and <think>y</think> this"), "keep  and  this")
+        self.assertEqual(answer("answer<think>unfinished"), "answer")
+        self.assertEqual(answer("<think>a</think>one <think>b</think>two <think>open"), "one two")
+
     def test_reloads_when_loaded_settings_differ(self):
         client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
         mine = self._ensure(client)
@@ -1488,6 +1504,24 @@ class ChatTests(unittest.TestCase):
                                    "--events", "--non-interactive"], capture_output=True, text=True)
         self.assertEqual(done.returncode, 1)
         self.assertIn("ERROR: Unknown chat worker", done.stderr)
+
+    def _bad_chat(self, config, request):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            (Path(folder) / "r.json").write_text(json.dumps(request), encoding="utf-8")
+            done = subprocess.run([sys.executable, str(Path(orchestrator.__file__)), "--project", folder, "--chat", str(Path(folder) / "r.json"),
+                                   "--events", "--non-interactive"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("ERROR:", done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+
+    def test_builtin_role_missing_from_config_is_a_clean_error(self):
+        self._bad_chat({"roles": {}}, {"mode": "single", "worker": "planner", "messages": self.MSGS})
+
+    def test_non_object_request_is_a_clean_error(self):
+        self._bad_chat({"roles": {}}, [1, 2])
 
     def test_multi_runs_three_stages_in_order(self):
         code, log, events, unloaded, files = self.chat(

@@ -224,7 +224,7 @@ class ApiClient:
                     if reason:
                         print(f"[{name}] {model} is loaded with other settings ({reason}); reloading ...")
                     print(f"[{name}] loading {self.auto_load['model_path']} ...")
-                    emit("loading", role=role, path=self.auto_load["model_path"])
+                    emit("loading", role=role, path=self.auto_load["model_path"], url=self.management_url)
                     self._request_at(self.management_url, "POST", "/api/inference/load", self.auto_load)
                     # A model the user had loaded and we reloaded is ours from here on, so it is unloaded at exit.
                     LOADED_BY_RUN[self.auto_load["model_path"]] = self
@@ -1255,7 +1255,8 @@ def run_review_loop(
 
 def answer_text(message: dict[str, Any]) -> str:
     """The reply without reasoning (an unterminated <think> counts as reasoning)."""
-    return re.sub(r"<think>.*", "", split_reasoning(message)[1], flags=re.S).strip()
+    text = re.sub(r"<think>.*?</think>", "", split_reasoning(message)[1], flags=re.S)
+    return re.sub(r"<think>.*\Z", "", text, flags=re.S).strip()  # only a trailing unterminated block remains
 
 
 def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]]) -> str:
@@ -1268,6 +1269,8 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
     """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No tools, no workflow files."""
     request = json.loads(load_text(request_path))
+    if not isinstance(request, dict):
+        raise WorkflowError("Chat request must be a JSON object")
     messages = [
         {"role": m["role"], "content": str(m["content"])}
         for m in request.get("messages") or []
@@ -1295,6 +1298,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         worker = next((w for w in custom_workers(config) if w["id"] == role), None)
         if role not in BUILTIN_ROLES and not worker:
             raise WorkflowError(f"Unknown chat worker {role!r}")
+        if role in BUILTIN_ROLES and role not in (config.get("roles") or {}):
+            raise WorkflowError(f"Chat worker {role!r} is missing from config roles")
         if worker:
             system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
         else:
