@@ -191,7 +191,10 @@ internal static class LauncherLogic
     }
 
     // Generation parameters of a built-in role, as the text shown in the settings editor ("" = key absent).
-    public sealed record RoleSettings(string Temperature, string MaxTokens, string RepetitionPenalty, string ReasoningBudget, string ContextLength);
+    public sealed record RoleSettings(string Temperature, string MaxTokens, string RepetitionPenalty, string ReasoningBudget, string ContextLength, string Thinking = "Auto");
+
+    // sampling.enable_thinking: true = On, false = Off, key absent = Auto.
+    public static readonly string[] ThinkingChoices = ["Auto", "On", "Off"];
 
     public static RoleSettings ReadRoleSettings(string configPath, string role)
     {
@@ -200,7 +203,8 @@ internal static class LauncherLogic
         return new RoleSettings(
             Text(settings["sampling"]?["temperature"]), Text(settings["sampling"]?["max_tokens"]),
             Text(settings["sampling"]?["extra_body"]?["repetition_penalty"]),
-            Text(settings["auto_load"]?["reasoning_budget"]), Text(settings["auto_load"]?["max_seq_length"]));
+            Text(settings["auto_load"]?["reasoning_budget"]), Text(settings["auto_load"]?["max_seq_length"]),
+            settings["sampling"]?["enable_thinking"] is JsonValue flag && flag.TryGetValue<bool>(out var on) ? (on ? "On" : "Off") : "Auto");
     }
 
     // Validates every field, then writes; returns an error message (nothing written) or null on success.
@@ -212,6 +216,8 @@ internal static class LauncherLogic
         static bool Whole(string text, long min, long max, out long result) =>
             long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out result) && result >= min && result <= max;
 
+        if (!ThinkingChoices.Contains(values.Thinking))
+            return "Thinking must be Auto, On or Off.";
         double temperature = 0, penalty = 0;
         long maxTokens = 0, budget = 0, context = 0;
         var temperatureText = values.Temperature.Trim();
@@ -244,6 +250,10 @@ internal static class LauncherLogic
             sampling["extra_body"]?.AsObject().Remove("repetition_penalty");
         else
             (sampling["extra_body"] ??= new JsonObject()).AsObject()["repetition_penalty"] = penalty;
+        if (values.Thinking == "Auto")
+            sampling.Remove("enable_thinking");
+        else
+            sampling["enable_thinking"] = values.Thinking == "On";
         if (budgetText.Length > 0)
             load!["reasoning_budget"] = budget;
         if (contextText.Length > 0)
@@ -404,6 +414,22 @@ internal static class LauncherLogic
                 WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("0.9", "", "", "0", "")) is null ||
                 File.ReadAllText(roleConfig) != untouched)
                 throw new InvalidOperationException("Context length or reasoning budget without auto_load model_path was accepted.");
+            // Thinking: On/Off write a bool, Auto removes the key; other sampling keys and roles are untouched.
+            string Sampling(string role) => JsonNode.Parse(File.ReadAllText(roleConfig))!["roles"]![role]!["sampling"]!.ToJsonString();
+            var plannerBefore = Sampling("planner");
+            var reviewerBefore = Sampling("reviewer");
+            JsonNode? Flag() => JsonNode.Parse(File.ReadAllText(roleConfig))!["roles"]!["reviewer"]!["sampling"]!["enable_thinking"];
+            var thinkingOk = WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "On")) is null &&
+                Flag()?.GetValue<bool>() == true && ReadRoleSettings(roleConfig, "reviewer").Thinking == "On" &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Off")) is null &&
+                Flag()?.GetValue<bool>() == false && ReadRoleSettings(roleConfig, "reviewer").Thinking == "Off" &&
+                Sampling("planner") == plannerBefore && Sampling("reviewer").Contains("\"repetition_penalty\"") == reviewerBefore.Contains("\"repetition_penalty\"") &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Auto")) is null &&
+                Flag() is null && !Sampling("reviewer").Contains("enable_thinking") && ReadRoleSettings(roleConfig, "reviewer").Thinking == "Auto" &&
+                Sampling("reviewer") == reviewerBefore &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Maybe")) is not null;
+            if (!thinkingOk)
+                throw new InvalidOperationException("Thinking setting was not written, read back or removed correctly.");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");

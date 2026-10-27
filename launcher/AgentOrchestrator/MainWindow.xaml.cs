@@ -1947,6 +1947,21 @@ public partial class MainWindow : Window
             grid.Children.Add(boxes[i]);
         }
 
+        var thinkingHint = new TextBlock { Text = "Auto = model default. Off avoids long hidden reasoning; recommended for the Implementer on reasoning models.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left };
+        thinkingHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var thinkingChoices = LauncherLogic.ThinkingChoices.Select(choice => new RadioButton
+        {
+            Content = choice, GroupName = "Thinking", IsChecked = choice == current.Thinking, Margin = new Thickness(0, 0, 18, 0),
+        }).ToArray();
+        var thinkingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var choice in thinkingChoices)
+            thinkingRow.Children.Add(choice);
+        var thinking = new StackPanel
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            Children = { new TextBlock { Text = "Thinking", FontWeight = FontWeights.SemiBold, FontSize = 12 }, thinkingHint, thinkingRow },
+        };
+
         var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 12, 0, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
@@ -1955,10 +1970,11 @@ public partial class MainWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
-        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, note, error, buttons } });
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, thinking, note, error, buttons } });
         save.Click += (_, _) =>
         {
-            LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text);
+            LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text,
+                thinkingChoices.First(radio => radio.IsChecked == true).Content.ToString()!);
             try
             {
                 var problem = LauncherLogic.WriteRoleSettings(path, card.Role, values);
