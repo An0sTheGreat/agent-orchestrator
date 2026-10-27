@@ -322,11 +322,16 @@ public partial class MainWindow : Window
         var pending = new StringBuilder();
         (string Role, string Kind, int Index)? key = null;
         var name = "";
+        var chunks = 0; // deltas before coalescing: one per streamed token
 
         void Flush()
         {
             if (key is { } k && pending.Length > 0)
+            {
                 AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
+                CardFor(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
+            }
+            chunks = 0;
             pending.Clear();
             key = null;
         }
@@ -340,6 +345,7 @@ public partial class MainWindow : Window
                 if (key is { } current && current != next)
                     Flush();
                 key = next;
+                chunks++;
                 name = Str(e, "name");
                 pending.Append(Str(e, "text"));
                 continue;
@@ -861,6 +867,23 @@ public partial class MainWindow : Window
             return Fail();
         // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
         if (LogBox.Visibility != Visibility.Collapsed)
+            return Fail();
+        // Live token stats: deltas alone drive the count and rate until the call's usage event gives the exact numbers.
+        var live = CardFor("implementer");
+        if (live is null)
+            return Fail();
+        for (var tick = 0; tick < 8; tick++)
+        {
+            for (var n = 0; n < 5; n++)
+                _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""");
+            DrainLines();
+            await Task.Delay(40);
+        }
+        if (live.LiveCompletion != 40 || live.TokensPerSec == "—" || !live.TurnDetail.Contains("40 generated"))
+            return Fail();
+        _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"usage","role":"implementer","prompt":123,"completion":77,"tps":42}""");
+        DrainLines();
+        if (live.LiveCompletion != 0 || !live.TurnDetail.Contains("123 prompt") || !live.TurnDetail.Contains("77 generated") || live.TokensPerSec != "42.0 tok/s")
             return Fail();
         // Presets: save, change the workers and the config, then apply; both come back as saved.
         var presetProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");

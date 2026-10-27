@@ -50,6 +50,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public void BeginTurn()
     {
         _bankedPrompt = _bankedCompletion = _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         TokensPerSec = "—";
         NotifyTotals();
     }
@@ -60,6 +61,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
         _bankedPrompt += prompt;
         _bankedCompletion += completion;
         _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         if (tps > 0)
             TokensPerSec = FormatRate(tps);
         NotifyTotals();
@@ -69,6 +71,11 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public void SetLive(long prompt, long completion, double? decodeTps, double? promptTps)
     {
         _livePrompt = prompt;
+        if (_liveCompletion > 0) // streamed deltas are counted exactly; the monitor only supplies the prompt side
+        {
+            NotifyTotals();
+            return;
+        }
         _liveCompletion = completion;
         if (decodeTps > 0)
             TokensPerSec = FormatRate(decodeTps.Value);
@@ -77,9 +84,28 @@ internal sealed class RoleCard : INotifyPropertyChanged
         NotifyTotals();
     }
 
+    // Streamed delta chunks (about one token each) since the last usage event; the rate uses a ~1 s sliding window.
+    public long LiveCompletion => _liveCompletion;
+
+    public void AddDeltas(int count, long nowMs)
+    {
+        _liveCompletion += count;
+        _recent.Enqueue((nowMs, count));
+        while (_recent.Count > 1 && nowMs - _recent.Peek().Ms > WindowMs)
+            _recent.Dequeue();
+        var (first, firstCount) = _recent.Peek();
+        if (nowMs > first) // the oldest batch only marks where the window starts
+            TokensPerSec = FormatRate((_recent.Sum(r => (double)r.Count) - firstCount) * 1000.0 / (nowMs - first));
+        NotifyTotals();
+    }
+
+    private const long WindowMs = 1000;
+    private readonly Queue<(long Ms, int Count)> _recent = new();
+
     public void ClearLive()
     {
         _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         NotifyTotals();
     }
 
