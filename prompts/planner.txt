@@ -9,6 +9,8 @@ For a task that changes what a web page does (the project has an index.html or a
 {"expect":"text","selector":"#id","contains":"text"} {"expect":"visible","selector":"#id"} {"expect":"hidden","selector":"#id"} {"expect":"count","selector":"#list li","min":1} (optional "max") {"expect":"storage","key":"localStorage key","contains":"text"} (optional "json_length_min":1 for a JSON array) {"expect":"no_errors"}
 Omit "acceptance" for projects without a web page.
 
+If PROJECT CONTRACT is given, it fixes the project's file wiring (which files each page loads), element ids, function names and storage keys, and every task must follow it. Never plan a task that contradicts it (for example removing a file a page loads, or renaming a contract id or function). Acceptance selectors that name an id ("#id") must use ids the contract lists. When a task needs a new or changed file, element id, function or storage key, add "contract_changes" to the task with only those entries, in the contract's own form, for example "contract_changes":{"ids":[{"id":"build-name","element":"input","file":"index.html","purpose":"name of the build"}]}; an entry replaces the one with the same path, id, name or key, and the contract is updated before the task runs.
+
 Return only JSON in one of these forms:
 {"status":"TASK","task":{"id":"WEB-001","outcome":"one exact outcome","allowed_files":["relative/file"],"required_work":["action"],"validation":["observable check"],"stop_condition":"exact stopping point","acceptance":[{"do":"fill","selector":"#build-name","value":"Gaming PC"},{"do":"click","selector":"#save-build"},{"expect":"text","selector":"#build-list","contains":"Gaming PC"}]}}
 {"status":"COMPLETE","summary":"brief completion summary"}
