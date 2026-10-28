@@ -2566,6 +2566,85 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(orchestrator.load_contract(root)["notes"], contract["notes"])
             self.assertEqual(self.gate(root)[0], [])
 
+    WIRED = {"files": [{"path": "index.html", "purpose": "Todo page", "loads": ["style.css", "script.js"]},
+                       {"path": "script.js", "purpose": "todo logic"}, {"path": "main.py", "purpose": "server"},
+                       {"path": ".hidden.js", "purpose": "dotfile"}],
+             "ids": [{"id": "task-input", "element": "input", "file": "index.html"}, {"id": "add-btn", "element": "button"}]}
+
+    def ensure(self, root, config=None, contract=None):
+        out = io.StringIO()
+        with patch.object(orchestrator, "ask_once", return_value=json.dumps(contract or self.WIRED)), contextlib.redirect_stdout(out):
+            orchestrator.ensure_contract(config or {}, root, "PROJECT", False)
+        return out.getvalue()
+
+    def files(self, root):
+        return {p.relative_to(root).as_posix(): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+    def test_scaffold_wires_the_contract_page_and_creates_its_files(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder)
+            out = self.ensure(root)
+            self.assertIn("[scaffold] created index.html, script.js, style.css\n", out)
+            self.assertFalse((root / "main.py").exists() or (root / ".hidden.js").exists())  # not web / dotfile
+            page = (root / "index.html").read_text(encoding="utf-8")
+            for part in ("<!DOCTYPE html>", '<html lang="en">', '<meta charset="utf-8">', 'name="viewport"', "<title>Todo page</title>",
+                         '<link rel="stylesheet" href="style.css">', '<main>\n    <input id="task-input">\n    <button id="add-btn"></button>\n  </main>',
+                         '<script src="script.js"></script>\n</body>'):
+                self.assertIn(part, page)
+            self.assertLess(page.index("style.css"), page.index("</head>"))
+            self.assertEqual((root / "script.js").read_text(encoding="utf-8"), "// todo logic\n")
+            self.assertEqual((root / "style.css").read_text(encoding="utf-8"), "/* loaded by index.html */\n")
+            (root / "script.js").write_text("document.getElementById('task-input');\ndocument.getElementById('add-btn');\n", encoding="utf-8")
+            defects, line = self.gate(root)
+            self.assertEqual(defects, [])
+            self.assertNotIn("never loaded", line)
+            self.assertNotIn("CONTRACT.md says it loads", line)
+            mjs = {"files": [{"path": "app/index.html", "loads": ["main.mjs"]}], "ids": [{"id": "x"}]}
+            with contextlib.redirect_stdout(io.StringIO()):
+                orchestrator.scaffold_contract({}, root, mjs)
+            page = (root / "app" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('<script type="module" src="main.mjs"></script>', page)
+            self.assertIn("<title>index</title>", page)
+            self.assertIn('<div id="x"></div>', page)
+            self.assertTrue((root / "app" / "main.mjs").is_file())
+
+    def test_scaffold_never_touches_existing_files_and_amendments_add_only_new_pages(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder, files={"index.html": "<p>mine</p>", "style.css": "body{}"})
+            self.assertIn("[scaffold] created script.js\n", self.ensure(root))
+            before = self.files(root)
+            changes = {"files": [{"path": "about.html", "purpose": "About", "loads": ["style.css"]}],
+                       "ids": [{"id": "about-text", "element": "p", "file": "about.html"}, {"id": "loose"}]}
+            task = dict(self.TASK, contract_changes=changes)
+            out = io.StringIO()
+            with patch.object(orchestrator, "ask_once", return_value=json.dumps({"status": "TASK", "task": task})), contextlib.redirect_stdout(out):
+                orchestrator.request_plan({}, "SYS", "USER", root, False, with_contract=True)
+            self.assertIn("[scaffold] created about.html\n", out.getvalue())
+            after = self.files(root)
+            self.assertEqual(set(after) - set(before), {"about.html"})
+            for name in before:
+                if name != "CONTRACT.md":
+                    self.assertEqual(after[name], before[name], name)
+            about = after["about.html"].decode()
+            self.assertIn('<p id="about-text"></p>', about)
+            self.assertNotIn("loose", about)  # two pages now: an id without a file goes nowhere
+            self.assertNotIn("task-input", about)
+
+    def test_scaffold_false_and_contract_false_create_nothing(self):
+        task = dict(self.TASK, contract_changes={"files": [{"path": "about.html", "loads": ["about.js"]}]})
+        expected = {"CONTRACT.md", "index.html", "script.js", "style.css", "about.html", "about.js"}  # the default, for contrast
+        for config in ({}, {"scaffold": False}, {"contract": False}):
+            with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+                root = self.project(folder)
+                before = set(self.files(root))
+                out = self.ensure(root, config)
+                with patch.object(orchestrator, "ask_once", return_value=json.dumps({"status": "TASK", "task": task})), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    orchestrator.request_plan(config, "SYS", "USER", root, False, with_contract=True)
+                created = set(self.files(root)) - before
+                self.assertEqual(created, expected if not config else set() if config.get("contract") is False else {"CONTRACT.md"}, config)
+                self.assertEqual("[scaffold]" in out, not config)
+
 
 if __name__ == "__main__":
     unittest.main()
