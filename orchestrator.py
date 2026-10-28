@@ -11,6 +11,7 @@ import datetime as dt
 import difflib
 import fnmatch
 import hashlib
+import html
 import http.server
 import json
 import os
@@ -1276,6 +1277,63 @@ def contract_context(contract: dict[str, Any] | None) -> str:
     return f"PROJECT CONTRACT\n{json.dumps(contract, indent=2, ensure_ascii=False)}\n\n" if contract else ""
 
 
+_VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"}
+
+
+def scaffold_contract(config: dict[str, Any], project_root: Path, contract: dict[str, Any]) -> list[str]:
+    """Create the web files the contract names but the disk lacks: pages wired to their `loads` with the contract's
+    ids, and one-comment .js/.mjs/.css files. Never touches an existing file; other file types are left to tasks.
+    Returns the created paths. `"scaffold": false` turns it off."""
+    if config.get("scaffold") is False:
+        return []
+    one_line = lambda text: " ".join(str(text or "").split())
+    files = {e["path"]: e for e in contract.get("files", [])}
+    pages = [p for p in files if Path(p).suffix.lower() in HTML_SUFFIXES]
+    wanted: dict[str, str] = {}  # path -> content
+    for page in pages:
+        entry, loads = files[page], files[page].get("loads", [])
+        css = [x for x in loads if Path(x).suffix.lower() == ".css"]
+        js = [x for x in loads if Path(x).suffix.lower() in JS_SUFFIXES]
+        body = []
+        for item in contract.get("ids", []):
+            if item.get("file") == page or item.get("file") is None and len(pages) == 1:
+                tag = str(item.get("element") or "").strip().lower()
+                tag = tag if re.fullmatch(r"[a-z][a-z0-9-]*", tag) and tag not in {"html", "head", "body", "title", "script", "style"} else "div"
+                body.append(f'    <{tag} id="{item["id"]}">' + ("" if tag in _VOID_TAGS else f"</{tag}>"))
+        module = ' type="module"'
+        wanted[page] = "\n".join([
+            "<!DOCTYPE html>", '<html lang="en">', "<head>", '  <meta charset="utf-8">',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+            f"  <title>{html.escape(one_line(entry.get('purpose')) or Path(page).stem)}</title>",
+            *(f'  <link rel="stylesheet" href="{html.escape(x)}">' for x in css), "</head>", "<body>", "  <main>", *body, "  </main>",
+            *(f'  <script{module if x.lower().endswith(".mjs") else ""} src="{html.escape(x)}"></script>' for x in js),
+            "</body>", "</html>"])
+        for x in css + js:
+            target = Path(os.path.normpath(Path(page).parent / x)).as_posix()
+            wanted.setdefault(target, one_line((files.get(target) or {}).get("purpose")) or f"loaded by {page}")
+    for path, entry in files.items():
+        if Path(path).suffix.lower() in JS_SUFFIXES | {".css"}:
+            wanted.setdefault(path, one_line(entry.get("purpose")) or Path(path).name)
+    created = []
+    for path, text in wanted.items():
+        suffix = Path(path).suffix.lower()
+        if suffix == ".css":
+            text = f"/* {text.replace('*/', '')} */"
+        elif suffix in JS_SUFFIXES:
+            text = f"// {text}"
+        try:
+            target = path_is_allowed(path, ["*"], project_root)  # inside the project; no secrets, dotfiles or workflow files
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("x", encoding="utf-8") as handle:  # "x": never overwrite an existing file
+                handle.write(text + "\n")
+        except (WorkflowError, OSError):
+            continue
+        created.append(path)
+    if created:
+        print(f"[scaffold] created {', '.join(sorted(created))}")
+    return created
+
+
 def ensure_contract(config: dict[str, Any], project_root: Path, context: str, interactive: bool, max_repairs: int = 2) -> dict[str, Any] | None:
     """The project's contract; when CONTRACT.md has none, the Planner derives one from `context` (its planning input)
     and the current page/script files, and the orchestrator writes it. None when config disables contracts."""
@@ -1307,6 +1365,7 @@ def ensure_contract(config: dict[str, Any], project_root: Path, context: str, in
             response = ask_once(config, "planner", system, prompt, interactive)
     write_contract(project_root, contract)
     print(f"[contract] wrote {CONTRACT_FILE}")
+    scaffold_contract(config, project_root, contract)
     return contract
 
 
@@ -1829,7 +1888,9 @@ def request_plan(
             if spec:
                 plan["task"]["worker_id"] = spec["id"]
             if contract and plan["task"].get("contract_changes"):
-                write_contract(project_root, merge_contract(contract, plan["task"]["contract_changes"]))
+                merged = merge_contract(contract, plan["task"]["contract_changes"])
+                write_contract(project_root, merged)
+                scaffold_contract(config, project_root, merged)
             return plan
         except WorkflowError as exc:
             if repair == max_repairs:
