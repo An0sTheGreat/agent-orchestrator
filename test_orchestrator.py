@@ -1,10 +1,16 @@
+import contextlib
+import io
 import json
+import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import orchestrator
+
+REAL_RUN_AGENT = orchestrator.run_agent
 
 
 class OrchestratorTests(unittest.TestCase):
@@ -124,6 +130,183 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
+    def _managed_client(self, status, **auto):
+        auto = {"model_path": "u/M", "max_seq_length": 32768, "reasoning_budget": 0, **auto}
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://m", "api_key": "k",
+                                         "expected_model_contains": "m", "auto_load": auto})
+        calls = []
+
+        def fake(base, method, route, body=None):
+            calls.append((method, route, body))
+            if route == "/api/inference/status":
+                if status is None:
+                    raise orchestrator.WorkflowError("down")
+                return status
+            return {}
+
+        client._request_at = fake
+        client.model_id = lambda: "u/M"
+        return client, calls
+
+    def _ensure(self, client):
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}) as mine, patch.object(orchestrator, "emit"):
+            client.ensure_model("implementer", False)
+        return mine
+
+    def test_loading_event_carries_management_url(self):
+        client, _ = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit") as emit:
+            client.ensure_model("implementer", False)
+        emit.assert_any_call("loading", role="implementer", path="u/M", url=client.management_url)
+        self.assertEqual(client.management_url, "http://m")
+
+    def test_answer_text_strips_every_think_block_and_only_a_trailing_open_one(self):
+        def answer(content):
+            return orchestrator.answer_text({"content": content})
+        self.assertEqual(answer("<think>a</think>one <think>b</think>two"), "one two")
+        self.assertEqual(answer("pre <think>a</think> mid <think>b</think> post"), "pre  mid  post")
+        self.assertEqual(answer("keep <think>x</think> and <think>y</think> this"), "keep  and  this")
+        self.assertEqual(answer("answer<think>unfinished"), "answer")
+        self.assertEqual(answer("<think>a</think>one <think>b</think>two <think>open"), "one two")
+
+    def test_reloads_when_loaded_settings_differ(self):
+        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        mine = self._ensure(client)
+        loads = [c for c in calls if c[1] == "/api/inference/load"]
+        self.assertEqual(loads[0][2], client.auto_load)
+        self.assertIn("u/M", mine)
+
+    def test_no_reload_when_settings_match_or_status_unreadable(self):
+        for status in ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, None, {}):
+            client, calls = self._managed_client(status)
+            self._ensure(client)
+            self.assertFalse([c for c in calls if c[1] == "/api/inference/load"], status)
+
+    def _failed_reload(self, models_after):
+        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        seq = iter(["u/M"] + models_after)
+
+        def model_id():
+            try:
+                value = next(seq)
+            except StopIteration:
+                value = ""
+            if not value:
+                raise orchestrator.WorkflowError("none loaded")
+            return value
+
+        client.model_id = model_id
+        inner = client._request_at
+
+        def fake(base, method, route, body=None):
+            if route == "/api/inference/load":
+                raise orchestrator.WorkflowError("OOM")
+            return inner(base, method, route, body)
+
+        client._request_at = fake
+        return client
+
+    def _ensure_ret(self, client):
+        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit"):
+            return client.ensure_model("implementer", False)
+
+    def test_failed_reload_continues_only_if_model_still_loaded(self):
+        self.assertEqual(self._ensure_ret(self._failed_reload(["u/M"])), "u/M")
+        for after in ([""], ["other"]):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "OOM"):
+                self._ensure_ret(self._failed_reload(after))
+
+    def test_thinking_fallback_is_sticky(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="a"), self._reply("stop", content="ok"), self._reply("stop", content="ok")])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            client.complete("m", [], {})
+            client.complete("m", [], {})
+        self.assertNotIn("enable_thinking", bodies[0])
+        self.assertIs(bodies[2]["enable_thinking"], False)
+
+    def test_discarded_attempt_is_closed_before_retry(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "planner"
+        order = []
+        replies = [self._reply("length", reasoning="a"), self._reply("stop", content="ok")]
+
+        def stream(body):
+            order.append("delta")
+            return replies[order.count("delta") - 1]
+
+        client._stream_chat = stream
+        with patch.object(orchestrator, "EVENTS", True), patch.object(client, "_monitor_row", return_value={}), \
+                patch.object(orchestrator, "emit", side_effect=lambda e, **k: order.append((e, k.get("final")))):
+            client.complete("m", [], {})
+        self.assertEqual(order[:3], ["delta", ("done", False), "delta"])
+
+    def _fake_stream(self, replies):
+        bodies = []
+
+        def stream(body):
+            bodies.append(body)
+            return replies[len(bodies) - 1]
+
+        return stream, bodies
+
+    def _reply(self, finish, content="", reasoning="", calls=None):
+        message = {"role": "assistant", "content": content}
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if calls:
+            message["tool_calls"] = calls
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": {}, "_streamed": True}
+
+    def test_cut_off_while_thinking_retries_without_thinking(self):
+        call = [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="hmm"), self._reply("tool_calls", calls=call)])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            message = client.complete("m", [], {})
+        self.assertNotIn("enable_thinking", bodies[0])
+        self.assertIs(bodies[1]["enable_thinking"], False)
+        self.assertEqual(message["tool_calls"], call)
+
+    def test_still_empty_after_retry_raises_output_limit_error(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="a")] * 2)
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "output limit"):
+                client.complete("m", [], {})
+        self.assertEqual(len(bodies), 2)
+
+    def test_truncated_but_non_empty_reply_is_not_retried(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("length", content="partial answer")])
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+            self.assertEqual(client.complete("m", [], {})["content"], "partial answer")
+        self.assertEqual(len(bodies), 1)
+
+    def test_stream_chat_reports_finish_reason(self):
+        class Response:
+            headers = type("H", (), {"get_content_type": staticmethod(lambda: "text/event-stream")})()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def __iter__(self):
+                yield b'data: {"choices": [{"delta": {"reasoning_content": "x"}}]}\n'
+                yield b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n'
+                yield b"data: [DONE]\n"
+
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        with patch.object(orchestrator, "urlopen", return_value=Response()), patch.object(orchestrator, "emit"):
+            self.assertEqual(client._stream_chat({})["choices"][0]["finish_reason"], "length")
+
+    def test_enable_thinking_is_sent_top_level_only_when_configured(self):
+        for sampling, expected in (({"enable_thinking": False, "max_tokens": 5}, False), ({"max_tokens": 5}, "absent")):
+            config = {"roles": {"planner": {"base_url": "http://x/v1", "api_key": "k", "sampling": sampling}}}
+            client, extra = orchestrator.role_settings(config, "planner")
+            sent = []
+            client._request = lambda method, route, body=None: sent.append(body) or {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+            with patch.object(orchestrator, "EVENTS", False):
+                client.complete("m", [], extra)
+            self.assertEqual(sent[0].get("enable_thinking", "absent"), expected)
+
     def test_unload_only_models_loaded_by_this_run(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://x", "api_key": "k"})
         client.role = "reviewer"
@@ -141,6 +324,14 @@ class OrchestratorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             result = orchestrator.execute_tool("read_file", {"path": "new.js"}, Path(folder), ["new.js"], {}, True)
         self.assertIn("create it with write_file", result)
+
+    def test_has_output_keeps_text_before_a_literal_think_tag(self):
+        msg = {"content": "Use the <think> tag like this <think>scratch</think> and more text"}
+        self.assertTrue(orchestrator.has_output(msg))
+        self.assertTrue(orchestrator.has_output({"content": "answer then <think>unfinished"}))
+        self.assertFalse(orchestrator.has_output({"content": "<think>only reasoning"}))
+        # two reasoning blocks before the answer: the answer must still count as output
+        self.assertTrue(orchestrator.has_output({"content": "<think>a</think><think>b</think>real answer"}))
 
     def test_text_tool_calls_recovered_from_json_blocks(self):
         text = 'x {"name": "write_file", "arguments": {"path": "a.txt", "content": "hi"}} y {"name": "nope", "arguments": {}}'
@@ -288,6 +479,343 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("BLOCKED: nothing to do", (Path(folder) / "RESULT.md").read_text(encoding="utf-8"))
 
 
+    def test_prior_work_without_new_writes_reaches_reviewer(self):
+        class Client:
+            completions = 0
+            messages = None
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.completions += 1
+                self.messages = [dict(m) for m in messages]
+                return {"role": "assistant", "content": "The feature is already implemented."}
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            (root / "a.txt").write_text("new\n", encoding="utf-8")
+            client, reviewer = Client(), []
+
+            def agent(config, role, system, user, *rest):
+                if role == "reviewer":
+                    reviewer.append(user)
+                    return '{"verdict":"PASS"}'
+                with patch.object(orchestrator, "role_settings", return_value=(client, {})):
+                    return REAL_RUN_AGENT(config, role, system, user, *rest)
+
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"):
+                orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {"a.txt": "old\n"}, 0, "", "implementing", 1, root, False)
+            self.assertEqual(client.completions, 1)  # no "No file was changed" nudge
+            self.assertIn("PRIOR WORK", client.messages[1]["content"])
+            self.assertNotIn("BLOCKED", (root / "RESULT.md").read_text(encoding="utf-8"))
+            self.assertEqual(len(reviewer), 1)
+            self.assertIn("-old", reviewer[0])
+            self.assertIn("+new", reviewer[0])
+            # Files equal to the task-start snapshot: nothing was ever written, so the block still fires.
+            with patch.object(orchestrator, "role_settings", return_value=(Client(), {})), patch.object(orchestrator, "emit"):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt"], True, False, {"a.txt": "new\n"})
+            self.assertIn("never executed a tool", str(ctx.exception))
+
+    def test_truncated_tool_call_is_not_executed_and_repeats_fail(self):
+        cut = {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "write_file", "arguments": '{"path": "b.txt", "content": "hel'}}]}
+
+        class Client:
+            completions = 0
+
+            def __init__(self, replies):
+                self.replies, self.cut_off, self.messages = replies, False, None
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.completions += 1
+                self.messages = [dict(m) for m in messages]
+                reply = self.replies[min(self.completions - 1, len(self.replies) - 1)]
+                self.cut_off = reply is cut
+                return reply
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            client = Client([cut, self._native("write_file", path="a.txt", content="x"), {"role": "assistant", "content": "done"}])
+            with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+                result = REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt", "b.txt"], True, False)
+            self.assertEqual(result, "done")
+            self.assertFalse((root / "b.txt").exists())
+            self.assertIn("cut off at the output limit", client.messages[3]["content"])
+            self.assertNotIn("tool_calls", client.messages[2])  # the broken arguments are not replayed
+            client = Client([cut])
+            with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    REAL_RUN_AGENT({}, "implementer", "s", "u", root, ["a.txt", "b.txt"], True, False)
+            self.assertIn("max_tokens", str(ctx.exception))
+            self.assertIn("implementer", str(ctx.exception))
+            self.assertEqual(client.completions, 3)
+            self.assertFalse((root / "b.txt").exists())
+
+    def test_complete_reports_a_reply_cut_off_with_output(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "implementer"
+        client._request = lambda method, route, body=None: {"choices": [{"message": {"content": "partial"}, "finish_reason": "length"}]}
+        out = io.StringIO()
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(out):
+            client.complete("m", [], {"max_tokens": 5})
+        self.assertTrue(client.cut_off)
+        self.assertIn("[implementer] reply cut off at the output limit (max_tokens=5)", out.getvalue())
+
+    def test_context_overflow_names_max_seq_length(self):
+        from urllib.error import HTTPError
+
+        def overflow(*args, **kwargs):
+            raise HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"Prompt is too long for the context window"}}'))
+
+        def other(*args, **kwargs):
+            raise HTTPError("http://x", 400, "Bad Request", {}, io.BytesIO(b'{"error":{"message":"bad temperature"}}'))
+
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "reviewer"
+        for events in (False, True):
+            with patch.object(orchestrator, "EVENTS", events), patch.object(orchestrator, "urlopen", side_effect=overflow):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    client.complete("m", [], {})
+            self.assertIn("reviewer", str(ctx.exception))
+            self.assertIn("auto_load.max_seq_length", str(ctx.exception))
+        with patch.object(orchestrator, "EVENTS", False), patch.object(orchestrator, "urlopen", side_effect=other):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                client.complete("m", [], {})
+        self.assertIn("API 400", str(ctx.exception))
+
+    def _scripted_agent(self, replies, folder, allowed, config=None):
+        """Run the writable implementer against scripted replies; returns (result, client)."""
+        class Client:
+            completions = 0
+            messages = None
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.completions += 1
+                self.messages = [dict(m) for m in messages]
+                return replies[min(self.completions - 1, len(replies) - 1)]
+
+        client = Client()
+        with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+            result = REAL_RUN_AGENT(config or {"max_tool_steps": 12}, "implementer", "s", "u", Path(folder), allowed, True, False)
+        return result, client
+
+    @staticmethod
+    def _native(name, **arguments):
+        return {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+
+    def test_syntax_gate_js_py_json(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "ok.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "bad.py").write_text("def f(:\n", encoding="utf-8")
+            (root / "ok.json").write_text('{"a": 1}', encoding="utf-8")
+            (root / "bad.json").write_text('{"a": }', encoding="utf-8")
+            defects, line = orchestrator.syntax_gate(root, ["ok.py", "bad.py", "ok.json", "bad.json", "missing.js"])
+            self.assertEqual(sorted(d["file"] for d in defects), ["bad.json", "bad.py"])
+            self.assertIn("FAILED", line)
+            defects, line = orchestrator.syntax_gate(root, ["ok.py", "ok.json"])
+            self.assertEqual(defects, [])
+            self.assertEqual(line, "SYNTAX CHECK: passed (ok.py, ok.json)")
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_syntax_gate_js(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "bad.js").write_text("const a = 1; const a = 2;\n", encoding="utf-8")
+            (root / "ok.js").write_text("const a = 1;\n", encoding="utf-8")
+            defects, _ = orchestrator.syntax_gate(root, ["bad.js", "ok.js"])
+            self.assertEqual([d["file"] for d in defects], ["bad.js"])
+            self.assertEqual(orchestrator.syntax_gate(root, ["ok.js"])[0], [])
+
+    def test_syntax_errors_go_back_to_implementer_then_skip_reviewer(self):
+        broken = self._native("write_file", path="a.json", content="{bad")
+        done = {"role": "assistant", "content": "T PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["a.json"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            roles = []
+
+            def agent(config, role, *rest):
+                roles.append(role)
+                if role == "reviewer":
+                    return '{"verdict":"PASS"}'
+                result, client = self._scripted_agent([broken, done], folder, ["a.json"])
+                seen.append(client.messages[-1]["content"])
+                return result
+
+            seen = []
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"):
+                with self.assertRaises(orchestrator.WorkflowError):
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {}, 0, "", "implementing", 1, root, False)
+            self.assertNotIn("reviewer", roles)
+            self.assertTrue(seen)
+            # Round 1 starts from a clean file, so its final send-back must carry the syntax error; later rounds start
+            # from the already-broken file (unchanged in their own turn) and are failed by the round gate instead.
+            self.assertIn("SYNTAX CHECK FAILED", seen[0])
+            self.assertIn("a.json", seen[0])
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+            self.assertEqual(review["verdict"], "FAIL")
+            self.assertEqual(review["defects"][0]["file"], "a.json")
+
+    def test_syntax_errors_reach_implementer_in_same_conversation(self):
+        broken = self._native("write_file", path="a.json", content="{bad")
+        fixed = self._native("write_file", path="a.json", content="{}")
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, client = self._scripted_agent([broken, done, fixed, done], folder, ["a.json"])
+            self.assertEqual(result, "PASSED")
+            self.assertTrue(any("SYNTAX CHECK FAILED" in str(m.get("content")) for m in client.messages))
+            self.assertEqual(client.completions, 4)
+
+    def test_unexecuted_commented_tool_call_is_not_accepted(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        bad = {"role": "assistant", "content": '{"name": "replace_text", "arguments": {"path": "a.txt", "old": "x", // comment\n "new": "y"}}\nPASSED'}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, client = self._scripted_agent([write, bad], folder, ["a.txt"])
+        self.assertTrue(result.startswith("UNVERIFIED:"))
+        self.assertIn("NOT executed", result)
+        self.assertEqual(client.completions, 5)  # write + reply + 3 send-backs
+
+    def test_passed_after_failed_tool_call_is_not_accepted(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        fail = self._native("replace_text", path="a.txt", old="zzz", new="y")
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, _ = self._scripted_agent([write, fail, done], folder, ["a.txt"])
+            self.assertTrue(result.startswith("UNVERIFIED:"))
+            ok = self._native("replace_text", path="a.txt", old="x", new="y")
+            result, _ = self._scripted_agent([write, fail, done, ok, done], folder, ["a.txt"])
+            self.assertEqual(result, "PASSED")
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_syntax_gate_js_non_ascii_error(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "u.js").write_text('const s = "\u0141\u00f3d\u017a \u00c1pp"; const s = 1;\n', encoding="utf-8")
+            defects, _ = orchestrator.syntax_gate(root, ["u.js"])
+            self.assertEqual([d["file"] for d in defects], ["u.js"])
+            # Node's own message must survive decoding, not just the exit-code fallback.
+            self.assertIn("already been declared", defects[0]["evidence"])
+
+    def test_syntax_gate_bom_and_unchanged_files(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            (root / "b.json").write_text("\ufeff{}", encoding="utf-8")
+            (root / "b.py").write_text("\ufeffx = 1\n", encoding="utf-8")
+            self.assertEqual(orchestrator.syntax_gate(root, ["b.json", "b.py"])[0], [])
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 1}', encoding="utf-8")
+            before = {"tsconfig.json": (root / "tsconfig.json").read_text(encoding="utf-8")}
+            defects, line = orchestrator.syntax_gate(root, ["tsconfig.json"], before)
+            self.assertEqual(defects, [])
+            self.assertIn("pre-existing", line)
+            self.assertIn("tsconfig.json", line)
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 2}', encoding="utf-8")
+            self.assertEqual([d["file"] for d in orchestrator.syntax_gate(root, ["tsconfig.json"], before)[0]], ["tsconfig.json"])
+
+    def test_round_with_unchanged_broken_file_reaches_reviewer_with_syntax_line(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["tsconfig.json", "ok.json"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            (root / "tsconfig.json").write_text('{\n// c\n"a": 1}', encoding="utf-8")
+            (root / "ok.json").write_text("{}", encoding="utf-8")
+            before = orchestrator.snapshot(root, task["allowed_files"])
+            inputs = []
+
+            def agent(config, role, system, user, *rest):
+                inputs.append((role, user))
+                return '{"verdict":"PASS"}' if role == "reviewer" else "PASSED"
+
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"):
+                orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, before, 0, "", "implementing", 1, root, False)
+            reviewer = [user for role, user in inputs if role == "reviewer"]
+            self.assertEqual(len(reviewer), 1)
+            self.assertIn("SYNTAX CHECK:", reviewer[0])
+            self.assertIn("pre-existing", reviewer[0])
+
+    BROKEN_PAGE = {"errors": [{"message": "Uncaught TypeError: components is not iterable", "source": "app.js", "line": 3}], "text": "", "visible": 0}
+
+    def _behaviour_loop(self, report):
+        """Run one task (2 rounds max) on a web project with the browser faked; returns [(role, user input)]."""
+        inputs = []
+
+        def agent(config, role, system, user, *rest):
+            inputs.append((role, user))
+            return '{"verdict":"PASS"}' if role == "reviewer" else "PASSED"
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("<html></html>", encoding="utf-8")
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"), \
+                    patch.object(orchestrator, "find_browser", return_value="browser"), \
+                    patch.object(orchestrator, "load_page", return_value=report), contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, self.TASK, {}, 0, "", "implementing", 1, root, False)
+                except orchestrator.WorkflowError:
+                    pass
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+        return inputs, review
+
+    def test_page_errors_fail_round_without_reviewer_and_go_back_to_implementer(self):
+        inputs, review = self._behaviour_loop(self.BROKEN_PAGE)
+        self.assertEqual([role for role, _ in inputs], ["implementer", "implementer"])
+        self.assertEqual(review["verdict"], "FAIL")
+        self.assertEqual(review["defects"][0]["evidence"], "Uncaught TypeError: components is not iterable (app.js:3)")
+        self.assertIn("components is not iterable (app.js:3)", inputs[1][1].split("REVIEWER FEEDBACK", 1)[1])
+
+    def test_clean_page_gives_reviewer_behaviour_evidence(self):
+        inputs, review = self._behaviour_loop({"errors": [], "text": "PC Tracker\nAdd component", "visible": 7})
+        reviewer = [user for role, user in inputs if role == "reviewer"]
+        self.assertEqual(len(reviewer), 1)
+        self.assertIn("BEHAVIOUR CHECK: passed (index.html", reviewer[0])
+        self.assertIn("Errors: none", reviewer[0])
+        self.assertIn("PC Tracker\nAdd component", reviewer[0])
+        self.assertEqual(review["verdict"], "PASS")
+
+    def test_planner_sees_behaviour_check_of_current_project(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("<html></html>", encoding="utf-8")
+            seen = []
+
+            def on_plan(config, system, user, *rest):
+                seen.append(user)
+                return {"status": "COMPLETE", "summary": "done"}
+
+            with patch.object(orchestrator, "find_browser", return_value="browser"), \
+                    patch.object(orchestrator, "load_page", return_value=self.BROKEN_PAGE):
+                self.run_main(root, on_plan=on_plan)
+            self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT\nBEHAVIOUR CHECK: FAILED (index.html)", seen[0])
+            self.assertIn("components is not iterable (app.js:3)", seen[0])
+            self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT", orchestrator.load_text(orchestrator.ROOT / "prompts" / "planner.txt"))
+
+    def test_flagged_answer_on_last_step_returns_unverified(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        fail = self._native("replace_text", path="a.txt", old="zzz", new="y")
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, _ = self._scripted_agent([write, fail, done], folder, ["a.txt"], {"max_tool_steps": 3})
+        self.assertTrue(result.startswith("UNVERIFIED:"))
+
+    def test_harmless_failed_call_is_not_unverified(self):
+        write = self._native("write_file", path="a.txt", content="x")
+        harmless = {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "run_validation", "arguments": json.dumps({"name": "nope"})}}]}
+        done = {"role": "assistant", "content": "PASSED"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            result, _ = self._scripted_agent([write, harmless, done], folder, ["a.txt"])
+        self.assertEqual(result, "PASSED")
+
     def _task(self, files=1, work=1):
         return {"id": "T", "outcome": "o", "allowed_files": [f"f{i}.txt" for i in range(files)],
                 "required_work": ["w"] * work, "validation": ["v"], "stop_condition": "s"}
@@ -426,7 +954,7 @@ class OrchestratorTests(unittest.TestCase):
     def test_resume_skips_planner_and_starts_at_stored_round(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)
-            (root / "app.js").write_text("new\n", encoding="utf-8")
+            (root / "app.js").write_text("newer\n", encoding="utf-8")
             orchestrator.save_checkpoint(root, self.TASK, {"app.js": "old\n"}, 1, "fix the bug", "implementing", 3)
             inputs = []
 
@@ -772,6 +1300,484 @@ class OrchestratorTests(unittest.TestCase):
                 self.assertIn(label, text)
                 if phase != "reviewing":
                     self.assertNotIn("Last reviewer feedback", text)
+
+PASS_JSON = json.dumps({"verdict": "PASS", "evidence": ["ok"]})
+
+
+def fail_json(*defects):
+    return json.dumps({"verdict": "FAIL", "defects": [{"file": "a.txt", "defect": d, "expected": "e", "evidence": "v"} for d in defects]})
+
+
+class CustomWorkerTests(unittest.TestCase):
+    """Specialists and Extra reviewers, driven through the real run loop with a fake API client."""
+
+    TASK = OrchestratorTests.TASK | {"allowed_files": ["a.txt"]}
+    PROMPTS = {r: (Path(orchestrator.ROOT) / "prompts" / f"{r}.txt").read_text(encoding="utf-8") for r in ("implementer", "reviewer")}
+
+    @staticmethod
+    def worker(wid, title, kind="specialist", **extra):
+        return {"id": wid, "title": title, "kind": kind, "description": f"{title} does things.", "system_prompt": f"You are {title}.",
+                "base_url": "http://x", "expected_model_contains": f"{wid}-model", **extra}
+
+    def config(self, workers=None, **extra):
+        roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in ("planner", "implementer", "reviewer")}
+        return {"roles": roles, **({"custom_workers": workers} if workers is not None else {}), **extra}
+
+    def run_loop(self, root, config, verdicts=None, task=None, once=True):
+        """Run orchestrator._run; replies for non-writable roles come from verdicts[role] (default PASS)."""
+        (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        for name in ("PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md", "ISSUES.md"):
+            if not (root / name).exists():
+                (root / name).write_text("Build a real thing\n" if name == "PROJECT.md" else "text\n", encoding="utf-8")
+        log, events, queues = [], [], {k: list(v) for k, v in (verdicts or {}).items()}
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role = settings, ""
+
+            def ensure_model(self, role, interactive):
+                orchestrator.emit("model", role=role, id=self.settings["expected_model_contains"])
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                writable = "write_file" in {t["function"]["name"] for t in tools or []}
+                log.append({"role": self.role, "model": self.settings["expected_model_contains"], "system": messages[0]["content"],
+                            "user": messages[1]["content"], "writable": writable, "sampling": sampling})
+                if writable:
+                    if any(m.get("role") == "tool" for m in messages):
+                        return {"role": "assistant", "content": "T-9 PASSED"}
+                    args = json.dumps({"path": "a.txt", "content": "x"})
+                    return {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": args}}]}
+                return {"role": "assistant", "content": queues[self.role].pop(0) if queues.get(self.role) else PASS_JSON}
+
+        argv = ["o", "--project", str(root), "--non-interactive", *(["--once"] if once else [])]
+        with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator, "request_plan", return_value={"status": "TASK", "task": task or self.TASK}), \
+                patch.object(orchestrator, "configure_project", side_effect=lambda c, *a: c), patch.object(orchestrator.sys, "argv", argv):
+            code = orchestrator._run()
+        return code, log, events
+
+    def test_custom_workers_parsing_ignores_invalid_entries_with_warning(self):
+        import contextlib
+        import io
+        good = [self.worker("s1", "Tester"), self.worker("r1", "Security", "reviewer")]
+        bad = [
+            self.worker("b1", "Reviewer"), self.worker("b2", "implementer"), self.worker("b3", "PLANNER"),  # reserved titles
+            self.worker("b4", "tester"),  # duplicate title (case-insensitive)
+            self.worker("s1", "Other"),  # duplicate id
+            self.worker("b5", "Odd", "boss"),  # unknown kind
+            {k: v for k, v in self.worker("b6", "NoUrl").items() if k != "base_url"},
+            {k: v for k, v in self.worker("b7", "NoModel").items() if k != "expected_model_contains"},
+            {k: v for k, v in self.worker("b8", "NoPrompt").items() if k != "system_prompt"},
+            {k: v for k, v in self.worker("b9", "NoDesc").items() if k != "description"},
+            "not an object",
+        ]
+        config = self.config(good[:1] + bad + good[1:])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            parsed = orchestrator.custom_workers(config, warn=True)
+        self.assertEqual([w["title"] for w in parsed], ["Tester", "Security"])
+        self.assertEqual(out.getvalue().count("[workers] ignoring"), len(bad))
+        with contextlib.redirect_stdout(io.StringIO()) as quiet:
+            orchestrator.custom_workers(config)
+        self.assertEqual(quiet.getvalue(), "")
+        self.assertEqual(orchestrator.custom_workers({"custom_workers": "x"}), [])
+        # a reviewer needs no description; a model may be named by auto_load alone
+        loaded = self.worker("r2", "Lint", "reviewer", auto_load={"model_path": "p"})
+        loaded.pop("description"), loaded.pop("expected_model_contains")
+        self.assertEqual(len(orchestrator.custom_workers(self.config([loaded]))), 1)
+
+    def test_team_context_lists_workers_and_is_unchanged_without_them(self):
+        plain = orchestrator.team_context(self.config())
+        self.assertEqual(plain, orchestrator.team_context(self.config([])))
+        self.assertNotIn("Specialists", plain)
+        text = orchestrator.team_context(self.config([self.worker("s1", "Tester"), self.worker("r1", "Security", "reviewer")]))
+        self.assertIn("Specialists", text)
+        self.assertIn("- Tester: Tester does things.", text)
+        self.assertIn("Extra reviewers", text)
+        self.assertIn("- Security: Security does things.", text)
+        self.assertEqual(text.splitlines()[-1], plain.splitlines()[-1])  # task limits stay last
+
+    def test_absent_or_empty_array_runs_identically(self):
+        runs = []
+        for workers in (None, []):
+            with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+                root = Path(folder)
+                code, log, events = self.run_loop(root, self.config(workers), {"reviewer": [fail_json("bad"), PASS_JSON]})
+                runs.append((code, log, events, (root / "STATE.md").read_text(encoding="utf-8").split("<!--")[0]))
+        self.assertEqual(runs[0][:3], runs[1][:3])
+        self.assertEqual(runs[0][3], runs[1][3])
+        log = runs[0][1]
+        self.assertEqual([e["role"] for e in log], ["implementer", "implementer", "reviewer", "implementer", "implementer", "reviewer"])
+        self.assertEqual(log[0]["system"], self.PROMPTS["implementer"])
+        self.assertEqual(log[2]["system"], self.PROMPTS["reviewer"])
+
+    def test_validate_task_worker_field(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            for ok in ({}, {"worker": None}, {"worker": ""}, {"worker": "Tester"}, {"worker": " tester "},
+                       {"worker": "Implementer"}, {"worker": " implementer "}):
+                orchestrator.validate_task(self.TASK | ok, root, (3, 7), ["Tester"])
+            for bad, titles in (("Ghost", ["Tester"]), ("Tester", [])):
+                with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                    orchestrator.validate_task(self.TASK | {"worker": bad}, root, (3, 7), titles)
+                self.assertIn("unknown worker", str(ctx.exception))
+
+    def test_unknown_worker_gets_planner_correction(self):
+        bad = {"status": "TASK", "task": self.TASK | {"worker": "Ghost"}}
+        good = {"status": "TASK", "task": self.TASK | {"worker": "tester"}}
+        config = self.config([self.worker("s1", "Tester")])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            with patch.object(orchestrator, "ask_once", side_effect=[json.dumps(bad), json.dumps(good)]) as planner:
+                plan = orchestrator.request_plan(config, "system", "user", Path(folder), False)
+        self.assertEqual(plan["task"]["worker"], "tester")
+        self.assertEqual(planner.call_count, 2)
+        self.assertIn("unknown worker 'Ghost'", planner.call_args.args[3])
+
+    def test_specialist_does_the_task_instead_of_the_implementer(self):
+        tester = self.worker("s1", "Tester", sampling={"max_tokens": 123, "extra_body": {"top_k": 7}})
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            code, log, events = self.run_loop(root, self.config([tester]), task=self.TASK | {"worker": "tester"})
+            self.assertEqual(code, 0)
+            self.assertEqual((root / "a.txt").read_text(encoding="utf-8"), "x\n")
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+        self.assertEqual([e["role"] for e in log], ["s1", "s1", "reviewer"])  # tool call + report, then the main reviewer
+        work = log[0]
+        self.assertEqual(work["model"], "s1-model")
+        self.assertTrue(work["writable"])
+        self.assertEqual((work["sampling"]["max_tokens"], work["sampling"]["top_k"]), (123, 7))
+        self.assertTrue(work["system"].startswith(self.PROMPTS["implementer"].rstrip()))
+        self.assertIn("YOUR ROLE: Tester", work["system"])
+        self.assertTrue(work["system"].rstrip().endswith("You are Tester."))
+        self.assertEqual(log[2]["system"], self.PROMPTS["reviewer"])
+        self.assertIn(("model", {"role": "s1", "id": "s1-model"}), events)
+        self.assertEqual([d["role"] for e, d in events if e == "tool"], ["s1"])
+        self.assertNotIn("implementer", {d.get("role") for e, d in events})
+
+    def test_specialist_choice_survives_resume(self):
+        tester = self.worker("s1", "Tester")
+        task = self.TASK | {"worker": "Tester"}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, task, {"a.txt": None}, 0, "fb", "implementing", 3)
+            code, log, _ = self.run_loop(root, self.config([tester]), task=dict(self.TASK, id="OTHER"))
+            self.assertEqual(code, 0)
+            self.assertEqual(log[0]["role"], "s1")  # the checkpointed task, not the planner's, ran
+            self.assertIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_plan_stores_worker_id_and_implementer_means_none(self):
+        config = self.config([self.worker("s1", "Tester")])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            for name, expect in (("tester", "s1"), ("Implementer", None), (None, None)):
+                plan = {"status": "TASK", "task": self.TASK | {"worker": name}}
+                with patch.object(orchestrator, "ask_once", return_value=json.dumps(plan)):
+                    task = orchestrator.request_plan(config, "s", "u", Path(folder), False)["task"]
+                self.assertEqual(task.get("worker_id"), expect)
+
+    def test_renamed_specialist_resumes_by_id_and_removed_one_falls_back(self):
+        task = self.TASK | {"worker": "Tester", "worker_id": "s1"}
+        before = {"a.txt": None}
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            renamed = self.config([self.worker("s1", "QA Lead")])
+            code, log, _ = self.run_loop(root, renamed, task=dict(self.TASK, id="OTHER"))
+            self.assertEqual((code, log[0]["role"]), (0, "s1"))
+            self.assertIn("YOUR ROLE: QA Lead", log[0]["system"])
+            self.assertIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+            # round and snapshot survive the rename
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            data = orchestrator.load_checkpoint(root, (3, 7), 3)
+            self.assertEqual((data["round"], data["before"], data["task"]["worker_id"]), (1, before, "s1"))
+            # Specialist removed (or turned into a reviewer): the Implementer continues, checkpoint kept
+            for workers in ([], [self.worker("s1", "Tester", "reviewer")]):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    self.assertIsNone(orchestrator.find_specialist(data["task"], orchestrator.custom_workers(self.config(workers))))
+                self.assertIn("no longer exists", out.getvalue())
+            orchestrator.save_checkpoint(root, task, before, 1, "fb", "implementing", 3)
+            out = type("Out", (io.StringIO,), {"reconfigure": lambda self, **kw: None})()
+            with contextlib.redirect_stdout(out):
+                code, log, _ = self.run_loop(root, self.config([]), task=dict(self.TASK, id="OTHER"))
+            self.assertEqual((code, log[0]["role"]), (0, "implementer"))
+            self.assertIn("no longer exists", out.getvalue())
+            self.assertNotIn("discarding", out.getvalue())
+
+    def test_log_lines_show_title_but_events_keep_id(self):
+        tester = self.worker("s1-guid", "Tester")
+        with patch.dict(os.environ, {"AO_TEST_KEY": "k"}):
+            settings = dict(tester, api_key_env="AO_TEST_KEY")
+            client = orchestrator.ApiClient(settings)
+            client.title = orchestrator.display_name(self.config([tester]), "s1-guid")
+            events = []
+            out = io.StringIO()
+            with patch.object(client, "model_id", return_value="s1-guid-model"), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                    contextlib.redirect_stdout(out):
+                client.ensure_model("s1-guid", False)
+        self.assertIn("[Tester] s1-guid-model", out.getvalue())
+        self.assertNotIn("[s1-guid]", out.getvalue())
+        self.assertEqual(events, [("model", {"role": "s1-guid", "id": "s1-guid-model"})])
+
+    def reviewers(self):
+        return [self.worker("r1", "Security", "reviewer"), self.worker("r2", "Perf", "reviewer")]
+
+    def test_extra_reviewer_fail_sends_task_back_with_titled_feedback(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            verdicts = {"r1": [fail_json("SQL injection"), PASS_JSON]}
+            code, log, events = self.run_loop(root, self.config(self.reviewers()), verdicts)
+            self.assertEqual(code, 0)
+            self.assertEqual([e["role"] for e in log if not e["writable"]], ["reviewer", "r1", "r2", "reviewer", "r1", "r2"])
+            second = [e for e in log if e["writable"]][-1]  # the round-2 implementer's last request
+            self.assertEqual(sum("Security: SQL injection" in e["user"] for e in log if e["role"] == "implementer"), 2)
+            self.assertIn("REVIEWER FEEDBACK\n{", second["user"])
+            self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["FAIL", "PASS"])
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+
+    def test_extra_reviewer_fail_is_recorded_in_review_md_and_blocks_at_the_limit(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            verdicts = {"r1": [fail_json("SQL injection")], "r2": [fail_json("slow loop", "n+1")]}
+            with self.assertRaises(orchestrator.WorkflowError):
+                self.run_loop(root, self.config(self.reviewers(), max_review_rounds=0), verdicts)
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+            self.assertEqual(review["verdict"], "FAIL")
+            self.assertEqual([d["defect"] for d in review["defects"]], ["Security: SQL injection", "Perf: slow loop", "Perf: n+1"])
+            self.assertIn("Security: SQL injection", (root / "ISSUES.md").read_text(encoding="utf-8"))
+            self.assertNotIn("## Passed: T-9", (root / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_extra_reviewers_all_pass_records_once_with_reviewer_rules(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            code, log, events = self.run_loop(root, self.config(self.reviewers()))
+            self.assertEqual(code, 0)
+            self.assertEqual(len((root / "STATE.md").read_text(encoding="utf-8").split("## Passed: T-9")), 2)
+        extras = [e for e in log if e["role"] in ("r1", "r2")]
+        self.assertEqual([e["role"] for e in extras], ["r1", "r2"])
+        for e in extras:
+            self.assertFalse(e["writable"])
+            self.assertTrue(e["system"].startswith(self.PROMPTS["reviewer"].rstrip()))
+            self.assertIn("YOUR ROLE:", e["system"])
+            self.assertIn("IMPLEMENTER RESULT", e["user"])
+        self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["PASS"])
+
+    def test_main_reviewer_fail_skips_extra_reviewers_that_round(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            _, log, _ = self.run_loop(Path(folder), self.config(self.reviewers()), {"reviewer": [fail_json("nope"), PASS_JSON]})
+        self.assertEqual([e["role"] for e in log if not e["writable"]], ["reviewer", "reviewer", "r1", "r2"])
+
+    def test_extra_reviewer_verdict_repair_uses_its_own_model(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            _, log, _ = self.run_loop(Path(folder), self.config(self.reviewers()[:1]), {"r1": ["no json here", PASS_JSON]})
+        self.assertEqual([(e["role"], e["model"]) for e in log if e["role"] == "r1"], [("r1", "r1-model")] * 2)
+
+    def test_resume_in_extra_review_phase_skips_implementer_and_records_once(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, self.TASK, {"a.txt": None}, 0, "fb", "extra_reviewing", 3)
+            (root / "a.txt").write_text("x\n", encoding="utf-8")
+            (root / "RESULT.md").write_text("earlier result\n", encoding="utf-8")
+            (root / "REVIEW.md").write_text(PASS_JSON, encoding="utf-8")
+            self.assertIn("Extra reviewers checking", (root / "HANDOFF.md").read_text(encoding="utf-8"))
+            config = self.config(self.reviewers())
+            # killed right after the completion entry is written: the next run only clears the checkpoint
+            with patch.object(orchestrator, "clear_checkpoint", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_loop(root, config)
+            self.assertEqual(json.loads((root / ".ao_checkpoint.json").read_text(encoding="utf-8"))["phase"], "passed")
+            state = (root / "STATE.md").read_text(encoding="utf-8")
+            code, log, _ = self.run_loop(root, config)
+            self.assertEqual(code, 0)
+            self.assertEqual(log, [])  # recording only
+            self.assertEqual((root / "STATE.md").read_text(encoding="utf-8"), state)
+            self.assertEqual(state.count("## Passed: T-9"), 1)
+            self.assertFalse((root / ".ao_checkpoint.json").exists())
+
+    def test_resume_in_extra_review_phase_runs_only_the_extra_reviewers(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.save_checkpoint(root, self.TASK, {"a.txt": None}, 0, "fb", "extra_reviewing", 3)
+            (root / "a.txt").write_text("x\n", encoding="utf-8")
+            (root / "RESULT.md").write_text("earlier result\n", encoding="utf-8")
+            (root / "REVIEW.md").write_text(PASS_JSON, encoding="utf-8")
+            code, log, _ = self.run_loop(root, self.config(self.reviewers()), {"r2": [fail_json("late"), PASS_JSON]})
+            self.assertEqual(code, 0)
+            self.assertEqual([e["role"] for e in log if not e["writable"]], ["r1", "r2", "reviewer", "r1", "r2"])
+            self.assertIn("earlier result", log[0]["user"])  # the resumed round reviews the saved result
+            self.assertEqual(sum("## Passed: T-9" in l for l in (root / "STATE.md").read_text(encoding="utf-8").splitlines()), 1)
+
+
+class ChatTests(unittest.TestCase):
+    """--chat: single worker or Planner -> Implementer -> Reviewer, in a folder holding only config.json."""
+
+    def chat(self, request, replies=None, workers=None):
+        replies = {k: list(v) for k, v in (replies or {}).items()}
+        roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model", "sampling": {"temperature": i}}
+                 for i, r in enumerate(("planner", "implementer", "reviewer"))}
+        config = {"roles": roles, **({"custom_workers": workers} if workers else {})}
+        log, events, unloaded = [], [], []
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role, self.title = settings, "", ""
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                log.append({"model": self.settings["expected_model_contains"], "system": messages[0]["content"],
+                            "input": "\n".join(m["content"] for m in messages[1:]), "sampling": sampling, "tools": tools})
+                return {"role": "assistant", "content": replies[self.role].pop(0) if replies.get(self.role) else f"{self.role} text"}
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            req = Path(folder) / "request.json"
+            req.write_text(json.dumps(request), encoding="utf-8")
+            argv = ["o", "--project", folder, "--chat", str(req), "--events", "--non-interactive"]
+            with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                    patch.object(orchestrator, "unload_models", lambda: unloaded.append(1)), patch.object(orchestrator.sys, "argv", argv):
+                code = orchestrator.main()
+            files = sorted(p.name for p in root.iterdir())
+        return code, log, events, unloaded, files
+
+    MSGS = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "explain X"}]
+
+    def test_single_builtin_uses_own_settings_and_streams_reply(self):
+        code, log, events, unloaded, files = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS},
+                                                       {"implementer": ["<think>hmm</think>the answer"]})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 1)
+        self.assertEqual((log[0]["model"], log[0]["sampling"], log[0]["tools"]), ("implementer-model", {"temperature": 1}, None))
+        self.assertIn((Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip(), log[0]["system"])
+        self.assertIn("Implementer worker", log[0]["system"])
+        self.assertIn("explain X", log[0]["input"])
+        self.assertEqual([e for e in events if e[0].startswith("chat_")],
+                         [("chat_stage", {"role": "implementer", "stage": "answer", "title": "implementer"}),
+                          ("chat_reply", {"role": "implementer", "text": "the answer"})])
+        # G3: no workflow files, models stay loaded
+        self.assertEqual(files, ["config.json", "request.json"])
+        self.assertEqual(unloaded, [])
+
+    def test_single_custom_worker_and_unknown_worker(self):
+        worker = {"id": "spec1", "title": "Tester", "kind": "specialist", "description": "d", "system_prompt": "Be a tester.",
+                  "base_url": "http://x", "expected_model_contains": "spec1-model"}
+        code, log, events, *_ = self.chat({"mode": "single", "worker": "spec1", "messages": self.MSGS}, workers=[worker])
+        self.assertEqual((code, log[0]["model"]), (0, "spec1-model"))
+        self.assertIn("=== YOUR ROLE: Tester ===\nBe a tester.", log[0]["system"])
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "Unknown chat worker"):
+            self.chat({"mode": "single", "worker": "nobody", "messages": self.MSGS})
+
+    def test_unknown_worker_prints_error_and_exits_1(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "config.json").write_text('{"roles": {}}', encoding="utf-8")
+            (Path(folder) / "r.json").write_text(json.dumps({"mode": "single", "worker": "nobody", "messages": self.MSGS}), encoding="utf-8")
+            done = subprocess.run([sys.executable, str(Path(orchestrator.__file__)), "--project", folder, "--chat", str(Path(folder) / "r.json"),
+                                   "--events", "--non-interactive"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("ERROR: Unknown chat worker", done.stderr)
+
+    def _bad_chat(self, config, request):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "config.json").write_text(json.dumps(config), encoding="utf-8")
+            (Path(folder) / "r.json").write_text(json.dumps(request), encoding="utf-8")
+            done = subprocess.run([sys.executable, str(Path(orchestrator.__file__)), "--project", folder, "--chat", str(Path(folder) / "r.json"),
+                                   "--events", "--non-interactive"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 1)
+        self.assertIn("ERROR:", done.stderr)
+        self.assertNotIn("Traceback", done.stderr)
+
+    def test_builtin_role_missing_from_config_is_a_clean_error(self):
+        self._bad_chat({"roles": {}}, {"mode": "single", "worker": "planner", "messages": self.MSGS})
+
+    def test_non_object_request_is_a_clean_error(self):
+        self._bad_chat({"roles": {}}, [1, 2])
+
+    def test_multi_runs_three_stages_in_order(self):
+        code, log, events, unloaded, files = self.chat(
+            {"mode": "multi", "worker": "ignored", "messages": self.MSGS},
+            {"planner": ["<think>x</think>PLAN-A"], "implementer": ["DRAFT-B"], "reviewer": ["FINAL-C"]})
+        self.assertEqual(code, 0)
+        self.assertEqual([(l["model"], l["sampling"]["temperature"]) for l in log],
+                         [("planner-model", 0), ("implementer-model", 1), ("reviewer-model", 2)])
+        self.assertNotIn("PLAN-A", log[0]["input"])
+        self.assertIn("PLAN-A", log[1]["input"])
+        self.assertNotIn("x</think>", log[1]["input"] + log[2]["input"])
+        self.assertTrue("PLAN-A" in log[2]["input"] and "DRAFT-B" in log[2]["input"] and "explain X" in log[2]["input"])
+        self.assertEqual([(d["stage"], d["role"]) for e, d in events if e == "chat_stage"],
+                         [("plan", "planner"), ("draft", "implementer"), ("review", "reviewer")])
+        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
+        self.assertEqual((files, unloaded), (["config.json", "request.json"], []))
+
+    def test_multi_falls_back_to_draft_when_reviewer_is_empty(self):
+        out = io.StringIO()
+        out.reconfigure = lambda **kw: None
+        with patch.object(orchestrator.sys, "stdout", out):
+            _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
+        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
+        self.assertIn("Reviewer returned nothing usable", out.getvalue())
+
+
+BROWSER = orchestrator.find_browser()
+
+
+class BehaviourGateTests(unittest.TestCase):
+    def gate(self, files, config=None):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            for name, text in files.items():
+                (Path(folder) / name).write_text(text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                return orchestrator.behaviour_gate(Path(folder), config or {})
+
+    def test_not_a_web_project_or_disabled_is_silent(self):
+        self.assertEqual(self.gate({"app.py": "x = 1\n"}), ([], ""))
+        self.assertEqual(self.gate({"index.html": "<p>x</p>"}, {"behaviour_check": False}), ([], ""))
+
+    def test_no_browser_skips_with_note(self):
+        with patch.object(orchestrator, "find_browser", return_value=None):
+            defects, block = self.gate({"index.html": "<p>x</p>"})
+        self.assertEqual(defects, [])
+        self.assertIn("BEHAVIOUR CHECK: skipped (no Chromium browser found", block)
+
+    def test_missing_report_is_a_gate_error_not_a_pass(self):
+        with patch.object(orchestrator, "find_browser", return_value="browser"), \
+                patch.object(orchestrator, "load_page", side_effect=orchestrator.WorkflowError("no report came back")):
+            defects, block = self.gate({"index.html": "<p>x</p>"})
+        self.assertEqual(defects[0]["evidence"], "no report came back")
+        self.assertIn("FAILED", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_reports_error_thrown_on_load(self):
+        defects, block = self.gate({
+            "index.html": "<!doctype html><html><head><title>t</title></head><body><p>Hi</p><script src='app.js'></script></body></html>",
+            "app.js": "const components = {};\nfor (const c of components) {}\n",
+        })
+        self.assertIn("components is not iterable (app.js:2)", defects[0]["evidence"])
+        self.assertIn("BEHAVIOUR CHECK: FAILED", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_clean_page_passes_with_visible_text(self):
+        defects, block = self.gate({
+            "index.html": "<html><body><h1>Tracker</h1><script src='app.js'></script></body></html>",
+            "app.js": "document.body.insertAdjacentHTML('beforeend', '<p>Added by script</p>');\n",
+        })
+        self.assertEqual(defects, [])
+        self.assertIn("BEHAVIOUR CHECK: passed", block)
+        self.assertIn("Tracker\n", block)
+        self.assertIn("Added by script", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_reports_missing_script_and_console_error(self):
+        defects, _ = self.gate({"index.html": "<p>x</p><script src='app.js'></script><script>console.error('boom')</script>"})
+        evidence = [d["evidence"] for d in defects]
+        self.assertIn("Failed to load app.js (404 not found) (index.html)", evidence)
+        self.assertTrue(any(e == "boom (console.error)" for e in evidence), evidence)
+
 
 if __name__ == "__main__":
     unittest.main()

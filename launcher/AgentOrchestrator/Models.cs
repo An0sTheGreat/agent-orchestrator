@@ -31,6 +31,13 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
     public string? ModelId { get; set; }
     public string? ModelVariant { get; set; }
+    // Custom workers' settings (kind, prompt, sampling, model path); written back by MainWindow.CurrentWorkers.
+    public WorkerSetting Config { get; set; } = new();
+    // Why the orchestrator would ignore this custom worker (null = fine); refreshed by MainWindow.RefreshSetupProblems.
+    private string? _setupProblem;
+    public string? SetupProblem { get => _setupProblem; set { if (_setupProblem != value) { _setupProblem = value; Raise(nameof(SetupProblem)); Raise(nameof(HasSetupProblem)); Raise(nameof(SetupTip)); } } }
+    public bool HasSetupProblem => _setupProblem is not null;
+    public string SetupTip => $"The orchestrator will skip this worker: {_setupProblem}";
     public string ModelName { get => _modelName; private set => Set(ref _modelName, value); }
     public string Weights { get => _weights; private set => Set(ref _weights, value); }
     public string Quant { get => _quant; private set => Set(ref _quant, value); }
@@ -50,6 +57,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public void BeginTurn()
     {
         _bankedPrompt = _bankedCompletion = _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         TokensPerSec = "—";
         NotifyTotals();
     }
@@ -60,6 +68,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
         _bankedPrompt += prompt;
         _bankedCompletion += completion;
         _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         if (tps > 0)
             TokensPerSec = FormatRate(tps);
         NotifyTotals();
@@ -69,6 +78,11 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public void SetLive(long prompt, long completion, double? decodeTps, double? promptTps)
     {
         _livePrompt = prompt;
+        if (_liveCompletion > 0) // streamed deltas are counted exactly; the monitor only supplies the prompt side
+        {
+            NotifyTotals();
+            return;
+        }
         _liveCompletion = completion;
         if (decodeTps > 0)
             TokensPerSec = FormatRate(decodeTps.Value);
@@ -77,9 +91,28 @@ internal sealed class RoleCard : INotifyPropertyChanged
         NotifyTotals();
     }
 
+    // Streamed delta chunks (about one token each) since the last usage event; the rate uses a ~1 s sliding window.
+    public long LiveCompletion => _liveCompletion;
+
+    public void AddDeltas(int count, long nowMs)
+    {
+        _liveCompletion += count;
+        _recent.Enqueue((nowMs, count));
+        while (_recent.Count > 1 && nowMs - _recent.Peek().Ms > WindowMs)
+            _recent.Dequeue();
+        var (first, firstCount) = _recent.Peek();
+        if (nowMs > first) // the oldest batch only marks where the window starts
+            TokensPerSec = FormatRate((_recent.Sum(r => (double)r.Count) - firstCount) * 1000.0 / (nowMs - first));
+        NotifyTotals();
+    }
+
+    private const long WindowMs = 1000;
+    private readonly Queue<(long Ms, int Count)> _recent = new();
+
     public void ClearLive()
     {
         _livePrompt = _liveCompletion = 0;
+        _recent.Clear();
         NotifyTotals();
     }
 
@@ -108,6 +141,8 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
+    // Named worker sets, global across projects.
+    public List<WorkerPreset> Presets { get; set; } = new();
     public string Theme { get; set; } = "Flat";
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
@@ -115,6 +150,11 @@ internal sealed class AppSettings
     public bool Once { get; set; } = true;
     public bool Compact { get; set; }
     public bool SidebarCollapsed { get; set; }
+    // Chat view: "single" (one worker) or "multi" (Planner -> Implementer -> Reviewer), and the single-mode target worker id.
+    public string ChatMode { get; set; } = "single";
+    public string ChatWorker { get; set; } = "implementer";
+    // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
+    public bool ChatKeepLoaded { get; set; } = true;
     // Window position and size in device-independent pixels; null until the window has been closed once.
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }
@@ -152,4 +192,28 @@ internal sealed class WorkerSetting
     public bool Custom { get; set; }
     public string? ModelId { get; set; }      // custom workers only
     public string? ModelVariant { get; set; } // custom workers only
+    // Custom workers only. ModelPath/ModelExpected rebuild auto_load.model_path and expected_model_contains
+    // (ModelId is the display name, ModelVariant the gguf_variant).
+    public string? ModelPath { get; set; }
+    public string? ModelExpected { get; set; }
+    public string Kind { get; set; } = "specialist"; // "specialist" | "reviewer"
+    public string Description { get; set; } = "";
+    public string SystemPrompt { get; set; } = "";
+    // Same text form as the built-in Settings dialog; "" = inherit the Implementer's value.
+    public string Temperature { get; set; } = "";
+    public string MaxTokens { get; set; } = "";
+    public string RepetitionPenalty { get; set; } = "";
+    public string ReasoningBudget { get; set; } = "";
+    public string ContextLength { get; set; } = "";
+    public string Thinking { get; set; } = "Auto";
+
+    public WorkerSetting Clone() => (WorkerSetting)MemberwiseClone();
+}
+
+// A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.
+internal sealed class WorkerPreset
+{
+    public string Name { get; set; } = "";
+    public List<WorkerSetting> Workers { get; set; } = new();
+    public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
 }

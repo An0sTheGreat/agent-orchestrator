@@ -36,7 +36,7 @@ public partial class MainWindow : Window
     private readonly Queue<StreamBlock> _pendingTools = new();
     private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
-    private readonly HashSet<string> _loadedByRun = new(); // only these are unloaded on Stop/close
+    private readonly HashSet<(string Url, string Path)> _loadedByRun = new(); // only these are unloaded on Stop/close, each on the server it loaded on
     private bool _followTail = true, _stopRequested;
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
@@ -69,6 +69,7 @@ public partial class MainWindow : Window
         ThemeOledRadio.IsChecked = _settings.Theme == "Oled";
         ApplyTheme();
         _initializing = false;
+        InitChat();
         RestoreWindowBounds();
 
         Closing += OnClosing;
@@ -100,7 +101,7 @@ public partial class MainWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
-        if (_workflowRoot is null)
+        if (_workflowRoot is null || _chatBusy) // a chat reply is using the models
             return;
 
         var project = SelectedProjectPath();
@@ -122,6 +123,8 @@ public partial class MainWindow : Window
             ApiKeyBox.Focus();
             return;
         }
+        if (!PrepareRun())
+            return;
         try
         {
             var python = LauncherLogic.FindPython();
@@ -132,7 +135,6 @@ public partial class MainWindow : Window
 
             _settings.LastProject = project;
             _settings.Save();
-            ResetRunView();
             _apiBase = ManagementUrl(project) ?? _apiBase;
             _runStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             Log($"Starting workflow for {project}");
@@ -220,6 +222,25 @@ public partial class MainWindow : Window
         }
     }
 
+    // Before a run: write the custom workers to config.json, clear the view, then say which workers will not take
+    // part (after the clear, so the lines stay). False (nothing started) when config.json could not be written,
+    // since the run would otherwise use whatever custom_workers is on disk.
+    private bool PrepareRun()
+    {
+        var skipped = new List<string>();
+        if (!SyncCustomWorkers(skipped))
+        {
+            Toast("Run not started: config.json could not be updated", "#FF667A");
+            return false;
+        }
+        ResetRunView();
+        foreach (var reason in skipped)
+            Log($"Not written to config.json, so it will not take part: {reason}");
+        if (skipped.Count > 0)
+            Toast($"Not taking part: {string.Join("; ", skipped)}", "#FFB74D");
+        return true;
+    }
+
     private void ResetRunView()
     {
         OutputPanel.Children.Clear();
@@ -255,6 +276,7 @@ public partial class MainWindow : Window
         ProjectButton.IsEnabled = !running;
         OnceToggle.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
+        PresetsButton.IsEnabled = !running;
         foreach (var card in _cards)
             card.Editable = !running;
         if (running)
@@ -263,6 +285,7 @@ public partial class MainWindow : Window
             SetStatus("Ready", "#667085");
         SetActivity(running);
         RefreshPrimary();
+        RefreshChatInput();
     }
 
     // While a run is in progress the status dot sends out a ring and a light sweeps along the header's lower edge.
@@ -321,11 +344,19 @@ public partial class MainWindow : Window
         var pending = new StringBuilder();
         (string Role, string Kind, int Index)? key = null;
         var name = "";
+        var chunks = 0; // deltas before coalescing: one per streamed token
 
         void Flush()
         {
             if (key is { } k && pending.Length > 0)
-                AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
+            {
+                if (_chatBusy)
+                    AppendChatDelta(k.Role, k.Kind, pending.ToString());
+                else
+                    AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
+                CardFor(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
+            }
+            chunks = 0;
             pending.Clear();
             key = null;
         }
@@ -339,6 +370,7 @@ public partial class MainWindow : Window
                 if (key is { } current && current != next)
                     Flush();
                 key = next;
+                chunks++;
                 name = Str(e, "name");
                 pending.Append(Str(e, "text"));
                 continue;
@@ -349,7 +381,11 @@ public partial class MainWindow : Window
                 if (ev is { } other)
                     HandleEvent(other);
                 else
+                {
+                    if (_chatBusy)
+                        NoteChatLine(line);
                     Log(line);
+                }
             }
             catch (Exception exception) when (exception is KeyNotFoundException or InvalidOperationException or FormatException)
             {
@@ -361,6 +397,11 @@ public partial class MainWindow : Window
 
     private void HandleEvent(JsonElement ev)
     {
+        if (_chatBusy) // a chat reply streams into the conversation, not into Model Output
+        {
+            HandleChatEvent(ev);
+            return;
+        }
         var role = Str(ev, "role");
         var card = CardFor(role);
         switch (Str(ev, "e"))
@@ -368,14 +409,14 @@ public partial class MainWindow : Window
             case "loading":
                 EndStream(false);
                 Activate(role, "Loading model");
-                _loadedByRun.Add(Str(ev, "path"));
-                Log($"[{role}] loading {Str(ev, "path")} ...");
+                _loadedByRun.Add(LoadedOn(ev));
+                Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
                 EndStream(false);
                 Activate(role, "Working");
                 card?.SetModel(LauncherLogic.DescribeModel(Str(ev, "id"), ConfiguredVariant(role)));
-                Log($"[{role}] {Str(ev, "id")}");
+                Log($"[{card?.Title ?? role}] {Str(ev, "id")}");
                 break;
             case "done":
                 EndStream(ev.TryGetProperty("final", out var f) && f.ValueKind == JsonValueKind.True);
@@ -632,7 +673,12 @@ public partial class MainWindow : Window
         _transcript.Append(transcript);
         if (!_followTail)
             Reveal(JumpPill, true, slide: 10);
-        // Each section fades and slides in once when it is added; streamed text never comes through here.
+        FadeIn(block);
+    }
+
+    // Each section fades and slides in once when it is added; streamed text never comes through here.
+    private static void FadeIn(UIElement block)
+    {
         var time = TimeSpan.FromMilliseconds(180);
         var shift = new TranslateTransform();
         block.RenderTransform = shift;
@@ -695,7 +741,7 @@ public partial class MainWindow : Window
     }
 
     // Read-only TextBox so the text is selectable; wheel input is passed on to the output scroller.
-    private TextBox BodyText(string text, bool mono, bool muted)
+    private TextBox BodyText(string text, bool mono, bool muted, bool chat = false)
     {
         var box = new TextBox
         {
@@ -711,12 +757,15 @@ public partial class MainWindow : Window
             Cursor = Cursors.IBeam,
         };
         box.SetResourceReference(TextBox.ForegroundProperty, muted ? "Muted" : "TextPrimary");
+        var scroller = chat ? ChatScroll : OutputScroll;
         box.PreviewMouseWheel += (_, e) =>
         {
             e.Handled = true;
             if (e.Delta > 0)
-                _followTail = false;
-            OutputScroll.ScrollToVerticalOffset(OutputScroll.VerticalOffset - e.Delta);
+            {
+                if (chat) _chatFollow = false; else _followTail = false;
+            }
+            scroller.ScrollToVerticalOffset(scroller.VerticalOffset - e.Delta);
         };
         return box;
     }
@@ -766,14 +815,15 @@ public partial class MainWindow : Window
         static Task Settle() => Task.Delay(400);
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
-        void Snap(string name)
+        void Snap(string name, FrameworkElement? target = null) // target: a popup such as a menu, which the window picture leaves out
         {
             if (string.IsNullOrEmpty(snapshots))
                 return;
+            target ??= this;
             var dpi = VisualTreeHelper.GetDpi(this);
-            var bitmap = new RenderTargetBitmap((int)(ActualWidth * dpi.DpiScaleX), (int)(ActualHeight * dpi.DpiScaleY),
+            var bitmap = new RenderTargetBitmap((int)(target.ActualWidth * dpi.DpiScaleX), (int)(target.ActualHeight * dpi.DpiScaleY),
                 dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-            bitmap.Render(this);
+            bitmap.Render(target);
             var encoder = new PngBitmapEncoder();
             encoder.Frames.Add(BitmapFrame.Create(bitmap));
             Directory.CreateDirectory(snapshots);
@@ -852,12 +902,427 @@ public partial class MainWindow : Window
         await Settle();
         if (!_followTail || JumpPill.IsVisible)
             return Fail();
-        await Task.Delay(3200); // toasts leave on their own
+        // toasts leave on their own: 3 s on screen + a 180 ms fade, with margin for a busy dispatcher
+        for (var waited = 0; waited < 5000 && ToastStack.Children.Count != 0; waited += 100)
+            await Task.Delay(100);
         if (ToastStack.Children.Count != 0)
             return Fail();
         // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
         if (LogBox.Visibility != Visibility.Collapsed)
             return Fail();
+        // Live token stats: deltas alone drive the count and rate until the call's usage event gives the exact numbers.
+        var live = CardFor("implementer");
+        if (live is null)
+            return Fail();
+        for (var tick = 0; tick < 8; tick++)
+        {
+            for (var n = 0; n < 5; n++)
+                _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""");
+            DrainLines();
+            await Task.Delay(40);
+        }
+        if (live.LiveCompletion != 40 || live.TokensPerSec == "—" || !live.TurnDetail.Contains("40 generated"))
+            return Fail();
+        _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"usage","role":"implementer","prompt":123,"completion":77,"tps":42}""");
+        DrainLines();
+        if (live.LiveCompletion != 0 || !live.TurnDetail.Contains("123 prompt") || !live.TurnDetail.Contains("77 generated") || live.TokensPerSec != "42.0 tok/s")
+            return Fail();
+        // Presets: save, change the workers and the config, then apply; both come back as saved.
+        var presetProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
+        var previousProject = _projectPath;
+        try
+        {
+            Directory.CreateDirectory(presetProject);
+            var presetConfig = Path.Combine(presetProject, "config.json");
+            string Config(string temperature) => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """}},"implementer":{"base_url":"http://h/v1"},"reviewer":{}}}""";
+            string Cards() => string.Join("|", _cards.Select(c => $"{c.Role}:{c.Title}"));
+            File.WriteAllText(presetConfig, Config("0.3"));
+            ProjectPath = presetProject;
+            var saved = Cards();
+            SavePreset("Smoke");
+            AddWorker_Click(AddWorkerButton, new RoutedEventArgs());
+            File.WriteAllText(presetConfig, Config("0.9"));
+            if (Cards() == saved || _settings.Presets.Count(p => p.Name == "Smoke") != 1)
+                return Fail();
+            var menu = BuildPresetsMenu();
+            menu.IsOpen = true;
+            await Settle();
+            if (!menu.IsOpen || menu.Items.OfType<MenuItem>().All(i => i.Header as string != "Smoke"))
+                return Fail();
+            Snap("7-presets-menu", menu);
+            menu.IsOpen = false;
+            ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            await Settle();
+            if (Cards() != saved || (double)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["sampling"]!["temperature"]! != 0.3)
+                return Fail();
+            DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            if (_settings.Presets.Any(p => p.Name == "Smoke"))
+                return Fail();
+
+            // The workflow root's config.json is the project template: syncing with it selected must leave it untouched.
+            var templatePath = Path.Combine(_workflowRoot ?? "", "config.json");
+            var templateBefore = File.ReadAllBytes(templatePath);
+            ProjectPath = _workflowRoot ?? "";
+            SyncCustomWorkers();
+            ProjectPath = presetProject;
+            if (!File.ReadAllBytes(templatePath).SequenceEqual(templateBefore))
+            {
+                File.WriteAllBytes(templatePath, templateBefore);
+                return Fail();
+            }
+            // Compact card context menu: items per worker kind.
+            var planner = CardFor("planner")!;
+            var extra = new RoleCard("smoke-custom", "SMOKE", custom: true);
+            _cards.Add(extra);
+            string Items(RoleCard c) => string.Join("|", BuildCardMenu(c, this).Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)")));
+            if (Items(planner) != "Change model…|Settings…" || Items(extra) != "Change model…|Settings…|Rename…|Remove")
+                return Fail();
+            var cardMenu = BuildCardMenu(planner, this);
+            cardMenu.IsOpen = true;
+            await Settle();
+            if (!cardMenu.IsOpen)
+                return Fail();
+            Snap("8-card-menu", cardMenu);
+            cardMenu.IsOpen = false;
+            planner.Editable = false;
+            var locked = Items(planner);
+            planner.Editable = true;
+            if (locked != "Change model… (off)|Settings… (off)")
+                return Fail();
+            RemoveWorker(extra);
+            if (_cards.Contains(extra))
+                return Fail();
+
+            // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
+            async Task<bool> Show(DialogShell dialog, string name)
+            {
+                dialog.ShowActivated = false;
+                dialog.Show();
+                await Settle();
+                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.ActualWidth > 100 && dialog.ActualHeight > 60;
+                Snap(name, dialog);
+                dialog.Close();
+                return shown && !dialog.IsVisible;
+            }
+            var mdFile = Path.Combine(presetProject, "PROJECT.md");
+            File.WriteAllText(mdFile, "# Smoke project\n");
+            var settingsDialog = BuildRoleSettingsDialog(planner, presetConfig, LauncherLogic.ReadRoleSettings(presetConfig, "planner"));
+            if (!await Show(settingsDialog, "9-settings-dialog") || !await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
+                || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
+                return Fail();
+
+            // Custom workers: reserved titles are refused, the settings dialog has the system prompt (built-ins do not),
+            // and the project's config.json receives the custom_workers entry.
+            static bool HasTag(DependencyObject d, string tag) =>
+                d is FrameworkElement { Tag: string t } && t == tag || LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Any(c => HasTag(c, tag));
+            var tester = new RoleCard("smoke-tester", "TESTER", custom: true);
+            _cards.Add(tester);
+            if (RenameTo(tester, "Reviewer") is null || RenameTo(tester, " planner ") is null || RenameTo(tester, "IMPLEMENTER") is null || tester.Title != "TESTER" ||
+                RenameTo(tester, "Docs") is not null || tester.Title != "Docs")
+                return Fail();
+            tester.ModelId = tester.Config.ModelPath = "org/M-GGUF";
+            tester.Config.ModelExpected = "M-GGUF";
+            tester.Config.Kind = "reviewer";
+            // No system prompt yet: the card warns, nothing is written, and the Settings dialog refuses to save.
+            SyncCustomWorkers();
+            if (!tester.HasSetupProblem || JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
+                return Fail();
+            var incompleteDialog = BuildCustomSettingsDialog(tester);
+            static T? FindIn<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
+                d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => FindIn(c, match)).FirstOrDefault(r => r is not null);
+            FindIn<Button>(incompleteDialog, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            var rejection = FindIn<TextBlock>(incompleteDialog, t => t.Visibility == Visibility.Visible && t.Text.StartsWith("Enter a system prompt"));
+            if (rejection is null || incompleteDialog.DialogResult is not null || tester.Config.SystemPrompt.Length != 0)
+                return Fail();
+            await Settle();
+            (CardsList.ItemContainerGenerator.ContainerFromItem(tester) as FrameworkElement)?.BringIntoView();
+            await Settle();
+            Snap("13-incomplete-worker");
+            tester.Config.SystemPrompt = "You test.";
+            SyncCustomWorkers();
+            if (tester.HasSetupProblem)
+                return Fail();
+            var synced = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray();
+            if (synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer")
+                return Fail();
+            var customDialog = BuildCustomSettingsDialog(tester);
+            if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") ||
+                !await Show(customDialog, "12-custom-settings-dialog"))
+                return Fail();
+            RemoveWorker(tester);
+            if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
+                return Fail();
+
+            // Legacy duplicate titles: the second card warns and is not written.
+            var first = new RoleCard("smoke-d1", "Dup", custom: true);
+            var second = new RoleCard("smoke-d2", "DUP", custom: true);
+            foreach (var card in new[] { first, second })
+            {
+                card.ModelId = card.Config.ModelPath = "org/M-GGUF";
+                card.Config.Kind = "reviewer";
+                card.Config.SystemPrompt = "p";
+                _cards.Add(card);
+            }
+            // Start's pre-run step: the skipped worker's line survives the view reset, and a toast is raised.
+            Log("stale line");
+            if (!PrepareRun() || first.HasSetupProblem || !second.HasSetupProblem || !second.SetupTip.Contains("already used") ||
+                LogBox.Text.Contains("stale line") || !LogBox.Text.Contains("DUP: title 'DUP' is already used") || ToastStack.Children.Count == 0 ||
+                JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 1)
+                return Fail();
+            // config.json cannot be written: the start is aborted before anything is cleared or launched.
+            Log("kept line");
+            File.SetAttributes(presetConfig, FileAttributes.ReadOnly);
+            bool started;
+            try { started = PrepareRun(); }
+            finally { File.SetAttributes(presetConfig, FileAttributes.Normal); }
+            if (started || _process is not null || StatusText.Text != "Could not update config.json" || !LogBox.Text.Contains("kept line") ||
+                !LogBox.Text.Contains("Could not write custom workers") || ToastStack.Children.OfType<Border>().All(t => !((TextBlock)((StackPanel)t.Child).Children[1]).Text.StartsWith("Run not started")))
+                return Fail();
+            RemoveWorker(first);
+            RemoveWorker(second);
+            SetStatus("Ready", "#667085");
+        }
+        finally
+        {
+            ProjectPath = previousProject;
+            if (Directory.Exists(presetProject))
+                Directory.Delete(presetProject, recursive: true);
+        }
+        // Chat view, driven without Python: worker menu, target chip, Single and Multi turns fed by fake events.
+        {
+            var outputCount = OutputPanel.Children.Count;
+            ShowView(false, chat: true);
+            await Settle();
+            if (!ChatView.IsVisible)
+                return Fail();
+            var stray = new RoleCard("smoke-chat-custom", "Smoke chat", custom: true);
+            _cards.Add(stray);
+            var workerMenu = BuildWorkerMenu(ChatPlus);
+            var headers = workerMenu.Items.OfType<MenuItem>().ToList();
+            var names = headers.Select(i => (string)i.Header).ToList();
+            var broken = headers.FirstOrDefault(i => ((string)i.Header).StartsWith("Smoke chat"));
+            if (new[] { "Planner", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
+                return Fail();
+            workerMenu.IsOpen = true;
+            await Settle();
+            Snap("14-chat-plus-menu", workerMenu);
+            workerMenu.IsOpen = false;
+            RemoveWorker(stray);
+
+            PickChatWorker("reviewer");
+            if (ChatMulti || !((string)ChatTargetChip.Content).Contains("Reviewer"))
+                return Fail();
+            string Ev(string json) => LauncherLogic.EventPrefix + json;
+            string Delta(string role, string kind, string text) => Ev($$"""{"e":"delta","role":"{{role}}","kind":"{{kind}}","text":"{{text}}"}""");
+
+            async Task<bool> Turn(string text, bool multi, string[] events, string reply)
+            {
+                StartChatTurn(text, multi);
+                if (!_chatBusy || StartButton.IsEnabled)
+                    return false;
+                foreach (var line in events)
+                    _lines.Enqueue(line);
+                _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"reviewer","text":"{{reply}}"}"""));
+                DrainLines();
+                var current = _reply!;
+                await Settle();
+                FinishChatTurn(0, false, null);
+                return current.Answer?.Text == reply && current.Final == reply && !_chatBusy && StartButton.IsEnabled == (_workflowRoot is not null);
+            }
+
+            var reviewer = CardFor("reviewer")!;
+            if (!await Turn("Hello", false, new[]
+            {
+                Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""),
+                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf"}"""),
+                Ev("""{"e":"model","role":"reviewer","id":"chat-model Q4_K_M"}"""),
+                Delta("reviewer", "thinking", "hmm"),
+                Delta("reviewer", "text", "streamed answer"),
+                Ev("""{"e":"done","role":"reviewer","final":true}"""),
+                Ev("""{"e":"usage","role":"reviewer","prompt":321,"completion":45,"tps":30}"""),
+            }, "Final reviewed reply") || _chatHistory.Count != 2 || !_loadedByChat.Any(l => l.Path == "smoke/chat-model.gguf") ||
+                !reviewer.TurnDetail.Contains("321 prompt") || !reviewer.TurnDetail.Contains("45 generated") || OutputPanel.Children.Count != outputCount ||
+                _reply!.Content.Children.OfType<Expander>().Count() != 1)
+                return Fail();
+            await Settle();
+            Snap("15-chat-single");
+
+            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
+            if (!ChatMulti || (string)ChatTargetChip.Content != ChainLabel)
+                return Fail();
+            var stages = new List<string>();
+            foreach (var (role, stage, title) in new[] { ("planner", "plan", "Plan"), ("implementer", "draft", "Draft"), ("reviewer", "review", "Review") })
+            {
+                stages.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
+                stages.Add(Ev($$"""{"e":"loading","role":"{{role}}","path":"smoke/{{role}}.gguf"}"""));
+                stages.Add(Ev($$"""{"e":"model","role":"{{role}}","id":"{{role}}-model"}"""));
+                stages.Add(Delta(role, "text", $"{title} body"));
+                stages.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
+            }
+            // The real Multi protocol (orchestrator.py run_chat): plan, draft, review stages, then only chat_reply carries the answer.
+            if (!await Turn("Build it", true, stages.ToArray(), "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
+                _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Any(l => l.Path == "smoke/planner.gguf"))
+                return Fail();
+            await Settle();
+            Snap("16-chat-multi");
+
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+            if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
+                return Fail();
+            ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+
+            // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop still discards the turn.
+            StartChatTurn("Race", false);
+            _lines.Enqueue(Ev("""{"e":"chat_reply","role":"reviewer","text":"Raced reply"}"""));
+            DrainLines();
+            if (FinishChatTurn(0, true, null) || _chatBusy || _chatHistory.Count != 2 || _chatHistory[1] != new LauncherLogic.ChatMessage("assistant", "Raced reply") ||
+                _reply!.Final != "Raced reply" || _reply.Answer?.Text != "Raced reply")
+                return Fail();
+            StartChatTurn("Really stopped", false);
+            if (!FinishChatTurn(-1, true, null) || _chatBusy || _chatHistory.Count != 2)
+                return Fail();
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+
+            // Closing mid-reply: the turn's request file and created temp folder are deleted, a real project is not touched.
+            var strayFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
+            var strayDir = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
+            File.WriteAllText(strayFile, "{}");
+            Directory.CreateDirectory(strayDir);
+            File.WriteAllText(Path.Combine(strayDir, "config.json"), "{}");
+            (_chatRequestFile, _chatTempFolder) = (strayFile, strayDir);
+            StartChatTurn("Busy", false);
+            _loadedByChat.Clear(); // the close path would unload these from a real server
+            OnClosing(this, new CancelEventArgs()); // the real close path: no chat process here, only the files
+            if (File.Exists(strayFile) || Directory.Exists(strayDir) || _chatRequestFile is not null || _chatTempFolder is not null)
+                return Fail();
+            CleanupChatTemp(); // idempotent: SendChat's own cleanup runs after this
+            FinishChatTurn(-1, true, null);
+            var realProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-project-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(realProject);
+            try
+            {
+                var projectConfigFile = Path.Combine(realProject, "config.json");
+                File.WriteAllText(projectConfigFile, "{\"keep\":1}");
+                var kept = LauncherLogic.PrepareChatFolder(realProject, _workflowRoot!, CurrentWorkers(), out _);
+                var made = LauncherLogic.PrepareChatFolder("", _workflowRoot!, CurrentWorkers(), out _);
+                var madeExists = made.IsTemp && Directory.Exists(made.Path);
+                if (made.IsTemp) Directory.Delete(made.Path, true);
+                if (kept.IsTemp || kept.Path != realProject || File.ReadAllText(projectConfigFile) != "{\"keep\":1}" || !made.IsTemp || !madeExists)
+                    return Fail();
+            }
+            finally { Directory.Delete(realProject, true); }
+
+            // Unload on close, called on the UI thread against two fake servers: each receives exactly its own paths, and fast.
+            (System.Net.Sockets.TcpListener Listener, System.Collections.Concurrent.ConcurrentBag<string> Seen, Task Serving) Fake()
+            {
+                var bag = new System.Collections.Concurrent.ConcurrentBag<string>();
+                var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+                listener.Start();
+                var task = Task.Run(async () =>
+                {
+                    try
+                    {
+                        while (true)
+                        {
+                            var client = await listener.AcceptTcpClientAsync();
+                            _ = Task.Run(async () =>
+                            {
+                                using var c = client;
+                                var stream = c.GetStream();
+                                var head = new StringBuilder();
+                                var one = new byte[1];
+                                while (!head.ToString().EndsWith("\r\n\r\n") && await stream.ReadAsync(one) == 1)
+                                    head.Append((char)one[0]);
+                                var length = System.Text.RegularExpressions.Regex.Match(head.ToString(), @"Content-Length:\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                                var body = new byte[length.Success ? int.Parse(length.Groups[1].Value) : 0];
+                                for (var got = 0; got < body.Length;)
+                                    got += await stream.ReadAsync(body.AsMemory(got));
+                                bag.Add(Encoding.UTF8.GetString(body));
+                                await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
+                            });
+                        }
+                    }
+                    catch (Exception) { } // the listener was stopped
+                });
+                return (listener, bag, task);
+            }
+            string UrlOf(System.Net.Sockets.TcpListener l) => $"http://127.0.0.1:{((System.Net.IPEndPoint)l.LocalEndpoint).Port}";
+            var (fakeA, seenA, servingA) = Fake();
+            var (fakeB, seenB, servingB) = Fake();
+            var (savedBase, savedKey) = (_apiBase, _runKey);
+            (_apiBase, _runKey) = (UrlOf(fakeA), "smoke-key"); // the fallback for a loading event without a url
+            _loadedByChat.Clear();
+            _loadedByRun.Clear();
+            _chatBusy = true;
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/a.gguf","url":"{{UrlOf(fakeA)}}"}""")); // chat, server A
+            _lines.Enqueue(Ev("""{"e":"loading","role":"planner","path":"smoke/b.gguf"}""")); // chat, no url: _apiBase (A)
+            DrainLines();
+            _chatBusy = false;
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"planner","path":"smoke/c.gguf","url":"{{UrlOf(fakeB)}}"}""")); // run, server B
+            // G3: a line still queued when closing begins is drained first, so it is unloaded too.
+            _lines.Enqueue(Ev($$"""{"e":"loading","role":"implementer","path":"smoke/d.gguf","url":"{{UrlOf(fakeB)}}"}"""));
+            if (_loadedByChat.Count != 2 || _loadedByRun.Count != 0 || _lines.Count != 2) // c and d are still queued, undrained
+                return Fail();
+            var clock = Stopwatch.StartNew();
+            OnClosing(this, new CancelEventArgs()); // the real close path (drain, then unload) on the UI thread
+            clock.Stop();
+            (_apiBase, _runKey) = (savedBase, savedKey);
+            fakeA.Stop();
+            fakeB.Stop();
+            await servingA;
+            await servingB;
+            bool Only(System.Collections.Concurrent.ConcurrentBag<string> bag, params string[] names) =>
+                bag.Count == names.Length && names.All(n => bag.Count(b => b.Contains($"smoke/{n}.gguf")) == 1);
+            if (!Only(seenA, "a", "b") || !Only(seenB, "c", "d") ||
+                clock.Elapsed > TimeSpan.FromSeconds(2) || _loadedByChat.Count != 0 || _loadedByRun.Count != 0)
+            {
+                Console.Error.WriteLine($"ui-smoke: unload on close: server A saw {seenA.Count}, server B saw {seenB.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
+                return Fail();
+            }
+
+            // Keep models loaded: On leaves them tracked and unposted; Off unloads exactly what the turn loaded, on its server;
+            // switching On to Off unloads the tracked ones once; a model chat did not load is never touched.
+            var (fakeC, seenC, servingC) = Fake();
+            (_apiBase, _runKey) = (UrlOf(fakeC), "smoke-key");
+            _loadedByChat.Clear();
+            _loadedByRun.Clear();
+            async Task KeepTurn(params string[] names)
+            {
+                StartChatTurn("K", false);
+                foreach (var n in names)
+                    _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/{{n}}.gguf","url":"{{UrlOf(fakeC)}}"}"""));
+                DrainLines();
+                FinishChatTurn(-1, true, null);
+                await _chatUnload;
+            }
+            bool Posted(params string[] names) => Only(seenC, names) && names.All(n => _loadedByChat.All(l => l.Path != $"smoke/{n}.gguf"));
+            _settings.ChatKeepLoaded = true;
+            ChatKeepToggle.IsChecked = true;
+            await KeepTurn("k1", "k2");
+            var keepOk = seenC.IsEmpty && _loadedByChat.Count == 2 && !_unloading;
+            ChatKeepToggle.IsChecked = false;
+            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs());
+            var sentWhileBusy = _unloading && !ChatSend.IsEnabled; // Send waits for the unload
+            await _chatUnload;
+            var switchOk = keepOk && sentWhileBusy && !_settings.ChatKeepLoaded && Posted("k1", "k2") && _loadedByChat.Count == 0 && !_unloading;
+            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs()); // already Off: nothing more to unload
+            await _chatUnload;
+            await KeepTurn("k3", "k4");
+            var offOk = switchOk && Posted("k1", "k2", "k3", "k4") && _loadedByChat.Count == 0;
+            await KeepTurn(); // a model that was already loaded sends no loading event: nothing is unloaded
+            _settings.ChatKeepLoaded = true;
+            ChatKeepToggle.IsChecked = true;
+            fakeC.Stop();
+            await servingC;
+            (_apiBase, _runKey) = (savedBase, savedKey);
+            if (!offOk || !Only(seenC, "k1", "k2", "k3", "k4") || _loadedByChat.Count != 0)
+            {
+                Console.Error.WriteLine($"ui-smoke: keep loaded: keep={keepOk} switch={switchOk} off={offOk}, server saw {seenC.Count}");
+                return Fail();
+            }
+            ShowView(false);
+            await Settle();
+        }
         SetRunning(true); // status ring and header shimmer
         await Settle();
         if (RailProjectButton.IsEnabled || RailOnceToggle.IsEnabled)
@@ -881,6 +1346,10 @@ public partial class MainWindow : Window
                 ApplyTheme();
                 await Settle();
                 Snap("5-theme-" + theme);
+                ShowView(false, chat: true);
+                await Settle();
+                Snap("17-chat-theme-" + theme);
+                ShowView(false);
             }
             ShowView(options: true);
             await Settle();
@@ -993,7 +1462,7 @@ public partial class MainWindow : Window
 
     private async void Poll_Tick(object? sender, EventArgs e)
     {
-        if (_polling || _process is null || _activeRole is null || CardFor(_activeRole) is not { } card)
+        if (_polling || (_process ?? _chatProcess) is null || _activeRole is null || CardFor(_activeRole) is not { } card)
             return;
         _polling = true;
         try
@@ -1015,7 +1484,7 @@ public partial class MainWindow : Window
                 if (started >= _runStart - 2 && started >= bestStart)
                     (best, bestStart) = (row, started);
             }
-            if (best is not { } live || _process is null)
+            if (best is not { } live || (_process ?? _chatProcess) is null)
                 return;
             var tps = Number(live, "tok_per_sec");
             var decodeMs = Number(live, "decode_ms");
@@ -1050,6 +1519,8 @@ public partial class MainWindow : Window
 
     private string? ConfiguredVariant(string role)
     {
+        if (CardFor(role) is { IsCustom: true } custom) // custom workers live outside "roles"
+            return custom.ModelVariant;
         using var config = ReadConfig(SelectedProjectPath());
         return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(role, out var r) &&
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
@@ -1081,26 +1552,65 @@ public partial class MainWindow : Window
         }
     }
 
+    // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.
+    private (string Url, string Path) LoadedOn(JsonElement ev) => (Str(ev, "url") is { Length: > 0 } u ? u : _apiBase, Str(ev, "path"));
+
     // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
     private async Task UnloadModelsAsync()
     {
         var paths = _loadedByRun.ToList();
         _loadedByRun.Clear();
+        foreach (var (url, path) in paths)
+            if (await PostUnloadAsync(url, path, _runKey))
+                Log($"Unloaded {path}");
+    }
+
+    // One unload POST; false when the server is unreachable or refuses. Touches no UI, so it is safe off the UI thread.
+    private async Task<bool> PostUnloadAsync(string url, string path, string key)
+    {
         try
         {
-            foreach (var path in paths)
+            using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, _apiBase + "/api/inference/unload")
+                Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+            using var response = await _http.SendAsync(request).ConfigureAwait(false);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return false; }
+    }
+
+    // The close-time unload. It runs on the UI thread inside Closing, so it must not await anything that needs the
+    // dispatcher (a Task.Wait on UnloadModelsAsync starves its own continuation and only the first POST goes out).
+    // Synchronous sends, each bounded, the whole thing bounded; every tracked path from both sets is attempted.
+    private int UnloadOnClose(double budgetSeconds = 4)
+    {
+        var paths = _loadedByRun.Concat(_loadedByChat).Distinct().ToList();
+        _loadedByRun.Clear();
+        _loadedByChat.Clear();
+        var deadline = DateTime.UtcNow.AddSeconds(budgetSeconds);
+        var unloaded = 0;
+        foreach (var (url, path) in paths)
+        {
+            var left = deadline - DateTime.UtcNow;
+            if (left <= TimeSpan.Zero)
+                break;
+            try
+            {
+                using var cancel = new CancellationTokenSource(left < TimeSpan.FromSeconds(2) ? left : TimeSpan.FromSeconds(2));
+                using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
                 {
                     Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
                 };
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
-                using var response = await _http.SendAsync(request);
+                using var response = _http.Send(request, cancel.Token);
                 if (response.IsSuccessStatusCode)
-                    Log($"Unloaded {path}");
+                    unloaded++;
             }
+            catch (Exception e) when (e is HttpRequestException or OperationCanceledException) { } // try the next path
         }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { }
+        return unloaded;
     }
 
     private bool TryLoadApiKeyFile()
@@ -1156,8 +1666,28 @@ public partial class MainWindow : Window
             if (_customConfigFile is not null)
                 LauncherLogic.ValidateConfigFile(_customConfigFile);
             var existed = Directory.Exists(project);
+            string? backup = null;
+            var existingMd = Path.Combine(project, "PROJECT.md");
+            var keptExisting = false;
+            if (File.Exists(existingMd))
+            {
+                var choice = AskExistingProjectMd(existingMd, _customProjectFile is not null);
+                if (choice == ExistingProjectMdChoice.Cancel)
+                {
+                    SetStatus("Initialization cancelled", "#F7C873");
+                    return;
+                }
+                if (choice == ExistingProjectMdChoice.Replace)
+                    backup = LauncherLogic.BackupProjectMd(project);
+                else
+                    keptExisting = true;
+            }
             var copied = LauncherLogic.InitializeProject(_workflowRoot, project, _customProjectFile, _customConfigFile);
             Log($"{(existed ? "Initialized" : "Created and initialized")} {project}");
+            if (backup is not null)
+                Log($"PROJECT.md replaced; previous saved as {backup}");
+            else if (keptExisting)
+                Log("Using existing PROJECT.md");
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
             if (_customProjectFile is not null && !copied.Contains("PROJECT.md"))
@@ -1165,7 +1695,8 @@ public partial class MainWindow : Window
             if (_customConfigFile is not null && !copied.Contains("config.json"))
                 Log("Existing config.json was preserved; the selected custom file was not copied.");
             SetStatus("Project initialized", "#5BD6A2");
-            Toast("Project initialized");
+            Toast(backup is not null ? $"PROJECT.md replaced; previous saved as {backup}" :
+                keptExisting ? "Using existing PROJECT.md" : "Project initialized");
             RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
@@ -1175,6 +1706,68 @@ public partial class MainWindow : Window
             Log($"Initialization failed: {exception.Message}");
             SetStatus("Initialization failed", "#FF667A");
         }
+    }
+
+    private enum ExistingProjectMdChoice { Use, Replace, Cancel }
+
+    private ExistingProjectMdChoice AskExistingProjectMd(string path, bool customSelected)
+    {
+        var (dialog, result) = BuildExistingProjectMdDialog(path, customSelected);
+        dialog.ShowDialog();
+        return result();
+    }
+
+    private (DialogShell Dialog, Func<ExistingProjectMdChoice> Result) BuildExistingProjectMdDialog(string path, bool customSelected)
+    {
+        var heading = "";
+        long size = 0;
+        try
+        {
+            size = new FileInfo(path).Length;
+            heading = File.ReadLines(path).FirstOrDefault(line => !string.IsNullOrWhiteSpace(line))?.Trim() ?? "";
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // details are optional
+        TextBlock Line(string text, bool muted, double top)
+        {
+            var block = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 460, Margin = new Thickness(0, top, 0, 0) };
+            if (muted)
+            {
+                block.FontSize = 11;
+                block.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            }
+            return block;
+        }
+
+        var details = $"{path}  ({size:N0} bytes)" + (heading.Length > 0 ? $"\nStarts with: {heading[..Math.Min(heading.Length, 80)]}" : "");
+        var panel = new StackPanel();
+        panel.Children.Add(Line("This folder already has a PROJECT.md. Do you want to use it?", false, 0));
+        panel.Children.Add(Line(details, true, 8));
+        panel.Children.Add(Line("Replace keeps your current file as a PROJECT.md.bak backup, then installs " +
+            (customSelected ? "the PROJECT.md you selected." : "the template PROJECT.md."), true, 8));
+        if (customSelected)
+            panel.Children.Add(Line("Using the existing file means the custom PROJECT.md you selected will not be used.", true, 4));
+
+        var result = ExistingProjectMdChoice.Cancel;
+        DialogShell? dialog = null;
+        Button Make(string text, string style, ExistingProjectMdChoice value, bool isDefault = false, bool isCancel = false)
+        {
+            var button = new Button
+            {
+                Content = text, Padding = new Thickness(14, 5, 14, 5),
+                Margin = new Thickness(8, 0, 0, 0), IsDefault = isDefault, IsCancel = isCancel,
+            };
+            if (style.Length > 0)
+                button.Style = (Style)FindResource(style);
+            button.Click += (_, _) => { result = value; dialog!.Close(); };
+            return button;
+        }
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(Make("Cancel", "GhostButton", ExistingProjectMdChoice.Cancel, isCancel: true));
+        buttons.Children.Add(Make("Replace it", "", ExistingProjectMdChoice.Replace));
+        buttons.Children.Add(Make("Use existing PROJECT.md", "PrimaryButton", ExistingProjectMdChoice.Use, isDefault: true));
+        panel.Children.Add(buttons);
+        dialog = new DialogShell(this, "PROJECT.md already exists", panel);
+        return (dialog, () => result);
     }
 
     private void ChooseProjectFile_Click(object sender, RoutedEventArgs e)
@@ -1307,12 +1900,12 @@ public partial class MainWindow : Window
             dot.Fill = (Brush)new BrushConverter().ConvertFromString(color)!;
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         row.Children.Add(dot);
-        row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis });
+        row.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, MaxWidth = 420 });
         var shift = new TranslateTransform(0, 14);
         var toast = new Border
         {
             Child = row, Padding = new Thickness(13, 9, 16, 9), Margin = new Thickness(0, 8, 0, 0), BorderThickness = new Thickness(1),
-            HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 380, Opacity = 0, RenderTransform = shift,
+            HorizontalAlignment = HorizontalAlignment.Right, MaxWidth = 480, Opacity = 0, RenderTransform = shift,
         };
         toast.SetResourceReference(Border.BackgroundProperty, "Card");
         toast.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
@@ -1344,7 +1937,7 @@ public partial class MainWindow : Window
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
         {
-            case Key.Enter when !shift && StartButton.IsEnabled:
+            case Key.Enter when !shift && StartButton.IsEnabled && !ChatView.IsVisible:
                 Start_Click(StartButton, e);
                 break;
             case Key.X when shift && StopButton.IsEnabled && Keyboard.FocusedElement is not (TextBox or PasswordBox):
@@ -1359,6 +1952,9 @@ public partial class MainWindow : Window
                 break;
             case Key.D2 or Key.NumPad2 when !shift:
                 ShowView(options: true);
+                break;
+            case Key.D3 or Key.NumPad3 when !shift:
+                ShowView(options: false, chat: true);
                 break;
             case Key.B when !shift:
                 SetSidebar(!_settings.SidebarCollapsed);
@@ -1390,44 +1986,321 @@ public partial class MainWindow : Window
             saved.Add(new WorkerSetting { Id = role });
         foreach (var w in saved)
         {
-            var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant };
+            var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
             if (w.Custom && w.ModelId is not null)
                 card.SetModel(LauncherLogic.DescribeModel(w.ModelId, w.ModelVariant));
             _cards.Add(card);
         }
+        RefreshSetupProblems();
     }
+
+    // Cards of custom workers the orchestrator would ignore show a light warning.
+    private void RefreshSetupProblems()
+    {
+        var workers = CurrentWorkers();
+        var path = ProjectConfigPath();
+        var problems = LauncherLogic.CustomProblems(workers, !File.Exists(path) || LauncherLogic.ImplementerHasBaseUrl(path));
+        for (var i = 0; i < workers.Count; i++)
+            if (CardFor(workers[i].Id) is { IsCustom: true } card)
+                card.SetupProblem = problems[i];
+    }
+
+    private List<WorkerSetting> CurrentWorkers() => _cards.Select(c =>
+    {
+        var w = c.Config.Clone();
+        w.Id = c.Role;
+        w.Title = c.Title;
+        w.Custom = c.IsCustom;
+        w.ModelId = c.ModelId;
+        w.ModelVariant = c.ModelVariant;
+        return w;
+    }).ToList();
 
     private void SaveWorkers()
     {
-        _settings.Workers = _cards.Select(c => new WorkerSetting
-        {
-            Id = c.Role, Title = c.Title, Custom = c.IsCustom, ModelId = c.ModelId, ModelVariant = c.ModelVariant,
-        }).ToList();
+        _settings.Workers = CurrentWorkers();
         _settings.Save();
+    }
+
+    // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
+    // Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
+    private bool SyncCustomWorkers(List<string>? collectSkipped = null)
+    {
+        RefreshSetupProblems();
+        var path = ProjectConfigPath();
+        if (!File.Exists(path) || LauncherLogic.IsTemplateConfig(path, _workflowRoot)) // chat without a project uses a temp copy
+            return true;
+        try
+        {
+            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers());
+            if (collectSkipped is not null)
+                collectSkipped.AddRange(skipped);
+            else
+                foreach (var reason in skipped)
+                    Log($"Not written to config.json, so it will not take part: {reason}");
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not write custom workers to config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+            return false;
+        }
+    }
+
+    // ---- presets: named sets of workers plus the built-in roles' config.json objects
+
+    private string ProjectConfigPath() => SelectedProjectPath() is { Length: > 0 } project ? Path.Combine(project, "config.json") : "";
+
+    private void Presets_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is null)
+            BuildPresetsMenu().IsOpen = true;
+    }
+
+    private ContextMenu NewPresetMenu() => new() { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = PresetsButton, Placement = PlacementMode.Bottom };
+
+    private MenuItem PresetItem(string header, Action click, bool enabled = true)
+    {
+        var item = new MenuItem { Header = header, Style = (Style)FindResource(typeof(MenuItem)), IsEnabled = enabled, Opacity = enabled ? 1 : 0.45 };
+        item.Click += (_, _) => click();
+        return item;
+    }
+
+    private ContextMenu BuildPresetsMenu()
+    {
+        var menu = NewPresetMenu();
+        foreach (var preset in _settings.Presets)
+            menu.Items.Add(PresetItem(preset.Name, () => ApplyPreset(preset)));
+        if (_settings.Presets.Count == 0)
+            menu.Items.Add(PresetItem("No saved presets", () => { }, enabled: false));
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        menu.Items.Add(PresetItem("Save current as preset…", SavePresetPrompt));
+        menu.Items.Add(PresetItem("Delete preset…", () => Dispatcher.InvokeAsync(DeletePresetMenu, DispatcherPriority.Background), _settings.Presets.Count > 0));
+        return menu;
+    }
+
+    // A second menu (the item template has no submenus) listing what can be deleted.
+    private void DeletePresetMenu()
+    {
+        var menu = NewPresetMenu();
+        foreach (var preset in _settings.Presets)
+            menu.Items.Add(PresetItem($"Delete  {preset.Name}", () =>
+            {
+                if (AskDialog("Delete preset", $"Delete the preset \"{preset.Name}\"?", "Delete") is null)
+                    return;
+                DeletePreset(preset);
+            }));
+        menu.IsOpen = true;
+    }
+
+    // Themed prompt: a name box when input is not null (empty names rejected), otherwise a plain confirmation.
+    // Returns the entered text ("" for a confirmation), or null when cancelled.
+    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60, Func<string, string?>? validate = null)
+    {
+        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength, validate);
+        dialog.ShowDialog();
+        return result();
+    }
+
+    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60, Func<string, string?>? validate = null)
+    {
+        var box = input is null ? null : new TextBox { Text = input, MaxLength = maxLength, Margin = new Thickness(0, 10, 0, 0) };
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var ok = new Button { Content = okLabel, Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(ok);
+        var panel = new StackPanel { MinWidth = 320 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
+        if (box is not null)
+            panel.Children.Add(box);
+        panel.Children.Add(error);
+        panel.Children.Add(buttons);
+        var dialog = new DialogShell(this, title, panel);
+        ok.Click += (_, _) =>
+        {
+            if (box is not null && box.Text.Trim().Length == 0)
+            {
+                error.Text = "Enter a name.";
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            if (box is not null && validate?.Invoke(box.Text) is { } problem)
+            {
+                error.Text = problem;
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            dialog.DialogResult = true;
+        };
+        dialog.Loaded += (_, _) =>
+        {
+            box?.Focus();
+            box?.SelectAll();
+        };
+        return (dialog, () => dialog.DialogResult == true ? box?.Text.Trim() ?? "" : null);
+    }
+
+    private bool SamePreset(WorkerPreset preset, string name) => string.Equals(preset.Name, name, StringComparison.OrdinalIgnoreCase);
+
+    private void SavePresetPrompt()
+    {
+        if (_process is not null || AskDialog("Save preset", "Name this set of workers and their settings.", "Save", "") is not { } name)
+            return;
+        if (_settings.Presets.Any(p => SamePreset(p, name)) &&
+            AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
+            return;
+        SavePreset(name);
+    }
+
+    private void SavePreset(string name)
+    {
+        WorkerPreset preset;
+        try
+        {
+            preset = LauncherLogic.CapturePreset(name, ProjectConfigPath(), CurrentWorkers());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not read config.json: {exception.Message}");
+            SetStatus("Could not read config.json", "#FF667A");
+            return;
+        }
+        var index = _settings.Presets.FindIndex(p => SamePreset(p, name));
+        if (index >= 0)
+            _settings.Presets[index] = preset;
+        else
+            _settings.Presets.Add(preset);
+        _settings.Save();
+        Log($"Preset saved: {name}");
+        Toast($"Preset saved: {name}");
+    }
+
+    private void ApplyPreset(WorkerPreset preset)
+    {
+        if (_process is not null)
+            return;
+        bool rolesApplied;
+        try
+        {
+            rolesApplied = !LauncherLogic.IsTemplateConfig(ProjectConfigPath(), _workflowRoot) && LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not update config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+            return;
+        }
+        _settings.Workers = preset.Workers;
+        _cards.Clear();
+        LoadWorkers(); // keeps only valid entries and re-adds any missing built-in worker
+        SaveWorkers();
+        SyncCustomWorkers();
+        PrefillCards();
+        Log($"Preset applied: {preset.Name}");
+        if (preset.Roles.Count > 0 && !rolesApplied)
+        {
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
+            Toast($"Preset applied: {preset.Name}. Built-in model settings need an initialized project.", "#F7C873");
+        }
+        else
+            Toast($"Preset applied: {preset.Name}");
+    }
+
+    private void DeletePreset(WorkerPreset preset)
+    {
+        _settings.Presets.Remove(preset);
+        _settings.Save();
+        Log($"Preset deleted: {preset.Name}");
+        Toast($"Preset deleted: {preset.Name}");
     }
 
     private void AddWorker_Click(object sender, RoutedEventArgs e)
     {
-        var n = _cards.Count(c => c.IsCustom) + 1;
+        var n = 1;
+        while (_cards.Any(c => string.Equals(c.Title, $"WORKER {n}", StringComparison.OrdinalIgnoreCase)))
+            n++;
         _cards.Add(new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true));
         SaveWorkers();
+        RefreshSetupProblems();
     }
 
     private void RemoveWorker_Click(object sender, RoutedEventArgs e)
     {
-        if (((FrameworkElement)sender).DataContext is RoleCard { IsCustom: true } card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            RemoveWorker(card);
+    }
+
+    private void RemoveWorker(RoleCard card)
+    {
+        if (card.IsCustom)
         {
             _cards.Remove(card);
             SaveWorkers();
+            SyncCustomWorkers();
         }
+    }
+
+    // Same rules as the standard card's title box: custom workers only, at most 32 characters, never empty,
+    // never a reserved built-in title or another worker's title. Returns the problem (nothing changed) or null.
+    private string? RenameTo(RoleCard card, string title)
+    {
+        if (LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } problem)
+            return problem;
+        card.Title = title.Trim();
+        SaveWorkers();
+        SyncCustomWorkers();
+        return null;
+    }
+
+    private void RenameWorker(RoleCard card)
+    {
+        if (_process is not null || !card.IsCustom ||
+            AskDialog("Rename worker", "Worker title", "Rename", card.Title, maxLength: 32, validate: t => LauncherLogic.TitleProblem(t, card.Role, CurrentWorkers())) is not { } title)
+            return;
+        RenameTo(card, title);
+    }
+
+    // ---- compact card context menu (right-click): what the standard card offers as buttons and a title box
+
+    private void CompactCard_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: RoleCard card } root)
+            return;
+        BuildCardMenu(card, root).IsOpen = true;
+        e.Handled = true;
+    }
+
+    private ContextMenu BuildCardMenu(RoleCard card, FrameworkElement anchor)
+    {
+        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor, Placement = PlacementMode.MousePoint };
+        var idle = _process is null && card.Editable;
+        menu.Items.Add(PresetItem("Change model…", () => ChangeModel(card, anchor), idle));
+        menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
+            idle && (card.IsCustom || File.Exists(ProjectConfigPath()))));
+        if (card.IsCustom)
+        {
+            menu.Items.Add(PresetItem("Rename…", () => Dispatcher.InvokeAsync(() => RenameWorker(card), DispatcherPriority.Background), idle));
+            menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+            menu.Items.Add(PresetItem("Remove", () => RemoveWorker(card), idle));
+        }
+        return menu;
     }
 
     private void TitleBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: true } card)
             return;
-        card.Title = card.Title.Trim().Length == 0 ? "WORKER" : card.Title.Trim();
-        SaveWorkers();
+        if (LauncherLogic.TitleProblem(card.Title, card.Role, CurrentWorkers()) is { } problem)
+        {
+            // the box edits the card live, so put back the last saved title
+            card.Title = _settings.Workers.FirstOrDefault(w => w.Id == card.Role)?.Title ?? "WORKER";
+            Toast(problem, "#F7C873");
+            return;
+        }
+        RenameTo(card, card.Title);
     }
 
     // ---- drag-and-drop reordering: the card follows the pointer and the others make room live
@@ -1440,7 +2313,7 @@ public partial class MainWindow : Window
         if (((FrameworkElement)sender).DataContext is not RoleCard card)
             return;
         if (LauncherLogic.IsInsideButton(e.OriginalSource as DependencyObject))
-            return; // a button inside the card (compact Change or Settings) is a click, not a drag
+            return; // a button inside the card is a click, not a drag
         DependencyObject? d = (DependencyObject)sender;
         while (d is not null && d is not FrameworkElement { Tag: "CardRoot" })
             d = VisualTreeHelper.GetParent(d);
@@ -1514,13 +2387,29 @@ public partial class MainWindow : Window
 
     private void RoleSettings_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is not null || ((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: false } card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            ShowRoleSettings(card);
+    }
+
+    private void ShowRoleSettings(RoleCard card)
+    {
+        if (_process is not null)
             return;
+        if (card.IsCustom)
+        {
+            BuildCustomSettingsDialog(card).ShowDialog();
+            return;
+        }
         var project = SelectedProjectPath();
         var path = Path.Combine(project, "config.json");
         if (project.Length == 0 || !File.Exists(path))
         {
             SetStatus("Initialize the project first", "#F7C873");
+            return;
+        }
+        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
+        {
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
             return;
         }
         LauncherLogic.RoleSettings current;
@@ -1534,54 +2423,24 @@ public partial class MainWindow : Window
             SetStatus("Could not read config.json", "#FF667A");
             return;
         }
+        BuildRoleSettingsDialog(card, path, current).ShowDialog();
+    }
 
-        var dialog = new Window
-        {
-            Title = $"{card.Title} settings", Owner = this, WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false,
-            FontFamily = FontFamily, FontSize = FontSize,
-        };
-        dialog.Resources.MergedDictionaries.Add(Resources);
-        dialog.SetResourceReference(BackgroundProperty, "AppBackground");
-        dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
-
-        var fields = new (string Label, string Hint, string Value)[]
-        {
-            ("Temperature", "0 to 2; empty = unchanged", current.Temperature),
-            ("Max tokens", "1 to 262144; empty = unchanged", current.MaxTokens),
-            ("Repetition penalty", "1.0 to 2.0, empty = off", current.RepetitionPenalty),
-            ("Reasoning budget", "0 or more; empty = unchanged", current.ReasoningBudget),
-            ("Context length", "512 to 262144; empty = unchanged", current.ContextLength),
-        };
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var boxes = new TextBox[fields.Length];
-        for (var i = 0; i < fields.Length; i++)
-        {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            var label = new TextBlock { Text = fields[i].Label, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 14, 4) };
-            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(10, 0, 0, 0) };
-            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            boxes[i] = new TextBox { Text = fields[i].Value, Margin = new Thickness(0, 4, 0, 4) };
-            UIElement[] row = [label, boxes[i], hint];
-            for (var column = 0; column < row.Length; column++)
-            {
-                Grid.SetRow(row[column], i);
-                Grid.SetColumn(row[column], column);
-                grid.Children.Add(row[column]);
-            }
-        }
-
-        var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 11, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 6, 0, 0) };
+    private DialogShell BuildRoleSettingsDialog(RoleCard card, string path, LauncherLogic.RoleSettings current)
+    {
+        var (grid, boxes, thinkingChoices, thinking) = BuildSamplingFields(current, custom: false);
+        var note = new TextBlock { Text = "Context length and reasoning budget apply when the orchestrator loads the model.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 12, 0, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), TextWrapping = TextWrapping.Wrap, MaxWidth = 440, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
-        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, thinking, note, error, buttons } });
         save.Click += (_, _) =>
         {
-            LauncherLogic.RoleSettings values = new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text);
+            var values = ReadFields(boxes, thinkingChoices);
             try
             {
                 var problem = LauncherLogic.WriteRoleSettings(path, card.Role, values);
@@ -1603,27 +2462,185 @@ public partial class MainWindow : Window
             Toast($"{card.Title}: settings saved");
             dialog.DialogResult = true;
         };
-        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
-        buttons.Children.Add(cancel);
-        buttons.Children.Add(save);
-        dialog.Content = new StackPanel { Margin = new Thickness(20, 16, 20, 16), Children = { grid, note, error, buttons } };
         dialog.Loaded += (_, _) =>
         {
             boxes[0].Focus();
             boxes[0].SelectAll();
         };
-        dialog.ShowDialog();
+        return dialog;
+    }
+
+    // The generation fields shared by both Settings dialogs. custom: empty means "use the Implementer's value".
+    private (Grid Grid, TextBox[] Boxes, RadioButton[] Choices, StackPanel Thinking) BuildSamplingFields(LauncherLogic.RoleSettings current, bool custom)
+    {
+        var empty = custom ? "empty = Implementer's" : "empty = unchanged";
+        var fields = new (string Label, string Hint, string Value)[]
+        {
+            ("Temperature", $"0 to 2; {empty}", current.Temperature),
+            ("Max tokens", $"1 to 262144; {empty}", current.MaxTokens),
+            ("Repetition penalty", custom ? "1.0 to 2.0; empty = Implementer's" : "1.0 to 2.0; empty = off", current.RepetitionPenalty),
+            ("Reasoning budget", $"0 or more; {empty}", current.ReasoningBudget),
+            ("Context length", $"512 to 262144; {empty}", current.ContextLength),
+        };
+        var grid = new Grid { MinWidth = 340 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(104) });
+        var boxes = new TextBox[fields.Length];
+        for (var i = 0; i < fields.Length; i++)
+        {
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var hint = new TextBlock { Text = fields[i].Hint, FontSize = 10.5 };
+            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var label = new StackPanel
+            {
+                VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 12, 0),
+                Children = { new TextBlock { Text = fields[i].Label, FontWeight = FontWeights.SemiBold, FontSize = 12 }, hint },
+            };
+            boxes[i] = new TextBox { Text = fields[i].Value, Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 0, 0) };
+            Grid.SetRow(label, i);
+            Grid.SetRow(boxes[i], i);
+            Grid.SetColumn(boxes[i], 1);
+            grid.Children.Add(label);
+            grid.Children.Add(boxes[i]);
+        }
+
+        var thinkingHint = new TextBlock
+        {
+            Text = custom ? "Auto = model default. Off avoids long hidden reasoning, which suits Specialists that edit files."
+                          : "Auto = model default. Off avoids long hidden reasoning; recommended for the Implementer on reasoning models.",
+            FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        thinkingHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var choices = LauncherLogic.ThinkingChoices.Select(choice => new RadioButton
+        {
+            Content = choice, GroupName = "Thinking", IsChecked = choice == current.Thinking, Margin = new Thickness(0, 0, 18, 0),
+        }).ToArray();
+        var thinkingRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var choice in choices)
+            thinkingRow.Children.Add(choice);
+        var thinking = new StackPanel
+        {
+            Margin = new Thickness(0, 12, 0, 0),
+            Children = { new TextBlock { Text = "Thinking", FontWeight = FontWeights.SemiBold, FontSize = 12 }, thinkingHint, thinkingRow },
+        };
+        return (grid, boxes, choices, thinking);
+    }
+
+    private static LauncherLogic.RoleSettings ReadFields(TextBox[] boxes, RadioButton[] thinking) =>
+        new(boxes[0].Text, boxes[1].Text, boxes[2].Text, boxes[3].Text, boxes[4].Text, thinking.First(radio => radio.IsChecked == true).Content.ToString()!);
+
+    // Custom workers keep everything in the launcher's settings (and the generated custom_workers in config.json),
+    // so this dialog works without an initialized project. The system prompt exists only here.
+    private DialogShell BuildCustomSettingsDialog(RoleCard card)
+    {
+        var w = card.Config;
+        TextBlock Muted(string text, Thickness margin)
+        {
+            var t = new TextBlock { Text = text, FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = margin };
+            t.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            return t;
+        }
+        TextBlock Label(string text, double top) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, top, 0, 0) };
+        TextBox Editor(string text, double height) => new()
+        {
+            Text = text, Height = height, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalContentAlignment = VerticalAlignment.Top,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(8, 6, 8, 6), Margin = new Thickness(0, 4, 0, 0),
+        };
+
+        var kinds = new[] { ("specialist", "Specialist"), ("reviewer", "Extra reviewer") };
+        var kindExplanation = Muted("", new Thickness(0, 4, 0, 0));
+        var kindChoices = kinds.Select(k => new RadioButton { Content = k.Item2, Tag = k.Item1, GroupName = "WorkerKind", IsChecked = (w.Kind == "reviewer" ? "reviewer" : "specialist") == k.Item1, Margin = new Thickness(0, 0, 18, 0) }).ToArray();
+        void Explain() => kindExplanation.Text = kindChoices[0].IsChecked == true
+            ? "Specialist: the Planner can assign it tasks, and it edits files like the Implementer."
+            : "Extra reviewer: reviews every task alongside the Reviewer; its FAIL sends the task back.";
+        foreach (var choice in kindChoices)
+            choice.Checked += (_, _) => Explain();
+        Explain();
+        var kindRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0) };
+        foreach (var choice in kindChoices)
+            kindRow.Children.Add(choice);
+
+        var description = Editor(w.Description, 58);
+        description.Tag = "Description";
+        var prompt = Editor(w.SystemPrompt, 170);
+        prompt.Tag = "SystemPrompt";
+        prompt.FontFamily = new FontFamily("Consolas");
+
+        var (grid, boxes, thinkingChoices, thinking) = BuildSamplingFields(
+            new LauncherLogic.RoleSettings(w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking), custom: true);
+        grid.Margin = new Thickness(0, 12, 0, 0);
+        var note = Muted("Context length and reasoning budget apply when the orchestrator loads the model.", new Thickness(0, 12, 0, 0));
+        var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), FontSize = 11.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 440, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+
+        var body = new StackPanel
+        {
+            MinWidth = 440,
+            Children =
+            {
+                Label("Kind", 0), kindRow, kindExplanation,
+                Label("Description", 12), Muted("Shown to the Planner: it assigns Specialist tasks based on this, so say what the worker is for.", new Thickness(0)), description,
+                Label("System prompt", 12), Muted("The worker's standing instructions. Only custom workers have an editable prompt.", new Thickness(0)), prompt,
+                grid, thinking, note, error,
+            },
+        };
+        var scroll = new ScrollViewer
+        {
+            Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = Math.Max(300, SystemParameters.WorkArea.Height - 190), Padding = new Thickness(0, 0, 8, 0),
+        };
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { scroll, buttons } });
+        save.Click += (_, _) =>
+        {
+            var values = ReadFields(boxes, thinkingChoices);
+            if (LauncherLogic.ValidateRoleSettings(values) is { } problem)
+            {
+                error.Text = problem;
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            var kind = (string)kindChoices.First(r => r.IsChecked == true).Tag;
+            if (string.IsNullOrWhiteSpace(prompt.Text) || kind != "reviewer" && string.IsNullOrWhiteSpace(description.Text))
+            {
+                error.Text = string.IsNullOrWhiteSpace(prompt.Text)
+                    ? "Enter a system prompt: the orchestrator ignores a worker without one."
+                    : "Enter a description: the Planner assigns Specialist tasks based on it.";
+                error.Visibility = Visibility.Visible;
+                return;
+            }
+            w.Kind = kind;
+            w.Description = description.Text.Trim();
+            w.SystemPrompt = prompt.Text;
+            (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) =
+                (values.Temperature.Trim(), values.MaxTokens.Trim(), values.RepetitionPenalty.Trim(), values.ReasoningBudget.Trim(), values.ContextLength.Trim(), values.Thinking);
+            SaveWorkers();
+            SyncCustomWorkers();
+            Log($"{card.Title}: worker settings saved");
+            Toast($"{card.Title}: settings saved");
+            dialog.DialogResult = true;
+        };
+        dialog.Loaded += (_, _) => prompt.Focus();
+        return dialog;
     }
 
     // ---- model assignment
 
     private sealed record ModelChoice(string Label, string Display, string LoadPath, string? Variant, string Expected);
 
-    private async void ChangeModel_Click(object sender, RoutedEventArgs e)
+    private void ChangeModel_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is not null || ((FrameworkElement)sender).DataContext is not RoleCard card)
+        if (((FrameworkElement)sender).DataContext is RoleCard card)
+            ChangeModel(card, (FrameworkElement)sender);
+    }
+
+    // anchor: the control the model list opens beneath (a standard card's button, or a compact card itself)
+    private async void ChangeModel(RoleCard card, FrameworkElement anchor)
+    {
+        if (_process is not null)
             return;
-        var button = (Button)sender;
         SetStatus("Loading installed models…", "#F7C873");
         List<ModelChoice> choices;
         try
@@ -1643,7 +2660,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = button };
+        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor };
         foreach (var choice in choices)
         {
             var current = LauncherLogic.DescribeModel(choice.Display, choice.Variant);
@@ -1665,9 +2682,16 @@ public partial class MainWindow : Window
         card.ModelId = choice.Display;
         card.ModelVariant = choice.Variant;
         card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
+        if (card.IsCustom)
+        {
+            card.Config.ModelPath = choice.LoadPath;
+            card.Config.ModelExpected = choice.Expected;
+        }
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
+        if (card.IsCustom)
+            SyncCustomWorkers();
     }
 
     // The orchestrator reads each built-in worker's model from the project's config.json.
@@ -1677,6 +2701,11 @@ public partial class MainWindow : Window
         if (project.Length == 0 || !File.Exists(path))
         {
             SetStatus("Initialize the project first", "#F7C873");
+            return false;
+        }
+        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
+        {
+            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
             return false;
         }
         try
@@ -1763,16 +2792,27 @@ public partial class MainWindow : Window
 
     // ---------------------------------------------------------------- navigation, theme, window chrome
 
-    private void Nav_Click(object sender, RoutedEventArgs e) =>
-        ShowView(((FrameworkElement)sender).Tag as string == "Options");
-
-    private void ShowView(bool options)
+    private void Nav_Click(object sender, RoutedEventArgs e)
     {
-        NavWorkspace.IsChecked = !options;
+        var tag = ((FrameworkElement)sender).Tag as string;
+        ShowView(tag == "Options", chat: tag == "Chat");
+    }
+
+    private void ShowView(bool options, bool chat = false)
+    {
+        NavWorkspace.IsChecked = !options && !chat;
+        NavChat.IsChecked = chat;
         NavOptions.IsChecked = options;
-        foreach (UIElement part in new UIElement[] { WorkArea, SplitterBar, DetailsPanel })
+        Reveal(WorkArea, !options && !chat);
+        Reveal(ChatView, chat);
+        foreach (UIElement part in new UIElement[] { SplitterBar, DetailsPanel })
             Reveal(part, !options);
         Reveal(OptionsView, options);
+        if (chat)
+        {
+            RefreshChatTarget();
+            ChatInput.Focus();
+        }
     }
 
     // ---- collapsible sidebar
@@ -1993,8 +3033,15 @@ public partial class MainWindow : Window
             p.Kill(entireProcessTree: true);
             p.WaitForExit(2000); // let it finish so it cannot overwrite the note
             RecordStopNote(activity);
-            UnloadModelsAsync().Wait(TimeSpan.FromSeconds(4));
         }
+        if (_chatProcess is { HasExited: false } chat)
+        {
+            chat.Kill(entireProcessTree: true);
+            chat.WaitForExit(2000);
+        }
+        CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
+        DrainLines(); // a loading event that arrived just before the kill still counts
+        UnloadOnClose(); // the models this run loaded, and those chat left loaded between messages
         _settings.Save();
     }
 

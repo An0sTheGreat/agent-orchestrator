@@ -11,16 +11,21 @@ import datetime as dt
 import difflib
 import fnmatch
 import hashlib
+import http.server
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -29,7 +34,7 @@ WORKFLOW_FILES = {"PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md",
 CHECKPOINT_FILE = ".ao_checkpoint.json"
 HANDOFF_FILE = "HANDOFF.md"
 COMPLETION_PHASES = ("passed", "blocked")
-CHECKPOINT_PHASES = ("implementing", "reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
+CHECKPOINT_PHASES = ("implementing", "reviewing", "extra_reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
 _ATOMIC_FILES = WORKFLOW_FILES | {HANDOFF_FILE, CHECKPOINT_FILE}  # everything write_atomic can write
 PROTECTED_FILES = _ATOMIC_FILES | {name + ".tmp" for name in _ATOMIC_FILES}  # models may not edit
 
@@ -103,6 +108,13 @@ def split_reasoning(message: dict[str, Any]) -> tuple[str, str]:
     return thinking, content
 
 
+def has_output(message: dict[str, Any]) -> bool:
+    """True if the reply carries tool calls or any answer text outside reasoning (an unterminated <think> is reasoning)."""
+    if message.get("tool_calls"):
+        return True
+    return bool(answer_text(message))
+
+
 class ThinkSplitter:
     """Splits streamed content into (kind, text) pieces, honouring inline <think>...</think> blocks."""
 
@@ -146,6 +158,9 @@ class ApiClient:
         self.management_url = settings.get("management_url", "").rstrip("/")
         self.auto_load = settings.get("auto_load")
         self.role = ""
+        self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
+        self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
+        self.cut_off = False  # the last reply stopped at max_tokens
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -174,34 +189,70 @@ class ApiClient:
             raise WorkflowError("The API returned no loaded models")
         return str(models[0]["id"])
 
+    def load_mismatch(self) -> str:
+        """Why the loaded model's load settings differ from this role's auto_load ("" if same or unknowable)."""
+        if not (self.management_url and self.auto_load):
+            return ""
+        try:
+            status = self._request_at(self.management_url, "GET", "/api/inference/status")
+        except WorkflowError:
+            return ""
+        # requested_* hold what the active load was invoked with; the unprefixed reasoning_budget is the effective value.
+        have = {
+            "max_seq_length": status.get("requested_context_length"),
+            "reasoning_budget": status.get("requested_reasoning_budget", status.get("reasoning_budget")),
+        }
+        diffs = [
+            f"{key} {have[key]} -> {self.auto_load[key]}"
+            for key in have
+            if key in self.auto_load and isinstance(have[key], int) and have[key] != self.auto_load[key]
+        ]
+        return ", ".join(diffs)
+
     def ensure_model(self, role: str, interactive: bool) -> str:
         load_error = ""
+        name = self.title or role
         while True:
             try:
                 model = self.model_id()
             except WorkflowError:
                 model = ""
-            if model and (not self.expected or self.expected in model.lower()):
-                print(f"[{role}] {model}")
+            matched = bool(model) and (not self.expected or self.expected in model.lower())
+            reason = self.load_mismatch() if matched else ""
+            if matched and not reason:
+                print(f"[{name}] {model}")
                 emit("model", role=role, id=model)
                 return model
             if self.management_url and self.auto_load:
                 try:
-                    print(f"[{role}] loading {self.auto_load['model_path']} ...")
-                    emit("loading", role=role, path=self.auto_load["model_path"])
+                    if reason:
+                        print(f"[{name}] {model} is loaded with other settings ({reason}); reloading ...")
+                    print(f"[{name}] loading {self.auto_load['model_path']} ...")
+                    emit("loading", role=role, path=self.auto_load["model_path"], url=self.management_url)
                     self._request_at(self.management_url, "POST", "/api/inference/load", self.auto_load)
+                    # A model the user had loaded and we reloaded is ours from here on, so it is unloaded at exit.
                     LOADED_BY_RUN[self.auto_load["model_path"]] = self
                     model = self.model_id()
                     if not self.expected or self.expected in model.lower():
-                        print(f"[{role}] {model}")
+                        print(f"[{name}] {model}")
                         emit("model", role=role, id=model)
                         return model
                     load_error = f"load completed but API reports {model!r}"
                 except WorkflowError as exc:
                     load_error = str(exc)
+                    if matched:
+                        # A failed reload may already have unloaded the old model (OOM, timeout mid-load): re-check.
+                        try:
+                            model = self.model_id()
+                        except WorkflowError:
+                            model = ""
+                        if model and (not self.expected or self.expected in model.lower()):
+                            print(f"[{name}] reload failed ({load_error}); continuing with the loaded model")
+                            emit("model", role=role, id=model)
+                            return model
             expected = self.expected or "the configured model"
             if not interactive:
-                raise WorkflowError(f"{role}: expected {expected!r}, loaded {model or 'nothing'!r}; {load_error}")
+                raise WorkflowError(f"{name}: expected {expected!r}, loaded {model or 'nothing'!r}; {load_error}")
             detail = f"\nAutomatic load failed: {load_error}" if load_error else ""
             answer = input(f"{detail}\nLoad {role} model ({expected}) in Unsloth, then press Enter [q quits]: ")
             if answer.strip().lower() == "q":
@@ -217,20 +268,51 @@ class ApiClient:
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
-        started = time.time()
-        streamed = False
-        if EVENTS:  # the launcher renders output as it is generated
-            payload = self._stream_chat(body)
-            streamed = payload.pop("_streamed", False)
-        else:
-            payload = self._request("POST", "/chat/completions", body)
-        try:
-            message = payload["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError) as exc:
-            raise WorkflowError(f"Unexpected API response: {payload}") from exc
-        if EVENTS:
-            self._emit_turn(message, payload, started, streamed)
-        return message
+        if self.thinking_off:
+            body["enable_thinking"] = False
+        fell_back = False
+        while True:
+            started = time.time()
+            streamed = False
+            try:
+                if EVENTS:  # the launcher renders output as it is generated
+                    payload = self._stream_chat(body)
+                    streamed = payload.pop("_streamed", False)
+                else:
+                    payload = self._request("POST", "/chat/completions", body)
+            except WorkflowError as exc:
+                text = str(exc).lower()
+                if text.startswith("api 400") and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
+                    raise WorkflowError(
+                        f"{self.title or self.role}: the conversation exceeded the model's context length. "
+                        "Raise the role's auto_load.max_seq_length."
+                    ) from exc
+                raise
+            try:
+                choice = payload["choices"][0]
+                message = choice["message"]
+            except (KeyError, IndexError, TypeError) as exc:
+                raise WorkflowError(f"Unexpected API response: {payload}") from exc
+            if choice.get("finish_reason") == "length" and not has_output(message):
+                if body.get("enable_thinking") is not False:
+                    print(f"[{self.title or self.role}] reply cut off while thinking; retrying without thinking")
+                    body = {**body, "enable_thinking": False}
+                    fell_back = True
+                    emit("done", role=self.role, final=False)  # close the discarded streamed attempt in the launcher
+                    continue
+                raise WorkflowError(
+                    f"{self.title or self.role}: the output limit was reached while thinking and the reply was empty. "
+                    "Raise sampling.max_tokens or lower the role's auto_load.reasoning_budget."
+                )
+            self.cut_off = choice.get("finish_reason") == "length"
+            if self.cut_off:
+                print(f"[{self.title or self.role}] reply cut off at the output limit (max_tokens={body.get('max_tokens', '?')})")
+            if EVENTS:
+                self._emit_turn(message, payload, started, streamed)
+            if fell_back and not self.thinking_off:
+                self.thinking_off = True
+                print(f"[{self.title or self.role}] thinking disabled for the rest of this turn")
+            return message
 
     def _stream_chat(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST with stream=true; emit delta events as they arrive and return a normal-shaped response."""
@@ -244,6 +326,7 @@ class ApiClient:
         reasoning: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
+        finish = None
         splitter = ThinkSplitter()
 
         def put(kind: str, text: str) -> None:
@@ -266,6 +349,7 @@ class ApiClient:
                         raise WorkflowError(f"API stream error: {chunk['error']}")
                     usage = chunk.get("usage") or usage
                     for choice in chunk.get("choices") or []:
+                        finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
                         if thought:
@@ -294,7 +378,7 @@ class ApiClient:
                 {"id": slot["id"] or f"call_{index}", "type": "function", "function": {"name": slot["name"], "arguments": slot["arguments"]}}
                 for index, slot in sorted(calls.items())
             ]
-        return {"choices": [{"message": message}], "usage": usage, "_streamed": True}
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage, "_streamed": True}
 
     def _monitor_row(self, started: float) -> dict[str, Any]:
         """Unsloth's own per-request stats (same source as the live-TPS mod); empty if unavailable."""
@@ -327,12 +411,104 @@ class ApiClient:
         )
 
 
+BUILTIN_ROLES = ("planner", "implementer", "reviewer")
+
+
+def custom_workers(config: dict[str, Any], warn: bool = False) -> list[dict[str, Any]]:
+    """Valid entries of config["custom_workers"] in config order; invalid ones are skipped (logged when warn)."""
+    raw = config.get("custom_workers")
+    if not raw:
+        return []
+
+    def skip(label: str, why: str) -> None:
+        if warn:
+            print(f"[workers] ignoring custom worker {label}: {why}")
+
+    if not isinstance(raw, list):
+        skip("list", "custom_workers must be an array")
+        return []
+    workers: list[dict[str, Any]] = []
+    ids: set[str] = set(BUILTIN_ROLES) | set(config.get("roles") or {})
+    titles: set[str] = set(BUILTIN_ROLES)
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            skip(f"#{index + 1}", "not an object")
+            continue
+
+        def text(key: str) -> str:
+            value = item.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        title = text("title")
+        auto = item.get("auto_load")
+        problems = [
+            why for bad, why in (
+                (not text("id") or text("id") in ids, "missing, duplicate or reserved id"),
+                (not title or title.lower() in titles, "missing, duplicate or reserved title"),
+                (item.get("kind") not in ("specialist", "reviewer"), "kind must be 'specialist' or 'reviewer'"),
+                (not text("base_url"), "missing base_url"),
+                (not (text("expected_model_contains") or (isinstance(auto, dict) and auto.get("model_path"))),
+                 "no model (expected_model_contains or auto_load.model_path)"),
+                (not text("system_prompt"), "missing system_prompt"),
+                (item.get("kind") == "specialist" and not text("description"), "a specialist needs a description"),
+                (auto is not None and not isinstance(auto, dict), "auto_load must be an object"),
+                (not isinstance(item.get("sampling", {}), dict), "sampling must be an object"),
+            ) if bad
+        ]
+        if problems:
+            skip(repr(title or f"#{index + 1}"), "; ".join(problems))
+            continue
+        ids.add(text("id"))
+        titles.add(title.lower())
+        workers.append({**item, "title": title})
+    return workers
+
+
+def specialist_titles(config: dict[str, Any]) -> list[str]:
+    return [w["title"] for w in custom_workers(config) if w["kind"] == "specialist"]
+
+
+def worker_name(task: dict[str, Any]) -> str:
+    """The task's "worker" field; blank or "Implementer" (any case) means no Specialist."""
+    name = str(task.get("worker") or "").strip()
+    return "" if name.lower() == "implementer" else name
+
+
+def find_specialist(task: dict[str, Any], workers: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The Specialist a task is assigned to: by worker_id (survives renames), else by title (case-insensitive).
+    None means the Implementer; a Specialist that no longer exists falls back to it with a warning."""
+    name = worker_name(task)
+    if not name:
+        return None
+    specialists = [w for w in workers if w["kind"] == "specialist"]
+    found = next((w for w in specialists if task.get("worker_id") and w["id"] == task["worker_id"]), None) or next(
+        (w for w in specialists if w["title"].lower() == name.lower()), None)
+    if not found:
+        print(f"[workers] Specialist {name!r} no longer exists; continuing with the Implementer")
+    return found
+
+
+def role_prompt(base: str, worker: dict[str, Any]) -> str:
+    """The built-in role prompt unchanged, followed by the custom worker's own section."""
+    return f"{base.rstrip()}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
+
+
+def display_name(config: dict[str, Any], role: str) -> str:
+    """Title of the custom worker with this id, else the role itself (for human-readable log lines)."""
+    return next((w["title"] for w in custom_workers(config) if w["id"] == role), role)
+
+
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
-    settings = config["roles"][role]
+    """Client + sampling for a built-in role, or for a custom worker when `role` is its id."""
+    if role in (config.get("roles") or {}):
+        settings = config["roles"][role]
+    else:
+        settings = next((w for w in custom_workers(config) if w["id"] == role), None) or config["roles"][role]
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
     client = ApiClient(settings)
     client.role = role
+    client.title = display_name(config, role)
     return client, sampling
 
 
@@ -352,7 +528,7 @@ def extract_json_with_repair(
         except WorkflowError as exc:
             if repair == max_repairs:
                 raise
-            print(f"[{role}] invalid JSON; requesting correction ({repair + 1}/{max_repairs}) ...")
+            print(f"[{display_name(config, role)}] invalid JSON; requesting correction ({repair + 1}/{max_repairs}) ...")
             response = ask_once(
                 config,
                 role,
@@ -479,6 +655,213 @@ def _parsed_arguments(raw: str) -> Any:
         return raw
 
 
+def syntax_gate(project_root: Path, allowed: list[str], before: dict[str, str | None] | None = None) -> tuple[list[dict[str, str]], str]:
+    """Deterministic syntax check of the existing allowed files. Returns (defects, one-line summary).
+
+    Only files whose content differs from `before` can produce defects; errors in unchanged files are
+    reported in the summary as pre-existing. Without `before`, every file counts as changed.
+    """
+    defects: list[dict[str, str]] = []
+    preexisting: list[str] = []
+    checked: list[str] = []
+    node = shutil.which("node")
+    skipped_js = False
+    for name, content in snapshot(project_root, allowed).items():
+        if content is None:
+            continue
+        suffix = Path(name).suffix.lower()
+        error = None
+        if suffix in {".js", ".mjs", ".cjs"}:
+            if not node:
+                skipped_js = True
+                continue
+            try:
+                # Decode as UTF-8 ourselves: text=True uses the locale codepage on Windows and can lose the error text.
+                done = subprocess.run([node, "--check", name], cwd=project_root, capture_output=True, timeout=30, shell=False)
+                if done.returncode:
+                    output = (done.stderr or done.stdout).decode("utf-8", errors="replace").strip()[-1500:]
+                    error = output or f"node --check exited {done.returncode}"
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                print(f"[syntax] could not run node on {name}: {exc}")
+                continue
+        elif suffix == ".py":
+            try:
+                compile(content.lstrip("﻿"), name, "exec")
+            except (SyntaxError, ValueError) as exc:
+                error = f"{type(exc).__name__}: {exc} (line {getattr(exc, 'lineno', '?')})"
+        elif suffix == ".json":
+            try:
+                json.loads(content.lstrip("﻿"))
+            except json.JSONDecodeError as exc:
+                error = f"JSONDecodeError: {exc}"
+        else:
+            continue
+        checked.append(name)
+        if error and before is not None and before.get(name) == content:
+            preexisting.append(name)
+        elif error:
+            defects.append({"file": name, "defect": "Syntax error", "expected": "The file parses without errors", "evidence": error})
+    if defects:
+        summary = f"FAILED ({', '.join(d['file'] for d in defects)})"
+    elif checked:
+        summary = f"passed ({', '.join(n for n in checked if n not in preexisting)})"
+    else:
+        summary = "skipped (node not found)" if skipped_js else "skipped (no checkable files)"
+    if preexisting:
+        summary += f"; pre-existing errors in unchanged files (not caused by this task): {', '.join(preexisting)}"
+    print(f"[syntax] {summary}")
+    return defects, f"SYNTAX CHECK: {summary}"
+
+
+def syntax_message(defects: list[dict[str, str]]) -> str:
+    return "SYNTAX CHECK FAILED. Fix these errors with the file tools, then answer again:\n" + "\n".join(
+        f"- {d['file']}: {d['evidence']}" for d in defects
+    )
+
+
+# Injected first into the checked page: records page errors, unhandled rejections and console.error, then after
+# load + a short settle writes a JSON report into the DOM, which the browser's --dump-dom prints.
+BEHAVIOUR_PROBE = """<script>(function(){var E=[];function p(m,s,l){E.push({message:String(m).slice(0,500),source:s||"",line:l||0});}
+window.addEventListener("error",function(e){if(e.target===window)p(e.message||e.error,e.filename,e.lineno);},true);
+window.addEventListener("unhandledrejection",function(e){var r=e.reason;p("Unhandled promise rejection: "+(r&&r.message||r));});
+var ce=console.error;console.error=function(){p(Array.prototype.map.call(arguments,String).join(" "),"console.error",0);return ce.apply(console,arguments);};
+window.addEventListener("load",function(){setTimeout(function(){var b=document.body,v=0;if(b){var all=b.querySelectorAll("*");for(var i=0;i<all.length;i++)if(all[i].getClientRects().length)v++;}
+var s=document.createElement("script");s.type="application/json";s.id="__ao_report";
+s.textContent=JSON.stringify({errors:E,text:(b?b.innerText:"").slice(0,1500),visible:v}).replace(/</g,"\\\\u003c");
+document.documentElement.appendChild(s);},500);});})();</script>"""
+
+
+def find_browser(configured: str | None = None) -> str | None:
+    """Configured path, else Edge, else Chrome at their standard install paths, else msedge/chrome/chromium on PATH."""
+    if configured:
+        return configured if Path(configured).is_file() else None
+    roots = [os.environ.get(v) for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
+    for sub in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe"):
+        for root in filter(None, roots):
+            if (Path(root) / sub).is_file():
+                return str(Path(root) / sub)
+    return next(filter(None, map(shutil.which, ("msedge", "chrome", "chromium", "chromium-browser", "google-chrome"))), None)
+
+
+def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) -> dict[str, Any]:
+    """Serve project_root on 127.0.0.1, load `page` headlessly in a fresh profile and return the probe report
+    ({"errors": [...], "text": str, "visible": int}). Missing scripts/stylesheets (404) are added as errors.
+    Raises WorkflowError when no report comes back (browser failed, timed out, or the probe never ran)."""
+    target = "/" + quote(page)
+    missing: list[str] = []
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, directory=str(project_root), **kwargs)
+
+        def do_GET(self) -> None:  # noqa: N802 (http.server naming)
+            if urlsplit(self.path).path != target:
+                parts = unquote(urlsplit(self.path).path).lower().split("/")
+                if "api_key.txt" in parts or any(p.startswith(".") for p in parts if p):  # never serve secrets or dotfiles
+                    return self.send_error(403)
+                return super().do_GET()
+            text = (project_root / page).read_text(encoding="utf-8", errors="replace")
+            for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>"):
+                found = re.search(pattern, text, re.IGNORECASE)
+                if found:
+                    text = text[:found.end()] + BEHAVIOUR_PROBE + text[found.end():]
+                    break
+            else:
+                text = BEHAVIOUR_PROBE + text
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_error(self, code: int, *args: Any, **kwargs: Any) -> None:
+            name = unquote(urlsplit(self.path).path).lstrip("/")
+            if code == 404 and Path(name).suffix.lower() in {".js", ".mjs", ".css"}:
+                missing.append(name)
+            super().send_error(code, *args, **kwargs)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    profile = tempfile.mkdtemp(prefix="ao-behaviour-")
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}{target}"
+        args = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+                f"--user-data-dir={profile}", "--virtual-time-budget=5000", "--dump-dom", url]
+        try:
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False)
+        except OSError as exc:
+            raise WorkflowError(f"could not start the browser: {exc}") from exc
+        try:
+            dom = proc.communicate(timeout=timeout)[0].decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":  # the browser's own child processes too, by this pid only
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            proc.kill()
+            proc.communicate()
+            raise WorkflowError(f"the page did not finish loading within {timeout} s (endless loop or hung browser?)")
+        found = re.search(r'id="__ao_report">(.*?)</script>', dom, re.DOTALL)
+        if not found:
+            raise WorkflowError(f"no report came back from the page (browser exit code {proc.returncode}); its scripts may never have run")
+        report = json.loads(found.group(1))
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(profile, ignore_errors=True)
+    origin = url.rsplit(target, 1)[0] + "/"
+    for error in report["errors"]:
+        error["source"] = str(error.get("source") or "").replace(origin, "")
+    report["errors"] += [{"message": f"Failed to load {name} (404 not found)", "source": page, "line": 0} for name in missing]
+    return report
+
+
+def behaviour_gate(project_root: Path, config: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
+    """Load the project's page headlessly. Returns (defects, BEHAVIOUR CHECK block); ([], "") when not a web project.
+
+    Applies when the root has index.html or config sets behaviour_check.page; behaviour_check false disables it.
+    """
+    setting = config.get("behaviour_check", {})
+    if setting is False:
+        return [], ""
+    setting = setting if isinstance(setting, dict) else {}
+    page = str(setting.get("page") or "index.html")
+    path = safe_relative_path(page, project_root)
+    if not path.is_file():
+        if setting.get("page"):
+            print(f"[behaviour] skipped (page {page} not found)")
+            return [], f"BEHAVIOUR CHECK: skipped (page {page} not found)"
+        return [], ""
+    page = path.relative_to(project_root.resolve()).as_posix()
+    browser = find_browser(setting.get("browser"))
+    if not browser:
+        print("[behaviour] skipped (no Chromium browser found)")
+        return [], "BEHAVIOUR CHECK: skipped (no Chromium browser found; install Edge or Chrome, or set behaviour_check.browser)"
+    try:
+        report = load_page(browser, project_root, page)
+    except WorkflowError as exc:
+        print(f"[behaviour] FAILED (could not check {page}: {exc})")
+        defect = {"file": page, "defect": "Behaviour check could not complete", "expected": "The page loads in a headless browser",
+                  "evidence": str(exc)}
+        return [defect], f"BEHAVIOUR CHECK: FAILED (could not check {page}: {exc})"
+    errors = [f"{e['message']} ({e['source'] or page}{':' + str(e['line']) if e['line'] else ''})" for e in report["errors"]]
+    if errors:
+        print(f"[behaviour] FAILED ({len(errors)} error(s) loading {page}: {errors[0]})")
+        defects = [{"file": page, "defect": "Error while loading the page", "expected": "The page loads without console or page errors",
+                    "evidence": error} for error in errors]
+        return defects, f"BEHAVIOUR CHECK: FAILED ({page})\nErrors:\n" + "\n".join(f"- {e}" for e in errors)
+    print(f"[behaviour] passed ({page}: no errors, {report['visible']} visible elements)")
+    return [], (
+        f"BEHAVIOUR CHECK: passed ({page} loaded in a headless browser with a fresh profile)\nErrors: none\n"
+        f"Visible elements: {report['visible']}\nVisible text sample:\n{report['text'].strip() or '(no visible text)'}"
+    )
+
+
+TOOL_CALL_TEXT = re.compile(r'"name"\s*:\s*"(?:write_file|replace_text|read_file|run_validation)"')
+
+
 def run_agent(
     config: dict[str, Any],
     role: str,
@@ -488,7 +871,9 @@ def run_agent(
     allowed: list[str],
     writable: bool,
     interactive: bool,
+    before: dict[str, str | None] | None = None,
 ) -> str:
+    """`before` is the task-start snapshot: allowed files already differing from it are prior (unreviewed) work."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, interactive)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -498,19 +883,27 @@ def run_agent(
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
     nudges = 0
+    fixes = syntax_fixes = 0  # shared budget (3) for unverified-report and syntax send-backs; syntax uses at most 2
+    last_error = False
+    cutoffs = 0
     prev_text_calls = None
-    for _ in range(max_steps):
+    start = snapshot(project_root, allowed)
+    baseline = start if before is None else before
+    prior_work = any(start.get(n) != baseline.get(n) for n in start)  # a reply without writes goes on to review
+    name = display_name(config, role)
+    for step in range(max_steps):
         try:
             response = client.complete(model, messages, sampling, tools)
         except WorkflowError as exc:
             if not tools or '"param":"tools"' not in str(exc):
                 raise
-            print(f"[{role}] model template does not support tool calling; continuing without tools ...")
+            print(f"[{name}] model template does not support tool calling; continuing without tools ...")
             tools = []
             response = client.complete(model, messages, sampling, tools)
         messages.append(response)
         calls = response.get("tool_calls") or text_tool_calls(str(response.get("content") or ""), tool_names)
         native = bool(response.get("tool_calls"))
+        unexecuted = not native and not calls and bool(TOOL_CALL_TEXT.search(str(response.get("content") or "")))
         if not native:
             signature = [(c["function"]["name"], _parsed_arguments(c["function"]["arguments"])) for c in calls]
             if calls and signature == prev_text_calls:
@@ -518,17 +911,52 @@ def run_agent(
             prev_text_calls = signature
         else:
             prev_text_calls = None
+        # Fake clients in tests have no cut_off attribute.
+        if getattr(client, "cut_off", False) and (unexecuted or any(
+            not isinstance(_parsed_arguments((c.get("function") or {}).get("arguments") or "{}"), dict) for c in calls
+        )):
+            cutoffs += 1
+            if cutoffs > 2:
+                raise WorkflowError(
+                    f"{name}: the reply was cut off at the output limit {cutoffs} times in a row. "
+                    "Raise this role's sampling.max_tokens (or auto_load.max_seq_length if the context is full)."
+                )
+            print(f"[{name}] truncated tool call not executed; sending back ({cutoffs}/2) ...")
+            messages[-1] = {"role": "assistant", "content": str(response.get("content") or "")}  # never replay broken arguments
+            messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
+            continue
+        cutoffs = 0
         if not calls:
-            if writable and not ran_tools and nudges < 2:
+            if writable and not ran_tools and not prior_work and nudges < 2:
                 nudges += 1
-                print(f"[{role}] no tool was executed; requesting real tool calls ({nudges}/2) ...")
+                print(f"[{name}] no tool was executed; requesting real tool calls ({nudges}/2) ...")
                 messages.append({"role": "user", "content": "No file was changed. Use the provided tool-calling interface to write the files; do not print JSON."})
                 continue
-            if writable and not ran_tools:
+            if writable and not ran_tools and not prior_work:
                 reply = str(response.get("content") or "").strip()
-                save_text(project_root / "RESULT.md", f"BLOCKED; {role} never executed a tool; no files were written.\n\nLast {role} reply:\n{reply}")
-                raise WorkflowError(f"{role} never executed a tool; no files were written. Last reply: {reply[:500]}")
-            return str(response.get("content") or "")
+                save_text(project_root / "RESULT.md", f"BLOCKED; {name} never executed a tool; no files were written.\n\nLast {name} reply:\n{reply}")
+                raise WorkflowError(f"{name} never executed a tool; no files were written. Last reply: {reply[:500]}")
+            reply = str(response.get("content") or "")
+            if not writable:
+                return reply
+            reasons = []
+            if unexecuted:
+                reasons.append("it printed a tool call that was not valid JSON (comments or trailing text) and was NOT executed")
+            if last_error:
+                reasons.append("the last tool call failed and nothing succeeded after it")
+            if reasons and fixes < 3 and step < max_steps - 1:
+                fixes += 1
+                print(f"[{name}] unverified report ({'; '.join(reasons)}); sending back ({fixes}/3) ...")
+                messages.append({"role": "user", "content": "Your report is not accepted: " + "; ".join(reasons) + ". Redo it through the tool-calling interface with strictly valid JSON (no comments, no trailing text), then report only what actually succeeded."})
+                continue
+            defects = [] if reasons else syntax_gate(project_root, allowed, baseline)[0]
+            if defects and fixes < 3 and syntax_fixes < 2 and step < max_steps - 1:
+                fixes += 1
+                syntax_fixes += 1
+                print(f"[{name}] syntax errors remain; sending back ({syntax_fixes}/2) ...")
+                messages.append({"role": "user", "content": syntax_message(defects)})
+                continue
+            return f"UNVERIFIED: {'; '.join(reasons)}.\n\n{reply}" if reasons else reply
         results = []
         for call in calls:
             try:
@@ -537,8 +965,11 @@ def run_agent(
                 result = execute_tool(function["name"], arguments, project_root, allowed, validations, writable)
                 emit("tool", role=role, name=function["name"], args=function.get("arguments") or "", result=result[:6000])
                 ran_tools = ran_tools or (function["name"] in {"write_file", "replace_text"} and result == "OK")
+                if function["name"] in {"write_file", "replace_text"}:
+                    last_error = result.startswith("ERROR:")
             except (KeyError, TypeError, json.JSONDecodeError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
+                last_error = last_error or (isinstance(call, dict) and call.get("function", {}).get("name") in {"write_file", "replace_text"})
                 emit("tool", role=role, name=str(call.get("function", {}).get("name", "?")), args="", result=result)
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": result})
@@ -576,12 +1007,23 @@ def team_context(config: dict[str, Any]) -> str:
         if (r.get("sampling") or {}).get("max_tokens"):
             parts.append(f"max output {r['sampling']['max_tokens']} tokens")
         lines.append(f"{role.capitalize()}: " + ", ".join(parts))
+    workers = custom_workers(config)
+    for kind, heading in (
+        ("specialist", 'Specialists (set "worker" to a title to give a task to one instead of the Implementer)'),
+        ("reviewer", "Extra reviewers (they review every task after the Reviewer; you cannot assign them)"),
+    ):
+        group = [w for w in workers if w["kind"] == kind]
+        if group:
+            lines.append(heading + ":")
+            lines.extend(f"- {w['title']}: {w.get('description') or 'no description'}" for w in group)
     files, work = task_limits(config)
     lines.append(f"Task limits: at most {files} allowed files and {work} required-work items per task")
     return "\n".join(lines)
 
 
-def validate_task(task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7)) -> None:
+def validate_task(
+    task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7), specialists: list[str] | None = (),
+) -> None:
     max_files, max_work = limits
     required = ["id", "outcome", "allowed_files", "required_work", "validation", "stop_condition"]
     missing = [name for name in required if not task.get(name)]
@@ -596,6 +1038,11 @@ def validate_task(task: dict[str, Any], project_root: Path, limits: tuple[int, i
     steps = task["required_work"]
     if not isinstance(steps, list) or not 1 <= len(steps) <= max_work:
         raise WorkflowError(f"Planner must provide 1-{max_work} required-work items")
+    worker = worker_name(task)
+    # specialists=None skips the check: a resumed task keeps running even if its Specialist was removed (see find_specialist)
+    if worker and specialists is not None and worker.lower() not in {title.lower() for title in specialists}:
+        known = ", ".join(specialists) or "none"
+        raise WorkflowError(f'Planner task names unknown worker {worker!r}; Specialists: {known}. Omit "worker" for the Implementer')
 
 
 def request_plan(
@@ -609,7 +1056,11 @@ def request_plan(
                 return plan
             if plan.get("status") != "TASK" or not isinstance(plan.get("task"), dict):
                 raise WorkflowError("Planner must return status TASK with a task, or status COMPLETE")
-            validate_task(plan["task"], project_root, task_limits(config))
+            validate_task(plan["task"], project_root, task_limits(config), specialist_titles(config))
+            plan["task"].pop("worker_id", None)
+            spec = find_specialist(plan["task"], custom_workers(config))
+            if spec:
+                plan["task"]["worker_id"] = spec["id"]
             return plan
         except WorkflowError as exc:
             if repair == max_repairs:
@@ -627,19 +1078,20 @@ def request_plan(
 
 
 def extract_review_with_repair(
-    config: dict[str, Any], system: str, user: str, response: str, interactive: bool, max_repairs: int = 2
+    config: dict[str, Any], system: str, user: str, response: str, interactive: bool, max_repairs: int = 2,
+    role: str = "reviewer",
 ) -> tuple[dict[str, Any], str]:
     for repair in range(max_repairs + 1):
-        review, response = extract_json_with_repair(config, "reviewer", response, interactive)
+        review, response = extract_json_with_repair(config, role, response, interactive)
         verdict = str(review.get("verdict", "")).upper()
         if verdict in {"PASS", "FAIL"}:
             return review, response
         if repair == max_repairs:
             raise WorkflowError(f"Reviewer verdict remained invalid after {max_repairs} corrections")
-        print(f"[reviewer] invalid verdict; requesting correction ({repair + 1}/{max_repairs}) ...")
+        print(f"[{display_name(config, role)}] invalid verdict; requesting correction ({repair + 1}/{max_repairs}) ...")
         response = ask_once(
             config,
-            "reviewer",
+            role,
             system,
             f"{user}\n\nCORRECTION REQUIRED\nThe previous response must contain verdict PASS or FAIL.\n"
             f"Return corrected JSON only.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}",
@@ -787,7 +1239,7 @@ def write_handoff(project_root: Path, checkpoint: dict[str, Any] | None, total_r
     if checkpoint:
         task = checkpoint["task"]
         phase = {
-            "reviewing": "Reviewer checking", "passed": "Passed, recording result", "blocked": "Blocked, recording issue",
+            "reviewing": "Reviewer checking", "extra_reviewing": "Extra reviewers checking", "passed": "Passed, recording result", "blocked": "Blocked, recording issue",
         }.get(checkpoint["phase"], "Implementer working")
         label = {"passed": "Implementer result", "blocked": "Final review"}.get(checkpoint["phase"], "Last reviewer feedback")
         feedback = str(checkpoint["reviewer_feedback"])[:2000]
@@ -832,7 +1284,9 @@ def clear_checkpoint(project_root: Path) -> None:
     write_handoff(project_root, None)
 
 
-def load_checkpoint(project_root: Path, limits: tuple[int, int], total_rounds: int) -> dict[str, Any] | None:
+def load_checkpoint(
+    project_root: Path, limits: tuple[int, int], total_rounds: int,
+) -> dict[str, Any] | None:
     """Return a valid checkpoint to resume, or None (warning and deleting a corrupt one)."""
     path = project_root / CHECKPOINT_FILE
     if not path.is_file():
@@ -856,7 +1310,7 @@ def load_checkpoint(project_root: Path, limits: tuple[int, int], total_rounds: i
             return data
         if not isinstance(data["round"], int) or not 0 <= data["round"] < total_rounds:
             raise WorkflowError("round out of range")
-        validate_task(data["task"], project_root, limits)
+        validate_task(data["task"], project_root, limits, None)
         return data
     except (WorkflowError, KeyError, ValueError) as exc:
         print(f"[resume] discarding invalid {CHECKPOINT_FILE}: {exc}")
@@ -882,6 +1336,27 @@ def complete_task(task: dict[str, Any], phase: str, text: str, project_root: Pat
     clear_checkpoint(project_root)
 
 
+def run_extra_reviewers(
+    config: dict[str, Any], base_prompt: str, extras: list[dict[str, Any]], reviewer_input: str,
+    project_root: Path, allowed: list[str], interactive: bool,
+) -> str:
+    """Run every Extra reviewer in config order. Returns "" when all PASS, else a FAIL review (JSON) whose
+    defects are prefixed with the failing reviewer's title; all reviewers run so one round carries all feedback."""
+    defects: list[Any] = []
+    for worker in extras:
+        system = role_prompt(base_prompt, worker)
+        text = run_agent(config, worker["id"], system, reviewer_input, project_root, allowed, False, interactive)
+        review, _ = extract_review_with_repair(config, system, reviewer_input, text, interactive, role=worker["id"])
+        verdict = str(review.get("verdict", "")).upper()
+        print(f"[{worker['title']}] {verdict}")
+        if verdict == "FAIL":
+            found = review.get("defects")
+            for item in (found if isinstance(found, list) and found else [{}]):
+                item = item if isinstance(item, dict) else {"defect": str(item)}
+                defects.append({**item, "defect": f"{worker['title']}: {item.get('defect') or 'failed the task without listing a defect'}"})
+    return json.dumps({"verdict": "FAIL", "defects": defects}, indent=2, ensure_ascii=False) if defects else ""
+
+
 def run_review_loop(
     config: dict[str, Any], prompts: dict[str, str], task: dict[str, Any], before: dict[str, str | None],
     start_round: int, reviewer_feedback: str, phase: str, max_review_rounds: int, project_root: Path, interactive: bool,
@@ -893,32 +1368,66 @@ def run_review_loop(
     """
     allowed = [str(item) for item in task["allowed_files"]]
     total = max_review_rounds + 1
+    workers = custom_workers(config)
+    specialist = find_specialist(task, workers)
+    extras = [w for w in workers if w["kind"] == "reviewer"]
     for review_round in range(start_round, total):
-        if phase == "reviewing" and review_round == start_round and (project_root / "RESULT.md").is_file():
+        resumed = phase in ("reviewing", "extra_reviewing") and review_round == start_round and (project_root / "RESULT.md").is_file()
+        if resumed:
             result = load_text(project_root / "RESULT.md").strip()
         else:
             save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "implementing", total)
+            current = snapshot(project_root, allowed)
+            prior = [n for n in current if current[n] != before.get(n)]
+            prior_note = (
+                f"PRIOR WORK\n{', '.join(prior)} already contain unreviewed changes from an earlier attempt. Finish or fix "
+                "them; if the task is already complete, report so without rewriting the files.\n\n"
+            ) if prior else ""
             implementer_input = (
                 f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
-                f"CURRENT ALLOWED FILES\n{allowed_files_context(snapshot(project_root, allowed))}\n\n"
+                f"{prior_note}CURRENT ALLOWED FILES\n{allowed_files_context(current)}\n\n"
                 f"REVIEWER FEEDBACK\n{reviewer_feedback}"
             )
-            result = run_agent(config, "implementer", prompts["implementer"], implementer_input, project_root, allowed, True, interactive)
+            impl_role, impl_system = ("implementer", prompts["implementer"]) if not specialist else (
+                specialist["id"], role_prompt(prompts["implementer"], specialist))
+            result = run_agent(config, impl_role, impl_system, implementer_input, project_root, allowed, True, interactive, before)
             save_text(project_root / "RESULT.md", result)
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
-        reviewer_input = (
-            f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
-            f"CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
-        )
-        save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
-        review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
-        review, review_text = extract_review_with_repair(
-            config, prompts["reviewer"], reviewer_input, review_text, interactive
-        )
-        save_text(project_root / "REVIEW.md", review_text)
-        verdict = str(review.get("verdict", "")).upper()
-        emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
+        defects, syntax_line = syntax_gate(project_root, allowed, before)
+        gate = "syntax"
+        if not defects:
+            defects, behaviour_block = behaviour_gate(project_root, config)
+            gate = "behaviour"
+        if defects:
+            review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)
+            save_text(project_root / "REVIEW.md", review_text)
+            verdict = "FAIL"
+            emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
+            print(f"[{gate}] round {review_round + 1} failed the {gate} check; reviewer skipped")
+        else:
+            behaviour_part = f"{behaviour_block}\n\n" if behaviour_block else ""
+            reviewer_input = (
+                f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
+                f"{syntax_line}\n\n{behaviour_part}CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
+            )
+            if resumed and phase == "extra_reviewing":
+                verdict, review_text = "PASS", load_text(project_root / "REVIEW.md")  # the main Reviewer already passed this round
+            else:
+                save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "reviewing", total)
+                review_text = run_agent(config, "reviewer", prompts["reviewer"], reviewer_input, project_root, allowed, False, interactive)
+                review, review_text = extract_review_with_repair(
+                    config, prompts["reviewer"], reviewer_input, review_text, interactive
+                )
+                save_text(project_root / "REVIEW.md", review_text)
+                verdict = str(review.get("verdict", "")).upper()
+            if verdict == "PASS" and extras:
+                save_checkpoint(project_root, task, before, review_round, reviewer_feedback, "extra_reviewing", total)
+                extra_failure = run_extra_reviewers(config, prompts["reviewer"], extras, reviewer_input, project_root, allowed, interactive)
+                if extra_failure:
+                    verdict, review_text = "FAIL", extra_failure
+                    save_text(project_root / "REVIEW.md", review_text)
+            emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
         if verdict == "PASS":
             token = save_checkpoint(project_root, task, before, review_round, result, "passed", total)
             complete_task(task, "passed", result, project_root, str(token))
@@ -931,6 +1440,66 @@ def run_review_loop(
             raise WorkflowError(f"{task['id']} failed after {total} reviews")
 
 
+def answer_text(message: dict[str, Any]) -> str:
+    """The reply without reasoning (an unterminated <think> counts as reasoning)."""
+    text = re.sub(r"<think>.*?</think>", "", split_reasoning(message)[1], flags=re.S)
+    return re.sub(r"<think>.*\Z", "", text, flags=re.S).strip()  # only a trailing unterminated block remains
+
+
+def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]]) -> str:
+    client, sampling = role_settings(config, role)
+    emit("chat_stage", role=role, stage=stage, title=client.title or role)
+    model = client.ensure_model(role, False)
+    return answer_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
+
+
+def run_chat(config: dict[str, Any], request_path: Path) -> int:
+    """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No tools, no workflow files."""
+    request = json.loads(load_text(request_path))
+    if not isinstance(request, dict):
+        raise WorkflowError("Chat request must be a JSON object")
+    messages = [
+        {"role": m["role"], "content": str(m["content"])}
+        for m in request.get("messages") or []
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
+    ]
+    if not messages or messages[-1]["role"] != "user":
+        raise WorkflowError("Chat request needs messages ending with a user message")
+    chat = load_text(ROOT / "prompts" / "chat.txt").strip()
+    if request.get("mode") == "multi":
+        missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
+        if missing:
+            raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
+        convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+        prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt")
+        plan = chat_call(config, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}])
+        draft = chat_call(config, "implementer", "draft", prompt("implementer"),
+                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}"}])
+        final = chat_call(config, "reviewer", "review", prompt("reviewer"),
+                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}\n\nDRAFT\n{draft}"}])
+        if not final:
+            print("[chat] the Reviewer returned nothing usable; answering with the draft")
+        role, text = ("reviewer", final) if final else ("implementer", draft)
+    elif request.get("mode") == "single":
+        role = str(request.get("worker") or "")
+        worker = next((w for w in custom_workers(config) if w["id"] == role), None)
+        if role not in BUILTIN_ROLES and not worker:
+            raise WorkflowError(f"Unknown chat worker {role!r}")
+        if role in BUILTIN_ROLES and role not in (config.get("roles") or {}):
+            raise WorkflowError(f"Chat worker {role!r} is missing from config roles")
+        if worker:
+            system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
+        else:
+            system = f"{chat}\n\nYou are the {role.capitalize()} worker.\n"
+        text = chat_call(config, role, "answer", system, messages)
+    else:
+        raise WorkflowError(f"Unknown chat mode {request.get('mode')!r}")
+    if not text:
+        raise WorkflowError("The model returned an empty reply")
+    emit("chat_reply", role=role, text=text)
+    return 0
+
+
 def _run() -> int:
     # Piped stdout defaults to the ANSI codepage on Windows; model names can contain non-cp1252 characters.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -940,19 +1509,26 @@ def _run() -> int:
     parser.add_argument("--non-interactive", action="store_true", help="Fail instead of waiting for model swaps")
     parser.add_argument("--once", action="store_true", help="Stop after one task passes")
     parser.add_argument("--events", action="store_true", help="Emit structured @@AO event lines for the launcher UI")
+    parser.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
     args = parser.parse_args()
-    global PROJECT_ROOT_ARG, EVENTS
+    global PROJECT_ROOT_ARG, EVENTS, CHAT_MODE
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
+    CHAT_MODE = args.chat is not None
 
     project_root = args.project.resolve()
     if not project_root.is_dir():
         raise WorkflowError(f"Project folder does not exist: {project_root}")
+    if args.chat:
+        config = json.loads(load_text(project_root / "config.json"))
+        custom_workers(config, warn=True)
+        return run_chat(config, args.chat)
     missing = sorted(name for name in WORKFLOW_FILES if not (project_root / name).is_file())
     if missing:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
     config = json.loads(load_text(project_root / "config.json"))
     task_limits(config)
+    custom_workers(config, warn=True)
     project = load_text(project_root / "PROJECT.md").strip()
     if not project or "REPLACE THIS" in project or "[Describe the project" in project:
         raise WorkflowError("Describe the real goal in PROJECT.md before running")
@@ -987,10 +1563,12 @@ def _run() -> int:
         else:
             write_handoff(project_root, None)  # a kill inside clear_checkpoint can leave a stale handoff
             config = configure_project(config, project_root, project, interactive)
+            behaviour_block = behaviour_gate(project_root, config)[1].split("\nVisible elements", 1)[0]  # no text sample
+            behaviour_part = f"BEHAVIOUR CHECK OF CURRENT PROJECT\n{behaviour_block}\n\n" if behaviour_block else ""
             planner_input = (
                 f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
                 f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
-                f"{team_context(config)}\n\n"
+                f"{team_context(config)}\n\n{behaviour_part}"
                 f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
             )
             plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
@@ -1014,10 +1592,11 @@ def _run() -> int:
 
 
 PROJECT_ROOT_ARG: Path = ROOT
+CHAT_MODE = False  # --chat: models stay loaded after the turn; the launcher unloads them when the app closes
 
 
-# Models this run loaded itself (path -> client). Models that were already loaded, e.g. by the user in
-# Unsloth Desktop, are never in here and so are never unloaded.
+# Models this run loaded itself (path -> client). A model the user loaded in Unsloth Desktop is not in
+# here, unless this run reloads it for a role's load settings; then it is added and unloaded at exit.
 LOADED_BY_RUN: dict[str, "ApiClient"] = {}
 
 
@@ -1026,7 +1605,7 @@ def unload_models() -> None:
     for path, client in LOADED_BY_RUN.items():
         try:
             client._request_at(client.management_url, "POST", "/api/inference/unload", {"model_path": path})
-            print(f"[{client.role}] unloaded {path}")
+            print(f"[{client.title or client.role}] unloaded {path}")
         except WorkflowError:
             pass  # already unloaded or server unreachable
     LOADED_BY_RUN.clear()
@@ -1036,7 +1615,8 @@ def main() -> int:
     try:
         return _run()
     finally:
-        unload_models()
+        if not CHAT_MODE:
+            unload_models()
 
 
 if __name__ == "__main__":

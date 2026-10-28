@@ -77,7 +77,41 @@ Use `--once` to complete one reviewed task. Use `--non-interactive` for three in
 
 The default config calls this installed Unsloth build's `POST /api/inference/load` route. It sequentially swaps the Planner, Implementer, and Reviewer on the same 16 GB GPU, using the settings already proven by your Unsloth logs. No three-model simultaneous load is attempted.
 
-If automatic loading is rejected, the controller reports the API error and falls back to asking you to load the role in Desktop. `--non-interactive` instead fails immediately. To disable automatic swaps, remove `management_url` or `auto_load` from each role.
+If automatic loading is rejected, the controller reports the API error and falls back to asking you to load the role in Desktop. `--non-interactive` instead fails immediately. To disable automatic swaps, remove `management_url` or `auto_load` from each role. When a role's model is already loaded but with a different `max_seq_length` or `reasoning_budget` than the role's `auto_load` (for example the same model shared by two roles), it is reloaded with the role's settings, and a model reloaded this way is unloaded at exit like any other this run loaded.
+
+Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
+
+## Chat mode
+
+`python orchestrator.py --project <folder with config.json> --chat <request.json> --events --non-interactive` answers one chat turn instead of running the workflow. It needs only `config.json` in the project folder (no `PROJECT.md`, `STATE.md`, ...), plans no tasks, writes no workflow files or checkpoints, and never runs the configurator. Workers have no tools in chat.
+
+`request.json` (UTF-8): `{"mode": "single"|"multi", "worker": "<role id>", "messages": [{"role": "user"|"assistant", "content": "..."}]}`. The last message must be the user's. `worker` (single mode) is `planner`, `implementer`, `reviewer` or a custom worker `id` (Specialists and Extra reviewers). Single mode streams one completion from that worker with `prompts/chat.txt` as the system prompt (plus the custom worker's own role section). Multi mode ignores `worker` and runs the three built-ins in turn: the Planner writes a plan (`prompts/chat_planner.txt`), the Implementer drafts the response from conversation and plan (`chat_implementer.txt`), and the Reviewer returns the final answer from conversation, plan and draft (`chat_reviewer.txt`); an empty Reviewer reply falls back to the draft.
+
+Events are the usual `@@AO` lines (`loading`, `model`, `delta`, `done`, `usage`) plus `{"e":"chat_stage","role","stage":"plan"|"draft"|"review"|"answer","title"}` before each model call and a final `{"e":"chat_reply","role","text"}` with the answer. Exit code 0 on success; on failure an `ERROR: ...` line is printed and the exit code is 1. Models stay loaded after the turn (the launcher unloads them when the app closes).
+
+## Custom workers
+
+`config.json` may hold an optional top-level `custom_workers` array. Absent or empty, the run behaves exactly as before.
+
+```json
+"custom_workers": [{
+  "id": "8f0c...", "title": "Tester", "kind": "specialist",
+  "description": "Writes and runs unit tests for a feature.",
+  "system_prompt": "You are a meticulous test engineer...",
+  "base_url": "...", "management_url": "...", "api_key_env": "UNSLOTH_API_KEY",
+  "expected_model_contains": "...", "display_name": "...", "timeout_seconds": 600,
+  "auto_load": {}, "sampling": {}
+}]
+```
+
+`id` is stable and unique and is the `role` of every event the worker emits. `title` is unique (case-insensitive) and never `Planner`, `Implementer` or `Reviewer`. The model fields (`base_url`, `expected_model_contains` or `auto_load.model_path`, `auto_load`, `sampling`, ...) have the same meaning as in `roles.<role>`, and the worker is loaded, reloaded and unloaded the same way. An entry with an unknown `kind`, a reserved or duplicate `id`/`title`, a missing `base_url`, model or `system_prompt`, or (for a specialist) a missing `description` is ignored with a `[workers]` warning.
+
+- **Specialist** (`"kind": "specialist"`): listed in the Planner's TEAM section with its description. The Planner may add `"worker": "<title>"` to a task (case-insensitive; an unknown name triggers the usual correction turn, and the choice is stored in the task, so it survives a resume). The Specialist then does that task instead of the Implementer, with the same tools, file scope, syntax check and unverified-report handling. Its system prompt is the standard implementer prompt followed by a `YOUR ROLE: <title>` section holding `system_prompt`.
+- **Extra reviewer** (`"kind": "reviewer"`): after the Reviewer passes a task and the syntax check passed, each Extra reviewer (config order, read-only) reviews it with the standard reviewer prompt followed by its own `YOUR ROLE` section. The task passes only when the Reviewer and every Extra reviewer pass. If any fail, the round fails: their defects, prefixed with the reviewer's title, go to the next round as feedback and into `REVIEW.md`. All Extra reviewers run each round so one round carries all their feedback; none run when the Reviewer fails. A run stopped while they check resumes there (checkpoint phase `extra_reviewing`) without re-running the Implementer or the Reviewer.
+
+## Behaviour check
+
+For web projects (an `index.html` in the project root, or `"behaviour_check": {"page": "<relative path>"}` in `config.json`) the page is loaded headlessly before planning and after each implementer round, right after the syntax check: the project is served on `127.0.0.1` and opened in a fresh browser profile (empty localStorage), and uncaught errors, unhandled promise rejections, `console.error` calls and missing scripts/stylesheets are recorded. Any error fails the round without calling the Reviewer and goes back to the implementer as feedback; a clean load gives the Reviewer a `BEHAVIOUR CHECK` block with a visible-text sample, and errors found before planning make the Planner schedule a fix first. It needs Edge or Chrome (standard install paths or on `PATH`); set `behaviour_check.browser` to a Chromium executable to choose one. Without a browser the check is skipped with a `[behaviour]` note. `"behaviour_check": false` turns it off.
 
 ## Safety and recovery
 
@@ -89,6 +123,8 @@ If automatic loading is rejected, the controller reports the API error and falls
 - `STATE.md` changes only after reviewer PASS.
 - `TASK.md`, `RESULT.md`, and `REVIEW.md` preserve the latest handoff.
 - An implementer that prints tool calls as JSON text instead of calling the tools has them executed anyway; one that never writes a file is stopped rather than passed to the reviewer.
+- Unreviewed changes left by an interrupted attempt (resume) or an earlier round are flagged to the implementer as PRIOR WORK; if it reports them complete without writing, the reviewer still checks the full diff against the task start instead of the task being blocked.
+- A reply cut off at the output limit is logged; a truncated tool call is never executed and the model is sent back to write in smaller pieces, then the run stops asking to raise `sampling.max_tokens`. A prompt over the context window stops with a request to raise `auto_load.max_seq_length`.
 - Models are unloaded from Unsloth when a run ends, whether it passed, failed, or was stopped.
 - Stop with Ctrl+C. Re-run after inspecting the latest workflow records.
 

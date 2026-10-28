@@ -32,6 +32,75 @@ internal static class LauncherLogic
 
     public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, string apiKey, bool once)
     {
+        var info = NewStartInfo(python, workflowRoot, apiKey);
+        info.ArgumentList.Add("--project");
+        info.ArgumentList.Add(projectRoot);
+        info.ArgumentList.Add("--non-interactive");
+        info.ArgumentList.Add("--events");
+        if (once)
+            info.ArgumentList.Add("--once");
+        return info;
+    }
+
+    // ---- chat: one orchestrator process per user message, fed the whole conversation through a request file
+
+    public sealed record ChatMessage(string Role, string Content);
+
+    // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
+    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages) =>
+        JsonSerializer.Serialize(new
+        {
+            mode = mode == "multi" ? "multi" : "single",
+            worker,
+            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+    public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
+    {
+        var info = NewStartInfo(python, workflowRoot, apiKey);
+        info.ArgumentList.Add("--project");
+        info.ArgumentList.Add(folder);
+        info.ArgumentList.Add("--chat");
+        info.ArgumentList.Add(requestFile);
+        info.ArgumentList.Add("--events");
+        info.ArgumentList.Add("--non-interactive");
+        return info;
+    }
+
+    // True when configPath is the workflow root's config.json: the template new projects are initialized from.
+    public static bool IsTemplateConfig(string configPath, string? workflowRoot) =>
+        workflowRoot is not null && configPath.Length > 0 && string.Equals(Path.GetFullPath(configPath), Path.GetFullPath(Path.Combine(workflowRoot, "config.json")), StringComparison.OrdinalIgnoreCase);
+
+    // The folder a chat runs in. An initialized project is used as is. Otherwise the template config is copied to a
+    // fresh temp folder (the template itself is never written) and gets the custom workers; the caller deletes it
+    // when the chat ends. IsTemp says whether the folder was created here (and so is the caller's to delete); a real
+    // project folder is never IsTemp. Returns "Title: reason" for each custom worker left out.
+    public sealed record ChatFolder(string Path, bool IsTemp);
+
+    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped)
+    {
+        skipped = [];
+        var projectConfig = Path.Combine(selectedProject, "config.json");
+        if (selectedProject.Length > 0 && File.Exists(projectConfig) && !IsTemplateConfig(projectConfig, workflowRoot))
+            return new ChatFolder(selectedProject, false);
+        var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(folder);
+            var copy = Path.Combine(folder, "config.json");
+            File.Copy(Path.Combine(workflowRoot, "config.json"), copy);
+            skipped = WriteCustomWorkers(copy, workers);
+            return new ChatFolder(folder, true);
+        }
+        catch
+        {
+            try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            throw;
+        }
+    }
+
+    private static ProcessStartInfo NewStartInfo(string python, string workflowRoot, string apiKey)
+    {
         var info = new ProcessStartInfo
         {
             FileName = python,
@@ -45,12 +114,6 @@ internal static class LauncherLogic
             CreateNoWindow = true,
         };
         info.ArgumentList.Add(Path.Combine(workflowRoot, "orchestrator.py"));
-        info.ArgumentList.Add("--project");
-        info.ArgumentList.Add(projectRoot);
-        info.ArgumentList.Add("--non-interactive");
-        info.ArgumentList.Add("--events");
-        if (once)
-            info.ArgumentList.Add("--once");
         info.Environment["UNSLOTH_API_KEY"] = apiKey;
         info.Environment["PYTHONUNBUFFERED"] = "1";
         return info;
@@ -154,6 +217,19 @@ internal static class LauncherLogic
         return copied.ToArray();
     }
 
+    /// <summary>Moves an existing PROJECT.md aside (never overwriting a prior backup) and returns the backup's file name.</summary>
+    public static string BackupProjectMd(string projectRoot)
+    {
+        var source = Path.Combine(projectRoot, "PROJECT.md");
+        var backup = "PROJECT.md.bak";
+        if (File.Exists(Path.Combine(projectRoot, backup)))
+            backup = $"PROJECT.md.bak-{DateTime.Now:yyyyMMdd-HHmmss-fff}";
+        for (var n = 2; File.Exists(Path.Combine(projectRoot, backup)); n++)
+            backup = $"PROJECT.md.bak-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{n}";
+        File.Move(source, Path.Combine(projectRoot, backup));
+        return backup;
+    }
+
     public static void ValidateConfigFile(string path)
     {
         using var document = JsonDocument.Parse(File.ReadAllText(path));
@@ -178,7 +254,10 @@ internal static class LauncherLogic
     }
 
     // Generation parameters of a built-in role, as the text shown in the settings editor ("" = key absent).
-    public sealed record RoleSettings(string Temperature, string MaxTokens, string RepetitionPenalty, string ReasoningBudget, string ContextLength);
+    public sealed record RoleSettings(string Temperature, string MaxTokens, string RepetitionPenalty, string ReasoningBudget, string ContextLength, string Thinking = "Auto");
+
+    // sampling.enable_thinking: true = On, false = Off, key absent = Auto.
+    public static readonly string[] ThinkingChoices = ["Auto", "On", "Off"];
 
     public static RoleSettings ReadRoleSettings(string configPath, string role)
     {
@@ -187,18 +266,44 @@ internal static class LauncherLogic
         return new RoleSettings(
             Text(settings["sampling"]?["temperature"]), Text(settings["sampling"]?["max_tokens"]),
             Text(settings["sampling"]?["extra_body"]?["repetition_penalty"]),
-            Text(settings["auto_load"]?["reasoning_budget"]), Text(settings["auto_load"]?["max_seq_length"]));
+            Text(settings["auto_load"]?["reasoning_budget"]), Text(settings["auto_load"]?["max_seq_length"]),
+            settings["sampling"]?["enable_thinking"] is JsonValue flag && flag.TryGetValue<bool>(out var on) ? (on ? "On" : "Off") : "Auto");
     }
 
-    // Validates every field, then writes; returns an error message (nothing written) or null on success.
-    // An empty repetition penalty removes the key; the other empty fields leave their key as it is.
-    public static string? WriteRoleSettings(string configPath, string role, RoleSettings values)
+    // The field rules shared by the built-in and custom Settings dialogs; null when every field is acceptable.
+    public static string? ValidateRoleSettings(RoleSettings values)
     {
         static bool Number(string text, double min, double max, out double result) =>
             double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out result) && double.IsFinite(result) && result >= min && result <= max;
         static bool Whole(string text, long min, long max, out long result) =>
             long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out result) && result >= min && result <= max;
 
+        if (!ThinkingChoices.Contains(values.Thinking))
+            return "Thinking must be Auto, On or Off.";
+        var temperatureText = values.Temperature.Trim();
+        var maxTokensText = values.MaxTokens.Trim();
+        var penaltyText = values.RepetitionPenalty.Trim();
+        var budgetText = values.ReasoningBudget.Trim();
+        var contextText = values.ContextLength.Trim();
+        if (temperatureText.Length > 0 && !Number(temperatureText, 0, 2, out _))
+            return "Temperature must be a number from 0 to 2.";
+        if (maxTokensText.Length > 0 && !Whole(maxTokensText, 1, 262144, out _))
+            return "Max tokens must be a whole number from 1 to 262144.";
+        if (penaltyText.Length > 0 && !Number(penaltyText, 1, 2, out _))
+            return "Repetition penalty must be a number from 1.0 to 2.0 (or empty).";
+        if (budgetText.Length > 0 && !Whole(budgetText, 0, int.MaxValue, out _))
+            return "Reasoning budget must be a whole number, 0 or more.";
+        if (contextText.Length > 0 && !Whole(contextText, 512, 262144, out _))
+            return "Context length must be a whole number from 512 to 262144.";
+        return null;
+    }
+
+    // Validates every field, then writes; returns an error message (nothing written) or null on success.
+    // An empty repetition penalty removes the key; the other empty fields leave their key as it is.
+    public static string? WriteRoleSettings(string configPath, string role, RoleSettings values)
+    {
+        if (ValidateRoleSettings(values) is { } problem)
+            return problem;
         double temperature = 0, penalty = 0;
         long maxTokens = 0, budget = 0, context = 0;
         var temperatureText = values.Temperature.Trim();
@@ -206,16 +311,11 @@ internal static class LauncherLogic
         var penaltyText = values.RepetitionPenalty.Trim();
         var budgetText = values.ReasoningBudget.Trim();
         var contextText = values.ContextLength.Trim();
-        if (temperatureText.Length > 0 && !Number(temperatureText, 0, 2, out temperature))
-            return "Temperature must be a number from 0 to 2.";
-        if (maxTokensText.Length > 0 && !Whole(maxTokensText, 1, 262144, out maxTokens))
-            return "Max tokens must be a whole number from 1 to 262144.";
-        if (penaltyText.Length > 0 && !Number(penaltyText, 1, 2, out penalty))
-            return "Repetition penalty must be a number from 1.0 to 2.0 (or empty).";
-        if (budgetText.Length > 0 && !Whole(budgetText, 0, int.MaxValue, out budget))
-            return "Reasoning budget must be a whole number, 0 or more.";
-        if (contextText.Length > 0 && !Whole(contextText, 512, 262144, out context))
-            return "Context length must be a whole number from 512 to 262144.";
+        _ = double.TryParse(temperatureText, NumberStyles.Float, CultureInfo.InvariantCulture, out temperature);
+        _ = long.TryParse(maxTokensText, NumberStyles.None, CultureInfo.InvariantCulture, out maxTokens);
+        _ = double.TryParse(penaltyText, NumberStyles.Float, CultureInfo.InvariantCulture, out penalty);
+        _ = long.TryParse(budgetText, NumberStyles.None, CultureInfo.InvariantCulture, out budget);
+        _ = long.TryParse(contextText, NumberStyles.None, CultureInfo.InvariantCulture, out context);
 
         var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
         var settings = root["roles"]![role]!.AsObject();
@@ -231,6 +331,10 @@ internal static class LauncherLogic
             sampling["extra_body"]?.AsObject().Remove("repetition_penalty");
         else
             (sampling["extra_body"] ??= new JsonObject()).AsObject()["repetition_penalty"] = penalty;
+        if (values.Thinking == "Auto")
+            sampling.Remove("enable_thinking");
+        else
+            sampling["enable_thinking"] = values.Thinking == "On";
         if (budgetText.Length > 0)
             load!["reasoning_budget"] = budget;
         if (contextText.Length > 0)
@@ -240,6 +344,170 @@ internal static class LauncherLogic
             WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         }));
         return null;
+    }
+
+    public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
+
+    // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
+    public static WorkerPreset CapturePreset(string name, string configPath, IEnumerable<WorkerSetting> workers)
+    {
+        var preset = new WorkerPreset
+        {
+            Name = name,
+            Workers = workers.Select(w => w.Clone()).ToList(),
+        };
+        if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath))?["roles"] is JsonObject roles)
+            foreach (var role in BuiltInRoles)
+                if (roles[role] is JsonObject stored)
+                    preset.Roles[role] = stored.ToJsonString();
+        return preset;
+    }
+
+    // Replaces only the stored roles.<role> objects; every other key and role in the config stays.
+    // Returns false when there is no config to write to.
+    public static bool ApplyPresetRoles(string configPath, WorkerPreset preset)
+    {
+        if (!File.Exists(configPath))
+            return false;
+        if (preset.Roles.Count == 0)
+            return true;
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
+        var roles = (root["roles"] ??= new JsonObject()).AsObject();
+        foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
+            roles[role] = JsonNode.Parse(json);
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return true;
+    }
+
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER"];
+
+    // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
+    public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
+    {
+        title = title.Trim();
+        if (title.Length == 0)
+            return "Enter a title.";
+        if (ReservedTitles.Contains(title, StringComparer.OrdinalIgnoreCase))
+            return $"\"{title}\" is reserved for a built-in worker. Choose another title.";
+        if (workers.Any(w => w.Id != selfId && string.Equals(w.Title.Trim(), title, StringComparison.OrdinalIgnoreCase)))
+            return $"Another worker is already titled \"{title}\".";
+        return null;
+    }
+
+    // Why the orchestrator would ignore this custom worker (it needs a model, a system prompt, and for a
+    // Specialist a description), or null. Shared by the Settings dialog and CustomProblems.
+    public static string? CustomWorkerProblem(WorkerSetting w)
+    {
+        if (string.IsNullOrWhiteSpace(w.ModelPath))
+            return string.IsNullOrWhiteSpace(w.ModelId) ? "no model assigned (Change model)" : "pick the model again (Change model)";
+        if (string.IsNullOrWhiteSpace(w.SystemPrompt))
+            return "the system prompt is empty (Settings)";
+        if (w.Kind != "reviewer" && string.IsNullOrWhiteSpace(w.Description))
+            return "a Specialist needs a description (Settings)";
+        return null;
+    }
+
+    // The orchestrator's acceptance rules for every worker in order (null = accepted or not a custom worker):
+    // the title may not be empty, reserved, or used by an earlier accepted worker, and the project's
+    // implementer needs a base_url (custom workers copy it). Used by the writer and by the card warnings.
+    public static string?[] CustomProblems(IReadOnlyList<WorkerSetting> workers, bool implementerHasBaseUrl)
+    {
+        var problems = new string?[workers.Count];
+        var used = new HashSet<string>(ReservedTitles, StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < workers.Count; i++)
+        {
+            var w = workers[i];
+            if (!w.Custom)
+                continue;
+            var title = w.Title.Trim();
+            problems[i] = !implementerHasBaseUrl ? "the project's implementer has no base_url in config.json" :
+                title.Length == 0 ? "the title is empty — rename it" :
+                ReservedTitles.Contains(title, StringComparer.OrdinalIgnoreCase) ? $"title '{title}' is reserved for a built-in worker — rename it" :
+                used.Contains(title) ? $"title '{title}' is already used — rename it" :
+                CustomWorkerProblem(w);
+            if (problems[i] is null)
+                used.Add(title);
+        }
+        return problems;
+    }
+
+    public static bool ImplementerHasBaseUrl(string configPath)
+    {
+        try { return !string.IsNullOrWhiteSpace((JsonNode.Parse(File.ReadAllText(configPath)))?["roles"]?["implementer"]?["base_url"]?.ToString()); }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return false; }
+    }
+
+    // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
+    // connection settings, auto_load defaults and sampling, then applies its own model and settings.
+    // Workers the orchestrator would ignore are not written; returns "Title: reason" for each.
+    // A missing implementer just means nothing to copy.
+    public static string[] WriteCustomWorkers(string configPath, IEnumerable<WorkerSetting> workers)
+    {
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
+        var implementer = root["roles"]?["implementer"] as JsonObject;
+        var skipped = new List<string>();
+        var array = new JsonArray();
+        var all = workers.ToList();
+        var problems = CustomProblems(all, !string.IsNullOrWhiteSpace(implementer?["base_url"]?.ToString()));
+        for (var i = 0; i < all.Count; i++)
+        {
+            var w = all[i];
+            if (!w.Custom)
+                continue;
+            if (problems[i] is { } problem)
+            {
+                skipped.Add($"{w.Title.Trim()}: {problem}");
+                continue;
+            }
+            var entry = new JsonObject
+            {
+                ["id"] = w.Id, ["title"] = w.Title.Trim(), ["kind"] = w.Kind == "reviewer" ? "reviewer" : "specialist",
+                ["description"] = w.Description, ["system_prompt"] = w.SystemPrompt,
+            };
+            foreach (var key in new[] { "base_url", "management_url", "api_key_env", "api_key" })
+                if (implementer?[key] is { } value)
+                    entry[key] = value.DeepClone();
+            entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
+            entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
+            if (implementer?["timeout_seconds"] is { } timeout)
+                entry["timeout_seconds"] = timeout.DeepClone();
+
+            var load = implementer?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
+            load["model_path"] = w.ModelPath;
+            if (string.IsNullOrEmpty(w.ModelVariant))
+                load.Remove("gguf_variant");
+            else
+                load["gguf_variant"] = w.ModelVariant;
+            if (long.TryParse(w.ReasoningBudget.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var budget))
+                load["reasoning_budget"] = budget;
+            if (long.TryParse(w.ContextLength.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var context))
+                load["max_seq_length"] = context;
+            entry["auto_load"] = load;
+
+            var sampling = implementer?["sampling"]?.DeepClone() as JsonObject ?? new JsonObject();
+            sampling.Remove("enable_thinking");
+            if (double.TryParse(w.Temperature.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var temperature))
+                sampling["temperature"] = temperature;
+            if (long.TryParse(w.MaxTokens.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var maxTokens))
+                sampling["max_tokens"] = maxTokens;
+            if (double.TryParse(w.RepetitionPenalty.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var penalty))
+                (sampling["extra_body"] ??= new JsonObject()).AsObject()["repetition_penalty"] = penalty;
+            if (w.Thinking is "On" or "Off")
+                sampling["enable_thinking"] = w.Thinking == "On";
+            entry["sampling"] = sampling;
+            array.Add(entry);
+        }
+        root["custom_workers"] = array;
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return skipped.ToArray();
     }
 
     // True when the node, or any ancestor, is a button. A Run inside a TextBlock is not a Visual and
@@ -293,6 +561,23 @@ internal static class LauncherLogic
         if (info.Environment["UNSLOTH_API_KEY"] != "test-key")
             throw new InvalidOperationException("API key environment handling failed.");
 
+        var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\req.json");
+        var chatArgs = chatInfo.ArgumentList;
+        if (chatArgs.IndexOf("--chat") < 0 || chatArgs[chatArgs.IndexOf("--chat") + 1] != @"Y:\req.json" || !chatArgs.Contains("--events") ||
+            !chatArgs.Contains("--non-interactive") || chatArgs[chatArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || chatArgs.Contains("--once") ||
+            chatInfo.Environment["UNSLOTH_API_KEY"] != "test-key" || chatInfo.Environment["PYTHONUNBUFFERED"] != "1")
+            throw new InvalidOperationException("Chat start info failed.");
+        var chat = new[] { new ChatMessage("user", "hi \"there\"\nline2 é"), new ChatMessage("assistant", "hello"), new ChatMessage("user", "again") };
+        var single = JsonNode.Parse(BuildChatRequest("single", "implementer", chat))!;
+        var customId = Guid.NewGuid().ToString("N");
+        var multi = JsonNode.Parse(BuildChatRequest("multi", customId, chat.Take(1)))!;
+        var sm = single["messages"]!.AsArray();
+        if ((string)single["mode"]! != "single" || (string)single["worker"]! != "implementer" || sm.Count != 3 ||
+            (string)sm[0]!["role"]! != "user" || (string)sm[0]!["content"]! != "hi \"there\"\nline2 é" || (string)sm[1]!["role"]! != "assistant" ||
+            (string)sm[2]!["content"]! != "again" || (string)multi["mode"]! != "multi" || (string)multi["worker"]! != customId || multi["messages"]!.AsArray().Count != 1 ||
+            (string)JsonNode.Parse(BuildChatRequest("bogus", "planner", chat))!["mode"]! != "single")
+            throw new InvalidOperationException("Chat request failed.");
+
         var gguf = DescribeModel(@"Y:\.llm_models\Qwen3.5 9B｜Q8_0.gguf");
         if (gguf.Name != "Qwen3.5 9B" || gguf.Weights != "9B" || gguf.Quant != "Q8_0")
             throw new InvalidOperationException($"Model description failed: {gguf}");
@@ -317,6 +602,26 @@ internal static class LauncherLogic
             if (detectedKey?.Key != "test-api-key")
                 throw new InvalidOperationException("API key file detection failed.");
             ValidateConfigFile(customConfig);
+            var rootDir = Path.Combine(testArea, "root");
+            var rootConfig = Path.Combine(rootDir, "config.json");
+            Directory.CreateDirectory(rootDir);
+            File.WriteAllText(rootConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\"}}}");
+            var rootBytes = File.ReadAllBytes(rootConfig);
+            var chatWorkers = new List<WorkerSetting> { Ok("c1", "Chat Docs") };
+            var chatPrepared = PrepareChatFolder(testArea, rootDir, chatWorkers, out _);
+            var chatFolder = chatPrepared.Path;
+            try
+            {
+                var chatCopy = JsonNode.Parse(File.ReadAllText(Path.Combine(chatFolder, "config.json")))!;
+                if (!chatPrepared.IsTemp || chatFolder == rootDir || chatFolder == testArea || (int)chatCopy["keep"]! != 1 || chatCopy["custom_workers"]?.AsArray().Count != 1 ||
+                    !File.ReadAllBytes(rootConfig).SequenceEqual(rootBytes) || !IsTemplateConfig(rootConfig.ToUpperInvariant(), rootDir))
+                    throw new InvalidOperationException("Chat folder without a project must be a temp copy of the template.");
+            }
+            finally { Directory.Delete(chatFolder, true); }
+            File.WriteAllText(Path.Combine(testArea, "config.json"), "{}");
+            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _) is not { Path: var initialized, IsTemp: false } || initialized != testArea)
+                throw new InvalidOperationException("Chat folder should be the initialized project.");
+            File.Delete(Path.Combine(testArea, "config.json"));
             var roleConfig = Path.Combine(testArea, "role-config.json");
             File.WriteAllText(roleConfig, "{\"keep\":1,\"roles\":{\"planner\":{\"display_name\":\"P\",\"sampling\":{\"temperature\":0.6,\"top_p\":0.9,\"extra_body\":{\"repetition_penalty\":1.1,\"top_k\":20}},\"auto_load\":{\"model_path\":\"m\"}},\"reviewer\":{\"sampling\":{\"temperature\":0.2}}}}");
             var before = ReadRoleSettings(roleConfig, "planner");
@@ -354,6 +659,102 @@ internal static class LauncherLogic
                 WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("0.9", "", "", "0", "")) is null ||
                 File.ReadAllText(roleConfig) != untouched)
                 throw new InvalidOperationException("Context length or reasoning budget without auto_load model_path was accepted.");
+            // Thinking: On/Off write a bool, Auto removes the key; other sampling keys and roles are untouched.
+            string Sampling(string role) => JsonNode.Parse(File.ReadAllText(roleConfig))!["roles"]![role]!["sampling"]!.ToJsonString();
+            var plannerBefore = Sampling("planner");
+            var reviewerBefore = Sampling("reviewer");
+            JsonNode? Flag() => JsonNode.Parse(File.ReadAllText(roleConfig))!["roles"]!["reviewer"]!["sampling"]!["enable_thinking"];
+            var thinkingOk = WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "On")) is null &&
+                Flag()?.GetValue<bool>() == true && ReadRoleSettings(roleConfig, "reviewer").Thinking == "On" &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Off")) is null &&
+                Flag()?.GetValue<bool>() == false && ReadRoleSettings(roleConfig, "reviewer").Thinking == "Off" &&
+                Sampling("planner") == plannerBefore && Sampling("reviewer").Contains("\"repetition_penalty\"") == reviewerBefore.Contains("\"repetition_penalty\"") &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Auto")) is null &&
+                Flag() is null && !Sampling("reviewer").Contains("enable_thinking") && ReadRoleSettings(roleConfig, "reviewer").Thinking == "Auto" &&
+                Sampling("reviewer") == reviewerBefore &&
+                WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Maybe")) is not null;
+            if (!thinkingOk)
+                throw new InvalidOperationException("Thinking setting was not written, read back or removed correctly.");
+            // Presets: capture from config A, apply to config B; B keeps its own project keys.
+            var configA = Path.Combine(testArea, "preset-a.json");
+            var configB = Path.Combine(testArea, "preset-b.json");
+            File.WriteAllText(configA, "{\"validation_commands\":[\"a\"],\"roles\":{\"planner\":{\"display_name\":\"PA\",\"sampling\":{\"temperature\":0.1},\"auto_load\":{\"model_path\":\"ma\"}},\"implementer\":{\"display_name\":\"IA\"},\"reviewer\":{\"display_name\":\"RA\"}}}");
+            File.WriteAllText(configB, "{\"validation_commands\":[\"b\"],\"roles\":{\"planner\":{\"display_name\":\"PB\"},\"implementer\":{\"display_name\":\"IB\"},\"reviewer\":{\"display_name\":\"RB\"},\"extra\":{\"x\":1}}}");
+            var workersA = new[] { new WorkerSetting { Id = "planner", Title = "PLANNER" }, new WorkerSetting { Id = "c1", Title = "MINE", Custom = true, ModelId = "m", ModelVariant = "Q4" } };
+            var preset = CapturePreset("p", configA, workersA);
+            if (preset.Workers.Count != 2 || preset.Workers[1].Title != "MINE" || preset.Workers[1].ModelVariant != "Q4" || preset.Roles.Count != 3)
+                throw new InvalidOperationException("Preset capture failed.");
+            var bBefore = File.ReadAllText(configB);
+            if (CapturePreset("none", Path.Combine(testArea, "missing.json"), workersA).Roles.Count != 0 ||
+                !ApplyPresetRoles(configB, new WorkerPreset { Name = "none" }) || File.ReadAllText(configB) != bBefore ||
+                ApplyPresetRoles(Path.Combine(testArea, "missing.json"), preset))
+                throw new InvalidOperationException("A preset without roles must leave the config untouched.");
+            if (!ApplyPresetRoles(configB, preset))
+                throw new InvalidOperationException("Preset roles were not applied.");
+            var rolesA = JsonNode.Parse(File.ReadAllText(configA))!["roles"]!;
+            var presetApplied = JsonNode.Parse(File.ReadAllText(configB))!;
+            if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
+                presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
+                throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
+            // Custom workers: contract of the written custom_workers array.
+            var cwConfig = Path.Combine(testArea, "cw.json");
+            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"api_key\":\"sk\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
+            var rolesBefore = JsonNode.Parse(File.ReadAllText(cwConfig))!["roles"]!.ToJsonString();
+            var cwWorkers = new[]
+            {
+                new WorkerSetting { Id = "planner", Title = "PLANNER" },
+                new WorkerSetting { Id = "s1", Title = " Tester ", Custom = true, Kind = "specialist", Description = "Runs tests", SystemPrompt = "You test.\nBe brief.",
+                    ModelId = "org/Model-GGUF", ModelVariant = "Q4_K_M", ModelPath = "org/Model-GGUF", ModelExpected = "Model-GGUF",
+                    Temperature = "0.2", MaxTokens = "2048", RepetitionPenalty = "1.2", ReasoningBudget = "0", ContextLength = "16384", Thinking = "Off" },
+                new WorkerSetting { Id = "r1", Title = "Security", Custom = true, Kind = "reviewer", SystemPrompt = "You review.", ModelId = "local.gguf", ModelPath = "C:\\m\\local.gguf", ModelExpected = "local.gguf" },
+                new WorkerSetting { Id = "n1", Title = "NoModel", Custom = true, Kind = "reviewer", SystemPrompt = "p" },
+                new WorkerSetting { Id = "n2", Title = "NoPrompt", Custom = true, ModelPath = "m", ModelId = "m", Description = "d" },
+                new WorkerSetting { Id = "n3", Title = "NoDesc", Custom = true, Kind = "specialist", ModelPath = "m", ModelId = "m", SystemPrompt = "p" },
+                new WorkerSetting { Id = "n4", Title = "OldSaved", Custom = true, Kind = "reviewer", ModelId = "org/Old", SystemPrompt = "p" },
+            };
+            var skippedTitles = WriteCustomWorkers(cwConfig, cwWorkers);
+            var cw = JsonNode.Parse(File.ReadAllText(cwConfig))!;
+            var cwArray = cw["custom_workers"]!.AsArray();
+            var spec = cwArray[0]!;
+            var rev = cwArray[1]!;
+            var specSampling = spec["sampling"]!;
+            var specLoad = spec["auto_load"]!;
+            var revSampling = rev["sampling"]!;
+            if (skippedTitles.Length != 4 || !skippedTitles[0].StartsWith("NoModel: no model") || !skippedTitles[1].StartsWith("NoPrompt: ") || !skippedTitles[2].StartsWith("NoDesc: ") || !skippedTitles[3].Contains("pick the model again") || cwArray.Count != 2 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
+                throw new InvalidOperationException("Custom workers: skipping, array size or untouched keys failed.");
+            if ((string)spec["id"]! != "s1" || (string)spec["title"]! != "Tester" || (string)spec["kind"]! != "specialist" || (string)spec["description"]! != "Runs tests" ||
+                (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" || (string)spec["management_url"]! != "http://h" ||
+                (string)spec["api_key_env"]! != "K" || (string)spec["api_key"]! != "sk" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
+                throw new InvalidOperationException("Custom workers: specialist fields do not match the contract.");
+            if ((string)specLoad["model_path"]! != "org/Model-GGUF" || (string)specLoad["gguf_variant"]! != "Q4_K_M" || (int)specLoad["reasoning_budget"]! != 0 ||
+                (int)specLoad["max_seq_length"]! != 16384 || (int)specLoad["n_parallel"]! != 1)
+                throw new InvalidOperationException("Custom workers: specialist model or auto_load failed.");
+            if ((double)specSampling["temperature"]! != 0.2 || (int)specSampling["max_tokens"]! != 2048 || specSampling["enable_thinking"]!.GetValue<bool>() ||
+                (double)specSampling["extra_body"]!["repetition_penalty"]! != 1.2 || (int)specSampling["extra_body"]!["top_k"]! != 20 || (double)specSampling["top_p"]! != 0.8)
+                throw new InvalidOperationException("Custom workers: specialist sampling failed.");
+            if ((string)rev["kind"]! != "reviewer" || (string)rev["auto_load"]!["model_path"]! != "C:\\m\\local.gguf" || rev["auto_load"]!["gguf_variant"] is not null ||
+                (string)rev["expected_model_contains"]! != "local.gguf" || revSampling["enable_thinking"] is not null || (double)revSampling["temperature"]! != 0.4)
+                throw new InvalidOperationException("Custom workers: reviewer fields failed.");
+            WriteCustomWorkers(cwConfig, cwWorkers.Take(1));
+            if (JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]!.AsArray().Count != 0)
+                throw new InvalidOperationException("Custom workers: rewriting must replace the previous array.");
+            // Title rules and the implementer's base_url, as the orchestrator applies them.
+            WorkerSetting Ok(string id, string title) => new() { Id = id, Title = title, Custom = true, Kind = "reviewer", SystemPrompt = "p", ModelId = "m", ModelPath = "m" };
+            var titled = new[] { Ok("t1", "Worker 2"), Ok("t2", "WORKER 2"), Ok("t3", "Reviewer"), Ok("t4", " planner "), Ok("t5", "Fine") };
+            var titledSkipped = WriteCustomWorkers(cwConfig, titled);
+            var titledWritten = JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]!.AsArray();
+            if (titledSkipped.Length != 3 || !titledSkipped[0].Contains("already used") || !titledSkipped[1].Contains("reserved") || !titledSkipped[2].Contains("reserved") ||
+                titledWritten.Count != 2 || (string)titledWritten[0]!["id"]! != "t1" || (string)titledWritten[1]!["id"]! != "t5")
+                throw new InvalidOperationException("Custom workers: duplicate and reserved titles must not be written.");
+            var noUrlConfig = Path.Combine(testArea, "nourl.json");
+            File.WriteAllText(noUrlConfig, "{\"roles\":{\"implementer\":{}}}");
+            if (ImplementerHasBaseUrl(noUrlConfig) || !ImplementerHasBaseUrl(cwConfig) || WriteCustomWorkers(noUrlConfig, [Ok("u1", "Docs")]) is not [var noUrl] || !noUrl.Contains("base_url") ||
+                JsonNode.Parse(File.ReadAllText(noUrlConfig))!["custom_workers"]!.AsArray().Count != 0)
+                throw new InvalidOperationException("Custom workers: a project without an implementer base_url must report and write nothing.");
+            var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
+            if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
+                TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)
+                throw new InvalidOperationException("Custom worker title validation failed.");
             var run = new System.Windows.Documents.Run("12 tokens");
             var tokens = new System.Windows.Controls.TextBlock();
             tokens.Inlines.Add(run);
@@ -372,6 +773,27 @@ internal static class LauncherLogic
             InitializeProject(root, testProject);
             if (File.ReadAllText(Path.Combine(testProject, "PROJECT.md")) != "preserve-me")
                 throw new InvalidOperationException("Project initialization overwrote an existing file.");
+
+            // Existing PROJECT.md: keep-existing still creates the rest; replace backs up and never clobbers a backup.
+            var mdProject = Path.Combine(testArea, "md-existing");
+            Directory.CreateDirectory(mdProject);
+            File.WriteAllText(Path.Combine(mdProject, "PROJECT.md"), "user-one");
+            var keptCopied = InitializeProject(root, mdProject, customProject);
+            if (File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != "user-one" || keptCopied.Contains("PROJECT.md") ||
+                keptCopied.Length != ProjectFiles.Length - 1 || MissingProjectFiles(mdProject).Length != 0)
+                throw new InvalidOperationException("Keep-existing PROJECT.md initialization failed.");
+            var backupOne = BackupProjectMd(mdProject);
+            InitializeProject(root, mdProject, customProject);
+            if (backupOne != "PROJECT.md.bak" || File.ReadAllText(Path.Combine(mdProject, backupOne)) != "user-one" ||
+                File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != "custom-project")
+                throw new InvalidOperationException("Replacing PROJECT.md did not back up and install the new file.");
+            File.WriteAllText(Path.Combine(mdProject, "PROJECT.md"), "user-two");
+            var backupTwo = BackupProjectMd(mdProject);
+            InitializeProject(root, mdProject);
+            if (backupTwo == backupOne || File.ReadAllText(Path.Combine(mdProject, backupOne)) != "user-one" ||
+                File.ReadAllText(Path.Combine(mdProject, backupTwo)) != "user-two" ||
+                File.ReadAllText(Path.Combine(mdProject, "PROJECT.md")) != File.ReadAllText(Path.Combine(root, "PROJECT.md")))
+                throw new InvalidOperationException("A second PROJECT.md replacement overwrote the first backup.");
             if (PrimaryLabel(testProject) != "Start Task")
                 throw new InvalidOperationException("Fresh project should offer Start Task.");
             File.WriteAllText(Path.Combine(testProject, "STATE.md"), "# Verified state\n\n## Passed: PHASE-0\n- x\n");
