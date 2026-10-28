@@ -800,15 +800,53 @@ def syntax_message(defects: list[dict[str, str]]) -> str:
 
 
 # Injected first into the checked page: records page errors, unhandled rejections and console.error, then after
-# load + a short settle writes a JSON report into the DOM, which the browser's --dump-dom prints.
-BEHAVIOUR_PROBE = """<script>(function(){var E=[];function p(m,s,l){E.push({message:String(m).slice(0,500),source:s||"",line:l||0});}
+# load + a short settle runs the task's acceptance steps (__AO_STEPS__: a JSON list, or null for a load-only check)
+# within __AO_BUDGET__ ms and writes a JSON report into the DOM, which the browser's --dump-dom prints.
+# A step fails on its own check or when a page error is recorded while it runs; the steps after a failure are not run.
+BEHAVIOUR_PROBE = r"""<script>(function(){var E=[],S=__AO_STEPS__;function p(m,s,l){E.push({message:String(m).slice(0,500),source:s||"",line:l||0});}
 window.addEventListener("error",function(e){if(e.target===window)p(e.message||e.error,e.filename,e.lineno);},true);
 window.addEventListener("unhandledrejection",function(e){var r=e.reason;p("Unhandled promise rejection: "+(r&&r.message||r));});
 var ce=console.error;console.error=function(){p(Array.prototype.map.call(arguments,String).join(" "),"console.error",0);return ce.apply(console,arguments);};
-window.addEventListener("load",function(){setTimeout(function(){var b=document.body,v=0;if(b){var all=b.querySelectorAll("*");for(var i=0;i<all.length;i++)if(all[i].getClientRects().length)v++;}
+function shown(el){return el.getClientRects().length>0&&getComputedStyle(el).visibility!=="hidden";}
+function cut(t){t=String(t);return t.length>200?t.slice(0,200)+"...":t;}
+function q(s){var el;try{el=document.querySelector(s);}catch(x){throw new Error("invalid selector "+s);}if(!el)throw new Error("selector "+s+" not found");return el;}
+function use(s){var el=q(s);if(!shown(el))throw new Error("selector "+s+" is not visible");return el;}
+function fire(el){el.dispatchEvent(new Event("input",{bubbles:true}));el.dispatchEvent(new Event("change",{bubbles:true}));}
+function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
+async function run(st){var k=st["do"]||st.expect,el,t;switch(k){
+case "click":use(st.selector).click();return;
+case "fill":el=use(st.selector);el.value=String(st.value);fire(el);return;
+case "select":el=use(st.selector);var o=Array.prototype.find.call(el.options||[],function(o){return o.value===String(st.value)||o.text.trim()===String(st.value);});
+if(!o)throw new Error("no option '"+st.value+"' in "+st.selector);el.value=o.value;fire(el);return;
+case "check":el=use(st.selector);if(el.checked!==st.value)el.click();if(el.checked!==st.value)throw new Error(st.selector+" did not become "+(st.value?"checked":"unchecked"));return;
+case "goto":location.hash=st.hash;return;
+case "wait":await sleep(Math.min(st.ms,2000));return;
+case "text":t=q(st.selector).innerText;if(t.indexOf(st.contains)<0)throw new Error("expected text '"+st.contains+"' in "+st.selector+"; got '"+cut(t)+"'");return;
+case "visible":if(!shown(q(st.selector)))throw new Error(st.selector+" is not visible");return;
+case "hidden":if(shown(q(st.selector)))throw new Error(st.selector+" is visible");return;
+case "count":t=document.querySelectorAll(st.selector).length;if(t<st.min||(st.max!=null&&t>st.max))throw new Error("expected "+st.min+(st.max!=null?"-"+st.max:" or more")+" match(es) for "+st.selector+"; got "+t);return;
+case "storage":t=localStorage.getItem(st.key);if(t===null)throw new Error("localStorage['"+st.key+"'] missing");
+if(st.contains!=null&&t.indexOf(st.contains)<0)throw new Error("expected localStorage['"+st.key+"'] to contain '"+st.contains+"'; got '"+cut(t)+"'");
+if(st.json_length_min!=null){var a;try{a=JSON.parse(t);}catch(x){a=null;}if(!Array.isArray(a)||a.length<st.json_length_min)throw new Error("expected localStorage['"+st.key+"'] to be a JSON array of at least "+st.json_length_min+" item(s); got '"+cut(t)+"'");}return;
+case "no_errors":if(E.length)throw new Error("page error: "+E[0].message);return;}
+throw new Error("unknown step");}
+async function steps(){var R=[],stop=false,end=Date.now()+__AO_BUDGET__;for(var i=0;i<S.length;i++){var r={index:i+1,step:S[i],ok:null,detail:"not run"};R.push(r);if(stop)continue;
+if(Date.now()>end){r.ok=false;r.detail="time budget exceeded";stop=true;continue;}
+var n=E.length;try{await run(S[i]);await sleep(150);r.ok=E.length===n;r.detail=r.ok?"":"page error: "+E[n].message;}catch(x){r.ok=false;r.detail=String(x&&x.message||x);}
+stop=!r.ok;}return R;}
+window.addEventListener("load",function(){setTimeout(async function(){var R=S?await steps():null,b=document.body,v=0;if(b){var all=b.querySelectorAll("*");for(var i=0;i<all.length;i++)if(all[i].getClientRects().length)v++;}
 var s=document.createElement("script");s.type="application/json";s.id="__ao_report";
-s.textContent=JSON.stringify({errors:E,text:(b?b.innerText:"").slice(0,1500),visible:v}).replace(/</g,"\\\\u003c");
+s.textContent=JSON.stringify({errors:E,text:(b?b.innerText:"").slice(0,1500),visible:v,steps:R}).replace(/</g,"\\u003c");
 document.documentElement.appendChild(s);},500);});})();</script>"""
+
+
+def behaviour_probe(steps: list[dict[str, Any]] | None) -> tuple[str, int]:
+    """The probe for these acceptance steps and the --virtual-time-budget (ms) it needs."""
+    waits = sum(min(step.get("ms", 0), 2000) for step in steps or [] if step.get("do") == "wait")
+    budget = min(15_000, 5000 + 400 * len(steps or []) + waits)
+    # json.dumps escapes U+2028/2029 (ensure_ascii); "<" is escaped so no "</script>" or "<!--" can end the script early
+    encoded = json.dumps(steps).replace("<", "\\u003c")
+    return BEHAVIOUR_PROBE.replace("__AO_BUDGET__", str(budget - 2000)).replace("__AO_STEPS__", encoded), budget
 
 
 def find_browser(configured: str | None = None) -> str | None:
@@ -823,11 +861,15 @@ def find_browser(configured: str | None = None) -> str | None:
     return next(filter(None, map(shutil.which, ("msedge", "chrome", "chromium", "chromium-browser", "google-chrome"))), None)
 
 
-def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) -> dict[str, Any]:
-    """Serve project_root on 127.0.0.1, load `page` headlessly in a fresh profile and return the probe report
-    ({"errors": [...], "text": str, "visible": int}). Missing scripts/stylesheets (404) are added as errors.
+def load_page(
+    browser: str, project_root: Path, page: str, timeout: int = 30, steps: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Serve project_root on 127.0.0.1, load `page` headlessly in a fresh profile, run the acceptance `steps` and return
+    the probe report ({"errors": [...], "text": str, "visible": int, "steps": [{"index", "step", "ok", "detail"}] or
+    None}; ok is null for steps not run). Missing scripts/stylesheets (404) are added as errors.
     Raises WorkflowError when no report comes back (browser failed, timed out, or the probe never ran)."""
     target = "/" + quote(page)
+    probe, budget = behaviour_probe(steps)
     missing: list[str] = []
 
     class Handler(http.server.SimpleHTTPRequestHandler):
@@ -844,10 +886,10 @@ def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) ->
             for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>"):
                 found = re.search(pattern, text, re.IGNORECASE)
                 if found:
-                    text = text[:found.end()] + BEHAVIOUR_PROBE + text[found.end():]
+                    text = text[:found.end()] + probe + text[found.end():]
                     break
             else:
-                text = BEHAVIOUR_PROBE + text
+                text = probe + text
             body = text.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -870,7 +912,7 @@ def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) ->
     try:
         url = f"http://127.0.0.1:{server.server_address[1]}{target}"
         args = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
-                f"--user-data-dir={profile}", "--virtual-time-budget=5000", "--dump-dom", url]
+                f"--user-data-dir={profile}", f"--virtual-time-budget={budget}", "--dump-dom", url]
         try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False)
         except OSError as exc:
@@ -898,8 +940,11 @@ def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) ->
     return report
 
 
-def behaviour_gate(project_root: Path, config: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
-    """Load the project's page headlessly. Returns (defects, BEHAVIOUR CHECK block); ([], "") when not a web project.
+def behaviour_gate(
+    project_root: Path, config: dict[str, Any], steps: list[dict[str, Any]] | None = None,
+) -> tuple[list[dict[str, str]], str]:
+    """Load the project's page headlessly and run the task's acceptance steps. Returns (defects, BEHAVIOUR CHECK block);
+    ([], "") when not a web project. steps None is a load-only check (before planning); [] is a task without steps.
 
     Applies when the root has index.html or config sets behaviour_check.page; behaviour_check false disables it.
     """
@@ -920,21 +965,38 @@ def behaviour_gate(project_root: Path, config: dict[str, Any]) -> tuple[list[dic
         print("[behaviour] skipped (no Chromium browser found)")
         return [], "BEHAVIOUR CHECK: skipped (no Chromium browser found; install Edge or Chrome, or set behaviour_check.browser)"
     try:
-        report = load_page(browser, project_root, page)
+        report = load_page(browser, project_root, page, steps=steps or None)
     except WorkflowError as exc:
         print(f"[behaviour] FAILED (could not check {page}: {exc})")
         defect = {"file": page, "defect": "Behaviour check could not complete", "expected": "The page loads in a headless browser",
                   "evidence": str(exc)}
         return [defect], f"BEHAVIOUR CHECK: FAILED (could not check {page}: {exc})"
     errors = [f"{e['message']} ({e['source'] or page}{':' + str(e['line']) if e['line'] else ''})" for e in report["errors"]]
-    if errors:
-        print(f"[behaviour] FAILED ({len(errors)} error(s) loading {page}: {errors[0]})")
+    results = report.get("steps") or []
+    failed = next((r for r in results if r["ok"] is False), None)
+    step_lines = [
+        f"{'✓' if r['ok'] else '✗' if r['ok'] is False else '-'} {r['index']}. {json.dumps(r['step'], ensure_ascii=False)}"
+        + (f" — {r['detail']}" if r["detail"] else "") for r in results
+    ]
+    if steps is None:
+        steps_part = ""
+    elif results:
+        steps_part = f"Acceptance steps ({sum(r['ok'] is True for r in results)}/{len(results)} passed):\n" + "\n".join(step_lines) + "\n"
+    else:
+        steps_part = "Acceptance steps: none (no acceptance steps were given; only the page load was checked)\n"
+    if errors or failed:
+        print(f"[behaviour] FAILED ({page}: "
+              + (f"acceptance step {failed['index']} failed: {failed['detail']})" if failed else f"{len(errors)} error(s): {errors[0]})"))
         defects = [{"file": page, "defect": "Error while loading the page", "expected": "The page loads without console or page errors",
                     "evidence": error} for error in errors]
-        return defects, f"BEHAVIOUR CHECK: FAILED ({page})\nErrors:\n" + "\n".join(f"- {e}" for e in errors)
-    print(f"[behaviour] passed ({page}: no errors, {report['visible']} visible elements)")
+        if failed:
+            defects.append({"file": page, "defect": "Acceptance step failed", "expected": "Every acceptance step passes",
+                            "evidence": f"acceptance step {failed['index']} failed: "
+                                        f"{json.dumps(failed['step'], ensure_ascii=False)} — {failed['detail']}"})
+        return defects, f"BEHAVIOUR CHECK: FAILED ({page})\nErrors:\n" + "\n".join(f"- {e}" for e in errors or ["none"]) + ("\n" + steps_part).rstrip("\n")
+    print(f"[behaviour] passed ({page}: no errors, {len(results)} acceptance step(s), {report['visible']} visible elements)")
     return [], (
-        f"BEHAVIOUR CHECK: passed ({page} loaded in a headless browser with a fresh profile)\nErrors: none\n"
+        f"BEHAVIOUR CHECK: passed ({page} loaded in a headless browser with a fresh profile)\nErrors: none\n{steps_part}"
         f"Visible elements: {report['visible']}\nVisible text sample:\n{report['text'].strip() or '(no visible text)'}"
     )
 
@@ -1101,6 +1163,45 @@ def team_context(config: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+MAX_ACCEPTANCE_STEPS = 12
+_SELECTOR = (lambda v: isinstance(v, str) and v.strip() != "" and len(v) <= 200, "a CSS selector string of at most 200 characters")
+_STRING = (lambda v: isinstance(v, str) and v != "", "a non-empty string")
+_VALUE = (lambda v: isinstance(v, (str, int, float)) and not isinstance(v, bool), "a string")
+_BOOL = (lambda v: isinstance(v, bool), "true or false")
+_COUNT = (lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0, "a non-negative integer")
+_MS = (lambda v: isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 2000, "an integer from 0 to 2000")
+# ("do" | "expect", kind) -> (required fields, optional fields); the probe in BEHAVIOUR_PROBE runs them
+ACCEPTANCE_STEPS: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {
+    ("do", "click"): ({"selector": _SELECTOR}, {}),
+    ("do", "fill"): ({"selector": _SELECTOR, "value": _VALUE}, {}),
+    ("do", "select"): ({"selector": _SELECTOR, "value": _VALUE}, {}),
+    ("do", "check"): ({"selector": _SELECTOR, "value": _BOOL}, {}),
+    ("do", "goto"): ({"hash": _STRING}, {}),
+    ("do", "wait"): ({"ms": _MS}, {}),
+    ("expect", "text"): ({"selector": _SELECTOR, "contains": _STRING}, {}),
+    ("expect", "visible"): ({"selector": _SELECTOR}, {}),
+    ("expect", "hidden"): ({"selector": _SELECTOR}, {}),
+    ("expect", "count"): ({"selector": _SELECTOR, "min": _COUNT}, {"max": _COUNT}),
+    ("expect", "storage"): ({"key": _STRING}, {"contains": _STRING, "json_length_min": _COUNT}),
+    ("expect", "no_errors"): ({}, {}),
+}
+
+
+def validate_acceptance(steps: Any) -> None:
+    if not isinstance(steps, list) or len(steps) > MAX_ACCEPTANCE_STEPS:
+        raise WorkflowError(f"Planner acceptance must be a list of at most {MAX_ACCEPTANCE_STEPS} steps")
+    for number, step in enumerate(steps, 1):
+        kinds = [(key, step[key]) for key in ("do", "expect") if isinstance(step, dict) and key in step]
+        if len(kinds) != 1 or not isinstance(kinds[0][1], str) or kinds[0] not in ACCEPTANCE_STEPS:
+            known = ", ".join(f'"{key}": "{kind}"' for key, kind in ACCEPTANCE_STEPS)
+            raise WorkflowError(f"Planner acceptance step {number} must be an object with exactly one of {known}; "
+                                f"got {json.dumps(step, ensure_ascii=False)[:300]}")
+        required, optional = ACCEPTANCE_STEPS[kinds[0]]
+        for name, (ok, kind) in (required | optional).items():
+            if (name in required or name in step) and not ok(step.get(name)):
+                raise WorkflowError(f'Planner acceptance step {number} ({kinds[0][0]} {kinds[0][1]}) needs "{name}" as {kind}')
+
+
 def validate_task(
     task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7), specialists: list[str] | None = (),
 ) -> None:
@@ -1118,6 +1219,8 @@ def validate_task(
     steps = task["required_work"]
     if not isinstance(steps, list) or not 1 <= len(steps) <= max_work:
         raise WorkflowError(f"Planner must provide 1-{max_work} required-work items")
+    if task.get("acceptance") is not None:
+        validate_acceptance(task["acceptance"])
     worker = worker_name(task)
     # specialists=None skips the check: a resumed task keeps running even if its Specialist was removed (see find_specialist)
     if worker and specialists is not None and worker.lower() not in {title.lower() for title in specialists}:
@@ -1189,13 +1292,20 @@ def extract_review_with_repair(
 def task_markdown(task: dict[str, Any]) -> str:
     def bullets(items: list[Any]) -> str:
         return "\n".join(f"- {item}" for item in items)
+    acceptance = "".join(
+        f"\n{n}. `{json.dumps(step, ensure_ascii=False)}`" for n, step in enumerate(task.get("acceptance") or [], 1)
+    )
     return (
         f"# {task['id']}\n\n## Outcome\n{task['outcome']}\n\n"
         f"## Allowed files\n{bullets(task['allowed_files'])}\n\n"
         f"## Required work\n{bullets(task['required_work'])}\n\n"
         f"## Validation\n{bullets(task['validation'])}\n\n"
         f"## Stop condition\n{task['stop_condition']}"
-    )
+    ) + (
+        "\n\n## Acceptance steps\nThe behaviour check runs these steps in order in a headless browser, on a fresh page with "
+        "empty localStorage; the task passes only if every step does. The ids and selectors they use are part of the "
+        f"contract: the page must have them.{acceptance}"
+    ) * bool(acceptance)
 
 
 def snapshot(project_root: Path, allowed: list[str]) -> dict[str, str | None]:
@@ -1484,7 +1594,7 @@ def run_review_loop(
         defects, syntax_line = syntax_gate(project_root, allowed, before)
         gate = "syntax"
         if not defects:
-            defects, behaviour_block = behaviour_gate(project_root, config)
+            defects, behaviour_block = behaviour_gate(project_root, config, task.get("acceptance") or [])
             gate = "behaviour"
         if defects:
             review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)
