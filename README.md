@@ -120,6 +120,7 @@ For web projects (an `index.html` in the project root, or `"behaviour_check": {"
 - Only planner-approved files are exposed per task.
 - Failed review gets at most two repair attempts by default.
 - Malformed JSON, invalid Planner task contracts, and invalid Reviewer verdicts get at most two format/scope correction attempts.
+- Model JSON is read tolerantly but never guessed: think blocks and surrounding prose are ignored, and only lossless slips (comments, trailing commas, smart quotes, raw newlines in strings) are fixed. A reply cut off or without JSON is re-asked from its original prompt with thinking off instead of being "repaired"; repairs also run with thinking off and keep the role's output format, followed by one fresh attempt. A Reviewer verdict that still cannot be read counts as a FAIL round (never PASS) and the loop continues; a Planner reply that cannot be read stops the run, which can simply be restarted.
 - `STATE.md` changes only after reviewer PASS.
 - `TASK.md`, `RESULT.md`, and `REVIEW.md` preserve the latest handoff.
 - An implementer that prints tool calls as JSON text instead of calling the tools has them executed anyway; one that never writes a file is stopped rather than passed to the reviewer.

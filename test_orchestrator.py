@@ -94,6 +94,91 @@ class OrchestratorTests(unittest.TestCase):
             )
         self.assertEqual(review["verdict"], "PASS")
 
+    def test_extract_json_tolerates_prose_and_lossless_syntax_slips(self):
+        cases = [
+            ('Here is the plan:\n```json\n{"status": "COMPLETE"}\n```\nThat is all.', {"status": "COMPLETE"}),
+            ('<think>maybe {"status": "TASK"</think>\n{"status": "COMPLETE"}', {"status": "COMPLETE"}),
+            ('{"a": [1, 2,], "b": {"c": 3,},}', {"a": [1, 2], "b": {"c": 3}}),
+            ('{"a": 1, // note {\n "b": "http://x" /* c */}', {"a": 1, "b": "http://x"}),
+            ('{“a”: “b”, "c": "it’s “ok”"}', {"a": "b", "c": "it’s “ok”"}),
+            ('{"a": "line1\nline2\tend"}', {"a": "line1\nline2\tend"}),
+            ('Draft: {"verdict": "PASS"}\nFinal answer: {"verdict": "FAIL", "defects": []}', {"verdict": "FAIL", "defects": []}),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(orchestrator.extract_json(text), expected)
+        # Truncated or absent JSON is never "fixed" by closing it or filling keys.
+        for text in ('{"status": "TASK", "task": {', '{"verdict": "PASS"} then {"verdict": "FA', "", "<think>planning {", "no json"):
+            with self.subTest(text=text), self.assertRaises(orchestrator.WorkflowError):
+                orchestrator.extract_json(text)
+
+    def test_cut_off_plan_is_re_asked_without_thinking_not_repaired(self):
+        class Client:
+            def __init__(self):
+                self.calls, self.cut_off = [], False
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.calls.append((messages, sampling))
+                self.cut_off = len(self.calls) == 1
+                return {"role": "assistant", "content": '<think>long</think>{"status": "TASK", "task": {"id": "T-1", "outc'
+                        if self.cut_off else '{"status": "COMPLETE"}'}
+
+        client, out = Client(), io.StringIO()
+        with patch.object(orchestrator, "role_settings", return_value=(client, {"max_tokens": 8192})), contextlib.redirect_stdout(out):
+            plan = orchestrator.request_plan({}, "SYS", "USER", Path("."), False)
+        self.assertEqual(plan, {"status": "COMPLETE"})
+        self.assertEqual(len(client.calls), 2)
+        self.assertNotIn("enable_thinking", client.calls[0][1])
+        self.assertIs(client.calls[1][1]["enable_thinking"], False)
+        self.assertEqual(client.calls[1][0][0]["content"], "SYS")
+        self.assertTrue(client.calls[1][0][1]["content"].startswith("USER\n"))
+        self.assertNotIn("MALFORMED", client.calls[1][0][1]["content"])
+        self.assertIn("[planner] reply cut off / no JSON; re-asking without thinking", out.getvalue())
+
+    def test_malformed_json_repairs_keep_the_contract_then_one_fresh_attempt(self):
+        with patch.object(orchestrator, "ask_once", return_value='{"status": TASK}') as ask, contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "planner.*restarted"):
+                orchestrator.extract_json_with_repair({}, "planner", '{"status": TASK}', False, system="SYS", user="USER")
+        self.assertEqual(ask.call_count, 3)  # two repairs, one fresh attempt
+        for call in ask.call_args_list:
+            self.assertIs(call.kwargs["thinking"], False)
+        repair, fresh = ask.call_args_list[0].args, ask.call_args_list[2].args
+        self.assertTrue(repair[2].startswith("SYS\n"))
+        self.assertIn("MALFORMED RESPONSE", repair[3])
+        self.assertEqual(fresh[2], "SYS")
+        self.assertTrue(fresh[3].startswith("USER\n"))
+
+    def test_unreadable_verdict_fails_the_round_and_the_loop_goes_on(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            feedback, reviews = [], iter(["garbage, no verdict", '{"verdict": "PASS", "evidence": ["ok"]}'])
+
+            def agent(config, role, system, user, *rest):
+                if role == "reviewer":
+                    return next(reviews)
+                feedback.append(user)
+                (root / "a.txt").write_text(f"v{len(feedback)}\n", encoding="utf-8")
+                return "done"
+
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "ask_once", return_value="still garbage"), \
+                    patch.object(orchestrator, "emit"), contextlib.redirect_stdout(io.StringIO()):
+                orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {"a.txt": None}, 0, "", "implementing", 2, root, False)
+            self.assertEqual(len(feedback), 2)
+            self.assertIn(orchestrator.UNREADABLE_VERDICT, feedback[1])
+            self.assertIn("garbage, no verdict", feedback[1])  # the raw reply reaches REVIEW.md / the next round
+            # Garbage every round never passes: the task ends blocked by the ordinary review-round limit.
+            with patch.object(orchestrator, "run_agent", side_effect=lambda c, role, *a: "junk" if role == "reviewer" else "done"), \
+                    patch.object(orchestrator, "ask_once", return_value="junk"), patch.object(orchestrator, "emit"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(orchestrator.WorkflowError, "failed after 2 reviews"):
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {"a.txt": None}, 0, "", "implementing", 1, root, False)
+            self.assertIn(orchestrator.UNREADABLE_VERDICT, (root / "REVIEW.md").read_text(encoding="utf-8"))
+
     def test_think_splitter_handles_tags_split_across_chunks(self):
         splitter = orchestrator.ThinkSplitter()
         pieces = []

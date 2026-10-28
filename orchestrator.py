@@ -51,22 +51,78 @@ def save_text(path: Path, text: str) -> None:
     path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
 
+class IncompleteReply(WorkflowError):
+    """The reply holds no whole JSON object (empty, prose only, or cut off inside one): re-ask, never repair."""
+
+
+def _scan_object(text: str, start: int) -> tuple[int, str] | None:
+    """Walk the object opening at text[start] string-aware. Returns (end, lossless-fixed text), or None if it
+    never closes. Fixes apply outside strings only: comments and trailing commas dropped, smart quotes used as
+    JSON quotes made ASCII; inside strings raw newlines/tabs are escaped. Nothing is ever added or closed."""
+    out: list[str] = []
+    depth, quote, i = 0, "", start
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            if ch == "\\":
+                out.append(text[i:i + 2])
+                i += 2
+                continue
+            if ch == quote or (quote != '"' and ch in '"“”'):
+                quote, ch = "", '"'
+            out.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}.get(ch, ch))
+        elif ch in '"“”':
+            quote = ch if ch == '"' else "”"
+            out.append('"')
+        elif text.startswith("//", i):
+            i = len(text) if text.find("\n", i) < 0 else text.find("\n", i)
+            continue
+        elif text.startswith("/*", i):
+            if text.find("*/", i + 2) < 0:
+                return None
+            i = text.find("*/", i + 2) + 2
+            continue
+        else:
+            if ch in "}]":
+                while out and out[-1].isspace():
+                    out.pop()
+                if out and out[-1] == ",":
+                    out.pop()
+            out.append(ch)
+            depth += (ch in "{[") - (ch in "}]")
+            if depth == 0:
+                return i + 1, "".join(out)
+        i += 1
+    return None
+
+
 def extract_json(text: str) -> dict[str, Any]:
-    """Accept plain JSON or one fenced JSON object; reject ambiguous prose."""
-    stripped = text.strip()
-    if stripped.startswith("```"):
-        lines = stripped.splitlines()
-        if len(lines) >= 3 and lines[-1].strip() == "```":
-            stripped = "\n".join(lines[1:-1])
-            if stripped.lstrip().startswith("json"):
-                stripped = stripped.lstrip()[4:].lstrip("\r\n")
-    try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise WorkflowError(f"Model did not return valid JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise WorkflowError("Model response must be a JSON object")
-    return value
+    """The reply's JSON object, read without guessing. Think blocks and prose around it (fences included) are
+    ignored; every balanced top-level {...} is tried as-is, then with lossless syntax fixes (see _scan_object).
+    Of several, the LAST that parses as an object wins: models draft, then give the final answer. A reply that
+    ends inside an unclosed object raises IncompleteReply even after a complete draft, since the cut-off final
+    answer may differ; missing keys are never filled and truncated JSON is never closed."""
+    text = answer_text({"content": text})
+    found: list[dict[str, Any]] = []
+    error = ""
+    i = text.find("{")
+    while i >= 0:
+        scanned = _scan_object(text, i)
+        if scanned is None:
+            raise IncompleteReply("Model did not return valid JSON: the reply ends inside an unfinished JSON object")
+        end, fixed = scanned
+        for candidate in (text[i:end], fixed):
+            try:
+                found.append(json.loads(candidate))  # starts with "{", so a dict
+                break
+            except json.JSONDecodeError as exc:
+                error = str(exc)
+        i = text.find("{", end)
+    if found:
+        return found[-1]
+    if not error:
+        raise IncompleteReply("Model did not return valid JSON: no JSON object in the reply")
+    raise WorkflowError(f"Model did not return valid JSON: {error}")
 
 
 def safe_relative_path(raw: str, project_root: Path) -> Path:
@@ -512,30 +568,54 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
     return client, sampling
 
 
-def ask_once(config: dict[str, Any], role: str, system: str, user: str, interactive: bool) -> str:
+def ask_once(config: dict[str, Any], role: str, system: str, user: str, interactive: bool, thinking: bool = True) -> str:
     client, sampling = role_settings(config, role)
+    if not thinking:
+        sampling = {**sampling, "enable_thinking": False}  # this call only
     model = client.ensure_model(role, interactive)
     message = client.complete(model, [{"role": "system", "content": system}, {"role": "user", "content": user}], sampling)
     return str(message.get("content") or "")
 
 
+REPAIR_NOTE = "Return only one valid JSON object with the same intended data. Do not add commentary or markdown fences."
+
+
 def extract_json_with_repair(
-    config: dict[str, Any], role: str, response: str, interactive: bool, max_repairs: int = 2
+    config: dict[str, Any], role: str, response: str, interactive: bool, max_repairs: int = 2,
+    system: str = "", user: str = "",
 ) -> tuple[dict[str, Any], str]:
-    for repair in range(max_repairs + 1):
+    """Parse the reply, asking the model again (thinking off) when it cannot be read. `system`/`user` are the
+    prompt that produced `response`. A reply with no whole object (empty, cut off, prose only) is re-asked from
+    that prompt, never "repaired": repairing a fragment would invent the rest. A whole but malformed object gets
+    up to max_repairs repairs that keep the original output contract, then one fresh attempt. At most two
+    fresh attempts in all; without a prompt only repairs are possible."""
+    name = display_name(config, role)
+    repairs = fresh = 0
+    while True:
         try:
             return extract_json(response), response
         except WorkflowError as exc:
-            if repair == max_repairs:
-                raise
-            print(f"[{display_name(config, role)}] invalid JSON; requesting correction ({repair + 1}/{max_repairs}) ...")
-            response = ask_once(
-                config,
-                role,
-                "Repair malformed JSON. Return only one valid JSON object with the same intended data. Do not add commentary or markdown fences.",
-                f"PARSER ERROR\n{exc}\n\nMALFORMED RESPONSE\n{response[-20_000:]}",
-                interactive,
-            )
+            incomplete = isinstance(exc, IncompleteReply)
+            if user and (incomplete or repairs == max_repairs) and fresh < (2 if incomplete else 1):
+                fresh += 1
+                print(f"[{name}] {'reply cut off / no JSON' if incomplete else 'JSON still invalid'}; re-asking without thinking")
+                response = ask_once(config, role, system, f"{user}\n\nReturn only the JSON object, with no commentary.", interactive, thinking=False)
+            elif repairs < max_repairs and not (incomplete and user):
+                repairs += 1
+                print(f"[{name}] invalid JSON; requesting correction ({repairs}/{max_repairs}) ...")
+                response = ask_once(
+                    config,
+                    role,
+                    f"{system}\n\nYour previous reply was not valid JSON. {REPAIR_NOTE}" if system else f"Repair malformed JSON. {REPAIR_NOTE}",
+                    f"PARSER ERROR\n{exc}\n\nMALFORMED RESPONSE\n{answer_text({'content': response})[-20_000:]}",
+                    interactive,
+                    thinking=False,
+                )
+            else:
+                raise WorkflowError(
+                    f"{name}: {exc} (after {repairs} repairs and {fresh} fresh attempts). "
+                    "Nothing was saved from this reply; the run can simply be restarted."
+                ) from exc
 
 
 def function_tool(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -1048,9 +1128,10 @@ def validate_task(
 def request_plan(
     config: dict[str, Any], system: str, user: str, project_root: Path, interactive: bool, max_repairs: int = 2
 ) -> dict[str, Any]:
-    response = ask_once(config, "planner", system, user, interactive)
+    prompt = user
+    response = ask_once(config, "planner", system, prompt, interactive)
     for repair in range(max_repairs + 1):
-        plan, response = extract_json_with_repair(config, "planner", response, interactive)
+        plan, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=prompt)
         try:
             if plan.get("status") == "COMPLETE":
                 return plan
@@ -1066,37 +1147,42 @@ def request_plan(
             if repair == max_repairs:
                 raise WorkflowError(f"Planner contract remained invalid after {max_repairs} corrections: {exc}") from exc
             print(f"[planner] invalid task: {exc}; requesting correction ({repair + 1}/{max_repairs}) ...")
-            response = ask_once(
-                config,
-                "planner",
-                system,
+            prompt = (
                 f"{user}\n\nCORRECTION REQUIRED\nThe previous JSON task was rejected: {exc}\n"
-                f"Return a corrected response that follows every schema and scope limit.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}",
-                interactive,
+                f"Return a corrected response that follows every schema and scope limit.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}"
             )
+            response = ask_once(config, "planner", system, prompt, interactive)
     raise AssertionError("unreachable")
+
+
+UNREADABLE_VERDICT = "The reviewer's verdict could not be read; no verdict was given for this round."
 
 
 def extract_review_with_repair(
     config: dict[str, Any], system: str, user: str, response: str, interactive: bool, max_repairs: int = 2,
     role: str = "reviewer",
 ) -> tuple[dict[str, Any], str]:
+    """A verdict that stays unreadable after every correction becomes a FAIL round (never PASS), so the review
+    loop goes on; the reviewer's raw reply is kept in the returned text for REVIEW.md."""
+    prompt = user
     for repair in range(max_repairs + 1):
-        review, response = extract_json_with_repair(config, role, response, interactive)
+        try:
+            review, response = extract_json_with_repair(config, role, response, interactive, system=system, user=prompt)
+        except WorkflowError:
+            review = {}  # still no JSON after repairs and fresh attempts; `response` is the reviewer's reply
         verdict = str(review.get("verdict", "")).upper()
         if verdict in {"PASS", "FAIL"}:
             return review, response
-        if repair == max_repairs:
-            raise WorkflowError(f"Reviewer verdict remained invalid after {max_repairs} corrections")
+        if repair == max_repairs or not review:
+            print(f"[{display_name(config, role)}] verdict unreadable; recording this round as FAIL")
+            failed = {"verdict": "FAIL", "defects": [{"file": "", "evidence": UNREADABLE_VERDICT}]}
+            return failed, f"{json.dumps(failed, indent=2)}\n\nUNREADABLE REVIEWER REPLY\n{answer_text({'content': response})[-4000:]}"
         print(f"[{display_name(config, role)}] invalid verdict; requesting correction ({repair + 1}/{max_repairs}) ...")
-        response = ask_once(
-            config,
-            role,
-            system,
+        prompt = (
             f"{user}\n\nCORRECTION REQUIRED\nThe previous response must contain verdict PASS or FAIL.\n"
-            f"Return corrected JSON only.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}",
-            interactive,
+            f"Return corrected JSON only.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}"
         )
+        response = ask_once(config, role, system, prompt, interactive)
     raise AssertionError("unreachable")
 
 
@@ -1219,8 +1305,9 @@ def configure_project(config: dict[str, Any], project_root: Path, project: str, 
         return config
     print("[configurator] reading PROJECT.md and build manifests ...")
     user = f"PROJECT\n{project}\n\n{context}"
-    response = ask_once(config, "planner", load_text(ROOT / "prompts" / "configurator.txt"), user, interactive)
-    _, response = extract_json_with_repair(config, "planner", response, interactive)
+    system = load_text(ROOT / "prompts" / "configurator.txt")
+    response = ask_once(config, "planner", system, user, interactive)
+    _, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=user)
     configured = apply_project_configuration(config, response)
     configured["configuration_fingerprint"] = fingerprint
     write_atomic(project_root / "config.json", json.dumps(configured, indent=2))
