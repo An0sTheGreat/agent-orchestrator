@@ -1821,6 +1821,7 @@ def request_plan(
                 raise WorkflowError("Planner must return status TASK with a task, or status COMPLETE")
             validate_task(plan["task"], project_root, task_limits(config), specialist_titles(config), contract)
             plan["task"].pop("worker_id", None)
+            plan["task"].pop("scope", None)  # set only by widen_scope
             spec = find_specialist(plan["task"], custom_workers(config))
             if spec:
                 plan["task"]["worker_id"] = spec["id"]
@@ -2115,7 +2116,7 @@ def load_checkpoint(
             return data
         if not isinstance(data["round"], int) or not 0 <= data["round"] < total_rounds:
             raise WorkflowError("round out of range")
-        validate_task(data["task"], project_root, limits, None)
+        validate_task(data["task"], project_root, (limits[0] + 2 * bool(data["task"].get("scope")), limits[1]), None)  # widened
         return data
     except (WorkflowError, KeyError, ValueError) as exc:
         print(f"[resume] discarding invalid {CHECKPOINT_FILE}: {exc}")
@@ -2160,6 +2161,100 @@ def run_extra_reviewers(
                 item = item if isinstance(item, dict) else {"defect": str(item)}
                 defects.append({**item, "defect": f"{worker['title']}: {item.get('defect') or 'failed the task without listing a defect'}"})
     return json.dumps({"verdict": "FAIL", "defects": defects}, indent=2, ensure_ascii=False) if defects else ""
+
+
+NEEDS_FILES = re.compile(r"^[\s>*\-•`]*needs[_ ]files[`*]*\s*:[`*]*\s*(.*)$", re.I | re.M)
+
+
+def scope_path(raw: str, project_root: Path) -> str | None:
+    """The project-relative path a scope request may name, or None (glob, outside the project or protected)."""
+    raw = raw.strip().strip("`'\"").strip()
+    if not raw or any(ch in raw for ch in "*?["):
+        return None
+    try:
+        return path_is_allowed(raw, ["*"], project_root).relative_to(project_root.resolve()).as_posix()
+    except WorkflowError:
+        return None
+
+
+def outside_defects(review_text: str, allowed: list[str], project_root: Path) -> dict[str, list[str]]:
+    """Defects of a FAIL review naming a file outside the allowed files: file -> evidence."""
+    try:
+        found = extract_json(review_text).get("defects")
+    except WorkflowError:
+        return {}
+    result: dict[str, list[str]] = {}
+    for item in found if isinstance(found, list) else []:
+        name = scope_path(re.sub(r":\d+$", "", str(item.get("file") or "")), project_root) if isinstance(item, dict) else None
+        if name and not any(fnmatch.fnmatch(name, pattern) for pattern in allowed):
+            result.setdefault(name, []).append(f"{item.get('defect') or 'defect'}: {item.get('evidence') or ''}".strip())
+    return result
+
+
+def scope_request(result: str, previous: str, review_text: str, allowed: list[str], project_root: Path) -> tuple[list[str], str] | None:
+    """(files, reason) from the Implementer's NEEDS_FILES line, else from defects naming the same outside file
+    in this round and the one before (`previous` is the feedback that round produced)."""
+    lines = NEEDS_FILES.findall(result)
+    if lines:
+        files, reason = (re.split(r"\s+(?:—|–|--?)\s+", lines[-1].strip().strip("`*"), maxsplit=1) + [""])[:2]
+        names = [n.strip("`'\"") for n in re.split(r"[,\s]+", files) if n.strip("`'\"").lower() not in {"", "none", "n/a"}]
+        if names:
+            return names, reason.strip() or "no reason given"
+    now, before = outside_defects(review_text, allowed, project_root), outside_defects(previous, allowed, project_root)
+    repeated = [name for name in now if name in before]
+    if not repeated:
+        return None
+    evidence = "; ".join(f"{name}: {e}" for name in repeated for e in now[name])
+    return repeated, f"defects in two consecutive rounds name files outside the allowed files: {evidence}"[:2000]
+
+
+def widen_scope(
+    config: dict[str, Any], task: dict[str, Any], allowed: list[str], before: dict[str, str | None],
+    requested: list[str], reason: str, project_root: Path, interactive: bool,
+) -> str:
+    """Let the Planner decide one scope request per task; on approval extend `task`, `allowed`, `before` and
+    TASK.md in place. Returns the note for the next Implementer round. task["scope"] records the decision."""
+    if task.get("scope"):
+        earlier = task["scope"]
+        print(f"[scope] {task['id']} request refused: the task already had its one scope request")
+        return (f"SCOPE REQUEST REFUSED\nThis task already had its one scope request "
+                f"({'approved' if earlier['approved'] else 'rejected'}: {earlier['reason']}). Work within the allowed files.")
+    names = list(dict.fromkeys(n for n in (scope_path(raw, project_root) for raw in requested) if n))
+    names = [n for n in names if not any(fnmatch.fnmatch(n, pattern) for pattern in allowed)]
+    if not names:
+        print(f"[scope] {task['id']} request refused: {', '.join(requested)} are protected, invalid or already allowed")
+        return f"SCOPE REQUEST REFUSED\n{', '.join(requested)}: protected, invalid or already allowed. Work within the allowed files."
+    room = max(0, task_limits(config)[0] + 2 - len(allowed))
+    contents = "\n\n".join(f"--- {n} ---\n{c[:20_000]}" if c is not None else f"--- {n} --- (does not exist)"
+                           for n, c in snapshot(project_root, names).items())
+    system = load_text(ROOT / "prompts" / "scope.txt")
+    user = (f"TASK\n{task_markdown(task)}\n\nREQUESTED FILES\n{', '.join(names)}\n\nREASON\n{reason}\n\n"
+            f"At most {room} file(s) can be added.\n\nCURRENT CONTENTS OF THE REQUESTED FILES\n{contents}")
+    try:
+        decision, _ = extract_json_with_repair(config, "planner", ask_once(config, "planner", system, user, interactive),
+                                               interactive, system=system, user=user)
+    except WorkflowError as exc:
+        decision = {"approve": False, "reason": f"the Planner's decision could not be read ({exc})"}
+    files = decision.get("files") if isinstance(decision.get("files"), list) else []
+    granted = list(dict.fromkeys(n for n in (scope_path(str(f), project_root) for f in files) if n))
+    why = " ".join(str(decision.get("reason") or "no reason given").split())
+    if decision.get("approve") is not True or not granted:
+        approved = False
+    elif not set(granted) <= set(names) or len(granted) > room:
+        approved, why = False, f"refused: the Planner approved {', '.join(granted)}, but only up to {room} of {', '.join(names)} can be added ({why})"
+    else:
+        approved = True
+    task["scope"] = {"files": granted if approved else names, "approved": approved, "reason": why}
+    if not approved:
+        print(f"[scope] {task['id']} request for {', '.join(names)} rejected: {why}")
+        return f"SCOPE REQUEST REJECTED\nThe Planner did not add {', '.join(names)}: {why}. Work within the allowed files."
+    before.update(snapshot(project_root, granted))  # their pre-widening content is the baseline for diffs and stub checks
+    allowed.extend(granted)
+    task["allowed_files"] = [*task["allowed_files"], *granted]
+    save_text(project_root / "TASK.md", task_markdown(task))
+    print(f"[scope] {task['id']} widened: {', '.join(granted)} ({why})")
+    emit("scope", id=str(task["id"]), files=granted, reason=why)
+    return f"SCOPE WIDENED\n{', '.join(granted)} added to the allowed files ({why}). You may now edit them."
 
 
 def run_review_loop(
@@ -2243,8 +2338,16 @@ def run_review_loop(
             emit("task_end", id=str(task["id"]), status="passed")
             print(f"\n{task['id']}: PASS")
             return
-        reviewer_feedback = review_text
+        previous, reviewer_feedback = reviewer_feedback, review_text
+        # Decided after the verdict and never on the last round: a widening applies from the next round and adds none.
+        request = scope_request(result, previous, review_text, allowed, project_root) if review_round < max_review_rounds else None
+        if request:
+            reviewer_feedback = f"{widen_scope(config, task, allowed, before, *request, project_root, interactive)}\n\n{review_text}"
+            save_checkpoint(project_root, task, before, review_round + 1, reviewer_feedback, "implementing", total)
         if review_round == max_review_rounds:
+            scope = task.get("scope")
+            if scope and not scope["approved"]:
+                review_text += f"\n\nSCOPE REQUEST REJECTED ({', '.join(scope['files'])}): {scope['reason']}"
             token = save_checkpoint(project_root, task, before, review_round, review_text, "blocked", total)
             complete_task(task, "blocked", review_text, project_root, str(token))
             emit("task_end", id=str(task["id"]), status="blocked")

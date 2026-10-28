@@ -128,6 +128,7 @@ Before the first task the Planner writes the project contract (`prompts/contract
 - Paths are resolved beneath `--project`; absolute paths and `..` escapes are rejected.
 - Workflow records cannot be edited by the models.
 - Only planner-approved files are exposed per task.
+- A task can ask for more files once: the Implementer ends its report with `NEEDS_FILES: a.html, b.js — reason`, or Reviewer/check defects name the same file outside the allowed files in two consecutive rounds. The Planner approves or rejects; an approval adds at most the requested files (never workflow records, at most two over the task limit) from the next round on, without extra rounds, and survives a resume. A rejection's reason goes into the feedback and the ISSUES.md entry.
 - Failed review gets at most two repair attempts by default.
 - Malformed JSON, invalid Planner task contracts, and invalid Reviewer verdicts get at most two format/scope correction attempts.
 - Model JSON is read tolerantly but never guessed: think blocks and surrounding prose are ignored, and only lossless slips (comments, trailing commas, smart quotes, raw newlines in strings) are fixed. A reply cut off or without JSON is re-asked from its original prompt with thinking off instead of being "repaired"; repairs also run with thinking off and keep the role's output format, followed by one fresh attempt. A Reviewer verdict that still cannot be read counts as a FAIL round (never PASS) and the loop continues; a Planner reply that cannot be read stops the run, which can simply be restarted.
