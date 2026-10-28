@@ -1107,7 +1107,11 @@ public partial class MainWindow : Window
             var mdFile = Path.Combine(presetProject, "PROJECT.md");
             File.WriteAllText(mdFile, "# Smoke project\n");
             var settingsDialog = BuildRoleSettingsDialog(planner, presetConfig, LauncherLogic.ReadRoleSettings(presetConfig, "planner"));
-            if (!await Show(settingsDialog, "9-settings-dialog") || !await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
+            var limitsDialog = BuildTaskLimitsDialog(presetConfig, ("6", ""), [("Implementer", 16384)]);
+            if (limitsDialog.Warning.Text != "6 files per task may not fit Implementer's 16k context" || limitsDialog.Warning.Visibility != Visibility.Visible
+                || !await Show(limitsDialog.Dialog, "9b-task-limits-dialog"))
+                return Fail();
+            if (!await Show(settingsDialog, "9-settings-dialog") ||!await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
                 || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
                 return Fail();
 

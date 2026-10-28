@@ -25,7 +25,7 @@ There is no active source-edit request at this checkpoint. The latest user reque
 - Initialization optionally accepts user-supplied `PROJECT.md` and `config.json`; custom config must define Planner, Implementer, and Reviewer roles.
 - The Configurator derives project-local validation commands from `PROJECT.md`, a bounded inventory, and recognized build manifests.
 - Empty validation commands are allowed for greenfield projects and configuration is reconsidered after project files change.
-- The Planner is constrained to one to three allowed files and one to seven required-work items.
+- The Planner is constrained by `"task_limits": {"max_allowed_files": N, "max_required_work": M}` in the project's `config.json` (defaults 5 and 10; set them in the launcher under Project > Task limits).
 - Models cannot edit workflow files or `config.json` through tools.
 - Malformed JSON gets up to two correction turns.
 - Invalid Planner contracts and invalid Reviewer verdicts get up to two semantic correction turns.
@@ -38,7 +38,7 @@ There is no active source-edit request at this checkpoint. The latest user reque
 - Never silently overwrite initialized workflow files or user-supplied project files.
 - Keep the API key out of config, project files, logs, and documentation.
 - Prefer one reviewed task per launcher run; the UI enables `--once` by default.
-- Keep Planner tasks intentionally small even when a project phase spans more than three files.
+- Planner tasks are feature-sized: one user-visible feature across all the files it needs, within the task limits.
 
 ## Key files
 

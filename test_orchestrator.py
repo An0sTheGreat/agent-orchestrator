@@ -70,7 +70,7 @@ class OrchestratorTests(unittest.TestCase):
         invalid = {
             "status": "TASK",
             "task": {
-                "id": "T-1", "outcome": "shell", "allowed_files": ["a", "b", "c", "d"],
+                "id": "T-1", "outcome": "shell", "allowed_files": ["a", "b", "c", "d", "e", "f"],
                 "required_work": ["work"], "validation": ["check"], "stop_condition": "stop",
             },
         }
@@ -1098,11 +1098,11 @@ class OrchestratorTests(unittest.TestCase):
     def test_validate_task_default_limits(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = Path(folder)
-            orchestrator.validate_task(self._task(3, 7), root)
+            orchestrator.validate_task(self._task(5, 10), root)
             with self.assertRaises(orchestrator.WorkflowError):
-                orchestrator.validate_task(self._task(4, 1), root)
+                orchestrator.validate_task(self._task(6, 1), root)
             with self.assertRaises(orchestrator.WorkflowError):
-                orchestrator.validate_task(self._task(1, 8), root)
+                orchestrator.validate_task(self._task(1, 11), root)
 
     def test_validate_task_custom_limits(self):
         limits = orchestrator.task_limits({"task_limits": {"max_allowed_files": 1, "max_required_work": 3}})
@@ -1118,8 +1118,8 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("1-3 required-work", str(ctx.exception))
 
     def test_task_limits_defaults_and_invalid(self):
-        self.assertEqual(orchestrator.task_limits({}), (3, 7))
-        self.assertEqual(orchestrator.task_limits({"task_limits": {"max_required_work": 5}}), (3, 5))
+        self.assertEqual(orchestrator.task_limits({}), (5, 10))
+        self.assertEqual(orchestrator.task_limits({"task_limits": {"max_required_work": 5}}), (5, 5))
         for bad in ({"max_allowed_files": 0}, {"max_required_work": "7"}, {"max_allowed_files": True}, {"max_required_work": 1.5}, []):
             with self.assertRaises(orchestrator.WorkflowError):
                 orchestrator.task_limits({"task_limits": bad})
@@ -1425,7 +1425,7 @@ class OrchestratorTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(orchestrator.WorkflowError, "Cannot reach"):
                 orchestrator.widen_scope({}, task, ["a.txt"], {}, ["index.html"], "why", root, False)
             self.assertNotIn("scope", task)  # a resume may still ask
-            full = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"])
+            full = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt", "d.txt", "e.txt", "f.txt", "g.txt"])
             with patch.object(orchestrator, "ask_once") as ask, contextlib.redirect_stdout(io.StringIO()):
                 note = orchestrator.widen_scope({}, full, list(full["allowed_files"]), {}, ["index.html"], "why", root, False)
             self.assertEqual((ask.call_count, "scope" in full), (0, False))
@@ -1459,10 +1459,10 @@ class OrchestratorTests(unittest.TestCase):
             note, calls, allowed = decide(task, ["STATE.md", "../x.js", "*.js", "a.txt"])
             self.assertEqual((calls, allowed, "scope" in task), (0, ["a.txt"], False))
             self.assertIn("SCOPE REQUEST REFUSED", note)
-            # Over the limit: three files allowed (max 3), so at most two more.
-            task = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt"])
-            note, calls, allowed = decide(task, ["d.txt", "e.txt", "f.txt"], '{"approve": true, "files": ["d.txt", "e.txt", "f.txt"], "reason": "all"}')
-            self.assertEqual((calls, allowed), (1, ["a.txt", "b.txt", "c.txt"]))
+            # Over the limit: five files allowed (max 5), so at most two more.
+            task = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"])
+            note, calls, allowed = decide(task, ["f.txt", "g.txt", "h.txt"], '{"approve": true, "files": ["f.txt", "g.txt", "h.txt"], "reason": "all"}')
+            self.assertEqual((calls, allowed), (1, ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]))
             self.assertIn("only up to 2", note)
             self.assertFalse(task["scope"]["approved"])
             # Approving a file that was not requested is refused too.
@@ -1551,7 +1551,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual([call.args[1] for call in agent.call_args_list], ["implementer", "reviewer"])
 
     def test_corrupt_checkpoint_is_discarded_and_planning_proceeds(self):
-        bad_task = dict(self.TASK, allowed_files=["a", "b", "c", "d"])
+        bad_task = dict(self.TASK, allowed_files=["a", "b", "c", "d", "e", "f"])
         cases = ["{not json", json.dumps({"version": 2}),
                  json.dumps({"version": 1, "task": bad_task, "before": {}, "round": 0,
                              "reviewer_feedback": "", "phase": "implementing"}),

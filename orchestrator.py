@@ -1747,7 +1747,7 @@ def task_limits(config: dict[str, Any]) -> tuple[int, int]:
     if not isinstance(raw, dict):
         raise WorkflowError("config task_limits must be an object")
     limits = []
-    for key, default in (("max_allowed_files", 3), ("max_required_work", 7)):
+    for key, default in (("max_allowed_files", 5), ("max_required_work", 10)):
         value = raw.get(key, default)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise WorkflowError(f"config task_limits.{key} must be a positive integer, got {value!r}")
@@ -1823,7 +1823,7 @@ def validate_acceptance(steps: Any) -> None:
 
 
 def validate_task(
-    task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7), specialists: list[str] | None = (),
+    task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (5, 10), specialists: list[str] | None = (),
     contract: dict[str, Any] | None = None,
 ) -> None:
     max_files, max_work = limits
