@@ -31,8 +31,12 @@ internal sealed class DialogShell : Window
         SetResourceReference(BackgroundProperty, "AppBackground");
         SetResourceReference(ForegroundProperty, "TextPrimary");
 
-        var glyph = new TextBlock { Text = "◈", FontSize = 18 };
-        glyph.SetResourceReference(TextBlock.ForegroundProperty, "Accent");
+        var glyph = new Image
+        {
+            Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/Assets/title.png")),
+            Width = 18, Height = 18, VerticalAlignment = VerticalAlignment.Center,
+        };
+        RenderOptions.SetBitmapScalingMode(glyph, BitmapScalingMode.HighQuality);
         var name = new TextBlock
         {
             Text = title.ToUpperInvariant(), FontFamily = new FontFamily("Consolas"), FontWeight = FontWeights.Bold,

@@ -4,7 +4,7 @@
         xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:local="clr-namespace:AgentOrchestrator"
         Title="Agent Orchestrator" Width="1400" Height="860" MinWidth="1040" MinHeight="620"
-        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize"
+        WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" Icon="/Assets/app.ico"
         Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
         TextOptions.TextFormattingMode="Ideal">
     <shell:WindowChrome.WindowChrome>
@@ -791,7 +791,7 @@
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0">
-                    <TextBlock Text="◈" Foreground="{DynamicResource Accent}" FontSize="18" />
+                    <Image Source="/Assets/title.png" Width="18" Height="18" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
                     <TextBlock Text="AGENT ORCHESTRATOR" Foreground="{DynamicResource AccentLight}" FontFamily="Consolas"
                                FontWeight="Bold" FontSize="12" Margin="7,0,0,0" VerticalAlignment="Center" />
                 </StackPanel>
