@@ -1723,6 +1723,33 @@ def append_passed_state(task: dict[str, Any], result: str, project_root: Path, t
     write_atomic(project_root / "STATE.md", state + entry)
 
 
+COMPLETE_HEADING = "## Project complete"
+
+
+def strip_complete(state: str) -> str:
+    """STATE.md without a trailing completion section. The project counts as complete (the launcher offers
+    Restart Project) only while that section is the last one, so planning a new task removes it."""
+    head, found, tail = state.rstrip().rpartition("\n" + COMPLETE_HEADING)
+    return head.rstrip() if found and "\n## " not in tail else state.rstrip()
+
+
+def record_complete(project_root: Path, summary: str) -> None:
+    """Persist a COMPLETE plan: the STATE.md marker section (summary on one line, so it stays the last section),
+    HANDOFF.md, and the launcher event. A repeat replaces the previous marker."""
+    stamp = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    state = strip_complete(load_text(project_root / "STATE.md"))
+    write_atomic(project_root / "STATE.md", f"{state}\n\n{COMPLETE_HEADING}\n- Time: {stamp}\n- Summary: {summary}")
+    write_atomic(project_root / HANDOFF_FILE, f"# Handoff\n\nNo task in progress. Project complete.\n- Time: {stamp}\n- Summary: {summary}\n\n"
+                 "A new run asks the Planner again; it plans more work if PROJECT.md now asks for it.")
+    emit("complete", summary=summary)
+
+
+def reopen_if_complete(project_root: Path) -> None:
+    state = load_text(project_root / "STATE.md")
+    if strip_complete(state) != state.rstrip():
+        write_atomic(project_root / "STATE.md", strip_complete(state))
+
+
 def project_configuration_context(project_root: Path) -> str:
     excluded = {".git", ".hg", ".svn", ".venv", "node_modules", "bin", "obj", "dist", "build"}
     manifest_names = {
@@ -2157,9 +2184,12 @@ def _run() -> int:
             )
             plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
             if plan.get("status") == "COMPLETE":
-                print(f"\nCOMPLETE: {plan.get('summary', 'Project goal complete')}")
+                summary = " ".join(str(plan.get("summary") or "").split()) or "Project goal complete"
+                record_complete(project_root, summary)
+                print(f"\nCOMPLETE: {summary}")
                 return 0
             task = plan["task"]
+            reopen_if_complete(project_root)
             save_text(project_root / "TASK.md", task_markdown(task))
             emit("task", id=str(task["id"]), outcome=str(task["outcome"]))
             before = snapshot(project_root, [str(item) for item in task["allowed_files"]])

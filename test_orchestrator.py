@@ -1217,6 +1217,28 @@ class OrchestratorTests(unittest.TestCase):
             events, _ = self.task_events(root, plan={"status": "COMPLETE"})
             self.assertEqual(events, [("task_start", None)])  # no task: the run's exit ends the span
 
+    def test_complete_is_persisted_and_a_later_task_supersedes_it(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "STATE.md").write_text("# Verified state\n\n## Passed: WEB-012\n- x\n", encoding="utf-8")
+            events = []
+            with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))):
+                code, _, _ = self.run_main(root, plan={"status": "COMPLETE", "summary": "All\n## done"})
+                self.run_main(root, plan={"status": "COMPLETE", "summary": "Still done"})
+            self.assertEqual(code, 0)
+            self.assertEqual([d for e, d in events if e == "complete"], [{"summary": "All ## done"}, {"summary": "Still done"}])
+            state = (root / "STATE.md").read_text(encoding="utf-8")
+            self.assertEqual(state.count(orchestrator.COMPLETE_HEADING), 1)  # a repeat replaces the marker
+            self.assertTrue(state.rstrip().split("\n## ")[-1].startswith("Project complete\n- Time: "))
+            self.assertTrue(state.rstrip().endswith("- Summary: Still done"))
+            self.assertIn("## Passed: WEB-012", state)
+            self.assertIn("Project complete.", (root / "HANDOFF.md").read_text(encoding="utf-8"))
+            self.run_main(root)  # the Planner finds new work: the marker no longer applies
+            state = (root / "STATE.md").read_text(encoding="utf-8")
+            self.assertNotIn(orchestrator.COMPLETE_HEADING, state)
+            self.assertIn("## Passed: T-9", state)
+            self.assertNotIn("Project complete", (root / "HANDOFF.md").read_text(encoding="utf-8"))
+
     def test_handoff_with_and_without_checkpoint(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)
