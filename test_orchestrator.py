@@ -2185,5 +2185,145 @@ class BehaviourGateTests(unittest.TestCase):
         self.assertTrue(evidence[-1].startswith("acceptance step 1 failed:") and "page error: Uncaught Error: kaboom" in evidence[-1], evidence)
 
 
+class ContractTests(unittest.TestCase):
+    """CONTRACT.md: created once by the orchestrator, amended by contract_changes, shown to every agent, enforced."""
+
+    CONTRACT = {"files": [{"path": "index.html", "purpose": "page", "loads": ["style.css", "script.js"]},
+                          {"path": "script.js", "purpose": "logic"}],
+                "ids": [{"id": "task-input", "element": "input", "file": "index.html", "purpose": "new task"}]}
+    TASK = {"id": "T-1", "outcome": "Add tasks", "allowed_files": ["script.js"], "required_work": ["work"],
+            "validation": ["check"], "stop_condition": "stop"}
+    CONTRACT_PROMPT = orchestrator.load_text(orchestrator.ROOT / "prompts" / "contract.txt")
+
+    def project(self, folder, config="{}", files=None):
+        root = Path(folder)
+        for name in orchestrator.WORKFLOW_FILES:
+            (root / name).write_text(config if name == "config.json" else "Build a todo app\n" if name == "PROJECT.md" else "text\n", encoding="utf-8")
+        for name, text in (files or {}).items():
+            (root / name).write_text(text, encoding="utf-8")
+        return root
+
+    def run_orchestrator(self, root, plans):
+        """_run with faked models: the contract prompt gets CONTRACT, the planner gets `plans` in order."""
+        asked, agents, plans = [], [], iter(plans)
+
+        def ask(config, role, system, user, interactive, thinking=True):
+            asked.append(("contract" if system == self.CONTRACT_PROMPT else "plan", user))
+            return json.dumps(self.CONTRACT if system == self.CONTRACT_PROMPT else next(plans))
+
+        def agent(config, role, system, user, *rest):
+            agents.append((role, user, (root / orchestrator.CONTRACT_FILE).is_file()))
+            return "did it"
+        argv = ["o", "--project", str(root), "--non-interactive"]
+        with patch.object(orchestrator, "ask_once", side_effect=ask), patch.object(orchestrator, "run_agent", side_effect=agent), \
+                patch.object(orchestrator, "extract_review_with_repair", side_effect=lambda *a: ({"verdict": "PASS"}, "ok")), \
+                patch.object(orchestrator, "configure_project", side_effect=lambda c, *a: c), patch.object(orchestrator.sys, "argv", argv):
+            self.assertEqual(orchestrator._run(), 0)
+        return asked, agents
+
+    def test_contract_created_once_before_the_first_task_and_shown_to_every_agent(self):
+        plans = [{"status": "TASK", "task": self.TASK}, {"status": "TASK", "task": dict(self.TASK, id="T-2")}, {"status": "COMPLETE"}]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder)
+            asked, agents = self.run_orchestrator(root, plans)
+            self.assertEqual([kind for kind, _ in asked], ["contract", "plan", "plan", "plan"])
+            self.assertIn("PROJECT\nBuild a todo app", asked[0][1])
+            self.assertEqual(orchestrator.load_contract(root), self.CONTRACT)
+            text = (root / "CONTRACT.md").read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("# Project contract") and "```json\n{" in text, text)
+            for kind, user in asked[1:]:
+                self.assertIn('PROJECT CONTRACT\n{\n  "files"', user)
+            self.assertEqual([role for role, *_ in agents], ["implementer", "reviewer"] * 2)
+            for role, user, existed in agents:
+                self.assertTrue(existed)
+                self.assertIn('PROJECT CONTRACT\n{\n  "files"', user)
+            with self.assertRaises(orchestrator.WorkflowError):  # models may not write it
+                orchestrator.path_is_allowed("CONTRACT.md", ["*"], root)
+            self.assertIn("CONTRACT.md.tmp", orchestrator.PROTECTED_FILES)
+
+    def test_contract_false_changes_nothing(self):
+        plans = [{"status": "TASK", "task": dict(self.TASK, contract_changes={"ids": [{"id": "x"}]})}, {"status": "COMPLETE"}]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder, '{"contract": false}')
+            asked, agents = self.run_orchestrator(root, plans)
+            self.assertEqual([kind for kind, _ in asked], ["plan", "plan"])
+            self.assertFalse((root / "CONTRACT.md").exists())
+            self.assertFalse(any("PROJECT CONTRACT" in user for _, user in asked) or any("PROJECT CONTRACT" in user for _, user, _ in agents))
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:  # a stale CONTRACT.md is ignored by the code check
+            root = self.project(folder, files={"index.html": "<p></p>", "script.js": "document.getElementById('ghost');\n"})
+            orchestrator.write_contract(root, self.CONTRACT)
+            with contextlib.redirect_stdout(io.StringIO()):
+                defects, _ = orchestrator.code_gate(root, [], None, {"contract": False})
+            self.assertFalse([d for d in defects if "contract" in d["defect"]], defects)
+
+    def test_contract_changes_merge_into_contract_md_before_the_task(self):
+        changes = {"files": [{"path": "script.js", "purpose": "all logic"}, {"path": "store.js", "purpose": "storage"}],
+                   "ids": [{"id": "save-btn", "element": "button"}], "storage_keys": [{"key": "todo.tasks", "shape": "array"}]}
+        task = dict(self.TASK, contract_changes=changes, acceptance=[{"do": "click", "selector": "#save-btn"}])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder)
+            orchestrator.write_contract(root, self.CONTRACT)
+            with patch.object(orchestrator, "ask_once", return_value=json.dumps({"status": "TASK", "task": task})) as ask:
+                orchestrator.request_plan({}, "SYS", "USER", root, False, with_contract=True)
+            self.assertEqual(ask.call_count, 1)  # the contract existed: no creation call
+            merged = orchestrator.load_contract(root)
+            self.assertEqual([(f["path"], f["purpose"]) for f in merged["files"]],
+                             [("index.html", "page"), ("script.js", "all logic"), ("store.js", "storage")])
+            self.assertEqual([i["id"] for i in merged["ids"]], ["task-input", "save-btn"])
+            self.assertEqual(merged["storage_keys"], [{"key": "todo.tasks", "shape": "array"}])
+            bad = dict(self.TASK, contract_changes={"ids": [{"id": "a"}, {"id": "a"}]})
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "repeats a id: a"):
+                orchestrator.validate_task(bad, root, contract=self.CONTRACT)
+            url = dict(self.TASK, contract_changes={"files": [{"path": "index.html", "loads": ["https://cdn.x/a.js"]}]})
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "not URLs"):
+                orchestrator.validate_task(url, root, contract=self.CONTRACT)
+
+    def test_acceptance_selector_must_use_a_contract_id(self):
+        def task(*selectors, **extra):
+            return dict(self.TASK, acceptance=[{"expect": "visible", "selector": s} for s in selectors], **extra)
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            orchestrator.validate_task(task("#task-input", "#task-input li", ".item", "li"), root, contract=self.CONTRACT)
+            orchestrator.validate_task(task("#new-id"), root, contract=None)  # no contract, no check
+            orchestrator.validate_task(task("#new-id", contract_changes={"ids": [{"id": "new-id"}]}), root, contract=self.CONTRACT)
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "step 2 selects #nope, which is not a contract id"):
+                orchestrator.validate_task(task("#task-input", "#nope"), root, contract=self.CONTRACT)
+            orchestrator.write_contract(root, self.CONTRACT)
+            replies = [json.dumps({"status": "TASK", "task": task(s)}) for s in ("#nope", "#task-input")]
+            with patch.object(orchestrator, "ask_once", side_effect=replies) as ask, contextlib.redirect_stdout(io.StringIO()):
+                plan = orchestrator.request_plan({}, "SYS", "USER", root, False, with_contract=True)
+            self.assertEqual(plan["task"]["acceptance"][0]["selector"], "#task-input")
+            self.assertIn("not a contract id", ask.call_args.args[3])
+
+    PAGE = '<html><body><input id="task-input"><p id="ghost"></p><script src="script.js"></script></body></html>\n'
+    SCRIPT = "document.getElementById('task-input');\n"
+
+    def gate(self, root, before=None, allowed=()):
+        with contextlib.redirect_stdout(io.StringIO()):
+            return orchestrator.code_gate(root, list(allowed), before, {})
+
+    def test_code_check_enforces_contract_wiring_and_ids(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.project(folder, files={"index.html": self.PAGE, "script.js": self.SCRIPT})
+            orchestrator.write_contract(root, self.CONTRACT)
+            self.assertEqual(self.gate(root)[0], [])  # style.css does not exist yet: not required
+            files = ["index.html", "script.js"]
+            before = orchestrator.snapshot(root, files)
+            (root / "index.html").write_text(self.PAGE.replace('<script src="script.js"></script>', ""), encoding="utf-8")
+            (root / "script.js").write_text(self.SCRIPT + "document.querySelector('#ghost');\n", encoding="utf-8")
+            defects, line = self.gate(root, before, files)
+            contract = {(d["defect"], d["evidence"].split(";")[-1].strip()) for d in defects if "contract" in d["defect"]}
+            self.assertEqual(contract, {
+                ("Page does not load a file the contract wires to it", 'add <script src="script.js"></script> to index.html'),
+                ("Element id not in the contract", "use the contract's id for this element (contract ids: task-input)"),
+            })
+            self.assertIn('script.js:2 looks up element id "ghost"', line)
+            # the same issues already present before the task are reported, not failed
+            defects, line = self.gate(root, orchestrator.snapshot(root, files), files)
+            self.assertEqual(defects, [])
+            self.assertIn("Pre-existing issues", line)
+            self.assertIn("CONTRACT.md says it loads", line)
+
+
 if __name__ == "__main__":
     unittest.main()

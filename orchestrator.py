@@ -33,9 +33,10 @@ ROOT = Path(__file__).resolve().parent
 WORKFLOW_FILES = {"PROJECT.md", "STATE.md", "TASK.md", "RESULT.md", "REVIEW.md", "ISSUES.md", "config.json"}  # required to run
 CHECKPOINT_FILE = ".ao_checkpoint.json"
 HANDOFF_FILE = "HANDOFF.md"
+CONTRACT_FILE = "CONTRACT.md"
 COMPLETION_PHASES = ("passed", "blocked")
 CHECKPOINT_PHASES = ("implementing", "reviewing", "extra_reviewing") + COMPLETION_PHASES  # passed/blocked: recording the outcome
-_ATOMIC_FILES = WORKFLOW_FILES | {HANDOFF_FILE, CHECKPOINT_FILE}  # everything write_atomic can write
+_ATOMIC_FILES = WORKFLOW_FILES | {HANDOFF_FILE, CHECKPOINT_FILE, CONTRACT_FILE}  # everything write_atomic can write
 PROTECTED_FILES = _ATOMIC_FILES | {name + ".tmp" for name in _ATOMIC_FILES}  # models may not edit
 
 
@@ -809,6 +810,7 @@ _GLOBAL = r"(?:(?:window|globalThis|self)\??\.)"
 _INHERITED = {"hasOwnProperty", "toString", "valueOf", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
               "constructor", "name", "length", "call", "apply", "bind", "prototype"}
 _OPEN = ("open", None)
+_ID_LOOKUP = re.compile(r"(?:getElementById\(\s*([\"'`])([^\"'`$\\]+)|querySelector(?:All)?\(\s*([\"'`])#([\w-]+))\s*[\"'`]\s*\)")
 
 
 def _web_sources(project_root: Path) -> dict[str, str]:
@@ -1072,7 +1074,7 @@ def contract_issues(sources: dict[str, str]) -> tuple[dict[tuple[str, ...], dict
             else:
                 ids.add(value)
         for file, (code, _) in scripts.items():
-            for found in re.finditer(r"(?:getElementById\(\s*([\"'`])([^\"'`$\\]+)|querySelector(?:All)?\(\s*([\"'`])#([\w-]+))\s*[\"'`]\s*\)", code):
+            for found in _ID_LOOKUP.finditer(code):
                 element = found.group(2) or found.group(4)
                 key = ("id", file, element)
                 if element in ids or key in issues or any(p.fullmatch(element) for p in patterns):
@@ -1159,6 +1161,8 @@ def code_gate(project_root: Path, allowed: list[str], before: dict[str, str | No
         print("[code] skipped (no JavaScript)")
         return [], "CODE CHECK: skipped (no JavaScript)"
     issues, namespaces = contract_issues(sources)
+    contract = load_contract(project_root) if (config or {}).get("contract") is not False else None
+    issues |= contract_rule_issues(sources, contract, lambda p: (project_root / p).is_file())
     old: dict[tuple[str, ...], dict[str, str]] = {}
     if before is not None:
         earlier = dict(sources)
@@ -1169,8 +1173,9 @@ def code_gate(project_root: Path, allowed: list[str], before: dict[str, str | No
                 earlier.pop(name, None)
             else:
                 earlier[name] = text
-        old = contract_issues(earlier)[0]
-    defects = [issue for key, issue in issues.items() if key not in old]
+        existed = lambda p: before[p] is not None if p in before else (project_root / p).is_file()
+        old = contract_issues(earlier)[0] | contract_rule_issues(earlier, contract, existed)
+    defects =[issue for key, issue in issues.items() if key not in old]
     defects += stub_issues(before, snapshot(project_root, allowed), namespaces)
     preexisting = [issue["evidence"] for key, issue in issues.items() if key in old]
     summary = f"FAILED ({len(defects)} issue(s))" if defects else "passed"
@@ -1184,6 +1189,160 @@ def code_gate(project_root: Path, allowed: list[str], before: dict[str, str | No
 def code_message(defects: list[dict[str, str]]) -> str:
     return ("CODE CHECK FAILED. Fix these problems with the file tools (write any missing function instead of guarding "
             "or renaming the call; replace stubs with working code), then answer again:\n") + "\n".join(f"- {d['evidence']}" for d in defects)
+
+
+# --- Project contract: CONTRACT.md's ```json block is the shared source of truth for file wiring, element ids,
+# function names and storage keys. Only the orchestrator writes it; the Planner amends it via "contract_changes".
+CONTRACT_KEYS = {"files": "path", "ids": "id", "functions": "name", "storage_keys": "key"}  # list -> merge key
+CONTRACT_HEADER = (
+    "# Project contract\n\nWritten by the orchestrator; models may not edit this file. The Planner changes it through a "
+    'task\'s "contract_changes". The JSON block below is the source of truth every task follows: the files and what each '
+    "page loads, the element ids, the function names and the storage keys.\n\n"
+)
+
+
+def validate_contract(data: Any, project_root: Path, changes: bool = False) -> dict[str, Any]:
+    """The contract (or a task's contract_changes) reduced to the known keys; WorkflowError names the first problem."""
+    label = "contract_changes" if changes else "The contract"
+    if not isinstance(data, dict):
+        raise WorkflowError(f"{label} must be a JSON object")
+    if not changes and not data.get("files"):
+        raise WorkflowError(f'{label} needs a non-empty "files" list')
+    result: dict[str, Any] = {}
+    for key, field in CONTRACT_KEYS.items():
+        items = data.get(key) or []
+        if not isinstance(items, list) or not all(isinstance(e, dict) and isinstance(e.get(field), str) and e[field].strip() for e in items):
+            raise WorkflowError(f'{label} "{key}" must be a list of objects, each with a non-empty "{field}" string')
+        names = [e[field].strip() for e in items]
+        if len(set(names)) < len(names):
+            raise WorkflowError(f'{label} "{key}" repeats a {field}: {", ".join(sorted({n for n in names if names.count(n) > 1}))}')
+        if items:
+            result[key] = [{**e, field: e[field].strip()} for e in items]
+    for entry in result.get("files", []):
+        entry["path"] = safe_relative_path(entry["path"], project_root).relative_to(project_root.resolve()).as_posix()
+        if entry["path"] in PROTECTED_FILES:
+            raise WorkflowError(f'{label} lists workflow file {entry["path"]}; list only project files')
+        loads = entry.get("loads") or []
+        if not isinstance(loads, list) or not all(isinstance(x, str) and x.strip() and "://" not in x and not x.startswith("//") for x in loads):
+            raise WorkflowError(f'{label} file {entry["path"]}: "loads" must be a list of project file paths (not URLs)')
+        if loads:
+            entry["loads"] = [x.strip().removeprefix("./") for x in loads]
+        for x in entry.get("loads", []):
+            safe_relative_path((Path(entry["path"]).parent / x).as_posix(), project_root)
+    for entry in result.get("ids", []):
+        if not re.fullmatch(r"[\w-]+", entry["id"]):
+            raise WorkflowError(f'{label} id {entry["id"]!r} must be a plain element id such as task-input (no "#", no spaces)')
+    for entry in result.get("ids", []) + result.get("functions", []):
+        if entry.get("file") is not None:
+            safe_relative_path(str(entry["file"]), project_root)
+    notes = data.get("notes") or []
+    if not isinstance(notes, list) or not all(isinstance(n, str) for n in notes):
+        raise WorkflowError(f'{label} "notes" must be a list of strings')
+    if notes:
+        result["notes"] = notes
+    return result
+
+
+def merge_contract(contract: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """Entries of `changes` replace the contract's entry with the same key (path, id, name or key) or are appended."""
+    merged = dict(contract)
+    for key, field in CONTRACT_KEYS.items():
+        entries = {e[field]: e for e in contract.get(key, []) + changes.get(key, [])}
+        if entries:
+            merged[key] = list(entries.values())
+    notes = contract.get("notes", []) + [n for n in changes.get("notes", []) if n not in contract.get("notes", [])]
+    if notes:
+        merged["notes"] = notes
+    return merged
+
+
+def load_contract(project_root: Path) -> dict[str, Any] | None:
+    """CONTRACT.md's JSON block, or None when the file, the block or a valid contract in it is missing."""
+    found = re.search(r"```json[ \t]*\r?\n(.*?)```", load_text(project_root / CONTRACT_FILE), re.S)
+    try:
+        return validate_contract(json.loads(found.group(1)), project_root) if found else None
+    except (json.JSONDecodeError, WorkflowError):
+        return None
+
+
+def write_contract(project_root: Path, contract: dict[str, Any]) -> None:
+    write_atomic(project_root / CONTRACT_FILE, f"{CONTRACT_HEADER}```json\n{json.dumps(contract, indent=2, ensure_ascii=False)}\n```")
+
+
+def contract_context(contract: dict[str, Any] | None) -> str:
+    return f"PROJECT CONTRACT\n{json.dumps(contract, indent=2, ensure_ascii=False)}\n\n" if contract else ""
+
+
+def ensure_contract(config: dict[str, Any], project_root: Path, context: str, interactive: bool, max_repairs: int = 2) -> dict[str, Any] | None:
+    """The project's contract; when CONTRACT.md has none, the Planner derives one from `context` (its planning input)
+    and the current page/script files, and the orchestrator writes it. None when config disables contracts."""
+    if config.get("contract") is False:
+        return None
+    contract = load_contract(project_root)
+    if contract:
+        return contract
+    print("[contract] no CONTRACT.md; asking the Planner for the project contract ...")
+    files, budget = [], 30_000
+    for name, text in sorted(_web_sources(project_root).items()):
+        text = text[:min(8_000, max(budget, 0))]
+        budget -= len(text)
+        files.append(f"CURRENT FILE: {name}\n{text}")
+    user = prompt = "\n\n".join([context, *files])
+    system = load_text(ROOT / "prompts" / "contract.txt")
+    response = ask_once(config, "planner", system, prompt, interactive)
+    for repair in range(max_repairs + 1):
+        data, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=prompt)
+        try:
+            contract = validate_contract(data.get("contract", data), project_root)
+            break
+        except WorkflowError as exc:
+            if repair == max_repairs:
+                raise WorkflowError(f"Planner project contract remained invalid after {max_repairs} corrections: {exc}") from exc
+            print(f"[contract] invalid contract: {exc}; requesting correction ({repair + 1}/{max_repairs}) ...")
+            prompt = (f"{user}\n\nCORRECTION REQUIRED\nThe previous contract was rejected: {exc}\n"
+                      f"Return the corrected contract JSON.\n\nPREVIOUS RESPONSE\n{response[-20_000:]}")
+            response = ask_once(config, "planner", system, prompt, interactive)
+    write_contract(project_root, contract)
+    print(f"[contract] wrote {CONTRACT_FILE}")
+    return contract
+
+
+def contract_rule_issues(sources: dict[str, str], contract: dict[str, Any] | None,
+                         exists: Any) -> dict[tuple[str, ...], dict[str, str]]:
+    """Breaks of the contract: a contract page that does not reference an existing file its "loads" lists, and element
+    ids scripts look up that the contract does not list. `exists(path)` says whether a project file exists."""
+    issues: dict[tuple[str, ...], dict[str, str]] = {}
+    if not contract:
+        return issues
+    for entry in contract["files"]:
+        page = entry["path"]
+        if page not in sources or Path(page).suffix.lower() not in HTML_SUFFIXES:
+            continue
+        for load in entry.get("loads", []):
+            target = Path(os.path.normpath(Path(page).parent / load)).as_posix()
+            linked = rf"<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*[\"']?(?:\./)?{re.escape(load)}(?=[\"'\s>?#])"
+            if exists(target) and not re.search(linked, sources[page], re.I):
+                tag = f'<link rel="stylesheet" href="{load}">' if load.lower().endswith(".css") else f'<script src="{load}"></script>'
+                issues[("contract-load", page, load)] = {
+                    "file": page, "defect": "Page does not load a file the contract wires to it",
+                    "expected": f"{page} references {load}, as CONTRACT.md lists in its loads",
+                    "evidence": f"{page} does not reference {load}, which CONTRACT.md says it loads; add {tag} to {page}",
+                }
+    ids = sorted(e["id"] for e in contract.get("ids", []))
+    for file, text in sources.items():
+        code = _strip_js(_script_text(file, text))[0]
+        for found in _ID_LOOKUP.finditer(code):
+            element = found.group(2) or found.group(4)
+            key = ("contract-id", file, element)
+            if element in ids or key in issues:
+                continue
+            issues[key] = {
+                "file": file, "defect": "Element id not in the contract",
+                "expected": "Scripts look up only element ids CONTRACT.md lists (the Planner adds new ones via contract_changes)",
+                "evidence": f'{file}:{code.count(chr(10), 0, found.start()) + 1} looks up element id "{element}", which is not in '
+                            f"CONTRACT.md; use the contract's id for this element (contract ids: {', '.join(ids) or 'none'})",
+            }
+    return issues
 
 
 # Injected first into the checked page: records page errors, unhandled rejections and console.error, then after
@@ -1603,6 +1762,7 @@ def validate_acceptance(steps: Any) -> None:
 
 def validate_task(
     task: dict[str, Any], project_root: Path, limits: tuple[int, int] = (3, 7), specialists: list[str] | None = (),
+    contract: dict[str, Any] | None = None,
 ) -> None:
     max_files, max_work = limits
     required = ["id", "outcome", "allowed_files", "required_work", "validation", "stop_condition"]
@@ -1623,6 +1783,17 @@ def validate_task(
         raise WorkflowError(f"Planner must provide 1-{max_work} required-work items")
     if task.get("acceptance") is not None:
         validate_acceptance(task["acceptance"])
+    if contract is not None:  # "#id" selectors must name contract ids, counting ids this task's contract_changes add
+        changes = task.get("contract_changes")
+        if changes is not None:
+            changes = task["contract_changes"] = validate_contract(changes, project_root, changes=True)
+        ids = {e["id"] for e in merge_contract(contract, changes or {}).get("ids", [])}
+        for number, step in enumerate(task.get("acceptance") or [], 1):
+            used = re.match(r"\s*#([\w-]+)", str(step.get("selector") or ""))
+            if used and used.group(1) not in ids:
+                raise WorkflowError(
+                    f"Planner acceptance step {number} selects #{used.group(1)}, which is not a contract id; use an id from "
+                    f'PROJECT CONTRACT ({", ".join(sorted(ids)) or "none yet"}) or add it to the task\'s "contract_changes"')
     worker = worker_name(task)
     # specialists=None skips the check: a resumed task keeps running even if its Specialist was removed (see find_specialist)
     if worker and specialists is not None and worker.lower() not in {title.lower() for title in specialists}:
@@ -1631,8 +1802,14 @@ def validate_task(
 
 
 def request_plan(
-    config: dict[str, Any], system: str, user: str, project_root: Path, interactive: bool, max_repairs: int = 2
+    config: dict[str, Any], system: str, user: str, project_root: Path, interactive: bool, with_contract: bool = False,
+    max_repairs: int = 2,
 ) -> dict[str, Any]:
+    """With with_contract, the project contract is created first if missing (see ensure_contract), shown to the
+    Planner, enforced on the task, and the task's contract_changes are merged into CONTRACT.md."""
+    contract = ensure_contract(config, project_root, user, interactive) if with_contract else None
+    if contract:
+        user = f"{user}\n\n{contract_context(contract)}".rstrip()
     prompt = user
     response = ask_once(config, "planner", system, prompt, interactive)
     for repair in range(max_repairs + 1):
@@ -1642,11 +1819,13 @@ def request_plan(
                 return plan
             if plan.get("status") != "TASK" or not isinstance(plan.get("task"), dict):
                 raise WorkflowError("Planner must return status TASK with a task, or status COMPLETE")
-            validate_task(plan["task"], project_root, task_limits(config), specialist_titles(config))
+            validate_task(plan["task"], project_root, task_limits(config), specialist_titles(config), contract)
             plan["task"].pop("worker_id", None)
             spec = find_specialist(plan["task"], custom_workers(config))
             if spec:
                 plan["task"]["worker_id"] = spec["id"]
+            if contract and plan["task"].get("contract_changes"):
+                write_contract(project_root, merge_contract(contract, plan["task"]["contract_changes"]))
             return plan
         except WorkflowError as exc:
             if repair == max_repairs:
@@ -1997,6 +2176,7 @@ def run_review_loop(
     workers = custom_workers(config)
     specialist = find_specialist(task, workers)
     extras = [w for w in workers if w["kind"] == "reviewer"]
+    contract_part = contract_context(load_contract(project_root) if config.get("contract") is not False else None)
     for review_round in range(start_round, total):
         resumed = phase in ("reviewing", "extra_reviewing") and review_round == start_round and (project_root / "RESULT.md").is_file()
         if resumed:
@@ -2010,7 +2190,7 @@ def run_review_loop(
                 "them; if the task is already complete, report so without rewriting the files.\n\n"
             ) if prior else ""
             implementer_input = (
-                f"TASK\n{load_text(project_root / 'TASK.md')}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
+                f"TASK\n{load_text(project_root / 'TASK.md')}\n\n{contract_part}VERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
                 f"{prior_note}CURRENT ALLOWED FILES\n{allowed_files_context(current)}\n\n"
                 f"REVIEWER FEEDBACK\n{reviewer_feedback}"
             )
@@ -2037,7 +2217,7 @@ def run_review_loop(
         else:
             behaviour_part = f"{behaviour_block}\n\n" if behaviour_block else ""
             reviewer_input = (
-                f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
+                f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\n{contract_part}IMPLEMENTER RESULT\n{result}\n\n"
                 f"{syntax_line}\n\n{code_line + chr(10) * 2 if code_line else ''}{behaviour_part}CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
             )
             if resumed and phase == "extra_reviewing":
@@ -2206,7 +2386,7 @@ def _run() -> int:
                 f"{team_context(config)}\n\n{behaviour_part}{code_part}"
                 f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
             )
-            plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
+            plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive, True)  # with_contract
             if plan.get("status") == "COMPLETE":
                 summary = " ".join(str(plan.get("summary") or "").split()) or "Project goal complete"
                 record_complete(project_root, summary)
