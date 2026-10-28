@@ -1413,6 +1413,36 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("index.html: script.js is never loaded: acceptance step 2 failed", asked[0][2])
             self.assertIn("--- index.html --- (does not exist)", asked[0][2])
 
+    def test_scope_request_never_names_secrets_or_dotfiles_and_server_failure_is_no_decision(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            for raw in (".env", "api_key.txt", ".git/hooks/pre-commit", "sub/.secret", "CONTRACT.md"):
+                self.assertIsNone(orchestrator.scope_path(raw, root), raw)
+                with self.assertRaises(orchestrator.WorkflowError):
+                    orchestrator.path_is_allowed(raw, ["*", "**/*", raw], root)
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            with patch.object(orchestrator, "ask_once", side_effect=orchestrator.WorkflowError("Cannot reach http://x")), \
+                    contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(orchestrator.WorkflowError, "Cannot reach"):
+                orchestrator.widen_scope({}, task, ["a.txt"], {}, ["index.html"], "why", root, False)
+            self.assertNotIn("scope", task)  # a resume may still ask
+            full = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"])
+            with patch.object(orchestrator, "ask_once") as ask, contextlib.redirect_stdout(io.StringIO()):
+                note = orchestrator.widen_scope({}, full, list(full["allowed_files"]), {}, ["index.html"], "why", root, False)
+            self.assertEqual((ask.call_count, "scope" in full), (0, False))
+            self.assertIn("most files a task may have", note)
+
+    def test_needs_files_line_without_a_dash_and_free_form_defect_files(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            for line, files, reason in [
+                ("NEEDS_FILES: index.html because the tag is missing", ["index.html"], "because the tag is missing"),
+                ("NEEDS_FILES: index.html: the tag is missing", ["index.html"], "the tag is missing"),
+                ("NEEDS_FILES: index.html, app.js — wiring", ["index.html", "app.js"], "wiring"),
+            ]:
+                self.assertEqual(orchestrator.scope_request(f"T PASSED\n{line}", "", "", ["script.js"], root), (files, reason), line)
+            review = json.dumps({"verdict": "FAIL", "defects": [{"file": "index.html (line 3)", "defect": "d", "evidence": "e"}]})
+            self.assertEqual(list(orchestrator.outside_defects(review, ["script.js"], root)), ["index.html"])
+
     def test_scope_request_refusals(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)
@@ -2526,6 +2556,15 @@ class ContractTests(unittest.TestCase):
             self.assertEqual(defects, [])
             self.assertIn("Pre-existing issues", line)
             self.assertIn("CONTRACT.md says it loads", line)
+
+    def test_root_relative_load_counts_and_backticks_in_values_keep_the_contract(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            page = self.PAGE.replace('src="script.js"', 'src="/script.js"')
+            root = self.project(folder, files={"index.html": page, "script.js": self.SCRIPT})
+            contract = dict(self.CONTRACT, notes=["use ```js``` blocks in docs"])
+            orchestrator.write_contract(root, contract)
+            self.assertEqual(orchestrator.load_contract(root)["notes"], contract["notes"])
+            self.assertEqual(self.gate(root)[0], [])
 
 
 if __name__ == "__main__":

@@ -141,6 +141,9 @@ def safe_relative_path(raw: str, project_root: Path) -> Path:
 def path_is_allowed(raw: str, allowed: list[str], project_root: Path) -> Path:
     path = safe_relative_path(raw, project_root)
     normalized = path.relative_to(project_root.resolve()).as_posix()
+    parts = normalized.lower().split("/")
+    if "api_key.txt" in parts or any(p.startswith(".") for p in parts):  # secrets and dotfiles (.env, .git/hooks) never
+        raise WorkflowError(f"Path is outside this task's file scope: {raw}")
     if normalized in PROTECTED_FILES or not any(fnmatch.fnmatch(normalized, pattern) for pattern in allowed):
         raise WorkflowError(f"Path is outside this task's file scope: {raw}")
     return path
@@ -1258,7 +1261,7 @@ def merge_contract(contract: dict[str, Any], changes: dict[str, Any]) -> dict[st
 
 def load_contract(project_root: Path) -> dict[str, Any] | None:
     """CONTRACT.md's JSON block, or None when the file, the block or a valid contract in it is missing."""
-    found = re.search(r"```json[ \t]*\r?\n(.*?)```", load_text(project_root / CONTRACT_FILE), re.S)
+    found = re.search(r"```json[ \t]*\r?\n(.*?)\r?\n```[ \t]*(?:\r?\n|$)", load_text(project_root / CONTRACT_FILE), re.S)
     try:
         return validate_contract(json.loads(found.group(1)), project_root) if found else None
     except (json.JSONDecodeError, WorkflowError):
@@ -1320,7 +1323,7 @@ def contract_rule_issues(sources: dict[str, str], contract: dict[str, Any] | Non
             continue
         for load in entry.get("loads", []):
             target = Path(os.path.normpath(Path(page).parent / load)).as_posix()
-            linked = rf"<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*[\"']?(?:\./)?{re.escape(load)}(?=[\"'\s>?#])"
+            linked = rf"<(?:script|link)\b[^>]*?\b(?:src|href)\s*=\s*[\"']?(?:\.?/)?{re.escape(load)}(?=[\"'\s>?#])"
             if exists(target) and not re.search(linked, sources[page], re.I):
                 tag = f'<link rel="stylesheet" href="{load}">' if load.lower().endswith(".css") else f'<script src="{load}"></script>'
                 issues[("contract-load", page, load)] = {
@@ -2185,7 +2188,8 @@ def outside_defects(review_text: str, allowed: list[str], project_root: Path) ->
         return {}
     result: dict[str, list[str]] = {}
     for item in found if isinstance(found, list) else []:
-        name = scope_path(re.sub(r":\d+$", "", str(item.get("file") or "")), project_root) if isinstance(item, dict) else None
+        raw = (str(item.get("file") or "").split() or [""])[0] if isinstance(item, dict) else ""  # "a.html (line 3)" -> a.html
+        name = scope_path(re.sub(r"(?::\d+)+$", "", raw), project_root) if raw else None
         if name and not any(fnmatch.fnmatch(name, pattern) for pattern in allowed):
             result.setdefault(name, []).append(f"{item.get('defect') or 'defect'}: {item.get('evidence') or ''}".strip())
     return result
@@ -2197,7 +2201,15 @@ def scope_request(result: str, previous: str, review_text: str, allowed: list[st
     lines = NEEDS_FILES.findall(result)
     if lines:
         files, reason = (re.split(r"\s+(?:—|–|--?)\s+", lines[-1].strip().strip("`*"), maxsplit=1) + [""])[:2]
-        names = [n.strip("`'\"") for n in re.split(r"[,\s]+", files) if n.strip("`'\"").lower() not in {"", "none", "n/a"}]
+        tokens, names = re.split(r"[,\s]+", files.strip()), []
+        for n, token in enumerate(tokens):  # file names until the first word that is not one; the rest is the reason
+            token = token.strip("`'\"").rstrip(":;")
+            if token.lower() in {"", "none", "n/a"}:
+                continue
+            if not re.fullmatch(r"[\w./-]*\.\w+", token):
+                reason = " ".join([*tokens[n:], reason]).strip()
+                break
+            names.append(token)
         if names:
             return names, reason.strip() or "no reason given"
     now, before = outside_defects(review_text, allowed, project_root), outside_defects(previous, allowed, project_root)
@@ -2225,14 +2237,17 @@ def widen_scope(
         print(f"[scope] {task['id']} request refused: {', '.join(requested)} are protected, invalid or already allowed")
         return f"SCOPE REQUEST REFUSED\n{', '.join(requested)}: protected, invalid or already allowed. Work within the allowed files."
     room = max(0, task_limits(config)[0] + 2 - len(allowed))
+    if not room:
+        print(f"[scope] {task['id']} request refused: the task already has the most files a task may have")
+        return f"SCOPE REQUEST REFUSED\nThis task already has the most files a task may have. Work within the allowed files."
     contents = "\n\n".join(f"--- {n} ---\n{c[:20_000]}" if c is not None else f"--- {n} --- (does not exist)"
                            for n, c in snapshot(project_root, names).items())
     system = load_text(ROOT / "prompts" / "scope.txt")
     user = (f"TASK\n{task_markdown(task)}\n\nREQUESTED FILES\n{', '.join(names)}\n\nREASON\n{reason}\n\n"
             f"At most {room} file(s) can be added.\n\nCURRENT CONTENTS OF THE REQUESTED FILES\n{contents}")
+    response = ask_once(config, "planner", system, user, interactive)  # a server failure stops the run, it is no decision
     try:
-        decision, _ = extract_json_with_repair(config, "planner", ask_once(config, "planner", system, user, interactive),
-                                               interactive, system=system, user=user)
+        decision, _ = extract_json_with_repair(config, "planner", response, interactive, system=system, user=user)
     except WorkflowError as exc:
         decision = {"approve": False, "reason": f"the Planner's decision could not be read ({exc})"}
     files = decision.get("files") if isinstance(decision.get("files"), list) else []
@@ -2240,7 +2255,9 @@ def widen_scope(
     why = " ".join(str(decision.get("reason") or "no reason given").split())
     if decision.get("approve") is not True or not granted:
         approved = False
-    elif not set(granted) <= set(names) or len(granted) > room:
+    elif not set(granted) <= set(names):
+        approved, why = False, f"refused: the Planner approved {', '.join(granted)}, but only {', '.join(names)} were requested ({why})"
+    elif len(granted) > room:
         approved, why = False, f"refused: the Planner approved {', '.join(granted)}, but only up to {room} of {', '.join(names)} can be added ({why})"
     else:
         approved = True
