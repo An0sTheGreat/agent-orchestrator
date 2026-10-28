@@ -885,6 +885,100 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("components is not iterable (app.js:3)", seen[0])
             self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT", orchestrator.load_text(orchestrator.ROOT / "prompts" / "planner.txt"))
 
+    DATA_LITERAL = "window.DataStore = {\n  getComponents() { return []; },\n  createBuild: function (b) { return b; },\n  exportBuilds: () => '',\n};\n"
+    DATA_IIFE = ("const DataStore = (function () {\n  function getComponents() { return []; }\n  function createBuild(b) { return b; }\n"
+                 "  function exportBuilds() { return ''; }\n  return { getComponents, createBuild, exportBuilds };\n})();\nwindow.DataStore = DataStore;\n")
+    APP_BROKEN = ("// app\nconst list = DataStore.getComponents();\nwindow.DataStore.addBuild({});\n"
+                  "const out = DataStore.exportData ? DataStore.exportData() : '';\ndocument.getElementById('missing-id');\n")
+    PAGE = '<html><body><input id="name" placeholder="Search"><script src="data.js"></script><script src="app.js"></script></body></html>\n'
+
+    def _code_project(self, folder, files):
+        root = Path(folder)
+        for name, text in files.items():
+            (root / name).write_text(text, encoding="utf-8")
+        with contextlib.redirect_stdout(io.StringIO()):
+            return orchestrator.code_gate(root, [], None)  # no allowed files: the contract check only
+
+    def test_code_gate_finds_undefined_members_and_missing_ids(self):
+        for data in (self.DATA_LITERAL, self.DATA_IIFE):
+            with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+                defects, line = self._code_project(folder, {"data.js": data, "app.js": self.APP_BROKEN, "index.html": self.PAGE})
+                evidence = "\n".join(d["evidence"] for d in defects)
+                self.assertIn("app.js:3 calls DataStore.addBuild, which data.js's DataStore does not define (it has: createBuild", evidence)
+                self.assertIn("DataStore.exportData", evidence)
+                self.assertIn('element id "missing-id"', evidence)
+                self.assertEqual(len(defects), 3, evidence)
+                self.assertIn("CODE CHECK: FAILED (3 issue(s))", line)
+
+    def test_code_gate_clean_project_and_open_namespace_pass(self):
+        clean = ("const list = DataStore.getComponents();\nDataStore.createBuild({});\nconst out = DataStore.exportBuilds();\n"
+                 "document.getElementById('name'); document.querySelector('#made');\nconst el = document.createElement('p'); el.id = 'made';\n")
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            self.assertEqual(self._code_project(folder, {"data.js": self.DATA_LITERAL, "app.js": clean, "index.html": self.PAGE}),
+                             ([], "CODE CHECK: passed"))
+        assigned = "window.DataStore = Object.assign({}, base, { getComponents() {} });\n"
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            self.assertEqual(self._code_project(folder, {"data.js": assigned, "app.js": "DataStore.addBuild({});\n"})[0], [])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            self.assertEqual(self._code_project(folder, {"a.py": "x = 1\n"}), ([], "CODE CHECK: skipped (no JavaScript)"))
+            self.assertEqual(orchestrator.code_gate(Path(folder), [], None, {"code_check": False}), ([], ""))
+
+    def test_code_gate_flags_only_added_stubs_and_guards(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            old_app = "// TODO: old note\nconst a = 1;\n"
+            files = {"data.js": "const DataStore = { load() {} };\n", "app.js": old_app, "index.html": self.PAGE}
+            for name, text in files.items():
+                (root / name).write_text(text, encoding="utf-8")
+            before = orchestrator.snapshot(root, list(files))
+            (root / "app.js").write_text(old_app + "// Comparison table logic would go here\nassertTrue(true, \"placeholder passes\");\n"
+                                         "if (DataStore.fn) { run(); }\n", encoding="utf-8")
+            (root / "index.html").write_text(self.PAGE + '<input placeholder="Find">\n', encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                defects, _ = orchestrator.code_gate(root, list(files), before)
+            stubs = sorted({d["evidence"].split(" ", 1)[0] for d in defects if d["defect"].startswith("Stub")})
+            self.assertEqual(stubs, ["app.js:3", "app.js:4", "app.js:5"])
+            self.assertFalse(any("index.html" in d["evidence"] or "app.js:1" in d["evidence"] for d in defects))
+
+    def _code_loop(self, app_before):
+        """One task on data.js (allowed) while app.js (not allowed) calls the namespace; returns (roles, reviewer inputs, review)."""
+        inputs = []
+
+        def agent(config, role, system, user, *rest):
+            inputs.append((role, user))
+            if role == "reviewer":
+                return '{"verdict":"PASS"}'
+            (root / "data.js").write_text("window.DataStore = { createBuild() {} };\n", encoding="utf-8")
+            return "PASSED"
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            (root / "data.js").write_text("window.DataStore = { createBuild() {}, addBuild() {} };\n", encoding="utf-8")
+            (root / "app.js").write_text(app_before, encoding="utf-8")
+            task = dict(self.TASK, allowed_files=["data.js"])
+            before = orchestrator.snapshot(root, ["data.js"])
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, before, 0, "", "implementing", 1, root, False)
+                except orchestrator.WorkflowError:
+                    pass
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+        return [r for r, _ in inputs], [u for r, u in inputs if r == "reviewer"], review
+
+    def test_new_contract_issue_fails_round_without_reviewer(self):
+        roles, _, review = self._code_loop("DataStore.addBuild();\n")  # the task removed addBuild that app.js calls
+        self.assertEqual(roles, ["implementer", "implementer"])
+        self.assertEqual(review["verdict"], "FAIL")
+        self.assertIn("calls DataStore.addBuild", review["defects"][0]["evidence"])
+
+    def test_preexisting_contract_issue_reaches_reviewer(self):
+        roles, reviewer, review = self._code_loop("DataStore.exportData();\n")
+        self.assertEqual(roles, ["implementer", "reviewer"])
+        self.assertEqual(review["verdict"], "PASS")
+        self.assertIn("CODE CHECK: passed\nPre-existing issues (not caused by this task):\n- app.js:1 calls DataStore.exportData", reviewer[0])
+
     def test_flagged_answer_on_last_step_returns_unverified(self):
         write = self._native("write_file", path="a.txt", content="x")
         fail = self._native("replace_text", path="a.txt", old="zzz", new="y")
