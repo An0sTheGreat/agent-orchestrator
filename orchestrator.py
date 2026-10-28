@@ -799,6 +799,381 @@ def syntax_message(defects: list[dict[str, str]]) -> str:
     )
 
 
+# --- Code check: static cross-file contract (namespace members, element ids) and stubs/silent guards in added lines.
+# A pragmatic regex/brace scanner, not a parser: whatever it cannot resolve confidently is skipped, never flagged.
+JS_SUFFIXES = {".js", ".mjs"}
+HTML_SUFFIXES = {".html", ".htm"}
+STUB_SUFFIXES = JS_SUFFIXES | HTML_SUFFIXES | {".cjs", ".jsx", ".ts", ".tsx", ".py", ".css"}
+_ID = r"[A-Za-z_$][\w$]*"
+_GLOBAL = r"(?:(?:window|globalThis|self)\??\.)"
+_INHERITED = {"hasOwnProperty", "toString", "valueOf", "isPrototypeOf", "propertyIsEnumerable", "toLocaleString",
+              "constructor", "name", "length", "call", "apply", "bind", "prototype"}
+_OPEN = ("open", None)
+
+
+def _web_sources(project_root: Path) -> dict[str, str]:
+    """Project .js/.mjs/.html texts by relative path; skips node_modules, dot dirs and files over 1 MB."""
+    files: dict[str, str] = {}
+    for folder, dirs, names in os.walk(project_root):
+        dirs[:] = [d for d in dirs if d != "node_modules" and not d.startswith(".")]
+        for name in names:
+            path = Path(folder) / name
+            if path.suffix.lower() in JS_SUFFIXES | HTML_SUFFIXES and path.stat().st_size <= 1_000_000:
+                files[path.relative_to(project_root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+    return files
+
+
+def _strip_js(text: str) -> tuple[str, str]:
+    """(code, bare): code has comments blanked; bare also blanks string, template and regex literal contents
+    (template ${...} stays code). Lengths and newlines are kept, so offsets and line numbers line up."""
+    code, bare = list(text), list(text)
+    n = len(text)
+
+    def blank(a: int, b: int, both: bool) -> None:
+        for k in range(a, min(b, n)):
+            if text[k] != "\n":
+                bare[k] = " "
+                if both:
+                    code[k] = " "
+
+    def template(j: int) -> tuple[int, int]:  # (end of the literal text, where code resumes)
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+            elif text[j] == "`":
+                return j, j + 1
+            elif text.startswith("${", j):
+                interpolations.append(depth)
+                return j, j + 2
+            else:
+                j += 1
+        return n, n
+
+    i, depth, prev, interpolations = 0, 0, "", []  # interpolations: brace depth where each open ${ resumes its template
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            blank(i, j, True)
+            i = j
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            blank(i, j, True)
+            i = j
+            continue
+        if c in "'\"":
+            j = i + 1
+            while j < n and text[j] not in (c, "\n"):
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j, False)
+            i, prev = j + 1, c
+            continue
+        if c == "`" or (c == "}" and interpolations and interpolations[-1] == depth):
+            if c == "}":
+                interpolations.pop()
+            end, resume = template(i + 1)
+            blank(i + 1, end, False)
+            i, prev = resume, "`"
+            continue
+        if c == "/" and (prev == "" or prev in "(,=:[!&|?{};+-*%<>~^"):
+            j, klass = i + 1, False
+            while j < n and text[j] != "\n" and (text[j] != "/" or klass):
+                klass = (klass or text[j] == "[") and text[j] != "]"
+                j += 2 if text[j] == "\\" else 1
+            blank(i + 1, j, False)
+            i, prev = j + 1, "/"
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+        if not c.isspace():
+            prev = c
+        i += 1
+    return "".join(code), "".join(bare)
+
+
+def _script_text(name: str, text: str) -> str:
+    """JavaScript of a project file: the file itself, or an HTML file's inline <script> bodies with the rest blanked."""
+    if Path(name).suffix.lower() in JS_SUFFIXES:
+        return text
+    chars = list(re.sub(r"[^\n]", " ", text))
+    for found in re.finditer(r"<script\b[^>]*>(.*?)</script>", text, re.I | re.S):
+        chars[found.start(1):found.end(1)] = text[found.start(1):found.end(1)]
+    return "".join(chars)
+
+
+def _closing(bare: str, start: int) -> int:
+    """Index of the bracket closing the one at `start`, or -1."""
+    depth = 0
+    for k in range(start, len(bare)):
+        if bare[k] in "([{":
+            depth += 1
+        elif bare[k] in ")]}":
+            depth -= 1
+            if depth == 0:
+                return k
+    return -1
+
+
+def _literal_members(code: str, bare: str, start: int) -> set[str] | None:
+    """Keys of the object literal whose `{` is at `start`; None when any key is not a plain name (spread, computed)."""
+    end = _closing(bare, start)
+    if end < 0:
+        return None
+    pieces, depth, piece = [], 0, start + 1
+    for k in range(start + 1, end):
+        if bare[k] in "([{":
+            depth += 1
+        elif bare[k] in ")]}":
+            depth -= 1
+        elif bare[k] == "," and depth == 0:
+            pieces.append(code[piece:k])
+            piece = k + 1
+    pieces.append(code[piece:end])
+    members = set()
+    for text in filter(None, (p.strip() for p in pieces)):
+        key = re.match(rf"(?:(?:async|get|set|static)\s+)*\*?\s*(['\"]?)({_ID})\1\s*(?=[:(]|$)", text)
+        if not key:
+            return None
+        members.add(key.group(2))
+    return members
+
+
+def _class_members(bare: str, start: int) -> set[str] | None:
+    """Static and prototype method/field names of the class body whose `{` is at `start`."""
+    end = _closing(bare, start)
+    if end < 0:
+        return None
+    top, depth = [], 0
+    for ch in bare[start + 1:end]:  # keep only the body's own level, brackets included
+        depth -= ch in ")]}"
+        top.append(ch if depth == 0 else " ")
+        depth += ch in "([{"
+    return set(re.findall(rf"({_ID})\s*[(=;]", "".join(top))) - {"static", "async", "get", "set"}
+
+
+def _definition(code: str, bare: str, pos: int) -> tuple[str, Any]:
+    """What the right-hand side starting at `pos` builds: ("members", set), ("alias", name) or _OPEN."""
+    if (lit := re.compile(r"\s*\{").match(bare, pos)):
+        members = _literal_members(code, bare, lit.end() - 1)
+        return _OPEN if members is None else ("members", members)
+    if (new := re.compile(rf"\s*new\s+({_ID})\s*\(").match(bare, pos)):
+        return "alias", new.group(1)
+    if (name := re.compile(rf"\s*{_GLOBAL}?({_ID})\s*(?:;|\n|$)").match(bare, pos)):
+        return "alias", name.group(1)
+    iife = re.compile(rf"\s*\(\s*(?:async\s+)?(?:function\b[^{{]*|\([^)]*\)\s*=>\s*|{_ID}\s*=>\s*)\{{").match(bare, pos)
+    if not iife:
+        return _OPEN
+    body = iife.end() - 1
+    end = _closing(bare, body)
+    if end < 0 or not re.compile(r"\s*(?:\)\s*\(|\(\s*\)\s*\))").match(bare, end + 1):
+        return _OPEN
+    returns = [r for r in re.finditer(r"\breturn\b", bare[body:end]) if bare.count("{", body, body + r.start()) - bare.count("}", body, body + r.start()) == 1]
+    if not returns:
+        return _OPEN
+    return _definition(code, bare, body + returns[-1].end())  # return { ... } or return api;
+
+
+def contract_issues(sources: dict[str, str]) -> tuple[dict[tuple[str, ...], dict[str, str]], dict[str, set[str] | None]]:
+    """Calls to members a closed project namespace lacks, and element ids no page or script defines.
+
+    Returns ({issue key: defect}, {namespace: members, or None when open}); keys hold no line numbers so issues
+    can be compared before and after a task."""
+    scripts = {name: _strip_js(_script_text(name, text)) for name, text in sources.items()}
+    defs: dict[str, list[tuple[str, str, Any]]] = {}  # global namespaces: name -> [(file, kind, payload)]
+    local: dict[tuple[str, str], list[tuple[str, str, Any]]] = {}  # any-depth definitions, for aliases
+    assigned: dict[str, set[str]] = {}
+    opened: set[str] = set()
+    for file, (code, bare) in scripts.items():
+        for found in re.finditer(rf"(?<![\w$.])(?:(?:const|let|var)\s+|{_GLOBAL}|(class)\s+)({_ID})\s*(=(?![=>])|extends\b|\{{)", bare):
+            is_class, name, op = found.group(1), found.group(2), found.group(3)
+            if is_class:
+                members = _class_members(bare, found.end() - 1) if op == "{" else None
+                entry = (file, *(_OPEN if members is None else ("members", members)))
+            elif op.startswith("="):
+                entry = (file, *_definition(code, bare, found.end()))
+            else:
+                continue
+            local.setdefault((file, name), []).append(entry)
+            top = bare.count("{", 0, found.start()) == bare.count("}", 0, found.start())
+            if top or found.group(0).lstrip().startswith(("window", "globalThis", "self")):
+                defs.setdefault(name, []).append(entry)
+        for found in re.finditer(rf"(?<![\w$.]){_GLOBAL}?({_ID})\??\.({_ID})\s*=(?![=>])", bare):
+            assigned.setdefault(found.group(1), set()).add(found.group(2))
+        opened.update(re.findall(rf"(?<![\w$.]){_GLOBAL}?({_ID})\s*\[[^\]]*\]\s*=(?!=)", bare))
+        opened.update(re.findall(rf"Object\.(?:assign|defineProperty|defineProperties|setPrototypeOf)\(\s*{_GLOBAL}?({_ID})\b", bare))
+    for file, (code, bare) in scripts.items():  # plain reassignments `X = ...` of a known name
+        for found in re.finditer(rf"(?<![\w$.])({_ID})\s*=(?![=>])", bare):
+            name = found.group(1)
+            target = defs.get(name) if name in defs else local.get((file, name))
+            if target is not None and not re.search(r"\b(?:const|let|var|class)\s+$", bare[max(0, found.start() - 8):found.start()]):
+                target.append((file, *_definition(code, bare, found.end())))
+
+    def resolve(name: str, entries: list[tuple[str, str, Any]] | None, depth: int = 0) -> set[str] | None:
+        if name in opened or not entries or depth > 8:  # the depth cap ends alias cycles as "open"
+            return None
+        members = set(assigned.get(name, ()))
+        for where, kind, payload in entries:
+            if kind == "alias":
+                if payload == name:  # window.X = X: X's own definition in that file, if it has one
+                    own = [e for e in local.get((where, name), []) if e[1:] != ("alias", name)]
+                    if not own:
+                        continue
+                    payload_entries = own
+                else:
+                    payload_entries = defs.get(payload) or local.get((where, payload))
+                payload = resolve(payload, payload_entries, depth + 1)
+            if payload is None:
+                return None
+            members |= payload
+        return members
+
+    namespaces = {name: resolve(name, entries) for name, entries in defs.items()}
+    issues: dict[tuple[str, ...], dict[str, str]] = {}
+    closed = [name for name, members in namespaces.items() if members is not None]
+    for file, (code, bare) in scripts.items():
+        if not closed:
+            break
+        for found in re.finditer(rf"(?<![\w$.]){_GLOBAL}?({'|'.join(map(re.escape, closed))})\s*\??\.\s*({_ID})", bare):
+            name, member = found.group(1), found.group(2)
+            members = namespaces[name] or set()
+            if member in members or member in _INHERITED:
+                continue
+            after, before = bare[found.end():found.end() + 4], bare[max(0, found.start() - 12):found.start()]
+            called = re.match(r"\s*(?:\?\.)?\s*\(", after)
+            guarded = (re.match(r"\s*\?(?![.?])", after) or re.search(r"(?:typeof\s*\(?|&&|\bif\s*\(\s*!?)\s*$", before))
+            key = ("member", file, name, member)
+            if (called or guarded) and key not in issues:
+                hint = difflib.get_close_matches(member, sorted(members), 3, 0.5) or sorted(members)[:6]
+                more = ", …" if len(members) > len(hint) else ""
+                owner = sorted({where for where, *_ in defs[name]})[0]
+                issues[key] = {
+                    "file": file, "defect": "Call to a function the project does not define",
+                    "expected": f"{name}.{member} exists, or the code calls a member {name} has",
+                    "evidence": f"{file}:{bare.count(chr(10), 0, found.start()) + 1} {'calls' if called else 'checks for'} "
+                                f"{name}.{member}, which {owner}'s {name} does not define "
+                                f"(it has: {', '.join(hint) + more if hint else 'no members'})",
+                }
+    pages = [text for name, text in sources.items() if Path(name).suffix.lower() in HTML_SUFFIXES]
+    if pages:
+        ids, patterns = set(), []
+        made = [m.group(1) or m.group(2) or m.group(3) or "" for text in pages
+                for m in re.finditer(r"(?<![\w-])id\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>]+))", text)]
+        for code, _ in scripts.values():
+            made += re.findall(r"(?<![\w-])id\s*=\s*\\?[\"'`]([^\"'`\\]*)", code)
+            made += [m[1] for m in re.findall(r"setAttribute\(\s*['\"]id['\"]\s*,\s*([\"'`])(.*?)\1", code)]
+        for value in made:
+            if "${" in value:
+                patterns.append(re.compile(".+".join(map(re.escape, re.split(r"\$\{[^}]*\}", value)))))
+            else:
+                ids.add(value)
+        for file, (code, _) in scripts.items():
+            for found in re.finditer(r"(?:getElementById\(\s*([\"'`])([^\"'`$\\]+)|querySelector(?:All)?\(\s*([\"'`])#([\w-]+))\s*[\"'`]\s*\)", code):
+                element = found.group(2) or found.group(4)
+                key = ("id", file, element)
+                if element in ids or key in issues or any(p.fullmatch(element) for p in patterns):
+                    continue
+                issues[key] = {
+                    "file": file, "defect": "Reference to an element id that does not exist",
+                    "expected": f'An element with id="{element}" exists in a project page or is created by a script',
+                    "evidence": f'{file}:{code.count(chr(10), 0, found.start()) + 1} looks up element id "{element}", '
+                                "which no project .html file has and no script creates",
+                }
+    return issues, namespaces
+
+
+_STUB_LINE = [
+    (re.compile(r"would go here", re.I), "placeholder text ('would go here')"),
+    (re.compile(r"not implemented", re.I), "'not implemented' stub"),
+    (re.compile(r"\bassert(?:True)?\s*\(\s*true\b|expect\s*\(\s*true\s*\)\s*\.\s*toBe\s*\(\s*true\s*\)", re.I), "assertion that always passes"),
+]
+
+
+def stub_issues(before: dict[str, str | None] | None, after: dict[str, str | None],
+                namespaces: dict[str, set[str] | None]) -> list[dict[str, str]]:
+    """Stubs and silent feature-detect guards on lines this task added to its allowed files."""
+    defects = []
+    names = "|".join(map(re.escape, namespaces))
+    guard = re.compile(
+        rf"typeof\s*\(?\s*{_GLOBAL}?({names})\??\.({_ID})\s*\)?\s*[!=]==?\s*['\"]function"
+        rf"|(?<![\w$.]){_GLOBAL}?({names})\??\.({_ID})(?:\s*\?(?![.?])|\?\.\()"
+        rf"|(?<![\w$.]){_GLOBAL}?({names})\s*&&\s*{_GLOBAL}?(?:{names})\??\.({_ID})"
+        rf"|\bif\s*\(\s*!?\s*{_GLOBAL}?({names})\??\.({_ID})\s*\)"
+    ) if names else None
+    for file, text in sorted(after.items()):
+        suffix = Path(file).suffix.lower()
+        if text is None or suffix not in STUB_SUFFIXES:
+            continue
+        old, new = ((before or {}).get(file) or "").splitlines(), text.splitlines()
+        added = [j for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes()
+                 if tag in ("replace", "insert") for j in range(j1, j2)]
+        for j in added:
+            line = new[j]
+            comment = re.search(r"(?<![:\w])//|/\*|<!--|^\s*\*" + (r"|#" if suffix == ".py" else ""), line)
+            comment_text = line[comment.end():] if comment else ""
+            found = [label for pattern, label in _STUB_LINE if pattern.search(line)]
+            if re.search(r"\b(?:TODO|FIXME)\b", comment_text):
+                found.append("TODO/FIXME left in")
+            if re.search("placeholder", comment_text, re.I) or (re.search(r"\b(?:assert\w*|expect)\s*\(", line) and "placeholder" in line.lower()):
+                found.append("placeholder comment or assertion")
+            for match in (guard.finditer(line) if guard and suffix not in {".py", ".css"} else ()):
+                groups = [g for g in match.groups() if g]
+                name, member = groups[0], groups[-1]
+                nearby = "\n".join(new[j:j + 3])
+                if (match.group(0).startswith("typeof") or namespaces[name] is not None and member not in namespaces[name]
+                        or "?.(" in match.group(0) or re.search(rf"(?<![\w$]){re.escape(name)}\??\.{re.escape(member)}\s*\(", nearby)):
+                    found.append(f"silent existence check around the project's own {name}.{member}")
+            for label in found:
+                defects.append({"file": file, "defect": "Stub or silent guard in added code",
+                                "expected": "Real, working code: no placeholders, TODOs or existence checks around the project's own functions",
+                                "evidence": f"{file}:{j + 1} {label}: {line.strip()[:200]}"})
+    return defects
+
+
+def code_gate(project_root: Path, allowed: list[str], before: dict[str, str | None] | None,
+              config: dict[str, Any] | None = None) -> tuple[list[dict[str, str]], str]:
+    """Static check of JavaScript projects. Returns (defects, CODE CHECK line); ([], "") when config disables it.
+
+    Contract issues already present in the `before` state are reported as pre-existing, not as defects; stubs
+    and guards count only on lines added since `before`. Without `before`, everything counts as new."""
+    if (config or {}).get("code_check") is False:
+        return [], ""
+    sources = _web_sources(project_root)
+    if not any(Path(name).suffix.lower() in JS_SUFFIXES for name in sources):
+        print("[code] skipped (no JavaScript)")
+        return [], "CODE CHECK: skipped (no JavaScript)"
+    issues, namespaces = contract_issues(sources)
+    old: dict[tuple[str, ...], dict[str, str]] = {}
+    if before is not None:
+        earlier = dict(sources)
+        for name, text in before.items():
+            if Path(name).suffix.lower() not in JS_SUFFIXES | HTML_SUFFIXES:
+                continue
+            if text is None:
+                earlier.pop(name, None)
+            else:
+                earlier[name] = text
+        old = contract_issues(earlier)[0]
+    defects = [issue for key, issue in issues.items() if key not in old]
+    defects += stub_issues(before, snapshot(project_root, allowed), namespaces)
+    preexisting = [issue["evidence"] for key, issue in issues.items() if key in old]
+    summary = f"FAILED ({len(defects)} issue(s))" if defects else "passed"
+    print(f"[code] {summary}" + (f"; {len(preexisting)} pre-existing issue(s)" if preexisting else ""))
+    summary += "".join(f"\n- {d['evidence']}" for d in defects)
+    if preexisting:
+        summary += "\nPre-existing issues (not caused by this task):" + "".join(f"\n- {e}" for e in preexisting)
+    return defects, f"CODE CHECK: {summary}"
+
+
+def code_message(defects: list[dict[str, str]]) -> str:
+    return ("CODE CHECK FAILED. Fix these problems with the file tools (write any missing function instead of guarding "
+            "or renaming the call; replace stubs with working code), then answer again:\n") + "\n".join(f"- {d['evidence']}" for d in defects)
+
+
 # Injected first into the checked page: records page errors, unhandled rejections and console.error, then after
 # load + a short settle runs the task's acceptance steps (__AO_STEPS__: a JSON list, or null for a load-only check)
 # within __AO_BUDGET__ ms and writes a JSON report into the DOM, which the browser's --dump-dom prints.
@@ -1092,11 +1467,14 @@ def run_agent(
                 messages.append({"role": "user", "content": "Your report is not accepted: " + "; ".join(reasons) + ". Redo it through the tool-calling interface with strictly valid JSON (no comments, no trailing text), then report only what actually succeeded."})
                 continue
             defects = [] if reasons else syntax_gate(project_root, allowed, baseline)[0]
+            message = syntax_message
+            if not reasons and not defects:
+                defects, message = code_gate(project_root, allowed, baseline, config)[0], code_message
             if defects and fixes < 3 and syntax_fixes < 2 and step < max_steps - 1:
                 fixes += 1
                 syntax_fixes += 1
-                print(f"[{name}] syntax errors remain; sending back ({syntax_fixes}/2) ...")
-                messages.append({"role": "user", "content": syntax_message(defects)})
+                print(f"[{name}] {'syntax errors' if message is syntax_message else 'code check problems'} remain; sending back ({syntax_fixes}/2) ...")
+                messages.append({"role": "user", "content": message(defects)})
                 continue
             return f"UNVERIFIED: {'; '.join(reasons)}.\n\n{reply}" if reasons else reply
         results = []
@@ -1592,7 +1970,10 @@ def run_review_loop(
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
         defects, syntax_line = syntax_gate(project_root, allowed, before)
-        gate = "syntax"
+        gate, code_line = "syntax", ""
+        if not defects:
+            defects, code_line = code_gate(project_root, allowed, before, config)
+            gate = "code"
         if not defects:
             defects, behaviour_block = behaviour_gate(project_root, config, task.get("acceptance") or [])
             gate = "behaviour"
@@ -1606,7 +1987,7 @@ def run_review_loop(
             behaviour_part = f"{behaviour_block}\n\n" if behaviour_block else ""
             reviewer_input = (
                 f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
-                f"{syntax_line}\n\n{behaviour_part}CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
+                f"{syntax_line}\n\n{code_line + chr(10) * 2 if code_line else ''}{behaviour_part}CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
             )
             if resumed and phase == "extra_reviewing":
                 verdict, review_text = "PASS", load_text(project_root / "REVIEW.md")  # the main Reviewer already passed this round
@@ -1766,10 +2147,12 @@ def _run() -> int:
             config = configure_project(config, project_root, project, interactive)
             behaviour_block = behaviour_gate(project_root, config)[1].split("\nVisible elements", 1)[0]  # no text sample
             behaviour_part = f"BEHAVIOUR CHECK OF CURRENT PROJECT\n{behaviour_block}\n\n" if behaviour_block else ""
+            code_defects, code_line = code_gate(project_root, [], None, config)
+            code_part = f"CODE CHECK OF CURRENT PROJECT\n{code_line}\n\n" if code_defects else ""
             planner_input = (
                 f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
                 f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
-                f"{team_context(config)}\n\n{behaviour_part}"
+                f"{team_context(config)}\n\n{behaviour_part}{code_part}"
                 f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
             )
             plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
