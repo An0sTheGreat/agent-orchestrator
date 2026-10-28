@@ -10,14 +10,14 @@ You describe the goal, constraints, and acceptance criteria in a `PROJECT.md`. A
 
 `planner -> implementer tools -> reviewer -> fix/review -> verified state -> planner`
 
-- **Planner** reads the project and the verified state, then picks one small task touching one to three files.
+- **Planner** reads the project and the verified state, then picks one feature-sized task: one user-visible feature or behaviour across the files it needs, up to 5 files and 10 required-work items by default.
 - **Implementer** writes code with file tools limited to those files, and can run only the validation commands you have approved.
 - **Reviewer** is read-only. It judges the diff and validation evidence and returns `PASS` or `FAIL`.
 - **Verified state** (`STATE.md`) advances only after a `PASS`, so the next task always builds on reviewed work.
 
 Models are loaded one at a time through Unsloth's local API, so the three roles can share a single GPU, and they are unloaded again when a run ends. A Windows launcher (`dist\Agent Orchestrator.exe`) wraps the Python engine with project setup, a live model-output view, per-model token statistics, and an execution log.
 
-The engine uses only Python's standard library and Unsloth's OpenAI-compatible API. The implementer can only touch the 1-3 files named by the planner. The reviewer is read-only. Shell access is not general-purpose: models can only run commands you explicitly name in `validation_commands`.
+The engine uses only Python's standard library and Unsloth's OpenAI-compatible API. The implementer can only touch the files named by the planner; the per-task limits are `"task_limits": {"max_allowed_files": N, "max_required_work": M}` in the project's `config.json` (defaults 5 and 10; set them in the launcher under Project > Task limits). The reviewer is read-only. Shell access is not general-purpose: models can only run commands you explicitly name in `validation_commands`.
 
 **Requirements:** Windows, Python 3.11+ on `PATH`, Unsloth Desktop running with an API key, and the three models installed in Unsloth.
 
