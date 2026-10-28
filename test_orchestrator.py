@@ -1276,6 +1276,209 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("T-2", text)
             self.assertFalse((root / ".ao_checkpoint.json").exists())
 
+    SCOPE_CONFIG = {"behaviour_check": False, "code_check": False}
+    FAIL_INDEX = json.dumps({"verdict": "FAIL", "defects": [
+        {"file": "index.html", "defect": "script.js is never loaded", "evidence": "acceptance step 2 failed: #out empty"}]})
+    PASS = '{"verdict": "PASS", "evidence": ["ok"]}'
+
+    def scope_run(self, root, task, implementer, reviews, decisions, rounds=2):
+        """run_review_loop with faked agents. implementer(user, allowed) writes through execute_tool, so the
+        task's real scope applies. Returns (Planner calls, events, stdout, WorkflowError or None)."""
+        reviews, decisions, asked, events, out = iter(reviews), iter(decisions), [], [], io.StringIO()
+
+        def agent(config, role, system, user, project_root, allowed, *rest):
+            return next(reviews) if role == "reviewer" else implementer(user, list(allowed))
+
+        def ask(config, role, system, user, *rest, **kwargs):
+            asked.append((role, system, user))
+            return next(decisions)
+
+        before = orchestrator.snapshot(root, task["allowed_files"])
+        (root / "TASK.md").write_text(orchestrator.task_markdown(task), encoding="utf-8")
+        with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "ask_once", side_effect=ask), \
+                patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), contextlib.redirect_stdout(out):
+            try:
+                orchestrator.run_review_loop(self.SCOPE_CONFIG, {"implementer": "", "reviewer": ""}, task, before, 0,
+                                             "None; this is the first attempt.", "implementing", rounds, root, False)
+                error = None
+            except orchestrator.WorkflowError as exc:
+                error = exc
+        return asked, events, out.getvalue(), error
+
+    @staticmethod
+    def write(root, allowed, name, content):
+        try:
+            return orchestrator.execute_tool("write_file", {"path": name, "content": content}, root, allowed, {}, True)
+        except orchestrator.WorkflowError as exc:
+            return f"ERROR: {exc}"
+
+    def test_needs_files_request_approved_widens_scope_for_the_next_round(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("<p id=out></p>\n", encoding="utf-8")
+            task = dict(self.TASK, id="P1-T1", allowed_files=["script.js"])
+            seen = []
+
+            def implementer(user, allowed):
+                seen.append((user, allowed, self.write(root, allowed, "index.html", "<script src=script.js></script>\n")))
+                self.write(root, allowed, "script.js", "out.textContent = 'hi';\n")
+                return "P1-T1 BLOCKED\n- **`needs_files: index.html` — the page never loads script.js**" if len(seen) == 1 else "P1-T1 PASSED"
+
+            asked, events, out, error = self.scope_run(
+                root, task, implementer, [self.FAIL_INDEX, self.PASS],
+                ['{"approve": true, "files": ["index.html"], "reason": "the script tag is missing"}'])
+            self.assertIsNone(error)
+            self.assertEqual(len(asked), 1)
+            role, system, user = asked[0]
+            self.assertEqual(role, "planner")
+            self.assertIn('"approve"', system)
+            for expected in ("REQUESTED FILES\nindex.html", "the page never loads script.js", "--- index.html ---\n<p id=out></p>", "P1-T1"):
+                self.assertIn(expected, user)
+            self.assertTrue(seen[0][2].startswith("ERROR"))  # round 1: outside the scope
+            self.assertEqual(seen[1][1], ["script.js", "index.html"])
+            self.assertEqual(seen[1][2], "OK")  # round 2 may write it
+            self.assertIn("SCOPE WIDENED\nindex.html added", seen[1][0])
+            self.assertIn("--- index.html ---", seen[1][0])  # CURRENT ALLOWED FILES shows it
+            self.assertIn("[scope] P1-T1 widened: index.html (the script tag is missing)", out)
+            self.assertIn(("scope", {"id": "P1-T1", "files": ["index.html"], "reason": "the script tag is missing"}), events)
+            self.assertEqual(task["allowed_files"], ["script.js", "index.html"])
+            self.assertIn("- index.html", (root / "TASK.md").read_text(encoding="utf-8"))
+            self.assertIn("## Passed: P1-T1", (root / "STATE.md").read_text(encoding="utf-8"))
+
+    def test_widened_file_diff_starts_from_its_pre_widening_content(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("old page\n", encoding="utf-8")
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            inputs = []
+
+            def agent(config, role, system, user, project_root, allowed, *rest):
+                if role == "reviewer":
+                    inputs.append(user)
+                    return self.FAIL_INDEX if len(inputs) == 1 else self.PASS
+                self.write(root, allowed, "index.html", "new page\n")
+                return "NEEDS_FILES: index.html — missing tag"
+
+            before = orchestrator.snapshot(root, ["a.txt"])
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            with patch.object(orchestrator, "run_agent", side_effect=agent), \
+                    patch.object(orchestrator, "ask_once", return_value='{"approve": true, "files": ["index.html"], "reason": "r"}'), \
+                    patch.object(orchestrator, "emit"), contextlib.redirect_stdout(io.StringIO()):
+                orchestrator.run_review_loop(self.SCOPE_CONFIG, {"implementer": "", "reviewer": ""}, task, before, 0, "", "implementing", 2, root, False)
+            self.assertEqual(before["index.html"], "old page\n")
+            self.assertNotIn("b/index.html", inputs[0])
+            self.assertIn("-old page\n+new page", inputs[1])
+
+    def test_rejected_scope_request_keeps_scope_and_records_the_reason(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["script.js"])
+            seen = []
+
+            def implementer(user, allowed):
+                seen.append((user, allowed, self.write(root, allowed, "index.html", "x\n")))
+                return "BLOCKED\nNEEDS_FILES: index.html - the tag is missing"
+
+            asked, events, out, error = self.scope_run(
+                root, task, implementer, [self.FAIL_INDEX] * 2,
+                ['{"approve": false, "files": [], "reason": "a later task owns index.html"}'], rounds=1)
+            self.assertRegex(str(error), "failed after 2 reviews")
+            self.assertEqual(len(asked), 1)  # the second round's request is not decided again (no round left)
+            self.assertEqual([s[1] for s in seen], [["script.js"], ["script.js"]])
+            self.assertTrue(seen[1][2].startswith("ERROR"))
+            self.assertIn("SCOPE REQUEST REJECTED\nThe Planner did not add index.html: a later task owns index.html", seen[1][0])
+            self.assertNotIn("scope", [e for e, _ in events])
+            self.assertEqual(task["allowed_files"], ["script.js"])
+            issues = (root / "ISSUES.md").read_text(encoding="utf-8")
+            self.assertIn("SCOPE REQUEST REJECTED (index.html): a later task owns index.html", issues)
+
+    def test_same_outside_file_in_two_consecutive_rounds_raises_a_scope_request(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            task = dict(self.TASK, allowed_files=["script.js"])
+            other = json.dumps({"verdict": "FAIL", "defects": [{"file": "script.js", "defect": "bug", "evidence": "e"}]})
+            seen = []
+
+            def implementer(user, allowed):
+                seen.append(allowed)
+                return "PASSED"  # never asks for files itself
+
+            asked, _, out, error = self.scope_run(
+                root, task, implementer, [self.FAIL_INDEX, other, self.FAIL_INDEX, "./index.html:3".join(self.FAIL_INDEX.split("index.html")), self.PASS],
+                ['{"approve": true, "files": ["index.html"], "reason": "needs the tag"}'], rounds=4)
+            self.assertIsNone(error)
+            self.assertEqual(len(asked), 1)  # rounds 1 and 3 are not consecutive; 3 and 4 are
+            self.assertEqual(seen, [["script.js"]] * 4 + [["script.js", "index.html"]])
+            self.assertIn("two consecutive rounds", asked[0][2])
+            self.assertIn("index.html: script.js is never loaded: acceptance step 2 failed", asked[0][2])
+            self.assertIn("--- index.html --- (does not exist)", asked[0][2])
+
+    def test_scope_request_refusals(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+
+            def decide(task, requested, reply=None):
+                allowed, before = list(task["allowed_files"]), {}
+                with patch.object(orchestrator, "ask_once", return_value=reply) as ask, patch.object(orchestrator, "emit"), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    note = orchestrator.widen_scope({}, task, allowed, before, requested, "why", root, False)
+                return note, ask.call_count, allowed
+
+            # Protected, escaping, glob and already-allowed names never reach the Planner and use up nothing.
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            note, calls, allowed = decide(task, ["STATE.md", "../x.js", "*.js", "a.txt"])
+            self.assertEqual((calls, allowed, "scope" in task), (0, ["a.txt"], False))
+            self.assertIn("SCOPE REQUEST REFUSED", note)
+            # Over the limit: three files allowed (max 3), so at most two more.
+            task = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt"])
+            note, calls, allowed = decide(task, ["d.txt", "e.txt", "f.txt"], '{"approve": true, "files": ["d.txt", "e.txt", "f.txt"], "reason": "all"}')
+            self.assertEqual((calls, allowed), (1, ["a.txt", "b.txt", "c.txt"]))
+            self.assertIn("only up to 2", note)
+            self.assertFalse(task["scope"]["approved"])
+            # Approving a file that was not requested is refused too.
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            note, _, allowed = decide(task, ["d.txt"], '{"approve": true, "files": ["d.txt", "z.txt"], "reason": "r"}')
+            self.assertEqual(allowed, ["a.txt"])
+            # One request per task: after an approval a second request is refused without asking.
+            task = dict(self.TASK, allowed_files=["a.txt"])
+            decide(task, ["d.txt"], '{"approve": true, "files": ["d.txt"], "reason": "r"}')
+            self.assertEqual(task["allowed_files"], ["a.txt", "d.txt"])
+            note, calls, allowed = decide(task, ["e.txt"], '{"approve": true, "files": ["e.txt"], "reason": "r"}')
+            self.assertEqual((calls, allowed), (0, ["a.txt", "d.txt"]))
+            self.assertIn("already had its one scope request", note)
+
+    def test_resume_after_widening_keeps_the_widened_scope(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "config.json").write_text(json.dumps(self.SCOPE_CONFIG), encoding="utf-8")
+            (root / "index.html").write_text("old\n", encoding="utf-8")
+            task = dict(self.TASK, allowed_files=["a.txt", "b.txt", "c.txt"])  # at the limit: the widened task has 4
+
+            def implementer(user, allowed):
+                if "SCOPE WIDENED" in user:
+                    raise orchestrator.WorkflowError("killed")
+                return "NEEDS_FILES: index.html — tag"
+
+            _, _, _, error = self.scope_run(root, task, implementer, [self.FAIL_INDEX],
+                                            ['{"approve": true, "files": ["index.html"], "reason": "r"}'])
+            self.assertEqual(str(error), "killed")
+            checkpoint = orchestrator.load_checkpoint(root, (3, 7), 3)
+            self.assertIsNotNone(checkpoint)
+            self.assertEqual(checkpoint["task"]["allowed_files"], ["a.txt", "b.txt", "c.txt", "index.html"])
+            self.assertEqual((checkpoint["round"], checkpoint["before"]["index.html"]), (1, "old\n"))
+            self.assertIn("SCOPE WIDENED", checkpoint["reviewer_feedback"])
+            seen = []
+
+            def agent(config, role, system, user, project_root, allowed, *rest):
+                seen.append(list(allowed))
+                return "did it"
+
+            code, plan, _ = self.run_main(root, agent=agent)
+            self.assertEqual(code, 0)
+            plan.assert_not_called()
+            self.assertEqual(seen[0], ["a.txt", "b.txt", "c.txt", "index.html"])
+            self.assertIn("- index.html", (root / "TASK.md").read_text(encoding="utf-8"))
+
     def test_resume_skips_planner_and_starts_at_stored_round(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)
