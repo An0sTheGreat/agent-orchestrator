@@ -229,4 +229,6 @@ internal sealed class WorkerPreset
     public string Name { get; set; } = "";
     public List<WorkerSetting> Workers { get; set; } = new();
     public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
+    // config.json task_limits as JSON; "{}" = none set (the defaults); null = saved without a project config, or before presets carried it.
+    public string? TaskLimits { get; set; }
 }

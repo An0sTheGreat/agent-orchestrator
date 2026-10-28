@@ -423,31 +423,99 @@ internal static class LauncherLogic
             Name = name,
             Workers = workers.Select(w => w.Clone()).ToList(),
         };
-        if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath))?["roles"] is JsonObject roles)
-            foreach (var role in BuiltInRoles)
-                if (roles[role] is JsonObject stored)
-                    preset.Roles[role] = stored.ToJsonString();
+        if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath)) is JsonObject root)
+        {
+            if (root["roles"] is JsonObject roles)
+                foreach (var role in BuiltInRoles)
+                    if (roles[role] is JsonObject stored)
+                        preset.Roles[role] = stored.ToJsonString();
+            preset.TaskLimits = root["task_limits"] is JsonObject limits ? limits.ToJsonString() : "{}";
+        }
         return preset;
     }
 
-    // Replaces only the stored roles.<role> objects; every other key and role in the config stays.
-    // Returns false when there is no config to write to.
+    // Replaces only the stored roles.<role> objects and task_limits ("{}" removes it; null leaves it);
+    // every other key and role in the config stays. Returns false when there is no config to write to.
     public static bool ApplyPresetRoles(string configPath, WorkerPreset preset)
     {
         if (!File.Exists(configPath))
             return false;
-        if (preset.Roles.Count == 0)
+        if (preset.Roles.Count == 0 && preset.TaskLimits is null)
             return true;
         var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
             ?? throw new InvalidOperationException("config.json is not a JSON object.");
-        var roles = (root["roles"] ??= new JsonObject()).AsObject();
-        foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
-            roles[role] = JsonNode.Parse(json);
+        if (preset.Roles.Count > 0)
+        {
+            var roles = (root["roles"] ??= new JsonObject()).AsObject();
+            foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
+                roles[role] = JsonNode.Parse(json);
+        }
+        if (preset.TaskLimits is { } stored)
+        {
+            if (JsonNode.Parse(stored) is JsonObject { Count: > 0 } limits)
+                root["task_limits"] = limits;
+            else
+                root.Remove("task_limits");
+        }
         File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
         {
             WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         }));
         return true;
+    }
+
+    // The orchestrator's task_limits.max_allowed_files when the key is absent.
+    public const int DefaultMaxFiles = 5;
+
+    // task_limits in the project's config.json as field text ("" = key absent, so the orchestrator's default).
+    public static (string Files, string Work) ReadTaskLimits(string configPath)
+    {
+        var limits = JsonNode.Parse(File.ReadAllText(configPath))?["task_limits"] as JsonObject;
+        static string Text(JsonNode? node) => node is JsonValue ? node.ToJsonString() : "";
+        return (Text(limits?["max_allowed_files"]), Text(limits?["max_required_work"]));
+    }
+
+    // Both fields must be empty or a whole number of 1 or more; returns an error (nothing written) or null.
+    // An empty field removes its key, an emptied task_limits is removed, and every other key stays.
+    public static string? WriteTaskLimits(string configPath, string files, string work)
+    {
+        var values = new[] { ("max_allowed_files", files.Trim()), ("max_required_work", work.Trim()) };
+        if (values.Any(v => v.Item2.Length > 0 && !(int.TryParse(v.Item2, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > 0)))
+            return "Task limits must be whole numbers, 1 or more (or empty for the default).";
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
+        if (root["task_limits"] is not JsonObject limits)
+            root["task_limits"] = limits = new JsonObject();
+        foreach (var (key, text) in values)
+            if (text.Length == 0)
+                limits.Remove(key);
+            else
+                limits[key] = int.Parse(text, NumberStyles.None, CultureInfo.InvariantCulture);
+        if (limits.Count == 0)
+            root.Remove("task_limits");
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return null;
+    }
+
+    // Each built-in role's auto_load.max_seq_length, when set.
+    public static List<(string Name, long Context)> RoleContexts(string configPath)
+    {
+        var roles = JsonNode.Parse(File.ReadAllText(configPath))?["roles"] as JsonObject;
+        var contexts = new List<(string, long)>();
+        foreach (var role in BuiltInRoles)
+            if (roles?[role]?["auto_load"]?["max_seq_length"] is JsonValue value && value.TryGetValue<long>(out var context))
+                contexts.Add((char.ToUpperInvariant(role[0]) + role[1..], context));
+        return contexts;
+    }
+
+    // A non-blocking hint: a task's files (~4,000 tokens each) plus ~8,000 tokens of prompt may not fit a role's context.
+    public static string? TaskContextWarning(int files, IEnumerable<(string Name, long Context)> contexts)
+    {
+        var tight = contexts.Where(c => files * 4000L + 8000 > c.Context).Select(c => $"{c.Name}'s {Math.Round(c.Context / 1024.0)}k").ToList();
+        return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
     public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER"];
@@ -812,6 +880,38 @@ internal static class LauncherLogic
             if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
                 presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
                 throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
+            // Task limits: read and write; an empty field removes its key, then the empty task_limits; other keys stay.
+            var limitsConfig = Path.Combine(testArea, "limits.json");
+            File.WriteAllText(limitsConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"auto_load\":{\"max_seq_length\":16384}},\"reviewer\":{\"auto_load\":{\"max_seq_length\":32768}}}}");
+            if (ReadTaskLimits(limitsConfig) != ("", "") || WriteTaskLimits(limitsConfig, "6", " 10 ") is not null || ReadTaskLimits(limitsConfig) != ("6", "10"))
+                throw new InvalidOperationException("Task limits were not written or read back.");
+            var limitsBefore = File.ReadAllText(limitsConfig);
+            if (new[] { "0", "-2", "1.5", "x", "99999999999" }.Any(bad => WriteTaskLimits(limitsConfig, bad, "") is null || WriteTaskLimits(limitsConfig, "", bad) is null) ||
+                File.ReadAllText(limitsConfig) != limitsBefore)
+                throw new InvalidOperationException("Invalid task limits were accepted or partially written.");
+            if (WriteTaskLimits(limitsConfig, "", "8") is not null || ReadTaskLimits(limitsConfig) != ("", "8") || WriteTaskLimits(limitsConfig, " ", "") is not null ||
+                JsonNode.Parse(File.ReadAllText(limitsConfig)) is not JsonObject cleared || cleared.ContainsKey("task_limits") || (int)cleared["keep"]! != 1 ||
+                (int)cleared["roles"]!["reviewer"]!["auto_load"]!["max_seq_length"]! != 32768)
+                throw new InvalidOperationException("Empty task limits must remove their keys, then task_limits, and nothing else.");
+            // Presets carry task_limits: "C++" sets 6/10, one saved without task_limits restores the defaults, an older preset leaves them.
+            WriteTaskLimits(configA, "6", "10");
+            var cpp = CapturePreset("C++", configA, workersA);
+            var plain = CapturePreset("plain", limitsConfig, workersA);
+            var old = new WorkerPreset { Name = "old", Roles = cpp.Roles };
+            if (cpp.TaskLimits is null || plain.TaskLimits != "{}" || CapturePreset("none", Path.Combine(testArea, "missing.json"), workersA).TaskLimits is not null ||
+                !ApplyPresetRoles(configB, cpp) || ReadTaskLimits(configB) != ("6", "10") || JsonNode.Parse(File.ReadAllText(configB))!["validation_commands"]![0]!.ToString() != "b" ||
+                !ApplyPresetRoles(configB, old) || ReadTaskLimits(configB) != ("6", "10") ||
+                !ApplyPresetRoles(configB, plain) || JsonNode.Parse(File.ReadAllText(configB))!.AsObject().ContainsKey("task_limits"))
+                throw new InvalidOperationException("Presets must capture and apply task_limits.");
+            // Context warning: files x 4,000 + 8,000 tokens against each role's max_seq_length.
+            var contexts = RoleContexts(limitsConfig);
+            if (contexts.Count != 2 || contexts[0] != ("Implementer", 16384) || contexts[1] != ("Reviewer", 32768) ||
+                TaskContextWarning(2, contexts) is not null || // 16,000 fits 16k
+                TaskContextWarning(3, contexts) != "3 files per task may not fit Implementer's 16k context" ||
+                TaskContextWarning(6, contexts) != "6 files per task may not fit Implementer's 16k context" || // 32,000 fits 32k
+                TaskContextWarning(7, contexts) != "7 files per task may not fit Implementer's 16k or Reviewer's 32k context" ||
+                TaskContextWarning(50, []) is not null || RoleContexts(configA).Count != 0)
+                throw new InvalidOperationException("Task limits context warning thresholds failed.");
             // Custom workers: contract of the written custom_workers array.
             var cwConfig = Path.Combine(testArea, "cw.json");
             File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"api_key\":\"sk\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
