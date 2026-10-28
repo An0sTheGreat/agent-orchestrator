@@ -5,6 +5,7 @@ using System.IO;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1428,6 +1429,51 @@ public partial class MainWindow : Window
         await Settle();
         if (!RailProjectButton.IsEnabled || !RailOnceToggle.IsEnabled)
             return Fail();
+        // Maximize, then drag the title bar: each cycle restores at the size from before maximizing, under the cursor.
+        // This maximizes on a real screen for a moment; no input is sent.
+        MouseButtonEventArgs TitleClick(int count, RoutedEvent kind)
+        {
+            var args = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = kind };
+            typeof(MouseButtonEventArgs).GetProperty(nameof(args.ClickCount))!.SetValue(args, count);
+            return args;
+        }
+        foreach (var size in new[] { new Size(1100, 700), new Size(1100, 700), new Size(1100, 700), new Size(1240, 760) })
+        {
+            (Width, Height) = (size.Width, size.Height);
+            await Settle();
+            MaximizeButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            TitleBar.RaiseEvent(TitleClick(1, MouseLeftButtonDownEvent)); // a plain click on the maximized bar does not restore
+            TitleBar.RaiseEvent(TitleClick(1, MouseLeftButtonUpEvent));
+            if (WindowState != WindowState.Maximized || _maximizedPress is not null || TitleBar.IsMouseCaptured)
+                return Fail();
+            var inBar = new Point(TitleBar.ActualWidth * 0.25, 10);
+            var cursor = TitleBar.PointToScreen(inBar);
+            RestoreForDrag(cursor, inBar);
+            await Settle();
+            var at = PresentationSource.FromVisual(this)!.CompositionTarget!.TransformFromDevice.Transform(cursor);
+            if (WindowState != WindowState.Normal || Math.Abs(ActualWidth - size.Width) > 1 || Math.Abs(ActualHeight - size.Height) > 1 ||
+                Math.Abs((at.X - Left) / ActualWidth - 0.25) > 0.01 || at.Y < Top || at.Y > Top + TitleBar.ActualHeight)
+            {
+                Console.Error.WriteLine($"ui-smoke: drag restore: {WindowState} {Left},{Top} {ActualWidth}x{ActualHeight}, wanted {size} under {at}");
+                return Fail();
+            }
+        }
+        TitleBar.RaiseEvent(TitleClick(2, MouseLeftButtonDownEvent)); // double-click toggles
+        await Settle();
+        if (WindowState != WindowState.Maximized)
+            return Fail();
+        TitleBar.RaiseEvent(TitleClick(2, MouseLeftButtonDownEvent));
+        await Settle();
+        if (WindowState != WindowState.Normal || Math.Abs(ActualWidth - 1240) > 1)
+            return Fail();
+        Minimize_Click(this, new RoutedEventArgs());
+        await Settle();
+        if (WindowState != WindowState.Minimized)
+            return Fail();
+        WindowState = WindowState.Normal;
+        (Left, Top) = (-20000, -20000);
+        await Settle();
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Flat" })
@@ -3135,13 +3181,77 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
+    private Point? _maximizedPress; // a title-bar press on the maximized window that may still become a drag (title-bar coordinates)
+
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ClickCount == 2)
+        {
+            EndMaximizedPress();
             ToggleMaximize();
+        }
+        else if (WindowState == WindowState.Maximized)
+        {
+            // DragMove does nothing while maximized, and a click or double-click must not restore: wait for the press to move.
+            _maximizedPress = e.GetPosition(TitleBar);
+            TitleBar.CaptureMouse();
+        }
         else if (e.LeftButton == MouseButtonState.Pressed)
             DragMove();
     }
+
+    private void TitleBar_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (_maximizedPress is not { } press)
+            return;
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            EndMaximizedPress();
+            return;
+        }
+        var at = e.GetPosition(TitleBar);
+        if (Math.Abs(at.X - press.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(at.Y - press.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+        EndMaximizedPress();
+        RestoreForDrag(TitleBar.PointToScreen(at), at);
+        DragMove(); // the same press carries on moving the restored window
+    }
+
+    private void TitleBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => EndMaximizedPress();
+
+    private void EndMaximizedPress()
+    {
+        _maximizedPress = null;
+        TitleBar.ReleaseMouseCapture();
+    }
+
+    // Restore a maximized window under the cursor (screen pixels; inBar: its spot in the title bar) at the size it had
+    // before maximizing. Called once a maximized title-bar press starts moving, and directly by --ui-smoke.
+    internal void RestoreForDrag(Point cursor, Point inBar)
+    {
+        var fromDevice = PresentationSource.FromVisual(this)!.CompositionTarget!.TransformFromDevice;
+        var monitor = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        GetMonitorInfo(MonitorFromPoint(new NativePoint { X = (int)cursor.X, Y = (int)cursor.Y }, 2 /* nearest */), ref monitor);
+        var work = new Rect(fromDevice.Transform(new Point(monitor.Work.Left, monitor.Work.Top)),
+            fromDevice.Transform(new Point(monitor.Work.Right, monitor.Work.Bottom)));
+        var bounds = LauncherLogic.DragRestoreBounds(fromDevice.Transform(cursor), inBar, TitleBar.ActualWidth, TitleBar.ActualHeight,
+            RestoreBounds, work, new Size(_settings.WindowWidth ?? 1400, _settings.WindowHeight ?? 860));
+        WindowState = WindowState.Normal;
+        (Left, Top, Width, Height) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);
+    }
+
+    private struct NativePoint { public int X, Y; }
+
+    private struct NativeRect { public int Left, Top, Right, Bottom; }
+
+    private struct MonitorInfo { public int Size; public NativeRect Monitor, Work; public uint Flags; }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 

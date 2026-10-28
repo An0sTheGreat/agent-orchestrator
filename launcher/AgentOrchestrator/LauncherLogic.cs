@@ -559,8 +559,47 @@ internal static class LauncherLogic
     public static string FormatElapsed(System.Diagnostics.Stopwatch watch) =>
         FormatElapsed(watch.IsRunning || watch.Elapsed > TimeSpan.Zero ? watch.Elapsed : null);
 
+    // Dragging the title bar of a maximized window restores it to its pre-maximize size (restore; fallback only when
+    // that is empty) with the cursor at the same fraction of the bar's width and the same height within the bar, kept
+    // on the cursor's monitor work area but never leaving the cursor outside the restored title bar. All in DIPs.
+    public static System.Windows.Rect DragRestoreBounds(System.Windows.Point cursor, System.Windows.Point inBar, double barWidth,
+        double barHeight, System.Windows.Rect restore, System.Windows.Rect workArea, System.Windows.Size fallback)
+    {
+        var size = restore.IsEmpty ? fallback : restore.Size;
+        var left = cursor.X - size.Width * Math.Clamp(inBar.X / barWidth, 0, 1);
+        left = Math.Max(Math.Min(left, workArea.Right - size.Width), workArea.Left);
+        left = Math.Clamp(left, cursor.X - size.Width, cursor.X);
+        var top = Math.Max(cursor.Y - Math.Clamp(inBar.Y, 0, barHeight), workArea.Top);
+        top = Math.Clamp(top, cursor.Y - barHeight, cursor.Y);
+        return new System.Windows.Rect(left, top, size.Width, size.Height);
+    }
+
     public static void SelfTest()
     {
+        var work = new System.Windows.Rect(0, 0, 1920, 1040);
+        var restored = new System.Windows.Rect(300, 200, 1000, 600);
+        var fallbackSize = new System.Windows.Size(1400, 860);
+        System.Windows.Rect Drag(double x, double y, double inX, double inY, System.Windows.Rect restore, System.Windows.Rect area)
+        {
+            var r = DragRestoreBounds(new(x, y), new(inX, inY), 1920, 32, restore, area, fallbackSize);
+            if (x < r.Left || x > r.Right || y < r.Top || y > r.Top + 32)
+                throw new InvalidOperationException($"Drag restore left the cursor ({x},{y}) outside the title bar: {r}");
+            return r;
+        }
+        foreach (var x in new[] { 5.0, 960, 1900 }) // left, centre, right of the bar: same fraction of the restored width
+        {
+            var r = Drag(x, 10, x, 10, restored, work);
+            if (r.Size != restored.Size || Math.Abs((x - r.Left) / r.Width - x / 1920) > 1e-9 || r.Top != 0 || r.Left < 0 || r.Right > 1920)
+                throw new InvalidOperationException($"Drag restore at x={x} failed: {r}");
+        }
+        if (Drag(50, 10, 1900, 10, restored, work).Left != 0 || // would hang off the left edge: clamped onto the work area
+            Drag(-960, 10, 960, 10, restored, new(-1920, 0, 1920, 1040)).Left != -1460 || // monitor left of the primary
+            Drag(960, 45, 960, 10, restored, new(0, 40, 1920, 1000)).Top != 40 || // taskbar on top
+            Drag(960, -3, 960, 2, restored, work).Top != -3 || // cursor above the work area: stays in the bar
+            Drag(960, 10, 960, 10, new(0, 0, 2500, 900), work).Left != 0 || // wider than the screen
+            Drag(960, 10, 960, 10, System.Windows.Rect.Empty, work).Size != fallbackSize)
+            throw new InvalidOperationException("Drag restore clamping or fallback failed.");
+
         if (FormatElapsed((TimeSpan?)null) != "—" || FormatElapsed(TimeSpan.FromSeconds(65)) != "1:05" ||
             FormatElapsed(TimeSpan.FromSeconds(3725)) != "1:02:05" || FormatElapsed(TimeSpan.FromHours(25)) != "25:00:00")
             throw new InvalidOperationException("Elapsed time formatting failed.");
