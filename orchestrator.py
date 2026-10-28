@@ -1083,6 +1083,18 @@ def contract_issues(sources: dict[str, str]) -> tuple[dict[tuple[str, ...], dict
                     "evidence": f'{file}:{code.count(chr(10), 0, found.start()) + 1} looks up element id "{element}", '
                                 "which no project .html file has and no script creates",
                 }
+        # A script no page or other script names never runs, so its tasks "pass" without doing anything.
+        for file in (f for f in scripts if Path(f).suffix.lower() in JS_SUFFIXES):
+            name = Path(file).name
+            if re.search(r"(?:^|[._-])(?:tests?|spec|config|server)(?:[._-]|$)", Path(file).stem, re.I):
+                continue  # run by node or a test runner, not by a page
+            if not any(re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", text) for other, text in sources.items() if other != file):
+                issues[("unloaded", file)] = {
+                    "file": file, "defect": "Script is never loaded",
+                    "expected": f'A project page loads it (<script src="{file}"></script>) or another script imports it',
+                    "evidence": f"{file} exists but no project .html file or script references it, so none of its code runs; "
+                                "add the <script> tag to the page",
+                }
     return issues, namespaces
 
 
@@ -1311,15 +1323,18 @@ def load_page(
     origin = url.rsplit(target, 1)[0] + "/"
     for error in report["errors"]:
         error["source"] = str(error.get("source") or "").replace(origin, "")
-    report["errors"] += [{"message": f"Failed to load {name} (404 not found)", "source": page, "line": 0} for name in missing]
+    report["errors"] += [{"message": f"Failed to load {name} (404 not found): create the file; never remove the reference",
+                          "source": page, "line": 0, "missing": name} for name in missing]
     return report
 
 
 def behaviour_gate(
-    project_root: Path, config: dict[str, Any], steps: list[dict[str, Any]] | None = None,
+    project_root: Path, config: dict[str, Any], steps: list[dict[str, Any]] | None = None, allowed: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], str]:
     """Load the project's page headlessly and run the task's acceptance steps. Returns (defects, BEHAVIOUR CHECK block);
     ([], "") when not a web project. steps None is a load-only check (before planning); [] is a task without steps.
+    With `allowed`, a missing script/stylesheet outside the task's allowed files is noted, not a defect: the task
+    cannot create it, and removing the reference to silence the 404 would break the page for the task that does.
 
     Applies when the root has index.html or config sets behaviour_check.page; behaviour_check false disables it.
     """
@@ -1346,7 +1361,12 @@ def behaviour_gate(
         defect = {"file": page, "defect": "Behaviour check could not complete", "expected": "The page loads in a headless browser",
                   "evidence": str(exc)}
         return [defect], f"BEHAVIOUR CHECK: FAILED (could not check {page}: {exc})"
-    errors = [f"{e['message']} ({e['source'] or page}{':' + str(e['line']) if e['line'] else ''})" for e in report["errors"]]
+    later = [e["missing"] for e in report["errors"] if e.get("missing") and allowed is not None
+             and not any(fnmatch.fnmatch(e["missing"], pattern) for pattern in allowed)]
+    pending = (f"Not created yet (outside this task's allowed files; keep the reference, a later task creates it): "
+               f"{', '.join(later)}\n") if later else ""
+    errors = [f"{e['message']} ({e['source'] or page}{':' + str(e['line']) if e['line'] else ''})" for e in report["errors"]
+              if e.get("missing") not in later]
     results = report.get("steps") or []
     failed = next((r for r in results if r["ok"] is False), None)
     step_lines = [
@@ -1359,6 +1379,7 @@ def behaviour_gate(
         steps_part = f"Acceptance steps ({sum(r['ok'] is True for r in results)}/{len(results)} passed):\n" + "\n".join(step_lines) + "\n"
     else:
         steps_part = "Acceptance steps: none (no acceptance steps were given; only the page load was checked)\n"
+    steps_part = pending + steps_part
     if errors or failed:
         print(f"[behaviour] FAILED ({page}: "
               + (f"acceptance step {failed['index']} failed: {failed['detail']})" if failed else f"{len(errors)} error(s): {errors[0]})"))
@@ -1588,6 +1609,9 @@ def validate_task(
     missing = [name for name in required if not task.get(name)]
     if missing:
         raise WorkflowError(f"Planner task is missing: {', '.join(missing)}")
+    for name in ("required_work", "validation"):  # one sentence instead of a list: a list of one, not a list of letters
+        if isinstance(task[name], str):
+            task[name] = [task[name]]
     allowed = task["allowed_files"]
     if not isinstance(allowed, list) or not 1 <= len(allowed) <= max_files:
         count = len(allowed) if isinstance(allowed, list) else "a non-list value"
@@ -2002,7 +2026,7 @@ def run_review_loop(
             defects, code_line = code_gate(project_root, allowed, before, config)
             gate = "code"
         if not defects:
-            defects, behaviour_block = behaviour_gate(project_root, config, task.get("acceptance") or [])
+            defects, behaviour_block = behaviour_gate(project_root, config, task.get("acceptance") or [], allowed)
             gate = "behaviour"
         if defects:
             review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)

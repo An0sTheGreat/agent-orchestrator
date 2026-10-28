@@ -988,6 +988,24 @@ class OrchestratorTests(unittest.TestCase):
                 self.assertEqual(len(defects), 3, evidence)
                 self.assertIn("CODE CHECK: FAILED (3 issue(s))", line)
 
+    def test_code_gate_flags_script_no_page_loads(self):
+        page = '<html><body><ul id="task-list"></ul></body></html>\n'
+        code = "document.getElementById('task-list');\n"
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            defects, _ = self._code_project(folder, {"index.html": page, "script.js": code, "tests.js": "x();\n"})
+            self.assertEqual([(d["file"], d["defect"]) for d in defects], [("script.js", "Script is never loaded")])
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:  # loaded by the page, or imported by a loaded script
+            page = page.replace("</body>", '<script type="module" src="script.js"></script></body>')
+            files = {"index.html": page, "script.js": "import { a } from './util.js';\n" + code, "util.js": "export const a = 1;\n"}
+            self.assertEqual(self._code_project(folder, files)[0], [])
+
+    def test_validate_task_accepts_one_sentence_validation(self):
+        task = dict(self._task(), validation="A task appears once per click.")
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            orchestrator.validate_task(task, Path(folder))
+        self.assertEqual(task["validation"], ["A task appears once per click."])
+        self.assertIn("## Validation\n- A task appears once per click.\n", orchestrator.task_markdown(task))
+
     def test_code_gate_clean_project_and_open_namespace_pass(self):
         clean = ("const list = DataStore.getComponents();\nDataStore.createBuild({});\nconst out = DataStore.exportBuilds();\n"
                  "document.getElementById('name'); document.querySelector('#made');\nconst el = document.createElement('p'); el.id = 'made';\n")
@@ -2034,12 +2052,12 @@ BROWSER = orchestrator.find_browser()
 
 
 class BehaviourGateTests(unittest.TestCase):
-    def gate(self, files, config=None, steps=None):
+    def gate(self, files, config=None, steps=None, allowed=None):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             for name, text in files.items():
                 (Path(folder) / name).write_text(text, encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()):
-                return orchestrator.behaviour_gate(Path(folder), config or {}, steps)
+                return orchestrator.behaviour_gate(Path(folder), config or {}, steps, allowed)
 
     def test_not_a_web_project_or_disabled_is_silent(self):
         self.assertEqual(self.gate({"app.py": "x = 1\n"}), ([], ""))
@@ -2082,8 +2100,17 @@ class BehaviourGateTests(unittest.TestCase):
     def test_real_browser_reports_missing_script_and_console_error(self):
         defects, _ = self.gate({"index.html": "<p>x</p><script src='app.js'></script><script>console.error('boom')</script>"})
         evidence = [d["evidence"] for d in defects]
-        self.assertIn("Failed to load app.js (404 not found) (index.html)", evidence)
+        self.assertIn("Failed to load app.js (404 not found): create the file; never remove the reference (index.html)", evidence)
         self.assertTrue(any(e == "boom (console.error)" for e in evidence), evidence)
+
+    def test_real_browser_missing_script_outside_allowed_files_is_noted_not_failed(self):
+        files = {"index.html": "<p>x</p><link rel='stylesheet' href='style.css'><script src='app.js'></script>"}
+        defects, block = self.gate(files, steps=[], allowed=["index.html"])
+        self.assertEqual(defects, [])
+        self.assertIn("Not created yet (outside this task's allowed files; keep the reference, a later task creates it): ", block)
+        self.assertIn("app.js", block.split("Not created yet", 1)[1])
+        defects, _ = self.gate(files, steps=[], allowed=["index.html", "app.js"])  # the task's own file must exist
+        self.assertEqual([d["evidence"].split(":")[0] for d in defects], ["Failed to load app.js (404 not found)"])
 
     BUILD_PAGE = (
         "<!doctype html><html><head><title>Builds</title></head><body>"
