@@ -1518,12 +1518,14 @@ def run_review_loop(
         if verdict == "PASS":
             token = save_checkpoint(project_root, task, before, review_round, result, "passed", total)
             complete_task(task, "passed", result, project_root, str(token))
+            emit("task_end", id=str(task["id"]), status="passed")
             print(f"\n{task['id']}: PASS")
             return
         reviewer_feedback = review_text
         if review_round == max_review_rounds:
             token = save_checkpoint(project_root, task, before, review_round, review_text, "blocked", total)
             complete_task(task, "blocked", review_text, project_root, str(token))
+            emit("task_end", id=str(task["id"]), status="blocked")
             raise WorkflowError(f"{task['id']} failed after {total} reviews")
 
 
@@ -1645,10 +1647,12 @@ def _run() -> int:
                 project = load_text(project_root / "PROJECT.md").strip()
                 continue
             print(f"[resume] continuing {task['id']} at review round {start_round + 1}")
+            emit("task_start")
             emit("resume", id=str(task["id"]), round=start_round)
             save_text(project_root / "TASK.md", task_markdown(task))
         else:
             write_handoff(project_root, None)  # a kill inside clear_checkpoint can leave a stale handoff
+            emit("task_start")  # the launcher's task span (TASK TIME/TOKENS) includes the Configurator and Planner
             config = configure_project(config, project_root, project, interactive)
             behaviour_block = behaviour_gate(project_root, config)[1].split("\nVisible elements", 1)[0]  # no text sample
             behaviour_part = f"BEHAVIOUR CHECK OF CURRENT PROJECT\n{behaviour_block}\n\n" if behaviour_block else ""

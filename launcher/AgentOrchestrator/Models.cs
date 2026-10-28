@@ -46,6 +46,18 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool IsActive { get => _isActive; set => Set(ref _isActive, value); }
     public string TurnTotal => (_bankedPrompt + _bankedCompletion + _livePrompt + _liveCompletion).ToString("N0");
     public string TurnDetail => $"↑ {_bankedPrompt + _livePrompt:N0} prompt   ↓ {_bankedCompletion + _liveCompletion:N0} generated";
+    // Tokens this worker used in the last completed task ("—" before one completes); unchanged while the next task runs.
+    public string TaskTokens => _taskTokens?.ToString("N0") ?? "—";
+    private long _taskSum; // usage-confirmed tokens since task_start: what the turn totals settle on, never live estimates
+    private long? _taskTokens;
+
+    public void BeginTask() => _taskSum = 0;
+
+    public void EndTask()
+    {
+        _taskTokens = _taskSum;
+        Raise(nameof(TaskTokens));
+    }
 
     public void SetModel(LauncherLogic.ModelInfo info)
     {
@@ -67,6 +79,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     {
         _bankedPrompt += prompt;
         _bankedCompletion += completion;
+        _taskSum += prompt + completion;
         _livePrompt = _liveCompletion = 0;
         _recent.Clear();
         if (tps > 0)

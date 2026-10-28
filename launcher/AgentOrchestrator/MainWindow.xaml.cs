@@ -42,6 +42,9 @@ public partial class MainWindow : Window
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private string? _activeRole, _blockRole;
+    // TASK TIME / TURN TIME in the Model Output header; _clock ticks only while one of them runs.
+    private readonly Stopwatch _taskWatch = new(), _turnWatch = new();
+    private readonly DispatcherTimer _clock = new(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(250) }; // Background starves while output streams
     private int _logLines;
     private bool _initializing = true, _polling;
     private double _runStart;
@@ -54,6 +57,7 @@ public partial class MainWindow : Window
         ApplyCompact();
         CardsList.ItemsSource = _cards;
         _pump.Tick += (_, _) => DrainLines();
+        _clock.Tick += (_, _) => ShowClocks();
         SizeChanged += (_, _) => FitDetailsColumn();
         Loaded += (_, _) => FitDetailsColumn();
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
@@ -179,6 +183,7 @@ public partial class MainWindow : Window
                 card.Status = "Idle";
             }
             _activeRole = null;
+            StopClocks(); // a stopped or failed run freezes both; TASK TOKENS only change on task_end
             SetRunning(false, preserveStatus: true);
         }
     }
@@ -446,6 +451,16 @@ public partial class MainWindow : Window
                 AddNote($"TASK  {Str(ev, "id")}", Str(ev, "outcome"));
                 RefreshPrimary();
                 break;
+            case "task_start": // planning (or a resume) begins: TASK TIME restarts, workers count this task from zero
+                StartClock(_taskWatch);
+                foreach (var c in _cards)
+                    c.BeginTask();
+                break;
+            case "task_end": // passed or blocked: every card shows its share of the task (0 if it took no part)
+                StopClock(_taskWatch);
+                foreach (var c in _cards)
+                    c.EndTask();
+                break;
             case "resume":
                 EndStream(false);
                 Log($"Resuming task {Str(ev, "id")} at review round {Num(ev, "round") + 1}");
@@ -477,9 +492,39 @@ public partial class MainWindow : Window
             }
             card.BeginTurn();
             _activeRole = role;
+            if (!_chatBusy) // the header clocks follow workflow runs only
+                StartClock(_turnWatch);
         }
         card.IsActive = true;
         card.Status = status;
+    }
+
+    private void StartClock(Stopwatch watch)
+    {
+        watch.Restart();
+        _clock.Start();
+        ShowClocks();
+    }
+
+    private void StopClock(Stopwatch watch)
+    {
+        watch.Stop();
+        ShowClocks();
+    }
+
+    private void StopClocks()
+    {
+        _taskWatch.Stop();
+        _turnWatch.Stop();
+        ShowClocks();
+    }
+
+    private void ShowClocks()
+    {
+        TaskTimeText.Text = LauncherLogic.FormatElapsed(_taskWatch);
+        TurnTimeText.Text = LauncherLogic.FormatElapsed(_turnWatch);
+        if (!_taskWatch.IsRunning && !_turnWatch.IsRunning)
+            _clock.Stop();
     }
 
     private void AddRoleHeaderIfNeeded(string role)
@@ -926,6 +971,51 @@ public partial class MainWindow : Window
         _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"usage","role":"implementer","prompt":123,"completion":77,"tps":42}""");
         DrainLines();
         if (live.LiveCompletion != 0 || !live.TurnDetail.Contains("123 prompt") || !live.TurnDetail.Contains("77 generated") || live.TokensPerSec != "42.0 tok/s")
+            return Fail();
+        // Task counters: TASK TOKENS commit on task_end (usage only, no live estimates) and hold through the next
+        // task; TASK TIME freezes at task_end and restarts at task_start; TURN TIME restarts per role and freezes on stop.
+        void Feed(params string[] events)
+        {
+            foreach (var json in events)
+                _lines.Enqueue(LauncherLogic.EventPrefix + json);
+            DrainLines();
+        }
+        string TaskTokens() => string.Join("|", _cards.Select(c => $"{c.Role}:{c.TaskTokens}"));
+        var expected = string.Join("|", _cards.Select(c => c.Role + ":" + c.Role switch { "planner" => "300", "implementer" => "1,500", "reviewer" => "500", _ => "0" }));
+        Feed("""{"e":"task_start"}""", """{"e":"usage","role":"planner","prompt":200,"completion":100,"tps":30}""",
+             """{"e":"task","id":"T2","outcome":"counters"}""");
+        if (_cards.Any(c => c.TaskTokens != "—") || !_taskWatch.IsRunning || TaskTimeText.Text != "0:00")
+            return Fail();
+        Feed(Enumerable.Repeat("""{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", 5)
+            .Append("""{"e":"usage","role":"implementer","prompt":1000,"completion":500,"tps":40}""")
+            .Append("""{"e":"usage","role":"reviewer","prompt":400,"completion":100,"tps":40}""")
+            .Append("""{"e":"verdict","role":"reviewer","id":"T2","verdict":"PASS","round":1}""")
+            .Append("""{"e":"task_end","id":"T2","status":"passed"}""").ToArray());
+        var frozenTask = TaskTimeText.Text;
+        if (TaskTokens() != expected || _taskWatch.IsRunning || !_turnWatch.IsRunning)
+            return Fail();
+        await Task.Delay(1100);
+        if (TaskTimeText.Text != frozenTask)
+            return Fail(); // frozen at task_end
+        Feed("""{"e":"task_start"}""");
+        await Task.Delay(1300); // the 250 ms clock has ticked past 1 s whatever its phase
+        if (TaskTimeText.Text is not ("0:01" or "0:02") || TurnTimeText.Text == "0:00")
+            return Fail(); // ticking again from zero; the reviewer's turn kept ticking
+        Feed("""{"e":"usage","role":"planner","prompt":50,"completion":50,"tps":30}""");
+        if (TurnTimeText.Text != "0:00" || TaskTokens() != expected)
+            return Fail(); // the planner's turn starts fresh; the last completed task's tokens stay
+        await Settle();
+        Snap("9-task-counters");
+        _settings.Compact = true;
+        ApplyCompact();
+        await Settle();
+        Snap("9b-task-counters-compact");
+        _settings.Compact = false;
+        ApplyCompact();
+        StopClocks(); // what the run's cleanup does on Stop
+        var (stoppedTask, stoppedTurn) = (TaskTimeText.Text, TurnTimeText.Text);
+        await Task.Delay(1100);
+        if (TaskTimeText.Text != stoppedTask || TurnTimeText.Text != stoppedTurn || _clock.IsEnabled || TaskTokens() != expected)
             return Fail();
         // Presets: save, change the workers and the config, then apply; both come back as saved.
         var presetProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");

@@ -1017,6 +1017,34 @@ class OrchestratorTests(unittest.TestCase):
             self.assertFalse((root / ".ao_checkpoint.json").exists())
             self.assertIn("T-9 blocked", (root / "ISSUES.md").read_text(encoding="utf-8"))
 
+    def task_events(self, root, **kwargs):
+        """Task-span events of one run_main, in order; (events, exception or None)."""
+        events = []
+        wanted = ("task_start", "task", "resume", "verdict", "task_end")
+        with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d.get("status") or d.get("verdict")))):
+            try:
+                self.run_main(root, **kwargs)
+            except orchestrator.WorkflowError as exc:
+                return [e for e in events if e[0] in wanted], exc
+        return [e for e in events if e[0] in wanted], None
+
+    def test_task_span_events_on_pass_blocked_resume_and_complete(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            events, error = self.task_events(root, reviews=("FAIL", "PASS"))
+            self.assertIsNone(error)
+            self.assertEqual(events, [("task_start", None), ("task", None), ("verdict", "FAIL"), ("verdict", "PASS"),
+                                      ("task_end", "passed")])
+            (root / "config.json").write_text('{"max_review_rounds": 0}', encoding="utf-8")
+            events, error = self.task_events(root, reviews=("FAIL",))
+            self.assertIsNotNone(error)
+            self.assertEqual(events, [("task_start", None), ("task", None), ("verdict", "FAIL"), ("task_end", "blocked")])
+            orchestrator.save_checkpoint(root, self.TASK, {"app.js": None}, 0, "fix it", "implementing", 1)
+            events, _ = self.task_events(root)
+            self.assertEqual(events, [("task_start", None), ("resume", None), ("verdict", "PASS"), ("task_end", "passed")])
+            events, _ = self.task_events(root, plan={"status": "COMPLETE"})
+            self.assertEqual(events, [("task_start", None)])  # no task: the run's exit ends the span
+
     def test_handoff_with_and_without_checkpoint(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)

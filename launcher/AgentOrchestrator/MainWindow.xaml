@@ -662,8 +662,9 @@
                             <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Quant}" FontSize="10" /></Border>
                         </StackPanel>
                         <TextBlock Text="{Binding TokensPerSec}" Style="{StaticResource CardValue}" FontSize="15" Margin="0,8,0,0" />
-                        <TextBlock FontSize="11" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" Margin="0,1,0,0">
-                            <Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
+                        <TextBlock FontSize="11" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" Margin="0,1,0,0"
+                                   TextTrimming="CharacterEllipsis" ToolTip="Last completed task's tokens · this turn's tokens">
+                            <Run Text="{Binding TaskTokens, Mode=OneWay}" /><Run Text=" task  ·  " /><Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
                         </TextBlock>
                     </StackPanel>
                 </Grid>
@@ -756,8 +757,17 @@
 
                     <TextBlock Text="TOKENS / SEC" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
                     <TextBlock Text="{Binding TokensPerSec}" Style="{StaticResource CardValue}" />
-                    <TextBlock Text="TURN TOKENS" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,12,0,0" />
-                    <TextBlock Text="{Binding TurnTotal}" Style="{StaticResource CardValue}" />
+                    <Grid Margin="0,12,0,0">
+                        <Grid.ColumnDefinitions><ColumnDefinition /><ColumnDefinition /></Grid.ColumnDefinitions>
+                        <StackPanel ToolTip="Tokens this worker used in the last completed task (prompt + generated)">
+                            <TextBlock Text="TASK TOKENS" Style="{StaticResource SectionHeader}" FontSize="10" />
+                            <TextBlock Text="{Binding TaskTokens}" Style="{StaticResource CardValue}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1">
+                            <TextBlock Text="TURN TOKENS" Style="{StaticResource SectionHeader}" FontSize="10" />
+                            <TextBlock Text="{Binding TurnTotal}" Style="{StaticResource CardValue}" />
+                        </StackPanel>
+                    </Grid>
                     <TextBlock Text="{Binding TurnDetail}" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,2,0,0" />
                 </StackPanel>
             </Border>
@@ -941,6 +951,15 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,8" LastChildFill="False">
                     <TextBlock Text="MODEL OUTPUT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <!-- Run clocks (MainWindow.ShowClocks): the current/last task and the current/last worker turn. -->
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0" TextBlock.FontSize="11">
+                        <TextBlock Text="TASK TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TaskTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,14,0" VerticalAlignment="Center" />
+                        <TextBlock Text="TURN TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
                     <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Copy output" Padding="10,4" FontSize="11" Click="CopyOutput_Click" />
                     <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Clear" Padding="10,4" FontSize="11" Click="ClearOutput_Click" />
                     <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Collapse all" Padding="10,4" FontSize="11" Click="CollapseAll_Click"

@@ -552,8 +552,18 @@ internal static class LauncherLogic
         return $"Handoff saved: {next}";
     }
 
+    // TASK TIME / TURN TIME: m:ss, h:mm:ss from an hour, "—" before the clock has ever started.
+    public static string FormatElapsed(TimeSpan? elapsed) =>
+        elapsed is not { } t ? "—" : t.TotalHours >= 1 ? $@"{(int)t.TotalHours}:{t:mm\:ss}" : t.ToString(@"m\:ss");
+
+    public static string FormatElapsed(System.Diagnostics.Stopwatch watch) =>
+        FormatElapsed(watch.IsRunning || watch.Elapsed > TimeSpan.Zero ? watch.Elapsed : null);
+
     public static void SelfTest()
     {
+        if (FormatElapsed((TimeSpan?)null) != "—" || FormatElapsed(TimeSpan.FromSeconds(65)) != "1:05" ||
+            FormatElapsed(TimeSpan.FromSeconds(3725)) != "1:02:05" || FormatElapsed(TimeSpan.FromHours(25)) != "25:00:00")
+            throw new InvalidOperationException("Elapsed time formatting failed.");
         var root = FindWorkflowRoot() ?? throw new InvalidOperationException("Workflow root discovery failed.");
         var info = BuildStartInfo("python.exe", root, @"Y:\Example Project", "test-key", true);
         if (!info.ArgumentList.Contains("--once") || !info.ArgumentList.Contains("--non-interactive"))
