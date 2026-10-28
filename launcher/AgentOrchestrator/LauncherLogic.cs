@@ -163,8 +163,70 @@ internal static class LauncherLogic
         return null;
     }
 
+    // Complete: STATE.md's last "## " section is the orchestrator's "## Project complete" (planning a new task removes
+    // it) and no task is checkpointed.
+    public static bool IsProjectComplete(string projectRoot)
+    {
+        try
+        {
+            var state = Path.Combine(projectRoot, "STATE.md");
+            if (File.Exists(Path.Combine(projectRoot, ".ao_checkpoint.json")) || !File.Exists(state))
+                return false;
+            var headings = Regex.Matches(File.ReadAllText(state), @"^## .*$", RegexOptions.Multiline);
+            return headings.Count > 0 && headings[^1].Value.TrimEnd() == "## Project complete";
+        }
+        catch (IOException) { return false; }
+    }
+
     public static string PrimaryLabel(string projectRoot) =>
-        CurrentTaskId(projectRoot) is { } id ? $"Resume Project — {id}" : "Start Task";
+        IsProjectComplete(projectRoot) ? "Restart Project" : CurrentTaskId(projectRoot) is { } id ? $"Resume Project — {id}" : "Start Task";
+
+    // Restart Project keeps these names in the project folder and sends everything else to the Recycle Bin.
+    public static readonly string[] RestartKeeps = ["PROJECT.md", ".git"];
+
+    public static string[] RestartTargets(string projectRoot) =>
+        Directory.GetFileSystemEntries(projectRoot)
+            .Where(path => !RestartKeeps.Contains(Path.GetFileName(path), StringComparer.OrdinalIgnoreCase))
+            .Order(StringComparer.OrdinalIgnoreCase).ToArray();
+
+    // Why Restart must not empty this folder, or null: a drive root, the template folder (or a folder holding it),
+    // or a folder without PROJECT.md.
+    public static string? RestartRefusal(string projectRoot, string? workflowRoot)
+    {
+        var project = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectRoot));
+        if (string.Equals(Path.TrimEndingDirectorySeparator(Path.GetPathRoot(project) ?? ""), project, StringComparison.OrdinalIgnoreCase))
+            return $"{project} is a drive root";
+        if (workflowRoot is not null)
+        {
+            var template = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workflowRoot));
+            if (string.Equals(template, project, StringComparison.OrdinalIgnoreCase) ||
+                template.StartsWith(project + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                return $"{project} holds the Agent Orchestrator template, not a project";
+        }
+        return File.Exists(Path.Combine(project, "PROJECT.md")) ? null : $"{project} has no PROJECT.md";
+    }
+
+    // Recycles every restart target in turn and stops at the first one that fails or is still there afterwards
+    // (items recycled before it stay in the Recycle Bin). Returns that path and the reason, or null when all went.
+    public static (string Path, string Error)? RecycleForRestart(string projectRoot, Action<string> recycle)
+    {
+        foreach (var path in RestartTargets(projectRoot))
+        {
+            try { recycle(path); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or OperationCanceledException) { return (path, e.Message); }
+            if (File.Exists(path) || Directory.Exists(path))
+                return (path, "it is still there after recycling");
+        }
+        return null;
+    }
+
+    public static void Recycle(string path)
+    {
+        if (Directory.Exists(path))
+            Microsoft.VisualBasic.FileIO.FileSystem.DeleteDirectory(path, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+        else
+            Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(path, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
+    }
 
     public const string EventPrefix = "@@AO ";
 
@@ -851,6 +913,20 @@ internal static class LauncherLogic
             File.WriteAllText(Path.Combine(testProject, "TASK.md"), "# PHASE-1\n\n## Outcome\nx\n");
             if (PrimaryLabel(testProject) != "Resume Project — PHASE-1")
                 throw new InvalidOperationException("Active task should win over passed task.");
+            File.WriteAllText(Path.Combine(testProject, "STATE.md"), "# Verified state\n\n## Passed: PHASE-1\n- x\n\n## Project complete\r\n- Summary: done\n");
+            if (PrimaryLabel(testProject) != "Restart Project")
+                throw new InvalidOperationException("A complete project should offer Restart Project.");
+            File.WriteAllText(Path.Combine(testProject, "TASK.md"), "# PHASE-2\n\n## Outcome\nx\n");
+            File.WriteAllText(Path.Combine(testProject, ".ao_checkpoint.json"), "{}");
+            if (PrimaryLabel(testProject) != "Resume Project — PHASE-2")
+                throw new InvalidOperationException("A task in progress after completion should offer Resume.");
+            File.Delete(Path.Combine(testProject, ".ao_checkpoint.json"));
+            File.AppendAllText(Path.Combine(testProject, "STATE.md"), "\n## Passed: PHASE-2\n- x\n");
+            if (PrimaryLabel(testProject) != "Resume Project — PHASE-2")
+                throw new InvalidOperationException("A task passed after completion should offer Resume.");
+            if (RestartRefusal(Path.GetPathRoot(root)!, null) is null || RestartRefusal(root, root) is null || RestartRefusal(Path.GetDirectoryName(root)!, root) is null ||
+                RestartRefusal(testArea, root) is null || RestartRefusal(testProject, root) is not null)
+                throw new InvalidOperationException("Restart refusal failed.");
 
             var stopProject = Path.Combine(testArea, "stop");
             Directory.CreateDirectory(stopProject);

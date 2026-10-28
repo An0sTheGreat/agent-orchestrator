@@ -128,6 +128,8 @@ public partial class MainWindow : Window
             ApiKeyBox.Focus();
             return;
         }
+        if (LauncherLogic.IsProjectComplete(project) && !RestartProject(project))
+            return;
         if (!PrepareRun())
             return;
         try
@@ -461,6 +463,13 @@ public partial class MainWindow : Window
                 StopClock(_taskWatch);
                 foreach (var c in _cards)
                     c.EndTask();
+                break;
+            case "complete":
+                EndStream(false);
+                Log($"Project complete: {Str(ev, "summary")}");
+                AddNote("PROJECT COMPLETE", Str(ev, "summary"));
+                Toast("Project complete");
+                RefreshPrimary();
                 break;
             case "resume":
                 EndStream(false);
@@ -1101,6 +1110,74 @@ public partial class MainWindow : Window
             if (!await Show(settingsDialog, "9-settings-dialog") || !await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
                 || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
                 return Fail();
+
+            // Restart Project on a complete temp project under bin; the Recycle Bin is replaced by a delete confined to it,
+            // and RestartProject is called directly, so no run starts.
+            var restartProject = Path.Combine(AppContext.BaseDirectory, $"smoke-restart-{Guid.NewGuid():N}");
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(restartProject, ".git"));
+                Directory.CreateDirectory(Path.Combine(restartProject, "src", "deep"));
+                foreach (var name in LauncherLogic.ProjectFiles.Append("app.js").Append("HANDOFF.md").Append(".ao_old.txt"))
+                    File.WriteAllText(Path.Combine(restartProject, name), "old " + name);
+                File.WriteAllText(Path.Combine(restartProject, ".git", "HEAD"), "ref: refs/heads/main");
+                File.WriteAllText(Path.Combine(restartProject, "src", "deep", "x.js"), "x");
+                File.WriteAllText(Path.Combine(restartProject, "PROJECT.md"), "# Smoke restart\nkeep me\n");
+                File.WriteAllText(Path.Combine(restartProject, "STATE.md"), "# Verified state\n\n## Passed: WEB-012\n- x\n\n## Project complete\n- Summary: done\n");
+                string Entries() => string.Join("|", Directory.GetFileSystemEntries(restartProject, "*", SearchOption.AllDirectories)
+                    .Select(p => Path.GetRelativePath(restartProject, p) + ":" + (File.Exists(p) ? File.ReadAllText(p) : "")).Order(StringComparer.Ordinal));
+                void Delete(string path)
+                {
+                    if (!Path.GetFullPath(path).StartsWith(restartProject + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                        throw new IOException($"smoke delete outside its project: {path}");
+                    if (Directory.Exists(path)) Directory.Delete(path, recursive: true); else File.Delete(path);
+                }
+                ProjectPath = restartProject;
+                if (StartButton.Content as string != "Restart Project")
+                    return Fail();
+                await Settle();
+                Snap("15b-restart-button");
+                if (!await Show(BuildRestartDialog(restartProject), "15-restart-dialog"))
+                    return Fail();
+                // Cancel: nothing changes.
+                var before = Entries();
+                _restartRecycle = Delete;
+                _restartConfirm = _ => false;
+                if (RestartProject(restartProject) || Entries() != before)
+                    return Fail();
+                // A file that cannot be recycled stops the restart there: earlier items are gone, later ones and init untouched.
+                _restartConfirm = _ => true;
+                _restartRecycle = path => { if (Path.GetFileName(path) == "app.js") throw new IOException("locked"); Delete(path); };
+                if (RestartProject(restartProject) || Directory.Exists(Path.Combine(restartProject, ".ao_old.txt")) || File.Exists(Path.Combine(restartProject, ".ao_old.txt")) ||
+                    !File.Exists(Path.Combine(restartProject, "app.js")) || File.ReadAllText(Path.Combine(restartProject, "STATE.md")) == File.ReadAllText(Path.Combine(_workflowRoot!, "STATE.md")) ||
+                    !LogBox.Text.Contains("app.js could not be moved to the Recycle Bin"))
+                    return Fail();
+                // Confirmed: only PROJECT.md and .git survive, then init adds the template files; PROJECT.md is unchanged.
+                var recycled = new List<string>();
+                _restartRecycle = path => { recycled.Add(Path.GetFileName(path)); Delete(path); };
+                if (!RestartProject(restartProject) || recycled.Contains("PROJECT.md") || recycled.Contains(".git") ||
+                    File.ReadAllText(Path.Combine(restartProject, "PROJECT.md")) != "# Smoke restart\nkeep me\n" ||
+                    File.ReadAllText(Path.Combine(restartProject, ".git", "HEAD")) != "ref: refs/heads/main" ||
+                    Directory.GetFileSystemEntries(restartProject).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase).SequenceEqual(
+                        LauncherLogic.ProjectFiles.Append(".git").Order(StringComparer.OrdinalIgnoreCase)) is false ||
+                    File.ReadAllText(Path.Combine(restartProject, "STATE.md")) != File.ReadAllText(Path.Combine(_workflowRoot!, "STATE.md")) ||
+                    StartButton.Content as string != "Start Task")
+                    return Fail();
+                // The template folder is refused before anything is asked or recycled.
+                var asked = false;
+                _restartRecycle = _ => throw new IOException("smoke must not recycle the template");
+                _restartConfirm = _ => { asked = true; return false; };
+                if (RestartProject(_workflowRoot!) || asked || !LogBox.Text.Contains("holds the Agent Orchestrator template"))
+                    return Fail();
+            }
+            finally
+            {
+                _restartConfirm = null;
+                _restartRecycle = LauncherLogic.Recycle;
+                ProjectPath = presetProject;
+                if (Directory.Exists(restartProject))
+                    Directory.Delete(restartProject, recursive: true);
+            }
 
             // Custom workers: reserved titles are refused, the settings dialog has the system prompt (built-ins do not),
             // and the project's config.json receives the custom_workers entry.
@@ -1842,6 +1919,67 @@ public partial class MainWindow : Window
             Log($"Initialization failed: {exception.Message}");
             SetStatus("Initialization failed", "#FF667A");
         }
+    }
+
+    // Test hooks for --ui-smoke: answer the restart confirmation without showing it, and replace the Recycle Bin.
+    private Func<DialogShell, bool>? _restartConfirm;
+    private Action<string> _restartRecycle = LauncherLogic.Recycle;
+
+    // Restart Project on a complete project: after confirmation, send everything but PROJECT.md (and .git) to the
+    // Recycle Bin, then initialize the project again from the template. True when the caller should start the run.
+    private bool RestartProject(string project)
+    {
+        if (_workflowRoot is null || _process is not null || _chatBusy)
+            return false;
+        if (LauncherLogic.RestartRefusal(project, _workflowRoot) is { } reason)
+        {
+            Log($"Restart refused: {reason}.");
+            SetStatus("Restart refused", "#FF667A");
+            Toast($"Restart refused: {reason}", "#FF667A");
+            return false;
+        }
+        var dialog = BuildRestartDialog(project);
+        if (!(_restartConfirm is { } confirm ? confirm(dialog) : dialog.ShowDialog() == true))
+        {
+            SetStatus("Restart cancelled", "#F7C873");
+            return false;
+        }
+        if (LauncherLogic.RecycleForRestart(project, _restartRecycle) is { } failure)
+        {
+            Log($"Restart stopped: {failure.Path} could not be moved to the Recycle Bin ({failure.Error}). Items recycled before it are in the Recycle Bin; the rest of the project is unchanged and no run was started.");
+            SetStatus("Restart stopped", "#FF667A");
+            Toast($"Restart stopped: {Path.GetFileName(failure.Path)} could not be recycled", "#FF667A");
+            RefreshInitializationPrompt();
+            RefreshPrimary();
+            return false;
+        }
+        var copied = LauncherLogic.InitializeProject(_workflowRoot, project); // PROJECT.md exists, so it is kept
+        Log($"Project restarted: everything but PROJECT.md moved to the Recycle Bin. Added: {string.Join(", ", copied)}");
+        Toast("Project restarted");
+        RefreshInitializationPrompt();
+        PrefillCards();
+        RefreshPrimary();
+        return true;
+    }
+
+    private DialogShell BuildRestartDialog(string project)
+    {
+        var names = LauncherLogic.RestartTargets(project).Select(Path.GetFileName).ToArray();
+        var listed = string.Join(", ", names.Take(6)) + (names.Length > 6 ? $" and {names.Length - 6} more" : "");
+        var text = $"Are you sure? This will move {names.Length} item{(names.Length == 1 ? "" : "s")} in {project} to the Recycle Bin ({listed}): " +
+            "everything except PROJECT.md, including the generated code and the workflow records (STATE.md, TASK.md, RESULT.md, REVIEW.md, " +
+            "ISSUES.md, HANDOFF.md, config.json and any saved checkpoint)." +
+            (Directory.Exists(Path.Combine(project, ".git")) ? " Your .git folder is kept." : "") +
+            "\n\nPROJECT.md is kept unchanged. The project is then initialized again from the template and a fresh run starts from the first task.";
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 });
+        var restart = new Button { Content = "Restart project", Padding = new Thickness(14, 5, 14, 5), Margin = new Thickness(8, 0, 0, 0) };
+        restart.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)); // no danger style exists; the app's error colour
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(14, 5, 14, 5), Margin = new Thickness(8, 0, 0, 0), IsDefault = true, IsCancel = true };
+        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0), Children = { restart, cancel } });
+        var dialog = new DialogShell(this, "Restart project", panel);
+        restart.Click += (_, _) => dialog.DialogResult = true;
+        return dialog;
     }
 
     private enum ExistingProjectMdChoice { Use, Replace, Cancel }
