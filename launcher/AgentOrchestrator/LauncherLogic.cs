@@ -196,6 +196,11 @@ internal static class LauncherLogic
         var project = Path.TrimEndingDirectorySeparator(Path.GetFullPath(projectRoot));
         if (string.Equals(Path.TrimEndingDirectorySeparator(Path.GetPathRoot(project) ?? ""), project, StringComparison.OrdinalIgnoreCase))
             return $"{project} is a drive root";
+        // Network and removable drives have no Recycle Bin: the shell would delete permanently.
+        if (!project.StartsWith(@"\\") && new DriveInfo(Path.GetPathRoot(project)!).DriveType != DriveType.Fixed)
+            return $"{project} is not on a local fixed drive, so its files could not go to the Recycle Bin";
+        if (project.StartsWith(@"\\"))
+            return $"{project} is a network path, so its files could not go to the Recycle Bin";
         if (workflowRoot is not null)
         {
             var template = Path.TrimEndingDirectorySeparator(Path.GetFullPath(workflowRoot));
