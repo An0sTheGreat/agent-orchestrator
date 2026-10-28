@@ -423,7 +423,7 @@ public partial class MainWindow : Window
             case "model":
                 EndStream(false);
                 Activate(role, "Working");
-                card?.SetModel(LauncherLogic.DescribeModel(Str(ev, "id"), ConfiguredVariant(role)));
+                card?.SetModel(ModelInfoFor(role, Str(ev, "id")));
                 Log($"[{card?.Title ?? role}] {Str(ev, "id")}");
                 break;
             case "done":
@@ -1214,7 +1214,7 @@ public partial class MainWindow : Window
             if (synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer")
                 return Fail();
             var customDialog = BuildCustomSettingsDialog(tester);
-            if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") ||
+            if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") || !HasTag(settingsDialog, "Base URL") ||
                 !await Show(customDialog, "12-custom-settings-dialog"))
                 return Fail();
             RemoveWorker(tester);
@@ -1739,12 +1739,28 @@ public partial class MainWindow : Window
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
     }
 
+    // The first built-in role's Unsloth server (a remote role has none).
     private string? ManagementUrl(string project)
     {
         using var config = ReadConfig(project);
-        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty("planner", out var p) &&
-               p.TryGetProperty("management_url", out var u) ? u.GetString()?.TrimEnd('/') : null;
+        if (config is null || !config.RootElement.TryGetProperty("roles", out var roles))
+            return null;
+        foreach (var role in LauncherLogic.BuiltInRoles)
+            if (roles.TryGetProperty(role, out var r) && r.TryGetProperty("management_url", out var u) && u.GetString() is { Length: > 0 } url)
+                return url.TrimEnd('/');
+        return null;
     }
+
+    // The model id of a built-in role set to a remote API (Settings > Remote API), else null.
+    private string? RemoteModel(string role)
+    {
+        using var config = ReadConfig(SelectedProjectPath());
+        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(role, out var r) &&
+               !r.TryGetProperty("management_url", out _) && r.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+    }
+
+    private LauncherLogic.ModelInfo ModelInfoFor(string role, string id) =>
+        RemoteModel(role) is not null ? LauncherLogic.RemoteModelInfo(id) : LauncherLogic.DescribeModel(id, ConfiguredVariant(role));
 
     // Show the configured models on the cards before anything runs.
     private void PrefillCards()
@@ -1756,6 +1772,11 @@ public partial class MainWindow : Window
             return;
         foreach (var card in _cards)
         {
+            if (!card.IsCustom && RemoteModel(card.Role) is { } remote)
+            {
+                card.SetModel(LauncherLogic.RemoteModelInfo(remote));
+                continue;
+            }
             if (!roles.TryGetProperty(card.Role, out var r) || !r.TryGetProperty("auto_load", out var load) ||
                 !load.TryGetProperty("model_path", out var path) || path.GetString() is not { } id)
                 continue;
@@ -2711,13 +2732,66 @@ public partial class MainWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
-        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { grid, thinking, note, error, buttons } });
+
+        // Model source: Local = the Unsloth server (model picker, load/unload); Remote API = an OpenAI-compatible endpoint.
+        var remoteNow = LauncherLogic.ReadRemoteRole(path, card.Role);
+        var modes = new[] { "Local (Unsloth)", "Remote API" }.Select((text, i) => new RadioButton
+        {
+            Content = text, GroupName = "ModelSource", IsChecked = (remoteNow is not null) == (i == 1), Margin = new Thickness(0, 0, 18, 0),
+        }).ToArray();
+        var modeRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 0), Children = { modes[0], modes[1] } };
+        var remoteFields = new (string Label, string Hint, string Value)[]
+        {
+            ("Base URL", "e.g. https://openrouter.ai/api/v1", remoteNow?.BaseUrl ?? ""),
+            ("Model id", "as the API names it", remoteNow?.Model ?? ""),
+            ("API key variable", "environment variable holding the key", remoteNow?.KeyEnv ?? "OPENAI_API_KEY"),
+            ("Timeout (s)", "empty = unchanged", remoteNow?.Timeout ?? ""),
+        };
+        var remoteGrid = new Grid { MinWidth = 340, Margin = new Thickness(0, 8, 0, 0) };
+        remoteGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        remoteGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(180) });
+        var remoteBoxes = new TextBox[remoteFields.Length];
+        for (var i = 0; i < remoteFields.Length; i++)
+        {
+            remoteGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var hint = new TextBlock { Text = remoteFields[i].Hint, FontSize = 10.5 };
+            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var label = new StackPanel { Margin = new Thickness(0, i == 0 ? 0 : 9, 12, 0), Children = { new TextBlock { Text = remoteFields[i].Label, FontWeight = FontWeights.SemiBold, FontSize = 12 }, hint } };
+            remoteBoxes[i] = new TextBox { Text = remoteFields[i].Value, Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center, Margin = new Thickness(0, i == 0 ? 0 : 9, 0, 0), Tag = remoteFields[i].Label };
+            Grid.SetRow(label, i);
+            Grid.SetRow(remoteBoxes[i], i);
+            Grid.SetColumn(remoteBoxes[i], 1);
+            remoteGrid.Children.Add(label);
+            remoteGrid.Children.Add(remoteBoxes[i]);
+        }
+        var remoteNote = new TextBlock { Text = "The launcher never stores the key: set the variable in your environment before starting it. Remote roles are not loaded, unloaded or monitored; context length and reasoning budget do not apply.", FontSize = 10.5, TextWrapping = TextWrapping.Wrap, MaxWidth = 340, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 8, 0, 0) };
+        remoteNote.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var remotePanel = new StackPanel { Children = { remoteGrid, remoteNote } };
+        var source = new StackPanel { Margin = new Thickness(0, 0, 0, 12), Children = { new TextBlock { Text = "Model source", FontWeight = FontWeights.SemiBold, FontSize = 12 }, modeRow, remotePanel } };
+        void SyncMode()
+        {
+            remotePanel.Visibility = modes[1].IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+            note.Visibility = modes[1].IsChecked == true ? Visibility.Collapsed : Visibility.Visible;
+        }
+        foreach (var mode in modes)
+            mode.Checked += (_, _) => SyncMode();
+        SyncMode();
+
+        var dialog = new DialogShell(this, $"{card.Title} settings", new StackPanel { Children = { source, grid, thinking, note, error, buttons } });
         save.Click += (_, _) =>
         {
             var values = ReadFields(boxes, thinkingChoices);
+            var remote = modes[1].IsChecked == true
+                ? new LauncherLogic.RemoteRole(remoteBoxes[0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, remoteBoxes[3].Text)
+                : null;
+            if (remote is not null)
+                values = values with { ReasoningBudget = "", ContextLength = "" }; // load settings; nothing is loaded remotely
             try
             {
-                var problem = LauncherLogic.WriteRoleSettings(path, card.Role, values);
+                var problem = (remote is null ? null : LauncherLogic.ValidateRemoteRole(remote)) ?? LauncherLogic.ValidateRoleSettings(values);
+                if (problem is null && (remote is not null || remoteNow is not null))
+                    problem = LauncherLogic.WriteRemoteRole(path, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
+                problem ??= LauncherLogic.WriteRoleSettings(path, card.Role, values);
                 if (problem is not null)
                 {
                     error.Text = problem;
@@ -2732,8 +2806,12 @@ public partial class MainWindow : Window
                 dialog.Close();
                 return;
             }
-            Log($"{card.Title}: generation settings saved");
-            Toast($"{card.Title}: settings saved");
+            Log($"{card.Title}: generation settings saved{(remote is null ? "" : $" (remote API {remote.BaseUrl.Trim()}, model {remote.Model.Trim()})")}");
+            if (remote is not null && Environment.GetEnvironmentVariable(remote.KeyEnv.Trim()) is null)
+                Toast($"{card.Title}: set {remote.KeyEnv.Trim()} in your environment, then restart the launcher", "#F7C873");
+            else
+                Toast($"{card.Title}: settings saved");
+            PrefillCards();
             dialog.DialogResult = true;
         };
         dialog.Loaded += (_, _) =>
@@ -2915,6 +2993,11 @@ public partial class MainWindow : Window
     {
         if (_process is not null)
             return;
+        if (!card.IsCustom && RemoteModel(card.Role) is not null)
+        {
+            SetStatus($"{card.Title} uses a remote API: change its model in Settings", "#F7C873");
+            return;
+        }
         SetStatus("Loading installed models…", "#F7C873");
         List<ModelChoice> choices;
         try

@@ -413,6 +413,85 @@ internal static class LauncherLogic
         return null;
     }
 
+    // A role on a remote OpenAI-compatible API: config.json gives its model id and no Unsloth management_url, so the
+    // orchestrator neither loads nor monitors it. The key itself stays in the environment variable KeyEnv.
+    public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout);
+
+    // The Unsloth keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
+    private static readonly string[] LocalKeys = ["base_url", "management_url", "api_key_env", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
+
+    public static ModelInfo RemoteModelInfo(string model) => new(model, "—", "Remote");
+
+    public static bool IsRemote(JsonNode? role) => role?["management_url"] is null && role?["model"] is JsonValue;
+
+    public static RemoteRole? ReadRemoteRole(string configPath, string role)
+    {
+        var settings = JsonNode.Parse(File.ReadAllText(configPath))!["roles"]![role];
+        return IsRemote(settings)
+            ? new RemoteRole((string?)settings!["base_url"] ?? "", (string?)settings["model"] ?? "", (string?)settings["api_key_env"] ?? "", settings["timeout_seconds"]?.ToJsonString() ?? "")
+            : null;
+    }
+
+    public static string? ValidateRemoteRole(RemoteRole remote)
+    {
+        if (!Uri.TryCreate(remote.BaseUrl.Trim(), UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            return "Base URL must be an http:// or https:// address, e.g. https://openrouter.ai/api/v1.";
+        if (remote.Model.Trim().Length == 0)
+            return "Enter the model id the API expects, e.g. openai/gpt-4o-mini.";
+        if (!Regex.IsMatch(remote.KeyEnv.Trim(), "^[A-Za-z_][A-Za-z0-9_]*$"))
+            return "API key variable must be an environment variable name, e.g. OPENAI_API_KEY (not the key itself).";
+        if (remote.Timeout.Trim().Length > 0 && !(long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var t) && t is >= 1 and <= 86400))
+            return "Timeout must be a whole number of seconds from 1 to 86400 (or empty).";
+        return null;
+    }
+
+    // remote: switch the role to (or edit) Remote mode; null: switch it back to the local Unsloth flow, restoring the
+    // saved local_settings, else the template's (templatePath, only read) values for this role. Error message or null.
+    public static string? WriteRemoteRole(string configPath, string role, RemoteRole? remote, string templatePath)
+    {
+        if (remote is not null && ValidateRemoteRole(remote) is { } problem)
+            return problem;
+        var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
+        var settings = root["roles"]![role]!.AsObject();
+        if (remote is not null)
+        {
+            if (!IsRemote(settings))
+            {
+                var saved = new JsonObject();
+                foreach (var key in LocalKeys)
+                    if (settings[key] is { } value)
+                        saved[key] = value.DeepClone();
+                settings["local_settings"] = saved;
+            }
+            foreach (var key in new[] { "management_url", "auto_load", "expected_model_contains" })
+                settings.Remove(key);
+            settings["base_url"] = remote.BaseUrl.Trim().TrimEnd('/');
+            settings["model"] = remote.Model.Trim();
+            settings["display_name"] = remote.Model.Trim();
+            settings["api_key_env"] = remote.KeyEnv.Trim();
+            if (long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var timeout))
+                settings["timeout_seconds"] = timeout;
+        }
+        else if (IsRemote(settings))
+        {
+            var source = settings["local_settings"] as JsonObject
+                ?? JsonNode.Parse(File.ReadAllText(templatePath))?["roles"]?[role] as JsonObject
+                ?? throw new InvalidOperationException($"No local settings to restore for {role}.");
+            settings.Remove("model");
+            foreach (var key in LocalKeys)
+                if (source[key] is { } value)
+                    settings[key] = value.DeepClone();
+                else
+                    settings.Remove(key);
+            settings.Remove("local_settings");
+        }
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return null;
+    }
+
     public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
 
     // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
@@ -791,6 +870,35 @@ internal static class LauncherLogic
                 WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Maybe")) is not null;
             if (!thinkingOk)
                 throw new InvalidOperationException("Thinking setting was not written, read back or removed correctly.");
+            // Remote API mode: save moves the Unsloth keys aside, Local puts them back (or the template's, when none were saved).
+            var remoteConfig = Path.Combine(testArea, "remote-config.json");
+            var remoteTemplate = Path.Combine(testArea, "remote-template.json");
+            const string localPlanner = "{\"base_url\":\"http://127.0.0.1:8888/v1\",\"management_url\":\"http://127.0.0.1:8888\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"expected_model_contains\":\"Q\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"u/Q\"},\"display_name\":\"u/Q\",\"sampling\":{\"temperature\":0.6}}";
+            File.WriteAllText(remoteConfig, $"{{\"keep\":1,\"roles\":{{\"planner\":{localPlanner}}}}}");
+            File.WriteAllText(remoteTemplate, "{\"roles\":{\"planner\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"auto_load\":{\"model_path\":\"t/M\"}}}}");
+            var templateBytes = File.ReadAllBytes(remoteTemplate);
+            JsonNode Planner() => JsonNode.Parse(File.ReadAllText(remoteConfig))!["roles"]!["planner"]!;
+            var remote = new RemoteRole("https://openrouter.ai/api/v1/", "vendor/model-x", "OPENAI_API_KEY", "120");
+            if (ReadRemoteRole(remoteConfig, "planner") is not null || WriteRemoteRole(remoteConfig, "planner", remote, remoteTemplate) is not null)
+                throw new InvalidOperationException("Remote role: a local role read as remote, or the remote save failed.");
+            var saved = Planner();
+            if (saved["management_url"] is not null || saved["auto_load"] is not null || saved["expected_model_contains"] is not null ||
+                (string?)saved["base_url"] != "https://openrouter.ai/api/v1" || (string?)saved["model"] != "vendor/model-x" ||
+                (string?)saved["api_key_env"] != "OPENAI_API_KEY" || (int?)saved["timeout_seconds"] != 120 || (double?)saved["sampling"]?["temperature"] != 0.6 ||
+                ReadRemoteRole(remoteConfig, "planner") != new RemoteRole("https://openrouter.ai/api/v1", "vendor/model-x", "OPENAI_API_KEY", "120") ||
+                RemoteModelInfo("vendor/model-x") != new ModelInfo("vendor/model-x", "—", "Remote"))
+                throw new InvalidOperationException($"Remote role saved wrongly: {saved.ToJsonString()}");
+            if (WriteRemoteRole(remoteConfig, "planner", remote with { Model = "other/m" }, remoteTemplate) is not null ||
+                WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
+                !JsonNode.DeepEquals(Planner(), JsonNode.Parse(localPlanner)) || (int?)JsonNode.Parse(File.ReadAllText(remoteConfig))!["keep"] != 1)
+                throw new InvalidOperationException($"Remote role: Local did not restore the role: {Planner().ToJsonString()}");
+            foreach (var bad in new[] { remote with { BaseUrl = "openrouter.ai" }, remote with { Model = " " }, remote with { KeyEnv = "sk-abc 123" }, remote with { Timeout = "0" } })
+                if (WriteRemoteRole(remoteConfig, "planner", bad, remoteTemplate) is null)
+                    throw new InvalidOperationException($"Remote role: invalid input was accepted: {bad}");
+            File.WriteAllText(remoteConfig, "{\"roles\":{\"planner\":{\"base_url\":\"https://r/v1\",\"model\":\"r/m\",\"api_key_env\":\"K\",\"sampling\":{}}}}");
+            if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["management_url"] != "http://t" ||
+                (string?)Planner()["auto_load"]?["model_path"] != "t/M" || Planner()["model"] is not null || !File.ReadAllBytes(remoteTemplate).SequenceEqual(templateBytes))
+                throw new InvalidOperationException($"Remote role: Local without saved settings should use the template's: {Planner().ToJsonString()}");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");
