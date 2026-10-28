@@ -213,8 +213,10 @@ class ApiClient:
         self.api_key = os.environ.get(key_env, "") if key_env else settings.get("api_key", "")
         if not self.api_key:
             source = key_env or "api_key"
-            raise WorkflowError(f"Missing Unsloth API key: set {source}")
+            raise WorkflowError(f"Missing API key for {self.base_url}: set {source}")
+        self.key_source = key_env or "api_key"
         self.expected = settings.get("expected_model_contains", "").lower()
+        self.model = str(settings.get("model") or "").strip()  # request model id as given (remote APIs); skips /models
         self.timeout = int(settings.get("timeout_seconds", 600))
         self.management_url = settings.get("management_url", "").rstrip("/")
         self.auto_load = settings.get("auto_load")
@@ -235,10 +237,22 @@ class ApiClient:
             with urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise WorkflowError(f"API {exc.code}: {detail}") from exc
+            raise self._http_error(exc, f"{base_url}{route}") from exc
         except (URLError, TimeoutError) as exc:
-            raise WorkflowError(f"Cannot reach {base_url}: {exc}") from exc
+            raise WorkflowError(f"{self._who()}Cannot reach {base_url}: {exc}") from exc
+
+    def _who(self) -> str:
+        name = self.title or self.role
+        return f"{name}: " if name else ""
+
+    def _http_error(self, exc: HTTPError, url: str) -> WorkflowError:
+        """`<role>: API <code> from <url>: <body>`, with a hint for the usual remote failures; never the key."""
+        detail = exc.read().decode("utf-8", errors="replace")[:4000].replace(self.api_key, "***")
+        hint = {401: f"check the key in {self.key_source}", 403: f"check the key in {self.key_source} and its access",
+                404: "check base_url and the model id", 429: "rate limited; retry later"}.get(exc.code)
+        if not hint and exc.code >= 500:
+            hint = "server error"
+        return WorkflowError(f"{self._who()}API {exc.code} from {url}{f' ({hint})' if hint else ''}: {detail}")
 
     def _request(self, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         return self._request_at(self.base_url, method, route, body)
@@ -273,6 +287,10 @@ class ApiClient:
     def ensure_model(self, role: str, interactive: bool) -> str:
         load_error = ""
         name = self.title or role
+        if self.model and not (self.management_url and self.auto_load):
+            print(f"[{name}] {self.model}")  # a configured id is used as is: no /models check, nothing to load
+            emit("model", role=role, id=self.model)
+            return self.model
         while True:
             try:
                 model = self.model_id()
@@ -343,7 +361,7 @@ class ApiClient:
                     payload = self._request("POST", "/chat/completions", body)
             except WorkflowError as exc:
                 text = str(exc).lower()
-                if text.startswith("api 400") and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
+                if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
                         "Raise the role's auto_load.max_seq_length."
@@ -426,9 +444,9 @@ class ApiClient:
                             slot["arguments"] += fragment
                             emit("delta", role=self.role, kind="tool", index=call.get("index", 0), name=slot["name"], text=fragment)
         except HTTPError as exc:
-            raise WorkflowError(f"API {exc.code}: {exc.read().decode('utf-8', errors='replace')}") from exc
+            raise self._http_error(exc, f"{self.base_url}/chat/completions") from exc
         except (URLError, TimeoutError) as exc:
-            raise WorkflowError(f"Cannot reach {self.base_url}: {exc}") from exc
+            raise WorkflowError(f"{self._who()}Cannot reach {self.base_url}: {exc}") from exc
         for kind, text in splitter.flush():
             put(kind, text)
         message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
@@ -443,8 +461,10 @@ class ApiClient:
 
     def _monitor_row(self, started: float) -> dict[str, Any]:
         """Unsloth's own per-request stats (same source as the live-TPS mod); empty if unavailable."""
+        if not self.management_url:
+            return {}  # a remote API has no Unsloth management routes
         try:
-            rows = self._request_at(self.management_url or self.base_url, "GET", "/api/inference/monitor").get("entries", [])
+            rows = self._request_at(self.management_url, "GET", "/api/inference/monitor").get("entries", [])
         except WorkflowError:
             return {}
         mine = [r for r in rows if r.get("kind") == "request" and r.get("via_api_key") and r.get("started_at", 0) >= started - 2]
@@ -508,8 +528,8 @@ def custom_workers(config: dict[str, Any], warn: bool = False) -> list[dict[str,
                 (not title or title.lower() in titles, "missing, duplicate or reserved title"),
                 (item.get("kind") not in ("specialist", "reviewer"), "kind must be 'specialist' or 'reviewer'"),
                 (not text("base_url"), "missing base_url"),
-                (not (text("expected_model_contains") or (isinstance(auto, dict) and auto.get("model_path"))),
-                 "no model (expected_model_contains or auto_load.model_path)"),
+                (not (text("model") or text("expected_model_contains") or (isinstance(auto, dict) and auto.get("model_path"))),
+                 "no model (model, expected_model_contains or auto_load.model_path)"),
                 (not text("system_prompt"), "missing system_prompt"),
                 (item.get("kind") == "specialist" and not text("description"), "a specialist needs a description"),
                 (auto is not None and not isinstance(auto, dict), "auto_load must be an object"),
@@ -1760,7 +1780,7 @@ def team_context(config: dict[str, Any]) -> str:
     for role in ("implementer", "reviewer"):
         r = config.get("roles", {}).get(role) or {}
         auto = r.get("auto_load") or {}
-        name = r.get("display_name") or auto.get("model_path") or r.get("expected_model_contains")
+        name = r.get("display_name") or r.get("model") or auto.get("model_path") or r.get("expected_model_contains")
         parts = [str(name) if name else "unknown model"]
         if auto.get("gguf_variant"):
             parts.append(f"quant {auto['gguf_variant']}")

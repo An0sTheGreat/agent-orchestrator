@@ -81,6 +81,22 @@ If automatic loading is rejected, the controller reports the API error and falls
 
 Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
+## Remote models per role
+
+Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's OpenAI-compatible endpoint, another local server) while the others stay on Unsloth. Give the role `base_url`, a `model` id and `api_key_env`, and no `management_url` or `auto_load`:
+
+```json
+"planner": {
+  "base_url": "https://openrouter.ai/api/v1",
+  "model": "openai/gpt-4o-mini",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "timeout_seconds": 600,
+  "sampling": { "temperature": 0.6, "max_tokens": 8192 }
+}
+```
+
+`model` is sent as the request's model id as is (no `/models` check), and the role is never loaded, unloaded or monitored. The key is read from the named environment variable and never written to config, logs or prompts; set it before starting the launcher. Errors name the role and URL (for example `planner: API 401 from https://…/chat/completions (check the key in OPENROUTER_API_KEY)`). Keep `sampling` to parameters the API accepts: some reject Unsloth extras such as `top_k` or `enable_thinking`. In the launcher, a role's **Settings** has a **Remote API** mode that writes these keys and keeps the Unsloth settings in `local_settings`; switching back to **Local** restores them.
+
 ## Chat mode
 
 `python orchestrator.py --project <folder with config.json> --chat <request.json> --events --non-interactive` answers one chat turn instead of running the workflow. It needs only `config.json` in the project folder (no `PROJECT.md`, `STATE.md`, ...), plans no tasks, writes no workflow files or checkpoints, and never runs the configurator. Workers have no tools in chat.

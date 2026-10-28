@@ -433,7 +433,7 @@ public partial class MainWindow
             case "model":
                 EndChatBlock();
                 Activate(role, "Working");
-                card?.SetModel(LauncherLogic.DescribeModel(Str(ev, "id"), ConfiguredVariant(role)));
+                card?.SetModel(ModelInfoFor(role, Str(ev, "id")));
                 SetChatStatus($"{name} is working…");
                 Log($"[{name}] {Str(ev, "id")}");
                 break;

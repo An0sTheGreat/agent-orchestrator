@@ -2646,5 +2646,67 @@ class ContractTests(unittest.TestCase):
                 self.assertEqual("[scaffold]" in out, not config)
 
 
+class RemoteRoleTests(unittest.TestCase):
+    """A role on a remote OpenAI-compatible API: base_url, api_key_env, model and sampling only."""
+
+    KEY = "sk-remote-secret-123"
+    URL = "https://remote.example/api/v1"
+    CONFIG = {"roles": {"planner": {"base_url": URL, "api_key_env": "REMOTE_TEST_KEY", "model": "vendor/model-x",
+                                    "timeout_seconds": 30, "sampling": {"temperature": 0.2, "max_tokens": 64}}}}
+
+    @staticmethod
+    def response(payload):
+        class Response:
+            headers = type("H", (), {"get_content_type": staticmethod(lambda: "application/json")})()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def read(self): return json.dumps(payload).encode()
+        return Response()
+
+    def test_remote_role_completes_without_management_calls_and_sends_model(self):
+        sent = []
+
+        def fake(request, timeout=None):
+            sent.append((request.full_url, json.loads(request.data) if request.data else None))
+            return self.response({"choices": [{"message": {"content": "planned"}, "finish_reason": "stop"}], "usage": {}})
+
+        for events in (False, True):
+            sent.clear()
+            with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", events), \
+                    patch.object(orchestrator, "urlopen", side_effect=fake), patch.object(orchestrator, "emit") as emit, \
+                    patch.object(orchestrator, "LOADED_BY_RUN", {}) as loaded, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False), "planned")
+                self.assertEqual(orchestrator.chat_call(self.CONFIG, "planner", "plan", "sys", [{"role": "user", "content": "hi"}]), "planned")
+                orchestrator.unload_models()
+            self.assertEqual([url for url, _ in sent], [f"{self.URL}/chat/completions"] * 2, events)
+            self.assertTrue(all(body["model"] == "vendor/model-x" for _, body in sent))
+            self.assertEqual(loaded, {})
+            self.assertNotIn("loading", [c.args[0] for c in emit.call_args_list])
+            self.assertNotIn(self.KEY, out.getvalue() + repr(emit.call_args_list) + repr([b for _, b in sent]))
+
+    def test_remote_errors_name_role_and_url_never_the_key(self):
+        from urllib.error import HTTPError
+
+        for code, hint in ((401, "REMOTE_TEST_KEY"), (403, "REMOTE_TEST_KEY"), (404, "model id"), (429, "rate limited"), (503, "server error")):
+            def fail(request, timeout=None):
+                body = json.dumps({"error": {"message": f"Invalid key {self.KEY}"}}).encode()
+                raise HTTPError(request.full_url, code, "err", {}, io.BytesIO(body))
+
+            for events in (False, True):
+                with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", events), \
+                        patch.object(orchestrator, "urlopen", side_effect=fail), patch.object(orchestrator, "emit"), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                        orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
+                text = str(ctx.exception)
+                self.assertTrue(text.startswith(f"planner: API {code} from {self.URL}/chat/completions"), text)
+                self.assertIn(hint, text)
+                self.assertNotIn(self.KEY, text)
+
+    def test_custom_worker_with_only_a_model_id_is_valid(self):
+        worker = {"id": "w", "title": "Remote", "kind": "reviewer", "system_prompt": "Review.", "base_url": self.URL, "model": "vendor/model-x"}
+        self.assertEqual([w["id"] for w in orchestrator.custom_workers({"roles": {}, "custom_workers": [worker]})], ["w"])
+
+
 if __name__ == "__main__":
     unittest.main()
