@@ -4,6 +4,11 @@ Choose exactly one smallest coherent next task from PROJECT and VERIFIED STATE. 
 
 If TEAM lists Specialists, a task may include an optional "worker" field set to one Specialist's exact title; that Specialist does the task instead of the Implementer. Assign a Specialist only when its description clearly fits the task, and otherwise omit "worker" so the Implementer does it. Never use a title that TEAM does not list under Specialists. Extra reviewers listed in TEAM review every task automatically; do not assign them.
 
+For a task that changes what a web page does (the project has an index.html or a BEHAVIOUR CHECK), add "acceptance": 2-6 steps that the behaviour check runs in a headless browser on a fresh page with empty localStorage, so the steps must create any data they check (fill the form and click Save before expecting the saved item). The steps must exercise the task's user-visible outcome, not just that the page loads, and use ids or selectors that will exist after the task (name them in required_work too). Step forms:
+{"do":"click","selector":"#id"} {"do":"fill","selector":"#id","value":"text"} {"do":"select","selector":"#id","value":"option value or text"} {"do":"check","selector":"#id","value":true} {"do":"goto","hash":"#view"} {"do":"wait","ms":300}
+{"expect":"text","selector":"#id","contains":"text"} {"expect":"visible","selector":"#id"} {"expect":"hidden","selector":"#id"} {"expect":"count","selector":"#list li","min":1} (optional "max") {"expect":"storage","key":"localStorage key","contains":"text"} (optional "json_length_min":1 for a JSON array) {"expect":"no_errors"}
+Omit "acceptance" for projects without a web page.
+
 Return only JSON in one of these forms:
-{"status":"TASK","task":{"id":"WEB-001","outcome":"one exact outcome","allowed_files":["relative/file"],"required_work":["action"],"validation":["observable check"],"stop_condition":"exact stopping point"}}
+{"status":"TASK","task":{"id":"WEB-001","outcome":"one exact outcome","allowed_files":["relative/file"],"required_work":["action"],"validation":["observable check"],"stop_condition":"exact stopping point","acceptance":[{"do":"fill","selector":"#build-name","value":"Gaming PC"},{"do":"click","selector":"#save-build"},{"expect":"text","selector":"#build-list","contains":"Gaming PC"}]}}
 {"status":"COMPLETE","summary":"brief completion summary"}

@@ -830,9 +830,10 @@ class OrchestratorTests(unittest.TestCase):
 
     BROKEN_PAGE = {"errors": [{"message": "Uncaught TypeError: components is not iterable", "source": "app.js", "line": 3}], "text": "", "visible": 0}
 
-    def _behaviour_loop(self, report):
+    def _behaviour_loop(self, report, task=None):
         """Run one task (2 rounds max) on a web project with the browser faked; returns [(role, user input)]."""
         inputs = []
+        task = task or self.TASK
 
         def agent(config, role, system, user, *rest):
             inputs.append((role, user))
@@ -844,9 +845,9 @@ class OrchestratorTests(unittest.TestCase):
             (root / "TASK.md").write_text("task\n", encoding="utf-8")
             with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"), \
                     patch.object(orchestrator, "find_browser", return_value="browser"), \
-                    patch.object(orchestrator, "load_page", return_value=report), contextlib.redirect_stdout(io.StringIO()):
+                    patch.object(orchestrator, "load_page", return_value=report) as self.load, contextlib.redirect_stdout(io.StringIO()):
                 try:
-                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, self.TASK, {}, 0, "", "implementing", 1, root, False)
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, task, {}, 0, "", "implementing", 1, root, False)
                 except orchestrator.WorkflowError:
                     pass
             review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
@@ -868,6 +869,82 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn("PC Tracker\nAdd component", reviewer[0])
         self.assertEqual(review["verdict"], "PASS")
 
+    STEPS = [{"do": "click", "selector": "#save-build"}, {"expect": "text", "selector": "#build-list", "contains": "Gaming PC"},
+             {"expect": "no_errors"}]
+
+    def test_failed_acceptance_step_fails_round_without_reviewer(self):
+        report = {"errors": [], "text": "Error saving build", "visible": 5, "steps": [
+            {"index": 1, "step": self.STEPS[0], "ok": True, "detail": ""},
+            {"index": 2, "step": self.STEPS[1], "ok": False, "detail": "expected text 'Gaming PC' in #build-list; got ''"},
+            {"index": 3, "step": self.STEPS[2], "ok": None, "detail": "not run"}]}
+        inputs, review = self._behaviour_loop(report, dict(self.TASK, acceptance=self.STEPS))
+        self.assertEqual(self.load.call_args.kwargs["steps"], self.STEPS)
+        self.assertEqual([role for role, _ in inputs], ["implementer", "implementer"])
+        self.assertEqual(review["defects"], [{
+            "file": "index.html", "defect": "Acceptance step failed", "expected": "Every acceptance step passes",
+            "evidence": 'acceptance step 2 failed: {"expect": "text", "selector": "#build-list", "contains": "Gaming PC"}'
+                        " — expected text 'Gaming PC' in #build-list; got ''"}])
+        self.assertIn("expected text 'Gaming PC' in #build-list; got ''", inputs[1][1].split("REVIEWER FEEDBACK", 1)[1])
+
+    def test_passing_acceptance_steps_reach_reviewer_and_missing_steps_are_noted(self):
+        report = {"errors": [], "text": "Gaming PC", "visible": 5,
+                  "steps": [{"index": n, "step": s, "ok": True, "detail": ""} for n, s in enumerate(self.STEPS, 1)]}
+        inputs, review = self._behaviour_loop(report, dict(self.TASK, acceptance=self.STEPS))
+        reviewer = [user for role, user in inputs if role == "reviewer"]
+        self.assertEqual(len(reviewer), 1)
+        self.assertIn('Acceptance steps (3/3 passed):\n✓ 1. {"do": "click", "selector": "#save-build"}\n✓ 2.', reviewer[0])
+        self.assertIn("Visible text sample:\nGaming PC", reviewer[0])
+        self.assertEqual(review["verdict"], "PASS")
+        inputs, _ = self._behaviour_loop({"errors": [], "text": "x", "visible": 1, "steps": None})
+        self.assertIsNone(self.load.call_args.kwargs["steps"])
+        self.assertIn("no acceptance steps were given", [user for role, user in inputs if role == "reviewer"][0])
+
+    def test_acceptance_steps_validated_and_shown_in_task_markdown(self):
+        all_forms = self.STEPS + [
+            {"do": "fill", "selector": "#n", "value": "Gaming PC"}, {"do": "select", "selector": "#c", "value": 3},
+            {"do": "check", "selector": "#f", "value": False}, {"do": "goto", "hash": "#builds"}, {"do": "wait", "ms": 2000},
+            {"expect": "visible", "selector": "#a"}, {"expect": "hidden", "selector": "#b"},
+            {"expect": "count", "selector": "li", "min": 0, "max": 2}, {"expect": "storage", "key": "builds", "json_length_min": 1}]
+        bad = [
+            "click", {"steps": []}, [{"do": "hover", "selector": "#a"}], [{"expect": "title"}], [{"do": "click", "expect": "text"}],
+            [{"do": "click"}], [{"do": "click", "selector": ""}], [{"do": "click", "selector": "#" + "a" * 200}],
+            [{"do": "fill", "selector": "#n"}], [{"do": "check", "selector": "#f", "value": "yes"}], [{"do": "wait", "ms": 2001}],
+            [{"expect": "text", "selector": "#l"}], [{"expect": "count", "selector": "li"}], [{"expect": "count", "selector": "li", "min": 1, "max": "2"}],
+            [{"expect": "storage", "key": "b", "json_length_min": True}], [{"do": ["click"], "selector": "#a"}], ["click #a"],
+            [{"expect": "no_errors"}] * 13,
+        ]
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = Path(folder)
+            for ok in ([], self.STEPS, all_forms):
+                orchestrator.validate_task(dict(self.TASK, acceptance=ok), root)
+            orchestrator.validate_task(self.TASK, root)
+            for steps in bad:
+                with self.subTest(steps=steps), self.assertRaisesRegex(orchestrator.WorkflowError, "acceptance"):
+                    orchestrator.validate_task(dict(self.TASK, acceptance=steps), root)
+        markdown = orchestrator.task_markdown(dict(self.TASK, acceptance=self.STEPS))
+        self.assertIn("## Acceptance steps\n", markdown)
+        self.assertIn("part of the contract", markdown)
+        self.assertIn('\n1. `{"do": "click", "selector": "#save-build"}`\n2. `{"expect": "text"', markdown)
+        self.assertNotIn("Acceptance", orchestrator.task_markdown(self.TASK))
+
+    def test_acceptance_steps_round_trip_through_checkpoint(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            orchestrator.save_checkpoint(root, dict(self.TASK, acceptance=self.STEPS), {}, 0, "", "implementing", 3)
+            self.assertEqual(orchestrator.load_checkpoint(root, (3, 7), 3)["task"]["acceptance"], self.STEPS)
+
+    def test_probe_escapes_steps_inside_the_script(self):
+        probe, budget = orchestrator.behaviour_probe([{"expect": "text", "selector": "#a", "contains": "</script><!--  "},
+                                                      {"do": "wait", "ms": 2000}])
+        self.assertEqual(probe.count("</script>"), 1)
+        self.assertTrue(probe.endswith("</script>"))
+        self.assertNotIn("<!--", probe)
+        self.assertNotIn(" ", probe)
+        self.assertNotIn(" ", probe)
+        self.assertEqual(budget, 5000 + 800 + 2000)
+        self.assertEqual(orchestrator.behaviour_probe([{"expect": "no_errors"}] * 40)[1], 15000)
+        self.assertIn("S=null;", orchestrator.behaviour_probe(None)[0])
+
     def test_planner_sees_behaviour_check_of_current_project(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)
@@ -879,8 +956,9 @@ class OrchestratorTests(unittest.TestCase):
                 return {"status": "COMPLETE", "summary": "done"}
 
             with patch.object(orchestrator, "find_browser", return_value="browser"), \
-                    patch.object(orchestrator, "load_page", return_value=self.BROKEN_PAGE):
+                    patch.object(orchestrator, "load_page", return_value=self.BROKEN_PAGE) as load:
                 self.run_main(root, on_plan=on_plan)
+            self.assertIsNone(load.call_args.kwargs["steps"])  # load-only before planning
             self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT\nBEHAVIOUR CHECK: FAILED (index.html)", seen[0])
             self.assertIn("components is not iterable (app.js:3)", seen[0])
             self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT", orchestrator.load_text(orchestrator.ROOT / "prompts" / "planner.txt"))
@@ -1840,12 +1918,12 @@ BROWSER = orchestrator.find_browser()
 
 
 class BehaviourGateTests(unittest.TestCase):
-    def gate(self, files, config=None):
+    def gate(self, files, config=None, steps=None):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             for name, text in files.items():
                 (Path(folder) / name).write_text(text, encoding="utf-8")
             with contextlib.redirect_stdout(io.StringIO()):
-                return orchestrator.behaviour_gate(Path(folder), config or {})
+                return orchestrator.behaviour_gate(Path(folder), config or {}, steps)
 
     def test_not_a_web_project_or_disabled_is_silent(self):
         self.assertEqual(self.gate({"app.py": "x = 1\n"}), ([], ""))
@@ -1890,6 +1968,78 @@ class BehaviourGateTests(unittest.TestCase):
         evidence = [d["evidence"] for d in defects]
         self.assertIn("Failed to load app.js (404 not found) (index.html)", evidence)
         self.assertTrue(any(e == "boom (console.error)" for e in evidence), evidence)
+
+    BUILD_PAGE = (
+        "<!doctype html><html><head><title>Builds</title></head><body>"
+        "<form id='build-form'><input id='build-name'><select id='category'><option value='cpu'>CPU</option>"
+        "<option value='gpu'>GPU</option></select><label><input type='checkbox' id='fav'> Favourite</label>"
+        "<button type='button' id='save-build'>Save</button></form><div id='secret' hidden>s</div>"
+        "<p id='status'></p><p id='view'></p><ul id='build-list'></ul>"
+        "<script src='data.js'></script><script src='app.js'></script></body></html>"
+    )
+    BUILD_APP = (
+        "addEventListener('hashchange', function () { document.getElementById('view').textContent = 'view ' + location.hash; });\n"
+        "document.getElementById('save-build').addEventListener('click', function () {\n"
+        "  try {\n"
+        "    var all = window.DataStore.addBuild({name: document.getElementById('build-name').value,\n"
+        "      category: document.getElementById('category').value, fav: document.getElementById('fav').checked});\n"
+        "    document.getElementById('build-list').innerHTML = all.map(function (b) {\n"
+        "      return '<li>' + b.name + ' (' + b.category + (b.fav ? ', fav' : '') + ')</li>'; }).join('');\n"
+        "  } catch (e) { document.getElementById('status').textContent = 'Error saving build: ' + e.message; }\n"
+        "});\n"
+    )
+    WORKING_STORE = ("window.DataStore = {addBuild: function (b) { var all = JSON.parse(localStorage.getItem('builds') || '[]');"
+                     " all.push(b); localStorage.setItem('builds', JSON.stringify(all)); return all; }};\n")
+    BUILD_STEPS = [
+        {"do": "fill", "selector": "#build-name", "value": "Gaming PC"},
+        {"do": "select", "selector": "#category", "value": "GPU"},
+        {"do": "check", "selector": "#fav", "value": True},
+        {"do": "click", "selector": "#save-build"},
+        {"expect": "text", "selector": "#build-list", "contains": "Gaming PC (gpu, fav)"},
+        {"expect": "storage", "key": "builds", "contains": "Gaming PC", "json_length_min": 1},
+        {"expect": "count", "selector": "#build-list li", "min": 1, "max": 1},
+        {"do": "goto", "hash": "#builds"},
+        {"do": "wait", "ms": 100},
+        {"expect": "text", "selector": "#view", "contains": "view #builds"},
+        {"expect": "visible", "selector": "#build-form"},
+        {"expect": "hidden", "selector": "#secret"},
+    ]
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_acceptance_steps_pass_when_save_works(self):
+        files = {"index.html": self.BUILD_PAGE, "app.js": self.BUILD_APP, "data.js": self.WORKING_STORE}
+        defects, block = self.gate(files, steps=self.BUILD_STEPS)
+        self.assertEqual(defects, [])
+        self.assertIn("BEHAVIOUR CHECK: passed", block)
+        self.assertIn("Acceptance steps (12/12 passed):\n✓ 1. {\"do\": \"fill\"", block)
+        self.assertIn('✓ 12. {"expect": "hidden", "selector": "#secret"}', block)
+        self.assertIn("Gaming PC (gpu, fav)", block.split("Visible text sample:", 1)[1])
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_acceptance_step_catches_save_that_shows_an_error(self):
+        files = {"index.html": self.BUILD_PAGE, "app.js": self.BUILD_APP, "data.js": "window.DataStore = {};\n"}
+        defects, block = self.gate(files, steps=self.BUILD_STEPS)
+        self.assertEqual(len(defects), 1, defects)  # the error is caught and shown in the page: no console error
+        self.assertEqual(
+            defects[0]["evidence"],
+            'acceptance step 5 failed: {"expect": "text", "selector": "#build-list", "contains": "Gaming PC (gpu, fav)"}'
+            " — expected text 'Gaming PC (gpu, fav)' in #build-list; got ''")
+        self.assertIn("BEHAVIOUR CHECK: FAILED", block)
+        self.assertIn('- 6. {"expect": "storage", "key": "builds", "contains": "Gaming PC", "json_length_min": 1} — not run', block)
+        self.assertIn("— not run", block.splitlines()[-1])
+        defects, _ = self.gate(files, steps=self.BUILD_STEPS[:4] + self.BUILD_STEPS[5:6])
+        self.assertIn("— localStorage['builds'] missing", defects[0]["evidence"])
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_missing_selector_and_page_error_fail_their_step(self):
+        defects, block = self.gate({"index.html": "<p>x</p>"}, steps=[{"do": "click", "selector": "#nope"}, {"expect": "no_errors"}])
+        self.assertEqual([d["evidence"] for d in defects], ['acceptance step 1 failed: {"do": "click", "selector": "#nope"} — selector #nope not found'])
+        self.assertIn('- 2. {"expect": "no_errors"} — not run', block)
+        page = "<button id='b' onclick=\"throw new Error('kaboom')\">b</button>"
+        defects, _ = self.gate({"index.html": page}, steps=[{"do": "click", "selector": "#b"}, {"expect": "no_errors"}])
+        evidence = [d["evidence"] for d in defects]
+        self.assertTrue(any("kaboom" in e and "index.html" in e for e in evidence[:-1]), evidence)  # counted as a page error
+        self.assertTrue(evidence[-1].startswith("acceptance step 1 failed:") and "page error: Uncaught Error: kaboom" in evidence[-1], evidence)
 
 
 if __name__ == "__main__":
