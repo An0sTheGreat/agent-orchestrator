@@ -756,6 +756,9 @@ def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) ->
 
         def do_GET(self) -> None:  # noqa: N802 (http.server naming)
             if urlsplit(self.path).path != target:
+                parts = unquote(urlsplit(self.path).path).lower().split("/")
+                if "api_key.txt" in parts or any(p.startswith(".") for p in parts if p):  # never serve secrets or dotfiles
+                    return self.send_error(403)
                 return super().do_GET()
             text = (project_root / page).read_text(encoding="utf-8", errors="replace")
             for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>"):
