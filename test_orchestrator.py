@@ -743,6 +743,63 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn("SYNTAX CHECK:", reviewer[0])
             self.assertIn("pre-existing", reviewer[0])
 
+    BROKEN_PAGE = {"errors": [{"message": "Uncaught TypeError: components is not iterable", "source": "app.js", "line": 3}], "text": "", "visible": 0}
+
+    def _behaviour_loop(self, report):
+        """Run one task (2 rounds max) on a web project with the browser faked; returns [(role, user input)]."""
+        inputs = []
+
+        def agent(config, role, system, user, *rest):
+            inputs.append((role, user))
+            return '{"verdict":"PASS"}' if role == "reviewer" else "PASSED"
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("<html></html>", encoding="utf-8")
+            (root / "TASK.md").write_text("task\n", encoding="utf-8")
+            with patch.object(orchestrator, "run_agent", side_effect=agent), patch.object(orchestrator, "emit"), \
+                    patch.object(orchestrator, "find_browser", return_value="browser"), \
+                    patch.object(orchestrator, "load_page", return_value=report), contextlib.redirect_stdout(io.StringIO()):
+                try:
+                    orchestrator.run_review_loop({}, {"implementer": "", "reviewer": ""}, self.TASK, {}, 0, "", "implementing", 1, root, False)
+                except orchestrator.WorkflowError:
+                    pass
+            review = json.loads((root / "REVIEW.md").read_text(encoding="utf-8"))
+        return inputs, review
+
+    def test_page_errors_fail_round_without_reviewer_and_go_back_to_implementer(self):
+        inputs, review = self._behaviour_loop(self.BROKEN_PAGE)
+        self.assertEqual([role for role, _ in inputs], ["implementer", "implementer"])
+        self.assertEqual(review["verdict"], "FAIL")
+        self.assertEqual(review["defects"][0]["evidence"], "Uncaught TypeError: components is not iterable (app.js:3)")
+        self.assertIn("components is not iterable (app.js:3)", inputs[1][1].split("REVIEWER FEEDBACK", 1)[1])
+
+    def test_clean_page_gives_reviewer_behaviour_evidence(self):
+        inputs, review = self._behaviour_loop({"errors": [], "text": "PC Tracker\nAdd component", "visible": 7})
+        reviewer = [user for role, user in inputs if role == "reviewer"]
+        self.assertEqual(len(reviewer), 1)
+        self.assertIn("BEHAVIOUR CHECK: passed (index.html", reviewer[0])
+        self.assertIn("Errors: none", reviewer[0])
+        self.assertIn("PC Tracker\nAdd component", reviewer[0])
+        self.assertEqual(review["verdict"], "PASS")
+
+    def test_planner_sees_behaviour_check_of_current_project(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            (root / "index.html").write_text("<html></html>", encoding="utf-8")
+            seen = []
+
+            def on_plan(config, system, user, *rest):
+                seen.append(user)
+                return {"status": "COMPLETE", "summary": "done"}
+
+            with patch.object(orchestrator, "find_browser", return_value="browser"), \
+                    patch.object(orchestrator, "load_page", return_value=self.BROKEN_PAGE):
+                self.run_main(root, on_plan=on_plan)
+            self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT\nBEHAVIOUR CHECK: FAILED (index.html)", seen[0])
+            self.assertIn("components is not iterable (app.js:3)", seen[0])
+            self.assertIn("BEHAVIOUR CHECK OF CURRENT PROJECT", orchestrator.load_text(orchestrator.ROOT / "prompts" / "planner.txt"))
+
     def test_flagged_answer_on_last_step_returns_unverified(self):
         write = self._native("write_file", path="a.txt", content="x")
         fail = self._native("replace_text", path="a.txt", old="zzz", new="y")
@@ -1664,6 +1721,62 @@ class ChatTests(unittest.TestCase):
             _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
         self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
         self.assertIn("Reviewer returned nothing usable", out.getvalue())
+
+
+BROWSER = orchestrator.find_browser()
+
+
+class BehaviourGateTests(unittest.TestCase):
+    def gate(self, files, config=None):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            for name, text in files.items():
+                (Path(folder) / name).write_text(text, encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                return orchestrator.behaviour_gate(Path(folder), config or {})
+
+    def test_not_a_web_project_or_disabled_is_silent(self):
+        self.assertEqual(self.gate({"app.py": "x = 1\n"}), ([], ""))
+        self.assertEqual(self.gate({"index.html": "<p>x</p>"}, {"behaviour_check": False}), ([], ""))
+
+    def test_no_browser_skips_with_note(self):
+        with patch.object(orchestrator, "find_browser", return_value=None):
+            defects, block = self.gate({"index.html": "<p>x</p>"})
+        self.assertEqual(defects, [])
+        self.assertIn("BEHAVIOUR CHECK: skipped (no Chromium browser found", block)
+
+    def test_missing_report_is_a_gate_error_not_a_pass(self):
+        with patch.object(orchestrator, "find_browser", return_value="browser"), \
+                patch.object(orchestrator, "load_page", side_effect=orchestrator.WorkflowError("no report came back")):
+            defects, block = self.gate({"index.html": "<p>x</p>"})
+        self.assertEqual(defects[0]["evidence"], "no report came back")
+        self.assertIn("FAILED", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_reports_error_thrown_on_load(self):
+        defects, block = self.gate({
+            "index.html": "<!doctype html><html><head><title>t</title></head><body><p>Hi</p><script src='app.js'></script></body></html>",
+            "app.js": "const components = {};\nfor (const c of components) {}\n",
+        })
+        self.assertIn("components is not iterable (app.js:2)", defects[0]["evidence"])
+        self.assertIn("BEHAVIOUR CHECK: FAILED", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_clean_page_passes_with_visible_text(self):
+        defects, block = self.gate({
+            "index.html": "<html><body><h1>Tracker</h1><script src='app.js'></script></body></html>",
+            "app.js": "document.body.insertAdjacentHTML('beforeend', '<p>Added by script</p>');\n",
+        })
+        self.assertEqual(defects, [])
+        self.assertIn("BEHAVIOUR CHECK: passed", block)
+        self.assertIn("Tracker\n", block)
+        self.assertIn("Added by script", block)
+
+    @unittest.skipUnless(BROWSER, "no Chromium browser installed")
+    def test_real_browser_reports_missing_script_and_console_error(self):
+        defects, _ = self.gate({"index.html": "<p>x</p><script src='app.js'></script><script>console.error('boom')</script>"})
+        evidence = [d["evidence"] for d in defects]
+        self.assertIn("Failed to load app.js (404 not found) (index.html)", evidence)
+        self.assertTrue(any(e == "boom (console.error)" for e in evidence), evidence)
 
 
 if __name__ == "__main__":

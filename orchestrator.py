@@ -11,6 +11,7 @@ import datetime as dt
 import difflib
 import fnmatch
 import hashlib
+import http.server
 import json
 import os
 import re
@@ -18,10 +19,13 @@ import shutil
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import uuid
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote, unquote, urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -715,6 +719,143 @@ def syntax_message(defects: list[dict[str, str]]) -> str:
     )
 
 
+# Injected first into the checked page: records page errors, unhandled rejections and console.error, then after
+# load + a short settle writes a JSON report into the DOM, which the browser's --dump-dom prints.
+BEHAVIOUR_PROBE = """<script>(function(){var E=[];function p(m,s,l){E.push({message:String(m).slice(0,500),source:s||"",line:l||0});}
+window.addEventListener("error",function(e){if(e.target===window)p(e.message||e.error,e.filename,e.lineno);},true);
+window.addEventListener("unhandledrejection",function(e){var r=e.reason;p("Unhandled promise rejection: "+(r&&r.message||r));});
+var ce=console.error;console.error=function(){p(Array.prototype.map.call(arguments,String).join(" "),"console.error",0);return ce.apply(console,arguments);};
+window.addEventListener("load",function(){setTimeout(function(){var b=document.body,v=0;if(b){var all=b.querySelectorAll("*");for(var i=0;i<all.length;i++)if(all[i].getClientRects().length)v++;}
+var s=document.createElement("script");s.type="application/json";s.id="__ao_report";
+s.textContent=JSON.stringify({errors:E,text:(b?b.innerText:"").slice(0,1500),visible:v}).replace(/</g,"\\\\u003c");
+document.documentElement.appendChild(s);},500);});})();</script>"""
+
+
+def find_browser(configured: str | None = None) -> str | None:
+    """Configured path, else Edge, else Chrome at their standard install paths, else msedge/chrome/chromium on PATH."""
+    if configured:
+        return configured if Path(configured).is_file() else None
+    roots = [os.environ.get(v) for v in ("ProgramFiles(x86)", "ProgramFiles", "LOCALAPPDATA")]
+    for sub in (r"Microsoft\Edge\Application\msedge.exe", r"Google\Chrome\Application\chrome.exe"):
+        for root in filter(None, roots):
+            if (Path(root) / sub).is_file():
+                return str(Path(root) / sub)
+    return next(filter(None, map(shutil.which, ("msedge", "chrome", "chromium", "chromium-browser", "google-chrome"))), None)
+
+
+def load_page(browser: str, project_root: Path, page: str, timeout: int = 30) -> dict[str, Any]:
+    """Serve project_root on 127.0.0.1, load `page` headlessly in a fresh profile and return the probe report
+    ({"errors": [...], "text": str, "visible": int}). Missing scripts/stylesheets (404) are added as errors.
+    Raises WorkflowError when no report comes back (browser failed, timed out, or the probe never ran)."""
+    target = "/" + quote(page)
+    missing: list[str] = []
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, directory=str(project_root), **kwargs)
+
+        def do_GET(self) -> None:  # noqa: N802 (http.server naming)
+            if urlsplit(self.path).path != target:
+                return super().do_GET()
+            text = (project_root / page).read_text(encoding="utf-8", errors="replace")
+            for pattern in (r"<head\b[^>]*>", r"<html\b[^>]*>", r"<!doctype[^>]*>"):
+                found = re.search(pattern, text, re.IGNORECASE)
+                if found:
+                    text = text[:found.end()] + BEHAVIOUR_PROBE + text[found.end():]
+                    break
+            else:
+                text = BEHAVIOUR_PROBE + text
+            body = text.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def send_error(self, code: int, *args: Any, **kwargs: Any) -> None:
+            name = unquote(urlsplit(self.path).path).lstrip("/")
+            if code == 404 and Path(name).suffix.lower() in {".js", ".mjs", ".css"}:
+                missing.append(name)
+            super().send_error(code, *args, **kwargs)
+
+        def log_message(self, *args: Any) -> None:
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    profile = tempfile.mkdtemp(prefix="ao-behaviour-")
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}{target}"
+        args = [browser, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+                f"--user-data-dir={profile}", "--virtual-time-budget=5000", "--dump-dom", url]
+        try:
+            proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, shell=False)
+        except OSError as exc:
+            raise WorkflowError(f"could not start the browser: {exc}") from exc
+        try:
+            dom = proc.communicate(timeout=timeout)[0].decode("utf-8", errors="replace")
+        except subprocess.TimeoutExpired:
+            if os.name == "nt":  # the browser's own child processes too, by this pid only
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            proc.kill()
+            proc.communicate()
+            raise WorkflowError(f"the page did not finish loading within {timeout} s (endless loop or hung browser?)")
+        found = re.search(r'id="__ao_report">(.*?)</script>', dom, re.DOTALL)
+        if not found:
+            raise WorkflowError(f"no report came back from the page (browser exit code {proc.returncode}); its scripts may never have run")
+        report = json.loads(found.group(1))
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(profile, ignore_errors=True)
+    origin = url.rsplit(target, 1)[0] + "/"
+    for error in report["errors"]:
+        error["source"] = str(error.get("source") or "").replace(origin, "")
+    report["errors"] += [{"message": f"Failed to load {name} (404 not found)", "source": page, "line": 0} for name in missing]
+    return report
+
+
+def behaviour_gate(project_root: Path, config: dict[str, Any]) -> tuple[list[dict[str, str]], str]:
+    """Load the project's page headlessly. Returns (defects, BEHAVIOUR CHECK block); ([], "") when not a web project.
+
+    Applies when the root has index.html or config sets behaviour_check.page; behaviour_check false disables it.
+    """
+    setting = config.get("behaviour_check", {})
+    if setting is False:
+        return [], ""
+    setting = setting if isinstance(setting, dict) else {}
+    page = str(setting.get("page") or "index.html")
+    path = safe_relative_path(page, project_root)
+    if not path.is_file():
+        if setting.get("page"):
+            print(f"[behaviour] skipped (page {page} not found)")
+            return [], f"BEHAVIOUR CHECK: skipped (page {page} not found)"
+        return [], ""
+    page = path.relative_to(project_root.resolve()).as_posix()
+    browser = find_browser(setting.get("browser"))
+    if not browser:
+        print("[behaviour] skipped (no Chromium browser found)")
+        return [], "BEHAVIOUR CHECK: skipped (no Chromium browser found; install Edge or Chrome, or set behaviour_check.browser)"
+    try:
+        report = load_page(browser, project_root, page)
+    except WorkflowError as exc:
+        print(f"[behaviour] FAILED (could not check {page}: {exc})")
+        defect = {"file": page, "defect": "Behaviour check could not complete", "expected": "The page loads in a headless browser",
+                  "evidence": str(exc)}
+        return [defect], f"BEHAVIOUR CHECK: FAILED (could not check {page}: {exc})"
+    errors = [f"{e['message']} ({e['source'] or page}{':' + str(e['line']) if e['line'] else ''})" for e in report["errors"]]
+    if errors:
+        print(f"[behaviour] FAILED ({len(errors)} error(s) loading {page}: {errors[0]})")
+        defects = [{"file": page, "defect": "Error while loading the page", "expected": "The page loads without console or page errors",
+                    "evidence": error} for error in errors]
+        return defects, f"BEHAVIOUR CHECK: FAILED ({page})\nErrors:\n" + "\n".join(f"- {e}" for e in errors)
+    print(f"[behaviour] passed ({page}: no errors, {report['visible']} visible elements)")
+    return [], (
+        f"BEHAVIOUR CHECK: passed ({page} loaded in a headless browser with a fresh profile)\nErrors: none\n"
+        f"Visible elements: {report['visible']}\nVisible text sample:\n{report['text'].strip() or '(no visible text)'}"
+    )
+
+
 TOOL_CALL_TEXT = re.compile(r'"name"\s*:\s*"(?:write_file|replace_text|read_file|run_validation)"')
 
 
@@ -1251,16 +1392,21 @@ def run_review_loop(
         after = snapshot(project_root, allowed)
         diff = make_diff(before, after)
         defects, syntax_line = syntax_gate(project_root, allowed, before)
+        gate = "syntax"
+        if not defects:
+            defects, behaviour_block = behaviour_gate(project_root, config)
+            gate = "behaviour"
         if defects:
             review_text = json.dumps({"verdict": "FAIL", "defects": defects}, indent=2)
             save_text(project_root / "REVIEW.md", review_text)
             verdict = "FAIL"
             emit("verdict", id=str(task["id"]), verdict=verdict, round=review_round + 1)
-            print(f"[syntax] round {review_round + 1} failed the syntax check; reviewer skipped")
+            print(f"[{gate}] round {review_round + 1} failed the {gate} check; reviewer skipped")
         else:
+            behaviour_part = f"{behaviour_block}\n\n" if behaviour_block else ""
             reviewer_input = (
                 f"ORIGINAL TASK\n{load_text(project_root / 'TASK.md')}\n\nIMPLEMENTER RESULT\n{result}\n\n"
-                f"{syntax_line}\n\nCHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
+                f"{syntax_line}\n\n{behaviour_part}CHANGED FILE DIFF\n{diff}\n\nReview round: {review_round + 1}"
             )
             if resumed and phase == "extra_reviewing":
                 verdict, review_text = "PASS", load_text(project_root / "REVIEW.md")  # the main Reviewer already passed this round
@@ -1414,10 +1560,12 @@ def _run() -> int:
         else:
             write_handoff(project_root, None)  # a kill inside clear_checkpoint can leave a stale handoff
             config = configure_project(config, project_root, project, interactive)
+            behaviour_block = behaviour_gate(project_root, config)[1].split("\nVisible elements", 1)[0]  # no text sample
+            behaviour_part = f"BEHAVIOUR CHECK OF CURRENT PROJECT\n{behaviour_block}\n\n" if behaviour_block else ""
             planner_input = (
                 f"PROJECT\n{project}\n\nVERIFIED STATE\n{load_text(project_root / 'STATE.md')}\n\n"
                 f"{project_configuration_context(project_root).split(chr(10) * 2 + 'BUILD MANIFEST', 1)[0]}\n\n"
-                f"{team_context(config)}\n\n"
+                f"{team_context(config)}\n\n{behaviour_part}"
                 f"KNOWN ISSUES\n{load_text(project_root / 'ISSUES.md')}"
             )
             plan = request_plan(config, prompts["planner"], planner_input, project_root, interactive)
