@@ -6,7 +6,7 @@ using Microsoft.Win32;
 
 namespace AgentOrchestrator;
 
-// Options > Model runtime: Unsloth Studio's API, or llama.cpp's llama-server (downloaded into <data>\llama.cpp) that the
+// Settings > Model runtime: Unsloth Studio's API, or llama.cpp's llama-server (downloaded into <data>\llama.cpp) that the
 // engine starts itself and records in LauncherLogic.LlamaStateFile; the launcher stops it where it unloads chat models.
 public partial class MainWindow
 {
@@ -57,7 +57,7 @@ public partial class MainWindow
         }
         if (!LocalRuntime || File.Exists(LauncherLogic.LlamaServerPath))
             return true;
-        Toast("Download llama-server in Options first", "#F7C873");
+        Toast("Download llama-server in Settings first", "#F7C873");
         return false;
     }
 

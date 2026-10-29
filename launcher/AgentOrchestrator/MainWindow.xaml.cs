@@ -132,8 +132,7 @@ public partial class MainWindow : Window
         {
             SetStatus("API key required", "#FF667A");
             Log("Enter your Unsloth API key.");
-            ShowView(options: true);
-            ApiKeyBox.Focus();
+            OpenSettings(ApiKeyBox);
             return;
         }
         if (LauncherLogic.IsProjectComplete(project) && !RestartProject(project))
@@ -754,7 +753,7 @@ public partial class MainWindow : Window
     private static readonly IEasingFunction Decelerate = new CubicEase { EasingMode = EasingMode.EaseOut };
 
     // Wanted visibility per element for Reveal. IsHitTestVisible cannot hold it: WPF forces it false on every
-    // child of a parent whose IsHitTestVisible is false (the log box while Options hides the work area).
+    // child of a parent whose IsHitTestVisible is false (such as a log box inside a hidden pane).
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<UIElement, System.Runtime.CompilerServices.StrongBox<bool>> RevealWanted = new();
 
     // Fades an element in or out (sliding it by `slide` px when given) instead of snapping its visibility.
@@ -885,6 +884,7 @@ public partial class MainWindow : Window
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         static Task Settle() => Task.Delay(400);
         _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-state.json"); // never the real server's record
+        _settingsShow = window => { window.ShowActivated = false; window.Show(); }; // ShowDialog would block the run
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
         ShowCodeRun(true); // the run checks below need Model Output on screen
@@ -954,7 +954,7 @@ public partial class MainWindow : Window
             LogToggle.IsChecked = open;
             LogToggle_Click(LogToggle, new RoutedEventArgs());
             await Settle();
-            ShowView(options: open);
+            ShowView();
             await Settle();
             _settings.Compact = open;
             ApplyCompact();
@@ -979,7 +979,7 @@ public partial class MainWindow : Window
             await Task.Delay(100);
         if (ToastStack.Children.Count != 0)
             return Fail();
-        // The log was closed while the Options view hid its pane; it must end up collapsed, not stuck open.
+        // The log was opened, then closed; it must end up collapsed, not stuck open.
         if (LogBox.Visibility != Visibility.Collapsed)
             return Fail();
         // Live token stats: deltas alone drive the count and rate until the call's usage event gives the exact numbers.
@@ -1126,7 +1126,8 @@ public partial class MainWindow : Window
                 dialog.ShowActivated = false;
                 dialog.Show();
                 await Settle();
-                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.ActualWidth > 100 && dialog.ActualHeight > 60;
+                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.AllowsTransparency && dialog.ActualWidth > 100 && dialog.ActualHeight > 60
+                    && ReferenceEquals(dialog.Frame.Background, Resources["DialogBackground"]); // borderless, on the popup shade
                 Snap(name, dialog);
                 dialog.Close();
                 return shown && !dialog.IsVisible;
@@ -1290,7 +1291,7 @@ public partial class MainWindow : Window
         // Chat view, driven without Python: worker menu, target chip, Single and Multi turns fed by fake events.
         {
             var outputCount = OutputPanel.Children.Count;
-            ShowView(false, chat: true);
+            ShowView(chat: true);
             await Settle();
             if (!ChatView.IsVisible)
                 return Fail();
@@ -1520,7 +1521,7 @@ public partial class MainWindow : Window
                 return Fail();
             }
             // Code view: a turn with a tool call lands in the Code conversation (not Chat); code_reply is the answer; both sub-views toggle.
-            ShowView(false);
+            ShowView();
             ShowCodeRun(false);
             await Settle();
             if (!CodeChat.IsVisible || WorkArea.IsVisible || NavCode.IsChecked != true)
@@ -1795,7 +1796,7 @@ public partial class MainWindow : Window
                     "- Water `weekly`\n  - deeper in summer\n- Mulch\n\n1. Dig\n2. Plant\n\n| Month | Task |\n|---|---|\n| May | Bloom |\n\n> Note\n\n```\ncode **raw**\n```\n\n---\nEnd";
                 SetChatFinal(sample);
                 await Settle();
-                ShowView(false, chat: true);
+                ShowView(chat: true);
                 await Settle();
                 Snap("25-markdown-reply");
                 var blocks = markdownReply.Rendered?.Document.Blocks.ToList() ?? [];
@@ -1836,11 +1837,11 @@ public partial class MainWindow : Window
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null)
                     return Fail();
-                ShowView(false); // from the Code view, its row opens the Chat view
+                ShowView(); // from the Code view, its row opens the Chat view
                 ClickRow(savedChat.Id);
                 await Settle();
                 Snap("23-sidebar-chat");
-                // The title bar names the open chat; Options names none.
+                // The title bar names the open chat.
                 if (TitleChatButton.Visibility != Visibility.Visible || TitleChatText.Text != _store.View().Ungrouped.Single(e => e.Id == savedChat.Id).Title)
                     return Fail();
                 if (NavChat.IsChecked != true || _chatConv != savedChat || _chatHistory.Count != 4 || ChatPanel.Children.Count != 4 || _codeConv != chatA ||
@@ -1870,7 +1871,7 @@ public partial class MainWindow : Window
                     ((TextBlock)((StackPanel)ChatSkillsButton.Content).Children[1]).Text != "Skills · 1  ▾" || !(bool)request["search"]! || !(bool)request["tools"]! ||
                     (string)request["skills"]![0]! != skillFolder)
                     return Fail();
-                ShowView(false, chat: true);
+                ShowView(chat: true);
                 var skillsMenu = BuildSkillsMenu(ChatSkillsButton);
                 skillsMenu.IsOpen = true;
                 await Settle();
@@ -1903,7 +1904,7 @@ public partial class MainWindow : Window
                 try { Directory.Delete(codeProject, true); } catch (IOException) { }
             }
             CloseCodeConversation();
-            ShowView(false);
+            ShowView();
             await Settle();
         }
         _process = new Process(); // never started; Start_Click sets _process before SetRunning(true)
@@ -1969,6 +1970,45 @@ public partial class MainWindow : Window
         WindowState = WindowState.Normal;
         (Left, Top) = (-20000, -20000);
         await Settle();
+        // The Settings window: the gear, the rail's gear and a run missing its API key open it, owned and borderless with the
+        // Options content inside (a run's key box focused); a theme picked in it restyles it live; × and Esc close it, and
+        // its content goes back to the holder each time, so it opens again.
+        for (var way = 0; way < 3; way++)
+        {
+            if (way == 0)
+                NavOptions.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            else if (way == 1)
+                RailSettings.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            else
+                OpenSettings(ApiKeyBox);
+            await Settle();
+            if (_settingsWindow is not { } settings || !settings.IsVisible || settings.Owner != this || settings.WindowStyle != WindowStyle.None
+                || !settings.AllowsTransparency || settings.ActualWidth < 900 || SettingsHolder.Child is not null || !ThemeFlatRadio.IsDescendantOf(settings)
+                || (way == 2) != (FocusManager.GetFocusedElement(settings) == ApiKeyBox))
+                return Fail();
+            if (way == 0)
+            {
+                var background = ((SolidColorBrush)settings.Frame.Background).Color;
+                var picked = new[] { ThemeFlatRadio, ThemeGoldRadio, ThemeGlassRadio, ThemeOledRadio, ThemeGraphiteRadio, ThemeParchmentRadio, ThemeParchmentDarkRadio }
+                    .Single(r => r.IsChecked == true);
+                (picked == ThemeOledRadio ? ThemeParchmentRadio : ThemeOledRadio).IsChecked = true;
+                await Settle();
+                if (((SolidColorBrush)settings.Frame.Background).Color == background)
+                    return Fail();
+                Snap("26-settings-window-live-theme", settings);
+                picked.IsChecked = true;
+                await Settle();
+                if (((SolidColorBrush)settings.Frame.Background).Color != background)
+                    return Fail();
+            }
+            if (way == 1) // Esc
+                settings.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(settings)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            else // ×
+                settings.CloseX.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            if (settings.IsVisible || _settingsWindow is not null || SettingsHolder.Child != SettingsContent)
+                return Fail();
+        }
         if (!await LocalRuntimeSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
@@ -1979,14 +2019,15 @@ public partial class MainWindow : Window
                 ApplyTheme();
                 await Settle();
                 Snap("5-theme-" + theme);
-                ShowView(false, chat: true);
+                ShowView(chat: true);
                 await Settle();
                 Snap("17-chat-theme-" + theme);
-                ShowView(false);
+                ShowView();
+                OpenSettings();
+                await Settle();
+                Snap("26-settings-window-" + theme, _settingsWindow);
+                _settingsWindow!.Close();
             }
-            ShowView(options: true);
-            await Settle();
-            Snap("6-options");
         }
         return true;
     }
@@ -2015,7 +2056,7 @@ public partial class MainWindow : Window
             return Fail();
         var replies = _chat.Panel.Children.Count;
         if (await RunTurn(_chat, "hi", "implementer", false, _ => "{}", LauncherLogic.BuildChatStartInfo, "Chat") ||
-            _chatBusy || _chat.Panel.Children.Count != replies || !Toasted("Download llama-server in Options first"))
+            _chatBusy || _chat.Panel.Children.Count != replies || !Toasted("Download llama-server in Settings first"))
             return Fail();
         // A stand-in llama-server.exe that runs: a copy of ping, so its process name is llama-server.
         var ping = Path.Combine(Environment.SystemDirectory, "PING.EXE");
@@ -2601,13 +2642,13 @@ public partial class MainWindow : Window
                 LogToggle_Click(LogToggle, e);
                 break;
             case Key.D1 or Key.NumPad1 when !shift:
-                ShowView(options: false, chat: true);
+                ShowView(chat: true);
                 break;
             case Key.D2 or Key.NumPad2 when !shift:
-                ShowView(options: false);
+                ShowView();
                 break;
             case Key.D3 or Key.NumPad3 when !shift:
-                ShowView(options: true);
+                OpenSettings();
                 break;
             case Key.B when !shift:
                 SetSidebar(!_settings.SidebarCollapsed);
@@ -3571,27 +3612,54 @@ public partial class MainWindow : Window
     private void Nav_Click(object sender, RoutedEventArgs e)
     {
         var tag = ((FrameworkElement)sender).Tag as string;
-        ShowView(tag == "Options", chat: tag == "Chat");
+        ShowView(chat: tag == "Chat");
     }
 
-    // Neither options nor chat: the Code view.
-    private void ShowView(bool options, bool chat = false)
+    // Not chat: the Code view.
+    private void ShowView(bool chat = false)
     {
-        var code = !options && !chat;
+        var code = !chat;
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
-        NavOptions.IsChecked = options;
         Reveal(CodeView, code);
         Reveal(ChatView, chat);
-        foreach (UIElement part in new UIElement[] { SplitterBar, DetailsPanel })
-            Reveal(part, !options);
-        Reveal(OptionsView, options);
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown
         if (chat || (code && !_codeRun))
         {
             RefreshChatTarget();
             (chat ? ChatInput : CodeInput).Focus();
         }
+    }
+
+    // ---- the Settings window (the sidebar's gear, Ctrl+3): it borrows SettingsContent from its hidden holder while open
+
+    private DialogShell? _settingsWindow;
+    private Action<DialogShell>? _settingsShow; // --ui-smoke: shows it without blocking (ShowDialog otherwise)
+
+    private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
+
+    // focus: the control to put the cursor in, such as the API key box when a run needs the key.
+    private void OpenSettings(IInputElement? focus = null)
+    {
+        if (_settingsWindow is { } open)
+        {
+            open.Activate();
+            focus?.Focus();
+            return;
+        }
+        SettingsHolder.Child = null;
+        var window = _settingsWindow = new DialogShell(this, null, SettingsContent, large: true);
+        window.Loaded += (_, _) => focus?.Focus();
+        window.Closed += (_, _) =>
+        {
+            ((Panel)SettingsContent.Parent).Children.Remove(SettingsContent);
+            SettingsHolder.Child = SettingsContent;
+            _settingsWindow = null;
+        };
+        if (_settingsShow is { } show)
+            show(window);
+        else
+            window.ShowDialog();
     }
 
     // ---- collapsible sidebar
@@ -3681,6 +3749,11 @@ public partial class MainWindow : Window
         // Graphite: warm dark grays with off-white text and a light gray accent.
         // Parchment: warm off-white paper (its background stays exactly #F4F3EE), white cards, near-black text.
         Surface("AppBackground", clay ? "#1E1C1B" : parchment ? "#F4F3EE" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment ? 0 : 0.035);
+        // Popup windows sit a shade off the window: lighter on the dark themes, darker on Parchment (Glass keeps its translucency).
+        var back = ((SolidColorBrush)Resources["AppBackground"]).Color;
+        var (toward, share) = parchment ? ((byte)0, 0.035) : ((byte)255, 0.07);
+        byte Shade(byte from) => (byte)Math.Round(from + (toward - from) * share);
+        Resources["DialogBackground"] = new SolidColorBrush(Color.FromArgb(back.A, Shade(back.R), Shade(back.G), Shade(back.B)));
         SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
         Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
         Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
@@ -3940,6 +4013,17 @@ public partial class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+    // The work area (device-independent units) of the monitor nearest a shown window; the primary one's before it is shown.
+    internal static Rect WorkAreaOf(Window window)
+    {
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (PresentationSource.FromVisual(window)?.CompositionTarget is not { } target
+            || !GetMonitorInfo(MonitorFromWindow(new WindowInteropHelper(window).Handle, 2 /* nearest */), ref info))
+            return SystemParameters.WorkArea;
+        var fromDevice = target.TransformFromDevice;
+        return new Rect(fromDevice.Transform(new Point(info.Work.Left, info.Work.Top)), fromDevice.Transform(new Point(info.Work.Right, info.Work.Bottom)));
+    }
 
     private void Minimize_Click(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 

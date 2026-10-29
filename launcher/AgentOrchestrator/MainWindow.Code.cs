@@ -185,7 +185,7 @@ public partial class MainWindow
             return;
         CloseCodeConversation();
         ProjectPath = folder;
-        ShowView(false);
+        ShowView();
         ShowCodeRun(false);
         if (!EnsureCodeConversation(SelectedProjectPath()))
             return;
@@ -233,7 +233,7 @@ public partial class MainWindow
             _settings.LastConversation = id;
             _settings.Save();
         }
-        ShowView(false);
+        ShowView();
         ShowCodeRun(false);
         RefreshSidebarList();
     }
@@ -447,7 +447,7 @@ public partial class MainWindow
         RefreshCodeFolders();
         CodeFoldersHost.Content = null;
         var dialog = new DialogShell(this, "Folders", CodeFoldersPanel);
-        dialog.Closed += (_, _) => { ((Border)CodeFoldersPanel.Parent).Child = null; CodeFoldersHost.Content = CodeFoldersPanel; };
+        dialog.Closed += (_, _) => { ((Panel)CodeFoldersPanel.Parent).Children.Remove(CodeFoldersPanel); CodeFoldersHost.Content = CodeFoldersPanel; };
         dialog.ShowDialog();
     }
 
