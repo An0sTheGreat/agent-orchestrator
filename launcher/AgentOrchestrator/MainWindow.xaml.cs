@@ -3544,13 +3544,13 @@ public partial class MainWindow : Window
             Resources[key] = new SolidColorBrush(Color.FromArgb(c.A, Mix(c.R, tint.R), Mix(c.G, tint.G), Mix(c.B, tint.B)));
         }
         // Graphite: warm dark grays with off-white text and a light gray accent.
-        Surface("AppBackground", graphite ? "#262624" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
+        Surface("AppBackground", graphite ? "#1D1D1B" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
         SetThemeBrush("TextPrimary", graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        Surface("TitleBackground", graphite ? "#1F1E1D" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
-        Surface("Panel", graphite ? "#1F1E1D" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
-        Surface("Card", graphite ? "#30302E" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
-        Surface("Hover", graphite ? "#393836" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
-        Surface("Border", graphite ? "#3A3936" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        Surface("TitleBackground", graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
+        Surface("Panel", graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("Card", graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
+        Surface("Hover", graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
+        Surface("Border", graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         SetThemeBrush("Muted", graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
@@ -3577,7 +3577,7 @@ public partial class MainWindow : Window
         ("Blue", "Flat blue", "#4C8DFF", "#86B3FF", "#FFFFFF"),
         ("Pink", "Pink", "#FF6FB5", "#FFA6D2", "#1A0A12"),
         ("Orange", "Orange", "#FF8A3D", "#FFB880", "#1A0D04"),
-        ("Silver", "Light gray", "#D1CFC9", "#ECEAE5", "#1A1A18"),
+        ("Silver", "Light gray", "#9D9B97", "#B1B0AC", "#121211"),
     };
 
     private string AccentKey => _settings.ThemeAccents.TryGetValue(_settings.Theme, out var key) && AccentColors.Any(x => x.Key == key)
