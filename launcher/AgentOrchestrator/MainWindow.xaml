@@ -859,8 +859,8 @@
             </Grid>
         </Border>
 
-        <!-- Workspace -->
-        <Grid x:Name="WorkspaceView" Grid.Row="2">
+        <!-- Main area: sidebar, the Code / Chat / Options view, worker cards -->
+        <Grid x:Name="MainView" Grid.Row="2">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" MinWidth="380" />
@@ -875,9 +875,9 @@
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel Margin="12,20,12,20">
                                 <TextBlock Text="VIEW" Style="{StaticResource SectionHeader}" Margin="8,0,0,8" />
-                                <ToggleButton x:Name="NavWorkspace" Style="{StaticResource NavToggle}" Content="Workspace" IsChecked="True" Click="Nav_Click" Tag="Workspace" ToolTip="Workspace (Ctrl+1)" />
-                                <ToggleButton x:Name="NavChat" Style="{StaticResource NavToggle}" Content="Chat" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+3)" />
-                                <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+2)" />
+                                <ToggleButton x:Name="NavChat" Style="{StaticResource NavToggle}" Content="Chat" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" />
+                                <ToggleButton x:Name="NavCode" Style="{StaticResource NavToggle}" Content="Code" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" />
+                                <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
 
                                 <TextBlock Text="PROJECT" Style="{StaticResource SubHeader}" />
                                 <Button x:Name="ProjectButton" Click="Browse_Click" Padding="12,9" ToolTip="Choose the project folder">
@@ -900,6 +900,13 @@
                                 <Button Content="Task limits…" Margin="0,6,0,0" Click="TaskLimits_Click" IsEnabled="{Binding IsEnabled, ElementName=ProjectButton}"
                                         ToolTip="The most files and required-work items the Planner may give one task" />
 
+                                <!-- Code: folders beyond the project the worker may use (MainWindow.Code.cs RefreshCodeFolders) -->
+                                <TextBlock Text="FOLDERS" Style="{StaticResource SubHeader}" ToolTip="Folders beyond the project folder the Code worker may read or edit" />
+                                <TextBlock x:Name="CodeFoldersEmpty" Text="Choose a project folder first" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0,0,4" />
+                                <StackPanel x:Name="CodeFoldersList" />
+                                <Button x:Name="AddCodeFolderButton" Content="Add folder…" Margin="0,4,0,0" Click="AddCodeFolder_Click" Visibility="Collapsed"
+                                        ToolTip="Let the Code worker read or edit another folder" />
+
                                 <TextBlock Text="RUN" Style="{StaticResource SubHeader}" />
                                 <DockPanel Margin="8,0,0,0">
                                     <ToggleButton x:Name="OnceToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="Once_Click" />
@@ -916,15 +923,15 @@
                         <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
                             <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Workspace" Click="Nav_Click" ToolTip="Workspace (Ctrl+1)" AutomationProperties.Name="Workspace (Ctrl+1)"
-                                      IsChecked="{Binding IsChecked, ElementName=NavWorkspace, Mode=TwoWay}">
-                            <TextBlock Text="&#xE80F;" Style="{StaticResource RailGlyph}" />
-                        </ToggleButton>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+3)" AutomationProperties.Name="Chat (Ctrl+3)"
+                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+1)" AutomationProperties.Name="Chat (Ctrl+1)"
                                       IsChecked="{Binding IsChecked, ElementName=NavChat, Mode=TwoWay}">
                             <TextBlock Text="&#xE8F2;" Style="{StaticResource RailGlyph}" />
                         </ToggleButton>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+2)" AutomationProperties.Name="Options (Ctrl+2)"
+                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Code" Click="Nav_Click" ToolTip="Code (Ctrl+2)" AutomationProperties.Name="Code (Ctrl+2)"
+                                      IsChecked="{Binding IsChecked, ElementName=NavCode, Mode=TwoWay}">
+                            <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" />
+                        </ToggleButton>
+                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options (Ctrl+3)"
                                       IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
                             <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
                         </ToggleButton>
@@ -946,8 +953,70 @@
                 </Grid>
             </Border>
 
-            <!-- Left column: model output + execution log -->
-            <Grid x:Name="WorkArea" Grid.Column="1">
+            <!-- Code: a conversation with a worker about a folder (MainWindow.Code.cs), or the project run's output (ShowCodeRun) -->
+            <Grid x:Name="CodeView" Grid.Column="1">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" /><RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <DockPanel Margin="20,16,20,0" LastChildFill="False">
+                    <TextBlock Text="CODE" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <TextBlock x:Name="CodeFolderText" Text="No folder" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
+                               Margin="12,0,0,0" MaxWidth="260" TextTrimming="CharacterEllipsis" />
+                    <Button x:Name="CodeStartButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11"
+                            Click="CodeStart_Click" ToolTip="Start the project run in this folder" />
+                    <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
+                            Click="CodeNew_Click" ToolTip="Start a new conversation" />
+                    <Border DockPanel.Dock="Right" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}"
+                            BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
+                        <StackPanel Orientation="Horizontal">
+                            <ToggleButton x:Name="CodeConversationToggle" Style="{StaticResource SegToggle}" Content="Conversation" IsChecked="True" Click="CodeSubView_Click"
+                                          ToolTip="The conversation with the worker" AutomationProperties.Name="Conversation" />
+                            <ToggleButton x:Name="CodeRunToggle" Style="{StaticResource SegToggle}" Content="Run output" Tag="run" Click="CodeSubView_Click"
+                                          ToolTip="Model output and the execution log of the project run" AutomationProperties.Name="Run output" />
+                        </StackPanel>
+                    </Border>
+                </DockPanel>
+                <Grid x:Name="CodeChat" Grid.Row="1">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*" /><RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <Grid Margin="0,8,0,0">
+                        <ScrollViewer x:Name="CodeScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged">
+                            <StackPanel x:Name="CodePanel" Margin="20,0,12,12" />
+                        </ScrollViewer>
+                        <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
+                            <TextBlock Text="The worker can read, search and edit the files in it, then start the project." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
+                            <Button Content="Choose a folder…" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Center" Padding="16,7" Margin="0,14,0,0" Click="CodeNew_Click" />
+                        </StackPanel>
+                        <Button x:Name="CodeJumpPill" Style="{StaticResource PrimaryButton}" Content="Jump to latest  ↓" FontSize="12" Padding="16,7"
+                                HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" Opacity="0"
+                                ToolTip="Scroll to the newest reply and keep following it" Click="ChatJump_Click" />
+                    </Grid>
+                    <Border Grid.Row="1" Style="{StaticResource ChatBox}" Margin="20,4,20,16">
+                        <Grid>
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Button x:Name="CodePlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
+                                        VerticalAlignment="Bottom" Click="ChatPlus_Click" ToolTip="Choose which worker to message" AutomationProperties.Name="Choose worker" />
+                                <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
+                                         VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
+                                         PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
+                                <Button x:Name="CodeSend" Grid.Column="2" Style="{StaticResource PrimaryButton}" Content="Send" Width="76" Height="34" Padding="0"
+                                        VerticalAlignment="Bottom" Click="ChatSend_Click" />
+                            </Grid>
+                            <DockPanel Grid.Row="1" Margin="4,6,2,0">
+                                <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
+                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="ChatTarget_Click" ToolTip="Which worker receives your message" />
+                                <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            </DockPanel>
+                        </Grid>
+                    </Border>
+                </Grid>
+
+            <!-- Run output: model output + execution log -->
+            <Grid x:Name="WorkArea" Grid.Row="1" Visibility="Collapsed">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
@@ -1012,6 +1081,7 @@
                                  VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
                     </DockPanel>
                 </Border>
+            </Grid>
             </Grid>
 
             <GridSplitter x:Name="SplitterBar" Grid.Column="2" Width="6" HorizontalAlignment="Stretch" ResizeDirection="Columns"

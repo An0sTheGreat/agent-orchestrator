@@ -67,6 +67,88 @@ internal static class LauncherLogic
         return info;
     }
 
+    // ---- code: like chat, but the worker gets file tools over folders[0] (the project, always write) and the extra folders
+
+    public sealed record CodeFolder(string Path, string Access); // Access: "read" | "write"
+
+    // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
+    public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders) =>
+        JsonSerializer.Serialize(new
+        {
+            action = action == "write_project" ? "write_project" : "chat",
+            worker,
+            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            folders = extraFolders.Select(f => new { path = f.Path, access = f.Access == "write" ? "write" : "read" })
+                .Prepend(new { path = projectFolder, access = "write" }),
+        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+
+    public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string apiKey, string requestFile)
+    {
+        var info = NewStartInfo(python, workflowRoot, apiKey);
+        info.ArgumentList.Add("--project");
+        info.ArgumentList.Add(configFolder);
+        info.ArgumentList.Add("--events");
+        info.ArgumentList.Add("--code");
+        info.ArgumentList.Add(requestFile);
+        return info;
+    }
+
+    // One saved Code conversation per project folder, under <data>\conversations (AGENT_ORCHESTRATOR_DATA like AppSettings).
+    public sealed class CodeConversation
+    {
+        public string Folder { get; set; } = "";
+        public List<CodeFolder> Folders { get; set; } = new();
+        public string Worker { get; set; } = "implementer";
+        public List<ChatMessage> Messages { get; set; } = new();
+        public DateTime Updated { get; set; }
+    }
+
+    private static readonly JsonSerializerOptions ConversationJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
+
+    public static string ConversationPath(string folder, string? dataRoot = null)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(NormalizeFolder(folder).ToLowerInvariant())));
+        dataRoot ??= Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
+            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
+        return Path.Combine(dataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
+    }
+
+    private static string NormalizeFolder(string folder) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+
+    // True when folder is the workflow root, inside it, or contains it: such a folder must never be writable by a Code turn.
+    public static bool OverlapsWorkflowRoot(string folder, string? workflowRoot)
+    {
+        if (workflowRoot is null || folder.Length == 0)
+            return false;
+        var (a, b) = (NormalizeFolder(folder), NormalizeFolder(workflowRoot));
+        static bool Within(string inner, string outer) => inner.StartsWith(outer.EndsWith(Path.DirectorySeparatorChar) ? outer : outer + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        return a.Equals(b, StringComparison.OrdinalIgnoreCase) || Within(a, b) || Within(b, a);
+    }
+
+    // null when there is none or it cannot be read (a corrupt file is ignored, not fatal). Hand-edited entries are cleaned:
+    // null lists become empty, messages need a user/assistant role and content, folders a path (unknown access is read).
+    public static CodeConversation? LoadConversation(string folder, string? dataRoot = null)
+    {
+        CodeConversation? c;
+        try { c = JsonSerializer.Deserialize<CodeConversation>(File.ReadAllText(ConversationPath(folder, dataRoot)), ConversationJson); }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or NotSupportedException) { return null; }
+        if (c is null)
+            return null;
+        c.Folder ??= "";
+        c.Worker ??= "implementer";
+        c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
+        c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
+        return c;
+    }
+
+    public static void SaveConversation(CodeConversation conversation, string? dataRoot = null)
+    {
+        var path = ConversationPath(conversation.Folder, dataRoot);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        conversation.Updated = DateTime.Now;
+        File.WriteAllText(path, JsonSerializer.Serialize(conversation, ConversationJson));
+    }
+
     // True when configPath is the workflow root's config.json: the template new projects are initialized from.
     public static bool IsTemplateConfig(string configPath, string? workflowRoot) =>
         workflowRoot is not null && configPath.Length > 0 && string.Equals(Path.GetFullPath(configPath), Path.GetFullPath(Path.Combine(workflowRoot, "config.json")), StringComparison.OrdinalIgnoreCase);
@@ -866,6 +948,68 @@ internal static class LauncherLogic
             (string)sm[2]!["content"]! != "again" || (string)multi["mode"]! != "multi" || (string)multi["worker"]! != customId || multi["messages"]!.AsArray().Count != 1 ||
             (string)JsonNode.Parse(BuildChatRequest("bogus", "planner", chat))!["mode"]! != "single")
             throw new InvalidOperationException("Chat request failed.");
+
+        var codeInfo = BuildCodeStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\code.json");
+        var codeArgs = codeInfo.ArgumentList;
+        if (codeArgs.IndexOf("--code") < 0 || codeArgs[codeArgs.IndexOf("--code") + 1] != @"Y:\code.json" || !codeArgs.Contains("--events") ||
+            codeArgs[codeArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || codeArgs.Contains("--chat") || codeInfo.Environment["UNSLOTH_API_KEY"] != "test-key")
+            throw new InvalidOperationException("Code start info failed.");
+        var code = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [new(@"Y:\lib", "read"), new(@"Y:\shared", "write"), new(@"Y:\odd", "bogus")]))!;
+        var codeFolders = code["folders"]!.AsArray();
+        if ((string)code["action"]! != "chat" || (string)code["worker"]! != "implementer" || code["messages"]!.AsArray().Count != 3 ||
+            (string)code["messages"]![0]!["content"]! != "hi \"there\"\nline2 é" || codeFolders.Count != 4 ||
+            (string)codeFolders[0]!["path"]! != @"Y:\app" || (string)codeFolders[0]!["access"]! != "write" ||
+            (string)codeFolders[1]!["path"]! != @"Y:\lib" || (string)codeFolders[1]!["access"]! != "read" ||
+            (string)codeFolders[2]!["access"]! != "write" || (string)codeFolders[3]!["access"]! != "read" ||
+            (string)JsonNode.Parse(BuildCodeRequest("write_project", "planner", [], @"Y:\app", []))!["action"]! != "write_project" ||
+            JsonNode.Parse(BuildCodeRequest("bogus", "planner", [], @"Y:\app", []))!["folders"]!.AsArray().Count != 1)
+            throw new InvalidOperationException("Code request failed.");
+        var dataArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-conv-{Guid.NewGuid():N}");
+        try
+        {
+            var convPath = ConversationPath(@"Y:\Programs\My_App", dataArea);
+            var expectedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(@"y:\programs\my_app")))[..16].ToLowerInvariant();
+            if (convPath != Path.Combine(dataArea, "conversations", expectedHash + ".json") || ConversationPath(@"y:\programs\my_app", dataArea) != convPath ||
+                LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
+                throw new InvalidOperationException("Conversation path failed.");
+            SaveConversation(new CodeConversation
+            {
+                Folder = @"Y:\Programs\My_App", Worker = "planner", Folders = [new(@"Y:\lib", "read")], Messages = [.. chat.Take(2)],
+            }, dataArea);
+            var loaded = LoadConversation(@"Y:\Programs\My_App", dataArea);
+            var savedJson = JsonNode.Parse(File.ReadAllText(convPath))!;
+            if (loaded is null || loaded.Folder != @"Y:\Programs\My_App" || loaded.Worker != "planner" || loaded.Folders.Single() != new CodeFolder(@"Y:\lib", "read") ||
+                !loaded.Messages.SequenceEqual(chat.Take(2)) || loaded.Updated == default || savedJson["folders"]![0]!["access"] is null || savedJson["messages"]![0]!["role"] is null)
+                throw new InvalidOperationException("Conversation round trip failed.");
+            File.WriteAllText(convPath, "{not json");
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
+                throw new InvalidOperationException("A corrupt conversation file must be ignored.");
+            if (ConversationPath(@"Y:\Programs\My_App\", dataArea) != convPath || ConversationPath(@"Y:\Programs\My_App\.", dataArea) != convPath)
+                throw new InvalidOperationException("A trailing separator must not change the conversation file.");
+            File.WriteAllText(convPath, """{"messages":null,"folders":null}""");
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
+                throw new InvalidOperationException("Null conversation lists must load as empty.");
+            File.WriteAllText(convPath, """{"messages":[null]}""");
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
+                throw new InvalidOperationException("A null message must be dropped.");
+            File.WriteAllText(convPath, """
+                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
+                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}]}
+                """);
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { } cleaned || !cleaned.Messages.SequenceEqual([new ChatMessage("user", "ok")]) ||
+                !cleaned.Folders.SequenceEqual([new CodeFolder(@"Y:\lib", "read"), new CodeFolder(@"Y:\w", "write")]))
+                throw new InvalidOperationException("Invalid conversation entries must be dropped.");
+            var wf = @"Y:\Programs\Agent Setup";
+            if (!OverlapsWorkflowRoot(wf, wf) || !OverlapsWorkflowRoot(@"y:\programs\agent setup\", wf) || !OverlapsWorkflowRoot(@"Y:\Programs/Agent Setup/templates", wf) ||
+                !OverlapsWorkflowRoot(@"Y:\Programs", wf) || !OverlapsWorkflowRoot(@"Y:\", wf) || OverlapsWorkflowRoot(@"Y:\Programs\Agent Setup2", wf) ||
+                OverlapsWorkflowRoot(@"Y:\Programs\My_App", wf) || OverlapsWorkflowRoot(@"Y:\Programs\My_App", null))
+                throw new InvalidOperationException("Workflow root overlap failed.");
+        }
+        finally
+        {
+            if (Directory.Exists(dataArea))
+                Directory.Delete(dataArea, recursive: true);
+        }
 
         var gguf = DescribeModel(@"Y:\.llm_models\Qwen3.5 9B｜Q8_0.gguf");
         if (gguf.Name != "Qwen3.5 9B" || gguf.Weights != "9B" || gguf.Quant != "Q8_0")

@@ -148,6 +148,7 @@ public partial class MainWindow : Window
             Log($"Starting workflow for {project}");
             SetRunning(true);
             _process.Start();
+            ShowCodeRun(true); // the Code view follows a run that actually started
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
             if (unsloth)
@@ -798,7 +799,7 @@ public partial class MainWindow : Window
     }
 
     // Read-only TextBox so the text is selectable; wheel input is passed on to the output scroller.
-    private TextBox BodyText(string text, bool mono, bool muted, bool chat = false)
+    private TextBox BodyText(string text, bool mono, bool muted, Conversation? conv = null)
     {
         var box = new TextBox
         {
@@ -814,13 +815,13 @@ public partial class MainWindow : Window
             Cursor = Cursors.IBeam,
         };
         box.SetResourceReference(TextBox.ForegroundProperty, muted ? "Muted" : "TextPrimary");
-        var scroller = chat ? ChatScroll : OutputScroll;
+        var scroller = conv?.Scroll ?? OutputScroll;
         box.PreviewMouseWheel += (_, e) =>
         {
             e.Handled = true;
             if (e.Delta > 0)
             {
-                if (chat) _chatFollow = false; else _followTail = false;
+                if (conv is not null) conv.Follow = false; else _followTail = false;
             }
             scroller.ScrollToVerticalOffset(scroller.VerticalOffset - e.Delta);
         };
@@ -872,6 +873,7 @@ public partial class MainWindow : Window
         static Task Settle() => Task.Delay(400);
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
+        ShowCodeRun(true); // the run checks below need Model Output on screen
         void Snap(string name, FrameworkElement? target = null) // target: a popup such as a menu, which the window picture leaves out
         {
             if (string.IsNullOrEmpty(snapshots))
@@ -1494,6 +1496,108 @@ public partial class MainWindow : Window
                 Console.Error.WriteLine($"ui-smoke: keep loaded: keep={keepOk} switch={switchOk} off={offOk}, server saw {seenC.Count}");
                 return Fail();
             }
+            // Code view: a turn with a tool call lands in the Code conversation (not Chat); code_reply is the answer; both sub-views toggle.
+            ShowView(false);
+            ShowCodeRun(false);
+            await Settle();
+            if (!CodeChat.IsVisible || WorkArea.IsVisible || NavCode.IsChecked != true)
+                return Fail();
+            var chatCount = ChatPanel.Children.Count;
+            StartTurn(_code, "Fix it", false, "implementer");
+            if (!_chatBusy || ChatSend.IsEnabled || (string)CodeSend.Content != "Stop")
+                return Fail();
+            _lines.Enqueue(Delta("implementer", "text", "Looking"));
+            _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
+            _lines.Enqueue(Ev("""{"e":"code_reply","role":"implementer","text":"Fixed"}"""));
+            DrainLines();
+            var codeReply = _reply!;
+            await Settle();
+            Snap("18-code-turn");
+            FinishChatTurn(0, false, null);
+            var toolRow = codeReply.Content.Children.OfType<Expander>().SingleOrDefault();
+            if (codeReply.Final != "Fixed" || codeReply.Answer?.Text != "Fixed" || _code.History.Count != 2 || ChatPanel.Children.Count != chatCount ||
+                toolRow is null || ((TextBlock)((StackPanel)toolRow.Header).Children[1]).Text != "src/a.js" || _chatBusy)
+                return Fail();
+            ShowCodeRun(true);
+            await Settle();
+            if (!WorkArea.IsVisible || CodeChat.IsVisible)
+                return Fail();
+            // New conversation (the "Main" preset applies), extra folders through the Add / × buttons, save, resume, Start new.
+            var codeProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
+            var codeExtra = Path.Combine(codeProject, "extra");
+            var codePrevious = _projectPath;
+            Directory.CreateDirectory(codeExtra);
+            try
+            {
+                string? pick = codeProject, answer = "new";
+                (_codeFolderPick, _codeChoice) = (() => pick, _ => answer);
+                SavePreset("main");
+                NewCodeConversation();
+                DeletePreset(_settings.Presets.Single(p => p.Name == "main"));
+                if (SelectedProjectPath() != codeProject || _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
+                    AddCodeFolderButton.Visibility != Visibility.Visible || !LogBox.Text.Contains("Preset applied: main"))
+                    return Fail();
+                void AddFolder() => AddCodeFolderButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                (pick, answer) = (codeExtra, "write");
+                AddFolder();
+                AddFolder(); // a duplicate
+                pick = codeProject + "\\";
+                AddFolder(); // the project itself
+                if (CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") || CodeFoldersList.Children.Count != 1 ||
+                    CodeFoldersEmpty.Visibility == Visibility.Visible)
+                    return Fail();
+                _code.History.Add(new LauncherLogic.ChatMessage("user", "Hi"));
+                _code.History.Add(new LauncherLogic.ChatMessage("assistant", "Hello"));
+                SaveCodeConversation();
+                (pick, answer) = (codeProject, "resume");
+                NewCodeConversation();
+                await Settle();
+                Snap("19-code-resumed");
+                if (_code.History.Count != 2 || CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
+                    CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
+                    CodeEmpty.Visibility == Visibility.Visible)
+                    return Fail();
+                ((Button)((DockPanel)CodeFoldersList.Children[0]).Children[0]).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || LauncherLogic.LoadConversation(codeProject) is not { Folders.Count: 0, Messages.Count: 2 })
+                    return Fail();
+                answer = "new";
+                NewCodeConversation();
+                if (_code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
+                    return Fail();
+                // A folder reached without NewCodeConversation (startup, sidebar Browse) shows its saved conversation and
+                // leaves the file alone; resumed extra folders that are gone, the project, or repeated are dropped.
+                LauncherLogic.SaveConversation(new LauncherLogic.CodeConversation
+                {
+                    Folder = codeProject, Messages = [new("user", "Hi"), new("assistant", "Hello")],
+                    Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")],
+                });
+                var savedText = File.ReadAllText(LauncherLogic.ConversationPath(codeProject));
+                ProjectPath = codeExtra;
+                if (_code.History.Count != 0 || CodeExtraFolders.Count != 0)
+                    return Fail();
+                ProjectPath = codeProject + "\\";
+                if (_code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") ||
+                    File.ReadAllText(LauncherLogic.ConversationPath(codeProject)) != savedText)
+                    return Fail();
+                // The Agent Orchestrator folder: only Read only as an extra folder, and never a Code project (no process starts).
+                (pick, answer) = (_workflowRoot!, "write");
+                AddFolder();
+                if (CodeExtraFolders.Count != 1)
+                    return Fail();
+                ProjectPath = _workflowRoot!;
+                CodeInput.Text = "Edit the templates";
+                var refused = SendCode();
+                if (!refused.IsCompleted || refused.Result || _chatBusy || _chatProcess is not null || CodeInput.Text.Length == 0 || StatusText.Text != "Choose a project folder")
+                    return Fail();
+                CodeInput.Clear();
+            }
+            finally
+            {
+                (_codeFolderPick, _codeChoice) = (null, null);
+                ProjectPath = codePrevious;
+                try { Directory.Delete(codeProject, true); } catch (IOException) { }
+            }
+            ClearConversation(_code);
             ShowView(false);
             await Settle();
         }
@@ -2150,6 +2254,7 @@ public partial class MainWindow : Window
             ProjectPathText.Text = shown;
             ProjectPathText.Visibility = shown.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
             ProjectButton.ToolTip = shown.Length == 0 ? "Choose the project folder" : shown;
+            RefreshCodeFolder();
             RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
@@ -2246,7 +2351,7 @@ public partial class MainWindow : Window
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
         {
-            case Key.Enter when !shift && StartButton.IsEnabled && !ChatView.IsVisible:
+            case Key.Enter when !shift && StartButton.IsEnabled && !ChatView.IsVisible && !CodeChat.IsVisible:
                 Start_Click(StartButton, e);
                 break;
             case Key.X when shift && StopButton.IsEnabled && Keyboard.FocusedElement is not (TextBox or PasswordBox):
@@ -2257,13 +2362,13 @@ public partial class MainWindow : Window
                 LogToggle_Click(LogToggle, e);
                 break;
             case Key.D1 or Key.NumPad1 when !shift:
-                ShowView(options: false);
+                ShowView(options: false, chat: true);
                 break;
             case Key.D2 or Key.NumPad2 when !shift:
-                ShowView(options: true);
+                ShowView(options: false);
                 break;
             case Key.D3 or Key.NumPad3 when !shift:
-                ShowView(options: false, chat: true);
+                ShowView(options: true);
                 break;
             case Key.B when !shift:
                 SetSidebar(!_settings.SidebarCollapsed);
@@ -3169,20 +3274,22 @@ public partial class MainWindow : Window
         ShowView(tag == "Options", chat: tag == "Chat");
     }
 
+    // Neither options nor chat: the Code view.
     private void ShowView(bool options, bool chat = false)
     {
-        NavWorkspace.IsChecked = !options && !chat;
+        var code = !options && !chat;
+        NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         NavOptions.IsChecked = options;
-        Reveal(WorkArea, !options && !chat);
+        Reveal(CodeView, code);
         Reveal(ChatView, chat);
         foreach (UIElement part in new UIElement[] { SplitterBar, DetailsPanel })
             Reveal(part, !options);
         Reveal(OptionsView, options);
-        if (chat)
+        if (chat || (code && !_codeRun))
         {
             RefreshChatTarget();
-            ChatInput.Focus();
+            (chat ? ChatInput : CodeInput).Focus();
         }
     }
 
