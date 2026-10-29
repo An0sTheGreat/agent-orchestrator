@@ -27,8 +27,6 @@ public partial class MainWindow : Window
 
     private Process? _process;
     private readonly string? _workflowRoot;
-    private string? _customProjectFile;
-    private string? _customConfigFile;
 
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly ObservableCollection<RoleCard> _cards = new();
@@ -64,7 +62,6 @@ public partial class MainWindow : Window
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
 
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
-        OnceToggle.IsChecked = _settings.Once;
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
         _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" ? _settings.Theme : "Flat";
@@ -75,6 +72,7 @@ public partial class MainWindow : Window
         ApplyTheme();
         _initializing = false;
         InitChat();
+        StoreDo(_store.Load);
         RestoreWindowBounds();
 
         Closing += OnClosing;
@@ -96,10 +94,12 @@ public partial class MainWindow : Window
             ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
             Log($"Workflow: {_workflowRoot}");
             TryLoadApiKeyFile();
-            RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
+            if (_store.Get(_settings.LastConversation) is not null)
+                OpenCodeConversation(_settings.LastConversation);
         }
+        RefreshSidebarList();
     }
 
     // ---------------------------------------------------------------- run control
@@ -112,8 +112,7 @@ public partial class MainWindow : Window
         var project = SelectedProjectPath();
         if (project.Length == 0 || !Directory.Exists(project) || LauncherLogic.MissingProjectFiles(project).Length != 0)
         {
-            RefreshInitializationPrompt();
-            SetStatus("Initialize the project first", "#F7C873");
+            SetStatus("Use Start project in Code first", "#F7C873"); // it writes PROJECT.md and the workflow files
             return;
         }
 
@@ -136,7 +135,7 @@ public partial class MainWindow : Window
         try
         {
             var python = LauncherLogic.FindPython();
-            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, OnceToggle.IsChecked == true);
+            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once);
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
             _process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -284,8 +283,6 @@ public partial class MainWindow : Window
         StartButton.IsEnabled = !running && _workflowRoot is not null;
         StopButton.IsEnabled = running;
         ApiKeyBox.IsEnabled = !running;
-        ProjectButton.IsEnabled = !running;
-        OnceToggle.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
         PresetsButton.IsEnabled = !running;
         foreach (var card in _cards)
@@ -942,7 +939,6 @@ public partial class MainWindow : Window
             await Settle();
             ShowView(options: open);
             await Settle();
-            OnceToggle.IsChecked = !OnceToggle.IsChecked;
             _settings.Compact = open;
             ApplyCompact();
             await Settle();
@@ -1057,7 +1053,17 @@ public partial class MainWindow : Window
             menu.IsOpen = false;
             ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             await Settle();
-            if (Cards() != saved || (double)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["sampling"]!["temperature"]! != 0.3)
+            // The worker config follows a project's preset too, and takes the roles itself with no project; the template never changes.
+            var workerConfig = LauncherLogic.EnsureWorkerConfig(_workflowRoot!);
+            var templateBytes = File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json"));
+            double Temperature(string path) => (double)JsonNode.Parse(File.ReadAllText(path))!["roles"]!["planner"]!["sampling"]!["temperature"]!;
+            if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3)
+                return Fail();
+            File.WriteAllText(workerConfig, Config("0.9"));
+            ProjectPath = "";
+            ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            ProjectPath = presetProject;
+            if (Temperature(workerConfig) != 0.3 || !File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json")).SequenceEqual(templateBytes))
                 return Fail();
             DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             if (_settings.Presets.Any(p => p.Name == "Smoke"))
@@ -1116,7 +1122,7 @@ public partial class MainWindow : Window
                 || !await Show(limitsDialog.Dialog, "9b-task-limits-dialog"))
                 return Fail();
             if (!await Show(settingsDialog, "9-settings-dialog") ||!await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
-                || !await Show(BuildExistingProjectMdDialog(mdFile, customSelected: true).Dialog, "11-existing-projectmd"))
+                || !await Show(BuildExistingProjectMdDialog(mdFile).Dialog, "11-existing-projectmd"))
                 return Fail();
 
             // Restart Project on a complete temp project under bin; the Recycle Bin is replaced by a delete confined to it,
@@ -1534,7 +1540,9 @@ public partial class MainWindow : Window
                 SavePreset("main");
                 NewCodeConversation();
                 DeletePreset(_settings.Presets.Single(p => p.Name == "main"));
-                if (SelectedProjectPath() != codeProject || _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
+                var first = _codeConv;
+                if (first is null || _store.Get(first.Id) != first || _settings.LastConversation != first.Id || SelectedProjectPath() != codeProject ||
+                    _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
                     AddCodeFolderButton.Visibility != Visibility.Visible || !LogBox.Text.Contains("Preset applied: main"))
                     return Fail();
                 void AddFolder() => AddCodeFolderButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -1546,38 +1554,79 @@ public partial class MainWindow : Window
                 if (CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") || CodeFoldersList.Children.Count != 1 ||
                     CodeFoldersEmpty.Visibility == Visibility.Visible)
                     return Fail();
+                if (_store.Get(first.Id) is not { Folders.Count: 1 }) // an extra-folder change is saved
+                    return Fail();
                 _code.History.Add(new LauncherLogic.ChatMessage("user", "Hi"));
                 _code.History.Add(new LauncherLogic.ChatMessage("assistant", "Hello"));
                 SaveCodeConversation();
-                (pick, answer) = (codeProject, "resume");
+                // A second conversation in the same folder; the first stays stored. Left empty, it is deleted on leaving.
                 NewCodeConversation();
+                var second = _codeConv;
+                if (second is null || second.Id == first.Id || _code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
+                    return Fail();
+                // Reopening shows the history, extra folders and folder; nothing is written.
+                var firstPath = Path.Combine(AppSettings.DataRoot, "conversations", first.Id + ".json");
+                var savedText = File.ReadAllText(firstPath);
+                ProjectPath = codeExtra; // another folder closes the open conversation
+                OpenCodeConversation(first.Id);
                 await Settle();
                 Snap("19-code-resumed");
-                if (_code.History.Count != 2 || CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
+                if (_codeConv != first || _store.Get(second.Id) is not null || SelectedProjectPath() != codeProject || _code.History.Count != 2 ||
+                    CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
                     CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
-                    CodeEmpty.Visibility == Visibility.Visible)
+                    CodeEmpty.Visibility == Visibility.Visible || File.ReadAllText(firstPath) != savedText)
+                    return Fail();
+                // Opening is refused while a run is active.
+                _process = new Process();
+                var third = _store.Create(codeProject)!;
+                OpenCodeConversation(third.Id);
+                var lastToast = ToastStack.Children.OfType<UIElement>().LastOrDefault();
+                NewCodeConversation(); // refused with the same toast
+                _process = null;
+                RefreshChatInput();
+                if (_codeConv != first || ToastStack.Children.OfType<UIElement>().LastOrDefault() == lastToast)
+                    return Fail();
+                // A chat with no usable folder is refused, and the open one stays.
+                var noFolder = _store.Create("")!;
+                noFolder.Folders = [new(codeExtra, "read")];
+                _store.Save(noFolder);
+                OpenCodeConversation(noFolder.Id);
+                _store.Delete(noFolder.Id);
+                if (_codeConv != first || CodeExtraFolders.Count != 1)
                     return Fail();
                 ((Button)((DockPanel)CodeFoldersList.Children[0]).Children[0]).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || LauncherLogic.LoadConversation(codeProject) is not { Folders.Count: 0, Messages.Count: 2 })
+                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || _store.Get(first.Id) is not { Folders.Count: 0, Messages.Count: 2 })
                     return Fail();
-                answer = "new";
-                NewCodeConversation();
-                if (_code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
+                // Saved extra folders that are gone, the project, or repeated are dropped when it opens.
+                third.Messages = [new("user", "Hi"), new("assistant", "Hello")];
+                third.Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")];
+                _store.Save(third);
+                OpenCodeConversation(third.Id);
+                if (_codeConv != third || _store.Get(first.Id) is null || _code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 ||
+                    CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write"))
                     return Fail();
-                // A folder reached without NewCodeConversation (startup, sidebar Browse) shows its saved conversation and
-                // leaves the file alone; resumed extra folders that are gone, the project, or repeated are dropped.
-                LauncherLogic.SaveConversation(new LauncherLogic.CodeConversation
-                {
-                    Folder = codeProject, Messages = [new("user", "Hi"), new("assistant", "Hello")],
-                    Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")],
-                });
-                var savedText = File.ReadAllText(LauncherLogic.ConversationPath(codeProject));
-                ProjectPath = codeExtra;
-                if (_code.History.Count != 0 || CodeExtraFolders.Count != 0)
+                // Project menu: its items; Use a PROJECT.md… copies a file in, then backs up the one it replaces.
+                string MenuItems() => string.Join("|", BuildProjectMenu().Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)") + (i.IsChecked ? " (on)" : "")));
+                const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Task limits…|Folders…|Run one reviewed task, then stop{1}";
+                var onceMark = _settings.Once ? " (on)" : "";
+                if (!CodeProjectButton.IsEnabled || MenuItems() != string.Format(items, " (off)", onceMark))
                     return Fail();
-                ProjectPath = codeProject + "\\";
-                if (_code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") ||
-                    File.ReadAllText(LauncherLogic.ConversationPath(codeProject)) != savedText)
+                var projectMenu = BuildProjectMenu();
+                projectMenu.IsOpen = true;
+                await Settle();
+                Snap("20-project-menu", projectMenu);
+                projectMenu.IsOpen = false;
+                var mdSource = Path.Combine(codeExtra, "my-project.md");
+                var mdTarget = Path.Combine(codeProject, "PROJECT.md");
+                File.WriteAllText(mdSource, "# Mine\n");
+                _projectMdPick = () => mdSource;
+                UseProjectMd();
+                if (File.ReadAllText(mdTarget) != "# Mine\n" || MenuItems() != string.Format(items, "", onceMark))
+                    return Fail();
+                File.WriteAllText(mdSource, "# Mine v2\n");
+                answer = "replace";
+                UseProjectMd();
+                if (File.ReadAllText(mdTarget) != "# Mine v2\n" || File.ReadAllText(Path.Combine(codeProject, "PROJECT.md.bak")) != "# Mine\n")
                     return Fail();
                 // The Agent Orchestrator folder: only Read only as an extra folder, and never a Code project (no process starts).
                 (pick, answer) = (_workflowRoot!, "write");
@@ -1590,20 +1639,103 @@ public partial class MainWindow : Window
                 if (!refused.IsCompleted || refused.Result || _chatBusy || _chatProcess is not null || CodeInput.Text.Length == 0 || StatusText.Text != "Choose a project folder")
                     return Fail();
                 CodeInput.Clear();
+                // Nor does adding an extra folder start a chat there.
+                (pick, answer) = (codeExtra, "read");
+                SetStatus("Ready", "#667085");
+                AddFolder();
+                if (_codeConv is not null || CodeExtraFolders.Count != 0 || StatusText.Text != "Choose a project folder")
+                    return Fail();
+
+                // Sidebar list: rows for the stored chats; rename, reorder, projects, collapse, archive and delete through the
+                // real menu items; opening a chat by its row.
+                CloseCodeConversation();
+                var stored = _store.View();
+                foreach (var entry in stored.Groups.SelectMany(g => g.Items).Concat(stored.Ungrouped).Concat(stored.Archived))
+                    _store.Delete(entry.Id);
+                var chatA = _store.Create(codeProject)!;
+                chatA.Messages = [new("user", "Alpha question"), new("assistant", "Alpha answer")];
+                var chatB = _store.Create(codeProject)!;
+                chatB.Messages = [new("user", "Beta question"), new("assistant", "Beta answer")];
+                _store.Save(chatA);
+                _store.Save(chatB);
+                RefreshSidebarList();
+                FrameworkElement Main(UIElement row) => row is Grid { Children: [FrameworkElement main, ..] } ? main : (FrameworkElement)row;
+                string Rows() => string.Join(",", SidebarList.Children.Cast<UIElement>().Select(r => Main(r).Tag is string tag ? tag == chatA.Id ? "A" : tag == chatB.Id ? "B" : tag : "?"));
+                void ClickRow(string tag) => SidebarList.Children.Cast<UIElement>().Select(Main).First(m => (string)m.Tag == tag).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                MenuItem SidebarItem(string id, string header) => _sidebarMenus[id]().Items.OfType<MenuItem>().Single(i => (string)i.Header == header);
+                void ClickItem(string id, string header) => SidebarItem(id, header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                await Settle();
+                Snap("21-sidebar");
+                if (Rows() != "+New chat,+New project,RECENTS,B,A" || SidebarList.Children.OfType<Grid>().Any(g => ((ToggleButton)g.Children[0]).IsChecked == true))
+                    return Fail();
+                answer = "Renamed B";
+                ClickItem(chatB.Id, "Rename…");
+                if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: TextBlock { Text: "Renamed B" } }))
+                    return Fail();
+                ClickItem(chatB.Id, "Move down");
+                if (Rows() != "+New chat,+New project,RECENTS,A,B" || SidebarItem(chatB.Id, "Move down").IsEnabled)
+                    return Fail();
+                ClickItem(chatB.Id, "Move up");
+                if (Rows() != "+New chat,+New project,RECENTS,B,A")
+                    return Fail();
+                answer = "Smoke project";
+                ClickRow("+New project");
+                ClickItem(chatA.Id, "Move to Smoke project");
+                if (Rows() != "+New chat,+New project,▾Smoke project,A,RECENTS,B")
+                    return Fail();
+                ClickRow("▾Smoke project");
+                if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,B" || _store.View().Groups is not [{ Collapsed: true }])
+                    return Fail();
+                // An empty chat moved into a project, or archived, is kept on leaving it.
+                var emptyGrouped = _store.Create(codeProject)!;
+                var emptyArchived = _store.Create(codeProject)!;
+                _store.MoveToGroup(emptyGrouped.Id, _store.View().Groups[0].Id);
+                _store.Archive(emptyArchived.Id, true);
+                foreach (var empty in new[] { emptyGrouped, emptyArchived })
+                {
+                    OpenCodeConversation(empty.Id);
+                    CloseCodeConversation();
+                    if (_store.Get(empty.Id) is null)
+                        return Fail();
+                    _store.Delete(empty.Id);
+                }
+                RefreshSidebarList();
+                ClickItem(chatB.Id, "Archive");
+                if (Rows() != "+New chat,+New project,▸Smoke project,▸ARCHIVED")
+                    return Fail();
+                ClickRow("▸ARCHIVED");
+                if (Rows() != "+New chat,+New project,▸Smoke project,▾ARCHIVED,B")
+                    return Fail();
+                _process = new Process(); // Delete is off while a run is active
+                var deleteOff = !SidebarItem(chatB.Id, "Delete…").IsEnabled;
+                _process = null;
+                answer = "yes";
+                ClickItem(chatB.Id, "Delete…");
+                if (!deleteOff || Rows() != "+New chat,+New project,▸Smoke project" || _store.Get(chatB.Id) is not null ||
+                    File.Exists(Path.Combine(AppSettings.DataRoot, "conversations", chatB.Id + ".json")))
+                    return Fail();
+                ClickRow("▸Smoke project");
+                ClickRow(chatA.Id);
+                await Settle();
+                Snap("22-sidebar-open");
+                if (_codeConv != chatA || _code.History.Count != 2 || CodePanel.Children.Count != 2 || Rows() != "+New chat,+New project,▾Smoke project,A" ||
+                    SidebarList.Children.OfType<Grid>().Last().Children[0] is not ToggleButton { IsChecked: true })
+                    return Fail();
             }
             finally
             {
-                (_codeFolderPick, _codeChoice) = (null, null);
+                (_codeFolderPick, _codeChoice, _projectMdPick) = (null, null, null);
                 ProjectPath = codePrevious;
                 try { Directory.Delete(codeProject, true); } catch (IOException) { }
             }
-            ClearConversation(_code);
+            CloseCodeConversation();
             ShowView(false);
             await Settle();
         }
+        _process = new Process(); // never started; Start_Click sets _process before SetRunning(true)
         SetRunning(true); // status ring and header shimmer
         await Settle();
-        if (RailProjectButton.IsEnabled || RailOnceToggle.IsEnabled)
+        if (CodeProjectButton.IsEnabled)
             return Fail();
         Snap("3-running");
         _settings.Compact = true;
@@ -1612,9 +1744,11 @@ public partial class MainWindow : Window
         Snap("4-compact");
         _settings.Compact = false;
         ApplyCompact();
+        _process.Dispose();
+        _process = null;
         SetRunning(false);
         await Settle();
-        if (!RailProjectButton.IsEnabled || !RailOnceToggle.IsEnabled)
+        if (!CodeProjectButton.IsEnabled)
             return Fail();
         // Maximize, then drag the title bar: each cycle restores at the size from before maximizing, under the cursor.
         // This maximizes on a real screen for a moment; no input is sent.
@@ -1828,7 +1962,10 @@ public partial class MainWindow : Window
 
     private JsonDocument? ReadConfig(string project)
     {
-        foreach (var path in new[] { Path.Combine(project, "config.json"), _workflowRoot is null ? "" : Path.Combine(_workflowRoot, "config.json") })
+        string active;
+        try { active = LauncherLogic.ActiveConfigPath(project, _workflowRoot); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { active = ""; }
+        foreach (var path in new[] { active, _workflowRoot is null ? "" : Path.Combine(_workflowRoot, "config.json") })
         {
             try
             {
@@ -1989,77 +2126,6 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Browse_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Select the target project folder",
-            InitialDirectory = Directory.Exists(ProjectPath) ? ProjectPath : _workflowRoot,
-        };
-        if (dialog.ShowDialog(this) == true)
-            ProjectPath = dialog.FolderName;
-    }
-
-    private void InitializeProject_Click(object sender, RoutedEventArgs e)
-    {
-        if (_workflowRoot is null)
-            return;
-        var project = SelectedProjectPath();
-        if (project.Length == 0)
-        {
-            SetStatus("Enter a project folder", "#FF667A");
-            return;
-        }
-
-        try
-        {
-            if (_customProjectFile is not null && string.IsNullOrWhiteSpace(File.ReadAllText(_customProjectFile)))
-                throw new InvalidDataException("Custom PROJECT.md cannot be empty.");
-            if (_customConfigFile is not null)
-                LauncherLogic.ValidateConfigFile(_customConfigFile);
-            var existed = Directory.Exists(project);
-            string? backup = null;
-            var existingMd = Path.Combine(project, "PROJECT.md");
-            var keptExisting = false;
-            if (File.Exists(existingMd))
-            {
-                var choice = AskExistingProjectMd(existingMd, _customProjectFile is not null);
-                if (choice == ExistingProjectMdChoice.Cancel)
-                {
-                    SetStatus("Initialization cancelled", "#F7C873");
-                    return;
-                }
-                if (choice == ExistingProjectMdChoice.Replace)
-                    backup = LauncherLogic.BackupProjectMd(project);
-                else
-                    keptExisting = true;
-            }
-            var copied = LauncherLogic.InitializeProject(_workflowRoot, project, _customProjectFile, _customConfigFile);
-            Log($"{(existed ? "Initialized" : "Created and initialized")} {project}");
-            if (backup is not null)
-                Log($"PROJECT.md replaced; previous saved as {backup}");
-            else if (keptExisting)
-                Log("Using existing PROJECT.md");
-            if (copied.Length > 0)
-                Log($"Added: {string.Join(", ", copied)}");
-            if (_customProjectFile is not null && !copied.Contains("PROJECT.md"))
-                Log("Existing PROJECT.md was preserved; the selected custom file was not copied.");
-            if (_customConfigFile is not null && !copied.Contains("config.json"))
-                Log("Existing config.json was preserved; the selected custom file was not copied.");
-            SetStatus("Project initialized", "#5BD6A2");
-            Toast(backup is not null ? $"PROJECT.md replaced; previous saved as {backup}" :
-                keptExisting ? "Using existing PROJECT.md" : "Project initialized");
-            RefreshInitializationPrompt();
-            PrefillCards();
-            RefreshPrimary();
-        }
-        catch (Exception exception)
-        {
-            Log($"Initialization failed: {exception.Message}");
-            SetStatus("Initialization failed", "#FF667A");
-        }
-    }
-
     // Test hooks for --ui-smoke: answer the restart confirmation without showing it, and replace the Recycle Bin.
     private Func<DialogShell, bool>? _restartConfirm;
     private Action<string> _restartRecycle = LauncherLogic.Recycle;
@@ -2088,14 +2154,12 @@ public partial class MainWindow : Window
             Log($"Restart stopped: {failure.Path} could not be moved to the Recycle Bin ({failure.Error}). Items recycled before it are in the Recycle Bin; the rest of the project is unchanged and no run was started.");
             SetStatus("Restart stopped", "#FF667A");
             Toast($"Restart stopped: {Path.GetFileName(failure.Path)} could not be recycled", "#FF667A");
-            RefreshInitializationPrompt();
             RefreshPrimary();
             return false;
         }
-        var copied = LauncherLogic.InitializeProject(_workflowRoot, project); // PROJECT.md exists, so it is kept
+        var copied = LauncherLogic.InitializeProject(_workflowRoot, project, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot)); // PROJECT.md exists, so it is kept
         Log($"Project restarted: everything but PROJECT.md moved to the Recycle Bin. Added: {string.Join(", ", copied)}");
         Toast("Project restarted");
-        RefreshInitializationPrompt();
         PrefillCards();
         RefreshPrimary();
         return true;
@@ -2123,14 +2187,16 @@ public partial class MainWindow : Window
 
     private enum ExistingProjectMdChoice { Use, Replace, Cancel }
 
-    private ExistingProjectMdChoice AskExistingProjectMd(string path, bool customSelected)
+    private ExistingProjectMdChoice AskExistingProjectMd(string path)
     {
-        var (dialog, result) = BuildExistingProjectMdDialog(path, customSelected);
+        if (_codeChoice is { } answer) // --ui-smoke
+            return answer("PROJECT.md already exists") switch { "replace" => ExistingProjectMdChoice.Replace, "use" => ExistingProjectMdChoice.Use, _ => ExistingProjectMdChoice.Cancel };
+        var (dialog, result) = BuildExistingProjectMdDialog(path);
         dialog.ShowDialog();
         return result();
     }
 
-    private (DialogShell Dialog, Func<ExistingProjectMdChoice> Result) BuildExistingProjectMdDialog(string path, bool customSelected)
+    private (DialogShell Dialog, Func<ExistingProjectMdChoice> Result) BuildExistingProjectMdDialog(string path)
     {
         var heading = "";
         long size = 0;
@@ -2156,9 +2222,8 @@ public partial class MainWindow : Window
         panel.Children.Add(Line("This folder already has a PROJECT.md. Do you want to use it?", false, 0));
         panel.Children.Add(Line(details, true, 8));
         panel.Children.Add(Line("Replace keeps your current file as a PROJECT.md.bak backup, then installs " +
-            (customSelected ? "the PROJECT.md you selected." : "the template PROJECT.md."), true, 8));
-        if (customSelected)
-            panel.Children.Add(Line("Using the existing file means the custom PROJECT.md you selected will not be used.", true, 4));
+            "the PROJECT.md you selected.", true, 8));
+        panel.Children.Add(Line("Using the existing file means the PROJECT.md you selected will not be used.", true, 4));
 
         var result = ExistingProjectMdChoice.Cancel;
         DialogShell? dialog = null;
@@ -2183,61 +2248,15 @@ public partial class MainWindow : Window
         return (dialog, () => result);
     }
 
-    private void ChooseProjectFile_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog { Title = "Choose PROJECT.md", Filter = "Markdown files (*.md)|*.md|All files (*.*)|*.*" };
-        if (dialog.ShowDialog(this) == true)
-        {
-            _customProjectFile = dialog.FileName;
-            UpdateCustomFilesText();
-        }
-    }
-
-    private void ChooseConfigFile_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new OpenFileDialog { Title = "Choose config.json", Filter = "JSON files (*.json)|*.json|All files (*.*)|*.*" };
-        if (dialog.ShowDialog(this) == true)
-        {
-            try
-            {
-                LauncherLogic.ValidateConfigFile(dialog.FileName);
-                _customConfigFile = dialog.FileName;
-                UpdateCustomFilesText();
-            }
-            catch (Exception exception)
-            {
-                Log($"Invalid custom config.json: {exception.Message}");
-                SetStatus("Invalid custom config.json", "#FF667A");
-            }
-        }
-    }
-
-    private void UpdateCustomFilesText()
-    {
-        var names = new List<string>();
-        if (_customProjectFile is not null)
-            names.Add($"PROJECT.md ← {_customProjectFile}");
-        if (_customConfigFile is not null)
-            names.Add($"config.json ← {_customConfigFile}");
-        CustomFilesText.Text = names.Count == 0 ? "Using Agent Setup templates." : string.Join("\n", names);
-    }
-
     private void EditProject_Click(object sender, RoutedEventArgs e)
     {
         var projectFile = Path.Combine(SelectedProjectPath(), "PROJECT.md");
         if (!File.Exists(projectFile))
         {
-            RefreshInitializationPrompt();
-            SetStatus("Initialize the project first", "#F7C873");
+            SetStatus("This folder has no PROJECT.md", "#F7C873");
             return;
         }
         Process.Start(new ProcessStartInfo(projectFile) { UseShellExecute = true });
-    }
-
-    private void Once_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.Once = OnceToggle.IsChecked == true;
-        _settings.Save();
     }
 
     private string _projectPath = "";
@@ -2249,13 +2268,7 @@ public partial class MainWindow : Window
         set
         {
             _projectPath = value;
-            var shown = SelectedProjectPath();
-            ProjectName.Text = shown.Length == 0 ? "Choose project folder…" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
-            ProjectPathText.Text = shown;
-            ProjectPathText.Visibility = shown.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-            ProjectButton.ToolTip = shown.Length == 0 ? "Choose the project folder" : shown;
             RefreshCodeFolder();
-            RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
         }
@@ -2274,31 +2287,6 @@ public partial class MainWindow : Window
         {
             return "";
         }
-    }
-
-    private void RefreshInitializationPrompt()
-    {
-        if (_initializing || _workflowRoot is null)
-            return;
-        var project = SelectedProjectPath();
-        if (project.Length == 0)
-        {
-            InitializationPanel.Visibility = Visibility.Collapsed;
-            return;
-        }
-
-        if (!Directory.Exists(project))
-        {
-            InitializationText.Text = "This folder does not exist. Initialize Project will create it and add the required workflow files.";
-            InitializationPanel.Visibility = Visibility.Visible;
-            return;
-        }
-
-        var missing = LauncherLogic.MissingProjectFiles(project);
-        InitializationText.Text = missing.Length == 0
-            ? ""
-            : $"This folder needs {missing.Length} workflow file{(missing.Length == 1 ? "" : "s")}. Existing files will not be overwritten.";
-        InitializationPanel.Visibility = missing.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     // Bottom-right toasts slide and fade in and leave after about three seconds (hovering one holds it).
@@ -2412,7 +2400,7 @@ public partial class MainWindow : Window
     private void RefreshSetupProblems()
     {
         var workers = CurrentWorkers();
-        var path = ProjectConfigPath();
+        var path = ActiveConfigPath();
         var problems = LauncherLogic.CustomProblems(workers, !File.Exists(path) || LauncherLogic.ImplementerHasBaseUrl(path));
         for (var i = 0; i < workers.Count; i++)
             if (CardFor(workers[i].Id) is { IsCustom: true } card)
@@ -2436,17 +2424,16 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
-    // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
-    // Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
+    // The orchestrator reads custom workers from config.json; keep the active config (and the worker config) in step
+    // with the cards. Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
     private bool SyncCustomWorkers(List<string>? collectSkipped = null)
     {
         RefreshSetupProblems();
-        var path = ProjectConfigPath();
-        if (!File.Exists(path) || LauncherLogic.IsTemplateConfig(path, _workflowRoot)) // chat without a project uses a temp copy
-            return true;
         try
         {
-            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
+            var skipped = Array.Empty<string>();
+            foreach (var path in WorkerConfigTargets())
+                skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
             if (collectSkipped is not null)
                 collectSkipped.AddRange(skipped);
             else
@@ -2464,7 +2451,46 @@ public partial class MainWindow : Window
 
     // ---- presets: named sets of workers plus the built-in roles' config.json objects
 
-    private string ProjectConfigPath() => SelectedProjectPath() is { Length: > 0 } project ? Path.Combine(project, "config.json") : "";
+    // The config worker changes go to (LauncherLogic.ActiveConfigPath); "" when there is none or it cannot be made.
+    private string ActiveConfigPath()
+    {
+        try { return LauncherLogic.ActiveConfigPath(SelectedProjectPath(), _workflowRoot); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not create the worker config: {e.Message}");
+            return "";
+        }
+    }
+
+    // Where a worker change is written: the active config, plus the worker config when the active one is a project's,
+    // so the current setup carries to new projects.
+    private string[] WorkerConfigTargets()
+    {
+        var active = ActiveConfigPath();
+        if (active.Length == 0)
+            return [];
+        var worker = LauncherLogic.EnsureWorkerConfig(_workflowRoot!); // ActiveConfigPath already made it
+        return string.Equals(active, worker, StringComparison.OrdinalIgnoreCase) ? [active] : [active, worker];
+    }
+
+    // Writes targets[0] (its problem, or exception, is the caller's), then mirrors the change to the rest. The project
+    // already has it then, so a mirror that fails is only a warning and the save counts as done. write: a problem or null.
+    private string? WriteConfigs(IReadOnlyList<string> targets, Func<string, string?> write)
+    {
+        if (write(targets[0]) is { } problem)
+            return problem;
+        foreach (var mirror in targets.Skip(1))
+        {
+            string? failed;
+            try { failed = write(mirror); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException) { failed = e.Message; }
+            if (failed is null)
+                continue;
+            Log($"Saved to the project; the launcher's worker config could not be updated: {failed}");
+            Toast($"Saved to the project; the launcher's worker config could not be updated: {failed}", "#F7C873");
+        }
+        return null;
+    }
 
     private void Presets_Click(object sender, RoutedEventArgs e)
     {
@@ -2472,7 +2498,8 @@ public partial class MainWindow : Window
             BuildPresetsMenu().IsOpen = true;
     }
 
-    private ContextMenu NewPresetMenu() => new() { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = PresetsButton, Placement = PlacementMode.Bottom };
+    private ContextMenu NewPresetMenu(UIElement? target = null) =>
+        new() { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = target ?? PresetsButton, Placement = PlacementMode.Bottom };
 
     private MenuItem PresetItem(string header, Action click, bool enabled = true)
     {
@@ -2574,7 +2601,7 @@ public partial class MainWindow : Window
         WorkerPreset preset;
         try
         {
-            preset = LauncherLogic.CapturePreset(name, ProjectConfigPath(), CurrentWorkers());
+            preset = LauncherLogic.CapturePreset(name, ActiveConfigPath(), CurrentWorkers());
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2599,7 +2626,8 @@ public partial class MainWindow : Window
         bool rolesApplied;
         try
         {
-            rolesApplied = !LauncherLogic.IsTemplateConfig(ProjectConfigPath(), _workflowRoot) && LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
+            var targets = WorkerConfigTargets();
+            rolesApplied = targets.Length > 0 && WriteConfigs(targets, path => LauncherLogic.ApplyPresetRoles(path, preset) ? null : $"{path} is missing") is null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2616,8 +2644,8 @@ public partial class MainWindow : Window
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
         {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
-            Toast($"Preset applied: {preset.Name}. Built-in model settings need an initialized project.", "#F7C873");
+            SetStatus("Built-in model settings were not changed", "#F7C873");
+            Toast($"Preset applied: {preset.Name}. Built-in model settings could not be written.", "#F7C873");
         }
         else
             Toast($"Preset applied: {preset.Name}");
@@ -2693,7 +2721,7 @@ public partial class MainWindow : Window
         var idle = _process is null && card.Editable;
         menu.Items.Add(PresetItem("Change model…", () => ChangeModel(card, anchor), idle));
         menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
-            idle && (card.IsCustom || File.Exists(ProjectConfigPath()))));
+            idle && (card.IsCustom || File.Exists(ActiveConfigPath()))));
         if (card.IsCustom)
         {
             menu.Items.Add(PresetItem("Rename…", () => Dispatcher.InvokeAsync(() => RenameWorker(card), DispatcherPriority.Background), idle));
@@ -2814,16 +2842,10 @@ public partial class MainWindow : Window
             BuildCustomSettingsDialog(card).ShowDialog();
             return;
         }
-        var project = SelectedProjectPath();
-        var path = Path.Combine(project, "config.json");
-        if (project.Length == 0 || !File.Exists(path))
+        var path = ActiveConfigPath();
+        if (!File.Exists(path))
         {
-            SetStatus("Initialize the project first", "#F7C873");
-            return;
-        }
-        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
-        {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
+            SetStatus("No config.json to change", "#F7C873");
             return;
         }
         LauncherLogic.RoleSettings current;
@@ -2908,9 +2930,10 @@ public partial class MainWindow : Window
             try
             {
                 var problem = (remote is null ? null : LauncherLogic.ValidateRemoteRole(remote)) ?? LauncherLogic.ValidateRoleSettings(values);
-                if (problem is null && (remote is not null || remoteNow is not null))
-                    problem = LauncherLogic.WriteRemoteRole(path, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
-                problem ??= LauncherLogic.WriteRoleSettings(path, card.Role, values);
+                // path first (the dialog's config), then the worker config when path is a project's
+                problem ??= WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
+                    (remote is not null || remoteNow is not null ? LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")) : null)
+                    ?? LauncherLogic.WriteRoleSettings(target, card.Role, values));
                 if (problem is not null)
                 {
                     error.Text = problem;
@@ -3153,7 +3176,7 @@ public partial class MainWindow : Window
 
     private void AssignModel(RoleCard card, ModelChoice choice)
     {
-        if (!card.IsCustom && !WriteRoleModel(SelectedProjectPath(), card.Role, choice))
+        if (!card.IsCustom && !WriteRoleModel(card.Role, choice))
             return;
         card.ModelId = choice.Display;
         card.ModelVariant = choice.Variant;
@@ -3170,21 +3193,34 @@ public partial class MainWindow : Window
             SyncCustomWorkers();
     }
 
-    // The orchestrator reads each built-in worker's model from the project's config.json.
-    private bool WriteRoleModel(string project, string role, ModelChoice choice)
+    // The orchestrator reads each built-in worker's model from config.json: the active one and the worker config.
+    private bool WriteRoleModel(string role, ModelChoice choice)
     {
-        var path = Path.Combine(project, "config.json");
-        if (project.Length == 0 || !File.Exists(path))
+        var targets = WorkerConfigTargets();
+        if (targets.Length == 0)
         {
-            SetStatus("Initialize the project first", "#F7C873");
-            return false;
-        }
-        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
-        {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
+            SetStatus("No config.json to change", "#F7C873");
             return false;
         }
         try
+        {
+            WriteConfigs(targets, path =>
+            {
+                WriteRoleModel(path, role, choice);
+                return null;
+            });
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
+        {
+            Log($"Could not update config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+            return false;
+        }
+    }
+
+    private static void WriteRoleModel(string path, string role, ModelChoice choice)
+    {
         {
             var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
             var settings = root["roles"]![role]!.AsObject();
@@ -3200,13 +3236,6 @@ public partial class MainWindow : Window
             {
                 WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             }));
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or JsonException or NullReferenceException or InvalidOperationException)
-        {
-            Log($"Could not update config.json: {exception.Message}");
-            SetStatus("Could not update config.json", "#FF667A");
-            return false;
         }
     }
 
@@ -3321,15 +3350,6 @@ public partial class MainWindow : Window
         SidePane.Width = width;
         SidebarFull.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SidebarRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    // The rail has no room for the initialization form, so a project that needs it reopens the sidebar instead.
-    private void RailProject_Click(object sender, RoutedEventArgs e)
-    {
-        if (InitializationPanel.Visibility == Visibility.Visible)
-            SetSidebar(false);
-        else
-            Browse_Click(sender, e);
     }
 
     // ---- compact worker cards

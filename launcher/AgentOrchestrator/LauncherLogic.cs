@@ -93,7 +93,7 @@ internal static class LauncherLogic
         return info;
     }
 
-    // One saved Code conversation per project folder, under <data>\conversations (AGENT_ORCHESTRATOR_DATA like AppSettings).
+    // The legacy one-conversation-per-folder file (<data>\conversations\<hash>.json); ConversationStore migrates it.
     public sealed class CodeConversation
     {
         public string Folder { get; set; } = "";
@@ -103,14 +103,11 @@ internal static class LauncherLogic
         public DateTime Updated { get; set; }
     }
 
-    private static readonly JsonSerializerOptions ConversationJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
-
+    // The legacy file's name for a folder.
     public static string ConversationPath(string folder, string? dataRoot = null)
     {
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(NormalizeFolder(folder).ToLowerInvariant())));
-        dataRoot ??= Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
-        return Path.Combine(dataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
+        return Path.Combine(dataRoot ?? AppSettings.DataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
     }
 
     private static string NormalizeFolder(string folder) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
@@ -125,41 +122,40 @@ internal static class LauncherLogic
         return a.Equals(b, StringComparison.OrdinalIgnoreCase) || Within(a, b) || Within(b, a);
     }
 
-    // null when there is none or it cannot be read (a corrupt file is ignored, not fatal). Hand-edited entries are cleaned:
-    // null lists become empty, messages need a user/assistant role and content, folders a path (unknown access is read).
-    public static CodeConversation? LoadConversation(string folder, string? dataRoot = null)
-    {
-        CodeConversation? c;
-        try { c = JsonSerializer.Deserialize<CodeConversation>(File.ReadAllText(ConversationPath(folder, dataRoot)), ConversationJson); }
-        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or NotSupportedException) { return null; }
-        if (c is null)
-            return null;
-        c.Folder ??= "";
-        c.Worker ??= "implementer";
-        c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
-        c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
-        return c;
-    }
-
-    public static void SaveConversation(CodeConversation conversation, string? dataRoot = null)
-    {
-        var path = ConversationPath(conversation.Folder, dataRoot);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        conversation.Updated = DateTime.Now;
-        File.WriteAllText(path, JsonSerializer.Serialize(conversation, ConversationJson));
-    }
-
     // True when configPath is the workflow root's config.json: the template new projects are initialized from.
     public static bool IsTemplateConfig(string configPath, string? workflowRoot) =>
         workflowRoot is not null && configPath.Length > 0 && string.Equals(Path.GetFullPath(configPath), Path.GetFullPath(Path.Combine(workflowRoot, "config.json")), StringComparison.OrdinalIgnoreCase);
 
-    // The folder a chat runs in. An initialized project is used as is. Otherwise the template config is copied to a
+    // The launcher's own worker setup: <data>\worker-config.json, made from the template when missing. Presets, workers
+    // and role settings work in it with no project; new projects and project-less chats start from it.
+    public static string EnsureWorkerConfig(string workflowRoot, string? dataRoot = null)
+    {
+        dataRoot ??= AppSettings.DataRoot;
+        var path = Path.Combine(dataRoot, "worker-config.json");
+        if (!File.Exists(path))
+        {
+            Directory.CreateDirectory(dataRoot);
+            File.Copy(Path.Combine(workflowRoot, "config.json"), path);
+        }
+        return path;
+    }
+
+    // The config worker changes go to: the project's config.json when it has one (never the template), else the worker config.
+    public static string ActiveConfigPath(string project, string? workflowRoot, string? dataRoot = null)
+    {
+        var projectConfig = project.Length > 0 ? Path.Combine(project, "config.json") : "";
+        if (projectConfig.Length > 0 && File.Exists(projectConfig) && !IsTemplateConfig(projectConfig, workflowRoot))
+            return projectConfig;
+        return workflowRoot is null ? "" : EnsureWorkerConfig(workflowRoot, dataRoot);
+    }
+
+    // The folder a chat runs in. An initialized project is used as is. Otherwise the worker config is copied to a
     // fresh temp folder (the template itself is never written) and gets the custom workers; the caller deletes it
     // when the chat ends. IsTemp says whether the folder was created here (and so is the caller's to delete); a real
     // project folder is never IsTemp. Returns "Title: reason" for each custom worker left out.
     public sealed record ChatFolder(string Path, bool IsTemp);
 
-    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped)
+    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped, string? dataRoot = null)
     {
         skipped = [];
         var projectConfig = Path.Combine(selectedProject, "config.json");
@@ -170,7 +166,7 @@ internal static class LauncherLogic
         {
             Directory.CreateDirectory(folder);
             var copy = Path.Combine(folder, "config.json");
-            File.Copy(Path.Combine(workflowRoot, "config.json"), copy);
+            File.Copy(EnsureWorkerConfig(workflowRoot, dataRoot), copy);
             skipped = WriteCustomWorkers(copy, workers, Path.Combine(workflowRoot, "config.json"));
             return new ChatFolder(folder, true);
         }
@@ -377,16 +373,6 @@ internal static class LauncherLogic
             backup = $"PROJECT.md.bak-{DateTime.Now:yyyyMMdd-HHmmss-fff}-{n}";
         File.Move(source, Path.Combine(projectRoot, backup));
         return backup;
-    }
-
-    public static void ValidateConfigFile(string path)
-    {
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
-        if (document.RootElement.ValueKind != JsonValueKind.Object ||
-            !document.RootElement.TryGetProperty("roles", out var roles) ||
-            roles.ValueKind != JsonValueKind.Object ||
-            new[] { "planner", "implementer", "reviewer" }.Any(role => !roles.TryGetProperty(role, out _)))
-            throw new InvalidDataException("Custom config.json must define planner, implementer, and reviewer roles.");
     }
 
     public static string FindPython()
@@ -969,36 +955,10 @@ internal static class LauncherLogic
         {
             var convPath = ConversationPath(@"Y:\Programs\My_App", dataArea);
             var expectedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(@"y:\programs\my_app")))[..16].ToLowerInvariant();
-            if (convPath != Path.Combine(dataArea, "conversations", expectedHash + ".json") || ConversationPath(@"y:\programs\my_app", dataArea) != convPath ||
-                LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
+            if (convPath != Path.Combine(dataArea, "conversations", expectedHash + ".json") || ConversationPath(@"y:\programs\my_app", dataArea) != convPath)
                 throw new InvalidOperationException("Conversation path failed.");
-            SaveConversation(new CodeConversation
-            {
-                Folder = @"Y:\Programs\My_App", Worker = "planner", Folders = [new(@"Y:\lib", "read")], Messages = [.. chat.Take(2)],
-            }, dataArea);
-            var loaded = LoadConversation(@"Y:\Programs\My_App", dataArea);
-            var savedJson = JsonNode.Parse(File.ReadAllText(convPath))!;
-            if (loaded is null || loaded.Folder != @"Y:\Programs\My_App" || loaded.Worker != "planner" || loaded.Folders.Single() != new CodeFolder(@"Y:\lib", "read") ||
-                !loaded.Messages.SequenceEqual(chat.Take(2)) || loaded.Updated == default || savedJson["folders"]![0]!["access"] is null || savedJson["messages"]![0]!["role"] is null)
-                throw new InvalidOperationException("Conversation round trip failed.");
-            File.WriteAllText(convPath, "{not json");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
-                throw new InvalidOperationException("A corrupt conversation file must be ignored.");
             if (ConversationPath(@"Y:\Programs\My_App\", dataArea) != convPath || ConversationPath(@"Y:\Programs\My_App\.", dataArea) != convPath)
                 throw new InvalidOperationException("A trailing separator must not change the conversation file.");
-            File.WriteAllText(convPath, """{"messages":null,"folders":null}""");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
-                throw new InvalidOperationException("Null conversation lists must load as empty.");
-            File.WriteAllText(convPath, """{"messages":[null]}""");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
-                throw new InvalidOperationException("A null message must be dropped.");
-            File.WriteAllText(convPath, """
-                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
-                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}]}
-                """);
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { } cleaned || !cleaned.Messages.SequenceEqual([new ChatMessage("user", "ok")]) ||
-                !cleaned.Folders.SequenceEqual([new CodeFolder(@"Y:\lib", "read"), new CodeFolder(@"Y:\w", "write")]))
-                throw new InvalidOperationException("Invalid conversation entries must be dropped.");
             var wf = @"Y:\Programs\Agent Setup";
             if (!OverlapsWorkflowRoot(wf, wf) || !OverlapsWorkflowRoot(@"y:\programs\agent setup\", wf) || !OverlapsWorkflowRoot(@"Y:\Programs/Agent Setup/templates", wf) ||
                 !OverlapsWorkflowRoot(@"Y:\Programs", wf) || !OverlapsWorkflowRoot(@"Y:\", wf) || OverlapsWorkflowRoot(@"Y:\Programs\Agent Setup2", wf) ||
@@ -1034,26 +994,36 @@ internal static class LauncherLogic
             var detectedKey = FindApiKeyFile(testArea, Path.Combine(testArea, "elsewhere"));
             if (detectedKey?.Key != "test-api-key")
                 throw new InvalidOperationException("API key file detection failed.");
-            ValidateConfigFile(customConfig);
             var rootDir = Path.Combine(testArea, "root");
             var rootConfig = Path.Combine(rootDir, "config.json");
             Directory.CreateDirectory(rootDir);
             File.WriteAllText(rootConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\"}}}");
             var rootBytes = File.ReadAllBytes(rootConfig);
             var chatWorkers = new List<WorkerSetting> { Ok("c1", "Chat Docs") };
-            var chatPrepared = PrepareChatFolder(testArea, rootDir, chatWorkers, out _);
+            // The worker config: made from the template once, then edited on its own; the template is never written.
+            var dataDir = Path.Combine(testArea, "data");
+            var workerConfig = Path.Combine(dataDir, "worker-config.json");
+            if (ActiveConfigPath("", rootDir, dataDir) != workerConfig || ActiveConfigPath(rootDir, rootDir, dataDir) != workerConfig ||
+                ActiveConfigPath(testArea, rootDir, dataDir) != workerConfig || !File.ReadAllBytes(workerConfig).SequenceEqual(rootBytes))
+                throw new InvalidOperationException("Without a project config the active config must be a copy of the template in the data folder.");
+            File.WriteAllText(workerConfig, "{\"keep\":2,\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\"}}}");
+            if (EnsureWorkerConfig(rootDir, dataDir) != workerConfig || !File.ReadAllText(workerConfig).Contains("\"keep\":2"))
+                throw new InvalidOperationException("An existing worker config must be kept.");
+            var chatPrepared = PrepareChatFolder(testArea, rootDir, chatWorkers, out _, dataDir);
             var chatFolder = chatPrepared.Path;
             try
             {
                 var chatCopy = JsonNode.Parse(File.ReadAllText(Path.Combine(chatFolder, "config.json")))!;
-                if (!chatPrepared.IsTemp || chatFolder == rootDir || chatFolder == testArea || (int)chatCopy["keep"]! != 1 || chatCopy["custom_workers"]?.AsArray().Count != 1 ||
-                    !File.ReadAllBytes(rootConfig).SequenceEqual(rootBytes) || !IsTemplateConfig(rootConfig.ToUpperInvariant(), rootDir))
-                    throw new InvalidOperationException("Chat folder without a project must be a temp copy of the template.");
+                if (!chatPrepared.IsTemp || chatFolder == rootDir || chatFolder == testArea || (int)chatCopy["keep"]! != 2 || chatCopy["custom_workers"]?.AsArray().Count != 1 ||
+                    !File.ReadAllBytes(rootConfig).SequenceEqual(rootBytes) || !IsTemplateConfig(rootConfig.ToUpperInvariant(), rootDir) ||
+                    !File.ReadAllText(workerConfig).Contains("\"keep\":2"))
+                    throw new InvalidOperationException("Chat folder without a project must be a temp copy of the worker config.");
             }
             finally { Directory.Delete(chatFolder, true); }
             File.WriteAllText(Path.Combine(testArea, "config.json"), "{}");
-            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _) is not { Path: var initialized, IsTemp: false } || initialized != testArea)
-                throw new InvalidOperationException("Chat folder should be the initialized project.");
+            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _, dataDir) is not { Path: var initialized, IsTemp: false } || initialized != testArea ||
+                ActiveConfigPath(testArea, rootDir, dataDir) != Path.Combine(testArea, "config.json"))
+                throw new InvalidOperationException("Chat folder and active config should be the initialized project's.");
             File.Delete(Path.Combine(testArea, "config.json"));
             var roleConfig = Path.Combine(testArea, "role-config.json");
             File.WriteAllText(roleConfig, "{\"keep\":1,\"roles\":{\"planner\":{\"display_name\":\"P\",\"sampling\":{\"temperature\":0.6,\"top_p\":0.9,\"extra_body\":{\"repetition_penalty\":1.1,\"top_k\":20}},\"auto_load\":{\"model_path\":\"m\"}},\"reviewer\":{\"sampling\":{\"temperature\":0.2}}}}");

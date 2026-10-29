@@ -7,22 +7,17 @@ using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
-// Project > Task limits: task_limits in the selected project's config.json (never the template in the workflow root).
+// Project > Task limits: task_limits in the active config (never the template in the workflow root).
 public partial class MainWindow
 {
     private void TaskLimits_Click(object sender, RoutedEventArgs e)
     {
         if (_process is not null)
             return;
-        var path = ProjectConfigPath();
-        if (path.Length == 0 || !File.Exists(path))
+        var path = ActiveConfigPath(); // the project's own limits when it has a config.json, else the worker config's
+        if (!File.Exists(path))
         {
-            SetStatus("Initialize the project first", "#F7C873");
-            return;
-        }
-        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
-        {
-            SetStatus("Select or initialize a project to change task limits", "#F7C873");
+            SetStatus("No config.json to change", "#F7C873");
             return;
         }
         (string Files, string Work) current;

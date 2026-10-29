@@ -30,7 +30,7 @@ public partial class MainWindow
         if (RefuseWorkflowRoot(project))
             return Task.FromResult(false);
         var text = action == "chat" ? CodeInput.Text.Trim() : null;
-        if (text is { Length: 0 })
+        if (text is { Length: 0 } || !EnsureCodeConversation(project))
             return Task.FromResult(false);
         return RunTurn(_code, text, worker ?? CodeTarget()!.Role, false,
             role => LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
@@ -55,7 +55,7 @@ public partial class MainWindow
     private void CodeTurnFinished()
     {
         SaveCodeConversation();
-        if (_codeStartRequested && SameFolder(SelectedProjectPath(), _codeFolder))
+        if (_codeStartRequested && SameFolder(SelectedProjectPath(), _codeConv?.Folder))
             StartCodeProject();
         _codeStartRequested = false;
     }
@@ -106,30 +106,21 @@ public partial class MainWindow
 
     private void CodeSubView_Click(object sender, RoutedEventArgs e) => ShowCodeRun(((FrameworkElement)sender).Tag as string == "run");
 
-    // The header and empty state follow the project folder. While a turn runs the conversation keeps its folder (so its
-    // history is saved where it belongs); RunTurn calls this again when the turn ends.
+    // The header and empty state follow the project folder. The open conversation belongs to its folder: another folder
+    // closes it (the next message there starts a new one). While a turn runs nothing changes; RunTurn calls this again
+    // when the turn ends.
     private void RefreshCodeFolder()
     {
         if (_chatBusy)
             return;
         var shown = SelectedProjectPath();
-        // A conversation belongs to its folder (saved after every change): another folder shows its own saved one, or
-        // starts empty. Loading it here (however the folder changed) keeps the next save from overwriting it.
-        if (!SameFolder(shown, _codeFolder))
-        {
-            ClearConversation(_code);
-            CodeExtraFolders.Clear();
-            _codeFolder = shown;
-            if (shown.Length > 0 && LauncherLogic.LoadConversation(shown) is { } saved && (saved.Messages.Count > 0 || saved.Folders.Count > 0))
-            {
-                ResumeCodeConversation(saved, shown);
-                Log($"Code: loaded the saved conversation for {shown}");
-            }
-        }
+        if (_codeConv is { } open && !SameFolder(shown, open.Folder))
+            CloseCodeConversation();
         RefreshCodeFolders();
         CodeFolderText.Text = shown.Length == 0 ? "No folder" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
         CodeFolderText.ToolTip = shown.Length == 0 ? null : shown;
         CodeEmptyTitle.Text = shown.Length == 0 ? "Choose a folder to start" : "Start a conversation";
+        RefreshChatInput(); // the Project menu needs a folder
     }
 
     private void CodeNew_Click(object sender, RoutedEventArgs e) => NewCodeConversation();
@@ -138,7 +129,8 @@ public partial class MainWindow
 
     // ---- folder, conversation lifecycle, extra folders, start
 
-    private string? _codeFolder; // the folder the Code conversation belongs to
+    private readonly ConversationStore _store = new(AppSettings.DataRoot); // every saved Code conversation and the sidebar's order
+    private ConversationStore.Conversation? _codeConv; // the open one (the store's own instance); null: none yet
     private bool _codeStarting; // StartCodeProject is in progress (it may await a write_project turn)
 
     // Test hooks for --ui-smoke: pick a folder and answer Choose (by its title) without showing a dialog.
@@ -180,36 +172,115 @@ public partial class MainWindow
         return result;
     }
 
-    // Pick the folder; resume its saved conversation or start a new one (with the "Main" preset, when there is one).
+    // Pick the folder and start a new conversation there (with the "Main" preset, when there is one). Earlier ones stay in
+    // the sidebar; a folder may have several.
     private void NewCodeConversation()
     {
-        if (_chatBusy || _process is not null || PickFolder("Choose the folder to work in") is not { } folder)
-            return;
-        var saved = LauncherLogic.LoadConversation(folder);
-        var choice = saved is { Messages.Count: > 0 } or { Folders.Count: > 0 }
-            ? Choose("Saved conversation", $"This folder has a saved conversation ({saved.Messages.Count} messages, {saved.Folders.Count} extra folder{(saved.Folders.Count == 1 ? "" : "s")}, " +
-                $"last used {saved.Updated:g}). Resume it?", ("Resume", "resume"), ("Start new", "new"))
-            : "new";
-        if (choice is null)
-            return;
-        ProjectPath = folder; // a changed folder loads its saved conversation (RefreshCodeFolder); either choice starts from scratch here
-        ClearConversation(_code);
-        CodeExtraFolders.Clear();
-        ShowCodeRun(false);
-        if (choice == "resume")
+        if (_chatBusy || _process is not null || _codeStarting)
         {
-            ResumeCodeConversation(saved!, SelectedProjectPath());
-            Log($"Code: resumed the conversation in {folder}");
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
         }
-        else if (_settings.Presets.FirstOrDefault(p => p.Name.Equals("Main", StringComparison.OrdinalIgnoreCase)) is { } main)
+        if (PickFolder("Choose the folder to work in") is not { } folder)
+            return;
+        CloseCodeConversation();
+        ProjectPath = folder;
+        ShowView(false);
+        ShowCodeRun(false);
+        if (!EnsureCodeConversation(SelectedProjectPath()))
+            return;
+        if (_settings.Presets.FirstOrDefault(p => p.Name.Equals("Main", StringComparison.OrdinalIgnoreCase)) is { } main)
             ApplyPreset(main);
         RefreshCodeFolders();
         RefreshChatTarget();
     }
 
+    // Opens the conversation when none is: a message or an extra folder in a folder with no conversation starts one.
+    private bool EnsureCodeConversation(string project)
+    {
+        if (_codeConv is not null)
+            return true;
+        if (!StoreDo(() => _codeConv = _store.Create(project)) || _codeConv is null)
+            return false;
+        _settings.LastConversation = _codeConv.Id;
+        _settings.Save();
+        RefreshSidebarList();
+        return true;
+    }
+
+    // A sidebar row: shows the saved conversation in the Code view, in its own folder. Refused while a turn or run is
+    // active (it would change the conversation that turn belongs to).
+    private void OpenCodeConversation(string id)
+    {
+        if (_chatBusy || _process is not null || _codeStarting)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            RefreshSidebarList(); // the clicked row unchecks itself
+            return;
+        }
+        if (_codeConv?.Id != id && _store.Get(id) is { } conversation)
+        {
+            if (!Path.IsPathFullyQualified(conversation.Folder)) // hand-edited or damaged: there is no folder to work in
+            {
+                Toast("This chat has no folder, so it can't be opened", "#FF667A");
+                RefreshSidebarList();
+                return;
+            }
+            CloseCodeConversation();
+            ProjectPath = conversation.Folder;
+            ResumeCodeConversation(conversation, SelectedProjectPath());
+            _codeConv = conversation;
+            _settings.LastConversation = id;
+            _settings.Save();
+        }
+        ShowView(false);
+        ShowCodeRun(false);
+        RefreshSidebarList();
+    }
+
+    // Empties the Code view. A conversation left with nothing in it (no messages, extra folders or title) is deleted
+    // rather than kept as clutter, unless it was moved into a project or archived.
+    private void CloseCodeConversation()
+    {
+        if (_codeConv is { Title: null } c && _code.History.Count == 0 && CodeExtraFolders.Count == 0 && !_store.IsOrganized(c.Id))
+            StoreDo(() => _store.Delete(c.Id));
+        _codeConv = null;
+        ClearConversation(_code);
+        CodeExtraFolders.Clear();
+        RefreshCodeFolders();
+        if (_settings.LastConversation.Length > 0)
+        {
+            _settings.LastConversation = "";
+            _settings.Save();
+        }
+        RefreshSidebarList();
+    }
+
+    // A store write that failed (disk full, access denied) is reported instead of ending the app. So is a store that
+    // could not read everything at startup: it is read-only, and the change is not attempted.
+    private bool StoreDo(Action change)
+    {
+        try
+        {
+            if (!_store.ReadOnly)
+                change(); // Load included: it is what may turn the store read-only
+            if (!_store.ReadOnly)
+                return true;
+            Log($"Conversations could not be loaded ({_store.LoadError}); changes to them are not saved until the launcher restarts");
+            Toast("Conversations could not be loaded; changes won't be saved", "#FF667A");
+            return false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not save the conversations: {e.Message}");
+            Toast("Could not save the conversations", "#FF667A");
+            return false;
+        }
+    }
+
     // Shows a saved conversation in the (cleared) Code view: its extra folders, worker and messages. Extra folders that
     // are gone, are the project, or repeat one are dropped; Full edit inside the Agent Orchestrator folder becomes Read only.
-    private void ResumeCodeConversation(LauncherLogic.CodeConversation saved, string project)
+    private void ResumeCodeConversation(ConversationStore.Conversation saved, string project)
     {
         foreach (var folder in saved.Folders)
         {
@@ -247,22 +318,16 @@ public partial class MainWindow
         RefreshChatTarget();
     }
 
+    // After a completed turn or an extra-folder change; the sidebar shows the new title and time.
     private void SaveCodeConversation()
     {
-        var folder = _codeFolder ?? ""; // the conversation's own folder, even if the project changed during the turn        // Never create a file for an empty conversation; an existing one is updated (a removed last folder must stay removed).
-        if (folder.Length == 0 || (_code.History.Count == 0 && CodeExtraFolders.Count == 0 && !File.Exists(LauncherLogic.ConversationPath(folder))))
+        if (_codeConv is not { } c)
             return;
-        try
-        {
-            LauncherLogic.SaveConversation(new LauncherLogic.CodeConversation
-            {
-                Folder = folder, Folders = CodeExtraFolders.ToList(), Worker = _settings.CodeWorker, Messages = _code.History.ToList(), Updated = DateTime.Now,
-            });
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-        {
-            Log($"Could not save the Code conversation: {e.Message}");
-        }
+        c.Folders = CodeExtraFolders.ToList();
+        c.Worker = _settings.CodeWorker;
+        c.Messages = _code.History.ToList();
+        StoreDo(() => _store.Save(c));
+        RefreshSidebarList();
     }
 
     private static bool SamePath(string a, string b) =>
@@ -275,7 +340,7 @@ public partial class MainWindow
     private void AddCodeFolder_Click(object sender, RoutedEventArgs e)
     {
         var project = SelectedProjectPath();
-        if (_chatBusy || _process is not null || project.Length == 0 || PickFolder("Choose a folder the worker may use") is not { } picked)
+        if (_chatBusy || _process is not null || project.Length == 0 || RefuseWorkflowRoot(project) || PickFolder("Choose a folder the worker may use") is not { } picked)
             return;
         var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
         if (SamePath(path, project))
@@ -295,6 +360,8 @@ public partial class MainWindow
             Toast("The Agent Orchestrator folder can only be added Read only", "#F7C873");
             return;
         }
+        if (!EnsureCodeConversation(project))
+            return;
         CodeExtraFolders.Add(new LauncherLogic.CodeFolder(path, access));
         RefreshCodeFolders();
         SaveCodeConversation();
@@ -308,7 +375,94 @@ public partial class MainWindow
         SaveCodeConversation();
     }
 
-    // The sidebar FOLDERS list: name (full path in the tooltip), access chip, remove.
+    // ---- Project menu: per-folder setup (PROJECT.md, task limits, extra folders, run once)
+
+    private Func<string?>? _projectMdPick; // --ui-smoke: the PROJECT.md to use, without the file dialog
+
+    private void CodeProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (CodeProjectButton.IsEnabled)
+            BuildProjectMenu().IsOpen = true;
+    }
+
+    private ContextMenu BuildProjectMenu()
+    {
+        var menu = NewPresetMenu(CodeProjectButton);
+        menu.Items.Add(PresetItem("Use a PROJECT.md…", UseProjectMd));
+        menu.Items.Add(PresetItem("Edit PROJECT.md", () => EditProject_Click(this, new RoutedEventArgs()), File.Exists(Path.Combine(SelectedProjectPath(), "PROJECT.md"))));
+        menu.Items.Add(PresetItem("Task limits…", () => Dispatcher.InvokeAsync(() => TaskLimits_Click(this, new RoutedEventArgs()), System.Windows.Threading.DispatcherPriority.Background)));
+        menu.Items.Add(PresetItem("Folders…", () => Dispatcher.InvokeAsync(ShowCodeFolders, System.Windows.Threading.DispatcherPriority.Background)));
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        var once = PresetItem("Run one reviewed task, then stop", () => { }); // a checkable item toggles itself before Click
+        once.IsCheckable = true;
+        once.IsChecked = _settings.Once;
+        once.Click += (_, _) => { _settings.Once = once.IsChecked; _settings.Save(); };
+        menu.Items.Add(once);
+        return menu;
+    }
+
+    // Copies a chosen file in as the folder's PROJECT.md; an existing one is kept (Use) or moved to a backup first (Replace).
+    private void UseProjectMd()
+    {
+        var folder = SelectedProjectPath();
+        if (_chatBusy || _process is not null || folder.Length == 0 || !Directory.Exists(folder) || RefuseWorkflowRoot(folder))
+            return;
+        string? source;
+        if (_projectMdPick is { } pick)
+            source = pick();
+        else
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Choose a PROJECT.md", Filter = "Markdown files (*.md)|*.md|All files (*.*)|*.*" };
+            source = dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+        if (source is null)
+            return;
+        var target = Path.Combine(folder, "PROJECT.md");
+        try
+        {
+            if (SamePath(source, target))
+            {
+                Toast("That is already this folder's PROJECT.md", "#F7C873");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(File.ReadAllText(source)))
+            {
+                Toast("That PROJECT.md is empty", "#F7C873");
+                return;
+            }
+            string? backup = null;
+            if (File.Exists(target))
+            {
+                var choice = AskExistingProjectMd(target);
+                if (choice == ExistingProjectMdChoice.Use)
+                    Log("Using the existing PROJECT.md");
+                if (choice != ExistingProjectMdChoice.Replace)
+                    return;
+                backup = LauncherLogic.BackupProjectMd(folder);
+            }
+            File.Copy(source, target);
+            Log($"PROJECT.md copied from {source} into {folder}" + (backup is null ? "" : $"; previous saved as {backup}"));
+            Toast(backup is null ? "PROJECT.md added" : $"PROJECT.md replaced; previous saved as {backup}");
+            RefreshPrimary();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not use that PROJECT.md: {exception.Message}");
+            Toast("Could not use that PROJECT.md", "#FF667A");
+        }
+    }
+
+    // The extra-folder list lives in a hidden XAML host (CodeFoldersHost) and is lent to a dialog while it is open.
+    private void ShowCodeFolders()
+    {
+        RefreshCodeFolders();
+        CodeFoldersHost.Content = null;
+        var dialog = new DialogShell(this, "Folders", CodeFoldersPanel);
+        dialog.Closed += (_, _) => { ((Border)CodeFoldersPanel.Parent).Child = null; CodeFoldersHost.Content = CodeFoldersPanel; };
+        dialog.ShowDialog();
+    }
+
+    // The Folders list: name (full path in the tooltip), access chip, remove.
     private void RefreshCodeFolders()
     {
         var hasProject = SelectedProjectPath().Length > 0;
@@ -361,10 +515,9 @@ public partial class MainWindow
                     return;
                 }
             }
-            var copied = LauncherLogic.InitializeProject(_workflowRoot, folder);
+            var copied = LauncherLogic.InitializeProject(_workflowRoot, folder, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot));
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
-            RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
         }

@@ -9,6 +9,7 @@ public partial class App : Application
         if (e.Args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
         {
             LauncherLogic.SelfTest();
+            ConversationStore.SelfTest();
             Shutdown(0);
             return;
         }

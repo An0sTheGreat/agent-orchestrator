@@ -176,11 +176,14 @@ internal sealed class AppSettings
     public double? WindowHeight { get; set; }
     public bool WindowMaximized { get; set; }
 
-    // AGENT_ORCHESTRATOR_DATA redirects the settings folder (used by UI tests so real settings stay untouched).
-    private static string FilePath => Path.Combine(
-        Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator"),
-        "settings.json");
+    public string LastConversation { get; set; } = ""; // the Code conversation open at exit, reopened at startup
+
+    // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
+    // UI tests so real data stays untouched).
+    public static string DataRoot => Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
+
+    private static string FilePath => Path.Combine(DataRoot, "settings.json");
 
     public static AppSettings Load()
     {
