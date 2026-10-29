@@ -831,7 +831,7 @@
 
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="34" /><RowDefinition Height="62" /><RowDefinition Height="*" /><RowDefinition Height="34" />
+            <RowDefinition Height="34" /><RowDefinition Height="0" /><RowDefinition Height="*" /><RowDefinition Height="34" />
         </Grid.RowDefinitions>
 
         <Grid x:Name="ThemeBackdrop" Grid.RowSpan="4" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AppBackground}">
@@ -847,37 +847,16 @@
         <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" MouseMove="TitleBar_MouseMove" MouseLeftButtonUp="TitleBar_MouseLeftButtonUp">
             <Grid>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0">
-                    <Image Source="/Assets/title.png" Width="18" Height="18" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
-                    <TextBlock Text="AGENT ORCHESTRATOR" Foreground="{DynamicResource AccentLight}" FontFamily="Consolas"
-                               FontWeight="Bold" FontSize="12" Margin="7,0,0,0" VerticalAlignment="Center" />
-                </StackPanel>
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
-                    <Button Style="{StaticResource TitleButton}" Content="─" Click="Minimize_Click" />
-                    <Button x:Name="MaximizeButton" Style="{StaticResource TitleButton}" Content="□" Click="Maximize_Click" />
-                    <Button Style="{StaticResource CloseButton}" Content="×" Click="Close_Click" />
-                </StackPanel>
-            </Grid>
-        </Border>
-
-        <!-- Header: project control -->
-        <Border Grid.Row="1" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1">
-            <Grid>
-            <!-- While a run is in progress a light sweeps along the header's lower edge (SetRunning starts and stops it).
-                 The Viewbox stretches a fixed 100-unit track to the header width, so the sweep needs no resize handling. -->
-            <Viewbox x:Name="Shimmer" Stretch="Fill" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-1" Opacity="0" IsHitTestVisible="False">
+            <!-- While a run or reply is in progress a light sweeps along the title bar's lower edge (SetActivity starts and stops it).
+                 The Viewbox stretches a fixed 100-unit track to the bar's width, so the sweep needs no resize handling. -->
+                <Viewbox x:Name="Shimmer" Stretch="Fill" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-1" Opacity="0" IsHitTestVisible="False">
                 <Canvas Width="100" Height="2" ClipToBounds="True">
                     <Rectangle Width="34" Height="2" Fill="{DynamicResource ShimmerBrush}">
                         <Rectangle.RenderTransform><TranslateTransform x:Name="ShimmerShift" X="-34" /></Rectangle.RenderTransform>
                     </Rectangle>
                 </Canvas>
             </Viewbox>
-            <Grid Margin="14,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <!-- Status pill, hidden while Ready (SetStatus): while running, a ring in the dot's colour swells and fades from behind the dot. -->
-                <Border x:Name="StatusPill" Grid.Column="2" HorizontalAlignment="Left" VerticalAlignment="Center" Padding="11,5,13,5" Visibility="Collapsed"
+                <Border x:Name="StatusPill" HorizontalAlignment="Center" VerticalAlignment="Center" Padding="9,2,11,2" Visibility="Collapsed"
                         Background="{DynamicResource Card}" BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1"
                         CornerRadius="{DynamicResource ControlRadius}">
                     <StackPanel Orientation="Horizontal">
@@ -890,14 +869,16 @@
                         <TextBlock x:Name="StatusText" Text="Ready" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
                     </StackPanel>
                 </Border>
-                <Button x:Name="AccentButton" Grid.Column="3" Padding="11,8" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
-                    <StackPanel Orientation="Horizontal">
-                        <Ellipse Width="10" Height="10" Fill="{DynamicResource Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
-                        <TextBlock x:Name="AccentLabel" Text="Accent" />
-                    </StackPanel>
-                    <Button.ContextMenu><ContextMenu x:Name="AccentMenu" Opened="AccentMenu_Opened" /></Button.ContextMenu>
-                </Button>
-            </Grid>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0">
+                    <Image Source="/Assets/title.png" Width="18" Height="18" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" />
+                    <TextBlock Text="AGENT ORCHESTRATOR" Foreground="{DynamicResource AccentLight}" FontFamily="Consolas"
+                               FontWeight="Bold" FontSize="12" Margin="7,0,0,0" VerticalAlignment="Center" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button Style="{StaticResource TitleButton}" Content="─" Click="Minimize_Click" />
+                    <Button x:Name="MaximizeButton" Style="{StaticResource TitleButton}" Content="□" Click="Maximize_Click" />
+                    <Button Style="{StaticResource CloseButton}" Content="×" Click="Close_Click" />
+                </StackPanel>
             </Grid>
         </Border>
 
@@ -1228,8 +1209,18 @@
                     <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents (default)" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark brown with clay accents" Checked="Theme_Checked" />
-                    <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
+                    <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents" Checked="Theme_Checked" />
+                    <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                        <TextBlock Text="Accent" VerticalAlignment="Center" Margin="0,0,12,0" />
+                    <Button x:Name="AccentButton" Padding="11,6" HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse Width="10" Height="10" Fill="{DynamicResource Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
+                            <TextBlock x:Name="AccentLabel" Text="Accent" />
+                        </StackPanel>
+                        <Button.ContextMenu><ContextMenu x:Name="AccentMenu" Opened="AccentMenu_Opened" /></Button.ContextMenu>
+                    </Button>
+                    </StackPanel>
+                    <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
                     <PasswordBox x:Name="ApiKeyBox" Width="460" HorizontalAlignment="Left" Margin="0,14,0,0" />
                     <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"

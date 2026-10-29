@@ -3557,7 +3557,7 @@ public partial class MainWindow : Window
         var oled = _settings.Theme == "Oled";
         var graphite = _settings.Theme == "Graphite";
         var parchment = _settings.Theme == "Parchment"; // the one light theme
-        var clay = _settings.Theme == "ParchmentDark"; // Parchment's dark variant: warm browns tinted toward clay
+        var clay = _settings.Theme == "ParchmentDark"; // Parchment's dark variant: near-neutral grays; the accent tint adds the clay
         var flat = _settings.Theme == "Flat" || oled || graphite || parchment || clay; // these have the Flat shapes
         // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
         // OLED's black background stays pure black.
@@ -3570,17 +3570,17 @@ public partial class MainWindow : Window
         }
         // Graphite: warm dark grays with off-white text and a light gray accent.
         // Parchment: warm off-white paper (its background stays exactly #F4F3EE), white cards, near-black text.
-        Surface("AppBackground", clay ? "#221C19" : parchment ? "#F4F3EE" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment ? 0 : 0.035);
-        SetThemeBrush("TextPrimary", clay ? "#F1ECE6" : parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        Surface("TitleBackground", clay ? "#1A1513" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
-        Surface("Panel", clay ? "#1A1513" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("AppBackground", clay ? "#1E1C1B" : parchment ? "#F4F3EE" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment ? 0 : 0.035);
+        SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
+        Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
+        Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
         // The left sidebar: the Panel shade, except Graphite's, which is lighter than its chat area.
-        Surface("NavBackground", clay ? "#1F1916" : parchment ? "#EDEBE4" : graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
-        Surface("Card", clay ? "#2C2420" : parchment ? "#FFFFFF" : graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
-        Surface("Hover", clay ? "#382D27" : parchment ? "#E6E3DA" : graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
-        Surface("Border", clay ? "#3A2F29" : parchment ? "#DCD8CC" : graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        Surface("NavBackground", clay ? "#232120" : parchment ? "#EDEBE4" : graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("Card", clay ? "#2A2726" : parchment ? "#FFFFFF" : graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
+        Surface("Hover", clay ? "#33302E" : parchment ? "#E6E3DA" : graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
+        Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
-        SetThemeBrush("Muted", clay ? "#A8988C" : parchment ? "#6F6D66" : graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
         var rim = (byte)(parchment ? 0 : glass ? 0x50 : oled || graphite ? 0x18 : flat ? 0x22 : 0x1A);
         // Code colours: VS Code's light palette on Parchment, its dark one elsewhere; inline code sits on a chip of the opposite shade.
@@ -3630,7 +3630,7 @@ public partial class MainWindow : Window
         else
             SetThemeBrush("AccentLight", accent.Light);
         SetThemeBrush("OnAccent", accent.On);
-        AccentLabel.Text = "Accent: " + accent.Label;
+        AccentLabel.Text = accent.Label;
         var strong = (Color)ColorConverter.ConvertFromString(accent.Accent)!;
         var soft = (Color)ColorConverter.ConvertFromString(accent.Light)!;
         GlassA1.Color = Color.FromArgb(0x70, strong.R, strong.G, strong.B);
