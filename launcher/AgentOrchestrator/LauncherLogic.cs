@@ -107,17 +107,38 @@ internal static class LauncherLogic
 
     public static string ConversationPath(string folder, string? dataRoot = null)
     {
-        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Path.GetFullPath(folder).ToLowerInvariant())));
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(NormalizeFolder(folder).ToLowerInvariant())));
         dataRoot ??= Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
         return Path.Combine(dataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
     }
 
-    // null when there is none or it cannot be read (a corrupt file is ignored, not fatal).
+    private static string NormalizeFolder(string folder) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
+
+    // True when folder is the workflow root, inside it, or contains it: such a folder must never be writable by a Code turn.
+    public static bool OverlapsWorkflowRoot(string folder, string? workflowRoot)
+    {
+        if (workflowRoot is null || folder.Length == 0)
+            return false;
+        var (a, b) = (NormalizeFolder(folder), NormalizeFolder(workflowRoot));
+        static bool Within(string inner, string outer) => inner.StartsWith(outer.EndsWith(Path.DirectorySeparatorChar) ? outer : outer + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        return a.Equals(b, StringComparison.OrdinalIgnoreCase) || Within(a, b) || Within(b, a);
+    }
+
+    // null when there is none or it cannot be read (a corrupt file is ignored, not fatal). Hand-edited entries are cleaned:
+    // null lists become empty, messages need a user/assistant role and content, folders a path (unknown access is read).
     public static CodeConversation? LoadConversation(string folder, string? dataRoot = null)
     {
-        try { return JsonSerializer.Deserialize<CodeConversation>(File.ReadAllText(ConversationPath(folder, dataRoot)), ConversationJson); }
+        CodeConversation? c;
+        try { c = JsonSerializer.Deserialize<CodeConversation>(File.ReadAllText(ConversationPath(folder, dataRoot)), ConversationJson); }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or NotSupportedException) { return null; }
+        if (c is null)
+            return null;
+        c.Folder ??= "";
+        c.Worker ??= "implementer";
+        c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
+        c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
+        return c;
     }
 
     public static void SaveConversation(CodeConversation conversation, string? dataRoot = null)
@@ -963,6 +984,26 @@ internal static class LauncherLogic
             File.WriteAllText(convPath, "{not json");
             if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
                 throw new InvalidOperationException("A corrupt conversation file must be ignored.");
+            if (ConversationPath(@"Y:\Programs\My_App\", dataArea) != convPath || ConversationPath(@"Y:\Programs\My_App\.", dataArea) != convPath)
+                throw new InvalidOperationException("A trailing separator must not change the conversation file.");
+            File.WriteAllText(convPath, """{"messages":null,"folders":null}""");
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
+                throw new InvalidOperationException("Null conversation lists must load as empty.");
+            File.WriteAllText(convPath, """{"messages":[null]}""");
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
+                throw new InvalidOperationException("A null message must be dropped.");
+            File.WriteAllText(convPath, """
+                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
+                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}]}
+                """);
+            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { } cleaned || !cleaned.Messages.SequenceEqual([new ChatMessage("user", "ok")]) ||
+                !cleaned.Folders.SequenceEqual([new CodeFolder(@"Y:\lib", "read"), new CodeFolder(@"Y:\w", "write")]))
+                throw new InvalidOperationException("Invalid conversation entries must be dropped.");
+            var wf = @"Y:\Programs\Agent Setup";
+            if (!OverlapsWorkflowRoot(wf, wf) || !OverlapsWorkflowRoot(@"y:\programs\agent setup\", wf) || !OverlapsWorkflowRoot(@"Y:\Programs/Agent Setup/templates", wf) ||
+                !OverlapsWorkflowRoot(@"Y:\Programs", wf) || !OverlapsWorkflowRoot(@"Y:\", wf) || OverlapsWorkflowRoot(@"Y:\Programs\Agent Setup2", wf) ||
+                OverlapsWorkflowRoot(@"Y:\Programs\My_App", wf) || OverlapsWorkflowRoot(@"Y:\Programs\My_App", null))
+                throw new InvalidOperationException("Workflow root overlap failed.");
         }
         finally
         {

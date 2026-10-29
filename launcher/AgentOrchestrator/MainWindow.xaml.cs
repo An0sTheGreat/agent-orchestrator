@@ -131,7 +131,6 @@ public partial class MainWindow : Window
         }
         if (LauncherLogic.IsProjectComplete(project) && !RestartProject(project))
             return;
-        ShowCodeRun(true); // the Code view follows the run
         if (!PrepareRun())
             return;
         try
@@ -149,6 +148,7 @@ public partial class MainWindow : Window
             Log($"Starting workflow for {project}");
             SetRunning(true);
             _process.Start();
+            ShowCodeRun(true); // the Code view follows a run that actually started
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
             if (unsloth)
@@ -1564,6 +1564,32 @@ public partial class MainWindow : Window
                 NewCodeConversation();
                 if (_code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
                     return Fail();
+                // A folder reached without NewCodeConversation (startup, sidebar Browse) shows its saved conversation and
+                // leaves the file alone; resumed extra folders that are gone, the project, or repeated are dropped.
+                LauncherLogic.SaveConversation(new LauncherLogic.CodeConversation
+                {
+                    Folder = codeProject, Messages = [new("user", "Hi"), new("assistant", "Hello")],
+                    Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")],
+                });
+                var savedText = File.ReadAllText(LauncherLogic.ConversationPath(codeProject));
+                ProjectPath = codeExtra;
+                if (_code.History.Count != 0 || CodeExtraFolders.Count != 0)
+                    return Fail();
+                ProjectPath = codeProject + "\\";
+                if (_code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") ||
+                    File.ReadAllText(LauncherLogic.ConversationPath(codeProject)) != savedText)
+                    return Fail();
+                // The Agent Orchestrator folder: only Read only as an extra folder, and never a Code project (no process starts).
+                (pick, answer) = (_workflowRoot!, "write");
+                AddFolder();
+                if (CodeExtraFolders.Count != 1)
+                    return Fail();
+                ProjectPath = _workflowRoot!;
+                CodeInput.Text = "Edit the templates";
+                var refused = SendCode();
+                if (!refused.IsCompleted || refused.Result || _chatBusy || _chatProcess is not null || CodeInput.Text.Length == 0 || StatusText.Text != "Choose a project folder")
+                    return Fail();
+                CodeInput.Clear();
             }
             finally
             {

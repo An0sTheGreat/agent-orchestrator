@@ -227,7 +227,7 @@ public partial class MainWindow
     private void Send(Conversation c)
     {
         if (c.IsCode)
-            SendCode();
+            Forget(SendCode());
         else
             SendChat();
     }
@@ -271,9 +271,9 @@ public partial class MainWindow
     {
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
-            _ = RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
+            Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
                 role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text))),
-                LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})");
+                LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
     }
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
@@ -314,6 +314,7 @@ public partial class MainWindow
         var exitCode = -1;
         string? failure = null;
         StartTurn(c, text, multi, role);
+        var turn = ++_turnId;
         if (text is not null)
             c.Input.Clear();
         try
@@ -352,15 +353,30 @@ public partial class MainWindow
         {
             _poll.Stop();
             _pump.Stop();
-            DrainLines();
             _chatProcess?.Dispose();
             _chatProcess = null;
             CleanupChatTemp();
         }
-        if (FinishChatTurn(exitCode, _chatStopRequested, failure))
-            Toast(c.IsCode ? "Code stopped" : "Chat stopped", "#F7C873");
-        return _turnCompleted;
+        try
+        {
+            DrainLines();
+            if (FinishChatTurn(exitCode, _chatStopRequested, failure))
+                Toast(c.IsCode ? "Code stopped" : "Chat stopped", "#F7C873");
+            return _turnCompleted;
+        }
+        finally
+        {
+            // An exception after the process ended must not leave the app busy (unless a newer turn already started).
+            if (_chatBusy && _turnId == turn)
+                SetChatBusy(false);
+            RefreshCodeFolder(); // a folder change during the turn takes effect now that its history is saved
+        }
     }
+
+    private int _turnId; // RunTurn's count: tells a turn's own cleanup from one a follow-up turn (StartCodeProject) started
+
+    // Runs a turn without awaiting it; a fault reaches the dispatcher (and fails --ui-smoke) instead of vanishing in the Task.
+    private static async void Forget(Task task) => await task;
 
     // Deletes the turn's request file and the temp folder (never a real project). Idempotent: the app closing mid-reply
     // and the turn's own cleanup may both run it.
