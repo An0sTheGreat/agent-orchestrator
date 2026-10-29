@@ -34,7 +34,7 @@ public partial class MainWindow
         public required StackPanel Panel;
         public required ScrollViewer Scroll;
         public required FrameworkElement Empty;
-        public required Button Jump, Send, Plus, Chip;
+        public required Button Jump, Send, Stop, Plus, Chip;
         public required TextBox Input;
         public required TextBlock Hint;
         public readonly List<LauncherLogic.ChatMessage> History = new();
@@ -64,9 +64,9 @@ public partial class MainWindow
 
     private void InitChat()
     {
-        _chat = _turn = new Conversation { IsCode = false, Panel = ChatPanel, Scroll = ChatScroll, Empty = ChatEmpty, Jump = ChatJumpPill, Send = ChatSend,
+        _chat = _turn = new Conversation { IsCode = false, Panel = ChatPanel, Scroll = ChatScroll, Empty = ChatEmpty, Jump = ChatJumpPill, Send = ChatSend, Stop = ChatStop,
             Plus = ChatPlus, Chip = ChatTargetChip, Input = ChatInput, Hint = ChatHint };
-        _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend,
+        _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
             Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint };
         if (_settings.ChatMode != "multi")
             _settings.ChatMode = "single";
@@ -99,8 +99,8 @@ public partial class MainWindow
         CodeTargetChip.Content = $"To: {ChatName(code, code?.Role ?? "")}  ▾";
     }
 
-    // Send / Stop, the lock while a reply streams, and why sending is unavailable. A turn of either kind locks both;
-    // only the running conversation's button offers Stop.
+    // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
+    // and why sending is unavailable. A turn of either kind locks both.
     private void RefreshChatInput()
     {
         if (_chat is null)
@@ -110,14 +110,15 @@ public partial class MainWindow
         {
             var mine = _chatBusy && _turn == c;
             c.Input.IsEnabled = c.Plus.IsEnabled = c.Chip.IsEnabled = !_chatBusy;
-            c.Send.Content = mine ? "Stop" : "Send";
-            c.Send.IsEnabled = mine || (!_chatBusy && !runActive && !_unloading && _workflowRoot is not null && c.Input.Text.Trim().Length > 0);
+            c.Stop.Visibility = _chatBusy || runActive ? Visibility.Visible : Visibility.Collapsed;
+            c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && c.Input.Text.Trim().Length > 0;
             c.Hint.Text = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" : _chatBusy ? $"{(c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
                 : _unloading ? "Unloading models…" : "Enter to send  ·  Shift+Enter for a new line";
         }
         ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
-        CodeNewButton.IsEnabled = CodeStartButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
+        CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
+        CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null;
         CodeProjectButton.IsEnabled = !_chatBusy && !runActive && SelectedProjectPath().Length > 0;
     }
 
@@ -237,7 +238,14 @@ public partial class MainWindow
     {
         if (!_chatBusy)
             Send(ConvOf(sender));
-        else if (_chatProcess is { } p)
+    }
+
+    // The stop icon (and Ctrl+Shift+X): stops the project run, else the reply.
+    private void StopWork_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is not null)
+            Stop_Click(sender, e);
+        else if (_chatBusy && _chatProcess is { } p)
         {
             try
             {
@@ -569,7 +577,6 @@ public partial class MainWindow
     private void SetChatBusy(bool busy)
     {
         _chatBusy = busy;
-        StartButton.IsEnabled = !busy && _workflowRoot is not null;
         AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
         foreach (var card in _cards)
             card.Editable = !busy;

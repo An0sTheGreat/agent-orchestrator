@@ -27,11 +27,11 @@ Double-click `dist\Agent Orchestrator.exe` for the graphical launcher. Enter the
 
 The window follows the Image Parser design language: selectable themes with per-theme accent colours, a left navigation panel, and a two-column workspace with a draggable divider.
 
-- **Start Task / Resume Project — <task>** is the primary button. It reads *Start Task* for a project with no tasks yet, and otherwise names the active task (from `TASK.md`) or the last one that passed.
+- The Code header's start button reads **Start project** until the folder has the workflow files, then *Start Task* for a project with no tasks yet, and otherwise **Resume Project — <task>**, naming the active task (from `TASK.md`) or the last one that passed (Ctrl+Enter from Run output).
 - **Model output** (left column) shows each agent's thinking, tool calls with results, and responses in execution order. Thinking and tool sections are collapsible.
 - **Execution log** is a collapsible panel anchored to the bottom of the left column. It is collapsed by default, scrolls on its own, and **Copy full log** copies the complete log.
 - **Model details** (right column) has one card per role with the model name, weights, quantization, live tokens/sec, and total tokens for the current turn. Speed and token counts come from Unsloth's own `/api/inference/monitor` data.
-- **Stop** and closing the window terminate the run and unload the models from Unsloth.
+- While a reply or a run is using the models, a stop icon appears to the left of **Send** (Ctrl+Shift+X). It stops the run, or the reply; stopping a run or closing the window also unloads the models from Unsloth.
 
 The launcher starts the engine with `--events`, which makes `orchestrator.py` print structured `@@AO {json}` lines alongside its normal log output. Plain command-line runs do not emit them.
 

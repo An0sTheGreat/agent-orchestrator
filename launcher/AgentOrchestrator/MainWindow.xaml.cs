@@ -86,7 +86,7 @@ public partial class MainWindow : Window
         if (_workflowRoot is null)
         {
             SetStatus("Workflow files not found", "#FF667A");
-            StartButton.IsEnabled = false;
+            CodeStartButton.IsEnabled = false;
             Log("Place this EXE in the Agent Setup folder or its dist subfolder.");
         }
         else
@@ -280,8 +280,6 @@ public partial class MainWindow : Window
 
     private void SetRunning(bool running, bool preserveStatus = false)
     {
-        StartButton.IsEnabled = !running && _workflowRoot is not null;
-        StopButton.IsEnabled = running;
         ApiKeyBox.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
         PresetsButton.IsEnabled = !running;
@@ -326,14 +324,15 @@ public partial class MainWindow : Window
         EmblemScale.BeginAnimation(ScaleTransform.ScaleYProperty, Breath(0.92, 1.06));
     }
 
-    // "Start Task" for a project with no tasks yet, otherwise "Resume Project — <active or last completed task>".
+    // Code's start button: "Start project" until the folder has the workflow files, then "Start Task" for a project with
+    // no tasks yet, otherwise "Resume Project — <active or last completed task>" (or "Restart Project").
     private void RefreshPrimary()
     {
         if (_workflowRoot is null)
             return;
         var project = SelectedProjectPath();
         var ready = project.Length > 0 && Directory.Exists(project) && LauncherLogic.MissingProjectFiles(project).Length == 0;
-        StartButton.Content = ready ? LauncherLogic.PrimaryLabel(project) : "Start Task";
+        CodeStartButton.Content = ready ? LauncherLogic.PrimaryLabel(project) : "Start project";
         FooterLeft.Text = project;
         FooterRight.Text = ready && LauncherLogic.CurrentTaskId(project) is { } id ? $"TASK {id}" : "NO TASK YET";
     }
@@ -1147,7 +1146,7 @@ public partial class MainWindow : Window
                     if (Directory.Exists(path)) Directory.Delete(path, recursive: true); else File.Delete(path);
                 }
                 ProjectPath = restartProject;
-                if (StartButton.Content as string != "Restart Project")
+                if (CodeStartButton.Content as string != "Restart Project")
                     return Fail();
                 await Settle();
                 Snap("15b-restart-button");
@@ -1175,7 +1174,7 @@ public partial class MainWindow : Window
                     Directory.GetFileSystemEntries(restartProject).Select(Path.GetFileName).Order(StringComparer.OrdinalIgnoreCase).SequenceEqual(
                         LauncherLogic.ProjectFiles.Append(".git").Order(StringComparer.OrdinalIgnoreCase)) is false ||
                     File.ReadAllText(Path.Combine(restartProject, "STATE.md")) != File.ReadAllText(Path.Combine(_workflowRoot!, "STATE.md")) ||
-                    StartButton.Content as string != "Start Task")
+                    CodeStartButton.Content as string != "Start Task")
                     return Fail();
                 // The template folder is refused before anything is asked or recycled.
                 var asked = false;
@@ -1300,7 +1299,7 @@ public partial class MainWindow : Window
             async Task<bool> Turn(string text, bool multi, string[] events, string reply)
             {
                 StartChatTurn(text, multi);
-                if (!_chatBusy || StartButton.IsEnabled)
+                if (!_chatBusy || CodeStartButton.IsEnabled)
                     return false;
                 foreach (var line in events)
                     _lines.Enqueue(line);
@@ -1309,7 +1308,7 @@ public partial class MainWindow : Window
                 var current = _reply!;
                 await Settle();
                 FinishChatTurn(0, false, null);
-                return current.Answer?.Text == reply && current.Final == reply && !_chatBusy && StartButton.IsEnabled == (_workflowRoot is not null);
+                return current.Answer?.Text == reply && current.Final == reply && !_chatBusy && CodeStartButton.IsEnabled == (_workflowRoot is not null);
             }
 
             var reviewer = CardFor("reviewer")!;
@@ -1510,7 +1509,7 @@ public partial class MainWindow : Window
                 return Fail();
             var chatCount = ChatPanel.Children.Count;
             StartTurn(_code, "Fix it", false, "implementer");
-            if (!_chatBusy || ChatSend.IsEnabled || (string)CodeSend.Content != "Stop")
+            if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible)
                 return Fail();
             _lines.Enqueue(Delta("implementer", "text", "Looking"));
             _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
@@ -2406,11 +2405,11 @@ public partial class MainWindow : Window
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
         {
-            case Key.Enter when !shift && StartButton.IsEnabled && !ChatView.IsVisible && !CodeChat.IsVisible:
-                Start_Click(StartButton, e);
+            case Key.Enter when !shift && CodeStartButton.IsEnabled && !ChatView.IsVisible && !CodeChat.IsVisible:
+                StartCodeProject();
                 break;
-            case Key.X when shift && StopButton.IsEnabled && Keyboard.FocusedElement is not (TextBox or PasswordBox):
-                Stop_Click(StopButton, e);
+            case Key.X when shift && (_process is not null || _chatBusy) && Keyboard.FocusedElement is not (TextBox or PasswordBox):
+                StopWork_Click(CodeStop, e);
                 break;
             case Key.L when !shift:
                 LogToggle.IsChecked = LogToggle.IsChecked != true;
@@ -2440,6 +2439,7 @@ public partial class MainWindow : Window
     private void SetStatus(string text, string color)
     {
         StatusText.Text = text;
+        StatusPill.Visibility = text == "Ready" ? Visibility.Collapsed : Visibility.Visible;
         StatusDot.Fill = (Brush)new BrushConverter().ConvertFromString(color)!;
     }
 
