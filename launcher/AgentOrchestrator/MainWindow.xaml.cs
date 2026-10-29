@@ -425,7 +425,8 @@ public partial class MainWindow : Window
             case "loading":
                 EndStream(false);
                 Activate(role, "Loading model");
-                _loadedByRun.Add(LoadedOn(ev));
+                if (LoadedOn(ev) is { } loaded)
+                    _loadedByRun.Add(loaded);
                 Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
@@ -1332,7 +1333,7 @@ public partial class MainWindow : Window
             if (!await Turn("Hello", false, new[]
             {
                 Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""),
-                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf"}"""),
+                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf","url":"http://127.0.0.1:9"}"""),
                 Ev("""{"e":"model","role":"reviewer","id":"chat-model Q4_K_M"}"""),
                 Delta("reviewer", "thinking", "hmm"),
                 Delta("reviewer", "text", "streamed answer"),
@@ -1352,7 +1353,7 @@ public partial class MainWindow : Window
             foreach (var (role, stage, title) in new[] { ("planner", "plan", "Plan"), ("implementer", "draft", "Draft"), ("reviewer", "review", "Review") })
             {
                 stages.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
-                stages.Add(Ev($$"""{"e":"loading","role":"{{role}}","path":"smoke/{{role}}.gguf"}"""));
+                stages.Add(Ev($$"""{"e":"loading","role":"{{role}}","path":"smoke/{{role}}.gguf","url":"http://127.0.0.1:9"}"""));
                 stages.Add(Ev($$"""{"e":"model","role":"{{role}}","id":"{{role}}-model"}"""));
                 stages.Add(Delta(role, "text", $"{title} body"));
                 stages.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
@@ -1453,13 +1454,13 @@ public partial class MainWindow : Window
             _loadedByRun.Clear();
             _chatBusy = true;
             _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/a.gguf","url":"{{UrlOf(fakeA)}}"}""")); // chat, server A
-            _lines.Enqueue(Ev("""{"e":"loading","role":"planner","path":"smoke/b.gguf"}""")); // chat, no url: _apiBase (A)
+            _lines.Enqueue(Ev("""{"e":"loading","role":"planner","path":"smoke/b.gguf"}""")); // chat, no url (llama.cpp): never tracked
             DrainLines();
             _chatBusy = false;
             _lines.Enqueue(Ev($$"""{"e":"loading","role":"planner","path":"smoke/c.gguf","url":"{{UrlOf(fakeB)}}"}""")); // run, server B
             // G3: a line still queued when closing begins is drained first, so it is unloaded too.
             _lines.Enqueue(Ev($$"""{"e":"loading","role":"implementer","path":"smoke/d.gguf","url":"{{UrlOf(fakeB)}}"}"""));
-            if (_loadedByChat.Count != 2 || _loadedByRun.Count != 0 || _lines.Count != 2) // c and d are still queued, undrained
+            if (_loadedByChat.Count != 1 || _loadedByRun.Count != 0 || _lines.Count != 2) // c and d are still queued, undrained
                 return Fail();
             var clock = Stopwatch.StartNew();
             OnClosing(this, new CancelEventArgs()); // the real close path (drain, then unload) on the UI thread
@@ -1471,7 +1472,7 @@ public partial class MainWindow : Window
             await servingB;
             bool Only(System.Collections.Concurrent.ConcurrentBag<string> bag, params string[] names) =>
                 bag.Count == names.Length && names.All(n => bag.Count(b => b.Contains($"smoke/{n}.gguf")) == 1);
-            if (!Only(seenA, "a", "b") || !Only(seenB, "c", "d") ||
+            if (!Only(seenA, "a") || !Only(seenB, "c", "d") ||
                 clock.Elapsed > TimeSpan.FromSeconds(2) || _loadedByChat.Count != 0 || _loadedByRun.Count != 0)
             {
                 Console.Error.WriteLine($"ui-smoke: unload on close: server A saw {seenA.Count}, server B saw {seenB.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
@@ -2216,12 +2217,13 @@ public partial class MainWindow : Window
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
     }
 
-    // False when every role is remote or local models run on llama-server: no Unsloth key is needed and its monitor is not polled. Custom workers always
-    // use the local server (they copy the Implementer's local connection), and an unreadable config counts as local.
+    // False when every role is remote or local models run on llama-server: no Unsloth key is needed and its monitor is not polled
+    // (a role with a management_url but no auto_load still talks to Unsloth). Custom workers always use the local server
+    // (they copy the Implementer's local connection), and an unreadable config counts as local.
     private bool UsesUnsloth(string project)
     {
         using var config = ReadConfig(project);
-        return !LocalRuntime && (config is null || CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement));
+        return config is null ? !LocalRuntime : !LocalRuntime && CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement, LocalRuntime);
     }
 
     // The first built-in role's Unsloth server (a remote role has none).
@@ -2272,7 +2274,8 @@ public partial class MainWindow : Window
     }
 
     // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.
-    private (string Url, string Path) LoadedOn(JsonElement ev) => (Str(ev, "url") is { Length: > 0 } u ? u : _apiBase, Str(ev, "path"));
+    // A loading event names the Unsloth server it loaded on; llama.cpp loads carry no url and are never tracked (the launcher stops that server instead).
+    private (string Url, string Path)? LoadedOn(JsonElement ev) => Str(ev, "url") is { Length: > 0 } u ? (u, Str(ev, "path")) : null;
 
     // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
     private async Task UnloadModelsAsync()

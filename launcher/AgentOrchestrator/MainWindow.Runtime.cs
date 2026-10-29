@@ -17,6 +17,8 @@ public partial class MainWindow
 
     private void InitRuntime()
     {
+        try { LauncherLogic.CleanLlamaLeftovers(LauncherLogic.LlamaFolder); } // an install that died half-way
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         _settings.Runtime = LocalRuntime ? LauncherLogic.LlamaRuntime : "unsloth";
         RuntimeLlamaRadio.IsChecked = LocalRuntime;
         RuntimeUnslothRadio.IsChecked = !LocalRuntime;
@@ -38,14 +40,21 @@ public partial class MainWindow
             (LocalRuntime ? RuntimeLlamaRadio : RuntimeUnslothRadio).IsChecked = true; // re-enters here with nothing to change
             return;
         }
+        if (!LocalRuntime)
+            UnloadChat(_loadedByChat.ToList()); // leaving Unsloth: free the models chat loaded there (_apiBase / _runKey still point at it)
         StopLocalServer();
         _settings.Runtime = runtime;
         _settings.Save();
     }
 
-    // False, with a toast, when the local runtime is chosen but llama-server has not been downloaded.
+    // False, with a toast, when the local runtime is chosen but llama-server has not been downloaded, or is being updated.
     private bool RuntimeReady()
     {
+        if (LocalRuntime && _llamaDownload is not null)
+        {
+            Toast("llama-server is being updated", "#F7C873");
+            return false;
+        }
         if (!LocalRuntime || File.Exists(LauncherLogic.LlamaServerPath))
             return true;
         Toast("Download llama-server in Options first", "#F7C873");
@@ -99,7 +108,8 @@ public partial class MainWindow
             using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
             LlamaStatus.Text = "Looking up the latest llama.cpp release…";
-            var assets = await LauncherLogic.FetchLlamaAssetsAsync(url => http.GetStringAsync(url, cancel.Token), LauncherLogic.HasNvidiaGpu());
+            var nvidia = await Task.Run(() => LauncherLogic.HasNvidiaGpu() ? LauncherLogic.ReadNvidiaSmi() ?? "" : null); // "" = a GPU whose driver version is unreadable
+            var assets = await LauncherLogic.FetchLlamaAssetsAsync(url => http.GetStringAsync(url, cancel.Token), nvidia is not null, nvidia);
             foreach (var url in assets.Urls)
             {
                 var zip = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-llama-{Guid.NewGuid():N}.zip");

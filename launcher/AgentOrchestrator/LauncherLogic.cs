@@ -254,21 +254,24 @@ internal static class LauncherLogic
 
     public sealed record LlamaAssets(string Tag, string Flavour, List<string> Urls);
 
-    // The latest release's Windows x64 build for this machine: with an NVIDIA GPU the highest CUDA version that has its
-    // cudart runtime zip, else Vulkan, else CPU. get fetches a URL's text (the GitHub API; tests pass sample JSON).
-    public static async Task<LlamaAssets> FetchLlamaAssetsAsync(Func<string, Task<string>> get, bool nvidia) =>
-        PickLlamaAssets(await get(LlamaReleaseUrl), nvidia);
+    // The latest release's Windows x64 build for this machine: with an NVIDIA GPU the highest CUDA version the driver
+    // supports (from nvidia-smi's "CUDA Version: X.Y"; unreadable: 12.x before 13.x) that has its cudart runtime zip, else
+    // Vulkan, else CPU. get fetches a URL's text (the GitHub API; tests pass sample JSON).
+    public static async Task<LlamaAssets> FetchLlamaAssetsAsync(Func<string, Task<string>> get, bool nvidia, string? nvidiaSmi = null) =>
+        PickLlamaAssets(await get(LlamaReleaseUrl), nvidia, nvidiaSmi);
 
-    public static LlamaAssets PickLlamaAssets(string releaseJson, bool nvidia)
+    public static LlamaAssets PickLlamaAssets(string releaseJson, bool nvidia, string? nvidiaSmi = null)
     {
         using var doc = JsonDocument.Parse(releaseJson);
         var tag = doc.RootElement.GetProperty("tag_name").GetString() ?? "";
         var assets = doc.RootElement.GetProperty("assets").EnumerateArray().ToDictionary(
             a => a.GetProperty("name").GetString() ?? "", a => a.GetProperty("browser_download_url").GetString() ?? "", StringComparer.OrdinalIgnoreCase);
         static string Cudart(string version) => $"cudart-llama-bin-win-cuda-{version}-x64.zip";
+        var driver = Regex.Match(nvidiaSmi ?? "", @"CUDA Version:\s*(\d+\.\d+)") is { Success: true } d ? Version.Parse(d.Groups[1].Value) : null;
         if (nvidia && assets.Keys.Select(n => Regex.Match(n, $@"^llama-{Regex.Escape(tag)}-bin-win-cuda-(\d+(?:\.\d+)+)-x64\.zip$", RegexOptions.IgnoreCase))
-                .Where(m => m.Success && assets.ContainsKey(Cudart(m.Groups[1].Value)))
-                .MaxBy(m => Version.Parse(m.Groups[1].Value)) is { } cuda)
+                .Where(m => m.Success && assets.ContainsKey(Cudart(m.Groups[1].Value)) && (driver is null || Version.Parse(m.Groups[1].Value) <= driver))
+                .OrderByDescending(m => driver is null && Version.Parse(m.Groups[1].Value).Major == 12).ThenByDescending(m => Version.Parse(m.Groups[1].Value))
+                .FirstOrDefault() is { } cuda)
             return new(tag, $"CUDA {cuda.Groups[1].Value}", [assets[cuda.Value], assets[Cudart(cuda.Groups[1].Value)]]);
         foreach (var (kind, flavour) in new[] { ("vulkan", "Vulkan"), ("cpu", "CPU") })
             if (assets.TryGetValue($"llama-{tag}-bin-win-{kind}-x64.zip", out var url))
@@ -281,11 +284,52 @@ internal static class LauncherLogic
         (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator).Prepend(Environment.SystemDirectory)
             .Any(d => d.Trim().Length > 0 && File.Exists(Path.Combine(d.Trim().Trim('"'), "nvidia-smi.exe")));
 
+    // nvidia-smi's text (it names the highest CUDA version the driver supports), or null when it cannot be run.
+    public static string? ReadNvidiaSmi()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("nvidia-smi") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
+            var output = process?.StandardOutput.ReadToEndAsync();
+            return process is not null && process.WaitForExit(5000) ? output!.GetAwaiter().GetResult() : null;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
+    }
+
+    // Removes the folders an interrupted install left beside target. If target itself is missing (the swap died between the
+    // two moves) the newest "old" folder is the install: it moves back instead of being deleted.
+    public static void CleanLlamaLeftovers(string target)
+    {
+        var parent = Path.GetDirectoryName(Path.GetFullPath(target));
+        if (parent is null || !Directory.Exists(parent))
+            return;
+        var name = Path.GetFileName(target);
+        void Delete(string dir)
+        {
+            try { Directory.Delete(dir, recursive: true); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        }
+        foreach (var dir in Directory.GetDirectories(parent, $"{name}.new-*"))
+            Delete(dir);
+        var olds = Directory.GetDirectories(parent, $"{name}.old-*").OrderByDescending(Directory.GetLastWriteTimeUtc).ToList();
+        if (!Directory.Exists(target) && olds.Count > 0)
+        {
+            try { Directory.Move(olds[0], target); olds.RemoveAt(0); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return; } // keep them all
+        }
+        foreach (var dir in olds)
+            Delete(dir);
+    }
+
     // Unpacks the zips into a fresh folder beside target, every file flattened to its root (a build that nests
     // llama-server.exe still works), checks llama-server.exe is there and writes version.txt, then swaps it in: the old
     // folder is moved aside and deleted only once the new one is in place, and moved back if that fails.
-    public static void InstallLlamaServer(IEnumerable<string> zips, string target, string version)
+    // Entry names are cut to their last segment ("..\x.dll" is x.dll) and must still land inside the new folder.
+    // moveDirectory is a test seam for a swap that fails.
+    public static void InstallLlamaServer(IEnumerable<string> zips, string target, string version, Action<string, string>? moveDirectory = null)
     {
+        moveDirectory ??= Directory.Move;
+        CleanLlamaLeftovers(target);
         var fresh = $"{target}.new-{Guid.NewGuid():N}";
         var old = $"{target}.old-{Guid.NewGuid():N}";
         var installed = false;
@@ -294,18 +338,23 @@ internal static class LauncherLogic
             Directory.CreateDirectory(fresh);
             foreach (var zip in zips)
                 using (var archive = System.IO.Compression.ZipFile.OpenRead(zip))
-                    foreach (var entry in archive.Entries.Where(e => e.Name.Length > 0))
-                        System.IO.Compression.ZipFileExtensions.ExtractToFile(entry,Path.Combine(fresh, entry.Name), overwrite: true);
+                    foreach (var entry in archive.Entries)
+                    {
+                        var name = entry.FullName[(entry.FullName.LastIndexOfAny(['/', '\\']) + 1)..];
+                        var destination = Path.GetFullPath(Path.Combine(fresh, name));
+                        if (name.Length > 0 && destination.StartsWith(Path.GetFullPath(fresh) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                            System.IO.Compression.ZipFileExtensions.ExtractToFile(entry, destination, overwrite: true);
+                    }
             if (!File.Exists(Path.Combine(fresh, "llama-server.exe")))
                 throw new InvalidOperationException("The download has no llama-server.exe.");
             File.WriteAllText(Path.Combine(fresh, "version.txt"), version);
             if (Directory.Exists(target))
-                Directory.Move(target, old);
-            try { Directory.Move(fresh, target); }
+                moveDirectory(target, old);
+            try { moveDirectory(fresh, target); }
             catch
             {
                 if (Directory.Exists(old) && !Directory.Exists(target))
-                    Directory.Move(old, target);
+                    moveDirectory(old, target);
                 throw;
             }
             installed = true;
@@ -356,7 +405,7 @@ internal static class LauncherLogic
         if (RecordedLlamaServer(stateFile) is { } server)
             using (server)
             {
-                try { server.Kill(entireProcessTree: true); stopped = true; }
+                try { server.Kill(entireProcessTree: true); server.WaitForExit(10000); stopped = true; } // its files stay locked until it exits
                 catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
             }
         try { File.Delete(stateFile); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
@@ -659,10 +708,12 @@ internal static class LauncherLogic
     public static bool IsRemote(JsonNode? role) => role?["management_url"] is null && role?["model"] is JsonValue;
 
     // Whether a run talks to the local Unsloth server (needs its key, can poll its monitor): some role or custom
-    // worker in the config has a management_url.
-    public static bool UsesUnsloth(JsonElement config)
+    // worker in the config has a management_url. With llama.cpp as the local runtime a role that also has auto_load is served
+    // by llama-server; one without auto_load expects a model already loaded in Unsloth, so it still counts.
+    public static bool UsesUnsloth(JsonElement config, bool llamaRuntime = false)
     {
-        static bool Has(JsonElement e) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("management_url", out _);
+        bool Has(JsonElement e) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("management_url", out _) &&
+                                   !(llamaRuntime && e.TryGetProperty("auto_load", out _));
         return config.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Object && roles.EnumerateObject().Any(r => Has(r.Value)) ||
                config.TryGetProperty("custom_workers", out var workers) && workers.ValueKind == JsonValueKind.Array && workers.EnumerateArray().Any(Has);
     }
@@ -1064,14 +1115,21 @@ internal static class LauncherLogic
             "llama-b6100-bin-win-vulkan-x64.zip", "llama-b6100-bin-win-cpu-x64.zip",
         ];
         string? asked = null;
-        var cuda = FetchLlamaAssetsAsync(url => { asked = url; return Task.FromResult(Release(all)); }, nvidia: true).GetAwaiter().GetResult();
+        static string Smi(string version) => $"| NVIDIA-SMI 570.00   Driver Version: 570.00   CUDA Version: {version} |";
+        var cuda = FetchLlamaAssetsAsync(url => { asked = url; return Task.FromResult(Release(all)); }, nvidia: true, Smi("13.1")).GetAwaiter().GetResult();
         if (asked != LlamaReleaseUrl || cuda.Tag != "b6100" || cuda.Flavour != "CUDA 13.1" ||
             !cuda.Urls.SequenceEqual(["https://dl/llama-b6100-bin-win-cuda-13.1-x64.zip", "https://dl/cudart-llama-bin-win-cuda-13.1-x64.zip"]))
             throw new InvalidOperationException($"CUDA asset picking failed: {cuda.Flavour} {string.Join(", ", cuda.Urls)}");
-        var noCudart = PickLlamaAssets(Release(all.Where(n => n != "cudart-llama-bin-win-cuda-13.1-x64.zip").ToArray()), nvidia: true);
+        var noCudart = PickLlamaAssets(Release(all.Where(n => n != "cudart-llama-bin-win-cuda-13.1-x64.zip").ToArray()), nvidia: true, Smi("13.1"));
         var vulkan = PickLlamaAssets(Release(all), nvidia: false);
         var cpu = PickLlamaAssets(Release(all.Where(n => !n.Contains("vulkan")).ToArray()), nvidia: false);
-        var nvidiaNoCuda = PickLlamaAssets(Release(all.Where(n => !n.Contains("cuda")).ToArray()), nvidia: true);
+        var nvidiaNoCuda = PickLlamaAssets(Release(all.Where(n => !n.Contains("cuda")).ToArray()), nvidia: true, Smi("13.1"));
+        // The driver's CUDA version caps the build; with no readable version 12.x is preferred over 13.x.
+        string[] withThirteenZero = [.. all, "llama-b6100-bin-win-cuda-13.0-x64.zip", "cudart-llama-bin-win-cuda-13.0-x64.zip"];
+        string Flavour(string[] names, string? smi) => PickLlamaAssets(Release(names), nvidia: true, smi).Flavour;
+        if (Flavour(all, Smi("12.8")) != "CUDA 12.4" || Flavour(withThirteenZero, Smi("13.0")) != "CUDA 13.0" || Flavour(all, Smi("13.2")) != "CUDA 13.1" ||
+            Flavour(all, null) != "CUDA 12.4" || Flavour(all, "no driver here") != "CUDA 12.4" || Flavour(all, Smi("11.8")) != "Vulkan")
+            throw new InvalidOperationException("CUDA picking must follow the driver's CUDA version.");
         if (noCudart.Flavour != "CUDA 12.4" || vulkan.Flavour != "Vulkan" || vulkan.Urls is not ["https://dl/llama-b6100-bin-win-vulkan-x64.zip"] ||
             cpu.Flavour != "CPU" || cpu.Urls is not ["https://dl/llama-b6100-bin-win-cpu-x64.zip"] || nvidiaNoCuda.Flavour != "Vulkan")
             throw new InvalidOperationException("Vulkan / CPU asset fallback failed.");
@@ -1137,6 +1195,44 @@ internal static class LauncherLogic
             catch (InvalidOperationException e) when (e.Message.Contains("no llama-server.exe")) { }
             if (File.ReadAllText(Path.Combine(target, "version.txt")) != "b6100\nCUDA 12.4" || Directory.GetDirectories(area).Length != 1)
                 throw new InvalidOperationException("A failed install must leave the old one in place.");
+
+            // Zip entries cannot climb out of the install folder or name an absolute path: only the file name counts.
+            var hostile = Path.Combine(area, "hostile");
+            InstallLlamaServer([Zip("evil.zip", "llama-server.exe", @"..\evil.dll", @"C:\x\y.dll", "../up.dll", "dir/", "x/..")], hostile, "b6100\nCPU");
+            if (!File.Exists(Path.Combine(hostile, "evil.dll")) || !File.Exists(Path.Combine(hostile, "y.dll")) || !File.Exists(Path.Combine(hostile, "up.dll")) ||
+                File.Exists(Path.Combine(area, "evil.dll")) || File.Exists(Path.Combine(area, "up.dll")) || Directory.GetFiles(hostile).Length != 5)
+                throw new InvalidOperationException("A zip entry with a path must extract into the install folder by file name only.");
+
+            // Leftovers of an interrupted install: .new-* is deleted; .old-* is deleted too, unless the install folder is
+            // missing, when the newest one is restored.
+            var parts = Path.Combine(area, "parts");
+            foreach (var (suffix, age) in new[] { (".new-a", 0), (".old-b", 2), (".old-c", 1) })
+            {
+                Directory.CreateDirectory(parts + suffix);
+                File.WriteAllText(Path.Combine(parts + suffix, "id.txt"), suffix);
+                Directory.SetLastWriteTimeUtc(parts + suffix, DateTime.UtcNow.AddHours(-age));
+            }
+            CleanLlamaLeftovers(parts);
+            int Leftovers() => Directory.GetDirectories(area, "parts.*-*").Length;
+            if (File.ReadAllText(Path.Combine(parts, "id.txt")) != ".old-c" || Leftovers() != 0)
+                throw new InvalidOperationException("A missing install folder must be restored from the newest .old-* leftover.");
+            Directory.CreateDirectory(parts + ".old-d");
+            Directory.CreateDirectory(parts + ".new-e");
+            CleanLlamaLeftovers(parts);
+            if (File.ReadAllText(Path.Combine(parts, "id.txt")) != ".old-c" || Leftovers() != 0)
+                throw new InvalidOperationException("Leftovers beside an install folder must be deleted.");
+
+            // A swap that fails puts the old install back and removes the new one.
+            var before = Directory.GetDirectories(area).Order().ToArray();
+            try
+            {
+                InstallLlamaServer([Zip("d.zip", "llama-server.exe")], target, "b6300\nCPU",
+                    (from, to) => { if (from.Contains(".new-")) throw new IOException("locked"); Directory.Move(from, to); });
+                throw new InvalidOperationException("A failed swap must fail the install.");
+            }
+            catch (IOException e) when (e.Message == "locked") { }
+            if (File.ReadAllText(Path.Combine(target, "version.txt")) != "b6100\nCUDA 12.4" || !Directory.GetDirectories(area).Order().SequenceEqual(before))
+                throw new InvalidOperationException("A failed swap must roll back to the old install and leave no stray folders.");
         }
         finally { Directory.Delete(area, recursive: true); }
     }
@@ -1521,7 +1617,11 @@ internal static class LauncherLogic
                 WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")]) is not [var noLocal] || !noLocal.Contains("base_url"))
                 throw new InvalidOperationException($"Custom workers: a Remote implementer without saved settings should use the template's: {Worker().ToJsonString()}");
             // Every role remote and no custom worker: no Unsloth key needed and no monitor to poll.
-            static bool Unsloth(string json) { using var doc = JsonDocument.Parse(json); return UsesUnsloth(doc.RootElement); }
+            static bool Unsloth(string json, bool llama = false) { using var doc = JsonDocument.Parse(json); return UsesUnsloth(doc.RootElement, llama); }
+            if (Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\",\"auto_load\":{\"model_path\":\"m\"}}}}", llama: true) ||
+                !Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\"}}}", llama: true) ||
+                !Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\",\"auto_load\":{}}}}"))
+                throw new InvalidOperationException("UsesUnsloth: a role with management_url but no auto_load still needs Unsloth on llama.cpp.");
             if (Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[]}") || Unsloth("{}") ||
                 !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"},\"reviewer\":{\"management_url\":\"http://h\"}}}") ||
                 !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[{\"management_url\":\"http://h\"}]}"))
