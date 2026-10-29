@@ -811,8 +811,15 @@ public partial class MainWindow : Window
             Cursor = Cursors.IBeam,
         };
         box.SetResourceReference(TextBox.ForegroundProperty, muted ? "Muted" : "TextPrimary");
+        ForwardWheel(box, conv);
+        return box;
+    }
+
+    // Selectable text boxes would swallow the mouse wheel; pass it on to the conversation's (or the output's) scroller.
+    private void ForwardWheel(UIElement element, Conversation? conv)
+    {
         var scroller = conv?.Scroll ?? OutputScroll;
-        box.PreviewMouseWheel += (_, e) =>
+        element.PreviewMouseWheel += (_, e) =>
         {
             e.Handled = true;
             if (e.Delta > 0)
@@ -821,7 +828,6 @@ public partial class MainWindow : Window
             }
             scroller.ScrollToVerticalOffset(scroller.VerticalOffset - e.Delta);
         };
-        return box;
     }
 
     // Follow new output unless the user has scrolled up; scrolling back to the bottom resumes following.
@@ -1764,6 +1770,25 @@ public partial class MainWindow : Window
                 ClearChatConversation();
                 StartChatTurn("Saved chat question", false);
                 SetChatFinal("Saved chat answer");
+                var markdownReply = _reply!;
+                const string sample = "# Peonies\n\nPlant in **full sun** and *well-drained* soil, see [guide](https://example.org/p).\n\n" +
+                    "- Water `weekly`\n  - deeper in summer\n- Mulch\n\n1. Dig\n2. Plant\n\n| Month | Task |\n|---|---|\n| May | Bloom |\n\n> Note\n\n```\ncode **raw**\n```\n\n---\nEnd";
+                SetChatFinal(sample);
+                await Settle();
+                ShowView(false, chat: true);
+                await Settle();
+                Snap("25-markdown-reply");
+                var blocks = markdownReply.Rendered?.Document.Blocks.ToList() ?? [];
+                var lists = blocks.OfType<System.Windows.Documents.List>().ToList();
+                var mdText = markdownReply.Rendered is { } rendered ? Markdown.PlainText(rendered.Document) : "";
+                if (markdownReply.Answer?.Visibility != Visibility.Collapsed || markdownReply.Answer.Text != sample ||
+                    blocks.FirstOrDefault() is not System.Windows.Documents.Paragraph { FontWeight: var headingWeight } || headingWeight != FontWeights.SemiBold || lists.Count != 2 || lists[0].MarkerStyle != TextMarkerStyle.Disc ||
+                    lists[1].MarkerStyle != TextMarkerStyle.Decimal || lists[0].ListItems.First().Blocks.OfType<System.Windows.Documents.List>().Count() != 1 ||
+                    blocks.OfType<System.Windows.Documents.Table>().Single().RowGroups[0].Rows.Count != 2 || blocks.OfType<System.Windows.Documents.Section>().Count() != 1 ||
+                    !mdText.Contains("code **raw**") || mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
+                    blocks.OfType<System.Windows.Documents.Paragraph>().SelectMany(p => p.Inlines).OfType<System.Windows.Documents.Hyperlink>().Single().NavigateUri.AbsoluteUri != "https://example.org/p")
+                    return Fail();
+                SetChatFinal("Saved chat answer"); // the saved conversation below expects the original reply
                 FinishChatTurn(0, false, null);
                 var savedChat = _chatConv;
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2 } || _store.View().Ungrouped[0].Id != savedChat.Id)

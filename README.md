@@ -103,6 +103,8 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 
 `request.json` (UTF-8): `{"mode": "single"|"multi", "worker": "<role id>", "messages": [{"role": "user"|"assistant", "content": "..."}]}`. The last message must be the user's. `worker` (single mode) is `planner`, `implementer`, `reviewer` or a custom worker `id` (Specialists and Extra reviewers). Single mode streams one completion from that worker with `prompts/chat.txt` as the system prompt (plus the custom worker's own role section). Multi mode ignores `worker` and runs the three built-ins in turn: the Planner writes a plan (`prompts/chat_planner.txt`), the Implementer drafts the response from conversation and plan (`chat_implementer.txt`), and the Reviewer returns the final answer from conversation, plan and draft (`chat_reviewer.txt`); an empty Reviewer reply falls back to the draft.
 
+Finished replies in the Chat and Code views show as formatted Markdown (headings, bold and italic, lists, tables, quotes, code and links; links open in the browser, web and mail links only). While a reply streams it shows as plain text; **Copy reply** copies the Markdown source.
+
 ### Search, tools and skills
 
 Under the message box of the Chat and Code views, **Search**, **Tools** and **Skills** switch extras on for the next messages; the choice is shared by both views and saved. They are sent as `"search": true|false, "tools": true|false, "skills": ["<skill folder>", ...]` in the Chat and Code requests, and each enabled stage (every stage in Multi mode) gets them as tools:

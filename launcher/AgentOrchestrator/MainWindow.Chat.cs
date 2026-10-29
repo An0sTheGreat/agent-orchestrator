@@ -57,7 +57,8 @@ public partial class MainWindow
         public bool Multi;
         public string Stage = "answer", StageTitle = "";
         public StreamBlock? Block;
-        public TextBox? Answer;
+        public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
+        public RichTextBox? Rendered; // the final reply as formatted Markdown
         public readonly StringBuilder AnswerText = new();
         public string? Final;
     }
@@ -731,8 +732,28 @@ public partial class MainWindow
         r.Final = text;
         EnsureAnswer(r).Text = text;
         r.AnswerText.Clear().Append(text);
+        ShowMarkdown(r, text);
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
+    }
+
+    // The final reply reads as formatted Markdown (links open in the browser); the plain answer box keeps the raw text, hidden.
+    private void ShowMarkdown(ChatReply r, string text)
+    {
+        var box = EnsureAnswer(r);
+        if (r.Rendered is null)
+        {
+            r.Rendered = new RichTextBox
+            {
+                IsReadOnly = true, IsDocumentEnabled = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+                Padding = new Thickness(0), Margin = box.Margin, FontFamily = FontFamily, Cursor = Cursors.IBeam,
+            };
+            r.Rendered.SetResourceReference(TextBoxBase.SelectionBrushProperty, "AccentLight");
+            ForwardWheel(r.Rendered, _turn);
+            r.Content.Children.Insert(r.Content.Children.IndexOf(box) + 1, r.Rendered);
+        }
+        r.Rendered.Document = Markdown.ToDocument(text, box.FontSize);
+        box.Visibility = Visibility.Collapsed;
     }
 
     private void EndChatBlock()
