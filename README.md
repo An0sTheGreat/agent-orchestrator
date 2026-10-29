@@ -25,7 +25,7 @@ The engine uses only Python's standard library and Unsloth's OpenAI-compatible A
 
 Double-click `dist\Agent Orchestrator.exe` for the graphical launcher. Enter the Unsloth API key under **Options**, then start a chat in the **Code** view (see Code mode below): pick a folder, optionally add a `PROJECT.md` from the **Project** menu, and press **Start project**, which adds the workflow files automatically. **Project > Run one reviewed task, then stop** gives `--once` behavior. The key is passed only to the child process and is not saved.
 
-The window follows the Image Parser design language: selectable themes (Parchment, a light theme, is the default; Flat, Track Gold, Liquid Glass, OLED and Graphite are dark) with per-theme accent colours, a left navigation panel, and a two-column workspace with a draggable divider.
+The window follows the Image Parser design language: selectable themes (Parchment, a light theme, is the default; Dark Parchment, Flat, Track Gold, Liquid Glass, OLED and Graphite are dark) with per-theme accent colours, a left navigation panel, and a two-column workspace with a draggable divider.
 
 - The Code header's start button reads **Start project** until the folder has the workflow files, then *Start Task* for a project with no tasks yet, and otherwise **Resume Project — <task>**, naming the active task (from `TASK.md`) or the last one that passed (Ctrl+Enter from Run output).
 - **Model output** (left column) shows each agent's thinking, tool calls with results, and responses in execution order. Thinking and tool sections are collapsible.

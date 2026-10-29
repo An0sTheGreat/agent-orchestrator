@@ -1227,7 +1227,8 @@
                     <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents (default)" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents (default)" Margin="0,0,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark brown with clay accents" Checked="Theme_Checked" />
                     <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
                     <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
                     <PasswordBox x:Name="ApiKeyBox" Width="460" HorizontalAlignment="Left" Margin="0,14,0,0" />
