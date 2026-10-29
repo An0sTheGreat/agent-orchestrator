@@ -93,7 +93,7 @@ internal static class LauncherLogic
         return info;
     }
 
-    // One saved Code conversation per project folder, under <data>\conversations (AGENT_ORCHESTRATOR_DATA like AppSettings).
+    // The legacy one-conversation-per-folder file (<data>\conversations\<hash>.json); ConversationStore migrates it.
     public sealed class CodeConversation
     {
         public string Folder { get; set; } = "";
@@ -103,14 +103,11 @@ internal static class LauncherLogic
         public DateTime Updated { get; set; }
     }
 
-    private static readonly JsonSerializerOptions ConversationJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
-
+    // The legacy file's name for a folder.
     public static string ConversationPath(string folder, string? dataRoot = null)
     {
         var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(NormalizeFolder(folder).ToLowerInvariant())));
-        dataRoot ??= Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
-        return Path.Combine(dataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
+        return Path.Combine(dataRoot ?? AppSettings.DataRoot, "conversations", hash[..16].ToLowerInvariant() + ".json");
     }
 
     private static string NormalizeFolder(string folder) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder));
@@ -125,30 +122,6 @@ internal static class LauncherLogic
         return a.Equals(b, StringComparison.OrdinalIgnoreCase) || Within(a, b) || Within(b, a);
     }
 
-    // null when there is none or it cannot be read (a corrupt file is ignored, not fatal). Hand-edited entries are cleaned:
-    // null lists become empty, messages need a user/assistant role and content, folders a path (unknown access is read).
-    public static CodeConversation? LoadConversation(string folder, string? dataRoot = null)
-    {
-        CodeConversation? c;
-        try { c = JsonSerializer.Deserialize<CodeConversation>(File.ReadAllText(ConversationPath(folder, dataRoot)), ConversationJson); }
-        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or NotSupportedException) { return null; }
-        if (c is null)
-            return null;
-        c.Folder ??= "";
-        c.Worker ??= "implementer";
-        c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
-        c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
-        return c;
-    }
-
-    public static void SaveConversation(CodeConversation conversation, string? dataRoot = null)
-    {
-        var path = ConversationPath(conversation.Folder, dataRoot);
-        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        conversation.Updated = DateTime.Now;
-        File.WriteAllText(path, JsonSerializer.Serialize(conversation, ConversationJson));
-    }
-
     // True when configPath is the workflow root's config.json: the template new projects are initialized from.
     public static bool IsTemplateConfig(string configPath, string? workflowRoot) =>
         workflowRoot is not null && configPath.Length > 0 && string.Equals(Path.GetFullPath(configPath), Path.GetFullPath(Path.Combine(workflowRoot, "config.json")), StringComparison.OrdinalIgnoreCase);
@@ -157,8 +130,7 @@ internal static class LauncherLogic
     // and role settings work in it with no project; new projects and project-less chats start from it.
     public static string EnsureWorkerConfig(string workflowRoot, string? dataRoot = null)
     {
-        dataRoot ??= Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
+        dataRoot ??= AppSettings.DataRoot;
         var path = Path.Combine(dataRoot, "worker-config.json");
         if (!File.Exists(path))
         {
@@ -983,36 +955,10 @@ internal static class LauncherLogic
         {
             var convPath = ConversationPath(@"Y:\Programs\My_App", dataArea);
             var expectedHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(@"y:\programs\my_app")))[..16].ToLowerInvariant();
-            if (convPath != Path.Combine(dataArea, "conversations", expectedHash + ".json") || ConversationPath(@"y:\programs\my_app", dataArea) != convPath ||
-                LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
+            if (convPath != Path.Combine(dataArea, "conversations", expectedHash + ".json") || ConversationPath(@"y:\programs\my_app", dataArea) != convPath)
                 throw new InvalidOperationException("Conversation path failed.");
-            SaveConversation(new CodeConversation
-            {
-                Folder = @"Y:\Programs\My_App", Worker = "planner", Folders = [new(@"Y:\lib", "read")], Messages = [.. chat.Take(2)],
-            }, dataArea);
-            var loaded = LoadConversation(@"Y:\Programs\My_App", dataArea);
-            var savedJson = JsonNode.Parse(File.ReadAllText(convPath))!;
-            if (loaded is null || loaded.Folder != @"Y:\Programs\My_App" || loaded.Worker != "planner" || loaded.Folders.Single() != new CodeFolder(@"Y:\lib", "read") ||
-                !loaded.Messages.SequenceEqual(chat.Take(2)) || loaded.Updated == default || savedJson["folders"]![0]!["access"] is null || savedJson["messages"]![0]!["role"] is null)
-                throw new InvalidOperationException("Conversation round trip failed.");
-            File.WriteAllText(convPath, "{not json");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not null)
-                throw new InvalidOperationException("A corrupt conversation file must be ignored.");
             if (ConversationPath(@"Y:\Programs\My_App\", dataArea) != convPath || ConversationPath(@"Y:\Programs\My_App\.", dataArea) != convPath)
                 throw new InvalidOperationException("A trailing separator must not change the conversation file.");
-            File.WriteAllText(convPath, """{"messages":null,"folders":null}""");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
-                throw new InvalidOperationException("Null conversation lists must load as empty.");
-            File.WriteAllText(convPath, """{"messages":[null]}""");
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { Messages.Count: 0, Folders.Count: 0 })
-                throw new InvalidOperationException("A null message must be dropped.");
-            File.WriteAllText(convPath, """
-                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
-                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}]}
-                """);
-            if (LoadConversation(@"Y:\Programs\My_App", dataArea) is not { } cleaned || !cleaned.Messages.SequenceEqual([new ChatMessage("user", "ok")]) ||
-                !cleaned.Folders.SequenceEqual([new CodeFolder(@"Y:\lib", "read"), new CodeFolder(@"Y:\w", "write")]))
-                throw new InvalidOperationException("Invalid conversation entries must be dropped.");
             var wf = @"Y:\Programs\Agent Setup";
             if (!OverlapsWorkflowRoot(wf, wf) || !OverlapsWorkflowRoot(@"y:\programs\agent setup\", wf) || !OverlapsWorkflowRoot(@"Y:\Programs/Agent Setup/templates", wf) ||
                 !OverlapsWorkflowRoot(@"Y:\Programs", wf) || !OverlapsWorkflowRoot(@"Y:\", wf) || OverlapsWorkflowRoot(@"Y:\Programs\Agent Setup2", wf) ||

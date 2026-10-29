@@ -72,6 +72,7 @@ public partial class MainWindow : Window
         ApplyTheme();
         _initializing = false;
         InitChat();
+        StoreDo(_store.Load);
         RestoreWindowBounds();
 
         Closing += OnClosing;
@@ -95,7 +96,10 @@ public partial class MainWindow : Window
             TryLoadApiKeyFile();
             PrefillCards();
             RefreshPrimary();
+            if (_store.Get(_settings.LastConversation) is not null)
+                OpenCodeConversation(_settings.LastConversation);
         }
+        RefreshSidebarList();
     }
 
     // ---------------------------------------------------------------- run control
@@ -1536,7 +1540,9 @@ public partial class MainWindow : Window
                 SavePreset("main");
                 NewCodeConversation();
                 DeletePreset(_settings.Presets.Single(p => p.Name == "main"));
-                if (SelectedProjectPath() != codeProject || _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
+                var first = _codeConv;
+                if (first is null || _store.Get(first.Id) != first || _settings.LastConversation != first.Id || SelectedProjectPath() != codeProject ||
+                    _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
                     AddCodeFolderButton.Visibility != Visibility.Visible || !LogBox.Text.Contains("Preset applied: main"))
                     return Fail();
                 void AddFolder() => AddCodeFolderButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -1548,38 +1554,46 @@ public partial class MainWindow : Window
                 if (CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") || CodeFoldersList.Children.Count != 1 ||
                     CodeFoldersEmpty.Visibility == Visibility.Visible)
                     return Fail();
+                if (_store.Get(first.Id) is not { Folders.Count: 1 }) // an extra-folder change is saved
+                    return Fail();
                 _code.History.Add(new LauncherLogic.ChatMessage("user", "Hi"));
                 _code.History.Add(new LauncherLogic.ChatMessage("assistant", "Hello"));
                 SaveCodeConversation();
-                (pick, answer) = (codeProject, "resume");
+                // A second conversation in the same folder; the first stays stored. Left empty, it is deleted on leaving.
                 NewCodeConversation();
+                var second = _codeConv;
+                if (second is null || second.Id == first.Id || _code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
+                    return Fail();
+                // Reopening shows the history, extra folders and folder; nothing is written.
+                var firstPath = Path.Combine(AppSettings.DataRoot, "conversations", first.Id + ".json");
+                var savedText = File.ReadAllText(firstPath);
+                ProjectPath = codeExtra; // another folder closes the open conversation
+                OpenCodeConversation(first.Id);
                 await Settle();
                 Snap("19-code-resumed");
-                if (_code.History.Count != 2 || CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
+                if (_codeConv != first || _store.Get(second.Id) is not null || SelectedProjectPath() != codeProject || _code.History.Count != 2 ||
+                    CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
                     CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
-                    CodeEmpty.Visibility == Visibility.Visible)
+                    CodeEmpty.Visibility == Visibility.Visible || File.ReadAllText(firstPath) != savedText)
+                    return Fail();
+                // Opening is refused while a run is active.
+                _process = new Process();
+                var third = _store.Create(codeProject);
+                OpenCodeConversation(third.Id);
+                _process = null;
+                RefreshChatInput();
+                if (_codeConv != first)
                     return Fail();
                 ((Button)((DockPanel)CodeFoldersList.Children[0]).Children[0]).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || LauncherLogic.LoadConversation(codeProject) is not { Folders.Count: 0, Messages.Count: 2 })
+                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || _store.Get(first.Id) is not { Folders.Count: 0, Messages.Count: 2 })
                     return Fail();
-                answer = "new";
-                NewCodeConversation();
-                if (_code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
-                    return Fail();
-                // A folder reached without NewCodeConversation (startup, sidebar Browse) shows its saved conversation and
-                // leaves the file alone; resumed extra folders that are gone, the project, or repeated are dropped.
-                LauncherLogic.SaveConversation(new LauncherLogic.CodeConversation
-                {
-                    Folder = codeProject, Messages = [new("user", "Hi"), new("assistant", "Hello")],
-                    Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")],
-                });
-                var savedText = File.ReadAllText(LauncherLogic.ConversationPath(codeProject));
-                ProjectPath = codeExtra;
-                if (_code.History.Count != 0 || CodeExtraFolders.Count != 0)
-                    return Fail();
-                ProjectPath = codeProject + "\\";
-                if (_code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") ||
-                    File.ReadAllText(LauncherLogic.ConversationPath(codeProject)) != savedText)
+                // Saved extra folders that are gone, the project, or repeated are dropped when it opens.
+                third.Messages = [new("user", "Hi"), new("assistant", "Hello")];
+                third.Folders = [new(codeExtra, "write"), new(Path.Combine(codeProject, "gone"), "read"), new(codeProject, "write"), new(codeExtra + "\\", "read")];
+                _store.Save(third);
+                OpenCodeConversation(third.Id);
+                if (_codeConv != third || _store.Get(first.Id) is null || _code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 ||
+                    CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write"))
                     return Fail();
                 // Project menu: its items; Use a PROJECT.md… copies a file in, then backs up the one it replaces.
                 string MenuItems() => string.Join("|", BuildProjectMenu().Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)") + (i.IsChecked ? " (on)" : "")));
@@ -1622,7 +1636,7 @@ public partial class MainWindow : Window
                 ProjectPath = codePrevious;
                 try { Directory.Delete(codeProject, true); } catch (IOException) { }
             }
-            ClearConversation(_code);
+            CloseCodeConversation();
             ShowView(false);
             await Settle();
         }

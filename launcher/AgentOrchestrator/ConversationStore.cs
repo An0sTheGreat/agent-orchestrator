@@ -35,7 +35,7 @@ internal sealed class ConversationStore
     {
         public List<Group> Groups { get; set; } = new();
         public List<string> Items { get; set; } = new();
-        public bool ArchivedCollapsed { get; set; }
+        public bool ArchivedCollapsed { get; set; } = true;
     }
 
     public sealed record Entry(string Id, string Title, string Folder, DateTime Updated);
@@ -395,6 +395,19 @@ internal sealed class ConversationStore
             File.WriteAllText(Path.Combine(conversations, c.Id + ".json"), "]]");
             s = Reload();
             Check(s.Get(c.Id) is null && s.View().Ungrouped.Count == 0 && s.Get(b.Id) is not null, "corrupt conversation tolerated");
+            // Hand-edited conversation: null lists load empty, invalid messages and folders are dropped, unknown access is read.
+            var edited = new string('e', 32);
+            File.WriteAllText(Path.Combine(conversations, edited + ".json"), """
+                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
+                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}],"worker":null,"folder":null}
+                """);
+            File.WriteAllText(Path.Combine(conversations, c.Id + ".json"), """{"messages":null,"folders":null}""");
+            s = Reload();
+            Check(s.Get(edited) is { Folder: "", Worker: "implementer" } e && e.Messages.SequenceEqual([new LauncherLogic.ChatMessage("user", "ok")]) &&
+                  e.Folders.SequenceEqual([new LauncherLogic.CodeFolder(@"Y:\lib", "read"), new LauncherLogic.CodeFolder(@"Y:\w", "write")]) &&
+                  s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0 }, "hand-edited conversation cleaned");
+            s.Delete(edited);
+            s.Delete(c.Id);
 
             // Legacy migration: converted once, folder and messages kept, file renamed .migrated.
             var legacyPath = LauncherLogic.ConversationPath(@"C:\Work\Legacy", root);
