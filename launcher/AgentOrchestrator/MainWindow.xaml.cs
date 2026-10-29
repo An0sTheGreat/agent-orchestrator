@@ -1787,6 +1787,51 @@ public partial class MainWindow : Window
                 ClickItem(savedChat.Id, "Delete…");
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is not null)
                     return Fail();
+
+                // Composer extras: a chip in one view switches both views and the saved setting; New skill… makes an enabled
+                // skill that the Skills menu lists and the next request carries; unticking it drops it from the request.
+                void Flip(ToggleButton chip)
+                {
+                    chip.IsChecked = chip.IsChecked != true; // what a click does before its Click handler
+                    ExtraToggle_Click(chip, new RoutedEventArgs());
+                }
+                Flip(CodeSearchToggle);
+                Flip(ChatToolsToggle);
+                if (!_settings.UseSearch || !_settings.UseTools || ChatSearchToggle.IsChecked != true || CodeToolsToggle.IsChecked != true || AppSettings.Load() is not { UseSearch: true, UseTools: true })
+                    return Fail();
+                answer = "Smoke skill";
+                NewSkill();
+                var skillFolder = Path.Combine(AppSettings.SkillsRoot, "Smoke skill");
+                var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("single", "implementer", [new("user", "x")], CurrentExtras()))!;
+                if (!File.Exists(Path.Combine(skillFolder, "SKILL.md")) || _settings.Skills is not ["Smoke skill"] || CodeSkillsButton.IsChecked != true ||
+                    ((TextBlock)((StackPanel)ChatSkillsButton.Content).Children[1]).Text != "Skills · 1  ▾" || !(bool)request["search"]! || !(bool)request["tools"]! ||
+                    (string)request["skills"]![0]! != skillFolder)
+                    return Fail();
+                ShowView(false, chat: true);
+                var skillsMenu = BuildSkillsMenu(ChatSkillsButton);
+                skillsMenu.IsOpen = true;
+                await Settle();
+                Snap("24-skills-menu", skillsMenu);
+                var skillItem = skillsMenu.Items.OfType<MenuItem>().First();
+                skillsMenu.IsOpen = false;
+                if (skillItem is not { Header: "Smoke skill", IsChecked: true, ToolTip: "When to use this skill, in one sentence." })
+                    return Fail();
+                SetSkill("SMOKE skill", true); // a key in another case is the same folder: no duplicate, still sent
+                if (_settings.Skills.Count != 1 || CurrentExtras().Skills.Count != 1)
+                    return Fail();
+                skillItem.IsChecked = false;
+                skillItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                ChatSkillsButton.IsChecked = true; // a click on Skills toggles it; RefreshExtras ties its look to the enabled skills
+                RefreshExtras();
+                if (_settings.Skills.Count != 0 || CurrentExtras().Skills.Count != 0 || ChatSkillsButton.IsChecked != false || NewSkillRefused("Smoke skill") || NewSkillRefused("SMOKE SKILL") ||
+                    NewSkillRefused("a/b") || NewSkillRefused("notes."))
+                    return Fail();
+                bool NewSkillRefused(string name)
+                {
+                    answer = name;
+                    NewSkill();
+                    return _settings.Skills.Count != 0;
+                }
             }
             finally
             {

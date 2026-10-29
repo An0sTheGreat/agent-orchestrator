@@ -99,9 +99,19 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 
 ## Chat mode
 
-`python orchestrator.py --project <folder with config.json> --chat <request.json> --events --non-interactive` answers one chat turn instead of running the workflow. It needs only `config.json` in the project folder (no `PROJECT.md`, `STATE.md`, ...), plans no tasks, writes no workflow files or checkpoints, and never runs the configurator. Workers have no tools in chat.
+`python orchestrator.py --project <folder with config.json> --chat <request.json> --events --non-interactive` answers one chat turn instead of running the workflow. It needs only `config.json` in the project folder (no `PROJECT.md`, `STATE.md`, ...), plans no tasks, writes no workflow files or checkpoints, and never runs the configurator. Workers get tools only as the request's extras switch them on (see Search, tools and skills).
 
 `request.json` (UTF-8): `{"mode": "single"|"multi", "worker": "<role id>", "messages": [{"role": "user"|"assistant", "content": "..."}]}`. The last message must be the user's. `worker` (single mode) is `planner`, `implementer`, `reviewer` or a custom worker `id` (Specialists and Extra reviewers). Single mode streams one completion from that worker with `prompts/chat.txt` as the system prompt (plus the custom worker's own role section). Multi mode ignores `worker` and runs the three built-ins in turn: the Planner writes a plan (`prompts/chat_planner.txt`), the Implementer drafts the response from conversation and plan (`chat_implementer.txt`), and the Reviewer returns the final answer from conversation, plan and draft (`chat_reviewer.txt`); an empty Reviewer reply falls back to the draft.
+
+### Search, tools and skills
+
+Under the message box of the Chat and Code views, **Search**, **Tools** and **Skills** switch extras on for the next messages; the choice is shared by both views and saved. They are sent as `"search": true|false, "tools": true|false, "skills": ["<skill folder>", ...]` in the Chat and Code requests, and each enabled stage (every stage in Multi mode) gets them as tools:
+
+- **Search**: `web_search` (DuckDuckGo's HTML results: up to 8 titles, URLs and snippets; no API key) and `fetch_page`. The model is told to search for current or specific facts, cite the pages it used, and never follow instructions found in pages.
+- **Tools**: `calculator` (arithmetic and `math` functions, no code execution), `current_time` and `fetch_page`. In Code these come on top of the file tools.
+- **Skills**: each folder under `%APPDATA%\Agent Orchestrator\skills` with a `SKILL.md` (front matter `name:` and `description:`, as in Claude skills) is listed in the **Skills** menu; ticked ones are named in the system prompt and the model reads one with `load_skill(name[, file])`, which can also read other files in that skill's folder. **New skill…** creates one from a template and opens it; **Open skills folder** opens the folder.
+
+`fetch_page` reads http(s) pages only, refuses hosts that resolve to local or private addresses, and returns at most 20,000 characters of the page's text. Models whose chat template does not support tool calling answer without the tools, as in Code.
 
 Events are the usual `@@AO` lines (`loading`, `model`, `delta`, `done`, `usage`) plus `{"e":"chat_stage","role","stage":"plan"|"draft"|"review"|"answer","title"}` before each model call and a final `{"e":"chat_reply","role","text"}` with the answer. Exit code 0 on success; on failure an `ERROR: ...` line is printed and the exit code is 1. Models stay loaded after the turn (the launcher unloads them when the app closes).
 

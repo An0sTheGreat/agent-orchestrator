@@ -178,6 +178,12 @@ internal sealed class AppSettings
 
     public string LastConversation { get; set; } = ""; // the Code conversation open at exit, reopened at startup
 
+    // The composer's extras (Chat and Code): web search, utilities, and the skills turned on (folder names under SkillsRoot).
+    public bool UseSearch { get; set; }
+    public bool UseTools { get; set; }
+    public List<string> Skills { get; set; } = new();
+    public static string SkillsRoot => Path.Combine(DataRoot, "skills");
+
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).
     public static string DataRoot => Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")

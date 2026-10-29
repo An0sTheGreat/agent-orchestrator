@@ -2187,7 +2187,8 @@ class ChatTests(unittest.TestCase):
             def complete(self, model, messages, sampling, tools=None):
                 log.append({"model": self.settings["expected_model_contains"], "system": messages[0]["content"],
                             "input": "\n".join(m["content"] for m in messages[1:]), "sampling": sampling, "tools": tools})
-                return {"role": "assistant", "content": replies[self.role].pop(0) if replies.get(self.role) else f"{self.role} text"}
+                reply = replies[self.role].pop(0) if replies.get(self.role) else f"{self.role} text"
+                return reply if isinstance(reply, dict) else {"role": "assistant", "content": reply}
 
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -2966,6 +2967,123 @@ class RemoteRoleTests(unittest.TestCase):
     def test_custom_worker_with_only_a_model_id_is_valid(self):
         worker = {"id": "w", "title": "Remote", "kind": "reviewer", "system_prompt": "Review.", "base_url": self.URL, "model": "vendor/model-x"}
         self.assertEqual([w["id"] for w in orchestrator.custom_workers({"roles": {}, "custom_workers": [worker]})], ["w"])
+
+
+class ExtrasTests(unittest.TestCase):
+    """Search, utilities and skills for Chat and Code turns. No network: web_request and DNS are patched."""
+
+    DDG = ('<div><a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fpeony.org%2Fcare&amp;rut=x">Peony <b>care</b></a>'
+           '<a class="result__snippet" href="x">Full <b>sun</b> &amp; well-drained soil.</a></div>'
+           '<div><a class="result__a" href="https://duckduckgo.com/y.js?ad=1">Buy now</a></div>'
+           '<div><a href="https://example.org/b" class="result__a">Second</a></div>')
+
+    def test_calculator_and_time(self):
+        self.assertEqual(orchestrator.calculator("2**10 + 3*(4-1)"), "1033")
+        self.assertEqual(orchestrator.calculator("round(sqrt(2), 3)"), "1.414")
+        for bad in ('__import__("os").system("x")', "open('f')", "9**9**9", "((9**1000)**1000)**1000", "(2**1000)**200", "1/0", "", "a.b"):
+            with self.subTest(bad), self.assertRaises(orchestrator.WorkflowError):
+                orchestrator.calculator(bad)
+        self.assertRegex(orchestrator.current_time(), r"^\w+day \d{4}-\d\d-\d\d \d\d:\d\d:\d\d ")
+
+    def test_web_search_parses_results_and_skips_ads(self):
+        sent = []
+        with patch.object(orchestrator, "web_request", lambda url, data=None: (sent.append((url, data)), (self.DDG, "text/html"))[1]):
+            out = orchestrator.web_search("peony care")
+        self.assertEqual(sent, [("https://html.duckduckgo.com/html/", b"q=peony+care")])
+        self.assertEqual(out, "1. Peony care\n   https://peony.org/care\n   Full sun & well-drained soil.\n2. Second\n   https://example.org/b")
+        with patch.object(orchestrator, "web_request", lambda url, data=None: ("<html>blocked</html>", "text/html")):
+            self.assertIn("no results", orchestrator.web_search("x"))
+        with self.assertRaises(orchestrator.WorkflowError):
+            orchestrator.web_search("  ")
+
+    def test_fetch_page_reads_public_text_only(self):
+        public = [(2, 1, 6, "", ("93.184.216.34", 0))]
+        private = [(2, 1, 6, "", ("10.0.0.5", 0))]
+        page = "<html><title>T &amp; C</title><script>x()</script><body><p>Hello</p>world</body></html>"
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
+                patch.object(orchestrator, "web_request", lambda url, data=None: (page, "text/html")):
+            self.assertEqual(orchestrator.fetch_page("https://example.com/a"), "TITLE: T & C\n\nT & C Hello\nworld")
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
+                patch.object(orchestrator, "web_request", lambda url, data=None: ("x" * 30_000, "text/plain")):
+            self.assertTrue(orchestrator.fetch_page("http://example.com/").endswith("truncated at 20000 characters"))
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
+                patch.object(orchestrator, "web_request", lambda url, data=None: ("%PDF", "application/pdf")), \
+                self.assertRaisesRegex(orchestrator.WorkflowError, "not a text page"):
+            orchestrator.fetch_page("https://example.com/f.pdf")
+        fetched = []
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: private), \
+                patch.object(orchestrator, "web_request", lambda url, data=None: fetched.append(url)):
+            for url in ("http://intranet/", "file:///C:/x", "ftp://example.com/", "https:///nohost"):
+                with self.subTest(url), self.assertRaises(orchestrator.WorkflowError):
+                    orchestrator.fetch_page(url)
+        self.assertEqual(fetched, [])
+
+    def test_redirects_only_to_public_hosts_and_bad_charsets_fall_back(self):
+        request = orchestrator.Request("https://example.com/r")
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("127.0.0.1", 0))]), \
+                self.assertRaisesRegex(orchestrator.WorkflowError, "local or private"):
+            orchestrator.PublicRedirects().redirect_request(request, None, 302, "Found", {}, "http://localhost:8888/v1/models")
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", ("93.184.216.34", 0))]):
+            self.assertEqual(orchestrator.PublicRedirects().redirect_request(request, None, 302, "Found", {}, "https://example.org/b").full_url,
+                             "https://example.org/b")
+        self.assertEqual((orchestrator.web_charset("bogus"), orchestrator.web_charset(None), orchestrator.web_charset("latin-1")),
+                         ("utf-8", "utf-8", "iso8859-1"))
+
+    def test_request_extras_switches_and_skills(self):
+        names = lambda request: [t["function"]["name"] for t in orchestrator.request_extras(request)[0]]
+        self.assertEqual(orchestrator.request_extras({}), ([], {}, ""))
+        self.assertEqual(names({"search": True}), ["web_search", "fetch_page"])
+        self.assertEqual(names({"tools": True}), ["calculator", "current_time", "fetch_page"])
+        self.assertEqual(names({"search": True, "tools": True}), ["web_search", "fetch_page", "calculator", "current_time"])
+        with tempfile.TemporaryDirectory() as folder:
+            skill = Path(folder) / "garden"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text("---\nname: gardening\ndescription: Plant care steps\n---\n# Steps\nWater weekly.\n", encoding="utf-8")
+            (skill / "zones.md").write_text("Zone 3-8", encoding="utf-8")
+            (Path(folder) / "secret.txt").write_text("no", encoding="utf-8")
+            bare = Path(folder) / "bare"
+            bare.mkdir()
+            (bare / "SKILL.md").write_text("Just text", encoding="utf-8")
+            bom = Path(folder) / "bom"
+            bom.mkdir()
+            (bom / "SKILL.md").write_text("---\nname: noted\ndescription: Saved with a BOM\n---\n", encoding="utf-8-sig")
+            tools, handlers, system = orchestrator.request_extras({"skills": [str(skill), str(bare), str(bom), str(Path(folder) / "missing"), "relative"]})
+            self.assertEqual([t["function"]["name"] for t in tools], ["load_skill"])
+            self.assertIn("SKILLS\n", system)
+            self.assertIn("- gardening: Plant care steps\n- bare: (no description)\n- noted: Saved with a BOM", system)
+            self.assertIn("Water weekly.", handlers["load_skill"]("gardening"))
+            self.assertEqual(handlers["load_skill"]("gardening", "zones.md"), "Zone 3-8")
+            for args in (("gardening", "../secret.txt"), ("gardening", str(Path(folder) / "secret.txt")), ("nobody",), ("gardening", "none.md")):
+                with self.subTest(args), self.assertRaises(orchestrator.WorkflowError):
+                    handlers["load_skill"](*args)
+
+    def test_chat_with_search_runs_tool_loop(self):
+        call = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\": \"peony care\"}"}}]}
+        with patch.object(orchestrator, "web_request", lambda url, data=None: (self.DDG, "text/html")):
+            code, log, events, *_ = ChatTests().chat({"mode": "single", "worker": "implementer", "messages": ChatTests.MSGS, "search": True},
+                                                     {"implementer": [call, "Plant in full sun [1](https://peony.org/care)"]})
+        self.assertEqual(code, 0)
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["web_search", "fetch_page"])
+        self.assertIn("WEB SEARCH\n", log[0]["system"])
+        tool = [d for e, d in events if e == "tool"]
+        self.assertEqual((tool[0]["name"], "https://peony.org/care" in tool[0]["result"]), ("web_search", True))
+        self.assertEqual(events[-1], ("chat_reply", {"role": "implementer", "text": "Plant in full sun [1](https://peony.org/care)"}))
+
+    def test_multi_chat_and_code_get_the_extras(self):
+        code, log, *_ = ChatTests().chat({"mode": "multi", "messages": ChatTests.MSGS, "tools": True})
+        self.assertEqual(code, 0)
+        self.assertEqual([[t["function"]["name"] for t in entry["tools"]] for entry in log], [["calculator", "current_time", "fetch_page"]] * 3)
+        test = CodeTests("test_request_validation")
+        test.setUp()
+        try:
+            code, log, *_ = test.code({"action": "chat", "worker": "implementer", "messages": CodeTests.MSGS, "tools": True}, {"implementer": ["done"]})
+        finally:
+            test.doCleanups()
+        names = [t["function"]["name"] for t in log[0]["tools"]]
+        self.assertEqual(names[:len(orchestrator.CODE_TOOLS)], [t["function"]["name"] for t in orchestrator.CODE_TOOLS])
+        self.assertEqual(names[len(orchestrator.CODE_TOOLS):], ["calculator", "current_time", "fetch_page"])
+        self.assertIn("UTILITIES\n", log[0]["system"])
 
 
 if __name__ == "__main__":

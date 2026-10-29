@@ -68,6 +68,7 @@ public partial class MainWindow
             Plus = ChatPlus, Chip = ChatTargetChip, Input = ChatInput, Hint = ChatHint };
         _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
             Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint };
+        RefreshExtras();
         if (_settings.ChatMode != "multi")
             _settings.ChatMode = "single";
         if (CardFor(_settings.ChatWorker) is null)
@@ -346,7 +347,7 @@ public partial class MainWindow
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
             Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
-                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text))),
+                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras()),
                 LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
     }
 

@@ -449,6 +449,35 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- The composer's Search / Tools / Skills chips: muted text, accent text when on. -->
+        <Style x:Key="ChipToggle" TargetType="ToggleButton">
+            <Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="Margin" Value="0,0,4,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Chip" Background="Transparent" CornerRadius="{DynamicResource ControlRadius}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Hover}" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Hover}" />
+                                <Setter Property="Foreground" Value="{DynamicResource AccentLight}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="ChatInput" TargetType="TextBox">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             <Setter Property="CaretBrush" Value="{DynamicResource AccentLight}" />
@@ -1001,6 +1030,20 @@
                             <DockPanel Grid.Row="1" Margin="4,6,2,0">
                                 <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="ChatTarget_Click" ToolTip="Which worker receives your message" />
+                                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
+                                    <ToggleButton x:Name="CodeSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
+                                                  ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Search" /></StackPanel>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="CodeToolsToggle" Style="{StaticResource ChipToggle}" Tag="tools" Click="ExtraToggle_Click" AutomationProperties.Name="Tools"
+                                                  ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="CodeSkillsButton" Style="{StaticResource ChipToggle}" Click="Skills_Click" AutomationProperties.Name="Skills"
+                                                  ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
+                                    </ToggleButton>
+                                </StackPanel>
                                 <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                             </DockPanel>
                         </Grid>
@@ -1154,6 +1197,20 @@
                         <DockPanel Grid.Row="1" Margin="4,6,2,0">
                             <Button x:Name="ChatTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
                                     Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="ChatTarget_Click" ToolTip="Which worker receives your message" />
+                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
+                                <ToggleButton x:Name="ChatSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
+                                              ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
+                                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Search" /></StackPanel>
+                                </ToggleButton>
+                                <ToggleButton x:Name="ChatToolsToggle" Style="{StaticResource ChipToggle}" Tag="tools" Click="ExtraToggle_Click" AutomationProperties.Name="Tools"
+                                              ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
+                                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
+                                </ToggleButton>
+                                <ToggleButton x:Name="ChatSkillsButton" Style="{StaticResource ChipToggle}" Click="Skills_Click" AutomationProperties.Name="Skills"
+                                              ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
+                                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
+                                </ToggleButton>
+                            </StackPanel>
                             <TextBlock x:Name="ChatHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </DockPanel>
                     </Grid>

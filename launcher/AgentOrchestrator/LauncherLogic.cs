@@ -46,13 +46,40 @@ internal static class LauncherLogic
 
     public sealed record ChatMessage(string Role, string Content);
 
+    // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
+    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills);
+
+    public sealed record Skill(string Name, string Description, string Folder);
+
+    // Each folder under root holding a SKILL.md, by name; name and description come from its front matter (name defaults to the folder's).
+    public static List<Skill> ListSkills(string root)
+    {
+        var skills = new List<Skill>();
+        if (!Directory.Exists(root))
+            return skills;
+        foreach (var folder in Directory.GetDirectories(root))
+        {
+            string text;
+            try { text = File.ReadAllText(Path.Combine(folder, "SKILL.md")); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
+            var front = Regex.Match(text, @"\A---\s*\n(.*?)\n---", RegexOptions.Singleline);
+            string Field(string key) => front.Success && Regex.Match(front.Groups[1].Value, $@"(?m)^{key}\s*:\s*(.+?)\s*$") is { Success: true } m
+                ? m.Groups[1].Value.Trim('\'', '"') : "";
+            skills.Add(new(Field("name") is { Length: > 0 } name ? name : Path.GetFileName(folder), Field("description"), folder));
+        }
+        return skills.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
-    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages) =>
+    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null) =>
         JsonSerializer.Serialize(new
         {
             mode = mode == "multi" ? "multi" : "single",
             worker,
             messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            search = extras?.Search ?? false,
+            tools = extras?.Tools ?? false,
+            skills = extras?.Skills ?? [],
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
@@ -72,7 +99,8 @@ internal static class LauncherLogic
     public sealed record CodeFolder(string Path, string Access); // Access: "read" | "write"
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
-    public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders) =>
+    public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
+        Extras? extras = null) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
@@ -80,6 +108,9 @@ internal static class LauncherLogic
             messages = messages.Select(m => new { role = m.Role, content = m.Content }),
             folders = extraFolders.Select(f => new { path = f.Path, access = f.Access == "write" ? "write" : "read" })
                 .Prepend(new { path = projectFolder, access = "write" }),
+            search = extras?.Search ?? false,
+            tools = extras?.Tools ?? false,
+            skills = extras?.Skills ?? [],
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string apiKey, string requestFile)
@@ -950,6 +981,25 @@ internal static class LauncherLogic
             (string)JsonNode.Parse(BuildCodeRequest("write_project", "planner", [], @"Y:\app", []))!["action"]! != "write_project" ||
             JsonNode.Parse(BuildCodeRequest("bogus", "planner", [], @"Y:\app", []))!["folders"]!.AsArray().Count != 1)
             throw new InvalidOperationException("Code request failed.");
+        var withExtras = JsonNode.Parse(BuildChatRequest("single", "implementer", chat, new(true, false, [@"Y:\skills\a"])))!;
+        var codeExtras = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], new(false, true, [])))!;
+        if ((bool)single["search"]! || (bool)single["tools"]! || single["skills"]!.AsArray().Count != 0 || !(bool)withExtras["search"]! ||
+            (bool)withExtras["tools"]! || (string)withExtras["skills"]![0]! != @"Y:\skills\a" || (bool)codeExtras["search"]! || !(bool)codeExtras["tools"]! ||
+            (bool)code["tools"]!)
+            throw new InvalidOperationException("Request extras failed.");
+        var skillArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-skills-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(skillArea, "zeta"));
+            File.WriteAllText(Path.Combine(skillArea, "zeta", "SKILL.md"), "---\nname: \"Alpha\"\ndescription: Does A\n---\nbody");
+            Directory.CreateDirectory(Path.Combine(skillArea, "beta"));
+            File.WriteAllText(Path.Combine(skillArea, "beta", "SKILL.md"), "no front matter");
+            Directory.CreateDirectory(Path.Combine(skillArea, "empty")); // no SKILL.md: not a skill
+            if (ListSkills(skillArea) is not [{ Name: "Alpha", Description: "Does A" } a, { Name: "beta", Description: "" }] ||
+                Path.GetFileName(a.Folder) != "zeta" || ListSkills(Path.Combine(skillArea, "missing")).Count != 0)
+                throw new InvalidOperationException("Skill listing failed.");
+        }
+        finally { Directory.Delete(skillArea, recursive: true); }
         var dataArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-conv-{Guid.NewGuid():N}");
         try
         {
