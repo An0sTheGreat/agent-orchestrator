@@ -900,6 +900,13 @@
                                 <Button Content="Task limits…" Margin="0,6,0,0" Click="TaskLimits_Click" IsEnabled="{Binding IsEnabled, ElementName=ProjectButton}"
                                         ToolTip="The most files and required-work items the Planner may give one task" />
 
+                                <!-- Code: folders beyond the project the worker may use (MainWindow.Code.cs RefreshCodeFolders) -->
+                                <TextBlock Text="FOLDERS" Style="{StaticResource SubHeader}" ToolTip="Folders beyond the project folder the Code worker may read or edit" />
+                                <TextBlock x:Name="CodeFoldersEmpty" Text="Choose a project folder first" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0,0,4" />
+                                <StackPanel x:Name="CodeFoldersList" />
+                                <Button x:Name="AddCodeFolderButton" Content="Add folder…" Margin="0,4,0,0" Click="AddCodeFolder_Click" Visibility="Collapsed"
+                                        ToolTip="Let the Code worker read or edit another folder" />
+
                                 <TextBlock Text="RUN" Style="{StaticResource SubHeader}" />
                                 <DockPanel Margin="8,0,0,0">
                                     <ToggleButton x:Name="OnceToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="Once_Click" />

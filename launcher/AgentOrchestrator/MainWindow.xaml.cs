@@ -131,6 +131,7 @@ public partial class MainWindow : Window
         }
         if (LauncherLogic.IsProjectComplete(project) && !RestartProject(project))
             return;
+        ShowCodeRun(true); // the Code view follows the run
         if (!PrepareRun())
             return;
         try
@@ -1521,6 +1522,55 @@ public partial class MainWindow : Window
             await Settle();
             if (!WorkArea.IsVisible || CodeChat.IsVisible)
                 return Fail();
+            // New conversation (the "Main" preset applies), extra folders through the Add / × buttons, save, resume, Start new.
+            var codeProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
+            var codeExtra = Path.Combine(codeProject, "extra");
+            var codePrevious = _projectPath;
+            Directory.CreateDirectory(codeExtra);
+            try
+            {
+                string? pick = codeProject, answer = "new";
+                (_codeFolderPick, _codeChoice) = (() => pick, _ => answer);
+                SavePreset("main");
+                NewCodeConversation();
+                DeletePreset(_settings.Presets.Single(p => p.Name == "main"));
+                if (SelectedProjectPath() != codeProject || _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
+                    AddCodeFolderButton.Visibility != Visibility.Visible || !LogBox.Text.Contains("Preset applied: main"))
+                    return Fail();
+                void AddFolder() => AddCodeFolderButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                (pick, answer) = (codeExtra, "write");
+                AddFolder();
+                AddFolder(); // a duplicate
+                pick = codeProject + "\\";
+                AddFolder(); // the project itself
+                if (CodeExtraFolders.Count != 1 || CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write") || CodeFoldersList.Children.Count != 1 ||
+                    CodeFoldersEmpty.Visibility == Visibility.Visible)
+                    return Fail();
+                _code.History.Add(new LauncherLogic.ChatMessage("user", "Hi"));
+                _code.History.Add(new LauncherLogic.ChatMessage("assistant", "Hello"));
+                SaveCodeConversation();
+                (pick, answer) = (codeProject, "resume");
+                NewCodeConversation();
+                await Settle();
+                Snap("19-code-resumed");
+                if (_code.History.Count != 2 || CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
+                    CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
+                    CodeEmpty.Visibility == Visibility.Visible)
+                    return Fail();
+                ((Button)((DockPanel)CodeFoldersList.Children[0]).Children[0]).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || LauncherLogic.LoadConversation(codeProject) is not { Folders.Count: 0, Messages.Count: 2 })
+                    return Fail();
+                answer = "new";
+                NewCodeConversation();
+                if (_code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
+                    return Fail();
+            }
+            finally
+            {
+                (_codeFolderPick, _codeChoice) = (null, null);
+                ProjectPath = codePrevious;
+                try { Directory.Delete(codeProject, true); } catch (IOException) { }
+            }
             ClearConversation(_code);
             ShowView(false);
             await Settle();

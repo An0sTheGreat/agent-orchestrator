@@ -17,6 +17,7 @@ public partial class MainWindow
 {
     private Process? _chatProcess;
     private bool _chatBusy, _chatStopRequested; // _chatBusy: a conversation turn (Chat or Code) is running
+    private bool _turnCompleted; // the last turn ended with a reply (not stopped or failed)
     private string? _chatError;
     private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
     private readonly HashSet<(string Url, string Path)> _loadedByChat = new(); // unloaded when the app closes, or after each turn when ChatKeepLoaded is off
@@ -116,7 +117,7 @@ public partial class MainWindow
                 : _unloading ? "Unloading models…" : "Enter to send  ·  Shift+Enter for a new line";
         }
         ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
-        CodeNewButton.IsEnabled = CodeStartButton.IsEnabled = !_chatBusy && !runActive;
+        CodeNewButton.IsEnabled = CodeStartButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
     }
 
     // ---- worker menu (+ button and target chip)
@@ -270,18 +271,19 @@ public partial class MainWindow
     {
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
-            RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
+            _ = RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
                 role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text))),
                 LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})");
     }
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.
-    private async void RunTurn(Conversation c, string? text, string role, bool multi, Func<string, string> buildRequest,
+    // True when the turn completed with a reply.
+    private async Task<bool> RunTurn(Conversation c, string? text, string role, bool multi, Func<string, string> buildRequest,
         Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label)
     {
         if (_chatBusy || _process is not null || _workflowRoot is null)
-            return;
+            return false;
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
         _runKey = ApiKeyBox.Password.Trim();
@@ -292,18 +294,18 @@ public partial class MainWindow
             Log("Enter your Unsloth API key.");
             ShowView(options: true);
             ApiKeyBox.Focus();
-            return;
+            return false;
         }
         var skipped = new List<string>();
         if (!SyncCustomWorkers(skipped))
         {
             Toast("Message not sent: config.json could not be updated", "#FF667A");
-            return;
+            return false;
         }
         if (!multi && CardFor(role) is { IsCustom: true, SetupProblem: { } problem } target)
         {
             Toast($"{ChatName(target, target.Role)} cannot be used: {problem}", "#F7C873");
-            return;
+            return false;
         }
         foreach (var reason in skipped)
             Log($"Not written to config.json, so it will not take part: {reason}");
@@ -357,6 +359,7 @@ public partial class MainWindow
         }
         if (FinishChatTurn(exitCode, _chatStopRequested, failure))
             Toast(c.IsCode ? "Code stopped" : "Chat stopped", "#F7C873");
+        return _turnCompleted;
     }
 
     // Deletes the turn's request file and the temp folder (never a real project). Idempotent: the app closing mid-reply
@@ -383,25 +386,37 @@ public partial class MainWindow
         _turnLoaded = new();
         _codeStartRequested = false;
         if (text is not null)
-        {
-            var box = BodyText(text, mono: false, muted: false, conv: c);
-            box.FontSize = 14;
-            var bubble = new Border
-            {
-                Child = box, Padding = new Thickness(14, 10, 14, 10), Margin = new Thickness(60, 10, 0, 6), MaxWidth = 640,
-                HorizontalAlignment = HorizontalAlignment.Right, BorderThickness = new Thickness(1),
-            };
-            bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
-            bubble.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
-            bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
-            ChatAdd(bubble);
-        }
+            AddUserBubble(text);
+        _reply = AddReply(multi, role);
+        _chatError = null;
+        _chatStopRequested = false;
+        _activeRole = null;
+        SetChatBusy(true);
+    }
 
+    // The user's message bubble and an empty reply (header, content, status, Copy), added to _turn's conversation.
+    private void AddUserBubble(string text)
+    {
+        var box = BodyText(text, mono: false, muted: false, conv: _turn);
+        box.FontSize = 14;
+        var bubble = new Border
+        {
+            Child = box, Padding = new Thickness(14, 10, 14, 10), Margin = new Thickness(60, 10, 0, 6), MaxWidth = 640,
+            HorizontalAlignment = HorizontalAlignment.Right, BorderThickness = new Thickness(1),
+        };
+        bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
+        bubble.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
+        bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
+        ChatAdd(bubble);
+    }
+
+    private ChatReply AddReply(bool multi, string role)
+    {
         var root = new StackPanel { Margin = new Thickness(0, 8, 0, 14) };
         var header = new TextBlock { Text = multi ? ChainLabel : ChatName(CardFor(role), role), Margin = new Thickness(2, 0, 0, 6) };
         header.SetResourceReference(StyleProperty, "SectionHeader");
         header.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
-        var reply = _reply = new ChatReply { Multi = multi, Content = new StackPanel() };
+        var reply = new ChatReply { Multi = multi, Content = new StackPanel() };
         reply.Status = new TextBlock { Text = "Starting…", FontStyle = FontStyles.Italic, FontSize = 12, Margin = new Thickness(2, 4, 0, 0) };
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         reply.Copy = new Button { Content = "Copy reply", Padding = new Thickness(10, 4, 10, 4), FontSize = 11, HorizontalAlignment = HorizontalAlignment.Left,
@@ -413,11 +428,7 @@ public partial class MainWindow
         root.Children.Add(reply.Status);
         root.Children.Add(reply.Copy);
         ChatAdd(root);
-
-        _chatError = null;
-        _chatStopRequested = false;
-        _activeRole = null;
-        SetChatBusy(true);
+        return reply;
     }
 
     // After the process ended (its output already applied): close the open section, show errors, remember the exchange.
@@ -465,6 +476,7 @@ public partial class MainWindow
         SetChatBusy(false);
         if (c.Input.IsVisible)
             c.Input.Focus();
+        _turnCompleted = completed;
         if (c.IsCode && completed)
             CodeTurnFinished();
         return stopped;
