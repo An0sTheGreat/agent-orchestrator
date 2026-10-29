@@ -403,16 +403,6 @@ internal static class LauncherLogic
         return backup;
     }
 
-    public static void ValidateConfigFile(string path)
-    {
-        using var document = JsonDocument.Parse(File.ReadAllText(path));
-        if (document.RootElement.ValueKind != JsonValueKind.Object ||
-            !document.RootElement.TryGetProperty("roles", out var roles) ||
-            roles.ValueKind != JsonValueKind.Object ||
-            new[] { "planner", "implementer", "reviewer" }.Any(role => !roles.TryGetProperty(role, out _)))
-            throw new InvalidDataException("Custom config.json must define planner, implementer, and reviewer roles.");
-    }
-
     public static string FindPython()
     {
         var path = Environment.GetEnvironmentVariable("PATH") ?? "";
@@ -1058,7 +1048,6 @@ internal static class LauncherLogic
             var detectedKey = FindApiKeyFile(testArea, Path.Combine(testArea, "elsewhere"));
             if (detectedKey?.Key != "test-api-key")
                 throw new InvalidOperationException("API key file detection failed.");
-            ValidateConfigFile(customConfig);
             var rootDir = Path.Combine(testArea, "root");
             var rootConfig = Path.Combine(rootDir, "config.json");
             Directory.CreateDirectory(rootDir);

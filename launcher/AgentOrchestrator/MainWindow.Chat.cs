@@ -118,6 +118,7 @@ public partial class MainWindow
         }
         ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeStartButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
+        CodeProjectButton.IsEnabled = !_chatBusy && !runActive && SelectedProjectPath().Length > 0;
     }
 
     // ---- worker menu (+ button and target chip)
@@ -502,7 +503,7 @@ public partial class MainWindow
     {
         _chatBusy = busy;
         StartButton.IsEnabled = !busy && _workflowRoot is not null;
-        ProjectButton.IsEnabled = AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
+        AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
         foreach (var card in _cards)
             card.Editable = !busy;
         SetStatus(busy ? "Replying" : "Ready", busy ? "#8B7CFF" : "#667085");

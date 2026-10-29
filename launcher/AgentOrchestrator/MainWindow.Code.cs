@@ -130,6 +130,7 @@ public partial class MainWindow
         CodeFolderText.Text = shown.Length == 0 ? "No folder" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
         CodeFolderText.ToolTip = shown.Length == 0 ? null : shown;
         CodeEmptyTitle.Text = shown.Length == 0 ? "Choose a folder to start" : "Start a conversation";
+        RefreshChatInput(); // the Project menu needs a folder
     }
 
     private void CodeNew_Click(object sender, RoutedEventArgs e) => NewCodeConversation();
@@ -308,7 +309,94 @@ public partial class MainWindow
         SaveCodeConversation();
     }
 
-    // The sidebar FOLDERS list: name (full path in the tooltip), access chip, remove.
+    // ---- Project menu: per-folder setup (PROJECT.md, task limits, extra folders, run once)
+
+    private Func<string?>? _projectMdPick; // --ui-smoke: the PROJECT.md to use, without the file dialog
+
+    private void CodeProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (CodeProjectButton.IsEnabled)
+            BuildProjectMenu().IsOpen = true;
+    }
+
+    private ContextMenu BuildProjectMenu()
+    {
+        var menu = NewPresetMenu(CodeProjectButton);
+        menu.Items.Add(PresetItem("Use a PROJECT.md…", UseProjectMd));
+        menu.Items.Add(PresetItem("Edit PROJECT.md", () => EditProject_Click(this, new RoutedEventArgs()), File.Exists(Path.Combine(SelectedProjectPath(), "PROJECT.md"))));
+        menu.Items.Add(PresetItem("Task limits…", () => Dispatcher.InvokeAsync(() => TaskLimits_Click(this, new RoutedEventArgs()), System.Windows.Threading.DispatcherPriority.Background)));
+        menu.Items.Add(PresetItem("Folders…", () => Dispatcher.InvokeAsync(ShowCodeFolders, System.Windows.Threading.DispatcherPriority.Background)));
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        var once = PresetItem("Run one reviewed task, then stop", () => { }); // a checkable item toggles itself before Click
+        once.IsCheckable = true;
+        once.IsChecked = _settings.Once;
+        once.Click += (_, _) => { _settings.Once = once.IsChecked; _settings.Save(); };
+        menu.Items.Add(once);
+        return menu;
+    }
+
+    // Copies a chosen file in as the folder's PROJECT.md; an existing one is kept (Use) or moved to a backup first (Replace).
+    private void UseProjectMd()
+    {
+        var folder = SelectedProjectPath();
+        if (_chatBusy || _process is not null || folder.Length == 0 || !Directory.Exists(folder) || RefuseWorkflowRoot(folder))
+            return;
+        string? source;
+        if (_projectMdPick is { } pick)
+            source = pick();
+        else
+        {
+            var dialog = new Microsoft.Win32.OpenFileDialog { Title = "Choose a PROJECT.md", Filter = "Markdown files (*.md)|*.md|All files (*.*)|*.*" };
+            source = dialog.ShowDialog(this) == true ? dialog.FileName : null;
+        }
+        if (source is null)
+            return;
+        var target = Path.Combine(folder, "PROJECT.md");
+        try
+        {
+            if (SamePath(source, target))
+            {
+                Toast("That is already this folder's PROJECT.md", "#F7C873");
+                return;
+            }
+            if (string.IsNullOrWhiteSpace(File.ReadAllText(source)))
+            {
+                Toast("That PROJECT.md is empty", "#F7C873");
+                return;
+            }
+            string? backup = null;
+            if (File.Exists(target))
+            {
+                var choice = AskExistingProjectMd(target);
+                if (choice == ExistingProjectMdChoice.Use)
+                    Log("Using the existing PROJECT.md");
+                if (choice != ExistingProjectMdChoice.Replace)
+                    return;
+                backup = LauncherLogic.BackupProjectMd(folder);
+            }
+            File.Copy(source, target);
+            Log($"PROJECT.md copied from {source} into {folder}" + (backup is null ? "" : $"; previous saved as {backup}"));
+            Toast(backup is null ? "PROJECT.md added" : $"PROJECT.md replaced; previous saved as {backup}");
+            RefreshPrimary();
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not use that PROJECT.md: {exception.Message}");
+            Toast("Could not use that PROJECT.md", "#FF667A");
+        }
+    }
+
+    // The extra-folder list lives in a hidden XAML host (CodeFoldersHost) and is lent to a dialog while it is open.
+    private void ShowCodeFolders()
+    {
+        RefreshCodeFolders();
+        CodeFoldersHost.Content = null;
+        var dialog = new DialogShell(this, "Folders", CodeFoldersPanel);
+        dialog.Closed += (_, _) => { ((Border)CodeFoldersPanel.Parent).Child = null; CodeFoldersHost.Content = CodeFoldersPanel; };
+        dialog.ShowDialog();
+    }
+
+    // The Folders list: name (full path in the tooltip), access chip, remove.
     private void RefreshCodeFolders()
     {
         var hasProject = SelectedProjectPath().Length > 0;
@@ -364,7 +452,6 @@ public partial class MainWindow
             var copied = LauncherLogic.InitializeProject(_workflowRoot, folder, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot));
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
-            RefreshInitializationPrompt();
             PrefillCards();
             RefreshPrimary();
         }

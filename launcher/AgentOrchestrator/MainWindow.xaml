@@ -879,39 +879,8 @@
                                 <ToggleButton x:Name="NavCode" Style="{StaticResource NavToggle}" Content="Code" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" />
                                 <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
 
-                                <TextBlock Text="PROJECT" Style="{StaticResource SubHeader}" />
-                                <Button x:Name="ProjectButton" Click="Browse_Click" Padding="12,9" ToolTip="Choose the project folder">
-                                    <StackPanel>
-                                        <TextBlock x:Name="ProjectName" Text="Choose project folder…" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" TextAlignment="Center" />
-                                        <TextBlock x:Name="ProjectPathText" Foreground="{DynamicResource Muted}" FontSize="10" TextTrimming="CharacterEllipsis" TextAlignment="Center" Margin="0,2,0,0" Visibility="Collapsed" />
-                                    </StackPanel>
-                                </Button>
-                                <Border x:Name="InitializationPanel" Visibility="Collapsed" Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}" Padding="12" Margin="0,10,0,0"
-                                        BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
-                                    <StackPanel>
-                                        <TextBlock x:Name="InitializationText" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="12" />
-                                        <Button Content="Initialize Project" Style="{StaticResource PrimaryButton}" Margin="0,10,0,0" Click="InitializeProject_Click" />
-                                        <Button Content="Use custom PROJECT.md…" Margin="0,6,0,0" Click="ChooseProjectFile_Click" />
-                                        <Button Content="Use custom config.json…" Margin="0,6,0,0" Click="ChooseConfigFile_Click" />
-                                        <TextBlock x:Name="CustomFilesText" Text="Using Agent Setup templates." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,8,0,0" />
-                                    </StackPanel>
-                                </Border>
-                                <Button Content="Edit PROJECT.md" Margin="0,8,0,0" Click="EditProject_Click" />
-                                <Button Content="Task limits…" Margin="0,6,0,0" Click="TaskLimits_Click" IsEnabled="{Binding IsEnabled, ElementName=ProjectButton}"
-                                        ToolTip="The most files and required-work items the Planner may give one task" />
-
-                                <!-- Code: folders beyond the project the worker may use (MainWindow.Code.cs RefreshCodeFolders) -->
-                                <TextBlock Text="FOLDERS" Style="{StaticResource SubHeader}" ToolTip="Folders beyond the project folder the Code worker may read or edit" />
-                                <TextBlock x:Name="CodeFoldersEmpty" Text="Choose a project folder first" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0,0,4" />
-                                <StackPanel x:Name="CodeFoldersList" />
-                                <Button x:Name="AddCodeFolderButton" Content="Add folder…" Margin="0,4,0,0" Click="AddCodeFolder_Click" Visibility="Collapsed"
-                                        ToolTip="Let the Code worker read or edit another folder" />
-
-                                <TextBlock Text="RUN" Style="{StaticResource SubHeader}" />
-                                <DockPanel Margin="8,0,0,0">
-                                    <ToggleButton x:Name="OnceToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="Once_Click" />
-                                    <TextBlock Text="Run one reviewed task, then stop" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,10,0" />
-                                </DockPanel>
+                                <!-- Empty for now: a conversation list goes here. Project setup lives in the Code view's Project menu. -->
+                                <StackPanel x:Name="SidebarList" Margin="0,16,0,0" />
                             </StackPanel>
                         </ScrollViewer>
                         <Button x:Name="SidebarCollapseButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,14,10,0"
@@ -935,20 +904,6 @@
                                       IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
                             <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
                         </ToggleButton>
-                        <Border Height="1" Background="{DynamicResource Border}" Margin="14,10,14,14" />
-                        <Button x:Name="RailProjectButton" Style="{StaticResource GhostButton}" Height="38" Margin="6,0,6,4" Padding="0" Click="RailProject_Click" ToolTip="{Binding ToolTip, ElementName=ProjectButton}" AutomationProperties.Name="Choose the project folder"
-                                IsEnabled="{Binding IsEnabled, ElementName=ProjectButton}">
-                            <TextBlock Text="&#xE8B7;" Style="{StaticResource RailGlyph}" />
-                        </Button>
-                        <Button Style="{StaticResource GhostButton}" Height="38" Margin="6,0,6,4" Padding="0" Click="EditProject_Click" ToolTip="Edit PROJECT.md" AutomationProperties.Name="Edit PROJECT.md">
-                            <TextBlock Text="&#xE70F;" Style="{StaticResource RailGlyph}" />
-                        </Button>
-                        <Border Height="1" Background="{DynamicResource Border}" Margin="14,10,14,14" />
-                        <ToggleButton x:Name="RailOnceToggle" Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Click="Once_Click" ToolTip="Run one reviewed task, then stop" AutomationProperties.Name="Run one reviewed task, then stop"
-                                      IsEnabled="{Binding IsEnabled, ElementName=OnceToggle}"
-                                      IsChecked="{Binding IsChecked, ElementName=OnceToggle, Mode=TwoWay}">
-                            <TextBlock Text="&#xE8ED;" Style="{StaticResource RailGlyph}" />
-                        </ToggleButton>
                     </StackPanel>
                 </Grid>
             </Border>
@@ -961,7 +916,19 @@
                 <DockPanel Margin="20,16,20,0" LastChildFill="False">
                     <TextBlock Text="CODE" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <TextBlock x:Name="CodeFolderText" Text="No folder" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
-                               Margin="12,0,0,0" MaxWidth="260" TextTrimming="CharacterEllipsis" />
+                               Margin="12,0,0,0" MaxWidth="200" TextTrimming="CharacterEllipsis" />
+                    <Button x:Name="CodeProjectButton" Style="{StaticResource GhostButton}" Content="Project  &#x25BE;" FontSize="11" Padding="9,3" Margin="10,0,0,0"
+                            VerticalAlignment="Center" Click="CodeProject_Click" IsEnabled="False" ToolTip="PROJECT.md, task limits, extra folders and run options for this folder" />
+                    <!-- Project > Folders… shows this panel in a dialog (MainWindow.Code.cs RefreshCodeFolders builds the list) -->
+                    <ContentControl x:Name="CodeFoldersHost" Visibility="Collapsed">
+                        <StackPanel x:Name="CodeFoldersPanel" Width="340">
+                            <TextBlock Text="Folders beyond the project folder the Code worker may read or edit." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,0,0,8" />
+                            <TextBlock x:Name="CodeFoldersEmpty" Text="Choose a project folder first" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" FontSize="11" Margin="8,0,0,4" />
+                            <StackPanel x:Name="CodeFoldersList" />
+                            <Button x:Name="AddCodeFolderButton" Content="Add folder…" Margin="0,8,0,0" Click="AddCodeFolder_Click" Visibility="Collapsed"
+                                    ToolTip="Let the Code worker read or edit another folder" />
+                        </StackPanel>
+                    </ContentControl>
                     <Button x:Name="CodeStartButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11"
                             Click="CodeStart_Click" ToolTip="Start the project run in this folder" />
                     <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
