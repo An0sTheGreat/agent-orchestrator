@@ -3532,14 +3532,23 @@ public partial class MainWindow : Window
         var glass = _settings.Theme == "Glass";
         var oled = _settings.Theme == "Oled";
         var flat = _settings.Theme == "Flat" || oled; // OLED has the Flat shapes
-        SetThemeBrush("AppBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C");
+        // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
+        // OLED's black background stays pure black.
+        var tint = (Color)ColorConverter.ConvertFromString(AccentColors.First(x => x.Key == AccentKey).Accent)!;
+        void Surface(string key, string color, double amount)
+        {
+            var c = (Color)ColorConverter.ConvertFromString(color)!;
+            byte Mix(byte from, byte to) => (byte)Math.Round(from + (to - from) * amount);
+            Resources[key] = new SolidColorBrush(Color.FromArgb(c.A, Mix(c.R, tint.R), Mix(c.G, tint.G), Mix(c.B, tint.B)));
+        }
+        Surface("AppBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
         SetThemeBrush("TextPrimary", oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        SetThemeBrush("TitleBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10");
-        SetThemeBrush("Panel", oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116");
-        SetThemeBrush("Card", oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C");
-        SetThemeBrush("Hover", oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26");
-        SetThemeBrush("Border", oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35");
-        SetThemeBrush("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35");
+        Surface("TitleBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
+        Surface("Panel", oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("Card", oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
+        Surface("Hover", oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
+        Surface("Border", oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         SetThemeBrush("Muted", oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
         var rim = (byte)(glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A);
@@ -3631,7 +3640,7 @@ public partial class MainWindow : Window
         if (sender is not MenuItem { Tag: string key })
             return;
         _settings.ThemeAccents[_settings.Theme] = key;
-        ApplyAccent();
+        ApplyTheme(); // the surfaces carry a tint of the accent too
         _settings.Save();
     }
 
