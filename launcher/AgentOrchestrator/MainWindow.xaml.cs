@@ -1578,11 +1578,21 @@ public partial class MainWindow : Window
                     return Fail();
                 // Opening is refused while a run is active.
                 _process = new Process();
-                var third = _store.Create(codeProject);
+                var third = _store.Create(codeProject)!;
                 OpenCodeConversation(third.Id);
+                var lastToast = ToastStack.Children.OfType<UIElement>().LastOrDefault();
+                NewCodeConversation(); // refused with the same toast
                 _process = null;
                 RefreshChatInput();
-                if (_codeConv != first)
+                if (_codeConv != first || ToastStack.Children.OfType<UIElement>().LastOrDefault() == lastToast)
+                    return Fail();
+                // A chat with no usable folder is refused, and the open one stays.
+                var noFolder = _store.Create("")!;
+                noFolder.Folders = [new(codeExtra, "read")];
+                _store.Save(noFolder);
+                OpenCodeConversation(noFolder.Id);
+                _store.Delete(noFolder.Id);
+                if (_codeConv != first || CodeExtraFolders.Count != 1)
                     return Fail();
                 ((Button)((DockPanel)CodeFoldersList.Children[0]).Children[0]).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 if (CodeExtraFolders.Count != 0 || CodeFoldersList.Children.Count != 0 || _store.Get(first.Id) is not { Folders.Count: 0, Messages.Count: 2 })
@@ -1629,6 +1639,12 @@ public partial class MainWindow : Window
                 if (!refused.IsCompleted || refused.Result || _chatBusy || _chatProcess is not null || CodeInput.Text.Length == 0 || StatusText.Text != "Choose a project folder")
                     return Fail();
                 CodeInput.Clear();
+                // Nor does adding an extra folder start a chat there.
+                (pick, answer) = (codeExtra, "read");
+                SetStatus("Ready", "#667085");
+                AddFolder();
+                if (_codeConv is not null || CodeExtraFolders.Count != 0 || StatusText.Text != "Choose a project folder")
+                    return Fail();
 
                 // Sidebar list: rows for the stored chats; rename, reorder, projects, collapse, archive and delete through the
                 // real menu items; opening a chat by its row.
@@ -1636,9 +1652,9 @@ public partial class MainWindow : Window
                 var stored = _store.View();
                 foreach (var entry in stored.Groups.SelectMany(g => g.Items).Concat(stored.Ungrouped).Concat(stored.Archived))
                     _store.Delete(entry.Id);
-                var chatA = _store.Create(codeProject);
+                var chatA = _store.Create(codeProject)!;
                 chatA.Messages = [new("user", "Alpha question"), new("assistant", "Alpha answer")];
-                var chatB = _store.Create(codeProject);
+                var chatB = _store.Create(codeProject)!;
                 chatB.Messages = [new("user", "Beta question"), new("assistant", "Beta answer")];
                 _store.Save(chatA);
                 _store.Save(chatB);
@@ -1670,6 +1686,20 @@ public partial class MainWindow : Window
                 ClickRow("▾Smoke project");
                 if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,B" || _store.View().Groups is not [{ Collapsed: true }])
                     return Fail();
+                // An empty chat moved into a project, or archived, is kept on leaving it.
+                var emptyGrouped = _store.Create(codeProject)!;
+                var emptyArchived = _store.Create(codeProject)!;
+                _store.MoveToGroup(emptyGrouped.Id, _store.View().Groups[0].Id);
+                _store.Archive(emptyArchived.Id, true);
+                foreach (var empty in new[] { emptyGrouped, emptyArchived })
+                {
+                    OpenCodeConversation(empty.Id);
+                    CloseCodeConversation();
+                    if (_store.Get(empty.Id) is null)
+                        return Fail();
+                    _store.Delete(empty.Id);
+                }
+                RefreshSidebarList();
                 ClickItem(chatB.Id, "Archive");
                 if (Rows() != "+New chat,+New project,▸Smoke project,▸ARCHIVED")
                     return Fail();
@@ -2443,6 +2473,25 @@ public partial class MainWindow : Window
         return string.Equals(active, worker, StringComparison.OrdinalIgnoreCase) ? [active] : [active, worker];
     }
 
+    // Writes targets[0] (its problem, or exception, is the caller's), then mirrors the change to the rest. The project
+    // already has it then, so a mirror that fails is only a warning and the save counts as done. write: a problem or null.
+    private string? WriteConfigs(IReadOnlyList<string> targets, Func<string, string?> write)
+    {
+        if (write(targets[0]) is { } problem)
+            return problem;
+        foreach (var mirror in targets.Skip(1))
+        {
+            string? failed;
+            try { failed = write(mirror); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException) { failed = e.Message; }
+            if (failed is null)
+                continue;
+            Log($"Saved to the project; the launcher's worker config could not be updated: {failed}");
+            Toast($"Saved to the project; the launcher's worker config could not be updated: {failed}", "#F7C873");
+        }
+        return null;
+    }
+
     private void Presets_Click(object sender, RoutedEventArgs e)
     {
         if (_process is null)
@@ -2578,9 +2627,7 @@ public partial class MainWindow : Window
         try
         {
             var targets = WorkerConfigTargets();
-            rolesApplied = targets.Length > 0;
-            foreach (var path in targets)
-                rolesApplied &= LauncherLogic.ApplyPresetRoles(path, preset);
+            rolesApplied = targets.Length > 0 && WriteConfigs(targets, path => LauncherLogic.ApplyPresetRoles(path, preset) ? null : $"{path} is missing") is null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2884,12 +2931,9 @@ public partial class MainWindow : Window
             {
                 var problem = (remote is null ? null : LauncherLogic.ValidateRemoteRole(remote)) ?? LauncherLogic.ValidateRoleSettings(values);
                 // path first (the dialog's config), then the worker config when path is a project's
-                foreach (var target in WorkerConfigTargets().Where(t => t != path).Prepend(path))
-                {
-                    if (problem is null && (remote is not null || remoteNow is not null))
-                        problem = LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
-                    problem ??= LauncherLogic.WriteRoleSettings(target, card.Role, values);
-                }
+                problem ??= WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
+                    (remote is not null || remoteNow is not null ? LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")) : null)
+                    ?? LauncherLogic.WriteRoleSettings(target, card.Role, values));
                 if (problem is not null)
                 {
                     error.Text = problem;
@@ -3160,8 +3204,11 @@ public partial class MainWindow : Window
         }
         try
         {
-            foreach (var path in targets)
+            WriteConfigs(targets, path =>
+            {
                 WriteRoleModel(path, role, choice);
+                return null;
+            });
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)

@@ -55,22 +55,38 @@ internal sealed class ConversationStore
         _indexPath = Path.Combine(dataRoot, "sidebar.json");
     }
 
-    // Reads everything, migrating legacy one-per-folder files first. Unreadable files are skipped, index ids without a
+    // Why the last Load could not read everything (a locked file, access denied); null when it did. The store is then
+    // read-only for the session: it shows what it read, every change returns false, and sidebar.json is never rewritten
+    // from a partial read.
+    public string? LoadError { get; private set; }
+    public bool ReadOnly => LoadError is not null;
+
+    // Reads everything, migrating legacy one-per-folder files first. Corrupt files are skipped, index ids without a
     // conversation dropped, and conversations missing from the index appended to the ungrouped list (newest first).
     public void Load()
     {
         _conversations.Clear();
+        _index = new();
+        LoadError = "the conversations folder could not be read"; // a Load that throws leaves the store read-only
+        string? error = null;
         Directory.CreateDirectory(_dir);
         foreach (var path in Directory.GetFiles(_dir, "*.json").Where(p => LegacyName.IsMatch(Path.GetFileNameWithoutExtension(p))))
-            Migrate(path);
+            error ??= Migrate(path);
         foreach (var path in Directory.GetFiles(_dir, "*.json"))
         {
             var id = Path.GetFileNameWithoutExtension(path);
-            if (IdName.IsMatch(id) && Read<Conversation>(path) is { } c)
-                _conversations[id] = Clean(c, id);
+            try
+            {
+                if (IdName.IsMatch(id) && Read<Conversation>(path) is { } c)
+                    _conversations[id] = Clean(c, id);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { error ??= e.Message; }
         }
 
-        var index = Read<Index>(_indexPath) ?? new();
+        Index? read = null;
+        try { read = Read<Index>(_indexPath); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { error ??= e.Message; }
+        var index = read ?? new();
         var seen = new HashSet<string>();
         List<string> Keep(List<string>? ids) => (ids ?? []).Where(id => id is not null && _conversations.ContainsKey(id) && seen.Add(id)).ToList();
         index.Groups = (index.Groups ?? []).Where(g => g is not null).ToList();
@@ -84,11 +100,16 @@ internal sealed class ConversationStore
         index.Items = Keep(index.Items);
         index.Items.AddRange(_conversations.Values.Where(c => !seen.Contains(c.Id)).OrderByDescending(c => c.Updated).Select(c => c.Id));
         _index = index;
-        SaveIndex();
+        LoadError = error;
+        if (!ReadOnly)
+            SaveIndex();
     }
 
-    public Conversation Create(string folder)
+    // Null when the store is read-only.
+    public Conversation? Create(string folder)
     {
+        if (ReadOnly)
+            return null;
         var now = DateTime.Now;
         var c = new Conversation { Id = NewId(), Folder = folder, Created = now, Updated = now };
         _conversations[c.Id] = c;
@@ -101,7 +122,7 @@ internal sealed class ConversationStore
     // False (nothing written) when the conversation was deleted meanwhile: a late save never brings it back.
     public bool Save(Conversation conversation)
     {
-        if (!_conversations.ContainsKey(conversation.Id))
+        if (ReadOnly || !_conversations.ContainsKey(conversation.Id))
             return false;
         conversation.Updated = DateTime.Now;
         _conversations[conversation.Id] = conversation;
@@ -111,6 +132,9 @@ internal sealed class ConversationStore
 
     public Conversation? Get(string id) => _conversations.GetValueOrDefault(id);
 
+    // In a group or archived: the user organized it, so it is kept even when empty.
+    public bool IsOrganized(string id) => Get(id) is { Archived: true } || _index.Groups.Any(g => g.Items.Contains(id));
+
     // A blank title goes back to the derived one.
     public bool Rename(string id, string? title) => Change(id, c => c.Title = string.IsNullOrWhiteSpace(title) ? null : title.Trim());
 
@@ -118,7 +142,7 @@ internal sealed class ConversationStore
 
     public bool Delete(string id)
     {
-        if (!_conversations.Remove(id))
+        if (ReadOnly || !_conversations.Remove(id))
             return false;
         File.Delete(PathOf(id));
         ListOf(id)?.Remove(id);
@@ -134,7 +158,7 @@ internal sealed class ConversationStore
     public bool MoveToGroup(string id, string? groupId)
     {
         var target = groupId is null ? _index.Items : FindGroup(groupId)?.Items;
-        if (target is null || ListOf(id) is not { } from)
+        if (ReadOnly || target is null || ListOf(id) is not { } from)
             return false;
         from.Remove(id);
         target.Insert(0, id);
@@ -142,8 +166,11 @@ internal sealed class ConversationStore
         return true;
     }
 
-    public string CreateGroup(string name)
+    // Null when the store is read-only.
+    public string? CreateGroup(string name)
     {
+        if (ReadOnly)
+            return null;
         var g = new Group { Id = NewId(), Name = name.Trim() };
         _index.Groups.Insert(0, g);
         SaveIndex();
@@ -156,7 +183,7 @@ internal sealed class ConversationStore
     // The group's chats (archived ones too) move, in order, to the top of the ungrouped list; none is deleted.
     public bool DeleteGroup(string groupId)
     {
-        if (FindGroup(groupId) is not { } g)
+        if (ReadOnly || FindGroup(groupId) is not { } g)
             return false;
         _index.Groups.Remove(g);
         _index.Items.InsertRange(0, g.Items);
@@ -167,10 +194,13 @@ internal sealed class ConversationStore
     public bool MoveGroupUp(string groupId) => MoveGroup(groupId, -1);
     public bool MoveGroupDown(string groupId) => MoveGroup(groupId, 1);
 
-    public void SetArchivedCollapsed(bool collapsed)
+    public bool SetArchivedCollapsed(bool collapsed)
     {
+        if (ReadOnly)
+            return false;
         _index.ArchivedCollapsed = collapsed;
         SaveIndex();
+        return true;
     }
 
     // Groups in order with their non-archived chats, the ungrouped non-archived chats, then every archived chat
@@ -201,7 +231,7 @@ internal sealed class ConversationStore
 
     private bool Change(string id, Action<Conversation> change)
     {
-        if (Get(id) is not { } c)
+        if (ReadOnly || Get(id) is not { } c)
             return false;
         change(c);
         Write(PathOf(id), c);
@@ -210,7 +240,7 @@ internal sealed class ConversationStore
 
     private bool ChangeGroup(string groupId, Action<Group> change)
     {
-        if (FindGroup(groupId) is not { } g)
+        if (ReadOnly || FindGroup(groupId) is not { } g)
             return false;
         change(g);
         SaveIndex();
@@ -219,7 +249,7 @@ internal sealed class ConversationStore
 
     private bool Move(string id, int step)
     {
-        if (ListOf(id) is not { } list)
+        if (ReadOnly || ListOf(id) is not { } list)
             return false;
         var i = list.IndexOf(id);
         for (var j = i + step; j >= 0 && j < list.Count; j += step)
@@ -237,7 +267,7 @@ internal sealed class ConversationStore
     private bool MoveGroup(string groupId, int step)
     {
         var i = _index.Groups.FindIndex(g => g.Id == groupId);
-        if (i < 0 || i + step < 0 || i + step >= _index.Groups.Count)
+        if (ReadOnly || i < 0 || i + step < 0 || i + step >= _index.Groups.Count)
             return false;
         (_index.Groups[i], _index.Groups[i + step]) = (_index.Groups[i + step], _index.Groups[i]);
         SaveIndex();
@@ -250,17 +280,31 @@ internal sealed class ConversationStore
         _index.Items.Contains(id) ? _index.Items : _index.Groups.Find(g => g.Items.Contains(id))?.Items;
 
     // A legacy <hash>.json becomes an id-based conversation, then is renamed .migrated so it is converted once.
-    // An unreadable one is left alone. ponytail: a crash between the two steps migrates it twice (a duplicate chat).
-    private void Migrate(string path)
+    // A corrupt one is left alone. An IO error (locked, access denied) is returned, and a converted copy already written
+    // is removed again, so the next Load retries without a duplicate.
+    // ponytail: a crash between the two steps, or a failed removal, migrates it twice (a duplicate chat).
+    private string? Migrate(string path)
     {
-        if (Read<LauncherLogic.CodeConversation>(path) is not { } old)
-            return;
-        var c = Clean(new Conversation
+        string? written = null;
+        try
         {
-            Folder = old.Folder, Folders = old.Folders, Worker = old.Worker, Messages = old.Messages, Created = old.Updated, Updated = old.Updated,
-        }, NewId());
-        Write(PathOf(c.Id), c);
-        File.Move(path, Path.ChangeExtension(path, ".migrated"), overwrite: true);
+            if (Read<LauncherLogic.CodeConversation>(path) is not { } old)
+                return null;
+            var c = Clean(new Conversation
+            {
+                Folder = old.Folder, Folders = old.Folders, Worker = old.Worker, Messages = old.Messages, Created = old.Updated, Updated = old.Updated,
+            }, NewId());
+            written = PathOf(c.Id);
+            Write(written, c);
+            File.Move(path, Path.ChangeExtension(path, ".migrated"), overwrite: true);
+            return null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            if (written is not null)
+                try { File.Delete(written); } catch (Exception d) when (d is IOException or UnauthorizedAccessException) { }
+            return e.Message;
+        }
     }
 
     // Like LauncherLogic.LoadConversation: hand-edited or partial files get empty lists and lose invalid entries.
@@ -275,10 +319,11 @@ internal sealed class ConversationStore
         return c;
     }
 
+    // Null for a missing or corrupt file. An IO error (locked, access denied) is thrown: the file is there but unread.
     private static T? Read<T>(string path) where T : class
     {
         try { return JsonSerializer.Deserialize<T>(File.ReadAllText(path), Json); }
-        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException or NotSupportedException) { return null; }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException or JsonException or NotSupportedException) { return null; }
     }
 
     // Atomic: a crash leaves the old file or the new one, never half of one.
@@ -319,9 +364,9 @@ internal sealed class ConversationStore
             }
 
             // Round trip; two chats on one folder; newest at the top; derived titles.
-            var a = s.Create(@"C:\Work\Alpha");
-            var b = s.Create(@"C:\Work\Alpha");
-            var c = s.Create(@"C:\Work\Gamma\");
+            var a = s.Create(@"C:\Work\Alpha")!;
+            var b = s.Create(@"C:\Work\Alpha")!;
+            var c = s.Create(@"C:\Work\Gamma\")!;
             Check(a.Id != b.Id && IdName.IsMatch(a.Id) && File.Exists(Path.Combine(conversations, a.Id + ".json")), "create");
             a.Messages.Add(new("user", "  Fix   the\nlogin bug please, it fails whenever the password has a space "));
             a.Messages.Add(new("assistant", "Done."));
@@ -350,8 +395,8 @@ internal sealed class ConversationStore
             Check(Ids(s.View().Ungrouped) == Of(b, a, c), "order persists");
 
             // Groups: create (top), move at bounds, move chats in, rename, collapse, delete (chats survive).
-            var g1 = s.CreateGroup("Project One");
-            var g2 = s.CreateGroup("Two");
+            var g1 = s.CreateGroup("Project One")!;
+            var g2 = s.CreateGroup("Two")!;
             Check(string.Join(",", s.View().Groups.Select(g => g.Id)) == $"{g2},{g1}", "new group on top");
             Check(!s.MoveGroupUp(g2) && s.MoveGroupDown(g2) && !s.MoveGroupDown(g2) && !s.MoveGroupUp("missing"), "group moves");
             Check(s.MoveToGroup(a.Id, g1) && s.MoveToGroup(c.Id, g1) && !s.MoveToGroup(b.Id, "missing"), "move to group");
@@ -419,6 +464,46 @@ internal sealed class ConversationStore
                   !File.Exists(legacyPath) && File.Exists(Path.ChangeExtension(legacyPath, ".migrated")), "legacy migration");
             s = Reload();
             Check(s.View().Ungrouped.Count == 1 && Ids(s.View().Ungrouped) == Ids(migrated), "migrated once");
+
+            // A file that cannot be read (locked) is not a corrupt one: the store turns read-only, every change is refused,
+            // and sidebar.json is never rewritten, so a grouped chat keeps its place once the file can be read again.
+            var kept = s.Create(@"C:\Work\Kept")!;
+            var keptGroup = s.CreateGroup("Kept")!;
+            Check(s.MoveToGroup(kept.Id, keptGroup) && !s.ReadOnly, "lock setup");
+            var indexPath = Path.Combine(root, "sidebar.json");
+            var indexBytes = File.ReadAllBytes(indexPath);
+            bool IndexUnchanged() => File.ReadAllBytes(indexPath).SequenceEqual(indexBytes);
+            using (new FileStream(Path.Combine(conversations, kept.Id + ".json"), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                s = Reload();
+                Check(s.ReadOnly && s.Get(kept.Id) is null && s.Create(@"C:\Work\X") is null && s.CreateGroup("X") is null && !s.DeleteGroup(keptGroup) &&
+                      !s.Save(s.Get(migrated[0].Id)!) && !s.Archive(migrated[0].Id, true) && !s.SetArchivedCollapsed(false), "locked conversation: read-only");
+            }
+            s = Reload();
+            Check(IndexUnchanged() && !s.ReadOnly && Ids(s.View().Groups.Single(g => g.Id == keptGroup).Items) == kept.Id, "locked conversation: group kept");
+            indexBytes = File.ReadAllBytes(indexPath);
+            using (new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                s = Reload();
+                Check(s.ReadOnly && s.Get(kept.Id) is not null && s.Create(@"C:\Work\X") is null, "locked index: read-only");
+            }
+            Check(IndexUnchanged(), "locked index: unchanged");
+
+            // A locked legacy file: unreadable leaves nothing behind; readable but not renamable removes its converted copy.
+            // Once unlocked it is migrated exactly once.
+            var legacy2 = LauncherLogic.ConversationPath(@"C:\Work\Legacy2", root);
+            File.WriteAllText(legacy2, """{"folder":"C:\\Work\\Legacy2","messages":[{"role":"user","content":"second legacy"}]}""");
+            var files = Directory.GetFiles(conversations, "*.json").Length;
+            foreach (var share in new[] { FileShare.None, FileShare.Read })
+                using (new FileStream(legacy2, FileMode.Open, FileAccess.Read, share))
+                {
+                    s = Reload();
+                    Check(s.ReadOnly && s.Create(@"C:\Work\X") is null && Directory.GetFiles(conversations, "*.json").Length == files, $"locked legacy ({share}): read-only, no copy");
+                }
+            Check(IndexUnchanged() && s.View().Groups.Any(g => g.Id == keptGroup), "locked legacy: groups kept");
+            s = Reload();
+            Check(!s.ReadOnly && !File.Exists(legacy2) && Directory.GetFiles(conversations, "*.json").Length == files &&
+                  s.View().Ungrouped.Count(e => e.Title == "second legacy") == 1, "locked legacy: migrated once after unlock");
         }
         finally
         {

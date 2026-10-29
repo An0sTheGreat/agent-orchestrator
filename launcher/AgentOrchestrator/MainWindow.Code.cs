@@ -176,7 +176,12 @@ public partial class MainWindow
     // the sidebar; a folder may have several.
     private void NewCodeConversation()
     {
-        if (_chatBusy || _process is not null || _codeStarting || PickFolder("Choose the folder to work in") is not { } folder)
+        if (_chatBusy || _process is not null || _codeStarting)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (PickFolder("Choose the folder to work in") is not { } folder)
             return;
         CloseCodeConversation();
         ProjectPath = folder;
@@ -195,9 +200,9 @@ public partial class MainWindow
     {
         if (_codeConv is not null)
             return true;
-        if (!StoreDo(() => _codeConv = _store.Create(project)))
+        if (!StoreDo(() => _codeConv = _store.Create(project)) || _codeConv is null)
             return false;
-        _settings.LastConversation = _codeConv!.Id;
+        _settings.LastConversation = _codeConv.Id;
         _settings.Save();
         RefreshSidebarList();
         return true;
@@ -215,10 +220,16 @@ public partial class MainWindow
         }
         if (_codeConv?.Id != id && _store.Get(id) is { } conversation)
         {
+            if (!Path.IsPathFullyQualified(conversation.Folder)) // hand-edited or damaged: there is no folder to work in
+            {
+                Toast("This chat has no folder, so it can't be opened", "#FF667A");
+                RefreshSidebarList();
+                return;
+            }
             CloseCodeConversation();
             ProjectPath = conversation.Folder;
-            _codeConv = conversation;
             ResumeCodeConversation(conversation, SelectedProjectPath());
+            _codeConv = conversation;
             _settings.LastConversation = id;
             _settings.Save();
         }
@@ -228,10 +239,10 @@ public partial class MainWindow
     }
 
     // Empties the Code view. A conversation left with nothing in it (no messages, extra folders or title) is deleted
-    // rather than kept as clutter.
+    // rather than kept as clutter, unless it was moved into a project or archived.
     private void CloseCodeConversation()
     {
-        if (_codeConv is { Title: null } c && _code.History.Count == 0 && CodeExtraFolders.Count == 0)
+        if (_codeConv is { Title: null } c && _code.History.Count == 0 && CodeExtraFolders.Count == 0 && !_store.IsOrganized(c.Id))
             StoreDo(() => _store.Delete(c.Id));
         _codeConv = null;
         ClearConversation(_code);
@@ -245,13 +256,19 @@ public partial class MainWindow
         RefreshSidebarList();
     }
 
-    // A store write that failed (disk full, access denied) is reported instead of ending the app.
+    // A store write that failed (disk full, access denied) is reported instead of ending the app. So is a store that
+    // could not read everything at startup: it is read-only, and the change is not attempted.
     private bool StoreDo(Action change)
     {
         try
         {
-            change();
-            return true;
+            if (!_store.ReadOnly)
+                change(); // Load included: it is what may turn the store read-only
+            if (!_store.ReadOnly)
+                return true;
+            Log($"Conversations could not be loaded ({_store.LoadError}); changes to them are not saved until the launcher restarts");
+            Toast("Conversations could not be loaded; changes won't be saved", "#FF667A");
+            return false;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
@@ -323,7 +340,7 @@ public partial class MainWindow
     private void AddCodeFolder_Click(object sender, RoutedEventArgs e)
     {
         var project = SelectedProjectPath();
-        if (_chatBusy || _process is not null || project.Length == 0 || PickFolder("Choose a folder the worker may use") is not { } picked)
+        if (_chatBusy || _process is not null || project.Length == 0 || RefuseWorkflowRoot(project) || PickFolder("Choose a folder the worker may use") is not { } picked)
             return;
         var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
         if (SamePath(path, project))
