@@ -352,6 +352,17 @@ class ApiClient:
             if answer.strip().lower() == "q":
                 raise KeyboardInterrupt
 
+    def _thinking(self, body: dict[str, Any], on: bool) -> dict[str, Any]:
+        """Copy of `body` with the thinking switch set: Unsloth takes a top-level field, llama-server a chat-template kwarg."""
+        if not self.llama_port:
+            return {**body, "enable_thinking": on}
+        body = {key: value for key, value in body.items() if key != "enable_thinking"}
+        return {**body, "chat_template_kwargs": {**(body.get("chat_template_kwargs") or {}), "enable_thinking": on}}
+
+    def _thinking_off(self, body: dict[str, Any]) -> bool:
+        field = (body.get("chat_template_kwargs") or {}) if self.llama_port else body
+        return field.get("enable_thinking") is False
+
     def complete(
         self,
         model: str,
@@ -365,8 +376,10 @@ class ApiClient:
                 body.pop(key, None)
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
+        if self.llama_port and "enable_thinking" in body:
+            body = self._thinking(body, bool(body["enable_thinking"]))  # llama-server reads it inside chat_template_kwargs
         if self.thinking_off:
-            body["enable_thinking"] = False
+            body = self._thinking(body, False)
         fell_back = False
         while True:
             started = time.time()
@@ -391,9 +404,9 @@ class ApiClient:
             except (KeyError, IndexError, TypeError) as exc:
                 raise WorkflowError(f"Unexpected API response: {payload}") from exc
             if choice.get("finish_reason") == "length" and not has_output(message):
-                if not self.remote and body.get("enable_thinking") is not False:  # enable_thinking is Unsloth-only
+                if not self.remote and not self._thinking_off(body):  # enable_thinking is Unsloth/llama-server only
                     print(f"[{self.title or self.role}] reply cut off while thinking; retrying without thinking")
-                    body = {**body, "enable_thinking": False}
+                    body = self._thinking(body, False)
                     fell_back = True
                     emit("done", role=self.role, final=False)  # close the discarded streamed attempt in the launcher
                     continue
@@ -590,6 +603,8 @@ def gguf_file(auto_load: dict[str, Any]) -> Path:
                 found.append(path)
     variant = str(auto_load.get("gguf_variant") or "").lower()
     preferred = [path for path in found if variant and variant in path.name.lower()]
+    if found and variant and not preferred:
+        print(f"warning: no GGUF file name contains the variant {variant!r}; using {found[0].name}")
     if preferred or found:
         return (preferred or found)[0]
     raise WorkflowError(f"No GGUF file for {repo} in {', '.join(str(root) for root, _ in roots)}. "
@@ -636,7 +651,7 @@ def llama_ensure(client: ApiClient, role: str) -> str:
             )
         llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature,
                                                    "model_file": str(model_file), "log": str(log)}), encoding="utf-8")
-        emit("loading", role=role, path=path, url=client.base_url)
+        emit("loading", role=role, path=path)  # no url: the launcher would send Unsloth unload calls to it
         deadline = time.time() + client.timeout
         while not llama_healthy(port):
             if process.poll() is not None:

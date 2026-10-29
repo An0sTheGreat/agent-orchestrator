@@ -3110,6 +3110,7 @@ class LlamaCppTests(unittest.TestCase):
         self.enterContext(patch.object(orchestrator.time, "sleep"))
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
         self.emit = self.enterContext(patch.object(orchestrator, "emit"))
+        self.enterContext(patch.object(orchestrator, "EVENTS", False))  # chat requests go through _request, not the stream
         self.loaded = self.enterContext(patch.object(orchestrator, "LOADED_BY_RUN", {}))
         self.alive = set()  # pids llama_alive reports as running llama-servers; os.kill removes them
         self.enterContext(patch.object(orchestrator, "llama_alive", side_effect=lambda pid: pid in self.alive))
@@ -3222,8 +3223,105 @@ class LlamaCppTests(unittest.TestCase):
         log = self.tmp / "temp" / "agent-orchestrator-llama.log"
         self.assertEqual(json.loads(self.state_file().read_text()),
                          {"pid": 77, "port": 8899, "signature": " ".join(args), "model_file": str(model_file), "log": str(log)})
-        self.emit.assert_any_call("loading", role="planner", path=self.PATH, url="http://127.0.0.1:8899/v1")
+        self.emit.assert_any_call("loading", role="planner", path=self.PATH)  # no url: the launcher would unload via Unsloth
         self.assertIn(self.PATH, self.loaded)
+
+    def test_restarts_an_unhealthy_server_with_a_matching_signature(self):
+        model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.write_state(41, " ".join(orchestrator.llama_args(model_file, self.AUTO, 8899)))
+        self.alive.add(41)
+        self.healthy.side_effect = [False, True]  # the reuse check, then the wait for the new server
+        self.client().ensure_model("planner", False)
+        self.kill.assert_called_once_with(41, orchestrator.signal.SIGTERM)
+        self.popen.assert_called_once()
+
+    def test_stop_waits_for_the_process_before_the_next_server_starts(self):
+        model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.write_state(41, "old args")
+        events, states = [], iter([True, True, False])  # running, still running after the kill, gone
+
+        def alive(pid):
+            events.append("alive")
+            return next(states, False)
+
+        self.popen.side_effect = lambda *args, **kwargs: events.append("popen") or self.popen.return_value
+        with patch.object(orchestrator, "llama_alive", side_effect=alive):
+            self.client().ensure_model("planner", False)
+        self.assertEqual(events, ["alive", "alive", "alive", "popen"])
+        self.assertEqual(orchestrator.time.sleep.call_count, 1)  # one pause between the two polls after the kill
+
+    def test_stop_polls_until_the_process_is_gone(self):
+        self.write_state(41, "sig")
+        with patch.object(orchestrator, "llama_alive", side_effect=[True, True, True, False]):
+            self.assertTrue(orchestrator.llama_stop())
+        self.assertEqual(orchestrator.time.sleep.call_count, 2)
+        self.assertFalse(self.state_file().exists())
+
+    def test_load_timeout_stops_the_server_and_names_the_log(self):
+        self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.healthy.return_value = False
+        self.popen.side_effect = lambda *args, **kwargs: self.alive.add(77) or self.popen.return_value
+        clock = iter(range(0, 1000, 20))  # 20 s per reading: past the 30 s timeout on the second
+        with patch.object(orchestrator.time, "time", side_effect=lambda: next(clock)), \
+                self.assertRaises(orchestrator.WorkflowError) as ctx:
+            self.client().ensure_model("planner", False)
+        self.assertIn("did not load", str(ctx.exception))
+        self.assertIn("within 30s", str(ctx.exception))
+        self.assertIn(str(self.tmp / "temp" / "agent-orchestrator-llama.log"), str(ctx.exception))
+        self.kill.assert_called_once_with(77, orchestrator.signal.SIGTERM)
+        self.assertFalse(self.state_file().exists())
+
+    def chat(self, client, sampling, replies=None):
+        """Run client.complete against canned payloads; returns the request bodies it sent."""
+        replies = replies or [{"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}]
+        with patch.object(client, "_request", side_effect=replies) as request:
+            client.complete(self.PATH, [{"role": "user", "content": "hi"}], sampling)
+        return [call.args[2] for call in request.call_args_list]
+
+    CUT_OFF = {"choices": [{"message": {"content": ""}, "finish_reason": "length"}]}
+
+    def test_llama_thinking_switch_goes_in_chat_template_kwargs(self):
+        for sampling in ({"enable_thinking": False}, {"chat_template_kwargs": {"x": 1}, "enable_thinking": False}):
+            (body,) = self.chat(self.client(), sampling)
+            self.assertNotIn("enable_thinking", body)
+            self.assertEqual(body["chat_template_kwargs"], {**sampling.get("chat_template_kwargs", {}), "enable_thinking": False})
+
+    def test_llama_ask_once_without_thinking(self):
+        sent = []
+        with patch.object(orchestrator.ApiClient, "ensure_model", return_value=self.PATH), \
+                patch.object(orchestrator.ApiClient, "_request",
+                             lambda self_, method, path, body: sent.append(body) or {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}):
+            self.assertEqual(orchestrator.ask_once({"roles": {"planner": self.ROLE}}, "planner", "s", "u", False, thinking=False), "ok")
+        self.assertNotIn("enable_thinking", sent[0])
+        self.assertEqual(sent[0]["chat_template_kwargs"], {"enable_thinking": False})
+
+    def test_llama_cut_off_retry_disables_thinking_in_chat_template_kwargs(self):
+        reply = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        first, retry = self.chat(self.client(), {"chat_template_kwargs": {"x": 1}}, [self.CUT_OFF, reply])
+        self.assertEqual(first["chat_template_kwargs"], {"x": 1})
+        self.assertNotIn("enable_thinking", retry)
+        self.assertEqual(retry["chat_template_kwargs"], {"x": 1, "enable_thinking": False})
+
+    def test_unsloth_thinking_switch_stays_top_level(self):
+        os.environ["AGENT_ORCHESTRATOR_BACKEND"] = "unsloth"
+        os.environ["UNSLOTH_API_KEY"] = "k"
+        reply = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        (body,) = self.chat(self.client(), {"enable_thinking": False})
+        self.assertEqual((body["enable_thinking"], "chat_template_kwargs" in body), (False, False))
+        _, retry = self.chat(self.client(), {}, [self.CUT_OFF, reply])
+        self.assertEqual((retry["enable_thinking"], "chat_template_kwargs" in retry), (False, False))
+
+    def test_gguf_warns_when_no_file_matches_the_variant(self):
+        wanted = self.touch(self.SNAP + "Qwen3.5-4B-BF16.gguf")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.find(gguf_variant="Q4_K_M"), wanted)
+        self.assertIn("q4_k_m", out.getvalue())
+        self.assertIn("Qwen3.5-4B-BF16.gguf", out.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.find()
+        self.assertEqual(out.getvalue(), "")
 
     def test_early_exit_reports_the_log_tail(self):
         self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
