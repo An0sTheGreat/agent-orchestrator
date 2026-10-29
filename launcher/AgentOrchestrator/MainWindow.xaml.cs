@@ -3574,6 +3574,7 @@ public partial class MainWindow : Window
         ("Blue", "Flat blue", "#4C8DFF", "#86B3FF", "#FFFFFF"),
         ("Pink", "Pink", "#FF6FB5", "#FFA6D2", "#1A0A12"),
         ("Orange", "Orange", "#FF8A3D", "#FFB880", "#1A0D04"),
+        ("Gray", "Gray", "#A3A09A", "#D9D6D0", "#1A1916"), // warm neutral, close to Claude desktop; its tint greys the surfaces
     };
 
     private string AccentKey => _settings.ThemeAccents.TryGetValue(_settings.Theme, out var key) && AccentColors.Any(x => x.Key == key)
