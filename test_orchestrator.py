@@ -12,6 +12,7 @@ from unittest.mock import patch
 import orchestrator
 
 REAL_RUN_AGENT = orchestrator.run_agent
+REAL_LLAMA_ALIVE = orchestrator.llama_alive
 
 
 class OrchestratorTests(unittest.TestCase):
@@ -3084,6 +3085,228 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual(names[:len(orchestrator.CODE_TOOLS)], [t["function"]["name"] for t in orchestrator.CODE_TOOLS])
         self.assertEqual(names[len(orchestrator.CODE_TOOLS):], ["calculator", "current_time", "fetch_page"])
         self.assertIn("UTILITIES\n", log[0]["system"])
+
+
+class LlamaCppTests(unittest.TestCase):
+    """Local roles on our own llama-server (AGENT_ORCHESTRATOR_BACKEND=llamacpp); no network and no real process."""
+
+    PATH = "unsloth/Qwen3.5-4B-GGUF"
+    SNAP = "hub/models--unsloth--Qwen3.5-4B-GGUF/snapshots/abc/"
+    AUTO = {"model_path": PATH, "gguf_variant": "Q4_K_M", "max_seq_length": 32768, "cache_type_kv": "q8_0", "n_batch": 1024,
+            "n_ubatch": 256, "gpu_layers": -1, "reasoning_budget": 0, "llama_extra_args": ["--flash-attn", "on"]}
+    ROLE = {"base_url": "http://127.0.0.1:8888/v1", "management_url": "http://127.0.0.1:8888", "api_key_env": "UNSLOTH_API_KEY",
+            "expected_model_contains": "Qwen3.5-4B-GGUF", "timeout_seconds": 30, "auto_load": AUTO}
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(dir=Path(__file__).parent))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        (self.tmp / "temp").mkdir()
+        self.exe = self.tmp / "llama-server.exe"
+        self.exe.write_bytes(b"")
+        self.enterContext(patch.dict(os.environ, {"AGENT_ORCHESTRATOR_BACKEND": "llamacpp", "AGENT_ORCHESTRATOR_LLAMA_SERVER": str(self.exe),
+                                                  "AGENT_ORCHESTRATOR_GGUF_DIRS": "", "HF_HUB_CACHE": str(self.tmp / "hub")}))
+        os.environ.pop("UNSLOTH_API_KEY", None)  # restored by patch.dict; llama.cpp roles need no key
+        self.enterContext(patch.object(tempfile, "tempdir", str(self.tmp / "temp")))
+        self.enterContext(patch.object(orchestrator.time, "sleep"))
+        self.enterContext(contextlib.redirect_stdout(io.StringIO()))
+        self.emit = self.enterContext(patch.object(orchestrator, "emit"))
+        self.loaded = self.enterContext(patch.object(orchestrator, "LOADED_BY_RUN", {}))
+        self.alive = set()  # pids llama_alive reports as running llama-servers; os.kill removes them
+        self.enterContext(patch.object(orchestrator, "llama_alive", side_effect=lambda pid: pid in self.alive))
+        self.kill = self.enterContext(patch.object(orchestrator.os, "kill", side_effect=lambda pid, sig: self.alive.discard(pid)))
+        self.healthy = self.enterContext(patch.object(orchestrator, "llama_healthy", return_value=True))
+        self.popen = self.enterContext(patch.object(orchestrator.subprocess, "Popen"))
+        self.popen.return_value.pid = 77
+        self.popen.return_value.poll.return_value = None
+
+    def touch(self, *names):
+        for name in names:
+            (self.tmp / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.tmp / name).write_bytes(b"")
+        return self.tmp / names[-1]
+
+    def find(self, **auto):
+        return orchestrator.gguf_file({"model_path": self.PATH, **auto})
+
+    def state_file(self):
+        return self.tmp / "temp" / "agent-orchestrator-llama.json"
+
+    def write_state(self, pid, signature):
+        self.state_file().write_text(json.dumps({"pid": pid, "port": 8899, "signature": signature, "model_file": "x", "log": "y"}))
+
+    def client(self, config=None):
+        client, _ = orchestrator.role_settings(config or {"roles": {"planner": self.ROLE}}, "planner")
+        client.model_id = lambda: self.PATH
+        return client
+
+    def test_gguf_prefers_the_variant(self):
+        self.touch(self.SNAP + "Qwen3.5-4B-BF16.gguf")
+        wanted = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.assertEqual(self.find(gguf_variant="q4_k_m"), wanted)
+
+    def test_gguf_skips_the_vision_projector(self):
+        self.touch(self.SNAP + "mmproj-f16.gguf")
+        wanted = self.touch(self.SNAP + "qwen3.5-4b-q4_k_m.gguf")
+        self.assertEqual(self.find(), wanted)
+
+    def test_gguf_split_model_loads_the_first_part(self):
+        self.touch("hub/models--unsloth--Qwen3.5-4B-GGUF/snapshots/a/Q4_K_M/Qwen3.5-4B-Q4_K_M-00002-of-00002.gguf")
+        wanted = self.touch("hub/models--unsloth--Qwen3.5-4B-GGUF/snapshots/b/Q4_K_M/Qwen3.5-4B-Q4_K_M-00001-of-00002.gguf")
+        self.assertEqual(self.find(gguf_variant="Q4_K_M"), wanted)
+
+    def test_gguf_explicit_file_wins_and_a_missing_one_falls_back(self):
+        cached = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        explicit = self.touch("elsewhere/custom.gguf")
+        self.assertEqual(self.find(gguf_file=str(explicit)), explicit)
+        self.assertEqual(self.find(gguf_file=str(self.tmp / "gone.gguf")), cached)
+
+    def test_gguf_extra_folders_are_searched_first_by_model_name(self):
+        self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.touch("models1/other/Llama-3-8B-Q4_K_M.gguf")
+        wanted = self.touch("models2/unsloth/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf")
+        os.environ["AGENT_ORCHESTRATOR_GGUF_DIRS"] = f"{self.tmp / 'models1'};{self.tmp / 'models2'};"
+        self.assertEqual(self.find(gguf_variant="Q4_K_M"), wanted)
+
+    def test_gguf_hugging_face_cache_from_hub_cache_or_hf_home(self):
+        wanted = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.assertEqual(self.find(), wanted)
+        del os.environ["HF_HUB_CACHE"]
+        os.environ["HF_HOME"] = str(self.tmp)
+        self.assertEqual(self.find(), wanted)
+
+    def test_gguf_not_found_names_the_model_and_folders(self):
+        os.environ["AGENT_ORCHESTRATOR_GGUF_DIRS"] = str(self.tmp / "models1")
+        with self.assertRaises(orchestrator.WorkflowError) as ctx:
+            self.find()
+        text = str(ctx.exception)
+        for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Unsloth", "Options"):
+            self.assertIn(part, text)
+
+    def test_server_args(self):
+        self.assertEqual(orchestrator.llama_args(Path("m.gguf"), self.AUTO, 8899), [
+            "-m", "m.gguf", "--host", "127.0.0.1", "--port", "8899", "--alias", self.PATH, "-c", "32768", "-ngl", "999", "--jinja",
+            "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-b", "1024", "-ub", "256", "--reasoning-budget", "0",
+            "--flash-attn", "on"])
+        for auto, layers in (({"gpu_layers": 20, "reasoning_budget": 8192}, "20"), ({}, "999")):
+            args = orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "max_seq_length": 4096, **auto}, 9000)
+            self.assertEqual(args[-5:], ["-c", "4096", "-ngl", layers, "--jinja"])
+            self.assertNotIn("--reasoning-budget", args)
+
+    def test_llama_role_needs_no_key_and_uses_the_llama_port(self):
+        client = self.client({"llama_port": 9001, "roles": {"planner": self.ROLE}})
+        self.assertEqual((client.base_url, client.management_url, client.llama_port, client.remote),
+                         ("http://127.0.0.1:9001/v1", "", 9001, False))
+        self.assertEqual(client.load_mismatch(), "")
+        self.assertEqual(client._monitor_row(0), {})
+
+    def test_reuses_the_running_server_when_the_signature_matches(self):
+        model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.write_state(41, " ".join(orchestrator.llama_args(model_file, self.AUTO, 8899)))
+        self.alive.add(41)
+        self.assertEqual(self.client().ensure_model("planner", False), self.PATH)
+        self.popen.assert_not_called()
+        self.kill.assert_not_called()
+        self.assertIn(self.PATH, self.loaded)
+        self.emit.assert_any_call("model", role="planner", id=self.PATH)
+
+    def test_restarts_the_server_when_the_signature_differs(self):
+        model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.write_state(41, "old args")
+        self.alive.add(41)
+        self.client().ensure_model("planner", False)
+        self.kill.assert_called_once_with(41, orchestrator.signal.SIGTERM)
+        args = orchestrator.llama_args(model_file, self.AUTO, 8899)
+        call = self.popen.call_args
+        self.assertEqual(call.args[0], [str(self.exe), *args])
+        self.assertTrue(call.kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
+        log = self.tmp / "temp" / "agent-orchestrator-llama.log"
+        self.assertEqual(json.loads(self.state_file().read_text()),
+                         {"pid": 77, "port": 8899, "signature": " ".join(args), "model_file": str(model_file), "log": str(log)})
+        self.emit.assert_any_call("loading", role="planner", path=self.PATH, url="http://127.0.0.1:8899/v1")
+        self.assertIn(self.PATH, self.loaded)
+
+    def test_early_exit_reports_the_log_tail(self):
+        self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        self.healthy.return_value = False
+
+        def crash(cmd, **kwargs):
+            kwargs["stdout"].write("".join(f"line {n}\n" for n in range(30)).encode())
+            kwargs["stdout"].flush()
+            return self.popen.return_value
+
+        self.popen.side_effect = crash
+        self.popen.return_value.poll.return_value = 3
+        self.popen.return_value.returncode = 3
+        with self.assertRaises(orchestrator.WorkflowError) as ctx:
+            self.client().ensure_model("planner", False)
+        text = str(ctx.exception)
+        self.assertIn("code 3", text)
+        self.assertIn("line 10", text)
+        self.assertIn("line 29", text)
+        self.assertNotIn("line 9", text)
+        self.assertFalse(self.state_file().exists())
+
+    def test_missing_llama_server_points_to_options(self):
+        self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        for value in (None, str(self.tmp / "nope.exe")):
+            if value is None:
+                del os.environ["AGENT_ORCHESTRATOR_LLAMA_SERVER"]
+            else:
+                os.environ["AGENT_ORCHESTRATOR_LLAMA_SERVER"] = value
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                self.client().ensure_model("planner", False)
+            self.assertIn("Download llama-server in Options", str(ctx.exception))
+        self.popen.assert_not_called()
+
+    def test_backend_unset_keeps_the_unsloth_path(self):
+        os.environ["UNSLOTH_API_KEY"] = "k"
+        for backend in (None, "unsloth"):
+            if backend is None:
+                os.environ.pop("AGENT_ORCHESTRATOR_BACKEND", None)
+            else:
+                os.environ["AGENT_ORCHESTRATOR_BACKEND"] = backend
+            client = self.client()
+            self.assertEqual((client.base_url, client.management_url, client.llama_port),
+                             ("http://127.0.0.1:8888/v1", "http://127.0.0.1:8888", 0))
+            client.model_id = unittest.mock.Mock(side_effect=[orchestrator.WorkflowError("none"), self.PATH])
+            with patch.object(orchestrator.ApiClient, "_request_at", return_value={}) as request:
+                client.ensure_model("planner", False)
+            request.assert_any_call("http://127.0.0.1:8888", "POST", "/api/inference/load", self.AUTO)
+        self.popen.assert_not_called()
+
+    def test_remote_roles_are_unaffected(self):
+        os.environ["REMOTE_TEST_KEY"] = "sk"
+        remote = {"base_url": "https://remote.example/v1", "api_key_env": "REMOTE_TEST_KEY", "model": "vendor/m"}
+        client, _ = orchestrator.role_settings({"roles": {"planner": remote}}, "planner")
+        self.assertEqual((client.base_url, client.remote, client.llama_port), ("https://remote.example/v1", True, 0))
+        self.assertEqual(client.ensure_model("planner", False), "vendor/m")
+        self.popen.assert_not_called()
+        self.assertEqual(self.loaded, {})
+
+    def test_unload_models_stops_the_recorded_server(self):
+        self.write_state(41, "sig")
+        self.alive.add(41)
+        self.loaded[self.PATH] = self.client()
+        with patch.object(orchestrator.ApiClient, "_request_at") as request:
+            orchestrator.unload_models()
+        self.kill.assert_called_once_with(41, orchestrator.signal.SIGTERM)
+        request.assert_not_called()
+        self.assertFalse(self.state_file().exists())
+        self.assertEqual(self.loaded, {})
+
+    def test_unload_local_flag_stops_the_recorded_server(self):
+        self.write_state(41, "sig")
+        self.alive.add(41)
+        with patch.object(orchestrator.sys, "argv", ["orchestrator.py", "--unload-local"]), \
+                contextlib.redirect_stdout(io.TextIOWrapper(io.BytesIO())):  # _run reconfigures stdout
+            self.assertEqual(orchestrator._run(), 0)
+        self.kill.assert_called_once_with(41, orchestrator.signal.SIGTERM)
+        self.assertFalse(self.state_file().exists())
+
+    def test_alive_only_for_a_llama_server_process(self):
+        for image, expected in (('"llama-server.exe","41","Console"', True), ('"notepad.exe","41","Console"', False)):
+            with patch.object(orchestrator.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, image, "")):
+                self.assertEqual(REAL_LLAMA_ALIVE(41), expected)
 
 
 if __name__ == "__main__":

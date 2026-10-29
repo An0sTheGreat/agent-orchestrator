@@ -81,6 +81,17 @@ If automatic loading is rejected, the controller reports the API error and falls
 
 Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
+### Local models (llama.cpp)
+
+With `AGENT_ORCHESTRATOR_BACKEND=llamacpp` (the launcher sets it), every role with an `auto_load` runs on llama.cpp's `llama-server.exe` instead of Unsloth Studio; remote API roles are unchanged. No Unsloth API key is needed for these roles.
+
+- `AGENT_ORCHESTRATOR_LLAMA_SERVER`: full path to `llama-server.exe` (download it in **Options**). Required with this backend.
+- `AGENT_ORCHESTRATOR_GGUF_DIRS`: optional `;`-separated extra folders holding GGUF files.
+
+The model file is `auto_load.gguf_file` when set and present. Otherwise it is looked up, in order, in each extra folder (recursively, files whose path names the model, for example `Qwen3.5-4B` for `unsloth/Qwen3.5-4B-GGUF`) and in the Hugging Face cache (`HF_HUB_CACHE`, else `HF_HOME\hub`, else `~\.cache\huggingface\hub`, under `models--<org>--<name>\snapshots`). A file whose name contains `gguf_variant` is preferred, `mmproj` files are skipped, and a split model starts from its `-00001-of-0000N` part. If nothing is found, download the model in Unsloth or add its folder in Options.
+
+One server runs at a time on `127.0.0.1:8899` (top-level `"llama_port"` in `config.json` overrides), started with the role's `max_seq_length`, `gpu_layers` (`-1` = all), `cache_type_kv`, `n_batch`, `n_ubatch`, `reasoning_budget` (only `0` is passed) and `llama_extra_args`. A server already running with the same arguments is reused; a different model or setting restarts it. Its state is in `%TEMP%\agent-orchestrator-llama.json` (`pid`, `port`, `signature`, `model_file`, `log`) and its output in `%TEMP%\agent-orchestrator-llama.log`. A workflow run stops the server when it ends; in chat and code mode it stays up until the launcher closes. `python orchestrator.py --unload-local` stops the recorded server and deletes the state file.
+
 ## Remote models per role
 
 Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's OpenAI-compatible endpoint, another local server) while the others stay on Unsloth. Give the role `base_url`, a `model` id and `api_key_env`, and no `management_url` or `auto_load`:

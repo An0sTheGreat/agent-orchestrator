@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 from pathlib import Path
 import subprocess
@@ -235,6 +236,7 @@ class ApiClient:
         self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
         self.cut_off = False  # the last reply stopped at max_tokens
+        self.llama_port = 0  # set by role_settings when this role runs on the llama.cpp backend
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -298,6 +300,8 @@ class ApiClient:
     def ensure_model(self, role: str, interactive: bool) -> str:
         load_error = ""
         name = self.title or role
+        if self.llama_port:
+            return llama_ensure(self, role)
         if self.model and not (self.management_url and self.auto_load):
             print(f"[{name}] {self.model}")  # a configured id is used as is: no /models check, nothing to load
             emit("model", role=role, id=self.model)
@@ -506,6 +510,150 @@ class ApiClient:
         )
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# llama.cpp backend (AGENT_ORCHESTRATOR_BACKEND=llamacpp): roles with auto_load run on one llama-server.exe that this
+# engine starts, instead of Unsloth Studio. The launcher sets the env vars and kills the server at app close by reading
+# the state file {"pid", "port", "signature", "model_file", "log"}; keep those names.
+# ---------------------------------------------------------------------------------------------------------------------
+
+LLAMA_PORT = 8899  # config "llama_port" overrides
+SPLIT_PART = re.compile(r"-(\d{5})-of-\d{5}\.gguf$", re.I)
+
+
+def llama_path(suffix: str) -> Path:
+    """The server's state file (.json) or log (.log) in the temp dir."""
+    return Path(tempfile.gettempdir()) / f"agent-orchestrator-llama{suffix}"
+
+
+def llama_state() -> dict[str, Any]:
+    try:
+        return json.loads(llama_path(".json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def llama_alive(pid: Any) -> bool:
+    """True if `pid` is a running llama-server (not a reused pid of another program)."""
+    if not isinstance(pid, int):
+        return False
+    listed = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+    return "llama-server" in listed.stdout.lower()
+
+
+def llama_healthy(port: int) -> bool:
+    """GET /health is 200 once the model is loaded (503 while loading)."""
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/health", timeout=5) as response:
+            return response.status == 200
+    except OSError:
+        return False
+
+
+def llama_stop() -> bool:
+    """Stop the recorded llama-server if it still runs and forget it; True if one was stopped."""
+    pid = llama_state().get("pid")
+    stopped = llama_alive(pid)
+    if stopped:
+        try:
+            os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+        except OSError:
+            pass
+        for _ in range(50):  # wait until its port and VRAM are free before the next server starts
+            if not llama_alive(pid):
+                break
+            time.sleep(0.2)
+    llama_path(".json").unlink(missing_ok=True)
+    return stopped
+
+
+def gguf_file(auto_load: dict[str, Any]) -> Path:
+    """auto_load.gguf_file, else the model's GGUF in the extra model folders, then the Hugging Face cache."""
+    explicit = auto_load.get("gguf_file")
+    if explicit and Path(explicit).is_file():
+        return Path(explicit)
+    repo = str(auto_load["model_path"])
+    hub = os.environ.get("HF_HUB_CACHE") or (Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME")
+                                             else Path.home() / ".cache" / "huggingface" / "hub")
+    # Extra folders hold many models: a file belongs to this one if its path names it (Qwen3.5-4B-GGUF -> qwen3.5-4b).
+    # ponytail: substring match on the name, so "qwen3-4b" also matches "qwen3-4b-instruct"; gguf_file pins the exact file.
+    key = re.sub(r"-gguf$", "", repo.split("/")[-1].lower())
+    roots = [(Path(p.strip()), True) for p in os.environ.get("AGENT_ORCHESTRATOR_GGUF_DIRS", "").split(";") if p.strip()]
+    roots.append((Path(hub) / f"models--{repo.replace('/', '--')}" / "snapshots", False))
+    found = []
+    for root, by_name in roots:
+        for path in sorted(root.rglob("*.gguf")):
+            part = SPLIT_PART.search(path.name)
+            if "mmproj" in path.name.lower() or (part and part.group(1) != "00001"):
+                continue  # vision projector, or a later part of a split model (llama.cpp loads the rest from part 1)
+            if not by_name or key in str(path.relative_to(root)).lower():
+                found.append(path)
+    variant = str(auto_load.get("gguf_variant") or "").lower()
+    preferred = [path for path in found if variant and variant in path.name.lower()]
+    if preferred or found:
+        return (preferred or found)[0]
+    raise WorkflowError(f"No GGUF file for {repo} in {', '.join(str(root) for root, _ in roots)}. "
+                        "Download the model in Unsloth, or add its models folder in Options.")
+
+
+def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[str]:
+    layers = auto_load.get("gpu_layers", -1)
+    args = ["-m", str(model_file), "--host", "127.0.0.1", "--port", str(port), "--alias", str(auto_load["model_path"])]
+    if "max_seq_length" in auto_load:
+        args += ["-c", str(auto_load["max_seq_length"])]
+    args += ["-ngl", str(999 if layers in (-1, None) else layers), "--jinja"]
+    if auto_load.get("cache_type_kv"):
+        args += ["--cache-type-k", str(auto_load["cache_type_kv"]), "--cache-type-v", str(auto_load["cache_type_kv"])]
+    if "n_batch" in auto_load:
+        args += ["-b", str(auto_load["n_batch"])]
+    if "n_ubatch" in auto_load:
+        args += ["-ub", str(auto_load["n_ubatch"])]
+    if auto_load.get("reasoning_budget") == 0:
+        args += ["--reasoning-budget", "0"]
+    return args + [str(arg) for arg in auto_load.get("llama_extra_args") or []]
+
+
+def llama_ensure(client: ApiClient, role: str) -> str:
+    """Serve the role's model on llama-server: reuse the running server if it has the same args, else restart it."""
+    name = client.title or role
+    exe = os.environ.get("AGENT_ORCHESTRATOR_LLAMA_SERVER", "")
+    if not exe or not Path(exe).is_file():
+        raise WorkflowError(f"{name}: llama-server.exe was not found ({exe or 'AGENT_ORCHESTRATOR_LLAMA_SERVER is not set'}). "
+                            "Download llama-server in Options.")
+    path, port = str(client.auto_load["model_path"]), client.llama_port
+    model_file = gguf_file(client.auto_load)
+    args = llama_args(model_file, client.auto_load, port)
+    signature = " ".join(args)
+    state = llama_state()
+    if not (state.get("signature") == signature and llama_alive(state.get("pid")) and llama_healthy(port)):
+        llama_stop()
+        print(f"[{name}] loading {path} ({model_file.name}) on llama-server ...")
+        log = llama_path(".log")
+        with open(log, "wb") as out:  # the child keeps its own handle
+            process = subprocess.Popen(
+                [exe, *args], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+            )
+        llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature,
+                                                   "model_file": str(model_file), "log": str(log)}), encoding="utf-8")
+        emit("loading", role=role, path=path, url=client.base_url)
+        deadline = time.time() + client.timeout
+        while not llama_healthy(port):
+            if process.poll() is not None:
+                llama_stop()
+                tail = "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
+                raise WorkflowError(f"{name}: llama-server exited (code {process.returncode}) while loading {model_file.name}:\n{tail}")
+            if time.time() > deadline:
+                llama_stop()
+                raise WorkflowError(f"{name}: llama-server did not load {model_file.name} within {client.timeout}s; see {log}")
+            time.sleep(0.5)
+    LOADED_BY_RUN[path] = client  # the server is always ours: stopped at the end of a workflow run
+    model = client.model_id()
+    print(f"[{name}] {model}")
+    emit("model", role=role, id=model)
+    return model
+
+
 BUILTIN_ROLES = ("planner", "implementer", "reviewer")
 
 
@@ -605,7 +753,14 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
             and (urlsplit(str(settings.get("base_url", ""))).hostname or "").lower() not in LOOPBACK_HOSTS:
         raise WorkflowError(f"{display_name(config, role)}: a remote role must not use UNSLOTH_API_KEY (the local Unsloth key); "
                             "give it its own api_key_env")
+    port = 0
+    if os.environ.get("AGENT_ORCHESTRATOR_BACKEND") == "llamacpp" and settings.get("auto_load"):
+        # A local role served by our own llama-server: no Unsloth routes, no key (the dummy keeps the Bearer header valid).
+        port = int(config.get("llama_port", LLAMA_PORT))
+        settings = {**settings, "base_url": f"http://127.0.0.1:{port}/v1", "management_url": "", "api_key_env": "",
+                    "api_key": "no-key", "model": ""}
     client = ApiClient(settings)
+    client.llama_port = port
     client.role = role
     client.title = display_name(config, role)
     return client, sampling
@@ -3014,7 +3169,11 @@ def _run() -> int:
     turn = parser.add_mutually_exclusive_group()
     turn.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
     turn.add_argument("--code", type=Path, help="Run one Code turn (file tools confined to the request's folders) for this JSON request")
+    parser.add_argument("--unload-local", action="store_true", help="Stop the llama-server this app started, then exit")
     args = parser.parse_args()
+    if args.unload_local:
+        llama_stop()
+        return 0
     global PROJECT_ROOT_ARG, EVENTS, CHAT_MODE
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
@@ -3114,6 +3273,10 @@ LOADED_BY_RUN: dict[str, "ApiClient"] = {}
 def unload_models() -> None:
     """Free VRAM/RAM: unload only the models this run loaded, ignoring failures."""
     for path, client in LOADED_BY_RUN.items():
+        if client.llama_port:
+            if llama_stop():
+                print(f"[{client.title or client.role}] stopped llama-server")
+            continue
         try:
             client._request_at(client.management_url, "POST", "/api/inference/unload", {"model_path": path})
             print(f"[{client.title or client.role}] unloaded {path}")
