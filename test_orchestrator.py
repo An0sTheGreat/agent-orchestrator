@@ -2608,6 +2608,14 @@ class ContractTests(unittest.TestCase):
             self.assertIn('<div id="x"></div>', page)
             self.assertTrue((root / "app" / "main.mjs").is_file())
 
+    def test_scaffold_loads_js_as_modules_when_the_contract_says_so(self):
+        for contract in ({"files": [{"path": "index.html", "loads": ["app.js"]}], "notes": ["Scripts are ES Modules."]},
+                         {"files": [{"path": "index.html", "loads": ["app.js"]}, {"path": "app.js", "purpose": "Imports util.js"}]}):
+            with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder, contextlib.redirect_stdout(io.StringIO()):
+                orchestrator.scaffold_contract({}, Path(folder), contract)
+                page = (Path(folder) / "index.html").read_text(encoding="utf-8")
+            self.assertIn('<script type="module" src="app.js"></script>', page, contract)
+
     def test_scaffold_never_touches_existing_files_and_amendments_add_only_new_pages(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.project(folder, files={"index.html": "<p>mine</p>", "style.css": "body{}"})
@@ -2702,6 +2710,70 @@ class RemoteRoleTests(unittest.TestCase):
                 self.assertTrue(text.startswith(f"planner: API {code} from {self.URL}/chat/completions"), text)
                 self.assertIn(hint, text)
                 self.assertNotIn(self.KEY, text)
+
+    def test_remote_role_refuses_the_local_unsloth_key(self):
+        sent = []
+        for url, refused in ((self.URL, True), ("http://localhost:9000/v1", False), ("http://[::1]:9000/v1", False)):
+            role = dict(self.CONFIG["roles"]["planner"], base_url=url, api_key_env="UNSLOTH_API_KEY")
+            config = {"roles": {"planner": role}}
+            with patch.dict(os.environ, {"UNSLOTH_API_KEY": self.KEY}), patch.object(orchestrator, "urlopen", side_effect=lambda r, timeout=None: sent.append(r)):
+                if refused:
+                    with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                        orchestrator.role_settings(config, "planner")
+                    self.assertTrue(str(ctx.exception).startswith("planner: "), ctx.exception)
+                    self.assertIn("UNSLOTH_API_KEY", str(ctx.exception))
+                    self.assertNotIn(self.KEY, str(ctx.exception))
+                else:
+                    orchestrator.role_settings(config, "planner")  # a local server without Unsloth management is fine
+        self.assertEqual(sent, [])
+
+    def test_remote_body_omits_unsloth_only_fields_unless_send_extra_body(self):
+        sent = []
+
+        def fake(request, timeout=None):
+            sent.append(json.loads(request.data))
+            return self.response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}})
+
+        extra = {"top_k": 20, "repetition_penalty": 1.05, "min_p": 0.1, "chat_template_kwargs": {"x": 1}}
+        dropped = set(extra) | {"enable_thinking"}
+        role = dict(self.CONFIG["roles"]["planner"], sampling={"temperature": 0.2, "max_tokens": 64, "extra_body": extra})
+        for send_extra in (False, True):
+            sent.clear()
+            config = {"roles": {"planner": dict(role, send_extra_body=True) if send_extra else role}}
+            with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False), \
+                    patch.object(orchestrator, "urlopen", side_effect=fake), contextlib.redirect_stdout(io.StringIO()):
+                orchestrator.ask_once(config, "planner", "sys", "user", False)
+                orchestrator.ask_once(config, "planner", "sys", "user", False, thinking=False)  # the JSON-repair call
+            self.assertEqual(len(sent), 2)
+            for body in sent:
+                self.assertNotIn("enable_thinking", body)  # never added for a remote role
+                self.assertEqual(set(extra) <= set(body), send_extra, body)
+                self.assertEqual(body["temperature"], 0.2)
+
+        # cut off while thinking: no enable_thinking retry for a remote role, and no auto_load advice
+        sent.clear()
+        cut = lambda request, timeout=None: (sent.append(json.loads(request.data)), self.response(
+            {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {}}))[1]
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False), \
+                patch.object(orchestrator, "urlopen", side_effect=cut), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                orchestrator.ask_once({"roles": {"planner": role}}, "planner", "sys", "user", False)
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(dropped & set(sent[0]))
+        self.assertNotIn("auto_load", str(ctx.exception))
+
+    def test_remote_context_overflow_does_not_suggest_auto_load(self):
+        from urllib.error import HTTPError
+
+        def fail(request, timeout=None):
+            raise HTTPError(request.full_url, 400, "err", {}, io.BytesIO(b'{"error": "context length exceeded"}'))
+
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False), \
+                patch.object(orchestrator, "urlopen", side_effect=fail), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
+        self.assertIn("exceeded the model's context length", str(ctx.exception))
+        self.assertNotIn("auto_load", str(ctx.exception))
 
     def test_custom_worker_with_only_a_model_id_is_valid(self):
         worker = {"id": "w", "title": "Remote", "kind": "reviewer", "system_prompt": "Review.", "base_url": self.URL, "model": "vendor/model-x"}

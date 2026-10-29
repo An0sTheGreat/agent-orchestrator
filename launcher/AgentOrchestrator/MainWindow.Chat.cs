@@ -220,7 +220,8 @@ public partial class MainWindow
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
         _runKey = ApiKeyBox.Password.Trim();
-        if (_runKey.Length == 0)
+        var unsloth = UsesUnsloth(SelectedProjectPath());
+        if (_runKey.Length == 0 && unsloth)
         {
             SetStatus("API key required", "#FF667A");
             Log("Enter your Unsloth API key.");
@@ -271,7 +272,8 @@ public partial class MainWindow
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            _poll.Start();
+            if (unsloth)
+                _poll.Start();
             _pump.Start();
             await process.WaitForExitAsync();
             exitCode = process.ExitCode;

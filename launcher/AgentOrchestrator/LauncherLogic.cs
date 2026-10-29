@@ -89,7 +89,7 @@ internal static class LauncherLogic
             Directory.CreateDirectory(folder);
             var copy = Path.Combine(folder, "config.json");
             File.Copy(Path.Combine(workflowRoot, "config.json"), copy);
-            skipped = WriteCustomWorkers(copy, workers);
+            skipped = WriteCustomWorkers(copy, workers, Path.Combine(workflowRoot, "config.json"));
             return new ChatFolder(folder, true);
         }
         catch
@@ -418,11 +418,20 @@ internal static class LauncherLogic
     public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout);
 
     // The Unsloth keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
-    private static readonly string[] LocalKeys = ["base_url", "management_url", "api_key_env", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
+    private static readonly string[] LocalKeys = ["base_url", "management_url", "api_key_env", "api_key", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
 
     public static ModelInfo RemoteModelInfo(string model) => new(model, "—", "Remote");
 
     public static bool IsRemote(JsonNode? role) => role?["management_url"] is null && role?["model"] is JsonValue;
+
+    // Whether a run talks to the local Unsloth server (needs its key, can poll its monitor): some role or custom
+    // worker in the config has a management_url.
+    public static bool UsesUnsloth(JsonElement config)
+    {
+        static bool Has(JsonElement e) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("management_url", out _);
+        return config.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Object && roles.EnumerateObject().Any(r => Has(r.Value)) ||
+               config.TryGetProperty("custom_workers", out var workers) && workers.ValueKind == JsonValueKind.Array && workers.EnumerateArray().Any(Has);
+    }
 
     public static RemoteRole? ReadRemoteRole(string configPath, string role)
     {
@@ -440,6 +449,8 @@ internal static class LauncherLogic
             return "Enter the model id the API expects, e.g. openai/gpt-4o-mini.";
         if (!Regex.IsMatch(remote.KeyEnv.Trim(), "^[A-Za-z_][A-Za-z0-9_]*$"))
             return "API key variable must be an environment variable name, e.g. OPENAI_API_KEY (not the key itself).";
+        if (remote.KeyEnv.Trim().Equals("UNSLOTH_API_KEY", StringComparison.OrdinalIgnoreCase))
+            return "UNSLOTH_API_KEY holds the local Unsloth key; use the remote API's own variable, e.g. OPENAI_API_KEY.";
         if (remote.Timeout.Trim().Length > 0 && !(long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var t) && t is >= 1 and <= 86400))
             return "Timeout must be a whole number of seconds from 1 to 86400 (or empty).";
         return null;
@@ -463,7 +474,7 @@ internal static class LauncherLogic
                         saved[key] = value.DeepClone();
                 settings["local_settings"] = saved;
             }
-            foreach (var key in new[] { "management_url", "auto_load", "expected_model_contains" })
+            foreach (var key in new[] { "management_url", "auto_load", "expected_model_contains", "api_key" })
                 settings.Remove(key);
             settings["base_url"] = remote.BaseUrl.Trim().TrimEnd('/');
             settings["model"] = remote.Model.Trim();
@@ -655,19 +666,34 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return false; }
     }
 
+    // The implementer's local Unsloth settings: the role itself, or when it is Remote the local_settings it saved,
+    // else the template's (templatePath, only read). Null when none is known.
+    private static JsonObject? LocalImplementer(JsonObject? implementer, string? templatePath)
+    {
+        if (!IsRemote(implementer))
+            return implementer;
+        if (implementer!["local_settings"] is JsonObject saved)
+            return saved;
+        var template = templatePath is not null && File.Exists(templatePath)
+            ? JsonNode.Parse(File.ReadAllText(templatePath))?["roles"]?["implementer"] as JsonObject : null;
+        return IsRemote(template) ? template!["local_settings"] as JsonObject : template;
+    }
+
     // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
-    // connection settings, auto_load defaults and sampling, then applies its own model and settings.
+    // local connection settings and auto_load defaults (see LocalImplementer) and its sampling, then applies its own
+    // model and settings.
     // Workers the orchestrator would ignore are not written; returns "Title: reason" for each.
     // A missing implementer just means nothing to copy.
-    public static string[] WriteCustomWorkers(string configPath, IEnumerable<WorkerSetting> workers)
+    public static string[] WriteCustomWorkers(string configPath, IEnumerable<WorkerSetting> workers, string? templatePath = null)
     {
         var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
             ?? throw new InvalidOperationException("config.json is not a JSON object.");
         var implementer = root["roles"]?["implementer"] as JsonObject;
+        var local = LocalImplementer(implementer, templatePath);
         var skipped = new List<string>();
         var array = new JsonArray();
         var all = workers.ToList();
-        var problems = CustomProblems(all, !string.IsNullOrWhiteSpace(implementer?["base_url"]?.ToString()));
+        var problems = CustomProblems(all, !string.IsNullOrWhiteSpace(local?["base_url"]?.ToString()));
         for (var i = 0; i < all.Count; i++)
         {
             var w = all[i];
@@ -684,14 +710,14 @@ internal static class LauncherLogic
                 ["description"] = w.Description, ["system_prompt"] = w.SystemPrompt,
             };
             foreach (var key in new[] { "base_url", "management_url", "api_key_env", "api_key" })
-                if (implementer?[key] is { } value)
+                if (local?[key] is { } value)
                     entry[key] = value.DeepClone();
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
             entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
-            if (implementer?["timeout_seconds"] is { } timeout)
+            if (local?["timeout_seconds"] is { } timeout)
                 entry["timeout_seconds"] = timeout.DeepClone();
 
-            var load = implementer?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
+            var load = local?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
             load["model_path"] = w.ModelPath;
             if (string.IsNullOrEmpty(w.ModelVariant))
                 load.Remove("gguf_variant");
@@ -967,6 +993,16 @@ internal static class LauncherLogic
             if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["management_url"] != "http://t" ||
                 (string?)Planner()["auto_load"]?["model_path"] != "t/M" || Planner()["model"] is not null || !File.ReadAllBytes(remoteTemplate).SequenceEqual(templateBytes))
                 throw new InvalidOperationException($"Remote role: Local without saved settings should use the template's: {Planner().ToJsonString()}");
+            // A literal api_key is moved aside with the Unsloth keys, and the local Unsloth key variable is refused.
+            var keyedPlanner = localPlanner.Replace("\"api_key_env\":\"UNSLOTH_API_KEY\",", "\"api_key_env\":\"UNSLOTH_API_KEY\",\"api_key\":\"sk-local\",");
+            File.WriteAllText(remoteConfig, $"{{\"roles\":{{\"planner\":{keyedPlanner}}}}}");
+            if (WriteRemoteRole(remoteConfig, "planner", remote, remoteTemplate) is not null || Planner()["api_key"] is not null ||
+                (string?)Planner()["local_settings"]?["api_key"] != "sk-local" || WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
+                !JsonNode.DeepEquals(Planner(), JsonNode.Parse(keyedPlanner)))
+                throw new InvalidOperationException($"Remote role: api_key was not moved aside and restored: {Planner().ToJsonString()}");
+            if (ValidateRemoteRole(remote with { KeyEnv = "UNSLOTH_API_KEY" }) is null || ValidateRemoteRole(remote with { KeyEnv = " unsloth_api_key " }) is null ||
+                WriteRemoteRole(remoteConfig, "planner", remote with { KeyEnv = "UNSLOTH_API_KEY" }, remoteTemplate) is null || Planner()["model"] is not null)
+                throw new InvalidOperationException("Remote role: UNSLOTH_API_KEY must not be accepted as a remote key variable.");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");
@@ -1075,6 +1111,27 @@ internal static class LauncherLogic
             if (ImplementerHasBaseUrl(noUrlConfig) || !ImplementerHasBaseUrl(cwConfig) || WriteCustomWorkers(noUrlConfig, [Ok("u1", "Docs")]) is not [var noUrl] || !noUrl.Contains("base_url") ||
                 JsonNode.Parse(File.ReadAllText(noUrlConfig))!["custom_workers"]!.AsArray().Count != 0)
                 throw new InvalidOperationException("Custom workers: a project without an implementer base_url must report and write nothing.");
+            // A Remote implementer: custom workers keep the local connection (its saved local_settings, else the template's).
+            File.WriteAllText(cwConfig, $"{{\"roles\":{rolesBefore}}}");
+            var remoteImpl = new RemoteRole("https://remote.example/v1", "vendor/m", "OPENAI_API_KEY", "30");
+            var cwTemplate = Path.Combine(testArea, "cw-template.json");
+            File.WriteAllText(cwTemplate, "{\"roles\":{\"implementer\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"timeout_seconds\":9,\"auto_load\":{\"model_path\":\"t\",\"n_batch\":7}}}}");
+            JsonNode Worker() => JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]![0]!;
+            if (WriteRemoteRole(cwConfig, "implementer", remoteImpl, cwTemplate) is not null || WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 ||
+                (string?)Worker()["base_url"] != "http://h/v1" || (string?)Worker()["management_url"] != "http://h" || (string?)Worker()["api_key_env"] != "K" ||
+                (string?)Worker()["api_key"] != "sk" || (int?)Worker()["timeout_seconds"] != 600 || (int?)Worker()["auto_load"]?["n_parallel"] != 1)
+                throw new InvalidOperationException($"Custom workers: a Remote implementer's connection was copied: {Worker().ToJsonString()}");
+            File.WriteAllText(cwConfig, "{\"roles\":{\"implementer\":{\"base_url\":\"https://remote.example/v1\",\"model\":\"vendor/m\",\"api_key_env\":\"OPENAI_API_KEY\",\"sampling\":{}}}}");
+            if (WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 || (string?)Worker()["base_url"] != "http://t/v1" ||
+                (string?)Worker()["management_url"] != "http://t" || (string?)Worker()["api_key_env"] != "UNSLOTH_API_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
+                WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")]) is not [var noLocal] || !noLocal.Contains("base_url"))
+                throw new InvalidOperationException($"Custom workers: a Remote implementer without saved settings should use the template's: {Worker().ToJsonString()}");
+            // Every role remote and no custom worker: no Unsloth key needed and no monitor to poll.
+            static bool Unsloth(string json) { using var doc = JsonDocument.Parse(json); return UsesUnsloth(doc.RootElement); }
+            if (Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[]}") || Unsloth("{}") ||
+                !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"},\"reviewer\":{\"management_url\":\"http://h\"}}}") ||
+                !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[{\"management_url\":\"http://h\"}]}"))
+                throw new InvalidOperationException("UsesUnsloth: wrong answer for remote-only or mixed configs.");
             var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
             if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
                 TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)

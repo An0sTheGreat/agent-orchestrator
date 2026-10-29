@@ -206,6 +206,10 @@ class ThinkSplitter:
         return [("thinking" if self.thinking else "text", rest)] if rest else []
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+UNSLOTH_ONLY_FIELDS = ("top_k", "repetition_penalty", "min_p", "chat_template_kwargs", "enable_thinking")  # dropped for remote roles
+
+
 class ApiClient:
     def __init__(self, settings: dict[str, Any]):
         self.base_url = settings["base_url"].rstrip("/")
@@ -220,6 +224,9 @@ class ApiClient:
         self.timeout = int(settings.get("timeout_seconds", 600))
         self.management_url = settings.get("management_url", "").rstrip("/")
         self.auto_load = settings.get("auto_load")
+        # A remote API role (as the launcher writes it): a model id and no Unsloth management_url.
+        self.remote = bool(self.model) and not self.management_url
+        self.send_extra_body = settings.get("send_extra_body") is True  # remote roles: keep Unsloth-only fields
         self.role = ""
         self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
@@ -345,6 +352,9 @@ class ApiClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
+        if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
+            for key in UNSLOTH_ONLY_FIELDS:
+                body.pop(key, None)
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
         if self.thinking_off:
@@ -364,7 +374,7 @@ class ApiClient:
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
-                        "Raise the role's auto_load.max_seq_length."
+                        + ("Raise the role's auto_load.max_seq_length." if not self.remote else "Use a model with a larger context.")
                     ) from exc
                 raise
             try:
@@ -373,7 +383,7 @@ class ApiClient:
             except (KeyError, IndexError, TypeError) as exc:
                 raise WorkflowError(f"Unexpected API response: {payload}") from exc
             if choice.get("finish_reason") == "length" and not has_output(message):
-                if body.get("enable_thinking") is not False:
+                if not self.remote and body.get("enable_thinking") is not False:  # enable_thinking is Unsloth-only
                     print(f"[{self.title or self.role}] reply cut off while thinking; retrying without thinking")
                     body = {**body, "enable_thinking": False}
                     fell_back = True
@@ -381,7 +391,7 @@ class ApiClient:
                     continue
                 raise WorkflowError(
                     f"{self.title or self.role}: the output limit was reached while thinking and the reply was empty. "
-                    "Raise sampling.max_tokens or lower the role's auto_load.reasoning_budget."
+                    "Raise sampling.max_tokens" + (" or lower the role's auto_load.reasoning_budget." if not self.remote else ".")
                 )
             self.cut_off = choice.get("finish_reason") == "length"
             if self.cut_off:
@@ -587,6 +597,10 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
         settings = next((w for w in custom_workers(config) if w["id"] == role), None) or config["roles"][role]
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
+    if not settings.get("management_url") and settings.get("api_key_env") == "UNSLOTH_API_KEY" \
+            and (urlsplit(str(settings.get("base_url", ""))).hostname or "").lower() not in LOOPBACK_HOSTS:
+        raise WorkflowError(f"{display_name(config, role)}: a remote role must not use UNSLOTH_API_KEY (the local Unsloth key); "
+                            "give it its own api_key_env")
     client = ApiClient(settings)
     client.role = role
     client.title = display_name(config, role)
@@ -595,7 +609,7 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
 
 def ask_once(config: dict[str, Any], role: str, system: str, user: str, interactive: bool, thinking: bool = True) -> str:
     client, sampling = role_settings(config, role)
-    if not thinking:
+    if not thinking and not getattr(client, "remote", False):  # enable_thinking is Unsloth-only; fakes in tests lack .remote
         sampling = {**sampling, "enable_thinking": False}  # this call only
     model = client.ensure_model(role, interactive)
     message = client.complete(model, [{"role": "system", "content": system}, {"role": "user", "content": user}], sampling)
@@ -1310,6 +1324,9 @@ def scaffold_contract(config: dict[str, Any], project_root: Path, contract: dict
     files = {e["path"]: e for e in contract.get("files", [])}
     pages = [p for p in files if Path(p).suffix.lower() in HTML_SUFFIXES]
     wanted: dict[str, str] = {}  # path -> content
+    # ponytail: keyword sniff of notes/purposes; add an explicit contract flag if it misfires
+    es_modules = any(re.search(r"module|\bimports?\b", str(text), re.I)
+                     for text in contract.get("notes", []) + [e.get("purpose") or "" for e in files.values()])
     for page in pages:
         entry, loads = files[page], files[page].get("loads", [])
         css = [x for x in loads if Path(x).suffix.lower() == ".css"]
@@ -1326,7 +1343,7 @@ def scaffold_contract(config: dict[str, Any], project_root: Path, contract: dict
             '  <meta name="viewport" content="width=device-width, initial-scale=1">',
             f"  <title>{html.escape(one_line(entry.get('purpose')) or Path(page).stem)}</title>",
             *(f'  <link rel="stylesheet" href="{html.escape(x)}">' for x in css), "</head>", "<body>", "  <main>", *body, "  </main>",
-            *(f'  <script{module if x.lower().endswith(".mjs") else ""} src="{html.escape(x)}"></script>' for x in js),
+            *(f'  <script{module if es_modules or x.lower().endswith(".mjs") else ""} src="{html.escape(x)}"></script>' for x in js),
             "</body>", "</html>"])
         for x in css + js:
             target = Path(os.path.normpath(Path(page).parent / x)).as_posix()

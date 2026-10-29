@@ -120,7 +120,8 @@ public partial class MainWindow : Window
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
         _runKey = ApiKeyBox.Password.Trim();
-        if (_runKey.Length == 0)
+        var unsloth = UsesUnsloth(project);
+        if (_runKey.Length == 0 && unsloth)
         {
             SetStatus("API key required", "#FF667A");
             Log("Enter your Unsloth API key.");
@@ -149,7 +150,8 @@ public partial class MainWindow : Window
             _process.Start();
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
-            _poll.Start();
+            if (unsloth)
+                _poll.Start();
             _pump.Start();
             await _process.WaitForExitAsync();
             var exitCode = _process.ExitCode;
@@ -1743,6 +1745,14 @@ public partial class MainWindow : Window
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
     }
 
+    // False when every role is remote: no Unsloth key is needed and its monitor is not polled. Custom workers always
+    // use the local server (they copy the Implementer's local connection), and an unreadable config counts as local.
+    private bool UsesUnsloth(string project)
+    {
+        using var config = ReadConfig(project);
+        return config is null || CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement);
+    }
+
     // The first built-in role's Unsloth server (a remote role has none).
     private string? ManagementUrl(string project)
     {
@@ -2331,7 +2341,7 @@ public partial class MainWindow : Window
             return true;
         try
         {
-            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers());
+            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
             if (collectSkipped is not null)
                 collectSkipped.AddRange(skipped);
             else
