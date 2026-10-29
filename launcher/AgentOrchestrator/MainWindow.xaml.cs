@@ -13,6 +13,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
@@ -77,6 +78,7 @@ public partial class MainWindow : Window
         RestoreWindowBounds();
 
         Closing += OnClosing;
+        SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(LimitMaximizeToWorkArea);
         StateChanged += (_, _) =>
         {
             MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
@@ -560,6 +562,7 @@ public partial class MainWindow : Window
         public Expander? Expander;
         public TextBlock? Preview, Label;
         public TextBox Body = null!, Result = null!;
+        public RichTextBox? View; // Chat and Code: Body rendered as Markdown (Body itself is hidden)
         public TextBlock ResultLabel = null!;
         public readonly StringBuilder Text = new();
         public bool Touched, Programmatic;
@@ -1797,6 +1800,16 @@ public partial class MainWindow : Window
                     !mdText.Contains("code **raw**") || mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
                     blocks.OfType<System.Windows.Documents.Paragraph>().SelectMany(p => p.Inlines).OfType<System.Windows.Documents.Hyperlink>().Single().NavigateUri.AbsoluteUri != "https://example.org/p")
                     return Fail();
+                // Code is coloured (keywords, calls, strings, numbers, comments; # is a comment only where the language uses it)
+                // and keeps every character; inline code keeps the text colour.
+                const string snippet = "if (x) return Foo(\"s\", 42); // done\n#include <a>";
+                var pieces = Markdown.Highlight(snippet, "c");
+                var inlineCode = blocks.OfType<System.Windows.Documents.List>().First().ListItems.First().Blocks.OfType<System.Windows.Documents.Paragraph>().First()
+                    .Inlines.OfType<System.Windows.Documents.Run>().Single(run => run.Text == "weekly");
+                if (string.Concat(pieces.Select(x => x.Text)) != snippet || pieces.Count(x => x.Color is not null) != 6 ||
+                    pieces.Any(x => x.Text.StartsWith("#include") && x.Color is not null) || Markdown.Highlight("# note", "python").Single().Color is null ||
+                    inlineCode.ReadLocalValue(System.Windows.Documents.TextElement.ForegroundProperty) != DependencyProperty.UnsetValue)
+                    return Fail();
                 SetChatFinal("Saved chat answer"); // the saved conversation below expects the original reply
                 FinishChatTurn(0, false, null);
                 var savedChat = _chatConv;
@@ -2034,7 +2047,7 @@ public partial class MainWindow : Window
         var parts = new List<string> { ((TextBlock)((StackPanel)expander.Header).Children[0]).Text };
         IEnumerable<UIElement> pieces = expander.Content is Panel panel ? panel.Children.OfType<UIElement>() : new[] { (UIElement)expander.Content };
         foreach (var piece in pieces.Where(p => p.Visibility == Visibility.Visible))
-            parts.Add(piece switch { TextBox box => box.Text, TextBlock label => label.Text, _ => "" });
+            parts.Add(piece switch { TextBox box => box.Text, TextBlock label => label.Text, RichTextBox { Tag: TextBox raw } => raw.Text, _ => "" });
         return string.Join("\n", parts);
     }
 
@@ -3552,10 +3565,12 @@ public partial class MainWindow : Window
             Resources[key] = new SolidColorBrush(Color.FromArgb(c.A, Mix(c.R, tint.R), Mix(c.G, tint.G), Mix(c.B, tint.B)));
         }
         // Graphite: warm dark grays with off-white text and a light gray accent.
-        Surface("AppBackground", graphite ? "#1D1D1B" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
+        Surface("AppBackground", graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
         SetThemeBrush("TextPrimary", graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
         Surface("TitleBackground", graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
         Surface("Panel", graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        // The left sidebar: the Panel shade, except Graphite's, which is lighter than its chat area.
+        Surface("NavBackground", graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
         Surface("Card", graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
         Surface("Hover", graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
         Surface("Border", graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
@@ -3770,6 +3785,29 @@ public partial class MainWindow : Window
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+
+#pragma warning disable CS0649 // filled in by Windows through marshalling
+    private struct MinMaxInfo { public NativePoint Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize; }
+#pragma warning restore CS0649
+
+    // A borderless (WindowStyle None) window maximizes over its whole monitor, taskbar included. WM_GETMINMAXINFO limits the
+    // maximized size and position to the monitor's work area, so the window ends on top of the taskbar.
+    // ponytail: an auto-hidden taskbar has no work-area strip, so it cannot pop up over a maximized window; reserve 1-2 px if that matters.
+    private IntPtr LimitMaximizeToWorkArea(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        const int WmGetMinMaxInfo = 0x0024;
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (msg != WmGetMinMaxInfo || !GetMonitorInfo(MonitorFromWindow(hwnd, 2 /* nearest */), ref info))
+            return IntPtr.Zero;
+        var limits = Marshal.PtrToStructure<MinMaxInfo>(lParam);
+        limits.MaxPosition = new NativePoint { X = info.Work.Left - info.Monitor.Left, Y = info.Work.Top - info.Monitor.Top };
+        limits.MaxSize = new NativePoint { X = info.Work.Right - info.Work.Left, Y = info.Work.Bottom - info.Work.Top };
+        Marshal.StructureToPtr(limits, lParam, false);
+        return IntPtr.Zero;
+    }
 
     [DllImport("user32.dll")]
     private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);

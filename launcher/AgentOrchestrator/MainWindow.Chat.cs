@@ -7,6 +7,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace AgentOrchestrator;
 
@@ -58,7 +59,7 @@ public partial class MainWindow
         public string Stage = "answer", StageTitle = "";
         public StreamBlock? Block;
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
-        public RichTextBox? Rendered; // the final reply as formatted Markdown
+        public RichTextBox? Rendered; // the answer as formatted Markdown, re-rendered as it streams
         public readonly StringBuilder AnswerText = new();
         public string? Final;
     }
@@ -679,6 +680,8 @@ public partial class MainWindow
         var block = r.Block;
         block.Text.Append(text);
         block.Body.AppendText(text);
+        if (block.View is { } view)
+            RenderSoon(view);
         if (block.Expander is null)
             r.AnswerText.Append(text);
         else if (block.Preview is not null && block.Text.Length <= 300)
@@ -693,12 +696,17 @@ public partial class MainWindow
         if (kind == "text" && r.Stage == "answer")
         {
             block.Body = EnsureAnswer(r); // the answer streams straight into the prominent text, not a section
+            block.View = r.Rendered;
             return block;
         }
         block.Body = BodyText("", mono: false, muted: kind == "thinking", conv: _turn);
+        block.View = MarkdownView(block.Body);
+        var content = new StackPanel();
+        content.Children.Add(block.Body);
+        content.Children.Add(block.View);
         var stage = r.StageTitle.Length > 0 ? r.StageTitle : r.Stage;
         var title = kind == "thinking" ? (r.Multi && stage.Length > 0 ? $"THINKING  ·  {stage.ToUpperInvariant()}" : "THINKING") : stage.ToUpperInvariant();
-        block.Expander = BuildExpander(title, "", block.Body, out block.Preview);
+        block.Expander = BuildExpander(title, "", content, out block.Preview);
         block.Label = (TextBlock)((StackPanel)block.Expander.Header).Children[0];
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
@@ -722,6 +730,8 @@ public partial class MainWindow
         box.FontSize = 14;
         box.Margin = new Thickness(2, 4, 0, 0);
         r.Content.Children.Add(box);
+        r.Rendered = MarkdownView(box);
+        r.Content.Children.Add(r.Rendered);
         return box;
     }
 
@@ -733,28 +743,55 @@ public partial class MainWindow
         r.Final = text;
         EnsureAnswer(r).Text = text;
         r.AnswerText.Clear().Append(text);
-        ShowMarkdown(r, text);
+        ShowMarkdown(r);
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
     }
 
-    // The final reply reads as formatted Markdown (links open in the browser); the plain answer box keeps the raw text, hidden.
-    private void ShowMarkdown(ChatReply r, string text)
+    // Streamed text (the answer and the thinking / stage sections) shows as Markdown with coloured code: the TextBox keeps the
+    // raw text, hidden, and a read-only RichTextBox shows it rendered, at most every 200 ms while it streams.
+    private readonly HashSet<RichTextBox> _markdownDirty = new();
+    private DispatcherTimer? _markdownTimer;
+
+    private RichTextBox MarkdownView(TextBox raw)
     {
-        var box = EnsureAnswer(r);
-        if (r.Rendered is null)
+        var view = new RichTextBox
         {
-            r.Rendered = new RichTextBox
-            {
-                IsReadOnly = true, IsDocumentEnabled = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-                Padding = new Thickness(0), Margin = box.Margin, FontFamily = FontFamily, Cursor = Cursors.IBeam,
-            };
-            r.Rendered.SetResourceReference(TextBoxBase.SelectionBrushProperty, "AccentLight");
-            ForwardWheel(r.Rendered, _turn);
-            r.Content.Children.Insert(r.Content.Children.IndexOf(box) + 1, r.Rendered);
-        }
-        r.Rendered.Document = Markdown.ToDocument(text, box.FontSize);
-        box.Visibility = Visibility.Collapsed;
+            IsReadOnly = true, IsDocumentEnabled = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+            Padding = new Thickness(0), Margin = raw.Margin, FontFamily = FontFamily, Cursor = Cursors.IBeam, Tag = raw,
+        };
+        view.SetResourceReference(TextBoxBase.SelectionBrushProperty, "AccentLight");
+        ForwardWheel(view, _turn);
+        raw.Visibility = Visibility.Collapsed;
+        Render(view);
+        return view;
+    }
+
+    private static void Render(RichTextBox view)
+    {
+        var raw = (TextBox)view.Tag;
+        view.Document = Markdown.ToDocument(raw.Text, raw.FontSize, muted: raw.FontStyle == FontStyles.Italic); // BodyText's muted text is italic
+    }
+
+    private void RenderSoon(RichTextBox view)
+    {
+        _markdownDirty.Add(view);
+        _markdownTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(200), DispatcherPriority.Background, (_, _) =>
+        {
+            foreach (var dirty in _markdownDirty)
+                Render(dirty);
+            _markdownDirty.Clear();
+            _markdownTimer!.Stop();
+        }, Dispatcher);
+        _markdownTimer.Start();
+    }
+
+    // The final reply replaces whatever streamed; render it now.
+    private void ShowMarkdown(ChatReply r)
+    {
+        EnsureAnswer(r);
+        _markdownDirty.Remove(r.Rendered!);
+        Render(r.Rendered!);
     }
 
     private void EndChatBlock()

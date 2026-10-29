@@ -911,7 +911,7 @@
             </Grid.ColumnDefinitions>
 
             <!-- Left-side navigation + project setup. Its width is animated; it collapses to an icon rail. -->
-            <Border x:Name="SidePane" Grid.Column="0" Width="260" ClipToBounds="True" Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
+            <Border x:Name="SidePane" Grid.Column="0" Width="260" ClipToBounds="True" Background="{DynamicResource NavBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
                 <Grid>
                     <Grid x:Name="SidebarFull" Width="259" HorizontalAlignment="Left">
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">

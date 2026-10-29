@@ -14,17 +14,18 @@ internal static class Markdown
     private static readonly Regex Heading = new(@"^(#{1,6})\s+(.*?)\s*#*\s*$");
     private static readonly Regex Rule = new(@"^\s{0,3}([-*_])(\s*\1){2,}\s*$");
     private static readonly Regex Item = new(@"^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$");
-    private static readonly Regex Fence = new(@"^\s*(```|~~~)");
+    private static readonly Regex Fence = new(@"^\s*(```|~~~)\s*([\w#+.-]*)");
     private static readonly Regex TableRule = new(@"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$");
     private static readonly Regex Inline = new(
         @"(?<code>`+)(?<codetext>.+?)\k<code>|\*\*(?<bold>.+?)\*\*|(?<!\w)__(?<bold2>.+?)__(?!\w)|~~(?<strike>.+?)~~|" +
         @"\[(?<label>[^\]]+)\]\((?<url>[^)\s]+)(?:\s+""[^""]*"")?\)|(?<!\*)\*(?![\s*])(?<em>.+?)(?<!\s)\*|(?<!\w)_(?![\s_])(?<em2>.+?)(?<!\s)_(?!\w)|" +
         @"(?<bare>https?://[^\s<>()]+[^\s<>().,;:!?'""])");
 
-    public static FlowDocument ToDocument(string markdown, double fontSize)
+    // muted: thinking text, in the theme's muted colour.
+    public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false)
     {
         var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left };
-        doc.SetResourceReference(FlowDocument.ForegroundProperty, "TextPrimary");
+        doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var paragraph = new List<string>();
         var lists = new List<(int Indent, List List)>(); // the open lists, outermost first
@@ -60,7 +61,7 @@ internal static class Markdown
                 while (++i < lines.Length && !lines[i].TrimStart().StartsWith(fence.Groups[1].Value))
                     code.Add(lines[i]);
                 lists.Clear();
-                doc.Blocks.Add(CodeBlock(string.Join("\n", code)));
+                doc.Blocks.Add(CodeBlock(string.Join("\n", code), fence.Groups[2].Value));
                 continue;
             }
             if (line.Trim().Length == 0)
@@ -160,11 +161,96 @@ internal static class Markdown
 
     private static Paragraph Para() => new() { Margin = new Thickness(0, 0, 0, 8), LineHeight = double.NaN };
 
-    private static Block CodeBlock(string code)
+    private static Block CodeBlock(string code, string language)
     {
-        var p = new Paragraph(new Run(code)) { FontFamily = new FontFamily("Consolas"), FontSize = 12.5, Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 2, 0, 10) };
+        var p = new Paragraph { FontFamily = new FontFamily("Consolas"), FontSize = 12.5, Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 2, 0, 10) };
         p.SetResourceReference(Block.BackgroundProperty, "Hover");
+        foreach (var (text, color) in Highlight(code, language))
+        {
+            var run = new Run(text);
+            if (color is not null)
+                run.Foreground = color;
+            p.Inlines.Add(run);
+        }
         return p;
+    }
+
+    // ---- syntax colours for code blocks: one tokenizer for the common languages (VS Code dark colours, readable on every theme)
+
+    private static Brush Frozen(string color)
+    {
+        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)!);
+        brush.Freeze();
+        return brush;
+    }
+
+    private static readonly Brush CommentColor = Frozen("#6A9955"), StringColor = Frozen("#CE9178"), NumberColor = Frozen("#B5CEA8"),
+        KeywordColor = Frozen("#569CD6"), ControlColor = Frozen("#C586C0"), CallColor = Frozen("#DCDCAA"), TypeColor = Frozen("#4EC9B0");
+
+    private static readonly HashSet<string> Control = new(StringComparer.Ordinal)
+    {
+        "if", "else", "elif", "for", "foreach", "while", "do", "return", "break", "continue", "switch", "case", "default", "try", "catch",
+        "except", "finally", "throw", "raise", "yield", "await", "goto", "match", "when", "then", "fi", "done", "esac", "loop", "with", "pass",
+    };
+
+    private static readonly HashSet<string> Keywords = new(StringComparer.Ordinal)
+    {
+        "def", "class", "struct", "enum", "interface", "record", "function", "func", "fn", "let", "var", "const", "val", "mut", "public",
+        "private", "protected", "internal", "static", "readonly", "sealed", "abstract", "override", "virtual", "async", "void", "int", "uint",
+        "long", "short", "byte", "string", "bool", "boolean", "float", "double", "decimal", "char", "object", "dynamic", "new", "delete",
+        "import", "from", "export", "as", "using", "namespace", "package", "include", "true", "false", "null", "None", "True", "False", "nil",
+        "undefined", "this", "self", "super", "base", "in", "is", "not", "and", "or", "lambda", "typeof", "instanceof", "extends", "implements",
+        "impl", "trait", "pub", "use", "mod", "type", "where", "global", "nonlocal", "assert", "del", "echo", "local", "export", "param",
+        "SELECT", "FROM", "WHERE", "INSERT", "INTO", "UPDATE", "DELETE", "CREATE", "TABLE", "JOIN", "ON", "AND", "OR", "NOT", "NULL", "AS",
+        "ORDER", "BY", "GROUP", "VALUES", "SET", "LIMIT",
+    };
+
+    private static readonly Regex Tokens = new(
+        @"(?<comment>//[^\n]*|/\*.*?\*/|<!--.*?-->|(?<![\w$])#(?![\w-]*\()[^\n]*|--[^\n]*)|" +
+        @"(?<string>@?""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|" +
+        @"(?<number>\b(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|" +
+        @"(?<word>[A-Za-z_$][\w$]*)", RegexOptions.Singleline);
+
+    // (text, colour or null for the default) pieces of the code, in order.
+    public static List<(string Text, Brush? Color)> Highlight(string code, string language)
+    {
+        var lang = language.ToLowerInvariant();
+        var hashComments = lang is "" or "py" or "python" or "sh" or "bash" or "shell" or "zsh" or "ps1" or "powershell" or "pwsh" or "rb" or "ruby"
+            or "yaml" or "yml" or "toml" or "r" or "perl" or "dockerfile" or "makefile" or "ini" or "conf";
+        var dashComments = lang is "sql" or "lua" or "haskell" or "hs";
+        var pieces = new List<(string, Brush?)>();
+        var at = 0;
+        foreach (Match m in Tokens.Matches(code))
+        {
+            Brush? color = null;
+            if (m.Groups["comment"].Success)
+            {
+                var text = m.Value;
+                if ((text.StartsWith('#') && !hashComments) || (text.StartsWith("--") && !dashComments))
+                    continue; // # is a preprocessor line or CSS id, -- an operator, in other languages
+                color = CommentColor;
+            }
+            else if (m.Groups["string"].Success)
+                color = StringColor;
+            else if (m.Groups["number"].Success)
+                color = NumberColor;
+            else
+            {
+                var word = m.Value;
+                var next = m.Index + m.Length < code.Length ? code[m.Index + m.Length] : '\0';
+                color = Control.Contains(word) ? ControlColor : Keywords.Contains(word) ? KeywordColor : next == '(' ? CallColor
+                    : char.IsUpper(word[0]) && word.Length > 1 && word.Any(char.IsLower) ? TypeColor : null;
+                if (color is null)
+                    continue;
+            }
+            if (m.Index > at)
+                pieces.Add((code[at..m.Index], null));
+            pieces.Add((m.Value, color));
+            at = m.Index + m.Length;
+        }
+        if (at < code.Length)
+            pieces.Add((code[at..], null));
+        return pieces;
     }
 
     private static Table TableOf(List<string> rows)
@@ -198,6 +284,8 @@ internal static class Markdown
         return table;
     }
 
+    private static readonly Brush InlineCodeBackground = Frozen("#33FFFFFF");
+
     public static void AddInlines(InlineCollection target, string text)
     {
         var at = 0;
@@ -208,9 +296,8 @@ internal static class Markdown
             at = m.Index + m.Length;
             if (m.Groups["codetext"].Success)
             {
-                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = new FontFamily("Consolas") };
-                code.SetResourceReference(TextElement.BackgroundProperty, "Hover");
-                code.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
+                // inline code keeps the text colour on a light chip, like other AI chat apps
+                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = new FontFamily("Consolas"), Background = InlineCodeBackground };
                 target.Add(code);
             }
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)
