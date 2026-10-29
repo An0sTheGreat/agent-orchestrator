@@ -402,6 +402,29 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Sidebar list rows that act rather than select (New chat, project headers, "…"): NavToggle's hover, no checked state. -->
+        <Style x:Key="SidebarRow" TargetType="Button">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Padding" Value="14,6,10,6" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Background="Transparent">
+                            <Border x:Name="HoverFill" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
+                                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <!-- Chat: segmented Single / Multi toggle, the borderless message box and the rounded composer around it. -->
         <Style x:Key="SegToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
@@ -879,7 +902,7 @@
                                 <ToggleButton x:Name="NavCode" Style="{StaticResource NavToggle}" Content="Code" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" />
                                 <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
 
-                                <!-- Empty for now: a conversation list goes here. Project setup lives in the Code view's Project menu. -->
+                                <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
                                 <StackPanel x:Name="SidebarList" Margin="0,16,0,0" />
                             </StackPanel>
                         </ScrollViewer>
@@ -891,6 +914,9 @@
                     <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,14,0,0" Visibility="Collapsed">
                         <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
                             <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="CodeNew_Click" ToolTip="New chat" AutomationProperties.Name="New chat">
+                            <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
                         <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+1)" AutomationProperties.Name="Chat (Ctrl+1)"
                                       IsChecked="{Binding IsChecked, ElementName=NavChat, Mode=TwoWay}">

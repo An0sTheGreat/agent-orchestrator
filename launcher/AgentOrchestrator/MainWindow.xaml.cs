@@ -1629,6 +1629,68 @@ public partial class MainWindow : Window
                 if (!refused.IsCompleted || refused.Result || _chatBusy || _chatProcess is not null || CodeInput.Text.Length == 0 || StatusText.Text != "Choose a project folder")
                     return Fail();
                 CodeInput.Clear();
+
+                // Sidebar list: rows for the stored chats; rename, reorder, projects, collapse, archive and delete through the
+                // real menu items; opening a chat by its row.
+                CloseCodeConversation();
+                var stored = _store.View();
+                foreach (var entry in stored.Groups.SelectMany(g => g.Items).Concat(stored.Ungrouped).Concat(stored.Archived))
+                    _store.Delete(entry.Id);
+                var chatA = _store.Create(codeProject);
+                chatA.Messages = [new("user", "Alpha question"), new("assistant", "Alpha answer")];
+                var chatB = _store.Create(codeProject);
+                chatB.Messages = [new("user", "Beta question"), new("assistant", "Beta answer")];
+                _store.Save(chatA);
+                _store.Save(chatB);
+                RefreshSidebarList();
+                FrameworkElement Main(UIElement row) => row is Grid { Children: [FrameworkElement main, ..] } ? main : (FrameworkElement)row;
+                string Rows() => string.Join(",", SidebarList.Children.Cast<UIElement>().Select(r => Main(r).Tag is string tag ? tag == chatA.Id ? "A" : tag == chatB.Id ? "B" : tag : "?"));
+                void ClickRow(string tag) => SidebarList.Children.Cast<UIElement>().Select(Main).First(m => (string)m.Tag == tag).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                MenuItem SidebarItem(string id, string header) => _sidebarMenus[id]().Items.OfType<MenuItem>().Single(i => (string)i.Header == header);
+                void ClickItem(string id, string header) => SidebarItem(id, header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                await Settle();
+                Snap("21-sidebar");
+                if (Rows() != "+New chat,+New project,RECENTS,B,A" || SidebarList.Children.OfType<Grid>().Any(g => ((ToggleButton)g.Children[0]).IsChecked == true))
+                    return Fail();
+                answer = "Renamed B";
+                ClickItem(chatB.Id, "Rename…");
+                if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: TextBlock { Text: "Renamed B" } }))
+                    return Fail();
+                ClickItem(chatB.Id, "Move down");
+                if (Rows() != "+New chat,+New project,RECENTS,A,B" || SidebarItem(chatB.Id, "Move down").IsEnabled)
+                    return Fail();
+                ClickItem(chatB.Id, "Move up");
+                if (Rows() != "+New chat,+New project,RECENTS,B,A")
+                    return Fail();
+                answer = "Smoke project";
+                ClickRow("+New project");
+                ClickItem(chatA.Id, "Move to Smoke project");
+                if (Rows() != "+New chat,+New project,▾Smoke project,A,RECENTS,B")
+                    return Fail();
+                ClickRow("▾Smoke project");
+                if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,B" || _store.View().Groups is not [{ Collapsed: true }])
+                    return Fail();
+                ClickItem(chatB.Id, "Archive");
+                if (Rows() != "+New chat,+New project,▸Smoke project,▸ARCHIVED")
+                    return Fail();
+                ClickRow("▸ARCHIVED");
+                if (Rows() != "+New chat,+New project,▸Smoke project,▾ARCHIVED,B")
+                    return Fail();
+                _process = new Process(); // Delete is off while a run is active
+                var deleteOff = !SidebarItem(chatB.Id, "Delete…").IsEnabled;
+                _process = null;
+                answer = "yes";
+                ClickItem(chatB.Id, "Delete…");
+                if (!deleteOff || Rows() != "+New chat,+New project,▸Smoke project" || _store.Get(chatB.Id) is not null ||
+                    File.Exists(Path.Combine(AppSettings.DataRoot, "conversations", chatB.Id + ".json")))
+                    return Fail();
+                ClickRow("▸Smoke project");
+                ClickRow(chatA.Id);
+                await Settle();
+                Snap("22-sidebar-open");
+                if (_codeConv != chatA || _code.History.Count != 2 || CodePanel.Children.Count != 2 || Rows() != "+New chat,+New project,▾Smoke project,A" ||
+                    SidebarList.Children.OfType<Grid>().Last().Children[0] is not ToggleButton { IsChecked: true })
+                    return Fail();
             }
             finally
             {

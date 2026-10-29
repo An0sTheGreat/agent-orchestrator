@@ -245,9 +245,6 @@ public partial class MainWindow
         RefreshSidebarList();
     }
 
-    // ponytail: placeholder until the sidebar conversation list (SidebarList) is built; every store change already calls it.
-    private void RefreshSidebarList() { }
-
     // A store write that failed (disk full, access denied) is reported instead of ending the app.
     private bool StoreDo(Action change)
     {
