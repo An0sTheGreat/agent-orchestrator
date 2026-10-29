@@ -2776,7 +2776,10 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         access = "write" if index == 0 else item.get("access")
         if access not in ("read", "write"):
             raise WorkflowError(f"Folder {index + 1} access must be 'read' or 'write', not {access!r}")
-        folders.append({"path": str(path.resolve()), "access": access})
+        path = path.resolve()
+        if access == "write" and (path == ROOT or ROOT in path.parents or path in ROOT.parents):
+            raise WorkflowError(f"Folder {index + 1} overlaps the Agent Orchestrator folder ({ROOT}); it can only be granted read only")
+        folders.append({"path": str(path), "access": access})
     if action == "write_project":
         target = write_project(config, role, folders, messages, "")
         lines = [line.strip() for line in load_text(target).splitlines() if line.strip()]

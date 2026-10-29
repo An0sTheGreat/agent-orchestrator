@@ -105,6 +105,24 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 
 Events are the usual `@@AO` lines (`loading`, `model`, `delta`, `done`, `usage`) plus `{"e":"chat_stage","role","stage":"plan"|"draft"|"review"|"answer","title"}` before each model call and a final `{"e":"chat_reply","role","text"}` with the answer. Exit code 0 on success; on failure an `ERROR: ...` line is printed and the exit code is 1. Models stay loaded after the turn (the launcher unloads them when the app closes).
 
+## Code mode
+
+The launcher's **Code** view (sidebar: Chat, Code, Options) works like a coding assistant in a folder you choose.
+
+- **New conversation** asks for a working folder. A saved conversation for that folder can be resumed. Conversations are stored per folder under `%APPDATA%\Agent Orchestrator\conversations`, not in the project. A new conversation applies the preset named **Main** when one exists.
+- Talk to any loaded worker; **+** or the target chip picks which one. It can list, read and search files, and create or edit files directly in the project folder.
+- **Add folder…** grants extra folders, each one **Read only** or **Full edit**. Nothing outside the granted folders can be read or written. `api_key.txt` and `.git` are always refused, and links or junctions that point outside are skipped.
+- No `PROJECT.md` is needed to start. Once you agree on a project, the agent calls `write_project_md` and the Implementer writes `PROJECT.md` from the template in this folder. An existing file is kept as `PROJECT.backup-<time>.md`. You can also bring your own `PROJECT.md`.
+- When you tell the agent to begin, or press **Start project**, the Planner first writes `PROJECT.md` from the files if there is none. The workflow files are then added (an existing `PROJECT.md` is kept), the view switches to **Run output**, and the normal Planner → Implementer → Reviewer run starts.
+
+Command line: `python orchestrator.py --project <folder with config.json> --events --code <request.json>`.
+
+- `request.json` is `{"action": "chat"|"write_project", "worker": "<role or custom id>", "messages": [...], "folders": [{"path": "<absolute>", "access": "write"|"read"}]}`.
+- `folders[0]` is the project and is always writable.
+- Tools are `list_files`, `read_file`, `search_files`, `write_file`, `replace_text`, `write_project_md` and `start_project`.
+- Events: every tool call is a `tool` event, then `code_project {role,path}`, `code_start {role}` and the final `code_reply {role,text}`.
+- Chat and Code turns share the GPU, so only one runs at a time and none during a project run.
+
 ## Custom workers
 
 `config.json` may hold an optional top-level `custom_workers` array. Absent or empty, the run behaves exactly as before.

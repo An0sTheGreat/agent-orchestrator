@@ -2339,6 +2339,9 @@ class CodeTests(unittest.TestCase):
             ({**good, "folders": [{"path": "relative/dir", "access": "write"}]}, "Folder 1 is not an existing absolute"),
             ({**good, "folders": [{"path": str(self.root / "missing"), "access": "write"}]}, "Folder 1 is not an existing absolute"),
             ({**good, "folders": [self.folders[0], {"path": str(self.shared), "access": "all"}]}, "Folder 2 access"),
+            ({**good, "folders": [{"path": str(orchestrator.ROOT), "access": "write"}]}, "Folder 1 overlaps the Agent Orchestrator"),
+            ({**good, "folders": [self.folders[0], {"path": str(orchestrator.ROOT / "prompts"), "access": "write"}]}, "Folder 2 overlaps"),
+            ({**good, "folders": [self.folders[0], {"path": str(orchestrator.ROOT.parent), "access": "write"}]}, "Folder 2 overlaps"),
         ]
         for request, message in cases:
             req = self.cfg / "r.json"
