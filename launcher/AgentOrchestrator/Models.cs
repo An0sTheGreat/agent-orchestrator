@@ -222,6 +222,7 @@ internal sealed class WorkerSetting
     // (ModelId is the display name, ModelVariant the gguf_variant).
     public string? ModelPath { get; set; }
     public string? ModelExpected { get; set; }
+    public string? GgufFile { get; set; } // auto_load.gguf_file: a llama.cpp model file outside the Hugging Face cache
     public string Kind { get; set; } = "specialist"; // "specialist" | "reviewer"
     public string Description { get; set; } = "";
     public string SystemPrompt { get; set; } = "";
