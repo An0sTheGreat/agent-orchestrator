@@ -1,61 +1,67 @@
-"""Render the Agent Orchestrator icon: a flat clay tile (the Parchment theme's accent) with three cream agent nodes joined
-in a loop around a hub. Usage: python make_icon.py <output folder>; writes app.ico, app.png, title.png and preview.png."""
-import math
+"""Render the Agent Orchestrator icon, "Huddle": three agent robots (a cream leader above two light-clay teammates) on a
+clay tile. Usage: python make_icon.py <output folder>; writes app.ico, app.png, title.png and preview.png."""
 import sys
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 S = 1024  # supersampled canvas
-CLAY_TOP, CLAY_BOTTOM = (205, 112, 76), (178, 84, 50)  # around #C15F3C
-CREAM = (244, 243, 238)  # #F4F3EE, the Parchment background
+CREAM, INK, LIGHT, MID, CLAY, GOLD = (244, 243, 238), (31, 30, 29), (236, 190, 166), (218, 140, 104), (193, 95, 60), (222, 170, 80)
+TILE_TOP, TILE_BOTTOM = (206, 110, 74), (172, 80, 48)
 
 
-def render(small: bool) -> Image.Image:
-    img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    grad = Image.new("RGBA", (S, S))
-    gd = ImageDraw.Draw(grad)
+def tile():
+    img = Image.new("RGBA", (S, S))
+    d = ImageDraw.Draw(img)
     for y in range(S):
         t = y / S
-        gd.line([(0, y), (S, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(CLAY_TOP, CLAY_BOTTOM)) + (255,))
-    mask = Image.new("L", (S, S), 0)
-    pad = 0 if small else 40
-    ImageDraw.Draw(mask).rounded_rectangle([pad, pad, S - pad, S - pad], radius=220, fill=255)
-    img.paste(grad, (0, 0), mask)
-    d = ImageDraw.Draw(img)
-
-    cx, cy, r = S / 2, S / 2 + 24, 300 if not small else 320
-    pts = [(cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a))) for a in (-90, 30, 150)]
-    # the loop: thick rounded strokes between the three agents, and spokes to the hub
-    w = 120 if small else 64
-    for i in range(3):
-        d.line([pts[i], pts[(i + 1) % 3]], fill=CREAM + (255,), width=w)
-    for x, y in pts:
-        d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=CREAM + (255,))  # round the joints
-    if not small:
-        for x, y in pts:
-            d.line([(cx, cy), (x, y)], fill=(232, 196, 176, 255), width=26)  # cream blended into clay (drawing does not blend alpha)
-    # agents: cream discs with a clay core (solid at small sizes, where the core would blur away)
-    nr = 150 if small else 118
-    for x, y in pts:
-        d.ellipse([x - nr, y - nr, x + nr, y + nr], fill=CREAM + (255,))
-        if not small:
-            ir = nr * 0.45
-            d.ellipse([x - ir, y - ir, x + ir, y + ir], fill=CLAY_BOTTOM + (255,))
-    # hub
-    hr = 0 if small else 70
-    if hr:
-        d.ellipse([cx - hr, cy - hr, cx + hr, cy + hr], fill=CREAM + (255,))
+        d.line([(0, y), (S, y)], fill=tuple(int(a + (b - a) * t) for a, b in zip(TILE_TOP, TILE_BOTTOM)) + (255,))
     return img
 
 
-big = render(False)
-small = render(True)
+def shadow(img, draw_fn, offset, alpha=80, blur=28):
+    layer = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(layer), (0, 0, 0, alpha))
+    img.alpha_composite(layer.filter(ImageFilter.GaussianBlur(blur)), offset)
+
+
+def bot(img, x, y, r, body, eyes, antenna):
+    """One agent head centred at (x, y): body with side ears, antenna, dark visor with two eyes."""
+    def head(d, c):
+        d.rounded_rectangle([x - r, y - r * 0.85, x + r, y + r * 0.85], radius=r * 0.45, fill=c)
+        for sx in (-1, 1):
+            d.rounded_rectangle([x + sx * r - r * 0.16, y - r * 0.3, x + sx * r + r * 0.16, y + r * 0.3], radius=r * 0.12, fill=c)
+    shadow(img, head, (0, int(r * 0.11)))
+    d = ImageDraw.Draw(img)
+    head(d, body + (255,))
+    for sx in (-1, 1):  # ears a shade darker than the head
+        d.rounded_rectangle([x + sx * r - r * 0.16, y - r * 0.3, x + sx * r + r * 0.16, y + r * 0.3], radius=r * 0.12,
+                            fill=tuple(int(c * 0.86) for c in body) + (255,))
+    d.line([(x, y - r * 0.85), (x, y - r * 1.2)], fill=body + (255,), width=int(r * 0.12))
+    d.ellipse([x - r * 0.15, y - r * 1.35, x + r * 0.15, y - r * 1.05], fill=antenna + (255,))
+    d.rounded_rectangle([x - r * 0.72, y - r * 0.38, x + r * 0.72, y + r * 0.3], radius=r * 0.3, fill=INK + (255,))
+    for ex in (-0.33, 0.33):
+        d.ellipse([x + r * ex - r * 0.13, y - r * 0.17, x + r * ex + r * 0.13, y + r * 0.09], fill=eyes + (255,))
+
+
+def render():
+    img = tile()
+    k, up = 1.35, 0.35 * 110  # agent size, and the lift that keeps the lower pair off the bottom edge
+    bot(img, 512 - 182 * k, 512 + 190 * k - up, 150 * k, LIGHT, MID, LIGHT)
+    bot(img, 512 + 182 * k, 512 + 190 * k - up, 150 * k, LIGHT, MID, LIGHT)
+    bot(img, 512, 512 - 82 * k - up, 175 * k, CREAM, CLAY, GOLD)
+    mask = Image.new("L", (S, S), 0)  # everything (ears, shadows) stays inside the rounded tile
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, S - 1, S - 1], radius=230, fill=255)
+    img.putalpha(mask)
+    return img
+
+
+icon = render()
 sizes = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
-frames = [(small if s <= 32 else big).resize((s, s), Image.LANCZOS) for s in sizes]
-big.resize((256, 256), Image.LANCZOS).save(out / "app.png")
-small.resize((72, 72), Image.LANCZOS).save(out / "title.png")  # dialogs draw it at 18 px
+frames = [icon.resize((s, s), Image.LANCZOS) for s in sizes]
+frames[-1].save(out / "app.png")
+icon.resize((72, 72), Image.LANCZOS).save(out / "title.png")  # dialogs draw it at 18 px
 frames[-1].save(out / "app.ico", sizes=[(s, s) for s in sizes], append_images=frames[:-1])
 sheet = Image.new("RGBA", (sum(sizes) + 20 * len(sizes) + 20, 300), (32, 32, 32, 255))
 x = 20
