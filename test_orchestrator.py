@@ -3071,6 +3071,22 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual((tool[0]["name"], "https://peony.org/care" in tool[0]["result"]), ("web_search", True))
         self.assertEqual(events[-1], ("chat_reply", {"role": "implementer", "text": "Plant in full sun [1](https://peony.org/care)"}))
 
+    def test_first_turn_asks_the_answering_model_for_a_short_title(self):
+        request = {"mode": "single", "worker": "implementer", "messages": ChatTests.MSGS, "title": True}
+        code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", '"Windows Calculator Batch File."\nmore']})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 2)
+        self.assertIn("hi", log[1]["input"])  # the first user message, and the reply, go into the title prompt
+        self.assertIn("the answer", log[1]["input"])
+        self.assertEqual((log[1]["sampling"]["max_tokens"], log[1]["sampling"]["enable_thinking"]), (40, False))
+        self.assertEqual(events[-2:], [("chat_reply", {"role": "implementer", "text": "the answer"}),
+                                       ("chat_title", {"text": "Windows Calculator Batch File"})])
+        # later turns ask for no title; an empty title is not sent
+        code, log, events, *_ = ChatTests().chat({**request, "title": False}, {"implementer": ["the answer"]})
+        self.assertEqual((len(log), [e for e, _ in events if e == "chat_title"]), (1, []))
+        code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", "  "]})
+        self.assertEqual([e for e, _ in events if e == "chat_title"], [])
+
     def test_multi_chat_and_code_get_the_extras(self):
         code, log, *_ = ChatTests().chat({"mode": "multi", "messages": ChatTests.MSGS, "tools": True})
         self.assertEqual(code, 0)

@@ -13,7 +13,7 @@ internal sealed class ConversationStore
     public sealed class Conversation
     {
         public string Id { get; set; } = "";
-        public string? Title { get; set; } // null: derived by TitleOf; only Rename sets it
+        public string? Title { get; set; } // null: derived by TitleOf; set by Rename or a model-written title (first turn)
         public string Kind { get; set; } = "code"; // "code" or "chat"
         public string Folder { get; set; } = ""; // "" for a chat
         public string Mode { get; set; } = "single"; // a chat's Single / Multi

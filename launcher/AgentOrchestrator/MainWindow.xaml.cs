@@ -1819,14 +1819,19 @@ public partial class MainWindow : Window
                     inlineCode.ReadLocalValue(System.Windows.Documents.TextElement.ForegroundProperty) != DependencyProperty.UnsetValue)
                     return Fail();
                 SetChatFinal("Saved chat answer"); // the saved conversation below expects the original reply
+                // The first turn's model-written title names the new chat; a later turn's title never replaces it.
+                _lines.Enqueue(Ev("""{"e":"chat_title","text":"Saved chat title"}"""));
+                DrainLines();
                 FinishChatTurn(0, false, null);
                 var savedChat = _chatConv;
-                if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2 } || _store.View().Ungrouped[0].Id != savedChat.Id)
+                if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
                     return Fail();
                 StartChatTurn("Follow-up", false);
                 SetChatFinal("Second answer");
+                _lines.Enqueue(Ev("""{"e":"chat_title","text":"Other title"}"""));
+                DrainLines();
                 FinishChatTurn(0, false, null);
-                if (_chatConv != savedChat || _store.Get(savedChat.Id) is not { Messages.Count: 4 } || _store.View().Ungrouped.Count(e => e.Kind == "chat") != 1)
+                if (_chatConv != savedChat || _store.Get(savedChat.Id) is not { Messages.Count: 4, Title: "Saved chat title" } || _store.View().Ungrouped.Count(e => e.Kind == "chat") != 1)
                     return Fail();
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null)

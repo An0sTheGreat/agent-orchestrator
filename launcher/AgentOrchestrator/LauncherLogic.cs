@@ -71,7 +71,8 @@ internal static class LauncherLogic
     }
 
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
-    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null) =>
+    // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
+    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false) =>
         JsonSerializer.Serialize(new
         {
             mode = mode == "multi" ? "multi" : "single",
@@ -80,6 +81,7 @@ internal static class LauncherLogic
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
+            title,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
@@ -100,7 +102,7 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null) =>
+        Extras? extras = null, bool title = false) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
@@ -111,6 +113,7 @@ internal static class LauncherLogic
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
+            title,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string apiKey, string requestFile)
@@ -1332,6 +1335,9 @@ internal static class LauncherLogic
             (bool)withExtras["tools"]! || (string)withExtras["skills"]![0]! != @"Y:\skills\a" || (bool)codeExtras["search"]! || !(bool)codeExtras["tools"]! ||
             (bool)code["tools"]!)
             throw new InvalidOperationException("Request extras failed.");
+        if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("single", "implementer", chat, title: true))!["title"]! ||
+            !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:pp", [], title: true))!["title"]!)
+            throw new InvalidOperationException("The first-turn title flag failed.");
         var skillArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-skills-{Guid.NewGuid():N}");
         try
         {

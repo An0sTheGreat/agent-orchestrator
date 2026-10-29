@@ -34,7 +34,7 @@ public partial class MainWindow
             return Task.FromResult(false);
         return RunTurn(_code, text, worker ?? CodeTarget()!.Role, false,
             role => LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-                project, CodeExtraFolders, CurrentExtras()),
+                project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0),
             LauncherLogic.BuildCodeStartInfo, $"Code ({action})");
     }
 
@@ -314,6 +314,7 @@ public partial class MainWindow
         c.Folders = CodeExtraFolders.ToList();
         c.Worker = _settings.CodeWorker;
         c.Messages = _code.History.ToList();
+        c.Title ??= TakeTurnTitle();
         StoreDo(() => _store.Save(c));
         RefreshSidebarList();
     }

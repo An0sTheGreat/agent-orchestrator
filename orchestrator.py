@@ -2870,6 +2870,28 @@ def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
     return worker
 
 
+def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]], reply: str) -> str:
+    """A short title for a new conversation, from its first exchange, written by the role that answered (its model is
+    loaded). Quiet: no events stream into the reply. "" when the model fails or returns nothing usable."""
+    global EVENTS
+    question = next((m["content"] for m in messages if m["role"] == "user"), "")
+    prompt = [{"role": "system", "content": "Write a short title (2 to 6 words) for this conversation, like a chat app's sidebar "
+                                            "title. Reply with the title only: no quotes, no punctuation at the end, no explanation."},
+              {"role": "user", "content": f"USER: {question[:2000]}\n\nASSISTANT: {reply[:1000]}"}]
+    events, EVENTS = EVENTS, False
+    try:
+        client, sampling = role_settings(config, role)
+        model = client.ensure_model(role, False)
+        sampling = {**sampling, "max_tokens": 40, "temperature": 0.3, "enable_thinking": False}
+        text = answer_text(client.complete(model, prompt, sampling))
+    except (WorkflowError, OSError, ValueError):
+        return ""
+    finally:
+        EVENTS = events
+    line = next((l for l in text.splitlines() if l.strip()), "").strip().strip("\"'*#` ").removeprefix("Title:").strip()
+    return line[:60].rstrip(" .:;,")
+
+
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
     """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No workflow files; tools only as the request
     switches them on (search, utilities, skills)."""
@@ -2908,6 +2930,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("chat_reply", role=role, text=text)
+    if request.get("title") and (title := chat_title(config, role, messages, text)):
+        emit("chat_title", text=title)
     return 0
 
 
@@ -3169,6 +3193,8 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("code_reply", role=role, text=text)
+    if request.get("title") and (title := chat_title(config, role, messages, text)):
+        emit("chat_title", text=title)
     return 0
 
 

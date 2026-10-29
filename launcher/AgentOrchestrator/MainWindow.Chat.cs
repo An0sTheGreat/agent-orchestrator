@@ -285,6 +285,9 @@ public partial class MainWindow
     }
 
     // After a completed Chat turn: the first reply creates the saved chat, later ones update it.
+    // A new conversation's first turn may bring a model-written title (chat_title); it is kept until the user renames.
+    private string? _turnTitle;
+
     private void SaveChatConversation()
     {
         if (_chatConv is null)
@@ -292,9 +295,17 @@ public partial class MainWindow
         if (_chatConv is { } c)
         {
             (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
+            c.Title ??= TakeTurnTitle();
             StoreDo(() => _store.Save(c));
         }
         RefreshSidebarList();
+    }
+
+    private string? TakeTurnTitle()
+    {
+        var title = string.IsNullOrWhiteSpace(_turnTitle) ? null : _turnTitle.Trim();
+        _turnTitle = null;
+        return title;
     }
 
     // A sidebar row: shows the saved chat in the Chat view with its mode and worker. Refused while a reply streams.
@@ -353,7 +364,7 @@ public partial class MainWindow
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
             Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
-                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras()),
+                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0),
                 LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
     }
 
@@ -483,6 +494,7 @@ public partial class MainWindow
         _pendingUser = text;
         _turnLoaded = new();
         _codeStartRequested = false;
+        _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
         if (text is not null)
             AddUserBubble(text);
         _reply = AddReply(multi, role);
@@ -648,6 +660,9 @@ public partial class MainWindow
                 break;
             case "chat_reply" or "code_reply":
                 SetChatFinal(Str(ev, "text"));
+                break;
+            case "chat_title":
+                _turnTitle = Str(ev, "text");
                 break;
             case "tool":
                 EndChatBlock();
