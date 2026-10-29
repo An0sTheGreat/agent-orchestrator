@@ -850,6 +850,14 @@
             <Grid>
             <!-- While a run or reply is in progress a light sweeps along the title bar's lower edge (SetActivity starts and stops it).
                  The Viewbox stretches a fixed 100-unit track to the bar's width, so the sweep needs no resize handling. -->
+                <!-- The open chat's title, like other chat apps; its menu is the sidebar row's (RefreshTitleChat). -->
+                <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
+                        Padding="8,3" Visibility="Collapsed" Click="TitleChat_Click" ToolTip="Chat options">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock x:Name="TitleChatText" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" MaxWidth="420" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Text="&#xE70D;" Style="{StaticResource RailGlyph}" FontSize="10" Margin="8,1,0,0" Foreground="{DynamicResource Muted}" />
+                    </StackPanel>
+                </Button>
                 <Viewbox x:Name="Shimmer" Stretch="Fill" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-1" Opacity="0" IsHitTestVisible="False">
                 <Canvas Width="100" Height="2" ClipToBounds="True">
                     <Rectangle Width="34" Height="2" Fill="{DynamicResource ShimmerBrush}">
@@ -893,10 +901,10 @@
                         <Border HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
                                 BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
                             <StackPanel Orientation="Horizontal">
-                                <ToggleButton x:Name="NavChat" Style="{StaticResource SegToggle}" Padding="15,5" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" AutomationProperties.Name="Chat">
+                                <ToggleButton x:Name="NavChat" Style="{StaticResource SegToggle}" Padding="7,5" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" AutomationProperties.Name="Chat">
                                     <TextBlock Text="&#xE8BD;" Style="{StaticResource RailGlyph}" FontSize="19" />
                                 </ToggleButton>
-                                <ToggleButton x:Name="NavCode" Style="{StaticResource SegToggle}" Padding="15,5" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" AutomationProperties.Name="Code">
+                                <ToggleButton x:Name="NavCode" Style="{StaticResource SegToggle}" Padding="7,5" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" AutomationProperties.Name="Code">
                                     <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="19" />
                                 </ToggleButton>
                             </StackPanel>

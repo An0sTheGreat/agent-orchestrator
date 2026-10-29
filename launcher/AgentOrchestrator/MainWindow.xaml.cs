@@ -1835,6 +1835,9 @@ public partial class MainWindow : Window
                 ClickRow(savedChat.Id);
                 await Settle();
                 Snap("23-sidebar-chat");
+                // The title bar names the open chat; Options names none.
+                if (TitleChatButton.Visibility != Visibility.Visible || TitleChatText.Text != _store.View().Ungrouped.Single(e => e.Id == savedChat.Id).Title)
+                    return Fail();
                 if (NavChat.IsChecked != true || _chatConv != savedChat || _chatHistory.Count != 4 || ChatPanel.Children.Count != 4 || _codeConv != chatA ||
                     SidebarList.Children.Cast<UIElement>().Select(Main).Single(m => m is ToggleButton { IsChecked: true }).Tag as string != savedChat.Id)
                     return Fail();

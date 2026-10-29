@@ -61,6 +61,23 @@ public partial class MainWindow
                 foreach (var entry in view.Archived)
                     SidebarList.Children.Add(ChatRow(entry, null, 0, 1, view.Groups, archived: true));
         }
+        RefreshTitleChat(view);
+    }
+
+    // The title bar names the chat open in the current view (Chat or Code); its menu is that chat's sidebar menu.
+    private string? TitleChatId => (NavChat.IsChecked == true ? _chatConv : NavCode.IsChecked == true ? _codeConv : null)?.Id;
+
+    private void RefreshTitleChat(ConversationStore.SidebarView view)
+    {
+        var entry = TitleChatId is { } id ? view.Groups.SelectMany(g => g.Items).Concat(view.Ungrouped).Concat(view.Archived).FirstOrDefault(e => e.Id == id) : null;
+        TitleChatButton.Visibility = entry is null ? Visibility.Collapsed : Visibility.Visible;
+        TitleChatText.Text = entry?.Title ?? "";
+    }
+
+    private void TitleChat_Click(object sender, RoutedEventArgs e)
+    {
+        if (TitleChatId is { } id && _sidebarMenus.TryGetValue(id, out var build))
+            OpenSidebarMenu(build(), TitleChatButton, PlacementMode.Bottom);
     }
 
     private static string ProjectName(GroupView group) => group.Name.Length > 0 ? group.Name : "Untitled project";
