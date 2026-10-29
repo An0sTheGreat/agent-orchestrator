@@ -833,8 +833,9 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="34" /><RowDefinition Height="0" /><RowDefinition Height="*" /><RowDefinition Height="34" />
         </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
 
-        <Grid x:Name="ThemeBackdrop" Grid.RowSpan="4" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AppBackground}">
+        <Grid x:Name="ThemeBackdrop" Grid.RowSpan="4" Grid.ColumnSpan="2" Visibility="Collapsed" IsHitTestVisible="False" Background="{DynamicResource AppBackground}">
             <Ellipse Width="820" Height="820" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-260,-330,0,0">
                 <Ellipse.Fill><RadialGradientBrush><GradientStop x:Name="GlassA1" Color="#70558CFF" Offset="0" /><GradientStop x:Name="GlassA2" Color="#00465A9C" Offset="1" /></RadialGradientBrush></Ellipse.Fill>
             </Ellipse>
@@ -844,7 +845,7 @@
         </Grid>
 
         <!-- Title bar -->
-        <Border x:Name="TitleBar" Grid.Row="0" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1"
+        <Border x:Name="TitleBar" Grid.Row="0" Grid.Column="1" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" MouseMove="TitleBar_MouseMove" MouseLeftButtonUp="TitleBar_MouseLeftButtonUp">
             <Grid>
             <!-- While a run or reply is in progress a light sweeps along the title bar's lower edge (SetActivity starts and stops it).
@@ -883,56 +884,68 @@
         </Border>
 
         <!-- Main area: sidebar, the Code / Chat / Options view, worker cards -->
-        <Grid x:Name="MainView" Grid.Row="2">
+        <!-- Left-side navigation, the full height of the window beside the title bar. Its width is animated; it collapses to an icon rail. -->
+        <Border x:Name="SidePane" Grid.Column="0" Grid.RowSpan="4" Width="260" ClipToBounds="True" Background="{DynamicResource NavBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
+            <Grid>
+                <Grid x:Name="SidebarFull" Width="259" HorizontalAlignment="Left">
+                    <Grid.RowDefinitions><RowDefinition Height="34" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <!-- Top strip, level with the title bar (it drags the window too): collapse on the left, the Chat / Code switch on the right. -->
+                    <Grid Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" MouseMove="TitleBar_MouseMove" MouseLeftButtonUp="TitleBar_MouseLeftButtonUp">
+                        <Button x:Name="SidebarCollapseButton" Style="{StaticResource GhostButton}" Width="28" Height="26" Padding="0" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
+                                Click="SidebarToggle_Click" ToolTip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar (Ctrl+B)">
+                            <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Border HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
+                                BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
+                            <StackPanel Orientation="Horizontal">
+                                <ToggleButton x:Name="NavChat" Style="{StaticResource SegToggle}" Padding="10,3" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" AutomationProperties.Name="Chat">
+                                    <TextBlock Text="&#xE8BD;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                                </ToggleButton>
+                                <ToggleButton x:Name="NavCode" Style="{StaticResource SegToggle}" Padding="10,3" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" AutomationProperties.Name="Code">
+                                    <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                                </ToggleButton>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="12,8,12,20">
+                            <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
+
+                            <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
+                            <StackPanel x:Name="SidebarList" Margin="0,16,0,0" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+                <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,4,0,0" Visibility="Collapsed">
+                    <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
+                        <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                    </Button>
+                    <Button Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="CodeNew_Click" ToolTip="New chat" AutomationProperties.Name="New chat">
+                        <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                    </Button>
+                    <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+1)" AutomationProperties.Name="Chat (Ctrl+1)"
+                                  IsChecked="{Binding IsChecked, ElementName=NavChat, Mode=TwoWay}">
+                        <TextBlock Text="&#xE8F2;" Style="{StaticResource RailGlyph}" />
+                    </ToggleButton>
+                    <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Code" Click="Nav_Click" ToolTip="Code (Ctrl+2)" AutomationProperties.Name="Code (Ctrl+2)"
+                                  IsChecked="{Binding IsChecked, ElementName=NavCode, Mode=TwoWay}">
+                        <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" />
+                    </ToggleButton>
+                    <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options (Ctrl+3)"
+                                  IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
+                        <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
+                    </ToggleButton>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid x:Name="MainView" Grid.Row="2" Grid.Column="1">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" MinWidth="380" />
                 <ColumnDefinition Width="6" />
                 <ColumnDefinition x:Name="DetailsColumn" Width="340" MinWidth="260" MaxWidth="1400" />
             </Grid.ColumnDefinitions>
-
-            <!-- Left-side navigation + project setup. Its width is animated; it collapses to an icon rail. -->
-            <Border x:Name="SidePane" Grid.Column="0" Width="260" ClipToBounds="True" Background="{DynamicResource NavBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
-                <Grid>
-                    <Grid x:Name="SidebarFull" Width="259" HorizontalAlignment="Left">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                            <StackPanel Margin="12,20,12,20">
-                                <TextBlock Text="VIEW" Style="{StaticResource SectionHeader}" Margin="8,0,0,8" />
-                                <ToggleButton x:Name="NavChat" Style="{StaticResource NavToggle}" Content="Chat" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" />
-                                <ToggleButton x:Name="NavCode" Style="{StaticResource NavToggle}" Content="Code" IsChecked="True" Click="Nav_Click" Tag="Code" ToolTip="Code in a folder with the workers (Ctrl+2)" />
-                                <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
-
-                                <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
-                                <StackPanel x:Name="SidebarList" Margin="0,16,0,0" />
-                            </StackPanel>
-                        </ScrollViewer>
-                        <Button x:Name="SidebarCollapseButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,14,10,0"
-                                Click="SidebarToggle_Click" ToolTip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar (Ctrl+B)">
-                            <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
-                        </Button>
-                    </Grid>
-                    <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,14,0,0" Visibility="Collapsed">
-                        <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
-                            <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
-                        </Button>
-                        <Button Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="CodeNew_Click" ToolTip="New chat" AutomationProperties.Name="New chat">
-                            <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="12" />
-                        </Button>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+1)" AutomationProperties.Name="Chat (Ctrl+1)"
-                                      IsChecked="{Binding IsChecked, ElementName=NavChat, Mode=TwoWay}">
-                            <TextBlock Text="&#xE8F2;" Style="{StaticResource RailGlyph}" />
-                        </ToggleButton>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Code" Click="Nav_Click" ToolTip="Code (Ctrl+2)" AutomationProperties.Name="Code (Ctrl+2)"
-                                      IsChecked="{Binding IsChecked, ElementName=NavCode, Mode=TwoWay}">
-                            <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" />
-                        </ToggleButton>
-                        <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options (Ctrl+3)"
-                                      IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
-                            <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
-                        </ToggleButton>
-                    </StackPanel>
-                </Grid>
-            </Border>
 
             <!-- Code: a conversation with a worker about a folder (MainWindow.Code.cs), or the project run's output (ShowCodeRun) -->
             <Grid x:Name="CodeView" Grid.Column="1">
@@ -1230,15 +1243,15 @@
         </Grid>
 
         <!-- A picture of the worker card being dragged follows the pointer on this layer -->
-        <Canvas x:Name="DragLayer" Grid.RowSpan="4" IsHitTestVisible="False" Visibility="Collapsed">
+        <Canvas x:Name="DragLayer" Grid.RowSpan="4" Grid.ColumnSpan="2" IsHitTestVisible="False" Visibility="Collapsed">
             <Image x:Name="DragGhost" Opacity="0.85" />
         </Canvas>
 
         <!-- Toasts (MainWindow.Toast): newest at the bottom, just above the status bar -->
-        <StackPanel x:Name="ToastStack" Grid.Row="2" IsHitTestVisible="False" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
+        <StackPanel x:Name="ToastStack" Grid.Row="2" Grid.Column="1" IsHitTestVisible="False" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
 
         <!-- Status bar -->
-        <Border Grid.Row="3" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
+        <Border Grid.Row="3" Grid.Column="1" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
             <DockPanel Margin="14,0" LastChildFill="False">
                 <TextBlock x:Name="FooterRight" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" />
                 <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />

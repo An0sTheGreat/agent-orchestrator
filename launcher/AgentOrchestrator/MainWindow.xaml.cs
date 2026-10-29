@@ -3591,7 +3591,7 @@ public partial class MainWindow : Window
         SetBrush("EdgeHighlight", new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
             { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();
-        Resources["ControlRadius"] = new CornerRadius(flat ? 17 : 7);
+        Resources["ControlRadius"] = new CornerRadius(flat ? 8 : 7); // buttons, toggles, inputs: softly rounded, not pills
         Resources["CardRadius"] = new CornerRadius(flat ? 14 : 5);
         Resources["PanelRadius"] = new CornerRadius(flat ? 14 : 9);
         Resources["SmallRadius"] = new CornerRadius(flat ? 10 : 6);
