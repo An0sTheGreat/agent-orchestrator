@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -6,9 +6,9 @@ using System.Windows.Media.Effects;
 
 namespace AgentOrchestrator;
 
-// Shared frame of every popup window: no title bar, a rounded and shadowed panel on the DialogBackground shade, a small ×
+// Shared frame of every popup window: no title bar, a rounded and shadowed panel on the DialogBackground shade, a small Ã—
 // at the top right, and a top strip that drags it; Esc closes it (the same as Cancel). The title, when given, is a heading
-// at the top of the body. Small dialogs size to their content; a large one (the Settings window) is about 960 x 640 within
+// at the top of the body. Small dialogs size to their content; a large one (the Settings window) is about 960 x 960 within
 // the owner's work area. Themed live through the owner's resources.
 internal sealed class DialogShell : Window
 {
@@ -23,7 +23,7 @@ internal sealed class DialogShell : Window
         {
             var work = MainWindow.WorkAreaOf(owner);
             Width = Math.Min(960 + 2 * ShadowRoom, work.Width);
-            Height = Math.Min(640 + 2 * ShadowRoom, work.Height);
+            Height = Math.Min(960 + 2 * ShadowRoom, work.Height - 60); // tall on big screens; a margin above and below on small ones
         }
         else
             SizeToContent = SizeToContent.WidthAndHeight;
@@ -44,7 +44,7 @@ internal sealed class DialogShell : Window
 
         CloseX = new Button
         {
-            Content = "×", Style = (Style)owner.FindResource("CloseButton"), Width = 36, Height = 28,
+            Content = "Ã—", Style = (Style)owner.FindResource("CloseButton"), Width = 36, Height = 28,
             HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 6, 6, 0), ToolTip = "Close (Esc)",
         };
         CloseX.Click += (_, _) => Close();
@@ -80,7 +80,7 @@ internal sealed class DialogShell : Window
         Content = new Grid { Margin = new Thickness(ShadowRoom), Children = { shadow, Frame } };
     }
 
-    // The rounded panel and its × (for --ui-smoke: the panel's brushes follow the theme).
+    // The rounded panel and its Ã— (for --ui-smoke: the panel's brushes follow the theme).
     public Border Frame { get; }
 
     public Button CloseX { get; }
