@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -1126,7 +1126,8 @@ public partial class MainWindow : Window
                 dialog.ShowActivated = false;
                 dialog.Show();
                 await Settle();
-                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.ActualWidth > 100 && dialog.ActualHeight > 60;
+                var shown = dialog.IsVisible && dialog.WindowStyle == WindowStyle.None && dialog.AllowsTransparency && dialog.ActualWidth > 100 && dialog.ActualHeight > 60
+                    && ReferenceEquals(dialog.Frame.Background, Resources["DialogBackground"]); // borderless, on the popup shade
                 Snap(name, dialog);
                 dialog.Close();
                 return shown && !dialog.IsVisible;
@@ -2003,7 +2004,7 @@ public partial class MainWindow : Window
             if (way == 1) // Esc
                 settings.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(settings)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
             else // ×
-                ((Grid)((DockPanel)settings.Frame.Child).Children[0]).Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                settings.CloseX.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             if (settings.IsVisible || _settingsWindow is not null || SettingsHolder.Child != SettingsContent)
                 return Fail();
@@ -3632,8 +3633,8 @@ public partial class MainWindow : Window
 
     // ---- the Settings window (the sidebar's gear, Ctrl+3): it borrows SettingsContent from its hidden holder while open
 
-    private PanelShell? _settingsWindow;
-    private Action<PanelShell>? _settingsShow; // --ui-smoke: shows it without blocking (ShowDialog otherwise)
+    private DialogShell? _settingsWindow;
+    private Action<DialogShell>? _settingsShow; // --ui-smoke: shows it without blocking (ShowDialog otherwise)
 
     private void Settings_Click(object sender, RoutedEventArgs e) => OpenSettings();
 
@@ -3647,11 +3648,12 @@ public partial class MainWindow : Window
             return;
         }
         SettingsHolder.Child = null;
-        var window = _settingsWindow = new PanelShell(this, SettingsContent);
+        var window = _settingsWindow = new DialogShell(this, null, SettingsContent, large: true);
         window.Loaded += (_, _) => focus?.Focus();
         window.Closed += (_, _) =>
         {
-            SettingsHolder.Child = SettingsContent; // PanelShell released it on closing
+            ((Panel)SettingsContent.Parent).Children.Remove(SettingsContent);
+            SettingsHolder.Child = SettingsContent;
             _settingsWindow = null;
         };
         if (_settingsShow is { } show)
@@ -3747,6 +3749,11 @@ public partial class MainWindow : Window
         // Graphite: warm dark grays with off-white text and a light gray accent.
         // Parchment: warm off-white paper (its background stays exactly #F4F3EE), white cards, near-black text.
         Surface("AppBackground", clay ? "#1E1C1B" : parchment ? "#F4F3EE" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment ? 0 : 0.035);
+        // Popup windows sit a shade off the window: lighter on the dark themes, darker on Parchment (Glass keeps its translucency).
+        var back = ((SolidColorBrush)Resources["AppBackground"]).Color;
+        var (toward, share) = parchment ? ((byte)0, 0.035) : ((byte)255, 0.07);
+        byte Shade(byte from) => (byte)Math.Round(from + (toward - from) * share);
+        Resources["DialogBackground"] = new SolidColorBrush(Color.FromArgb(back.A, Shade(back.R), Shade(back.G), Shade(back.B)));
         SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
         Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
         Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);

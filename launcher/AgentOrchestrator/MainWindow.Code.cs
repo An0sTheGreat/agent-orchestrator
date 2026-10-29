@@ -447,7 +447,7 @@ public partial class MainWindow
         RefreshCodeFolders();
         CodeFoldersHost.Content = null;
         var dialog = new DialogShell(this, "Folders", CodeFoldersPanel);
-        dialog.Closed += (_, _) => { ((Border)CodeFoldersPanel.Parent).Child = null; CodeFoldersHost.Content = CodeFoldersPanel; };
+        dialog.Closed += (_, _) => { ((Panel)CodeFoldersPanel.Parent).Children.Remove(CodeFoldersPanel); CodeFoldersHost.Content = CodeFoldersPanel; };
         dialog.ShowDialog();
     }
 
