@@ -37,6 +37,10 @@ internal sealed class DialogShell : Window
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
         Resources.MergedDictionaries.Add(owner.Resources);
         SetResourceReference(ForegroundProperty, "TextPrimary");
+        // Text boxes, drop-downs and plain buttons keep the app's look but sit on DialogInput, so they stand out from the popup's shade.
+        foreach (var type in new[] { typeof(TextBox), typeof(PasswordBox), typeof(ComboBox), typeof(Button) })
+            Resources[type] = new Style(type, (Style)owner.FindResource(type))
+                { Setters = { new Setter(Control.BackgroundProperty, new DynamicResourceExtension("DialogInput")) } };
 
         CloseX = new Button
         {

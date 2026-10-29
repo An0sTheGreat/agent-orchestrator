@@ -2009,6 +2009,9 @@ public partial class MainWindow : Window
                 await Settle();
                 Snap("26-settings-window-" + theme, _settingsWindow);
                 _settingsWindow!.Close();
+                // On the llama.cpp runtime the model list is a local disk scan: the smoke never calls a real Unsloth server.
+                var runtimeBefore = _settings.Runtime;
+                _settings.Runtime = LauncherLogic.LlamaRuntime;
                 if (theme is "Parchment" or "Graphite" && BuildModelSettings(CardFor("planner")!) is { } modelWindow)
                 {
                     modelWindow.ShowActivated = false;
@@ -2017,6 +2020,7 @@ public partial class MainWindow : Window
                     Snap("27-model-settings-" + theme, modelWindow);
                     modelWindow.Close();
                 }
+                _settings.Runtime = runtimeBefore;
             }
         }
         return true;
@@ -3092,7 +3096,7 @@ public partial class MainWindow : Window
             return;
         if (!card.IsCustom && RemoteModel(card.Role) is not null)
         {
-            SetStatus($"{card.Title} uses a remote API: change its model in Settings", "#F7C873");
+            SetStatus($"{card.Title} uses a remote API: change its model with the gear on its card", "#F7C873");
             return;
         }
         SetStatus("Loading installed models…", "#F7C873");
@@ -3416,6 +3420,8 @@ public partial class MainWindow : Window
         var (toward, share) = parchment ? ((byte)0, 0.035) : ((byte)255, 0.07);
         byte Shade(byte from) => (byte)Math.Round(from + (toward - from) * share);
         Resources["DialogBackground"] = new SolidColorBrush(Color.FromArgb(back.A, Shade(back.R), Shade(back.G), Shade(back.B)));
+        // Inputs on a popup: set apart from its shade, darker than it on the dark themes (the window colour), white on Parchment.
+        Resources["DialogInput"] = parchment ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Color.FromArgb(255, back.R, back.G, back.B));
         SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
         Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
         Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);

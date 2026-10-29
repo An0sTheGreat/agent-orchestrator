@@ -15,7 +15,23 @@ internal static class ModelOptions
     {
         public string Section => Target switch { "auto_load" => "Load", "role" => "Request", _ => "Sampling" };
         public string[] Values => Kind == Kind.Bool ? ["on", "off"] : Choices ?? [];
+        public string Label => Labels.TryGetValue(Key, out var label) ? label : Key;
     }
+
+    // What the window calls each option; the config key stays in the tooltip.
+    private static readonly Dictionary<string, string> Labels = new()
+    {
+        ["gguf_variant"] = "Quantization", ["max_seq_length"] = "Context length", ["cache_type_kv"] = "KV cache type", ["n_parallel"] = "Parallel slots",
+        ["n_batch"] = "Batch size", ["n_ubatch"] = "Micro-batch size", ["ctx_checkpoints"] = "Context checkpoints", ["cache_ram"] = "Prompt cache (MiB)",
+        ["load_mode"] = "Memory mapping", ["gpu_memory_mode"] = "GPU memory mode", ["gpu_layers"] = "GPU layers", ["n_cpu_moe"] = "MoE layers on CPU",
+        ["tensor_split"] = "Tensor split", ["gpu_ids"] = "GPU IDs", ["tensor_parallel"] = "Tensor parallel", ["speculative_type"] = "Speculative decoding",
+        ["spec_draft_n_max"] = "Draft tokens", ["spec_draft_cache_type"] = "Draft KV cache type", ["reasoning_budget"] = "Reasoning budget",
+        ["reasoning_budget_message"] = "Budget message", ["disable_vision"] = "Disable vision", ["cpu_fallback"] = "CPU fallback",
+        ["chat_template_override"] = "Chat template override", ["llama_extra_args"] = "Extra llama-server arguments", ["temperature"] = "Temperature",
+        ["top_p"] = "Top P", ["top_k"] = "Top K", ["min_p"] = "Min P", ["repetition_penalty"] = "Repetition penalty", ["presence_penalty"] = "Presence penalty",
+        ["frequency_penalty"] = "Frequency penalty", ["max_tokens"] = "Max tokens", ["seed"] = "Seed", ["stop"] = "Stop strings",
+        ["enable_thinking"] = "Thinking", ["reasoning_effort"] = "Reasoning effort", ["timeout_seconds"] = "Timeout (seconds)",
+    };
 
     private static readonly string[] CacheTypes = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"];
     private const double Big = int.MaxValue;

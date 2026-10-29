@@ -93,7 +93,7 @@ public partial class MainWindow
             sections.Children.Add(panel);
             var link = new Button
             {
-                Content = name, Style = (Style)FindResource("GhostButton"), HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 6, 10, 6),
+                Content = name, Style = (Style)FindResource("SidebarRow"), HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 6, 10, 6),
             };
             link.Click += (_, _) => scroll.ScrollToVerticalOffset(panel.TranslatePoint(new Point(0, 0), sections).Y);
             nav.Children.Add(link);
@@ -140,7 +140,7 @@ public partial class MainWindow
                 var cell = new StackPanel
                 {
                     Margin = new Thickness(col == 0 ? 0 : 9, 12, col == 0 && !wide ? 9 : 0, 0),
-                    Children = { Label(o.Key), Muted(o.Help), editor, (fieldErrors[o.Key] = ErrorLine()) },
+                    Children = { Label(o.Label), Muted(o.Help), editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = o.Key,
                 };
                 Grid.SetRow(cell, row);
                 Grid.SetColumn(cell, col);
