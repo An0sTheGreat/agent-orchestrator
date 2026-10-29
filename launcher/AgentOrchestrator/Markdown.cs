@@ -169,7 +169,7 @@ internal static class Markdown
         {
             var run = new Run(text);
             if (color is not null)
-                run.Foreground = color;
+                run.SetResourceReference(TextElement.ForegroundProperty, color);
             p.Inlines.Add(run);
         }
         return p;
@@ -177,15 +177,9 @@ internal static class Markdown
 
     // ---- syntax colours for code blocks: one tokenizer for the common languages (VS Code dark colours, readable on every theme)
 
-    private static Brush Frozen(string color)
-    {
-        var brush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(color)!);
-        brush.Freeze();
-        return brush;
-    }
-
-    private static readonly Brush CommentColor = Frozen("#6A9955"), StringColor = Frozen("#CE9178"), NumberColor = Frozen("#B5CEA8"),
-        KeywordColor = Frozen("#569CD6"), ControlColor = Frozen("#C586C0"), CallColor = Frozen("#DCDCAA"), TypeColor = Frozen("#4EC9B0");
+    // Theme resource keys (MainWindow.ApplyTheme sets dark or light shades).
+    private const string CommentColor = "CodeComment", StringColor = "CodeString", NumberColor = "CodeNumber", KeywordColor = "CodeKeyword",
+        ControlColor = "CodeControl", CallColor = "CodeCall", TypeColor = "CodeType";
 
     private static readonly HashSet<string> Control = new(StringComparer.Ordinal)
     {
@@ -212,17 +206,17 @@ internal static class Markdown
         @"(?<word>[A-Za-z_$][\w$]*)", RegexOptions.Singleline);
 
     // (text, colour or null for the default) pieces of the code, in order.
-    public static List<(string Text, Brush? Color)> Highlight(string code, string language)
+    public static List<(string Text, string? Color)> Highlight(string code, string language)
     {
         var lang = language.ToLowerInvariant();
         var hashComments = lang is "" or "py" or "python" or "sh" or "bash" or "shell" or "zsh" or "ps1" or "powershell" or "pwsh" or "rb" or "ruby"
             or "yaml" or "yml" or "toml" or "r" or "perl" or "dockerfile" or "makefile" or "ini" or "conf";
         var dashComments = lang is "sql" or "lua" or "haskell" or "hs";
-        var pieces = new List<(string, Brush?)>();
+        var pieces = new List<(string, string?)>();
         var at = 0;
         foreach (Match m in Tokens.Matches(code))
         {
-            Brush? color = null;
+            string? color = null;
             if (m.Groups["comment"].Success)
             {
                 var text = m.Value;
@@ -284,8 +278,6 @@ internal static class Markdown
         return table;
     }
 
-    private static readonly Brush InlineCodeBackground = Frozen("#33FFFFFF");
-
     public static void AddInlines(InlineCollection target, string text)
     {
         var at = 0;
@@ -297,7 +289,8 @@ internal static class Markdown
             if (m.Groups["codetext"].Success)
             {
                 // inline code keeps the text colour on a light chip, like other AI chat apps
-                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = new FontFamily("Consolas"), Background = InlineCodeBackground };
+                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = new FontFamily("Consolas") };
+                code.SetResourceReference(TextElement.BackgroundProperty, "InlineCode");
                 target.Add(code);
             }
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)

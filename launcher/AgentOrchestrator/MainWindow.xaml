@@ -247,7 +247,7 @@
                                 <Setter TargetName="Ring" Property="Stroke" Value="{DynamicResource AccentLight}" />
                                 <Setter TargetName="Dot" Property="Visibility" Value="Visible" />
                             </Trigger>
-                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="White" /></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -1222,11 +1222,12 @@
                 <StackPanel Margin="40,28" MaxWidth="760" HorizontalAlignment="Left">
                     <TextBlock Text="OPTIONS" Style="{StaticResource SectionHeader}" />
                     <TextBlock Text="Theme" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
-                    <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme (default)" Margin="0,14,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme" Margin="0,14,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                    <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents (default)" Checked="Theme_Checked" />
                     <TextBlock Text="Accent colour is chosen per theme from the Accent button in the header." Foreground="{DynamicResource Muted}" Margin="0,16,0,0" />
                     <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
                     <PasswordBox x:Name="ApiKeyBox" Width="460" HorizontalAlignment="Left" Margin="0,14,0,0" />

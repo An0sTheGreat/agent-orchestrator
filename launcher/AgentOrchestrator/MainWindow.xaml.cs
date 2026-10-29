@@ -65,12 +65,13 @@ public partial class MainWindow : Window
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
-        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" ? _settings.Theme : "Flat";
+        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" ? _settings.Theme : "Parchment";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
         ThemeGlassRadio.IsChecked = _settings.Theme == "Glass";
         ThemeOledRadio.IsChecked = _settings.Theme == "Oled";
         ThemeGraphiteRadio.IsChecked = _settings.Theme == "Graphite";
+        ThemeParchmentRadio.IsChecked = _settings.Theme == "Parchment";
         ApplyTheme();
         _initializing = false;
         InitChat();
@@ -1955,7 +1956,7 @@ public partial class MainWindow : Window
         await Settle();
         if (!string.IsNullOrEmpty(snapshots))
         {
-            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Flat" })
+            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "Flat" })
             {
                 _settings.Theme = theme;
                 ApplyTheme();
@@ -3544,7 +3545,7 @@ public partial class MainWindow : Window
     {
         if (_initializing)
             return;
-        _settings.Theme = ThemeGraphiteRadio.IsChecked == true ? "Graphite" : ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
+        _settings.Theme = ThemeParchmentRadio.IsChecked == true ? "Parchment" : ThemeGraphiteRadio.IsChecked == true ? "Graphite" : ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
         ApplyTheme();
         _settings.Save();
     }
@@ -3554,7 +3555,8 @@ public partial class MainWindow : Window
         var glass = _settings.Theme == "Glass";
         var oled = _settings.Theme == "Oled";
         var graphite = _settings.Theme == "Graphite";
-        var flat = _settings.Theme == "Flat" || oled || graphite; // OLED and Graphite have the Flat shapes
+        var parchment = _settings.Theme == "Parchment"; // the one light theme
+        var flat = _settings.Theme == "Flat" || oled || graphite || parchment; // OLED, Graphite and Parchment have the Flat shapes
         // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
         // OLED's black background stays pure black.
         var tint = (Color)ColorConverter.ConvertFromString(AccentColors.First(x => x.Key == AccentKey).Accent)!;
@@ -3565,19 +3567,25 @@ public partial class MainWindow : Window
             Resources[key] = new SolidColorBrush(Color.FromArgb(c.A, Mix(c.R, tint.R), Mix(c.G, tint.G), Mix(c.B, tint.B)));
         }
         // Graphite: warm dark grays with off-white text and a light gray accent.
-        Surface("AppBackground", graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
-        SetThemeBrush("TextPrimary", graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        Surface("TitleBackground", graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
-        Surface("Panel", graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        // Parchment: warm off-white paper (its background stays exactly #F4F3EE), white cards, near-black text.
+        Surface("AppBackground", parchment ? "#F4F3EE" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment ? 0 : 0.035);
+        SetThemeBrush("TextPrimary", parchment ? "#1F1E1D" : graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
+        Surface("TitleBackground", parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
+        Surface("Panel", parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
         // The left sidebar: the Panel shade, except Graphite's, which is lighter than its chat area.
-        Surface("NavBackground", graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
-        Surface("Card", graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
-        Surface("Hover", graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
-        Surface("Border", graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        Surface("NavBackground", parchment ? "#EDEBE4" : graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("Card", parchment ? "#FFFFFF" : graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
+        Surface("Hover", parchment ? "#E6E3DA" : graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
+        Surface("Border", parchment ? "#DCD8CC" : graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
-        SetThemeBrush("Muted", graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        SetThemeBrush("Muted", parchment ? "#6F6D66" : graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
-        var rim = (byte)(glass ? 0x50 : oled || graphite ? 0x18 : flat ? 0x22 : 0x1A);
+        var rim = (byte)(parchment ? 0 : glass ? 0x50 : oled || graphite ? 0x18 : flat ? 0x22 : 0x1A);
+        // Code colours: VS Code's light palette on Parchment, its dark one elsewhere; inline code sits on a chip of the opposite shade.
+        foreach (var (key, dark, light) in new[] { ("CodeComment", "#6A9955", "#008000"), ("CodeString", "#CE9178", "#A31515"), ("CodeNumber", "#B5CEA8", "#098658"),
+                     ("CodeKeyword", "#569CD6", "#0000FF"), ("CodeControl", "#C586C0", "#AF00DB"), ("CodeCall", "#DCDCAA", "#795E26"), ("CodeType", "#4EC9B0", "#267F99"),
+                     ("InlineCode", "#33FFFFFF", "#14000000") })
+            SetThemeBrush(key, parchment ? light : dark);
         SetBrush("EdgeHighlight", new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
             { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();
@@ -3602,17 +3610,23 @@ public partial class MainWindow : Window
         ("Orange", "Orange", "#FF8A3D", "#FFB880", "#1A0D04"),
         ("Silver", "Light gray", "#9D9B97", "#B1B0AC", "#121211"),
         ("Peru", "Peru", "#CF8E4E", "#E6B587", "#1A0F05"),
+        ("Clay", "Clay", "#C15F3C", "#D97757", "#FFFFFF"),
     };
 
     private string AccentKey => _settings.ThemeAccents.TryGetValue(_settings.Theme, out var key) && AccentColors.Any(x => x.Key == key)
         ? key
-        : _settings.Theme switch { "Gold" => "Gold", "Glass" => "LightBlue", "Oled" => "Purple", "Graphite" => "Silver", _ => "Blue" };
+        : _settings.Theme switch { "Gold" => "Gold", "Glass" => "LightBlue", "Oled" => "Purple", "Graphite" => "Silver", "Parchment" => "Clay", _ => "Blue" };
 
     private void ApplyAccent()
     {
         var accent = AccentColors.First(x => x.Key == AccentKey);
         SetThemeBrush("Accent", accent.Accent);
-        SetThemeBrush("AccentLight", accent.Light);
+        // AccentLight colours text and outlines; on the light theme it must be darker than the accent, not lighter.
+        var accentColor = (Color)ColorConverter.ConvertFromString(accent.Accent)!;
+        if (_settings.Theme == "Parchment")
+            Resources["AccentLight"] = new SolidColorBrush(Color.FromRgb((byte)(accentColor.R * 0.82), (byte)(accentColor.G * 0.82), (byte)(accentColor.B * 0.82)));
+        else
+            SetThemeBrush("AccentLight", accent.Light);
         SetThemeBrush("OnAccent", accent.On);
         AccentLabel.Text = "Accent: " + accent.Label;
         var strong = (Color)ColorConverter.ConvertFromString(accent.Accent)!;
