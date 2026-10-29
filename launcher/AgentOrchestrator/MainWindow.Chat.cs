@@ -185,8 +185,11 @@ public partial class MainWindow
     {
         _settings.ChatKeepLoaded = ChatKeepToggle.IsChecked == true;
         _settings.Save();
-        if (!_settings.ChatKeepLoaded)
-            UnloadChat(_loadedByChat.ToList());
+        if (_settings.ChatKeepLoaded)
+            return;
+        UnloadChat(_loadedByChat.ToList());
+        if (_process is null) // a run may be using the local server
+            StopLocalServer();
     }
 
     // Unloads the given chat-loaded models, each on the server that loaded it, without blocking the UI thread. Only models
@@ -360,7 +363,7 @@ public partial class MainWindow
     private async Task<bool> RunTurn(Conversation c, string? text, string role, bool multi, Func<string, string> buildRequest,
         Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label)
     {
-        if (_chatBusy || _process is not null || _workflowRoot is null)
+        if (_chatBusy || _process is not null || _workflowRoot is null || !RuntimeReady())
             return false;
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
@@ -407,6 +410,7 @@ public partial class MainWindow
             }
             File.WriteAllText(requestFile, buildRequest(role));
             var startInfo = buildStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, _runKey, requestFile);
+            ApplyRuntime(startInfo);
             var process = _chatProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
             process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -566,7 +570,10 @@ public partial class MainWindow
         var loadedThisTurn = _turnLoaded.ToList();
         _turnLoaded = new();
         if (!_settings.ChatKeepLoaded)
+        {
             UnloadChat(loadedThisTurn);
+            StopLocalServer();
+        }
         SetChatBusy(false);
         if (c.Input.IsVisible)
             c.Input.Focus();

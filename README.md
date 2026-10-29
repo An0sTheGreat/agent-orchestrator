@@ -35,6 +35,8 @@ The window follows the Image Parser design language: selectable themes (Parchmen
 
 The launcher starts the engine with `--events`, which makes `orchestrator.py` print structured `@@AO {json}` lines alongside its normal log output. Plain command-line runs do not emit them.
 
+**Options > Model runtime** picks where local models run: **Unsloth Studio (API)** (the default) or **Local — llama.cpp (llama-server)**. **Download llama-server** fetches the latest llama.cpp Windows build from GitHub into `%APPDATA%\Agent Orchestrator\llama.cpp` (CUDA with its runtime when `nvidia-smi.exe` is found, else Vulkan, else CPU; **Update llama-server** replaces it). With the local runtime no Unsloth API key is needed; GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in the optional **Models folder**. The engine starts one llama-server on `127.0.0.1:8899`; the launcher stops it when the app closes and, with **Keep models loaded** off, after each chat turn. The runtime cannot be switched while a reply or run is in progress.
+
 For automatic key entry, create `api_key.txt` beside the EXE or in the Agent Orchestrator root. It must contain exactly one nonblank line: the API key. A file beside the EXE takes precedence. The launcher masks the detected value and never prints it. `api_key.txt` is excluded from Git, but it is still an unencrypted credential on disk.
 
 Initialization adds these project-local files without overwriting existing files: `PROJECT.md`, `STATE.md`, `TASK.md`, `RESULT.md`, `REVIEW.md`, `ISSUES.md`, and `config.json`. Edit the initialized project’s `PROJECT.md`; the workflow maintains the handoff files.

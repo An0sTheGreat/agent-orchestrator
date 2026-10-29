@@ -74,6 +74,7 @@ public partial class MainWindow : Window
         ThemeParchmentRadio.IsChecked = _settings.Theme == "Parchment";
         ThemeParchmentDarkRadio.IsChecked = _settings.Theme == "ParchmentDark";
         ApplyTheme();
+        InitRuntime();
         _initializing = false;
         InitChat();
         StoreDo(_store.Load);
@@ -121,6 +122,8 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (!RuntimeReady())
+            return;
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
         _runKey = ApiKeyBox.Password.Trim();
@@ -141,6 +144,7 @@ public partial class MainWindow : Window
         {
             var python = LauncherLogic.FindPython();
             var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once);
+            ApplyRuntime(startInfo);
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
             _process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -879,6 +883,7 @@ public partial class MainWindow : Window
     {
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         static Task Settle() => Task.Delay(400);
+        _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-state.json"); // never the real server's record
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
         ShowCodeRun(true); // the run checks below need Model Output on screen
@@ -1955,6 +1960,8 @@ public partial class MainWindow : Window
         WindowState = WindowState.Normal;
         (Left, Top) = (-20000, -20000);
         await Settle();
+        if (!await LocalRuntimeSmoke())
+            return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Flat" })
@@ -1973,6 +1980,69 @@ public partial class MainWindow : Window
             Snap("6-options");
         }
         return true;
+    }
+
+    // --ui-smoke, local runtime: the radios persist (and are refused mid-reply), the status follows the data folder, a turn
+    // without llama-server is refused, and stopping the recorded server kills a llama-server but never another process.
+    private async Task<bool> LocalRuntimeSmoke()
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        bool Toasted(string text) => ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text);
+        RuntimeLlamaRadio.IsChecked = true;
+        if (AppSettings.Load().Runtime != LauncherLogic.LlamaRuntime)
+            return Fail();
+        RuntimeUnslothRadio.IsChecked = true;
+        if (AppSettings.Load().Runtime != "unsloth")
+            return Fail();
+        _chatBusy = true;
+        RuntimeLlamaRadio.IsChecked = true;
+        _chatBusy = false;
+        await Task.Delay(100);
+        if (_settings.Runtime != "unsloth" || RuntimeUnslothRadio.IsChecked != true || RuntimeLlamaRadio.IsChecked == true)
+            return Fail();
+        RuntimeLlamaRadio.IsChecked = true;
+        RefreshLlamaStatus();
+        if (LlamaStatus.Text != "llama-server not installed" || (string)LlamaDownloadButton.Content != "Download llama-server")
+            return Fail();
+        var replies = _chat.Panel.Children.Count;
+        if (await RunTurn(_chat, "hi", "implementer", false, _ => "{}", LauncherLogic.BuildChatStartInfo, "Chat") ||
+            _chatBusy || _chat.Panel.Children.Count != replies || !Toasted("Download llama-server in Options first"))
+            return Fail();
+        // A stand-in llama-server.exe that runs: a copy of ping, so its process name is llama-server.
+        var ping = Path.Combine(Environment.SystemDirectory, "PING.EXE");
+        Directory.CreateDirectory(LauncherLogic.LlamaFolder);
+        File.Copy(ping, LauncherLogic.LlamaServerPath);
+        File.WriteAllText(Path.Combine(LauncherLogic.LlamaFolder, "version.txt"), "b9999\nCUDA 12.4");
+        RefreshLlamaStatus();
+        if (LlamaStatus.Text != "llama-server b9999 installed (CUDA 12.4)" || (string)LlamaDownloadButton.Content != "Update llama-server")
+            return Fail();
+        void Record(int pid) => File.WriteAllText(_llamaStateFile, $"{{\"pid\": {pid}, \"port\": 8899, \"signature\": \"s\", \"model_file\": \"m.gguf\", \"log\": \"l\"}}");
+        Process Run(string exe) => Process.Start(new ProcessStartInfo(exe, "-n 60 127.0.0.1") { UseShellExecute = false, CreateNoWindow = true })!;
+        Record(Environment.ProcessId);
+        StopLocalServer(); // our own pid: not a llama-server, so it must survive (this line returning is the check)
+        using var other = Run(ping);
+        using var server = Run(LauncherLogic.LlamaServerPath);
+        try
+        {
+            Record(other.Id);
+            StopLocalServer();
+            await Task.Delay(500);
+            if (other.HasExited)
+                return Fail(); // killed a process that is not llama-server
+            Record(server.Id);
+            if (server.HasExited)
+                return Fail(); // the stand-in must be running for the kill below to mean anything
+            StopLocalServer();
+            if (!server.WaitForExit(5000) || File.Exists(_llamaStateFile))
+                return Fail();
+        }
+        finally
+        {
+            foreach (var p in new[] { other, server })
+                try { p.Kill(); } catch (InvalidOperationException) { }
+        }
+        RuntimeUnslothRadio.IsChecked = true;
+        return _settings.Runtime == "unsloth" || Fail();
     }
 
     // Real hover cannot be faked, so begin every IsMouseOver storyboard of each control and data template directly:
@@ -2146,12 +2216,12 @@ public partial class MainWindow : Window
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
     }
 
-    // False when every role is remote: no Unsloth key is needed and its monitor is not polled. Custom workers always
+    // False when every role is remote or local models run on llama-server: no Unsloth key is needed and its monitor is not polled. Custom workers always
     // use the local server (they copy the Implementer's local connection), and an unreadable config counts as local.
     private bool UsesUnsloth(string project)
     {
         using var config = ReadConfig(project);
-        return config is null || CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement);
+        return !LocalRuntime && (config is null || CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement));
     }
 
     // The first built-in role's Unsloth server (a remote role has none).
@@ -3731,6 +3801,8 @@ public partial class MainWindow : Window
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
         UnloadOnClose(); // the models this run loaded, and those chat left loaded between messages
+        _llamaDownload?.Cancel();
+        StopLocalServer();
         _settings.Save();
     }
 
