@@ -185,7 +185,7 @@ public partial class MainWindow
             return;
         CloseCodeConversation();
         ProjectPath = folder;
-        ShowView(false);
+        ShowView();
         ShowCodeRun(false);
         if (!EnsureCodeConversation(SelectedProjectPath()))
             return;
@@ -233,7 +233,7 @@ public partial class MainWindow
             _settings.LastConversation = id;
             _settings.Save();
         }
-        ShowView(false);
+        ShowView();
         ShowCodeRun(false);
         RefreshSidebarList();
     }

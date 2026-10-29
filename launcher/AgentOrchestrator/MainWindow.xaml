@@ -916,11 +916,11 @@
                             <StackPanel x:Name="SidebarList" />
                         </StackPanel>
                     </ScrollViewer>
-                    <!-- Options: a gear at the sidebar's bottom left. -->
-                    <ToggleButton x:Name="NavOptions" Grid.Row="2" Style="{StaticResource NavToggle}" Width="40" Height="36" Padding="0" Margin="10,4,0,10"
-                                  HorizontalAlignment="Left" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options">
+                    <!-- Settings: a gear at the sidebar's bottom left opens the Settings window. -->
+                    <Button x:Name="NavOptions" Grid.Row="2" Style="{StaticResource GhostButton}" Foreground="{DynamicResource TextPrimary}" Width="40" Height="36" Padding="0" Margin="10,4,0,10"
+                            HorizontalAlignment="Left" Click="Settings_Click" ToolTip="Settings (Ctrl+3)" AutomationProperties.Name="Settings">
                         <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="17" />
-                    </ToggleButton>
+                    </Button>
                 </Grid>
                 <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,4,0,0" Visibility="Collapsed">
                     <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
@@ -937,10 +937,10 @@
                                   IsChecked="{Binding IsChecked, ElementName=NavCode, Mode=TwoWay}">
                         <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" />
                     </ToggleButton>
-                    <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Options" Click="Nav_Click" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options (Ctrl+3)"
-                                  IsChecked="{Binding IsChecked, ElementName=NavOptions, Mode=TwoWay}">
+                    <Button x:Name="RailSettings" Style="{StaticResource GhostButton}" Foreground="{DynamicResource TextPrimary}" Height="38" Padding="0" Margin="6,0,6,4"
+                            Click="Settings_Click" ToolTip="Settings (Ctrl+3)" AutomationProperties.Name="Settings (Ctrl+3)">
                         <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" />
-                    </ToggleButton>
+                    </Button>
                 </StackPanel>
             </Grid>
         </Border>
@@ -1217,10 +1217,14 @@
                     </Grid>
                 </Border>
             </Grid>
-            <!-- Options -->
-            <ScrollViewer x:Name="OptionsView" Grid.Column="1" Grid.ColumnSpan="3" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-                <StackPanel Margin="40,28" MaxWidth="760" HorizontalAlignment="Left">
-                    <TextBlock Text="OPTIONS" Style="{StaticResource SectionHeader}" />
+            <!-- Settings: shown in their own window (OpenSettings), which borrows SettingsContent from this hidden holder while open. -->
+            <Border x:Name="SettingsHolder" Grid.Column="1" Visibility="Collapsed">
+            <ScrollViewer x:Name="SettingsContent" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel>
+                    <TextBlock Text="SETTINGS" Style="{StaticResource SectionHeader}" />
+                    <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <StackPanel>
                     <TextBlock Text="Theme" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
                     <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme" Margin="0,14,0,8" Checked="Theme_Checked" />
                     <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
@@ -1240,26 +1244,31 @@
                     </Button>
                     </StackPanel>
                     <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                    <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
                     <RadioButton x:Name="RuntimeUnslothRadio" GroupName="Runtime" Content="Unsloth Studio (API)" Margin="0,14,0,8" Checked="Runtime_Checked" />
                     <RadioButton x:Name="RuntimeLlamaRadio" GroupName="Runtime" Content="Local — llama.cpp (llama-server)" Checked="Runtime_Checked" />
-                    <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
+                    <DockPanel Margin="0,14,0,0">
                         <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
-                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" />
-                    </StackPanel>
-                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
+                    </DockPanel>
+                    <DockPanel Margin="0,10,0,0">
                         <Button Content="Models folder…" Padding="11,6" VerticalAlignment="Center" Click="ModelsFolder_Click" />
-                        <TextBlock x:Name="ModelsFolderText" VerticalAlignment="Center" Margin="12,0,0,0" MaxWidth="420" TextTrimming="CharacterEllipsis" />
-                        <Button x:Name="ModelsFolderClear" Content="Clear" Padding="11,6" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModelsFolderClear_Click" />
-                    </StackPanel>
+                        <Button x:Name="ModelsFolderClear" DockPanel.Dock="Right" Content="Clear" Padding="11,6" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModelsFolderClear_Click" />
+                        <TextBlock x:Name="ModelsFolderText" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
                     <TextBlock Text="GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in this folder." TextWrapping="Wrap"
-                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" MaxWidth="460" HorizontalAlignment="Left" />
-                    <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,36,0,0" />
-                    <PasswordBox x:Name="ApiKeyBox" Width="460" HorizontalAlignment="Left" Margin="0,14,0,0" />
+                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                    <PasswordBox x:Name="ApiKeyBox" Margin="0,14,0,0" />
                     <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"
-                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" MaxWidth="460" HorizontalAlignment="Left" />
+                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    </Grid>
                 </StackPanel>
             </ScrollViewer>
+            </Border>
         </Grid>
 
         <!-- A picture of the worker card being dragged follows the pointer on this layer -->

@@ -84,3 +84,79 @@ internal sealed class DialogShell : Window
         }
     }
 }
+
+// The large frame of a settings window: no title bar, a rounded and shadowed panel about 960 x 640 (within the owner's
+// work area) centred over the owner, an optional header and a small close button in its top strip, which drags it.
+// Themed live through the owner's resources; Esc closes it. Closing releases the body so its owner can take it back.
+internal sealed class PanelShell : Window
+{
+    private const double ShadowRoom = 16; // transparent margin around the panel that its shadow falls into
+
+    public PanelShell(Window owner, UIElement body, string? header = null)
+    {
+        Owner = owner;
+        var work = MainWindow.WorkAreaOf(owner);
+        Width = Math.Min(960 + 2 * ShadowRoom, work.Width);
+        Height = Math.Min(640 + 2 * ShadowRoom, work.Height);
+        WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        ResizeMode = ResizeMode.NoResize;
+        ShowInTaskbar = false;
+        WindowStyle = WindowStyle.None;
+        AllowsTransparency = true;
+        Background = Brushes.Transparent;
+        FontFamily = owner.FontFamily;
+        FontSize = owner.FontSize;
+        TextOptions.SetTextFormattingMode(this, TextFormattingMode.Ideal);
+        Resources.MergedDictionaries.Add(owner.Resources);
+        SetResourceReference(ForegroundProperty, "TextPrimary");
+
+        var close = new Button
+        {
+            Content = "×", Style = (Style)owner.FindResource("CloseButton"), Width = 36, Height = 28,
+            HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 6, 6, 0), ToolTip = "Close (Esc)",
+        };
+        close.Click += (_, _) => Close();
+        var strip = new Grid { Height = 40, Background = Brushes.Transparent };
+        if (header is not null)
+            strip.Children.Add(new TextBlock
+            {
+                Text = header, Style = (Style)owner.FindResource("SectionHeader"), Margin = new Thickness(28, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+            });
+        strip.Children.Add(close);
+        strip.MouseLeftButtonDown += (_, e) =>
+        {
+            if (e.LeftButton == MouseButtonState.Pressed)
+                DragMove();
+        };
+        var host = new Border { Padding = new Thickness(28, 0, 28, 24), Child = body };
+        Closed += (_, _) => host.Child = null;
+        var rows = new DockPanel();
+        DockPanel.SetDock(strip, Dock.Top);
+        rows.Children.Add(strip);
+        rows.Children.Add(host);
+        var frame = new Border { BorderThickness = new Thickness(1), Child = rows };
+        // The shadow is a sibling under the panel, so the effect never rasterizes the panel's text.
+        var shadow = new Border { Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.28 } };
+        foreach (var part in new[] { frame, shadow })
+        {
+            part.SetResourceReference(Border.BackgroundProperty, "Panel");
+            part.SetResourceReference(Border.BorderBrushProperty, "Border");
+            part.SetResourceReference(Border.CornerRadiusProperty, "PanelRadius");
+        }
+        Frame = frame;
+        Content = new Grid { Margin = new Thickness(ShadowRoom), Children = { shadow, frame } };
+    }
+
+    // The rounded panel (for --ui-smoke: its brushes follow the theme).
+    public Border Frame { get; }
+
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        base.OnPreviewKeyDown(e);
+        if (e.Key == Key.Escape && !e.Handled)
+        {
+            e.Handled = true;
+            Close();
+        }
+    }
+}

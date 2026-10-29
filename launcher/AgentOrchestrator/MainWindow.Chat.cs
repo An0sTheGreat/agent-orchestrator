@@ -268,7 +268,7 @@ public partial class MainWindow
     {
         if (_chatBusy)
             return;
-        ShowView(false, chat: true);
+        ShowView(chat: true);
         ClearChatConversation();
         ChatInput.Focus();
     }
@@ -327,7 +327,7 @@ public partial class MainWindow
             _settings.Save();
             Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
         }
-        ShowView(false, chat: true);
+        ShowView(chat: true);
     }
 
     // Saved messages into a cleared conversation: user bubbles and finished replies.
@@ -384,8 +384,7 @@ public partial class MainWindow
         {
             SetStatus("API key required", "#FF667A");
             Log("Enter your Unsloth API key.");
-            ShowView(options: true);
-            ApiKeyBox.Focus();
+            OpenSettings(ApiKeyBox);
             return false;
         }
         var skipped = new List<string>();
