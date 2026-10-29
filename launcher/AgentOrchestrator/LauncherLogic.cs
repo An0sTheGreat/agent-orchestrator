@@ -802,6 +802,47 @@ internal static class LauncherLogic
         return null;
     }
 
+    // A GGUF the llama.cpp runtime can load. Repo "org/name" for a Hugging Face cache file (the engine finds it by repo and
+    // variant), "" for a file in the models folder (loaded by its path, auto_load.gguf_file). Variant: the quant, or "".
+    public sealed record LocalGguf(string Repo, string Variant, string File);
+
+    // The engine's Hugging Face cache (orchestrator.py gguf_file): HF_HUB_CACHE, else HF_HOME\hub, else ~\.cache\huggingface\hub.
+    public static string HubCache() =>
+        Environment.GetEnvironmentVariable("HF_HUB_CACHE") is { Length: > 0 } hub ? hub
+        : Environment.GetEnvironmentVariable("HF_HOME") is { Length: > 0 } home ? Path.Combine(home, "hub")
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "huggingface", "hub");
+
+    private static readonly Regex SplitPart = new(@"-(\d{5})-of-\d{5}\.gguf$", RegexOptions.IgnoreCase);
+    private static readonly Regex QuantTail = new(@"[-_.]((?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*))$", RegexOptions.IgnoreCase);
+
+    // Every loadable GGUF the engine's lookup would find: the models folder (empty = none) and each cached repo's snapshots.
+    // Vision projectors (mmproj) and later parts of a split model are skipped, as the engine does.
+    public static List<LocalGguf> FindLocalGgufs(string modelsFolder, string hubCache)
+    {
+        var found = new List<LocalGguf>();
+        IEnumerable<string> Files(string folder) => Directory.Exists(folder)
+            ? Directory.EnumerateFiles(folder, "*.gguf", SearchOption.AllDirectories)
+                .Where(f => !Path.GetFileName(f).Contains("mmproj", StringComparison.OrdinalIgnoreCase) && FirstPart(Path.GetFileName(f)))
+                .Order(StringComparer.OrdinalIgnoreCase)
+            : [];
+        static bool FirstPart(string name) => SplitPart.Match(name) is not { Success: true } part || part.Groups[1].Value == "00001";
+        static string Variant(string file) => QuantTail.Match(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5]) is { Success: true } m ? m.Groups[1].Value : "";
+        if (modelsFolder.Length > 0)
+            found.AddRange(Files(modelsFolder).Select(f => new LocalGguf("", Variant(f), f)));
+        if (Directory.Exists(hubCache))
+            foreach (var repoDir in Directory.EnumerateDirectories(hubCache, "models--*").Order(StringComparer.OrdinalIgnoreCase))
+            {
+                var parts = Path.GetFileName(repoDir)["models--".Length..].Split("--", 2);
+                if (parts.Length != 2)
+                    continue;
+                var snapshots = Path.Combine(repoDir, "snapshots");
+                // the same file in several snapshot revisions is one choice
+                found.AddRange(Files(snapshots).DistinctBy(f => Path.GetFileName(f), StringComparer.OrdinalIgnoreCase)
+                    .Select(f => new LocalGguf($"{parts[0]}/{parts[1]}", Variant(f), f)));
+            }
+        return found;
+    }
+
     public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
 
     // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
@@ -1022,6 +1063,10 @@ internal static class LauncherLogic
                 load.Remove("gguf_variant");
             else
                 load["gguf_variant"] = w.ModelVariant;
+            if (string.IsNullOrEmpty(w.GgufFile))
+                load.Remove("gguf_file");
+            else
+                load["gguf_file"] = w.GgufFile;
             if (long.TryParse(w.ReasoningBudget.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var budget))
                 load["reasoning_budget"] = budget;
             if (long.TryParse(w.ContextLength.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var context))
@@ -1373,6 +1418,36 @@ internal static class LauncherLogic
         }
 
         LlamaSelfTest(root);
+
+        // Local GGUFs: the models folder and the HF cache layout; mmproj and later split parts skipped, one entry per file name.
+        var ggufArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-gguf-{Guid.NewGuid():N}");
+        try
+        {
+            void Touch(params string[] parts)
+            {
+                var file = Path.Combine([ggufArea, .. parts]);
+                Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+                File.WriteAllText(file, "");
+            }
+            Touch("models", "sub", "My-Model-Q8_0.gguf");
+            Touch("models", "mmproj-F16.gguf");
+            Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r1", "Qwen3-4B-UD-Q4_K_XL.gguf");
+            Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r2", "Qwen3-4B-UD-Q4_K_XL.gguf");
+            Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r1", "mmproj-BF16.gguf");
+            Touch("hub", "models--org--Big-GGUF", "snapshots", "r1", "Q4_K_M", "Big-Q4_K_M-00001-of-00002.gguf");
+            Touch("hub", "models--org--Big-GGUF", "snapshots", "r1", "Q4_K_M", "Big-Q4_K_M-00002-of-00002.gguf");
+            Touch("hub", "models--org--Big-GGUF", "blobs", "x.gguf");
+            var ggufs = FindLocalGgufs(Path.Combine(ggufArea, "models"), Path.Combine(ggufArea, "hub"));
+            var shown = string.Join("|", ggufs.Select(g => $"{g.Repo}:{g.Variant}:{Path.GetFileName(g.File)}"));
+            if (shown != ":Q8_0:My-Model-Q8_0.gguf|org/Big-GGUF:Q4_K_M:Big-Q4_K_M-00001-of-00002.gguf|unsloth/Qwen3-4B-GGUF:UD-Q4_K_XL:Qwen3-4B-UD-Q4_K_XL.gguf" ||
+                !Path.IsPathRooted(ggufs[0].File) || FindLocalGgufs("", Path.Combine(ggufArea, "none")).Count != 0)
+                throw new InvalidOperationException($"Local GGUF scan failed: {shown}");
+        }
+        finally
+        {
+            if (Directory.Exists(ggufArea))
+                Directory.Delete(ggufArea, recursive: true);
+        }
 
         var gguf = DescribeModel(@"Y:\.llm_models\Qwen3.5 9B｜Q8_0.gguf");
         if (gguf.Name != "Qwen3.5 9B" || gguf.Weights != "9B" || gguf.Quant != "Q8_0")

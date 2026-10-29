@@ -2050,6 +2050,16 @@ public partial class MainWindow : Window
             foreach (var p in new[] { other, server })
                 try { p.Kill(); } catch (InvalidOperationException) { }
         }
+        // Change on this runtime lists the GGUFs on disk (no Unsloth): a file in the models folder is assigned by its path.
+        var models = Path.Combine(AppSettings.DataRoot, "smoke-models");
+        var fake = Path.Combine(models, "Fake-Model-Q4_K_M.gguf");
+        Directory.CreateDirectory(models);
+        File.WriteAllText(fake, "");
+        _settings.ModelsFolder = models;
+        var choices = await FetchModelChoicesAsync();
+        _settings.ModelsFolder = "";
+        if (choices.SingleOrDefault(c => c.File == fake) is not { Label: "Fake-Model-Q4_K_M", Variant: "Q4_K_M", LoadPath: "Fake-Model-Q4_K_M" })
+            return Fail();
         RuntimeUnslothRadio.IsChecked = true;
         return _settings.Runtime == "unsloth" || Fail();
     }
@@ -3364,7 +3374,8 @@ public partial class MainWindow : Window
 
     // ---- model assignment
 
-    private sealed record ModelChoice(string Label, string Display, string LoadPath, string? Variant, string Expected);
+    // File: auto_load.gguf_file, for a llama.cpp model outside the Hugging Face cache.
+    private sealed record ModelChoice(string Label, string Display, string LoadPath, string? Variant, string Expected, string? File = null);
 
     private void ChangeModel_Click(object sender, RoutedEventArgs e)
     {
@@ -3427,6 +3438,7 @@ public partial class MainWindow : Window
         {
             card.Config.ModelPath = choice.LoadPath;
             card.Config.ModelExpected = choice.Expected;
+            card.Config.GgufFile = choice.File;
         }
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
@@ -3472,6 +3484,10 @@ public partial class MainWindow : Window
                 load.Remove("gguf_variant");
             else
                 load["gguf_variant"] = choice.Variant;
+            if (choice.File is null)
+                load.Remove("gguf_file");
+            else
+                load["gguf_file"] = choice.File;
             settings["expected_model_contains"] = choice.Expected;
             settings["display_name"] = choice.Display; // the launcher's label; load paths for local models are opaque ids
             File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
@@ -3482,8 +3498,21 @@ public partial class MainWindow : Window
     }
 
     // Installed text-generation GGUF models: local files, plus each downloaded quantization of cached Hugging Face repos.
+    // On the llama.cpp runtime: the GGUF files the engine itself would find (models folder and Hugging Face cache), no server needed.
     private async Task<List<ModelChoice>> FetchModelChoicesAsync()
     {
+        if (LocalRuntime)
+            return (await Task.Run(() => LauncherLogic.FindLocalGgufs(_settings.ModelsFolder, LauncherLogic.HubCache())))
+                .Select(g =>
+                {
+                    if (g.Repo.Length > 0)
+                    {
+                        var tail = g.Repo.Split('/')[^1];
+                        return new ModelChoice($"{tail}  ·  {(g.Variant.Length > 0 ? g.Variant : Path.GetFileName(g.File))}", g.Repo, g.Repo, g.Variant.Length > 0 ? g.Variant : null, tail);
+                    }
+                    var name = Path.GetFileNameWithoutExtension(g.File);
+                    return new ModelChoice(name, name, name, g.Variant.Length > 0 ? g.Variant : null, name, g.File);
+                }).DistinctBy(c => c.Label).OrderBy(c => c.Label, StringComparer.OrdinalIgnoreCase).ToList();
         var baseUrl = ManagementUrl(SelectedProjectPath()) ?? _apiBase;
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
