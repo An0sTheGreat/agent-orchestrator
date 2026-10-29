@@ -233,8 +233,15 @@ internal sealed class WorkerSetting
     public string ReasoningBudget { get; set; } = "";
     public string ContextLength { get; set; } = "";
     public string Thinking { get; set; } = "Auto";
+    // The Model settings window's fields (ModelOptions table keys; only non-empty ones). Supersedes the six above.
+    public Dictionary<string, string> ModelOptions { get; set; } = new();
 
-    public WorkerSetting Clone() => (WorkerSetting)MemberwiseClone();
+    public WorkerSetting Clone()
+    {
+        var copy = (WorkerSetting)MemberwiseClone();
+        copy.ModelOptions = new Dictionary<string, string>(ModelOptions);
+        return copy;
+    }
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.

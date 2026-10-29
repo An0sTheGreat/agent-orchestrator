@@ -1067,23 +1067,12 @@ internal static class LauncherLogic
                 load.Remove("gguf_file");
             else
                 load["gguf_file"] = w.GgufFile;
-            if (long.TryParse(w.ReasoningBudget.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var budget))
-                load["reasoning_budget"] = budget;
-            if (long.TryParse(w.ContextLength.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var context))
-                load["max_seq_length"] = context;
             entry["auto_load"] = load;
 
             var sampling = implementer?["sampling"]?.DeepClone() as JsonObject ?? new JsonObject();
             sampling.Remove("enable_thinking");
-            if (double.TryParse(w.Temperature.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var temperature))
-                sampling["temperature"] = temperature;
-            if (long.TryParse(w.MaxTokens.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var maxTokens))
-                sampling["max_tokens"] = maxTokens;
-            if (double.TryParse(w.RepetitionPenalty.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var penalty))
-                (sampling["extra_body"] ??= new JsonObject()).AsObject()["repetition_penalty"] = penalty;
-            if (w.Thinking is "On" or "Off")
-                sampling["enable_thinking"] = w.Thinking == "On";
             entry["sampling"] = sampling;
+            ModelOptions.Apply(entry, ModelOptions.Effective(w), includeLoad: true); // the worker's own values; the rest stay the Implementer's
             array.Add(entry);
         }
         root["custom_workers"] = array;
@@ -1308,6 +1297,7 @@ internal static class LauncherLogic
 
     public static void SelfTest()
     {
+        ModelOptions.SelfTest();
         var work = new System.Windows.Rect(0, 0, 1920, 1040);
         var restored = new System.Windows.Rect(300, 200, 1000, 600);
         var fallbackSize = new System.Windows.Size(1400, 860);
