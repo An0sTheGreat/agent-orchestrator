@@ -3601,6 +3601,7 @@ public partial class MainWindow : Window
         ("Pink", "Pink", "#FF6FB5", "#FFA6D2", "#1A0A12"),
         ("Orange", "Orange", "#FF8A3D", "#FFB880", "#1A0D04"),
         ("Silver", "Light gray", "#9D9B97", "#B1B0AC", "#121211"),
+        ("Peru", "Peru", "#CF8E4E", "#E6B587", "#1A0F05"),
     };
 
     private string AccentKey => _settings.ThemeAccents.TryGetValue(_settings.Theme, out var key) && AccentColors.Any(x => x.Key == key)
