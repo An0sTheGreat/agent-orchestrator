@@ -615,10 +615,10 @@ public partial class MainWindow
             case "loading":
                 EndChatBlock();
                 Activate(role, "Loading model");
-                if (Str(ev, "path").Length > 0)
+                if (Str(ev, "path").Length > 0 && LoadedOn(ev) is { } loaded)
                 {
-                    _loadedByChat.Add(LoadedOn(ev));
-                    _turnLoaded.Add(LoadedOn(ev));
+                    _loadedByChat.Add(loaded);
+                    _turnLoaded.Add(loaded);
                 }
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
