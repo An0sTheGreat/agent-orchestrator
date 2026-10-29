@@ -2541,6 +2541,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
 
 
 CODE_SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv"}
+CODE_MAX_SEARCH = 2_000_000  # bytes; search_files skips larger files
 CODE_MAX_ENTRIES, CODE_MAX_READ, CODE_MAX_HITS = 500, 200_000, 200
 CODE_TOOLS = [
     function_tool("list_files", "List files and folders under a folder, recursively (default: the project root).",
@@ -2574,12 +2575,20 @@ def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> P
     return path
 
 
-def code_files(folder: Path):
-    """Files under folder, skipping heavy/VCS directories, in a stable order."""
+def code_safe(path: Path, folders: list[dict[str, str]]) -> bool:
+    """A walked entry is usable only if it is no link/junction and code_path accepts it (so no walk leaves the grants)."""
+    try:
+        return os.path.normcase(code_path(str(path), folders)) == os.path.normcase(path)
+    except WorkflowError:
+        return False
+
+
+def code_walk(folder: Path, folders: list[dict[str, str]]):
+    """(path, is_dir) under folder in a stable order, skipping heavy/VCS directories, links and protected files."""
     for dirpath, dirnames, filenames in os.walk(folder):
-        dirnames[:] = sorted(d for d in dirnames if d.lower() not in CODE_SKIP_DIRS)
-        for name in sorted(filenames):
-            yield Path(dirpath) / name
+        dirnames[:] = [d for d in sorted(dirnames) if d.lower() not in CODE_SKIP_DIRS and code_safe(Path(dirpath) / d, folders)]
+        yield from ((Path(dirpath) / d, True) for d in dirnames)
+        yield from ((Path(dirpath) / f, False) for f in sorted(filenames) if code_safe(Path(dirpath) / f, folders))
 
 
 def code_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
@@ -2595,9 +2604,8 @@ def code_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
 
     def list_files(path: str = "") -> str:
         base, entries = folder(path), []
-        for dirpath, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(d for d in dirnames if d.lower() not in CODE_SKIP_DIRS)
-            entries += [shown(Path(dirpath) / d) + "/" for d in dirnames] + [shown(Path(dirpath) / f) for f in sorted(filenames)]
+        for entry, is_dir in code_walk(base, folders):
+            entries.append(shown(entry) + ("/" if is_dir else ""))
             if len(entries) > CODE_MAX_ENTRIES:
                 return "\n".join(entries[:CODE_MAX_ENTRIES] + [f"... truncated at {CODE_MAX_ENTRIES} entries"])
         return "\n".join(entries) or "(empty folder)"
@@ -2616,10 +2624,10 @@ def code_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
         except re.error as exc:
             raise WorkflowError(f"invalid regex: {exc}") from exc
         hits = []
-        for file in code_files(folder(path)):
-            if file.name.lower() == "api_key.txt":
-                continue
+        for file, is_dir in code_walk(folder(path), folders):
             try:
+                if is_dir or file.stat().st_size > CODE_MAX_SEARCH:
+                    continue  # ponytail: size cap only; a pathological regex can still stall this turn
                 lines = file.read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
                 continue  # binary or unreadable
@@ -2703,7 +2711,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 if tool not in handlers or not isinstance(arguments, dict):
                     raise WorkflowError(f"tool {tool!r} is unavailable" if tool not in handlers else "arguments must be an object")
                 result = handlers[tool](**arguments)
-            except (TypeError, ValueError, OSError, WorkflowError) as exc:
+            except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
             if native:
@@ -2735,7 +2743,10 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
     if not re.search(r"^## ", text, re.M):
         raise WorkflowError(f"{display_name(config, role)} did not return a PROJECT.md (empty or no '## ' heading); nothing was written")
     if target.is_file():
-        shutil.copy2(target, target.with_name(f"PROJECT.backup-{time.strftime('%Y%m%d-%H%M%S')}.md"))
+        stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+        while (backup := target.with_name(f"PROJECT.backup-{stamp}{'' if n == 1 else f'-{n}'}.md")).exists():
+            n += 1
+        shutil.copy2(target, backup)
     save_text(target, text)
     emit("code_project", role=role, path=str(target))
     return target

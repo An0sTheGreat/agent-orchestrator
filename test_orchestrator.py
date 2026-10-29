@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -2381,6 +2382,25 @@ class CodeTests(unittest.TestCase):
             self.assertTrue(tools["read_file"]("a.txt").startswith("need\n... truncated at 4 bytes"))
         with self.assertRaisesRegex(orchestrator.WorkflowError, "outside"):
             tools["list_files"](str(self.cfg))
+
+    def test_walks_stay_inside_grants(self):
+        (self.cfg / "secret.txt").write_text("needle OUTSIDE\n", encoding="utf-8")
+        (self.root / "a.txt").write_text("needle inside\n", encoding="utf-8")
+        link = self.root / "link"
+        if subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.cfg)], capture_output=True).returncode != 0:
+            self.skipTest("junctions unavailable")
+        tools = orchestrator.code_handlers(self.folders)
+        self.assertNotIn("link", tools["list_files"]())
+        self.assertEqual(tools["search_files"]("needle"), "a.txt:1: needle inside")
+        sibling = Path(self.folders[0]["path"] + "2")  # Y:\app2 must not pass as inside Y:\app
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "outside"):
+            orchestrator.code_path(str(sibling / "x"), self.folders)
+
+    def test_project_folder_is_always_writable(self):
+        folders = [{"path": str(self.root), "access": "read"}]
+        replies = {"implementer": [tool_call("write_file", path="a.txt", content="x"), "Done."]}
+        code, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "folders": folders}, replies)
+        self.assertEqual((code, (self.root / "a.txt").read_text(encoding="utf-8")), (0, "x\n"))
 
     def test_chat_turn_writes_file_and_reports(self):
         (self.shared / "lib.py").write_text("x = 1\n", encoding="utf-8")
