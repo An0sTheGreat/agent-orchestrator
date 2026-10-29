@@ -357,6 +357,59 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="Padding" Value="8,6" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Row" Background="Transparent" CornerRadius="{DynamicResource SmallRadius}" Padding="{TemplateBinding Padding}" Margin="0,1">
+                            <ContentPresenter VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                            <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Row" Property="Opacity" Value="0.45" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- Drawn like a TextBox; the list opens like the app's menus -->
+        <Style TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /><Setter Property="Background" Value="{DynamicResource Card}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" /><Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="10,0,28,0" /><Setter Property="Height" Value="30" /><Setter Property="MaxDropDownHeight" Value="360" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Field" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{DynamicResource ControlRadius}" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                              VerticalAlignment="Center" HorizontalAlignment="Left" IsHitTestVisible="False" />
+                            <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10" Foreground="{DynamicResource Muted}"
+                                       HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" IsHitTestVisible="False" />
+                            <ToggleButton Focusable="False" ClickMode="Press" IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                                <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="Transparent" /></ControlTemplate></ToggleButton.Template>
+                            </ToggleButton>
+                            <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False">
+                                <Border Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource SmallRadius}"
+                                        Padding="5" Margin="0,2,0,0" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                                    <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}" VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Field" Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="NavToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             <Setter Property="Padding" Value="14,8,10,8" />
@@ -644,8 +697,8 @@
 
         <!-- Small square card: title plus a pulsing status dot -->
         <DataTemplate x:Key="CompactCardTemplate">
-            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder; right-click for model, settings and more"
-                  PreviewMouseLeftButtonDown="Handle_Down" MouseRightButtonUp="CompactCard_RightClick" Background="Transparent">
+            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder"
+                  PreviewMouseLeftButtonDown="Handle_Down" Background="Transparent">
                 <Grid.Style>
                     <Style TargetType="Grid">
                         <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
@@ -717,6 +770,10 @@
                 </Grid>
             </Border>
             <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
+            <Button Style="{StaticResource GhostButton}" Tag="ModelSettingsGear" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,6,6" Padding="5,3"
+                    IsEnabled="{Binding Editable}" ToolTip="Model settings" AutomationProperties.Name="Model settings" Click="ModelSettings_Click">
+                <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="13" />
+            </Button>
             </Grid>
             <DataTemplate.Triggers>
                 <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
@@ -787,9 +844,6 @@
 
                     <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
                     <DockPanel Margin="0,2,0,0">
-                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Settings" Padding="9,3" FontSize="11" Margin="8,0,0,0"
-                                IsEnabled="{Binding Editable}" ToolTip="Edit temperature, max tokens, context length and more (custom workers: kind, description and system prompt too)"
-                                Click="RoleSettings_Click" />
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Change" Padding="9,3" FontSize="11" Margin="8,0,0,0"
                                 IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
                         <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" VerticalAlignment="Center" />
@@ -819,6 +873,10 @@
                 </StackPanel>
             </Border>
             <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
+            <Button Style="{StaticResource GhostButton}" Tag="ModelSettingsGear" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,8,8" Padding="5,3"
+                    IsEnabled="{Binding Editable}" ToolTip="Model settings" AutomationProperties.Name="Model settings" Click="ModelSettings_Click">
+                <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="13" />
+            </Button>
             </Grid>
             <DataTemplate.Triggers>
                 <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
