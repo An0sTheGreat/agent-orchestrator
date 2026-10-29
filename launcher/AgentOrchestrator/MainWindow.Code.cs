@@ -129,7 +129,7 @@ public partial class MainWindow
 
     // ---- folder, conversation lifecycle, extra folders, start
 
-    private readonly ConversationStore _store = new(AppSettings.DataRoot); // every saved Code conversation and the sidebar's order
+    private readonly ConversationStore _store = new(AppSettings.DataRoot); // every saved conversation (Code and Chat) and the sidebar's order
     private ConversationStore.Conversation? _codeConv; // the open one (the store's own instance); null: none yet
     private bool _codeStarting; // StartCodeProject is in progress (it may await a write_project turn)
 
@@ -301,19 +301,7 @@ public partial class MainWindow
             _settings.CodeWorker = saved.Worker;
             _settings.Save();
         }
-        _turn = _code;
-        foreach (var message in saved.Messages)
-            if (message.Role == "user")
-                AddUserBubble(message.Content);
-            else
-            {
-                var reply = _reply = AddReply(false, _settings.CodeWorker);
-                SetChatFinal(message.Content);
-                reply.Status.Visibility = Visibility.Collapsed;
-                reply.Copy.Visibility = Visibility.Visible;
-            }
-        _reply = null;
-        _code.History.AddRange(saved.Messages);
+        Replay(_code, saved.Messages, false, _settings.CodeWorker);
         RefreshCodeFolders();
         RefreshChatTarget();
     }

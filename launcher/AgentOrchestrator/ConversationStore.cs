@@ -4,7 +4,7 @@ using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
 
-// Saved Code conversations by id (<data>\conversations\<id>.json) and the sidebar's order of them (<data>\sidebar.json):
+// Saved conversations (Code, and the Chat view's: Kind "chat", no folder) by id (<data>\conversations\<id>.json) and the sidebar's order of them (<data>\sidebar.json):
 // ungrouped chats and named groups ("projects"), each an ordered id list, newest at the top. An archived chat keeps its
 // place in its list (unarchiving puts it back there); the read model shows it apart. Several chats may share a folder.
 // ponytail: no locking, one instance owned by the UI thread; a second writer (another launcher) would lose updates.
@@ -14,7 +14,9 @@ internal sealed class ConversationStore
     {
         public string Id { get; set; } = "";
         public string? Title { get; set; } // null: derived by TitleOf; only Rename sets it
-        public string Folder { get; set; } = "";
+        public string Kind { get; set; } = "code"; // "code" or "chat"
+        public string Folder { get; set; } = ""; // "" for a chat
+        public string Mode { get; set; } = "single"; // a chat's Single / Multi
         public List<LauncherLogic.CodeFolder> Folders { get; set; } = new();
         public string Worker { get; set; } = "implementer";
         public List<LauncherLogic.ChatMessage> Messages { get; set; } = new();
@@ -38,7 +40,7 @@ internal sealed class ConversationStore
         public bool ArchivedCollapsed { get; set; } = true;
     }
 
-    public sealed record Entry(string Id, string Title, string Folder, DateTime Updated);
+    public sealed record Entry(string Id, string Title, string Folder, DateTime Updated, string Kind);
     public sealed record GroupView(string Id, string Name, bool Collapsed, IReadOnlyList<Entry> Items);
     public sealed record SidebarView(IReadOnlyList<GroupView> Groups, IReadOnlyList<Entry> Ungrouped, IReadOnlyList<Entry> Archived, bool ArchivedCollapsed);
 
@@ -106,12 +108,12 @@ internal sealed class ConversationStore
     }
 
     // Null when the store is read-only.
-    public Conversation? Create(string folder)
+    public Conversation? Create(string folder, string kind = "code")
     {
         if (ReadOnly)
             return null;
         var now = DateTime.Now;
-        var c = new Conversation { Id = NewId(), Folder = folder, Created = now, Updated = now };
+        var c = new Conversation { Id = NewId(), Kind = kind, Folder = folder, Created = now, Updated = now };
         _conversations[c.Id] = c;
         Write(PathOf(c.Id), c);
         _index.Items.Insert(0, c.Id);
@@ -155,13 +157,18 @@ internal sealed class ConversationStore
     public bool MoveDown(string id) => Move(id, 1);
 
     // To the top of the group's list, or of the ungrouped list when groupId is null.
-    public bool MoveToGroup(string id, string? groupId)
+    public bool MoveToGroup(string id, string? groupId) => MoveTo(id, groupId, null);
+
+    // Into the group's list (the ungrouped one when groupId is null): at the top when at is null, else taking at's place
+    // (a drop on a row: in the same list it lands after at when it came from above, so both directions move it).
+    public bool MoveTo(string id, string? groupId, string? at)
     {
         var target = groupId is null ? _index.Items : FindGroup(groupId)?.Items;
-        if (ReadOnly || target is null || ListOf(id) is not { } from)
+        if (ReadOnly || target is null || id == at || (at is not null && !target.Contains(at)) || ListOf(id) is not { } from)
             return false;
+        var after = from == target && at is not null && from.IndexOf(id) < from.IndexOf(at);
         from.Remove(id);
-        target.Insert(0, id);
+        target.Insert(at is null ? 0 : target.IndexOf(at) + (after ? 1 : 0), id);
         SaveIndex();
         return true;
     }
@@ -191,6 +198,19 @@ internal sealed class ConversationStore
         return true;
     }
 
+    // The group takes at's place (a drop on another project's header).
+    public bool MoveGroupTo(string groupId, string at)
+    {
+        var (from, to) = (_index.Groups.FindIndex(g => g.Id == groupId), _index.Groups.FindIndex(g => g.Id == at));
+        if (ReadOnly || from < 0 || to < 0 || from == to)
+            return false;
+        var g = _index.Groups[from];
+        _index.Groups.RemoveAt(from);
+        _index.Groups.Insert(to, g);
+        SaveIndex();
+        return true;
+    }
+
     public bool MoveGroupUp(string groupId) => MoveGroup(groupId, -1);
     public bool MoveGroupDown(string groupId) => MoveGroup(groupId, 1);
 
@@ -207,7 +227,7 @@ internal sealed class ConversationStore
     // (groups' first, in list order).
     public SidebarView View()
     {
-        Entry ToEntry(string id) => new(id, TitleOf(_conversations[id]), _conversations[id].Folder, _conversations[id].Updated);
+        Entry ToEntry(string id) => new(id, TitleOf(_conversations[id]), _conversations[id].Folder, _conversations[id].Updated, _conversations[id].Kind);
         List<Entry> Pick(IEnumerable<string> ids, bool archived) => ids.Where(id => _conversations[id].Archived == archived).Select(ToEntry).ToList();
         return new(
             _index.Groups.Select(g => new GroupView(g.Id, g.Name, g.Collapsed, Pick(g.Items, false))).ToList(),
@@ -312,7 +332,9 @@ internal sealed class ConversationStore
     {
         c.Id = id; // the file name is the id
         c.Title = string.IsNullOrWhiteSpace(c.Title) ? null : c.Title;
+        c.Kind = c.Kind == "chat" ? "chat" : "code";
         c.Folder ??= "";
+        c.Mode = c.Mode == "multi" ? "multi" : "single";
         c.Worker ??= "implementer";
         c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
         c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
@@ -393,13 +415,20 @@ internal sealed class ConversationStore
             Check(s.MoveUp(a.Id) && Ids(s.View().Ungrouped) == Of(b, a, c), "move up");
             s = Reload();
             Check(Ids(s.View().Ungrouped) == Of(b, a, c), "order persists");
+            // Drag: takes the target's place from either direction; onto itself or a target in another list is refused.
+            Check(s.MoveTo(b.Id, null, c.Id) && Ids(s.View().Ungrouped) == Of(a, c, b), "drag down");
+            Check(s.MoveTo(b.Id, null, a.Id) && Ids(s.View().Ungrouped) == Of(b, a, c), "drag up");
+            Check(!s.MoveTo(b.Id, null, b.Id) && !s.MoveTo(b.Id, "missing", null) && !s.MoveTo("missing", null, null), "drag refused");
 
             // Groups: create (top), move at bounds, move chats in, rename, collapse, delete (chats survive).
             var g1 = s.CreateGroup("Project One")!;
             var g2 = s.CreateGroup("Two")!;
             Check(string.Join(",", s.View().Groups.Select(g => g.Id)) == $"{g2},{g1}", "new group on top");
+            Check(s.MoveGroupTo(g2, g1) && string.Join(",", s.View().Groups.Select(g => g.Id)) == $"{g1},{g2}" && s.MoveGroupTo(g2, g1) &&
+                  !s.MoveGroupTo(g2, g2) && !s.MoveGroupTo(g2, "missing"), "group drag");
             Check(!s.MoveGroupUp(g2) && s.MoveGroupDown(g2) && !s.MoveGroupDown(g2) && !s.MoveGroupUp("missing"), "group moves");
-            Check(s.MoveToGroup(a.Id, g1) && s.MoveToGroup(c.Id, g1) && !s.MoveToGroup(b.Id, "missing"), "move to group");
+            Check(s.MoveToGroup(a.Id, g1) && s.MoveTo(c.Id, g1, a.Id) && Ids(s.View().Groups.Single(g => g.Id == g1).Items) == Of(c, a) &&
+                  !s.MoveTo(b.Id, g1, b.Id) && !s.MoveTo(b.Id, null, a.Id) && !s.MoveToGroup(b.Id, "missing"), "move to group");
             Check(s.RenameGroup(g1, "Renamed") && s.SetGroupCollapsed(g1, true), "group rename/collapse");
             s = Reload();
             var v = s.View();
@@ -424,6 +453,18 @@ internal sealed class ConversationStore
             // Delete removes the file and the entry; a late Save does not resurrect it.
             Check(s.Delete(a.Id) && !s.Delete(a.Id) && s.Get(a.Id) is null && !File.Exists(Path.Combine(conversations, a.Id + ".json")), "delete");
             Check(!s.Save(a) && !File.Exists(Path.Combine(conversations, a.Id + ".json")) && Ids(s.View().Ungrouped) == Of(c), "no resurrection");
+
+            // A Chat-view chat: kind, mode and no folder round-trip; an unknown kind or mode loads as code / single.
+            var chat = s.Create("", "chat")!;
+            chat.Mode = "multi";
+            chat.Messages.Add(new("user", "plain question"));
+            s.Save(chat);
+            File.WriteAllText(Path.Combine(conversations, new string('d', 32) + ".json"), """{"kind":"bogus","mode":"bogus","folder":"C:\\K"}""");
+            s = Reload();
+            Check(s.Get(chat.Id) is { Kind: "chat", Mode: "multi", Folder: "" } && s.View().Ungrouped[0] is { Kind: "chat", Title: "plain question" } &&
+                  s.Get(new string('d', 32)) is { Kind: "code", Mode: "single" }, "chat kind");
+            s.Delete(chat.Id);
+            s.Delete(new string('d', 32));
 
             // Corrupt index: every conversation survives, ungrouped.
             File.WriteAllText(Path.Combine(root, "sidebar.json"), "{ not json");
@@ -468,6 +509,7 @@ internal sealed class ConversationStore
             // A file that cannot be read (locked) is not a corrupt one: the store turns read-only, every change is refused,
             // and sidebar.json is never rewritten, so a grouped chat keeps its place once the file can be read again.
             var kept = s.Create(@"C:\Work\Kept")!;
+            var keptGroup2 = s.CreateGroup("Kept 2")!;
             var keptGroup = s.CreateGroup("Kept")!;
             Check(s.MoveToGroup(kept.Id, keptGroup) && !s.ReadOnly, "lock setup");
             var indexPath = Path.Combine(root, "sidebar.json");
@@ -477,7 +519,8 @@ internal sealed class ConversationStore
             {
                 s = Reload();
                 Check(s.ReadOnly && s.Get(kept.Id) is null && s.Create(@"C:\Work\X") is null && s.CreateGroup("X") is null && !s.DeleteGroup(keptGroup) &&
-                      !s.Save(s.Get(migrated[0].Id)!) && !s.Archive(migrated[0].Id, true) && !s.SetArchivedCollapsed(false), "locked conversation: read-only");
+                      !s.Save(s.Get(migrated[0].Id)!) && !s.Archive(migrated[0].Id, true) && !s.SetArchivedCollapsed(false) &&
+                      !s.MoveTo(migrated[0].Id, keptGroup, null) && !s.MoveGroupTo(keptGroup, keptGroup2), "locked conversation: read-only");
             }
             s = Reload();
             Check(IndexUnchanged() && !s.ReadOnly && Ids(s.View().Groups.Single(g => g.Id == keptGroup).Items) == kept.Id, "locked conversation: group kept");

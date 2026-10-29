@@ -3,6 +3,8 @@ using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Data;
+using System.Windows.Input;
+using System.Windows.Media;
 using Entry = AgentOrchestrator.ConversationStore.Entry;
 using GroupView = AgentOrchestrator.ConversationStore.GroupView;
 
@@ -10,12 +12,19 @@ namespace AgentOrchestrator;
 
 // The sidebar's conversation list, rebuilt flat from the store after every change: New chat / New project, each project
 // (a collapsible group of chats), RECENTS (chats in no project), then a collapsible ARCHIVED section. A chat or project
-// has a menu ("…" on hover, or right-click) to rename, reorder, move, archive or delete it. Each row's main control
-// carries a Tag (a chat's id, a header's chevron and name) that --ui-smoke reads the order from.
+// has a menu ("…" on hover, or right-click) to rename, reorder, move, archive or delete it, and can be dragged: a chat
+// onto another chat (takes its place), a project header (its top) or RECENTS; a project onto another project's header.
+// Code chats open in the Code view, Chat-view chats in the Chat view. Each row's main control carries a Tag (a chat's
+// id, a header's chevron and name) that --ui-smoke reads the order from.
 public partial class MainWindow
 {
     // The menu builders by chat or project id: menus are built fresh when opened, and --ui-smoke clicks their items.
     private readonly Dictionary<string, Func<ContextMenu>> _sidebarMenus = new();
+
+    // The drop handlers by target (a chat's id, a project's id, "RECENTS"): the store change for a dragged "chat:<id>" or
+    // "project:<id>", or null when that drop does nothing there. --ui-smoke calls them directly.
+    private readonly Dictionary<string, Func<string?, Func<bool>?>> _sidebarDrops = new();
+    private const string DragFormat = "AgentOrchestrator.SidebarItem";
 
     private bool CodeBusy => _chatBusy || _process is not null || _codeStarting;
 
@@ -23,22 +32,25 @@ public partial class MainWindow
     {
         SidebarList.Children.Clear();
         _sidebarMenus.Clear();
+        _sidebarDrops.Clear();
         var view = _store.View();
-        SidebarList.Children.Add(SidebarAction("", "New chat", NewCodeConversation));
+        SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
         SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
         foreach (var group in view.Groups)
         {
             var header = SidebarHeader(ProjectName(group), group.Collapsed, group.Items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
-            SidebarList.Children.Add(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups)));
+            Draggable(header, "project:" + group.Id);
+            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups)), group.Id,
+                (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, group.Id) : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
             if (!group.Collapsed)
                 for (var i = 0; i < group.Items.Count; i++)
                     SidebarList.Children.Add(ChatRow(group.Items[i], group.Id, i, group.Items.Count, view.Groups, archived: false));
         }
-        if (view.Ungrouped.Count > 0)
+        if (view.Ungrouped.Count > 0 || view.Groups.Count > 0) // with projects, RECENTS is where a chat is dragged out to
         {
             var recents = new TextBlock { Text = "RECENTS", Tag = "RECENTS", Margin = new Thickness(8, 14, 0, 6) };
             recents.SetResourceReference(StyleProperty, "SectionHeader");
-            SidebarList.Children.Add(recents);
+            SidebarList.Children.Add(DropTarget(new Grid { Children = { recents } }, "RECENTS", (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, null) : null));
             for (var i = 0; i < view.Ungrouped.Count; i++)
                 SidebarList.Children.Add(ChatRow(view.Ungrouped[i], null, i, view.Ungrouped.Count, view.Groups, archived: false));
         }
@@ -83,17 +95,105 @@ public partial class MainWindow
         return button;
     }
 
-    // One line: the title (ellipsis), highlighted when it is the open chat; the folder and last change in the tooltip.
+    // One line: the title (ellipsis), highlighted when it is the chat open in the view shown; the folder (or "Chat") and
+    // last change in the tooltip. A Chat-view chat has a speech-bubble glyph.
     private UIElement ChatRow(Entry entry, string? groupId, int index, int count, IReadOnlyList<GroupView> groups, bool archived)
     {
+        var open = NavChat.IsChecked == true ? _chatConv : NavCode.IsChecked == true ? _codeConv : null;
+        var content = new DockPanel();
+        if (entry.Kind == "chat")
+        {
+            var glyph = new TextBlock { Text = "\uE8BD", FontSize = 11, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
+            glyph.SetResourceReference(StyleProperty, "RailGlyph");
+            content.Children.Add(glyph);
+        }
+        content.Children.Add(new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis });
         var row = new ToggleButton
         {
-            Content = new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis }, Tag = entry.Id, IsChecked = _codeConv?.Id == entry.Id,
-            Padding = new Thickness(14, 6, 30, 6), Margin = new Thickness(groupId is null ? 0 : 12, 0, 0, 1), ToolTip = $"{entry.Folder}\n{entry.Updated:g}",
+            Content = content, Tag = entry.Id, IsChecked = open?.Id == entry.Id, Padding = new Thickness(14, 6, 30, 6),
+            Margin = new Thickness(groupId is null ? 0 : 12, 0, 0, 1), ToolTip = $"{(entry.Kind == "chat" ? "Chat" : entry.Folder)}\n{entry.Updated:g}",
         };
         row.SetResourceReference(StyleProperty, "NavToggle");
-        row.Click += (_, _) => OpenCodeConversation(entry.Id);
-        return WithMenu(row, entry.Id, entry.Title, () => ChatMenu(entry, groupId, index, count, groups, archived));
+        row.Click += (_, _) => OpenSidebarConversation(entry);
+        var withMenu = WithMenu(row, entry.Id, entry.Title, () => ChatMenu(entry, groupId, index, count, groups, archived));
+        if (archived)
+            return withMenu;
+        Draggable(row, "chat:" + entry.Id);
+        return DropTarget(withMenu, entry.Id, (kind, id) => kind == "chat" && id != entry.Id ? () => _store.MoveTo(id, groupId, entry.Id) : null);
+    }
+
+    private void OpenSidebarConversation(Entry entry)
+    {
+        if (entry.Kind == "chat")
+            OpenChatConversation(entry.Id);
+        else
+            OpenCodeConversation(entry.Id);
+    }
+
+    // A new chat in the view shown: the Chat view's own, else a Code chat (which asks for its folder).
+    private void NewSidebarChat()
+    {
+        if (NavChat.IsChecked == true)
+            NewChat_Click(this, new RoutedEventArgs());
+        else
+            NewCodeConversation();
+    }
+
+    // ---- drag and drop
+
+    // A press, then a move past the system's drag distance, drags the payload. The row lets go of the mouse first, so it
+    // does not stay pressed (or click) when the drop ends.
+    private void Draggable(Control row, string payload)
+    {
+        Point? press = null;
+        row.PreviewMouseLeftButtonDown += (_, e) => press = e.GetPosition(row);
+        row.PreviewMouseLeftButtonUp += (_, _) => press = null;
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (press is not { } start || e.LeftButton != MouseButtonState.Pressed)
+                return;
+            var moved = e.GetPosition(row) - start;
+            if (Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance)
+                return;
+            press = null;
+            if (_store.ReadOnly)
+                return; // nothing could move; the press stays a click
+            row.ReleaseMouseCapture();
+            DragDrop.DoDragDrop(row, new DataObject(DragFormat, payload), DragDropEffects.Move);
+        };
+    }
+
+    // The target highlights while a drop there would do something; the change runs once the drag has ended (the list is
+    // rebuilt, so not while the dragged row is still in it).
+    private Grid DropTarget(Grid target, string key, Func<string, string, Func<bool>?> changeFor)
+    {
+        Func<bool>? ChangeOf(string? payload) => payload?.Split(':', 2) is [var kind, var id] ? changeFor(kind, id) : null;
+        _sidebarDrops[key] = ChangeOf;
+        Func<bool>? Change(DragEventArgs e) => ChangeOf(e.Data.GetData(DragFormat) as string);
+        void Mark(bool on)
+        {
+            if (on)
+                target.SetResourceReference(Panel.BackgroundProperty, "Hover");
+            else
+                target.Background = Brushes.Transparent;
+        }
+        target.Background = Brushes.Transparent; // hit-testable across the whole row
+        target.AllowDrop = true;
+        target.DragEnter += (_, e) => Mark(Change(e) is not null);
+        target.DragLeave += (_, _) => Mark(false);
+        target.DragOver += (_, e) =>
+        {
+            e.Effects = Change(e) is null ? DragDropEffects.None : DragDropEffects.Move;
+            e.Handled = true;
+        };
+        target.Drop += (_, e) =>
+        {
+            Mark(false);
+            e.Handled = true;
+            if (Change(e) is { } change)
+                Dispatcher.BeginInvoke(() => StoreChange(() => change()));
+        };
+        return target;
     }
 
     // The row with a "…" button over its right end (shown on hover) and the same menu on right-click.
@@ -173,7 +273,7 @@ public partial class MainWindow
 
     private void NewSidebarProject()
     {
-        if (SidebarAsk("New project", "Name the project; move chats into it from their menu.", "Create", "") is { } name)
+        if (SidebarAsk("New project", "Name the project; drag chats into it, or use a chat's menu.", "Create", "") is { } name)
             StoreChange(() => _store.CreateGroup(name));
     }
 
@@ -198,6 +298,8 @@ public partial class MainWindow
             _codeConv = null; // so closing does not treat it as an empty chat to clean up
             CloseCodeConversation();
         }
+        if (_chatConv?.Id == entry.Id)
+            ClearChatConversation();
         StoreChange(() => _store.Delete(entry.Id));
     }
 

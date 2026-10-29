@@ -253,8 +253,73 @@ public partial class MainWindow
     {
         if (_chatBusy)
             return;
-        ClearConversation(_chat);
+        ShowView(false, chat: true);
+        ClearChatConversation();
         ChatInput.Focus();
+    }
+
+    // ---- saved Chat-view conversations (the sidebar lists them with the Code ones)
+
+    private ConversationStore.Conversation? _chatConv; // the open saved one; null until a chat's first reply saves it
+
+    private void ClearChatConversation()
+    {
+        ClearConversation(_chat);
+        _chatConv = null;
+        RefreshSidebarList();
+    }
+
+    // After a completed Chat turn: the first reply creates the saved chat, later ones update it.
+    private void SaveChatConversation()
+    {
+        if (_chatConv is null)
+            StoreDo(() => _chatConv = _store.Create("", "chat"));
+        if (_chatConv is { } c)
+        {
+            (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
+            StoreDo(() => _store.Save(c));
+        }
+        RefreshSidebarList();
+    }
+
+    // A sidebar row: shows the saved chat in the Chat view with its mode and worker. Refused while a reply streams.
+    private void OpenChatConversation(string id)
+    {
+        if (_chatBusy)
+        {
+            Toast("Wait for the reply to finish", "#F7C873");
+            RefreshSidebarList(); // the clicked row unchecks itself
+            return;
+        }
+        if (_chatConv?.Id != id && _store.Get(id) is { } saved)
+        {
+            ClearConversation(_chat);
+            _chatConv = saved;
+            _settings.ChatMode = saved.Mode;
+            if (CardFor(saved.Worker) is not null)
+                _settings.ChatWorker = saved.Worker;
+            _settings.Save();
+            Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
+        }
+        ShowView(false, chat: true);
+    }
+
+    // Saved messages into a cleared conversation: user bubbles and finished replies.
+    private void Replay(Conversation c, List<LauncherLogic.ChatMessage> messages, bool multi, string role)
+    {
+        _turn = c;
+        foreach (var message in messages)
+            if (message.Role == "user")
+                AddUserBubble(message.Content);
+            else
+            {
+                var reply = _reply = AddReply(multi, role);
+                SetChatFinal(message.Content);
+                reply.Status.Visibility = Visibility.Collapsed;
+                reply.Copy.Visibility = Visibility.Visible;
+            }
+        _reply = null;
+        c.History.AddRange(messages);
     }
 
     private void ClearConversation(Conversation c)
@@ -496,6 +561,8 @@ public partial class MainWindow
         _turnCompleted = completed;
         if (c.IsCode && completed)
             CodeTurnFinished();
+        else if (completed)
+            SaveChatConversation();
         return stopped;
     }
 
