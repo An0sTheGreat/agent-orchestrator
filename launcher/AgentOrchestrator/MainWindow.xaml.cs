@@ -1057,7 +1057,17 @@ public partial class MainWindow : Window
             menu.IsOpen = false;
             ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             await Settle();
-            if (Cards() != saved || (double)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["sampling"]!["temperature"]! != 0.3)
+            // The worker config follows a project's preset too, and takes the roles itself with no project; the template never changes.
+            var workerConfig = LauncherLogic.EnsureWorkerConfig(_workflowRoot!);
+            var templateBytes = File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json"));
+            double Temperature(string path) => (double)JsonNode.Parse(File.ReadAllText(path))!["roles"]!["planner"]!["sampling"]!["temperature"]!;
+            if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3)
+                return Fail();
+            File.WriteAllText(workerConfig, Config("0.9"));
+            ProjectPath = "";
+            ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
+            ProjectPath = presetProject;
+            if (Temperature(workerConfig) != 0.3 || !File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json")).SequenceEqual(templateBytes))
                 return Fail();
             DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             if (_settings.Presets.Any(p => p.Name == "Smoke"))
@@ -1828,7 +1838,10 @@ public partial class MainWindow : Window
 
     private JsonDocument? ReadConfig(string project)
     {
-        foreach (var path in new[] { Path.Combine(project, "config.json"), _workflowRoot is null ? "" : Path.Combine(_workflowRoot, "config.json") })
+        string active;
+        try { active = LauncherLogic.ActiveConfigPath(project, _workflowRoot); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { active = ""; }
+        foreach (var path in new[] { active, _workflowRoot is null ? "" : Path.Combine(_workflowRoot, "config.json") })
         {
             try
             {
@@ -2092,7 +2105,7 @@ public partial class MainWindow : Window
             RefreshPrimary();
             return false;
         }
-        var copied = LauncherLogic.InitializeProject(_workflowRoot, project); // PROJECT.md exists, so it is kept
+        var copied = LauncherLogic.InitializeProject(_workflowRoot, project, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot)); // PROJECT.md exists, so it is kept
         Log($"Project restarted: everything but PROJECT.md moved to the Recycle Bin. Added: {string.Join(", ", copied)}");
         Toast("Project restarted");
         RefreshInitializationPrompt();
@@ -2412,7 +2425,7 @@ public partial class MainWindow : Window
     private void RefreshSetupProblems()
     {
         var workers = CurrentWorkers();
-        var path = ProjectConfigPath();
+        var path = ActiveConfigPath();
         var problems = LauncherLogic.CustomProblems(workers, !File.Exists(path) || LauncherLogic.ImplementerHasBaseUrl(path));
         for (var i = 0; i < workers.Count; i++)
             if (CardFor(workers[i].Id) is { IsCustom: true } card)
@@ -2436,17 +2449,16 @@ public partial class MainWindow : Window
         _settings.Save();
     }
 
-    // The orchestrator reads custom workers from the project's config.json; keep it in step with the cards.
-    // Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
+    // The orchestrator reads custom workers from config.json; keep the active config (and the worker config) in step
+    // with the cards. Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
     private bool SyncCustomWorkers(List<string>? collectSkipped = null)
     {
         RefreshSetupProblems();
-        var path = ProjectConfigPath();
-        if (!File.Exists(path) || LauncherLogic.IsTemplateConfig(path, _workflowRoot)) // chat without a project uses a temp copy
-            return true;
         try
         {
-            var skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
+            var skipped = Array.Empty<string>();
+            foreach (var path in WorkerConfigTargets())
+                skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
             if (collectSkipped is not null)
                 collectSkipped.AddRange(skipped);
             else
@@ -2464,7 +2476,27 @@ public partial class MainWindow : Window
 
     // ---- presets: named sets of workers plus the built-in roles' config.json objects
 
-    private string ProjectConfigPath() => SelectedProjectPath() is { Length: > 0 } project ? Path.Combine(project, "config.json") : "";
+    // The config worker changes go to (LauncherLogic.ActiveConfigPath); "" when there is none or it cannot be made.
+    private string ActiveConfigPath()
+    {
+        try { return LauncherLogic.ActiveConfigPath(SelectedProjectPath(), _workflowRoot); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not create the worker config: {e.Message}");
+            return "";
+        }
+    }
+
+    // Where a worker change is written: the active config, plus the worker config when the active one is a project's,
+    // so the current setup carries to new projects.
+    private string[] WorkerConfigTargets()
+    {
+        var active = ActiveConfigPath();
+        if (active.Length == 0)
+            return [];
+        var worker = LauncherLogic.EnsureWorkerConfig(_workflowRoot!); // ActiveConfigPath already made it
+        return string.Equals(active, worker, StringComparison.OrdinalIgnoreCase) ? [active] : [active, worker];
+    }
 
     private void Presets_Click(object sender, RoutedEventArgs e)
     {
@@ -2574,7 +2606,7 @@ public partial class MainWindow : Window
         WorkerPreset preset;
         try
         {
-            preset = LauncherLogic.CapturePreset(name, ProjectConfigPath(), CurrentWorkers());
+            preset = LauncherLogic.CapturePreset(name, ActiveConfigPath(), CurrentWorkers());
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2599,7 +2631,10 @@ public partial class MainWindow : Window
         bool rolesApplied;
         try
         {
-            rolesApplied = !LauncherLogic.IsTemplateConfig(ProjectConfigPath(), _workflowRoot) && LauncherLogic.ApplyPresetRoles(ProjectConfigPath(), preset);
+            var targets = WorkerConfigTargets();
+            rolesApplied = targets.Length > 0;
+            foreach (var path in targets)
+                rolesApplied &= LauncherLogic.ApplyPresetRoles(path, preset);
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -2616,8 +2651,8 @@ public partial class MainWindow : Window
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
         {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
-            Toast($"Preset applied: {preset.Name}. Built-in model settings need an initialized project.", "#F7C873");
+            SetStatus("Built-in model settings were not changed", "#F7C873");
+            Toast($"Preset applied: {preset.Name}. Built-in model settings could not be written.", "#F7C873");
         }
         else
             Toast($"Preset applied: {preset.Name}");
@@ -2693,7 +2728,7 @@ public partial class MainWindow : Window
         var idle = _process is null && card.Editable;
         menu.Items.Add(PresetItem("Change model…", () => ChangeModel(card, anchor), idle));
         menu.Items.Add(PresetItem("Settings…", () => Dispatcher.InvokeAsync(() => ShowRoleSettings(card), DispatcherPriority.Background),
-            idle && (card.IsCustom || File.Exists(ProjectConfigPath()))));
+            idle && (card.IsCustom || File.Exists(ActiveConfigPath()))));
         if (card.IsCustom)
         {
             menu.Items.Add(PresetItem("Rename…", () => Dispatcher.InvokeAsync(() => RenameWorker(card), DispatcherPriority.Background), idle));
@@ -2814,16 +2849,10 @@ public partial class MainWindow : Window
             BuildCustomSettingsDialog(card).ShowDialog();
             return;
         }
-        var project = SelectedProjectPath();
-        var path = Path.Combine(project, "config.json");
-        if (project.Length == 0 || !File.Exists(path))
+        var path = ActiveConfigPath();
+        if (!File.Exists(path))
         {
-            SetStatus("Initialize the project first", "#F7C873");
-            return;
-        }
-        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
-        {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
+            SetStatus("No config.json to change", "#F7C873");
             return;
         }
         LauncherLogic.RoleSettings current;
@@ -2908,9 +2937,13 @@ public partial class MainWindow : Window
             try
             {
                 var problem = (remote is null ? null : LauncherLogic.ValidateRemoteRole(remote)) ?? LauncherLogic.ValidateRoleSettings(values);
-                if (problem is null && (remote is not null || remoteNow is not null))
-                    problem = LauncherLogic.WriteRemoteRole(path, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
-                problem ??= LauncherLogic.WriteRoleSettings(path, card.Role, values);
+                // path first (the dialog's config), then the worker config when path is a project's
+                foreach (var target in WorkerConfigTargets().Where(t => t != path).Prepend(path))
+                {
+                    if (problem is null && (remote is not null || remoteNow is not null))
+                        problem = LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
+                    problem ??= LauncherLogic.WriteRoleSettings(target, card.Role, values);
+                }
                 if (problem is not null)
                 {
                     error.Text = problem;
@@ -3153,7 +3186,7 @@ public partial class MainWindow : Window
 
     private void AssignModel(RoleCard card, ModelChoice choice)
     {
-        if (!card.IsCustom && !WriteRoleModel(SelectedProjectPath(), card.Role, choice))
+        if (!card.IsCustom && !WriteRoleModel(card.Role, choice))
             return;
         card.ModelId = choice.Display;
         card.ModelVariant = choice.Variant;
@@ -3170,21 +3203,31 @@ public partial class MainWindow : Window
             SyncCustomWorkers();
     }
 
-    // The orchestrator reads each built-in worker's model from the project's config.json.
-    private bool WriteRoleModel(string project, string role, ModelChoice choice)
+    // The orchestrator reads each built-in worker's model from config.json: the active one and the worker config.
+    private bool WriteRoleModel(string role, ModelChoice choice)
     {
-        var path = Path.Combine(project, "config.json");
-        if (project.Length == 0 || !File.Exists(path))
+        var targets = WorkerConfigTargets();
+        if (targets.Length == 0)
         {
-            SetStatus("Initialize the project first", "#F7C873");
-            return false;
-        }
-        if (LauncherLogic.IsTemplateConfig(path, _workflowRoot))
-        {
-            SetStatus("Select or initialize a project to change worker settings", "#F7C873");
+            SetStatus("No config.json to change", "#F7C873");
             return false;
         }
         try
+        {
+            foreach (var path in targets)
+                WriteRoleModel(path, role, choice);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
+        {
+            Log($"Could not update config.json: {exception.Message}");
+            SetStatus("Could not update config.json", "#FF667A");
+            return false;
+        }
+    }
+
+    private static void WriteRoleModel(string path, string role, ModelChoice choice)
+    {
         {
             var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
             var settings = root["roles"]![role]!.AsObject();
@@ -3200,13 +3243,6 @@ public partial class MainWindow : Window
             {
                 WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             }));
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or JsonException or NullReferenceException or InvalidOperationException)
-        {
-            Log($"Could not update config.json: {exception.Message}");
-            SetStatus("Could not update config.json", "#FF667A");
-            return false;
         }
     }
 

@@ -361,7 +361,7 @@ public partial class MainWindow
                     return;
                 }
             }
-            var copied = LauncherLogic.InitializeProject(_workflowRoot, folder);
+            var copied = LauncherLogic.InitializeProject(_workflowRoot, folder, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot));
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
             RefreshInitializationPrompt();
