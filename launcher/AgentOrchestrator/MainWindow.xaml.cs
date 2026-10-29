@@ -64,11 +64,12 @@ public partial class MainWindow : Window
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
-        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" ? _settings.Theme : "Flat";
+        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" ? _settings.Theme : "Flat";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
         ThemeGlassRadio.IsChecked = _settings.Theme == "Glass";
         ThemeOledRadio.IsChecked = _settings.Theme == "Oled";
+        ThemeGraphiteRadio.IsChecked = _settings.Theme == "Graphite";
         ApplyTheme();
         _initializing = false;
         InitChat();
@@ -1933,7 +1934,7 @@ public partial class MainWindow : Window
         await Settle();
         if (!string.IsNullOrEmpty(snapshots))
         {
-            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Flat" })
+            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Flat" })
             {
                 _settings.Theme = theme;
                 ApplyTheme();
@@ -3522,7 +3523,7 @@ public partial class MainWindow : Window
     {
         if (_initializing)
             return;
-        _settings.Theme = ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
+        _settings.Theme = ThemeGraphiteRadio.IsChecked == true ? "Graphite" : ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
         ApplyTheme();
         _settings.Save();
     }
@@ -3531,7 +3532,8 @@ public partial class MainWindow : Window
     {
         var glass = _settings.Theme == "Glass";
         var oled = _settings.Theme == "Oled";
-        var flat = _settings.Theme == "Flat" || oled; // OLED has the Flat shapes
+        var graphite = _settings.Theme == "Graphite";
+        var flat = _settings.Theme == "Flat" || oled || graphite; // OLED and Graphite have the Flat shapes
         // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
         // OLED's black background stays pure black.
         var tint = (Color)ColorConverter.ConvertFromString(AccentColors.First(x => x.Key == AccentKey).Accent)!;
@@ -3541,17 +3543,18 @@ public partial class MainWindow : Window
             byte Mix(byte from, byte to) => (byte)Math.Round(from + (to - from) * amount);
             Resources[key] = new SolidColorBrush(Color.FromArgb(c.A, Mix(c.R, tint.R), Mix(c.G, tint.G), Mix(c.B, tint.B)));
         }
-        Surface("AppBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
-        SetThemeBrush("TextPrimary", oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        Surface("TitleBackground", oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
-        Surface("Panel", oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
-        Surface("Card", oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
-        Surface("Hover", oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
-        Surface("Border", oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        // Graphite: warm dark grays with off-white text and a light gray accent.
+        Surface("AppBackground", graphite ? "#262624" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled ? 0 : 0.035);
+        SetThemeBrush("TextPrimary", graphite ? "#ECEBE7" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
+        Surface("TitleBackground", graphite ? "#1F1E1D" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled ? 0 : 0.035);
+        Surface("Panel", graphite ? "#1F1E1D" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
+        Surface("Card", graphite ? "#30302E" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
+        Surface("Hover", graphite ? "#393836" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
+        Surface("Border", graphite ? "#3A3936" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
-        SetThemeBrush("Muted", oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        SetThemeBrush("Muted", graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
-        var rim = (byte)(glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A);
+        var rim = (byte)(glass ? 0x50 : oled || graphite ? 0x18 : flat ? 0x22 : 0x1A);
         SetBrush("EdgeHighlight", new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
             { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();
@@ -3574,12 +3577,12 @@ public partial class MainWindow : Window
         ("Blue", "Flat blue", "#4C8DFF", "#86B3FF", "#FFFFFF"),
         ("Pink", "Pink", "#FF6FB5", "#FFA6D2", "#1A0A12"),
         ("Orange", "Orange", "#FF8A3D", "#FFB880", "#1A0D04"),
-        ("Gray", "Gray", "#A3A09A", "#D9D6D0", "#1A1916"), // warm neutral, close to Claude desktop; its tint greys the surfaces
+        ("Silver", "Light gray", "#D1CFC9", "#ECEAE5", "#1A1A18"),
     };
 
     private string AccentKey => _settings.ThemeAccents.TryGetValue(_settings.Theme, out var key) && AccentColors.Any(x => x.Key == key)
         ? key
-        : _settings.Theme switch { "Gold" => "Gold", "Glass" => "LightBlue", "Oled" => "Purple", _ => "Blue" };
+        : _settings.Theme switch { "Gold" => "Gold", "Glass" => "LightBlue", "Oled" => "Purple", "Graphite" => "Silver", _ => "Blue" };
 
     private void ApplyAccent()
     {
