@@ -114,6 +114,7 @@ public partial class MainWindow
             c.Input.IsEnabled = c.Plus.IsEnabled = c.Chip.IsEnabled = !_chatBusy;
             c.Stop.Visibility = _chatBusy || runActive ? Visibility.Visible : Visibility.Collapsed;
             c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && c.Input.Text.Trim().Length > 0;
+            c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && c.Input.Text.Trim().Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             c.Hint.Text = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" : _chatBusy ? $"{(c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
                 : _unloading ? "Unloading models…" : "Enter to send  ·  Shift+Enter for a new line";

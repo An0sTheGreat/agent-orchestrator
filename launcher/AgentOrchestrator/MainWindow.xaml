@@ -1015,12 +1015,15 @@
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
-                                <Button x:Name="CodeStop" Grid.Column="2" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Margin="0,0,6,0"
+                                <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
                                         VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                     <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
                                 </Button>
-                                <Button x:Name="CodeSend" Grid.Column="3" Style="{StaticResource PrimaryButton}" Content="Send" Width="76" Height="34" Padding="0"
-                                        VerticalAlignment="Bottom" Click="ChatSend_Click" />
+                                <!-- Send: an enter arrow, shown once there is text; the stop square takes its place while the models work. -->
+                                <Button x:Name="CodeSend" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                                        VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
+                                    <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
+                                </Button>
                             </Grid>
                             <DockPanel Grid.Row="1" Margin="4,6,2,0">
                                 <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
@@ -1182,12 +1185,15 @@
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                      VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
-                            <Button x:Name="ChatStop" Grid.Column="2" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Margin="0,0,6,0"
+                            <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
                                     VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                 <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
                             </Button>
-                            <Button x:Name="ChatSend" Grid.Column="3" Style="{StaticResource PrimaryButton}" Content="Send" Width="76" Height="34" Padding="0"
-                                    VerticalAlignment="Bottom" Click="ChatSend_Click" />
+                            <!-- Send: an enter arrow, shown once there is text; the stop square takes its place while the models work. -->
+                            <Button x:Name="ChatSend" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                                    VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
+                                <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
+                            </Button>
                         </Grid>
                         <DockPanel Grid.Row="1" Margin="4,6,2,0">
                             <Button x:Name="ChatTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"

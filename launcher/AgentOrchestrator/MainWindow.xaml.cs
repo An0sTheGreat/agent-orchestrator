@@ -1515,8 +1515,16 @@ public partial class MainWindow : Window
             if (!CodeChat.IsVisible || WorkArea.IsVisible || NavCode.IsChecked != true)
                 return Fail();
             var chatCount = ChatPanel.Children.Count;
+            // The enter arrow shows only once the box has text (and nothing is running).
+            CodeInput.Text = "";
+            var arrowHidden = CodeSend.Visibility == Visibility.Collapsed;
+            CodeInput.Text = "Fix it";
+            if (!arrowHidden || CodeSend.Visibility != Visibility.Visible || CodeStop.Visibility != Visibility.Collapsed)
+                return Fail();
+            CodeInput.Text = "";
             StartTurn(_code, "Fix it", false, "implementer");
-            if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible)
+            if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible ||
+                CodeSend.Visibility == Visibility.Visible || ChatSend.Visibility == Visibility.Visible)
                 return Fail();
             _lines.Enqueue(Delta("implementer", "text", "Looking"));
             _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
