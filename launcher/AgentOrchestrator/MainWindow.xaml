@@ -883,7 +883,7 @@
         <Border x:Name="SidePane" Grid.Column="0" Grid.RowSpan="4" Width="260" ClipToBounds="True" Background="{DynamicResource NavBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,0,1,0">
             <Grid>
                 <Grid x:Name="SidebarFull" Width="259" HorizontalAlignment="Left">
-                    <Grid.RowDefinitions><RowDefinition Height="46" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="46" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                     <!-- Top strip, level with the title bar (it drags the window too): collapse on the left, the Chat / Code switch on the right. -->
                     <Grid Background="Transparent" MouseLeftButtonDown="TitleBar_MouseLeftButtonDown" MouseMove="TitleBar_MouseMove" MouseLeftButtonUp="TitleBar_MouseLeftButtonUp">
                         <Button x:Name="SidebarCollapseButton" Style="{StaticResource GhostButton}" Width="28" Height="26" Padding="0" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
@@ -903,13 +903,16 @@
                         </Border>
                     </Grid>
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                        <StackPanel Margin="12,8,12,20">
-                            <ToggleButton x:Name="NavOptions" Style="{StaticResource NavToggle}" Content="Options" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" />
-
+                        <StackPanel Margin="12,4,12,12">
                             <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
-                            <StackPanel x:Name="SidebarList" Margin="0,16,0,0" />
+                            <StackPanel x:Name="SidebarList" />
                         </StackPanel>
                     </ScrollViewer>
+                    <!-- Options: a gear at the sidebar's bottom left. -->
+                    <ToggleButton x:Name="NavOptions" Grid.Row="2" Style="{StaticResource NavToggle}" Width="40" Height="36" Padding="0" Margin="10,4,0,10"
+                                  HorizontalAlignment="Left" Click="Nav_Click" Tag="Options" ToolTip="Options (Ctrl+3)" AutomationProperties.Name="Options">
+                        <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="17" />
+                    </ToggleButton>
                 </Grid>
                 <StackPanel x:Name="SidebarRail" Width="53" HorizontalAlignment="Left" Margin="0,4,0,0" Visibility="Collapsed">
                     <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
