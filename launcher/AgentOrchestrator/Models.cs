@@ -156,7 +156,7 @@ internal sealed class AppSettings
     public List<WorkerSetting> Workers { get; set; } = new();
     // Named worker sets, global across projects.
     public List<WorkerPreset> Presets { get; set; } = new();
-    public string Theme { get; set; } = "Parchment";
+    public string Theme { get; set; } = "ParchmentDark";
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
     public string LastProject { get; set; } = "";

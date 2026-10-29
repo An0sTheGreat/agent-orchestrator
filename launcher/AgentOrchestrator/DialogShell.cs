@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -6,7 +6,7 @@ using System.Windows.Media.Effects;
 
 namespace AgentOrchestrator;
 
-// Shared frame of every popup window: no title bar, a rounded and shadowed panel on the DialogBackground shade, a small Ã—
+// Shared frame of every popup window: no title bar, a rounded and shadowed panel on the DialogBackground shade, a small ×
 // at the top right, and a top strip that drags it; Esc closes it (the same as Cancel). The title, when given, is a heading
 // at the top of the body. Small dialogs size to their content; a large one (the Settings window) is about 960 x 960 within
 // the owner's work area. Themed live through the owner's resources.
@@ -44,8 +44,8 @@ internal sealed class DialogShell : Window
 
         CloseX = new Button
         {
-            Content = "Ã—", Style = (Style)owner.FindResource("CloseButton"), Width = 36, Height = 28,
-            HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 6, 6, 0), ToolTip = "Close (Esc)",
+            Content = "×", Style = (Style)owner.FindResource("CloseButton"), Width = 36, Height = 28,
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, ToolTip = "Close (Esc)",
         };
         CloseX.Click += (_, _) => Close();
         // Transparent, over the top of the body: the heading (or the empty top margin) below it is where the window is dragged.
@@ -68,7 +68,14 @@ internal sealed class DialogShell : Window
         }
         column.Children.Add(body);
         var padding = large ? new Thickness(28, 40, 28, 24) : new Thickness(24, string.IsNullOrEmpty(title) ? 40 : 18, 24, 20);
-        Frame = new Border { BorderThickness = new Thickness(1), Child = new Grid { Children = { new Border { Padding = padding, Child = column }, strip } } };
+        var inside = new Grid { Children = { new Border { Padding = padding, Child = column }, strip } };
+        // The × sits in the corner; clipping to the panel's rounding gives its hover fill the same rounded corner.
+        inside.SizeChanged += (_, _) =>
+        {
+            var r = TryFindResource("PanelRadius") is CornerRadius radius ? Math.Max(0, radius.TopRight - 1) : 0;
+            inside.Clip = new RectangleGeometry(new Rect(inside.RenderSize), r, r);
+        };
+        Frame = new Border { BorderThickness = new Thickness(1), Child = inside };
         // The shadow is a sibling under the panel, so the effect never rasterizes the panel's text.
         var shadow = new Border { Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.28 } };
         foreach (var part in new[] { Frame, shadow })
@@ -80,7 +87,7 @@ internal sealed class DialogShell : Window
         Content = new Grid { Margin = new Thickness(ShadowRoom), Children = { shadow, Frame } };
     }
 
-    // The rounded panel and its Ã— (for --ui-smoke: the panel's brushes follow the theme).
+    // The rounded panel and its × (for --ui-smoke: the panel's brushes follow the theme).
     public Border Frame { get; }
 
     public Button CloseX { get; }

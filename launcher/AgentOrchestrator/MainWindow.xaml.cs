@@ -65,7 +65,7 @@ public partial class MainWindow : Window
         DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
-        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "ParchmentDark" ? _settings.Theme : "Parchment";
+        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" ? _settings.Theme : "ParchmentDark";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
         ThemeGlassRadio.IsChecked = _settings.Theme == "Glass";
