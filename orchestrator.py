@@ -2483,16 +2483,30 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
     return answer_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
 
+def chat_messages(request: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {"role": m["role"], "content": str(m["content"])}
+        for m in request.get("messages") or []
+        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
+    ]
+
+
+def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
+    """The custom worker with this id, None for a built-in role; raises for an unknown or unconfigured one."""
+    worker = next((w for w in custom_workers(config) if w["id"] == role), None)
+    if role not in BUILTIN_ROLES and not worker:
+        raise WorkflowError(f"Unknown chat worker {role!r}")
+    if role in BUILTIN_ROLES and role not in (config.get("roles") or {}):
+        raise WorkflowError(f"Chat worker {role!r} is missing from config roles")
+    return worker
+
+
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
     """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No tools, no workflow files."""
     request = json.loads(load_text(request_path))
     if not isinstance(request, dict):
         raise WorkflowError("Chat request must be a JSON object")
-    messages = [
-        {"role": m["role"], "content": str(m["content"])}
-        for m in request.get("messages") or []
-        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
-    ]
+    messages = chat_messages(request)
     if not messages or messages[-1]["role"] != "user":
         raise WorkflowError("Chat request needs messages ending with a user message")
     chat = load_text(ROOT / "prompts" / "chat.txt").strip()
@@ -2512,11 +2526,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         role, text = ("reviewer", final) if final else ("implementer", draft)
     elif request.get("mode") == "single":
         role = str(request.get("worker") or "")
-        worker = next((w for w in custom_workers(config) if w["id"] == role), None)
-        if role not in BUILTIN_ROLES and not worker:
-            raise WorkflowError(f"Unknown chat worker {role!r}")
-        if role in BUILTIN_ROLES and role not in (config.get("roles") or {}):
-            raise WorkflowError(f"Chat worker {role!r} is missing from config roles")
+        worker = chat_worker(config, role)
         if worker:
             system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
         else:
@@ -2530,6 +2540,262 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     return 0
 
 
+CODE_SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv"}
+CODE_MAX_SEARCH = 2_000_000  # bytes; search_files skips larger files
+CODE_MAX_ENTRIES, CODE_MAX_READ, CODE_MAX_HITS = 500, 200_000, 200
+CODE_TOOLS = [
+    function_tool("list_files", "List files and folders under a folder, recursively (default: the project root).",
+                  {"path": {"type": "string"}}, []),
+    function_tool("read_file", "Read one UTF-8 text file.", {"path": {"type": "string"}}, ["path"]),
+    function_tool("search_files", "Search text files for a Python regular expression; returns file:line: text hits.",
+                  {"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"]),
+    function_tool("write_file", "Create or replace one UTF-8 text file with complete content.",
+                  {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
+    function_tool("replace_text", "Replace one exact, unique string in a UTF-8 text file.",
+                  {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, ["path", "old", "new"]),
+    function_tool("write_project_md", "Write the project root's PROJECT.md from the template, using the conversation and these notes.",
+                  {"notes": {"type": "string"}}, ["notes"]),
+    function_tool("start_project", "Ask the launcher to begin the project run after this reply.", {}, []),
+]
+
+
+def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> Path:
+    """Resolve a Code tool path: relative to folders[0]; must stay inside a granted folder (the innermost one
+    decides read/write access). api_key.txt and anything inside .git are always refused."""
+    path = Path(str(raw or "").strip() or ".")
+    path = (path if path.is_absolute() else Path(folders[0]["path"]) / path).resolve()
+    inside = [f for f in folders if path == Path(f["path"]) or Path(f["path"]) in path.parents]
+    if not inside:
+        raise WorkflowError(f"Path is outside the granted folders: {raw}")
+    parts = [p.lower() for p in path.parts]
+    if "api_key.txt" in parts or ".git" in parts:
+        raise WorkflowError(f"Path is protected: {raw}")
+    if write and max(inside, key=lambda f: len(Path(f["path"]).parts))["access"] != "write":
+        raise WorkflowError(f"Path is in a read-only folder: {raw}")
+    return path
+
+
+def code_safe(path: Path, folders: list[dict[str, str]]) -> bool:
+    """A walked entry is usable only if it is no link/junction and code_path accepts it (so no walk leaves the grants)."""
+    try:
+        return os.path.normcase(code_path(str(path), folders)) == os.path.normcase(path)
+    except WorkflowError:
+        return False
+
+
+def code_walk(folder: Path, folders: list[dict[str, str]]):
+    """(path, is_dir) under folder in a stable order, skipping heavy/VCS directories, links and protected files."""
+    for dirpath, dirnames, filenames in os.walk(folder):
+        dirnames[:] = [d for d in sorted(dirnames) if d.lower() not in CODE_SKIP_DIRS and code_safe(Path(dirpath) / d, folders)]
+        yield from ((Path(dirpath) / d, True) for d in dirnames)
+        yield from ((Path(dirpath) / f, False) for f in sorted(filenames) if code_safe(Path(dirpath) / f, folders))
+
+
+def code_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
+    """The read-only Code tools; each returns a string and raises WorkflowError/OSError on bad input."""
+    root = Path(folders[0]["path"])
+    shown = lambda p: p.relative_to(root).as_posix() if root in p.parents else str(p)
+
+    def folder(raw: str) -> Path:
+        path = code_path(raw, folders)
+        if not path.is_dir():
+            raise WorkflowError(f"not a folder: {raw}")
+        return path
+
+    def list_files(path: str = "") -> str:
+        base, entries = folder(path), []
+        for entry, is_dir in code_walk(base, folders):
+            entries.append(shown(entry) + ("/" if is_dir else ""))
+            if len(entries) > CODE_MAX_ENTRIES:
+                return "\n".join(entries[:CODE_MAX_ENTRIES] + [f"... truncated at {CODE_MAX_ENTRIES} entries"])
+        return "\n".join(entries) or "(empty folder)"
+
+    def read_file(path: str) -> str:
+        target = code_path(path, folders)
+        if not target.is_file():
+            raise WorkflowError(f"file does not exist: {path}")
+        data = target.read_bytes()
+        text = data[:CODE_MAX_READ].decode("utf-8", errors="replace")
+        return text + (f"\n... truncated at {CODE_MAX_READ} bytes of {len(data)}" if len(data) > CODE_MAX_READ else "")
+
+    def search_files(pattern: str, path: str = "") -> str:
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            raise WorkflowError(f"invalid regex: {exc}") from exc
+        hits = []
+        for file, is_dir in code_walk(folder(path), folders):
+            try:
+                if is_dir or file.stat().st_size > CODE_MAX_SEARCH:
+                    continue  # ponytail: size cap only; a pathological regex can still stall this turn
+                lines = file.read_text(encoding="utf-8").splitlines()
+            except (OSError, UnicodeDecodeError):
+                continue  # binary or unreadable
+            for number, line in enumerate(lines, 1):
+                if regex.search(line):
+                    hits.append(f"{shown(file)}:{number}: {line.strip()[:300]}")
+                    if len(hits) >= CODE_MAX_HITS:
+                        return "\n".join(hits + [f"... truncated at {CODE_MAX_HITS} hits"])
+        return "\n".join(hits) or "no matches"
+
+    return {"list_files": list_files, "read_file": read_file, "search_files": search_files}
+
+
+def code_write_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
+    def write_file(path: str, content: str) -> str:
+        target = code_path(path, folders, write=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        save_text(target, str(content))
+        return "OK"
+
+    def replace_text(path: str, old: str, new: str) -> str:
+        target = code_path(path, folders, write=True)
+        content = load_text(target)
+        count = content.count(str(old)) if old else 0
+        if count != 1:
+            return f"ERROR: expected exactly one match, found {count}"
+        save_text(target, content.replace(str(old), str(new), 1))
+        return "OK"
+
+    return {"write_file": write_file, "replace_text": replace_text}
+
+
+def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
+              tools: list[dict[str, Any]], handlers: dict[str, Any]) -> str:
+    """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply."""
+    client, sampling = role_settings(config, role)
+    model = client.ensure_model(role, False)
+    messages = [{"role": "system", "content": system}, *messages]
+    max_steps, name, prev_text_calls, cutoffs = int(config.get("max_tool_steps", 30)), display_name(config, role), None, 0
+    printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
+    for _ in range(max_steps):
+        try:
+            response = client.complete(model, messages, sampling, tools)
+        except WorkflowError as exc:
+            if not tools or '"param":"tools"' not in str(exc):
+                raise
+            print(f"[{name}] model template does not support tool calling; continuing without tools ...")
+            tools = []
+            response = client.complete(model, messages, sampling, tools)
+        messages.append(response)
+        content = str(response.get("content") or "")
+        native = bool(response.get("tool_calls"))
+        calls = response.get("tool_calls") or text_tool_calls(content, set(handlers))
+        if not native:
+            signature = [(c["function"]["name"], _parsed_arguments(c["function"]["arguments"])) for c in calls]
+            if calls and signature == prev_text_calls:
+                calls = []
+            prev_text_calls = signature
+        else:
+            prev_text_calls = None
+        if getattr(client, "cut_off", False) and ((not calls and printed_call.search(content)) or any(
+            not isinstance(_parsed_arguments((c.get("function") or {}).get("arguments") or "{}"), dict) for c in calls
+        )):
+            cutoffs += 1
+            if cutoffs > 2:
+                raise WorkflowError(f"{name}: the reply was cut off at the output limit {cutoffs} times in a row. "
+                                    "Raise this role's sampling.max_tokens")
+            print(f"[{name}] truncated tool call not executed; sending back ({cutoffs}/2) ...")
+            messages[-1] = {"role": "assistant", "content": content}  # never replay broken arguments
+            messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
+            continue
+        cutoffs = 0
+        if not calls:
+            return answer_text(response)
+        results = []
+        for call in calls:
+            function = call.get("function") or {}
+            tool = str(function.get("name") or "?")
+            try:
+                arguments = json.loads(function.get("arguments") or "{}")
+                if tool not in handlers or not isinstance(arguments, dict):
+                    raise WorkflowError(f"tool {tool!r} is unavailable" if tool not in handlers else "arguments must be an object")
+                result = handlers[tool](**arguments)
+            except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
+                result = f"ERROR: {exc}"
+            emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
+            if native:
+                messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": result})
+            else:
+                results.append(f"{tool}: {result}")
+        if not native:
+            messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
+    raise WorkflowError(f"{name} exceeded max_tool_steps={max_steps}")
+
+
+def folders_context(folders: list[dict[str, str]]) -> str:
+    lines = [f"- {f['path']} ({f['access']}{', project root' if i == 0 else ''})" for i, f in enumerate(folders)]
+    exists = "yes" if (Path(folders[0]["path"]) / "PROJECT.md").is_file() else "no"
+    return "FOLDERS\n" + "\n".join(lines) + f"\n\nPROJECT.md exists in the project root: {exists}\n"
+
+
+def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str]], messages: list[dict[str, str]], notes: str) -> Path:
+    """`role` explores the folders read-only and returns PROJECT.md from the template; an existing one is backed up."""
+    target = Path(folders[0]["path"]) / "PROJECT.md"
+    current = load_text(target).strip()
+    convo = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+    user = (f"TEMPLATE\n{load_text(ROOT / 'PROJECT.md').strip()}\n\n" + (f"CONVERSATION\n{convo}\n\n" if convo else "")
+            + f"NOTES\n{str(notes or '').strip() or '(none)'}" + (f"\n\nCURRENT PROJECT.md\n{current}" if current else ""))
+    system = f"{load_text(ROOT / 'prompts' / 'project_writer.txt').strip()}\n\n{folders_context(folders)}"
+    text = code_loop(config, role, system, [{"role": "user", "content": user}], CODE_TOOLS[:3], code_handlers(folders))
+    fenced = re.fullmatch(r"```[\w-]*\n(.*?)\n?```", text.strip(), re.S)
+    text = fenced.group(1).strip() if fenced else text.strip()
+    if not re.search(r"^## ", text, re.M):
+        raise WorkflowError(f"{display_name(config, role)} did not return a PROJECT.md (empty or no '## ' heading); nothing was written")
+    if target.is_file():
+        stamp, n = time.strftime("%Y%m%d-%H%M%S"), 1
+        while (backup := target.with_name(f"PROJECT.backup-{stamp}{'' if n == 1 else f'-{n}'}.md")).exists():
+            n += 1
+        shutil.copy2(target, backup)
+    save_text(target, text)
+    emit("code_project", role=role, path=str(target))
+    return target
+
+
+def run_code(config: dict[str, Any], request_path: Path) -> int:
+    """One Code turn: a single worker with file tools confined to the request's folders."""
+    request = json.loads(load_text(request_path))
+    if not isinstance(request, dict):
+        raise WorkflowError("Code request must be a JSON object")
+    action = request.get("action")
+    if action not in ("chat", "write_project"):
+        raise WorkflowError(f"Unknown code action {action!r}")
+    messages = chat_messages(request)
+    if action == "chat" and (not messages or messages[-1]["role"] != "user"):
+        raise WorkflowError("Code request needs messages ending with a user message")
+    role = str(request.get("worker") or "")
+    worker = chat_worker(config, role)
+    raw = request.get("folders")
+    if not isinstance(raw, list) or not raw:
+        raise WorkflowError("Code request needs at least one folder")
+    folders = []
+    for index, item in enumerate(raw):
+        path = Path(str(item.get("path") or "")) if isinstance(item, dict) else Path()
+        if not path.is_absolute() or not path.is_dir():
+            raise WorkflowError(f"Folder {index + 1} is not an existing absolute directory: {path}")
+        access = "write" if index == 0 else item.get("access")
+        if access not in ("read", "write"):
+            raise WorkflowError(f"Folder {index + 1} access must be 'read' or 'write', not {access!r}")
+        folders.append({"path": str(path.resolve()), "access": access})
+    if action == "write_project":
+        target = write_project(config, role, folders, messages, "")
+        lines = [line.strip() for line in load_text(target).splitlines() if line.strip()]
+        goal = next((line for line in lines if not line.startswith("#")), lines[0].lstrip("# "))  # the goal sentence, else the title
+        emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
+        return 0
+    handlers = {**code_handlers(folders), **code_write_handlers(folders)}
+    handlers["write_project_md"] = lambda notes="": (
+        f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
+    handlers["start_project"] = lambda: (emit("code_start", role=role), "OK: the project run will start after this reply.")[1]
+    system = load_text(ROOT / "prompts" / "code.txt").strip()
+    system += f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n" if worker else f"\n\nYou are the {role.capitalize()} worker.\n"
+    text = code_loop(config, role, f"{system}\n{folders_context(folders)}", messages, CODE_TOOLS, handlers)
+    if not text:
+        raise WorkflowError("The model returned an empty reply")
+    emit("code_reply", role=role, text=text)
+    return 0
+
+
 def _run() -> int:
     # Piped stdout defaults to the ANSI codepage on Windows; model names can contain non-cp1252 characters.
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2539,20 +2805,22 @@ def _run() -> int:
     parser.add_argument("--non-interactive", action="store_true", help="Fail instead of waiting for model swaps")
     parser.add_argument("--once", action="store_true", help="Stop after one task passes")
     parser.add_argument("--events", action="store_true", help="Emit structured @@AO event lines for the launcher UI")
-    parser.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
+    turn = parser.add_mutually_exclusive_group()
+    turn.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
+    turn.add_argument("--code", type=Path, help="Run one Code turn (file tools confined to the request's folders) for this JSON request")
     args = parser.parse_args()
     global PROJECT_ROOT_ARG, EVENTS, CHAT_MODE
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
-    CHAT_MODE = args.chat is not None
+    CHAT_MODE = args.chat is not None or args.code is not None
 
     project_root = args.project.resolve()
     if not project_root.is_dir():
         raise WorkflowError(f"Project folder does not exist: {project_root}")
-    if args.chat:
+    if args.chat or args.code:
         config = json.loads(load_text(project_root / "config.json"))
         custom_workers(config, warn=True)
-        return run_chat(config, args.chat)
+        return run_chat(config, args.chat) if args.chat else run_code(config, args.code)
     missing = sorted(name for name in WORKFLOW_FILES if not (project_root / name).is_file())
     if missing:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
@@ -2629,7 +2897,7 @@ def _run() -> int:
 
 
 PROJECT_ROOT_ARG: Path = ROOT
-CHAT_MODE = False  # --chat: models stay loaded after the turn; the launcher unloads them when the app closes
+CHAT_MODE = False  # --chat/--code: models stay loaded after the turn; the launcher unloads them when the app closes
 
 
 # Models this run loaded itself (path -> client). A model the user loaded in Unsloth Desktop is not in

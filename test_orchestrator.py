@@ -3,6 +3,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -2279,6 +2280,190 @@ class ChatTests(unittest.TestCase):
             _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
         self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
         self.assertIn("Reviewer returned nothing usable", out.getvalue())
+
+
+def tool_call(name, **arguments):
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": name, "arguments": json.dumps(arguments)}}]}
+
+
+class CodeTests(unittest.TestCase):
+    """--code: one worker with file tools confined to the request's folders (folders[0] = project root)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.root, self.extra, self.shared, self.cfg = (base / n for n in ("app", "out", "lib", "cfg"))
+        for folder in (self.root, self.extra, self.shared, self.cfg):
+            folder.mkdir()
+        self.folders = [{"path": str(self.root), "access": "write"}, {"path": str(self.extra), "access": "write"},
+                        {"path": str(self.shared), "access": "read"}]
+        self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES}}
+
+    def code(self, request, replies):
+        request = {"folders": self.folders, **request}
+        replies = {k: list(v) for k, v in replies.items()}
+        log, events, unloaded = [], [], []
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role, self.title = settings, "", ""
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                log.append({"role": self.role, "system": messages[0]["content"], "messages": list(messages[1:]), "tools": tools})
+                reply = replies[self.role].pop(0)
+                return {"role": "assistant", "content": reply} if isinstance(reply, str) else reply
+
+        (self.cfg / "config.json").write_text(json.dumps(self.config), encoding="utf-8")
+        req = self.cfg / "request.json"
+        req.write_text(json.dumps(request), encoding="utf-8")
+        argv = ["o", "--project", str(self.cfg), "--code", str(req), "--events"]
+        with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator, "unload_models", lambda: unloaded.append(1)), patch.object(orchestrator.sys, "argv", argv):
+            code = orchestrator.main()
+        return code, log, events, unloaded
+
+    MSGS = [{"role": "user", "content": "add a readme"}]
+
+    def test_request_validation(self):
+        good = {"action": "chat", "worker": "implementer", "messages": self.MSGS, "folders": self.folders}
+        cases = [
+            ([1], "must be a JSON object"),
+            ({**good, "action": "run"}, "Unknown code action"),
+            ({**good, "messages": [{"role": "assistant", "content": "x"}]}, "ending with a user message"),
+            ({**good, "worker": "nobody"}, "Unknown chat worker"),
+            ({**good, "folders": []}, "at least one folder"),
+            ({**good, "folders": [{"path": "relative/dir", "access": "write"}]}, "Folder 1 is not an existing absolute"),
+            ({**good, "folders": [{"path": str(self.root / "missing"), "access": "write"}]}, "Folder 1 is not an existing absolute"),
+            ({**good, "folders": [self.folders[0], {"path": str(self.shared), "access": "all"}]}, "Folder 2 access"),
+        ]
+        for request, message in cases:
+            req = self.cfg / "r.json"
+            req.write_text(json.dumps(request), encoding="utf-8")
+            with self.subTest(message), self.assertRaisesRegex(orchestrator.WorkflowError, message):
+                orchestrator.run_code(self.config, req)
+
+    def test_code_path_confinement(self):
+        path = lambda raw, write=False: orchestrator.code_path(raw, self.folders, write)
+        self.assertEqual(path("src/a.py", True), self.root / "src" / "a.py")
+        self.assertEqual(path(str(self.shared / "x.py")), self.shared / "x.py")
+        self.assertEqual(path(str(self.extra / "y.txt"), True), self.extra / "y.txt")
+        self.assertEqual(path("../lib/x.py"), self.shared / "x.py")  # `..` into another granted folder is fine
+        refused = [("../cfg/config.json", False, "outside"), ("src/../../cfg/config.json", False, "outside"), (str(self.cfg / "a"), False, "outside"),
+                   (str(self.shared / "x.py"), True, "read-only"), ("api_key.txt", False, "protected"),
+                   (str(self.shared / "API_KEY.txt"), False, "protected"), (".git/config", False, "protected"), ("sub/.git/HEAD", True, "protected")]
+        for raw, write, message in refused:
+            with self.subTest(raw), self.assertRaisesRegex(orchestrator.WorkflowError, message):
+                path(raw, write)
+        nested = self.folders + [{"path": str(self.root / "vendor"), "access": "read"}]  # the innermost folder decides
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "read-only"):
+            orchestrator.code_path("vendor/v.js", nested, True)
+
+    def test_list_search_and_read_caps(self):
+        for name in ("a.txt", "b.txt", "c.txt", "node_modules/x.txt", ".git/config"):
+            (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / name).write_text("needle here\n", encoding="utf-8")
+        (self.root / "api_key.txt").write_text("needle SECRET\n", encoding="utf-8")
+        tools = orchestrator.code_handlers(self.folders)
+        listing = tools["list_files"]()
+        self.assertIn("a.txt", listing)
+        self.assertNotIn("node_modules", listing)
+        self.assertNotIn(".git", listing)
+        hits = tools["search_files"]("needle")
+        self.assertEqual(hits.splitlines(), ["a.txt:1: needle here", "b.txt:1: needle here", "c.txt:1: needle here"])
+        self.assertNotIn("SECRET", hits)
+        with patch.object(orchestrator, "CODE_MAX_ENTRIES", 2), patch.object(orchestrator, "CODE_MAX_HITS", 2), \
+                patch.object(orchestrator, "CODE_MAX_READ", 4):
+            self.assertIn("truncated at 2 entries", tools["list_files"]())
+            self.assertEqual(len(tools["search_files"]("needle").splitlines()), 3)
+            self.assertTrue(tools["read_file"]("a.txt").startswith("need\n... truncated at 4 bytes"))
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "outside"):
+            tools["list_files"](str(self.cfg))
+
+    def test_walks_stay_inside_grants(self):
+        (self.cfg / "secret.txt").write_text("needle OUTSIDE\n", encoding="utf-8")
+        (self.root / "a.txt").write_text("needle inside\n", encoding="utf-8")
+        link = self.root / "link"
+        if subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(self.cfg)], capture_output=True).returncode != 0:
+            self.skipTest("junctions unavailable")
+        tools = orchestrator.code_handlers(self.folders)
+        self.assertNotIn("link", tools["list_files"]())
+        self.assertEqual(tools["search_files"]("needle"), "a.txt:1: needle inside")
+        sibling = Path(self.folders[0]["path"] + "2")  # Y:\app2 must not pass as inside Y:\app
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "outside"):
+            orchestrator.code_path(str(sibling / "x"), self.folders)
+
+    def test_project_folder_is_always_writable(self):
+        folders = [{"path": str(self.root), "access": "read"}]
+        replies = {"implementer": [tool_call("write_file", path="a.txt", content="x"), "Done."]}
+        code, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "folders": folders}, replies)
+        self.assertEqual((code, (self.root / "a.txt").read_text(encoding="utf-8")), (0, "x\n"))
+
+    def test_chat_turn_writes_file_and_reports(self):
+        (self.shared / "lib.py").write_text("x = 1\n", encoding="utf-8")
+        replies = {"implementer": [tool_call("write_file", path="README.md", content="# App"),
+                                   tool_call("write_file", path=str(self.shared / "lib.py"), content="hacked"),
+                                   tool_call("replace_text", path="README.md", old="App", new="My app"),
+                                   "<think>ok</think>Added README.md."]}
+        code, log, events, unloaded = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS}, replies)
+        self.assertEqual((code, unloaded), (0, []))
+        self.assertEqual((self.root / "README.md").read_text(encoding="utf-8"), "# My app\n")
+        self.assertEqual((self.shared / "lib.py").read_text(encoding="utf-8"), "x = 1\n")
+        tools = [(d["name"], d["result"].split(":")[0]) for e, d in events if e == "tool"]
+        self.assertEqual(tools, [("write_file", "OK"), ("write_file", "ERROR"), ("replace_text", "OK")])
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "Added README.md."}])
+        self.assertIn("FOLDERS", log[0]["system"])
+        self.assertIn(f"{self.shared} (read)", log[0]["system"])
+        self.assertEqual({t["function"]["name"] for t in log[0]["tools"]},
+                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "write_project_md", "start_project"})
+
+    def test_start_project_emits_code_start(self):
+        replies = {"planner": [tool_call("start_project"), "Starting the project."]}
+        code, log, events, _ = self.code({"action": "chat", "worker": "planner", "messages": self.MSGS}, replies)
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_start", "code_reply"])
+        self.assertIn("OK: the project run will start", log[1]["messages"][-1]["content"])
+
+    PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
+
+    def test_write_project_writes_backs_up_and_rejects_empty(self):
+        code, log, events, _ = self.code({"action": "write_project", "worker": "planner", "messages": []},
+                                         {"planner": [tool_call("list_files"), f"```markdown\n{self.PROJECT}```"]})
+        self.assertEqual(code, 0)
+        self.assertEqual((self.root / "PROJECT.md").read_text(encoding="utf-8"), self.PROJECT)
+        self.assertEqual({t["function"]["name"] for t in log[0]["tools"]}, {"list_files", "read_file", "search_files"})
+        self.assertIn("[Describe the project", log[0]["messages"][0]["content"])  # the workflow root's template
+        self.assertEqual([(e, d.get("path") or d.get("text")) for e, d in events if e.startswith("code_")],
+                         [("code_project", str(self.root / "PROJECT.md")), ("code_reply", "PROJECT.md written: A todo app.")])
+        code, log, *_ = self.code({"action": "write_project", "worker": "planner", "messages": self.MSGS},
+                                  {"planner": ["# Project\n\n## Project Goal\n\nA better todo app.\n"]})
+        self.assertIn("CURRENT PROJECT.md\n# Project", log[0]["messages"][0]["content"])
+        backups = list(self.root.glob("PROJECT.backup-*.md"))
+        self.assertEqual([b.read_text(encoding="utf-8") for b in backups], [self.PROJECT])
+        for bad in ("", "Just prose, no headings."):
+            with self.subTest(bad), self.assertRaisesRegex(orchestrator.WorkflowError, "did not return a PROJECT.md"):
+                self.code({"action": "write_project", "worker": "planner", "messages": []}, {"planner": [bad]})
+        self.assertIn("better", (self.root / "PROJECT.md").read_text(encoding="utf-8"))
+        self.assertEqual(len(list(self.root.glob("PROJECT.backup-*.md"))), 1)
+
+    def test_write_project_md_tool_uses_implementer(self):
+        replies = {"reviewer": [tool_call("write_project_md", notes="todo app"), "Wrote it."],
+                   "implementer": [self.PROJECT]}
+        code, log, events, _ = self.code({"action": "chat", "worker": "reviewer", "messages": self.MSGS}, replies)
+        self.assertEqual([l["role"] for l in log], ["reviewer", "implementer", "reviewer"])
+        self.assertIn("NOTES\ntodo app", log[1]["messages"][0]["content"])
+        self.assertEqual([d["result"] for e, d in events if e == "tool"], ["OK: PROJECT.md written (5 lines)"])
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_project", "code_reply"])
+
+    def test_chat_and_code_are_mutually_exclusive(self):
+        err = io.StringIO()
+        err.reconfigure = lambda **kw: None
+        with patch.object(orchestrator.sys, "argv", ["o", "--chat", "a.json", "--code", "b.json"]), \
+                patch.object(orchestrator.sys, "stderr", err), self.assertRaises(SystemExit):
+            orchestrator._run()
+        self.assertIn("not allowed with argument", err.getvalue())
 
 
 BROWSER = orchestrator.find_browser()
