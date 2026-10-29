@@ -536,7 +536,7 @@
                     <ControlTemplate TargetType="ToggleButton">
                         <Grid Background="Transparent">
                             <Border x:Name="HoverFill" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource SmallRadius}" Opacity="0" />
-                            <DockPanel Margin="12,8">
+                            <DockPanel Margin="4,5">
                                 <Grid DockPanel.Dock="Left" Width="16">
                                     <TextBlock x:Name="Glyph" Text="&#x25B8;" Foreground="{DynamicResource Muted}" HorizontalAlignment="Left" VerticalAlignment="Center"
                                                RenderTransformOrigin="0.5,0.5">
@@ -576,14 +576,13 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- A collapsible section (thinking, tool call, response): plain text without a card, like other AI chat apps. -->
         <Style x:Key="BlockExpander" TargetType="Expander">
-            <Setter Property="Margin" Value="0,0,0,8" />
+            <Setter Property="Margin" Value="0,0,0,4" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Expander">
                         <Grid>
-                        <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource SmallRadius}"
-                                BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
                             <DockPanel>
                                 <Grid DockPanel.Dock="Top">
                                     <ToggleButton Style="{StaticResource BlockHeaderToggle}"
@@ -594,21 +593,17 @@
                                     <Button x:Name="SectionCopy" Focusable="False" Content="Copy" FontSize="11" Padding="10,3" Margin="0,0,8,0" Opacity="0"
                                             HorizontalAlignment="Right" VerticalAlignment="Center" ToolTip="Copy this section" Click="SectionCopy_Click" />
                                 </Grid>
-                                <ContentPresenter x:Name="Body" Margin="14,0,14,12" Visibility="Collapsed">
+                                <ContentPresenter x:Name="Body" Margin="22,2,8,8" Visibility="Collapsed">
                                     <ContentPresenter.RenderTransform><TranslateTransform x:Name="BodyShift" /></ContentPresenter.RenderTransform>
                                 </ContentPresenter>
                             </DockPanel>
-                        </Border>
-                        <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource SmallRadius}" />
                         </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Trigger.EnterActions>
-                                    <BeginStoryboard Storyboard="{StaticResource HoverIn}" />
                                     <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="SectionCopy" Storyboard.TargetProperty="Opacity" To="1" Duration="0:0:0.12" /></Storyboard></BeginStoryboard>
                                 </Trigger.EnterActions>
                                 <Trigger.ExitActions>
-                                    <BeginStoryboard Storyboard="{StaticResource HoverOut}" />
                                     <BeginStoryboard><Storyboard><DoubleAnimation Storyboard.TargetName="SectionCopy" Storyboard.TargetProperty="Opacity" To="0" Duration="0:0:0.15" /></Storyboard></BeginStoryboard>
                                 </Trigger.ExitActions>
                             </Trigger>
