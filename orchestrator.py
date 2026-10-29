@@ -1715,7 +1715,8 @@ def run_agent(
             if cutoffs > 2:
                 raise WorkflowError(
                     f"{name}: the reply was cut off at the output limit {cutoffs} times in a row. "
-                    "Raise this role's sampling.max_tokens (or auto_load.max_seq_length if the context is full)."
+                    "Raise this role's sampling.max_tokens"
+                    + ("." if getattr(client, "remote", False) else " (or auto_load.max_seq_length if the context is full).")
                 )
             print(f"[{name}] truncated tool call not executed; sending back ({cutoffs}/2) ...")
             messages[-1] = {"role": "assistant", "content": str(response.get("content") or "")}  # never replay broken arguments
