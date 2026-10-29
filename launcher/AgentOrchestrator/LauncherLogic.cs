@@ -231,7 +231,9 @@ internal static class LauncherLogic
     // ---- local runtime: llama.cpp's llama-server instead of Unsloth Studio
 
     public const string LlamaRuntime = "llamacpp";
-    public const string LlamaReleaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
+    // Recent releases, newest first: llama.cpp publishes its builds (b1234) as prereleases, and "latest" can be a tag
+    // without any binaries.
+    public const string LlamaReleaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
     public static string LlamaFolder => Path.Combine(AppSettings.DataRoot, "llama.cpp");
     public static string LlamaServerPath => Path.Combine(LlamaFolder, "llama-server.exe");
     // The engine keeps one llama-server and records it here: {"pid", "port", "signature", "model_file", "log"}.
@@ -254,11 +256,20 @@ internal static class LauncherLogic
 
     public sealed record LlamaAssets(string Tag, string Flavour, List<string> Urls);
 
-    // The latest release's Windows x64 build for this machine: with an NVIDIA GPU the highest CUDA version the driver
+    // The newest release that has a Windows x64 build for this machine: with an NVIDIA GPU the highest CUDA version the driver
     // supports (from nvidia-smi's "CUDA Version: X.Y"; unreadable: 12.x before 13.x) that has its cudart runtime zip, else
     // Vulkan, else CPU. get fetches a URL's text (the GitHub API; tests pass sample JSON).
-    public static async Task<LlamaAssets> FetchLlamaAssetsAsync(Func<string, Task<string>> get, bool nvidia, string? nvidiaSmi = null) =>
-        PickLlamaAssets(await get(LlamaReleaseUrl), nvidia, nvidiaSmi);
+    public static async Task<LlamaAssets> FetchLlamaAssetsAsync(Func<string, Task<string>> get, bool nvidia, string? nvidiaSmi = null)
+    {
+        using var doc = JsonDocument.Parse(await get(LlamaReleaseUrl));
+        var releases = doc.RootElement.ValueKind == JsonValueKind.Array ? doc.RootElement.EnumerateArray().ToList() : [doc.RootElement];
+        foreach (var release in releases.Where(r => !(r.TryGetProperty("draft", out var draft) && draft.GetBoolean())))
+        {
+            try { return PickLlamaAssets(release.GetRawText(), nvidia, nvidiaSmi); }
+            catch (InvalidOperationException) { } // a release without Windows binaries: try the next one
+        }
+        throw new InvalidOperationException("No recent llama.cpp release has a Windows x64 build.");
+    }
 
     public static LlamaAssets PickLlamaAssets(string releaseJson, bool nvidia, string? nvidiaSmi = null)
     {
@@ -1116,7 +1127,17 @@ internal static class LauncherLogic
         ];
         string? asked = null;
         static string Smi(string version) => $"| NVIDIA-SMI 570.00   Driver Version: 570.00   CUDA Version: {version} |";
-        var cuda = FetchLlamaAssetsAsync(url => { asked = url; return Task.FromResult(Release(all)); }, nvidia: true, Smi("13.1")).GetAwaiter().GetResult();
+        // The release list: a binary-less "latest" tag and a draft come first and are skipped for the newest build.
+        var list = $"[{{\"tag_name\":\"v0.8.0\",\"assets\":[{{\"name\":\"nightly-tag.txt\",\"browser_download_url\":\"https://dl/n\"}}]}}," +
+            $"{JsonSerializer.Serialize(new { tag_name = "b9999", draft = true, assets = new[] { new { name = "llama-b9999-bin-win-cpu-x64.zip", browser_download_url = "https://dl/draft" } } })}," +
+            $"{Release(all)}]";
+        var cuda = FetchLlamaAssetsAsync(url => { asked = url; return Task.FromResult(list); }, nvidia: true, Smi("13.1")).GetAwaiter().GetResult();
+        try
+        {
+            FetchLlamaAssetsAsync(_ => Task.FromResult("[{\"tag_name\":\"v0.8.0\",\"assets\":[]}]"), nvidia: false).GetAwaiter().GetResult();
+            throw new InvalidOperationException("A release list without Windows builds must be refused.");
+        }
+        catch (InvalidOperationException e) when (e.Message.StartsWith("No recent llama.cpp release")) { }
         if (asked != LlamaReleaseUrl || cuda.Tag != "b6100" || cuda.Flavour != "CUDA 13.1" ||
             !cuda.Urls.SequenceEqual(["https://dl/llama-b6100-bin-win-cuda-13.1-x64.zip", "https://dl/cudart-llama-bin-win-cuda-13.1-x64.zip"]))
             throw new InvalidOperationException($"CUDA asset picking failed: {cuda.Flavour} {string.Join(", ", cuda.Urls)}");
