@@ -1274,29 +1274,29 @@ public partial class MainWindow : Window
             tester.ModelId = tester.Config.ModelPath = "org/M-GGUF";
             tester.Config.ModelExpected = "M-GGUF";
             tester.Config.Kind = "reviewer";
-            // No system prompt yet: the card warns, nothing is written, and the Settings dialog refuses to save.
+            // No system prompt or description: nothing is missing; config.json gets the kind's defaults, the dialog shows them
+            // prefilled, and Save keeps them (switching kind swaps in the other kind's defaults).
             SyncCustomWorkers();
-            if (!tester.HasSetupProblem || JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
+            var synced = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray();
+            if (tester.HasSetupProblem || synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer" ||
+                (string)synced[0]!["system_prompt"]! != LauncherLogic.DefaultSystemPrompt("reviewer"))
                 return Fail();
-            var incompleteDialog = BuildModelSettings(tester)!;
+            var prefilled = BuildModelSettings(tester)!;
             static T? FindIn<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
                 d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => FindIn(c, match)).FirstOrDefault(r => r is not null);
-            FindIn<Button>(incompleteDialog, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-            var rejection = FindIn<TextBlock>(incompleteDialog, t => t.Visibility == Visibility.Visible && t.Text.StartsWith("Enter a system prompt"));
-            if (rejection is null || tester.Config.SystemPrompt.Length != 0)
+            var promptBox = FindIn<TextBox>(prefilled, t => t.Tag as string == "SystemPrompt");
+            var specialist = FindIn<RadioButton>(prefilled, r => r.Tag as string == "specialist");
+            var reviewerKind = FindIn<RadioButton>(prefilled, r => r.Tag as string == "reviewer");
+            if (promptBox?.Text != LauncherLogic.DefaultSystemPrompt("reviewer") || specialist is null || reviewerKind is null)
                 return Fail();
-            incompleteDialog.Close();
+            specialist.IsChecked = true;
+            var swapped = promptBox.Text == LauncherLogic.DefaultSystemPrompt("specialist");
+            reviewerKind.IsChecked = true;
+            FindIn<Button>(prefilled, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (!swapped || tester.Config.SystemPrompt != LauncherLogic.DefaultSystemPrompt("reviewer") || tester.Config.Description != LauncherLogic.DefaultDescription("reviewer"))
+                return Fail();
+            prefilled.Close();
             await Settle();
-            (CardsList.ItemContainerGenerator.ContainerFromItem(tester) as FrameworkElement)?.BringIntoView();
-            await Settle();
-            Snap("13-incomplete-worker");
-            tester.Config.SystemPrompt = "You test.";
-            SyncCustomWorkers();
-            if (tester.HasSetupProblem)
-                return Fail();
-            var synced = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray();
-            if (synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer")
-                return Fail();
             var customDialog = BuildModelSettings(tester)!;
             if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") || !HasTag(settingsDialog, "Base URL") ||
                 !await Show(customDialog, "12-custom-settings-dialog"))

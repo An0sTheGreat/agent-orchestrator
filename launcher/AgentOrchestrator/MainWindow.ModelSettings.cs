@@ -289,11 +289,20 @@ public partial class MainWindow
             void Explain() => kindHelp.Text = kinds[0].IsChecked == true
                 ? "Specialist: the Planner can assign it tasks, and it edits files like the Implementer."
                 : "Extra reviewer: reviews every task alongside the Reviewer; its FAIL sends the task back.";
+            // Empty fields show the kind's defaults; switching kind swaps a default (or empty) field for the other kind's.
+            string KindOf(RadioButton r) => r.Tag as string == "reviewer" ? "reviewer" : "specialist";
+            var startKind = w.Kind == "reviewer" ? "reviewer" : "specialist";
+            description = Box(string.IsNullOrWhiteSpace(w.Description) ? LauncherLogic.DefaultDescription(startKind) : w.Description, "Description", 58);
+            prompt = Box(string.IsNullOrWhiteSpace(w.SystemPrompt) ? LauncherLogic.DefaultSystemPrompt(startKind) : w.SystemPrompt, "SystemPrompt", 170);
             foreach (var k in kinds)
-                k.Checked += (_, _) => Explain();
+                k.Checked += (_, _) =>
+                {
+                    Explain();
+                    foreach (var (box, of) in new (TextBox, Func<string, string>)[] { (description, LauncherLogic.DefaultDescription), (prompt, LauncherLogic.DefaultSystemPrompt) })
+                        if (string.IsNullOrWhiteSpace(box.Text) || kinds.Any(r => box.Text == of(KindOf(r))))
+                            box.Text = of(KindOf(k));
+                };
             Explain();
-            description = Box(w.Description, "Description", 58);
-            prompt = Box(w.SystemPrompt, "SystemPrompt", 170);
             prompt.FontFamily = new FontFamily("Consolas");
             var remove = new Button { Content = "Remove worker", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0) };
             remove.Click += (_, _) =>
@@ -455,17 +464,13 @@ public partial class MainWindow
                 var title = nameBox!.Text.Trim();
                 if (title != card.Title && LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } titleProblem)
                     errors["Name"] = titleProblem;
-                if (string.IsNullOrWhiteSpace(prompt!.Text))
-                    errors["SystemPrompt"] = "Enter a system prompt: the orchestrator ignores a worker without one.";
-                else if (kind != "reviewer" && string.IsNullOrWhiteSpace(description!.Text))
-                    errors["Description"] = "Enter a description: the Planner assigns Specialist tasks based on it.";
                 if (ShowErrors(errors))
                     return;
                 if (choice is not null)
                     AssignModel(card, choice);
                 w.Kind = kind;
                 w.Description = description!.Text.Trim();
-                w.SystemPrompt = prompt.Text;
+                w.SystemPrompt = prompt!.Text;
                 w.ModelOptions = fields.Where(p => p.Value.Trim().Length > 0).ToDictionary();
                 (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) = ("", "", "", "", "", "Auto"); // now in ModelOptions
                 if (title != card.Title)

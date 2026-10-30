@@ -1136,18 +1136,26 @@ internal static class LauncherLogic
         return null;
     }
 
-    // Why the orchestrator would ignore this custom worker (it needs a model, a system prompt, and for a
-    // Specialist a description), or null. Shared by the Settings dialog and CustomProblems.
+    // Why the orchestrator would ignore this custom worker (it needs a model), or null. Shared by the Settings dialog and
+    // CustomProblems. An empty description or system prompt is fine: the kind's default is written instead.
     public static string? CustomWorkerProblem(WorkerSetting w)
     {
         if (string.IsNullOrWhiteSpace(w.ModelPath))
             return string.IsNullOrWhiteSpace(w.ModelId) ? "no model assigned (Change model)" : "pick the model again (Change model)";
-        if (string.IsNullOrWhiteSpace(w.SystemPrompt))
-            return "the system prompt is empty (Settings)";
-        if (w.Kind != "reviewer" && string.IsNullOrWhiteSpace(w.Description))
-            return "a Specialist needs a description (Settings)";
         return null;
     }
+
+    // A custom worker's description and system prompt when it leaves them empty, by kind ("reviewer", else a Specialist).
+    // The Models window shows them prefilled.
+    public static string DefaultDescription(string kind) => kind == "reviewer"
+        ? "A second reviewer: checks each task's changes for bugs, missed requirements and risky edits."
+        : "A general implementer: writes and edits code for the task it is given.";
+
+    public static string DefaultSystemPrompt(string kind) => kind == "reviewer"
+        ? "You are a code reviewer. Check the change against the task: correctness, missed requirements, broken behaviour and risky "
+          + "edits. Report concrete problems with where they are; do not ask for changes the task did not call for."
+        : "You are an implementer. Make the change the task asks for, completely and correctly, following the project's existing "
+          + "conventions. Keep the change focused, and say briefly what you changed.";
 
     // The orchestrator's acceptance rules for every worker in order (null = accepted or not a custom worker):
     // the title may not be empty, reserved, or used by an earlier accepted worker, and the project's
@@ -1217,10 +1225,12 @@ internal static class LauncherLogic
                 skipped.Add($"{w.Title.Trim()}: {problem}");
                 continue;
             }
+            var kind = w.Kind == "reviewer" ? "reviewer" : "specialist";
             var entry = new JsonObject
             {
-                ["id"] = w.Id, ["title"] = w.Title.Trim(), ["kind"] = w.Kind == "reviewer" ? "reviewer" : "specialist",
-                ["description"] = w.Description, ["system_prompt"] = w.SystemPrompt,
+                ["id"] = w.Id, ["title"] = w.Title.Trim(), ["kind"] = kind,
+                ["description"] = string.IsNullOrWhiteSpace(w.Description) ? DefaultDescription(kind) : w.Description,
+                ["system_prompt"] = string.IsNullOrWhiteSpace(w.SystemPrompt) ? DefaultSystemPrompt(kind) : w.SystemPrompt,
             };
             foreach (var key in new[] { "base_url", "management_url", "api_key_env", "api_key" })
                 if (local?[key] is { } value)
@@ -1926,8 +1936,13 @@ internal static class LauncherLogic
             var specSampling = spec["sampling"]!;
             var specLoad = spec["auto_load"]!;
             var revSampling = rev["sampling"]!;
-            if (skippedTitles.Length != 4 || !skippedTitles[0].StartsWith("NoModel: no model") || !skippedTitles[1].StartsWith("NoPrompt: ") || !skippedTitles[2].StartsWith("NoDesc: ") || !skippedTitles[3].Contains("pick the model again") || cwArray.Count != 2 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
+            if (skippedTitles.Length != 2 || !skippedTitles[0].StartsWith("NoModel: no model") || !skippedTitles[1].Contains("pick the model again") || cwArray.Count != 4 || (int)cw["keep"]! != 1 || cw["roles"]!.ToJsonString() != rolesBefore)
                 throw new InvalidOperationException("Custom workers: skipping, array size or untouched keys failed.");
+            // An empty system prompt or description is written as the kind's default.
+            if ((string)cwArray[2]!["system_prompt"]! != DefaultSystemPrompt("specialist") || (string)cwArray[2]!["description"]! != "d" ||
+                (string)cwArray[3]!["description"]! != DefaultDescription("specialist") || (string)cwArray[3]!["system_prompt"]! != "p" ||
+                (string)rev["description"]! != DefaultDescription("reviewer"))
+                throw new InvalidOperationException("Custom workers: empty fields must take the kind's defaults.");
             if ((string)spec["id"]! != "s1" || (string)spec["title"]! != "Tester" || (string)spec["kind"]! != "specialist" || (string)spec["description"]! != "Runs tests" ||
                 (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" || (string)spec["management_url"]! != "http://h" ||
                 (string)spec["api_key_env"]! != "K" || (string)spec["api_key"]! != "sk" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
