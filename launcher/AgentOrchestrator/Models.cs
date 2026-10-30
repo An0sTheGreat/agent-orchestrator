@@ -28,6 +28,9 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool IsDragging { get => _dragging; set => Set(ref _dragging, value); }
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
     public bool DropHover { get => _dropHover; set => Set(ref _dropHover, value); }
+    // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: the built-in workers in the Chat view's Single mode).
+    private bool _hidden;
+    public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
     public string? ModelId { get; set; }
     public string? ModelVariant { get; set; }
@@ -167,6 +170,8 @@ internal sealed class AppSettings
     public string ChatMode { get; set; } = "single";
     public string ChatWorker { get; set; } = "implementer";
     public string CodeWorker { get; set; } = "implementer"; // the Code view's target worker id
+    // Thinking effort sent with Chat and Code messages: "" (the model's default), off, low, medium, high or max.
+    public string ChatEffort { get; set; } = "";
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
     public bool ChatKeepLoaded { get; set; } = true;
     // Where local models run: "unsloth" (Unsloth Studio's API) or "llamacpp" (llama-server from <data>\llama.cpp).

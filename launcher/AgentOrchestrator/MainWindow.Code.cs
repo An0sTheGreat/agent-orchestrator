@@ -34,7 +34,7 @@ public partial class MainWindow
             return Task.FromResult(false);
         return RunTurn(_code, text, worker ?? CodeTarget()!.Role, false,
             role => LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-                project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0),
+                project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(false, CardFor(role))),
             LauncherLogic.BuildCodeStartInfo, $"Code ({action})");
     }
 

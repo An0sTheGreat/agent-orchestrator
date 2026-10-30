@@ -1382,10 +1382,10 @@ internal static class LauncherLogic
             (bool)code["tools"]!)
             throw new InvalidOperationException("Request extras failed.");
         if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("single", "implementer", chat, title: true))!["title"]! ||
-            !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:pp", [], title: true))!["title"]!)
+            !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], title: true))!["title"]!)
             throw new InvalidOperationException("The first-turn title flag failed.");
         if ((string)single["effort"]! != "" || (string)JsonNode.Parse(BuildChatRequest("multi", "x", chat, effort: "high"))!["effort"]! != "high" ||
-            (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:pp", [], effort: "off"))!["effort"]! != "off")
+            (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], effort: "off"))!["effort"]! != "off")
             throw new InvalidOperationException("The effort field failed.");
         foreach (var (name, budget, thinks) in new (string, int?, bool)[]
         {
