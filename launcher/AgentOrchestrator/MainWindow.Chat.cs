@@ -41,6 +41,7 @@ public partial class MainWindow
         public required TextBlock Hint;
         public readonly List<LauncherLogic.ChatMessage> History = new();
         public bool Follow = true;
+        public long Tokens; // all turns of this conversation (saved with it)
         public bool Owns(object o) => o == Input || o == Send || o == Scroll || o == Jump || o == Plus || o == Chip;
     }
 
@@ -58,6 +59,9 @@ public partial class MainWindow
         public Button Copy = null!;
         public StackPanel Footer = null!; // timestamp and copy icon, shown once the reply is complete
         public TextBlock Stamp = null!;
+        public TextBlock Stats = null!; // the footer's call / turn / task tokens
+        public string? Last, Pending; // stats of the last call; of a call whose text streamed into the answer, not yet shown
+        public long TurnTokens;
         public bool Multi;
         public string Stage = "answer", StageTitle = "";
         public StreamBlock? Block;
@@ -311,6 +315,7 @@ public partial class MainWindow
         {
             (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
             c.Context = _chatContext;
+            c.Tokens = _chat.Tokens;
             c.Title ??= TakeTurnTitle();
             StoreDo(() => _store.Save(c));
         }
@@ -343,6 +348,7 @@ public partial class MainWindow
             _settings.Save();
             Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
             ShowContext(false, saved.Context);
+            _chat.Tokens = saved.Tokens ?? 0;
         }
         ShowView(chat: true);
     }
@@ -370,6 +376,7 @@ public partial class MainWindow
     {
         c.Panel.Children.Clear();
         c.History.Clear();
+        c.Tokens = 0;
         _reply = null;
         c.Empty.Visibility = Visibility.Visible;
         ShowContext(c.IsCode, null);
@@ -613,6 +620,9 @@ public partial class MainWindow
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
         reply.Footer.Visibility = Visibility.Collapsed;
+        reply.Stats = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
+        reply.Stats.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        reply.Footer.Children.Add(reply.Stats);
         root.Children.Add(header);
         root.Children.Add(reply.Content);
         root.Children.Add(reply.Status);
@@ -652,7 +662,11 @@ public partial class MainWindow
                 completed = true;
             }
             if (answer is not null)
+            {
                 SetStamp(reply.Stamp, Now());
+                if ((reply.Pending ?? reply.Last) is { } call)
+                    reply.Stats.ToolTip = reply.Stats.Text = $"{call} · {LauncherLogic.TotalsLine(reply.TurnTokens, c.Tokens)}";
+            }
             reply.Footer.Visibility = answer is null ? Visibility.Collapsed : Visibility.Visible;
         }
         foreach (var card in _cards)
@@ -662,6 +676,7 @@ public partial class MainWindow
             card.Status = "Idle";
         }
         _activeRole = null;
+        _chatClosed.Clear();
         var loadedThisTurn = _turnLoaded.ToList();
         _turnLoaded = new();
         if (!_settings.ChatKeepLoaded)
@@ -731,6 +746,7 @@ public partial class MainWindow
             case "usage":
                 Activate(role, "Working");
                 card?.AddUsage((long)Num(ev, "prompt"), (long)Num(ev, "completion"), Num(ev, "tps"));
+                ChatUsage(role, LauncherLogic.StatsLine(name, Num(ev, "tps"), (long)Num(ev, "completion"), (long)Num(ev, "prompt")), Num(ev, "tps"), (long)(Num(ev, "prompt") + Num(ev, "completion")));
                 break;
             case "chat_stage":
                 EndChatBlock();
@@ -752,6 +768,13 @@ public partial class MainWindow
                 break;
             case "tool":
                 EndChatBlock();
+                if (_reply is { Pending: { } step } stepReply) // text before a tool call: its call's stats under it
+                {
+                    stepReply.Pending = null;
+                    var line = new TextBlock { Text = step, FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "stats" };
+                    line.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+                    stepReply.Content.Children.Add(line);
+                }
                 Activate(role, "Using tools");
                 SetChatStatus($"{name} is using {Str(ev, "name")}…");
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
@@ -763,6 +786,26 @@ public partial class MainWindow
             case "code_start":
                 _codeStartRequested = true;
                 break;
+        }
+    }
+
+    private readonly List<StreamBlock> _chatClosed = new(); // blocks closed since their call's usage event
+
+    // The usage event follows the call's done: the line goes to every block that call closed (sections now, the answer's in the footer).
+    private void ChatUsage(string role, string line, double tps, long total)
+    {
+        if (_reply is not { } r)
+            return;
+        r.TurnTokens += total;
+        _turn.Tokens += total;
+        r.Last = line;
+        foreach (var block in _chatClosed.Where(b => b.Role == role).ToList())
+        {
+            _chatClosed.Remove(block);
+            if (block.Expander is null)
+                r.Pending = line;
+            else
+                AddStatsLine(block, line, tps);
         }
     }
 
@@ -1048,6 +1091,7 @@ public partial class MainWindow
         if (_reply?.Block is not { } block)
             return;
         _reply.Block = null;
+        _chatClosed.Add(block);
         if (block.Expander is null)
             return;
         SetPulse(block, false);

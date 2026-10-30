@@ -23,6 +23,7 @@ internal sealed class ConversationStore
         public DateTime Created { get; set; }
         public DateTime Updated { get; set; }
         public bool Archived { get; set; }
+        public long? Tokens { get; set; } // tokens used by all turns of this conversation (the footer's Task total); absent in older files
         public ContextSnapshot? Context { get; set; } // the last turn's context usage; absent in older files
     }
 
