@@ -1072,8 +1072,16 @@
                         </ScrollViewer>
                         <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
-                            <TextBlock Text="The worker can read, search and edit the files in it, then start the project." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
-                            <Button Content="Choose a folder…" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Center" Padding="16,7" Margin="0,14,0,0" Click="CodeNew_Click" />
+                            <!-- MainWindow.Code.cs RefreshCodeFolder sets the text and buttons: no folder, a folder without PROJECT.md, or one with it -->
+                            <TextBlock x:Name="CodeEmptyText" Text="Choose the working folder; the worker can read, search and edit the files in it." Foreground="{DynamicResource Muted}"
+                                       HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0">
+                                <Button x:Name="CodeEmptyChoose" Content="Choose a folder…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeNew_Click" />
+                                <Button x:Name="CodeEmptyAddMd" Content="Add PROJECT.md…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeEmptyAddMd_Click"
+                                        Visibility="Collapsed" ToolTip="Copy a PROJECT.md you already have into this folder" />
+                                <Button x:Name="CodeEmptyTemplate" Content="Start from template" Style="{StaticResource GhostButton}" Padding="16,7" Margin="8,0,0,0"
+                                        Click="CodeEmptyTemplate_Click" Visibility="Collapsed" ToolTip="Copy the PROJECT.md template into this folder and open it to fill in" />
+                            </StackPanel>
                         </StackPanel>
                         <Button x:Name="CodeJumpPill" Style="{StaticResource PrimaryButton}" Content="Jump to latest  ↓" FontSize="12" Padding="16,7"
                                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" Opacity="0"

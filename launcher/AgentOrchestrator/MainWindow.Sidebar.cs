@@ -26,7 +26,7 @@ public partial class MainWindow
     private readonly Dictionary<string, Func<string?, Func<bool>?>> _sidebarDrops = new();
     private const string DragFormat = "AgentOrchestrator.SidebarItem";
 
-    private bool CodeBusy => _chatBusy || _process is not null || _codeStarting;
+    private bool CodeBusy => _chatBusy || _process is not null;
 
     private void RefreshSidebarList()
     {

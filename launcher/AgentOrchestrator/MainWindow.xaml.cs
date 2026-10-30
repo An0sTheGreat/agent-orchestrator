@@ -82,6 +82,7 @@ public partial class MainWindow : Window
         RestoreWindowBounds();
 
         Closing += OnClosing;
+        Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(LimitMaximizeToWorkArea);
         StateChanged += (_, _) =>
         {
@@ -119,7 +120,7 @@ public partial class MainWindow : Window
         var project = SelectedProjectPath();
         if (project.Length == 0 || !Directory.Exists(project) || LauncherLogic.MissingProjectFiles(project).Length != 0)
         {
-            SetStatus("Use Start project in Code first", "#F7C873"); // it writes PROJECT.md and the workflow files
+            SetStatus("Use Start project in Code first", "#F7C873"); // it writes the workflow files beside PROJECT.md
             return;
         }
 
@@ -1797,6 +1798,8 @@ public partial class MainWindow : Window
                 var second = _codeConv;
                 if (second is null || second.Id == first.Id || _code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible)
                     return Fail();
+                await Settle();
+                Snap("18b-code-empty-no-projectmd");
                 // Reopening shows the history, extra folders and folder; nothing is written.
                 var firstPath = Path.Combine(AppSettings.DataRoot, "conversations", first.Id + ".json");
                 var savedText = File.ReadAllText(firstPath);
@@ -1838,6 +1841,23 @@ public partial class MainWindow : Window
                 if (_codeConv != third || _store.Get(first.Id) is null || _code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 ||
                     CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write"))
                     return Fail();
+                // A folder without PROJECT.md: the empty state offers Add / template, Start project is off (and says why), and
+                // neither Start nor the worker's start_project starts anything or asks a model to write the file.
+                string EmptyState() => $"{CodeEmptyTitle.Text}|{CodeEmptyChoose.Visibility}|{CodeEmptyAddMd.Visibility}|{CodeEmptyTemplate.Visibility}|{CodeStartButton.IsEnabled}";
+                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|False" || !ToolTipService.GetShowOnDisabled(CodeStartButton) ||
+                    CodeStartButton.ToolTip as string is not { } whyOff || !whyOff.Contains("no PROJECT.md"))
+                    return Fail();
+                await Settle();
+                Snap("20a-code-no-projectmd");
+                SetStatus("Ready", "#667085");
+                StartCodeProject();
+                if (_chatBusy || _chatProcess is not null || _process is not null || StatusText.Text != "Add a PROJECT.md first" || File.Exists(Path.Combine(codeProject, "PROJECT.md")))
+                    return Fail();
+                SetStatus("Ready", "#667085");
+                _codeStartRequested = true;
+                CodeTurnFinished();
+                if (_codeStartRequested || _chatBusy || _chatProcess is not null || _process is not null || StatusText.Text != "Add a PROJECT.md first")
+                    return Fail();
                 // Project menu: its items; Use a PROJECT.md… copies a file in, then backs up the one it replaces.
                 string MenuItems() => string.Join("|", BuildProjectMenu().Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)") + (i.IsChecked ? " (on)" : "")));
                 const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Task limits…|Folders…|Run one reviewed task, then stop{1}";
@@ -1854,12 +1874,25 @@ public partial class MainWindow : Window
                 File.WriteAllText(mdSource, "# Mine\n");
                 _projectMdPick = () => mdSource;
                 UseProjectMd();
-                if (File.ReadAllText(mdTarget) != "# Mine\n" || MenuItems() != string.Format(items, "", onceMark))
+                const string withMd = "Start a conversation|Collapsed|Collapsed|Collapsed|True";
+                if (File.ReadAllText(mdTarget) != "# Mine\n" || MenuItems() != string.Format(items, "", onceMark) || EmptyState() != withMd ||
+                    CodeStartButton.ToolTip as string != "Start or resume the project run in this folder (Ctrl+Enter)")
                     return Fail();
                 File.WriteAllText(mdSource, "# Mine v2\n");
                 answer = "replace";
                 UseProjectMd();
                 if (File.ReadAllText(mdTarget) != "# Mine v2\n" || File.ReadAllText(Path.Combine(codeProject, "PROJECT.md.bak")) != "# Mine\n")
+                    return Fail();
+                // Removed outside the app: the next refresh (window activation) notices; Start from template copies the
+                // template in and opens it.
+                File.Delete(mdTarget);
+                RefreshCodeFolder();
+                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|False")
+                    return Fail();
+                string? opened = null;
+                _openProjectMd = file => opened = file;
+                CodeEmptyTemplate.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                if (File.ReadAllText(mdTarget) != File.ReadAllText(Path.Combine(_workflowRoot!, "PROJECT.md")) || opened != mdTarget || EmptyState() != withMd)
                     return Fail();
                 // The Agent Orchestrator folder: only Read only as an extra folder, and never a Code project (no process starts).
                 (pick, answer) = (_workflowRoot!, "write");
@@ -1877,6 +1910,13 @@ public partial class MainWindow : Window
                 SetStatus("Ready", "#667085");
                 AddFolder();
                 if (_codeConv is not null || CodeExtraFolders.Count != 0 || StatusText.Text != "Choose a project folder")
+                    return Fail();
+                // No folder: only Choose a folder…, and Start project is off.
+                var keptFolder = _projectPath;
+                ProjectPath = "";
+                var noFolderState = EmptyState();
+                ProjectPath = keptFolder;
+                if (noFolderState != "Choose a folder to start|Visible|Collapsed|Collapsed|False")
                     return Fail();
 
                 // A mirror write that fails (a problem or an exception) is only a warning, shown as a toast: the save still
@@ -2332,7 +2372,7 @@ public partial class MainWindow : Window
             }
             finally
             {
-                (_codeFolderPick, _codeChoice, _projectMdPick) = (null, null, null);
+                (_codeFolderPick, _codeChoice, _projectMdPick, _openProjectMd) = (null, null, null, null);
                 ProjectPath = codePrevious;
                 try { Directory.Delete(codeProject, true); } catch (IOException) { }
             }
@@ -2997,8 +3037,13 @@ public partial class MainWindow : Window
             SetStatus("This folder has no PROJECT.md", "#F7C873");
             return;
         }
-        Process.Start(new ProcessStartInfo(projectFile) { UseShellExecute = true });
+        if (_openProjectMd is { } open)
+            open(projectFile);
+        else
+            Process.Start(new ProcessStartInfo(projectFile) { UseShellExecute = true });
     }
+
+    private Action<string>? _openProjectMd; // --ui-smoke: records the file instead of opening an editor
 
     private string _projectPath = "";
 

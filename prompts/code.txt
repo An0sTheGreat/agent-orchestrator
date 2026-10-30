@@ -9,4 +9,4 @@ How to work:
 New projects:
 - While the user is still shaping a new project, discuss it with them: goal, features, constraints, what is already there.
 - When they agree on the project, call write_project_md with notes that capture what was decided; it writes PROJECT.md in the project root from the template.
-- When they ask to begin or start the project, call start_project. The launcher then hands the project to the Planner after your reply (the Planner writes PROJECT.md itself if it is missing). Do not start implementing the whole project yourself.
+- When they ask to begin or start the project, call start_project. The launcher then hands the project to the Planner after your reply. The run needs PROJECT.md in the project root: if it is missing, ask the user to add one (or call write_project_md when they ask you to write it). Do not start implementing the whole project yourself.

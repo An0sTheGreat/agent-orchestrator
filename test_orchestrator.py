@@ -2515,10 +2515,17 @@ class CodeTests(unittest.TestCase):
                          {"list_files", "read_file", "search_files", "write_file", "replace_text", "write_project_md", "start_project"})
 
     def test_start_project_emits_code_start(self):
+        (self.root / "PROJECT.md").write_text("# Project\n", encoding="utf-8")
         replies = {"planner": [tool_call("start_project"), "Starting the project."]}
         code, log, events, _ = self.code({"action": "chat", "worker": "planner", "messages": self.MSGS}, replies)
         self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_start", "code_reply"])
         self.assertIn("OK: the project run will start", log[1]["messages"][-1]["content"])
+
+    def test_start_project_without_project_md_is_refused(self):
+        replies = {"planner": [tool_call("start_project"), "Please add a PROJECT.md."]}
+        code, log, events, _ = self.code({"action": "chat", "worker": "planner", "messages": self.MSGS}, replies)
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_reply"])
+        self.assertIn("ERROR: the project root has no PROJECT.md", log[1]["messages"][-1]["content"])
 
     PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
 

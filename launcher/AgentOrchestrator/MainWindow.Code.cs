@@ -58,7 +58,7 @@ public partial class MainWindow
     private const string WorkflowRootRefusal = "Choose a project folder — the Agent Orchestrator folder itself can't be a Code project";
 
     // A completed Code turn: its exchange is in the history; start the run if the worker asked for it (and the folder
-    // was not changed meanwhile: the run would start in another folder).
+    // was not changed meanwhile: the run would start in another folder). StartCodeProject refuses a folder without PROJECT.md.
     private void CodeTurnFinished()
     {
         SaveCodeConversation();
@@ -115,7 +115,7 @@ public partial class MainWindow
 
     // The header and empty state follow the project folder. The open conversation belongs to its folder: another folder
     // closes it (the next message there starts a new one). While a turn runs nothing changes; RunTurn calls this again
-    // when the turn ends.
+    // when the turn ends. Also called when the window is activated (PROJECT.md may have been added or removed outside).
     private void RefreshCodeFolder()
     {
         if (_chatBusy)
@@ -126,11 +126,52 @@ public partial class MainWindow
         RefreshCodeFolders();
         CodeFolderText.Text = shown.Length == 0 ? "No folder" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
         CodeFolderText.ToolTip = shown.Length == 0 ? null : shown;
-        CodeEmptyTitle.Text = shown.Length == 0 ? "Choose a folder to start" : "Start a conversation";
-        RefreshChatInput(); // the Project menu needs a folder
+        var hasMd = HasProjectMd();
+        (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
+            ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
+            : hasMd ? ("Start a conversation", "Message the worker below, or press Start project to run Planner → Implementer → Reviewer on PROJECT.md.")
+            : ("Add a PROJECT.md to start the project", "Start project runs Planner → Implementer → Reviewer from this folder's PROJECT.md. " +
+                "Meanwhile you can still message the worker below.");
+        CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
+        RefreshChatInput(); // the Project menu needs a folder; Start project needs PROJECT.md
     }
 
+    // A cheap check, repeated on every refresh: the user may add or delete the file outside the app.
+    private bool HasProjectMd() => SelectedProjectPath() is { Length: > 0 } folder && File.Exists(Path.Combine(folder, "PROJECT.md"));
+
     private void CodeNew_Click(object sender, RoutedEventArgs e) => NewCodeConversation();
+
+    private void CodeEmptyAddMd_Click(object sender, RoutedEventArgs e) => UseProjectMd();
+
+    private void CodeEmptyTemplate_Click(object sender, RoutedEventArgs e) => StartProjectMdFromTemplate();
+
+    // Copies the workflow root's PROJECT.md template into a folder that has none, then opens it to be filled in.
+    private void StartProjectMdFromTemplate()
+    {
+        var folder = SelectedProjectPath();
+        if (_chatBusy || _process is not null || _workflowRoot is null || folder.Length == 0 || !Directory.Exists(folder) || RefuseWorkflowRoot(folder))
+            return;
+        var target = Path.Combine(folder, "PROJECT.md");
+        try
+        {
+            if (!File.Exists(target))
+            {
+                File.Copy(Path.Combine(_workflowRoot, "PROJECT.md"), target);
+                Log($"PROJECT.md template copied into {folder}");
+                Toast("PROJECT.md added from the template; fill it in, then press Start project");
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not copy the PROJECT.md template: {exception.Message}");
+            Toast("Could not copy the PROJECT.md template", "#FF667A");
+            return;
+        }
+        RefreshCodeFolder();
+        RefreshPrimary();
+        EditProject_Click(this, new RoutedEventArgs());
+    }
 
     private void CodeStart_Click(object sender, RoutedEventArgs e) => StartCodeProject();
 
@@ -138,7 +179,6 @@ public partial class MainWindow
 
     private readonly ConversationStore _store = new(AppSettings.DataRoot); // every saved conversation (Code and Chat) and the sidebar's order
     private ConversationStore.Conversation? _codeConv; // the open one (the store's own instance); null: none yet
-    private bool _codeStarting; // StartCodeProject is in progress (it may await a write_project turn)
 
     // Test hooks for --ui-smoke: pick a folder and answer Choose (by its title) without showing a dialog.
     private Func<string?>? _codeFolderPick;
@@ -183,7 +223,7 @@ public partial class MainWindow
     // the sidebar; a folder may have several.
     private void NewCodeConversation()
     {
-        if (_chatBusy || _process is not null || _codeStarting)
+        if (_chatBusy || _process is not null)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
@@ -219,7 +259,7 @@ public partial class MainWindow
     // active (it would change the conversation that turn belongs to).
     private void OpenCodeConversation(string id)
     {
-        if (_chatBusy || _process is not null || _codeStarting)
+        if (_chatBusy || _process is not null)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             RefreshSidebarList(); // the clicked row unchecks itself
@@ -442,6 +482,7 @@ public partial class MainWindow
             File.Copy(source, target);
             Log($"PROJECT.md copied from {source} into {folder}" + (backup is null ? "" : $"; previous saved as {backup}"));
             Toast(backup is null ? "PROJECT.md added" : $"PROJECT.md replaced; previous saved as {backup}");
+            RefreshCodeFolder();
             RefreshPrimary();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -484,12 +525,12 @@ public partial class MainWindow
         AddCodeFolderButton.Visibility = hasProject ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    // Writes PROJECT.md first when the folder has none (the Planner, from the conversation), initializes the missing
-    // workflow files, then starts the normal run. A write_project turn's own code_start does not start a second run.
-    private async void StartCodeProject()
+    // Initializes the missing workflow files, then starts the normal run. The folder must already have a PROJECT.md:
+    // without one nothing starts and no model is asked to write it; the user adds it (Add PROJECT.md… or the template).
+    private void StartCodeProject()
     {
         var folder = SelectedProjectPath();
-        if (_codeStarting || _chatBusy || _process is not null || _workflowRoot is null)
+        if (_chatBusy || _process is not null || _workflowRoot is null)
             return;
         if (folder.Length == 0 || !Directory.Exists(folder))
         {
@@ -498,22 +539,15 @@ public partial class MainWindow
         }
         if (RefuseWorkflowRoot(folder))
             return;
-        _codeStarting = true;
+        if (!HasProjectMd())
+        {
+            SetStatus("Add a PROJECT.md first", "#F7C873");
+            Toast("Project not started: add a PROJECT.md to this folder (Add PROJECT.md… or Start from template)", "#F7C873");
+            RefreshCodeFolder();
+            return;
+        }
         try
         {
-            if (!File.Exists(Path.Combine(folder, "PROJECT.md")))
-            {
-                if (!await SendCode("write_project", "planner"))
-                {
-                    Toast("Project not started: the Planner did not finish writing PROJECT.md", "#FF667A");
-                    return;
-                }
-                if (!File.Exists(Path.Combine(folder, "PROJECT.md")))
-                {
-                    Toast("Project not started: the Planner wrote no PROJECT.md", "#FF667A");
-                    return;
-                }
-            }
             var copied = LauncherLogic.InitializeProject(_workflowRoot, folder, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot));
             if (copied.Length > 0)
                 Log($"Added: {string.Join(", ", copied)}");
@@ -526,7 +560,6 @@ public partial class MainWindow
             Toast("Project not started: initialization failed", "#FF667A");
             return;
         }
-        finally { _codeStarting = false; }
         Start_Click(this, new RoutedEventArgs()); // switches the Code view to Run output once the run starts
         if (_process is null) // refused (a declined restart, say) or failed to start: Start_Click set the run before its first await
             Toast("PROJECT.md and the workflow files are ready, but the run was not started", "#F7C873");

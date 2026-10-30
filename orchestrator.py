@@ -3313,7 +3313,10 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     handlers = {**code_handlers(folders), **code_write_handlers(folders)}
     handlers["write_project_md"] = lambda notes="": (
         f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
-    handlers["start_project"] = lambda: (emit("code_start", role=role), "OK: the project run will start after this reply.")[1]
+    handlers["start_project"] = lambda: (
+        "ERROR: the project root has no PROJECT.md; ask the user to add one (or write it with write_project_md when they ask)"
+        if not (Path(folders[0]["path"]) / "PROJECT.md").is_file()
+        else (emit("code_start", role=role), "OK: the project run will start after this reply.")[1])
     tools, extra_handlers, extra_system = request_extras(request)
     handlers.update(extra_handlers)
     system = load_text(ROOT / "prompts" / "code.txt").strip() + extra_system

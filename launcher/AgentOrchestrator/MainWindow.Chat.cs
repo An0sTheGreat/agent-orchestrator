@@ -150,7 +150,10 @@ public partial class MainWindow
         }
         ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = CodeSingleToggle.IsEnabled = CodeMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
-        CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null;
+        var hasMd = HasProjectMd();
+        CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
+        CodeStartButton.ToolTip = hasMd ? "Start or resume the project run in this folder (Ctrl+Enter)"
+            : "This folder has no PROJECT.md: add one (Add PROJECT.md… or Start from template) to start the project";
         CodeProjectButton.IsEnabled = !_chatBusy && !runActive && SelectedProjectPath().Length > 0;
     }
 
