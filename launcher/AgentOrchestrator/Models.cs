@@ -258,6 +258,7 @@ internal sealed class ModelPreset
 {
     public string Name { get; set; } = "";
     public Dictionary<string, string> Options { get; set; } = new();
+    public string SystemPrompt { get; set; } = ""; // "" = none stored (blank, or the worker kind's default when saved)
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.

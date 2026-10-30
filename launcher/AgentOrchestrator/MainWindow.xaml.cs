@@ -54,9 +54,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         LoadWorkers();
-        ApplyCompact();
-        CardsList.ItemsSource = _cards;
         _cards.CollectionChanged += (_, _) => RefreshCardVisibility(); // a preset rebuilds the cards
+        InitWorkerTabs();
         _pump.Tick += (_, _) => DrainLines();
         _clock.Tick += (_, _) => ShowClocks();
         SizeChanged += (_, _) => FitDetailsColumn();
@@ -1026,10 +1025,8 @@ public partial class MainWindow : Window
             await Settle();
             ShowView();
             await Settle();
-            _settings.Compact = open;
-            ApplyCompact();
-            await Settle();
-            PlayHoverStoryboards(this); // both card layouts
+            // TODO smoke: removed the compact toggle (ran the hover storyboards with compact cards and standard cards).
+            PlayHoverStoryboards(this);
         }
         // Scrolled away from the end: new output brings in the jump pill, which returns to following.
         _followTail = false;
@@ -1106,12 +1103,7 @@ public partial class MainWindow : Window
             return Fail(); // the planner's turn starts fresh; the last completed task's tokens stay
         await Settle();
         Snap("9-task-counters");
-        _settings.Compact = true;
-        ApplyCompact();
-        await Settle();
-        Snap("9b-task-counters-compact");
-        _settings.Compact = false;
-        ApplyCompact();
+        // TODO smoke: removed snapshot 9b-task-counters-compact (the task counters on compact cards).
         StopClocks(); // what the run's cleanup does on Stop
         var (stoppedTask, stoppedTurn) = (TaskTimeText.Text, TurnTimeText.Text);
         await Task.Delay(1100);
@@ -1192,7 +1184,9 @@ public partial class MainWindow : Window
             }
             var mdFile = Path.Combine(presetProject, "PROJECT.md");
             File.WriteAllText(mdFile, "# Smoke project\n");
-            var settingsDialog = BuildModelSettings(planner)!;
+            // TODO smoke: was BuildModelSettings(planner) (the gear's Model settings window, snapshot 9-settings-dialog); the
+            // body now lives in the worker tab, wrapped in a dialog here only to keep the snapshot.
+            var settingsDialog = new DialogShell(this, planner.Title, ModelSettingsBody(planner, () => { }, () => { }, "Revert")!.Value.Body, large: true);
             var limitsDialog = BuildTaskLimitsDialog(presetConfig, ("6", ""), [("Implementer", 16384)]);
             if (limitsDialog.Warning.Text != "6 files per task may not fit Implementer's 16k context" || limitsDialog.Warning.Visibility != Visibility.Visible
                 || !await Show(limitsDialog.Dialog, "9b-task-limits-dialog"))
@@ -1288,7 +1282,9 @@ public partial class MainWindow : Window
             if (tester.HasSetupProblem || synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer" ||
                 (string)synced[0]!["system_prompt"]! != LauncherLogic.DefaultSystemPrompt("reviewer"))
                 return Fail();
-            var prefilled = BuildModelSettings(tester)!;
+            // TODO smoke: was BuildModelSettings(tester) twice (the custom worker's settings window: prefilled kind defaults, Save,
+            // snapshot 12-custom-settings-dialog); now the tab's body wrapped in a dialog.
+            var prefilled = new DialogShell(this, tester.Title, ModelSettingsBody(tester, () => { }, () => { }, "Revert")!.Value.Body, large: true);
             static T? FindIn<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
                 d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => FindIn(c, match)).FirstOrDefault(r => r is not null);
             var promptBox = FindIn<TextBox>(prefilled, t => t.Tag as string == "SystemPrompt");
@@ -1308,7 +1304,7 @@ public partial class MainWindow : Window
                 return Fail();
             prefilled.Close();
             await Settle();
-            var customDialog = BuildModelSettings(tester)!;
+            var customDialog = new DialogShell(this, tester.Title, ModelSettingsBody(tester, () => { }, () => { }, "Revert")!.Value.Body, large: true);
             if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") || !HasTag(settingsDialog, "Base URL") ||
                 !await Show(customDialog, "12-custom-settings-dialog"))
                 return Fail();
@@ -1434,7 +1430,8 @@ public partial class MainWindow : Window
             var visible = new RoleCard("smoke-visible", "Visible", custom: true);
             _cards.Add(visible);
             await Settle();
-            bool Shown(RoleCard card) => CardsList.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
+            // TODO smoke: CardsList -> WorkerTabs (a selected hidden tab now stays shown; the grid-origin check below assumed cards).
+            bool Shown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
             bool AllShown() => _cards.All(card => !card.Hidden && Shown(card));
             bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == card.IsCustom) && Shown(visible);
             if (!AllShown())
@@ -1442,8 +1439,8 @@ public partial class MainWindow : Window
             ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
             await Settle();
             // Hidden cards take no slot: the first shown card starts the grid's top-left cell.
-            var firstShown = _cards.Where(Shown).Select(card => (UIElement)CardsList.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
-            if (!SingleShown() || firstShown?.TranslatePoint(new Point(), CardsList) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !SingleShown())
+            var firstShown = _cards.Where(Shown).Select(card => (UIElement)WorkerTabs.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
+            if (!SingleShown() || firstShown?.TranslatePoint(new Point(), WorkerTabs) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !SingleShown())
                 return Fail();
             ShowView();
             await Settle();
@@ -2457,12 +2454,7 @@ public partial class MainWindow : Window
         if (CodeProjectButton.IsEnabled)
             return Fail();
         Snap("3-running");
-        _settings.Compact = true;
-        ApplyCompact();
-        await Settle();
-        Snap("4-compact");
-        _settings.Compact = false;
-        ApplyCompact();
+        // TODO smoke: removed snapshot 4-compact (the compact cards while a run is active).
         _process.Dispose();
         _process = null;
         SetRunning(false);
@@ -2574,8 +2566,10 @@ public partial class MainWindow : Window
                 // On the llama.cpp runtime the model list is a local disk scan: the smoke never calls a real Unsloth server.
                 var runtimeBefore = _settings.Runtime;
                 _settings.Runtime = LauncherLogic.LlamaRuntime;
-                if (theme is "Parchment" or "Graphite" && BuildModelSettings(CardFor("planner")!) is { } modelWindow)
+                // TODO smoke: was BuildModelSettings(planner) (the settings window per theme); now the tab body in a dialog.
+                if (theme is "Parchment" or "Graphite" && ModelSettingsBody(CardFor("planner")!, () => { }, () => { }, "Revert") is { } modelBody)
                 {
+                    var modelWindow = new DialogShell(this, "Planner", modelBody.Body, large: true);
                     modelWindow.ShowActivated = false;
                     modelWindow.Show();
                     await Settle();
@@ -2873,6 +2867,7 @@ public partial class MainWindow : Window
         RefreshEffort(); // callers have just changed a model or the project
         if (_process is not null || _initializing)
             return;
+        RefreshWorkerTab();
         using var config = ReadConfig(SelectedProjectPath());
         if (config is null || !config.RootElement.TryGetProperty("roles", out var roles))
             return;
@@ -3528,12 +3523,6 @@ public partial class MainWindow : Window
         RefreshSetupProblems();
     }
 
-    private void RemoveWorker_Click(object sender, RoutedEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is RoleCard card)
-            RemoveWorker(card);
-    }
-
     private void RemoveWorker(RoleCard card)
     {
         if (card.IsCustom)
@@ -3556,207 +3545,25 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void TitleBox_LostFocus(object sender, RoutedEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is not RoleCard { IsCustom: true } card)
-            return;
-        if (LauncherLogic.TitleProblem(card.Title, card.Role, CurrentWorkers()) is { } problem)
-        {
-            // the box edits the card live, so put back the last saved title
-            card.Title = _settings.Workers.FirstOrDefault(w => w.Id == card.Role)?.Title ?? "WORKER";
-            Toast(problem, "#F7C873");
-            return;
-        }
-        RenameTo(card, card.Title);
-    }
-
-    // ---- drag-and-drop reordering: the card follows the pointer and the others make room live
-
-    private RoleCard? _dragCard;
-    private Point _grab;
-
-    private void Handle_Down(object sender, MouseButtonEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is not RoleCard card || !DetailsPanel.IsVisible) // the rail's hover card does not reorder
-            return;
-        if (LauncherLogic.IsInsideButton(e.OriginalSource as DependencyObject))
-            return; // a button inside the card is a click, not a drag
-        DependencyObject? d = (DependencyObject)sender;
-        while (d is not null && d is not FrameworkElement { Tag: "CardRoot" })
-            d = VisualTreeHelper.GetParent(d);
-        if (d is not FrameworkElement root)
-            return;
-
-        var dpi = VisualTreeHelper.GetDpi(root);
-        var bitmap = new RenderTargetBitmap(
-            Math.Max(1, (int)(root.ActualWidth * dpi.DpiScaleX)), Math.Max(1, (int)(root.ActualHeight * dpi.DpiScaleY)),
-            dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-        bitmap.Render(root);
-        _grab = e.GetPosition(root);
-        DragGhost.Source = bitmap;
-        DragGhost.Width = root.ActualWidth;
-        DragGhost.Height = root.ActualHeight;
-        _dragCard = card;
-        card.IsDragging = true;
-        PositionGhost(e.GetPosition(this));
-        DragLayer.Visibility = Visibility.Visible;
-        DetailsScroll.CaptureMouse(); // stays valid while the list re-creates cards as they move
-        e.Handled = true;
-    }
-
-    private void PositionGhost(Point windowPoint)
-    {
-        Canvas.SetLeft(DragGhost, windowPoint.X - _grab.X);
-        Canvas.SetTop(DragGhost, windowPoint.Y - _grab.Y);
-    }
-
-    private void Drag_Move(object sender, MouseEventArgs e)
-    {
-        if (_dragCard is null)
-            return;
-        PositionGhost(e.GetPosition(this));
-
-        var inScroll = e.GetPosition(DetailsScroll).Y;
-        if (inScroll < 50)
-            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset - 14);
-        else if (inScroll > DetailsScroll.ActualHeight - 50)
-            DetailsScroll.ScrollToVerticalOffset(DetailsScroll.VerticalOffset + 14);
-
-        // swap when the pointer reaches the inner half of another card (works for one or several columns)
-        var p = e.GetPosition(CardsList);
-        var current = _cards.IndexOf(_dragCard);
-        for (var i = 0; i < _cards.Count; i++)
-        {
-            if (i == current || CardsList.ItemContainerGenerator.ContainerFromIndex(i) is not FrameworkElement item)
-                continue;
-            var rect = new Rect(item.TranslatePoint(new Point(0, 0), CardsList), item.RenderSize);
-            rect.Inflate(-rect.Width / 4, -rect.Height / 4);
-            if (!rect.Contains(p))
-                continue;
-            _cards.Move(current, i);
-            CardsList.UpdateLayout();
-            break;
-        }
-    }
-
-    private void Drag_Up(object sender, MouseEventArgs e)
-    {
-        if (_dragCard is not { } card)
-            return;
-        _dragCard = null;
-        card.IsDragging = false;
-        DragLayer.Visibility = Visibility.Collapsed;
-        DetailsScroll.ReleaseMouseCapture();
-        SaveWorkers();
-    }
-
     // ---- model assignment
 
     // File: auto_load.gguf_file, for a llama.cpp model outside the Hugging Face cache.
     private sealed record ModelChoice(string Label, string Display, string LoadPath, string? Variant, string Expected, string? File = null);
 
-    private void ChangeModel_Click(object sender, RoutedEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is RoleCard card)
-            ChangeModel(card, (FrameworkElement)sender);
-    }
-
-    // anchor: the control the model list opens beneath (a standard card's button, or a compact card itself)
-    private async void ChangeModel(RoleCard card, FrameworkElement anchor)
-    {
-        if (_process is not null)
-            return;
-        if (!card.IsCustom && RemoteModel(card.Role) is not null)
-        {
-            SetStatus($"{card.Title} uses a remote API: change its model with the gear on its card", "#F7C873");
-            return;
-        }
-        SetStatus("Loading installed models…", "#F7C873");
-        List<ModelChoice> choices;
-        try
-        {
-            choices = await FetchModelChoicesAsync();
-        }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException)
-        {
-            Log($"Could not list Unsloth models: {exception.Message}");
-            SetStatus("Could not reach Unsloth", "#FF667A");
-            return;
-        }
-        SetStatus("Ready", "#667085");
-        if (choices.Count == 0)
-        {
-            SetStatus("No installed text models found", "#F7C873");
-            return;
-        }
-
-        var menu = new ContextMenu { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = anchor };
-        foreach (var choice in choices)
-        {
-            var current = LauncherLogic.DescribeModel(choice.Display, choice.Variant);
-            var item = new MenuItem
-            {
-                Header = choice.Label, Tag = choice, Style = (Style)FindResource(typeof(MenuItem)),
-                IsChecked = card.ModelName == current.Name && (card.Quant == current.Quant || current.Quant == "—"),
-            };
-            item.Click += (_, _) => AssignModel(card, choice);
-            menu.Items.Add(item);
-        }
-        menu.IsOpen = true;
-    }
-
+    // A custom worker's model (kept in the launcher's settings); built-in roles write theirs in ModelSettingsBody's Save.
     private void AssignModel(RoleCard card, ModelChoice choice)
     {
-        if (!card.IsCustom && !WriteRoleModel(card.Role, choice))
-            return;
         card.ModelId = choice.Display;
         card.ModelVariant = choice.Variant;
         card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
-        if (card.IsCustom)
-        {
-            card.Config.ModelPath = choice.LoadPath;
-            card.Config.ModelExpected = choice.Expected;
-            card.Config.GgufFile = choice.File;
-        }
+        card.Config.ModelPath = choice.LoadPath;
+        card.Config.ModelExpected = choice.Expected;
+        card.Config.GgufFile = choice.File;
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
-        if (card.IsCustom)
-            SyncCustomWorkers();
+        SyncCustomWorkers();
         RefreshEffort();
-    }
-
-    // The orchestrator reads each built-in worker's model from config.json: the active one and the worker config.
-    private bool WriteRoleModel(string role, ModelChoice choice)
-    {
-        var targets = WorkerConfigTargets();
-        if (targets.Length == 0)
-        {
-            SetStatus("No config.json to change", "#F7C873");
-            return false;
-        }
-        try
-        {
-            WriteConfigs(targets, path =>
-            {
-                WriteRoleModel(path, role, choice);
-                return null;
-            });
-            return true;
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
-        {
-            Log($"Could not update config.json: {exception.Message}");
-            SetStatus("Could not update config.json", "#FF667A");
-            return false;
-        }
-    }
-
-    private static void WriteRoleModel(string path, string role, ModelChoice choice)
-    {
-        var root = JsonNode.Parse(File.ReadAllText(path))!.AsObject();
-        SetRoleModel(root["roles"]![role]!.AsObject(), choice);
-        WriteJson(path, root);
     }
 
     private static void SetRoleModel(JsonObject settings, ModelChoice choice)
@@ -3931,22 +3738,6 @@ public partial class MainWindow : Window
         SidePane.Width = width;
         SidebarFull.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SidebarRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    // ---- compact worker cards
-
-    private void Compact_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.Compact = CompactToggle.IsChecked == true;
-        ApplyCompact();
-        _settings.Save();
-    }
-
-    private void ApplyCompact()
-    {
-        CompactToggle.IsChecked = _settings.Compact;
-        CardsList.ItemsPanel = (ItemsPanelTemplate)FindResource(_settings.Compact ? "CompactPanel" : "StandardPanel");
-        CardsList.ItemTemplate = (DataTemplate)FindResource(_settings.Compact ? "CompactCardTemplate" : "RoleCardTemplate");
     }
 
     // The details pane may grow, but never past what leaves the sidebar and a usable output column on screen.

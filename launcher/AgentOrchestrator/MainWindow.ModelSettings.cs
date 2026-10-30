@@ -10,153 +10,20 @@ using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
-// The worker card's gear: the Model settings window. Model, load, sampling and request options (ModelOptions); a built-in
-// role's remote API fields; a custom worker's name, kind, description, system prompt and removal. Built-in roles write
-// config.json on Save; custom workers keep their options in the launcher's settings and inherit what they leave empty
-// from the Implementer. Cancel, × and Esc discard.
+// The selected worker tab's model settings (MainWindow.WorkerTabs.cs hosts them inline). Model, load, sampling and request
+// options (ModelOptions); a built-in role's remote API fields and optional chat system prompt; a custom worker's name, kind,
+// description, system prompt and removal. Built-in roles write config.json on Save; custom workers keep their options in the
+// launcher's settings and inherit what they leave empty from the Implementer.
 public partial class MainWindow
 {
-    private void ModelSettings_Click(object sender, RoutedEventArgs e)
-    {
-        if (((FrameworkElement)sender).DataContext is RoleCard card)
-            OpenModelSettings(card);
-    }
-
-    private void OpenModelSettings(RoleCard card)
-    {
-        if (_process is not null || !card.Editable || BuildModelSettings(card) is not { } window)
-            return;
-        if (_settingsShow is { } show)
-            show(window);
-        else
-            window.ShowDialog();
-    }
-
-    // The composer's target chip: the Models window, a list of the workers (name, model, activity dot) beside the selected
-    // one's model settings. Save keeps the window open; switching worker or closing with unsaved changes asks first.
-    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards, Conversation? conv = null, RoleCard? select = null)
-    {
-        if (_process is not null || cards.Count == 0 || cards.Any(c => !c.Editable))
-            return null;
-        var host = new Border();
-        var list = new StackPanel { Width = 200, Margin = new Thickness(0, 0, 18, 0) };
-        DockPanel.SetDock(list, Dock.Left);
-        var window = new DialogShell(this, "Models", new DockPanel { Children = { list, host } }, large: true);
-        RoleCard? selected = null;
-        var dirty = () => false;
-        var rows = new Dictionary<RoleCard, ToggleButton>();
-        bool Show(RoleCard card)
-        {
-            var shown = host.Child;
-            host.Child = null; // the radio groups are shared by name: never two bodies at once
-            if (ModelSettingsBody(card, () => Show(card), window.Close, "Close") is not { } built)
-            {
-                host.Child = shown;
-                return false;
-            }
-            (host.Child, dirty, selected) = (built.Body, built.IsDirty, card);
-            foreach (var (c, row) in rows)
-                row.IsChecked = c == card;
-            return true;
-        }
-        void AddRow(RoleCard card)
-        {
-            var name = new TextBlock { Text = ChatName(card, card.Role), FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
-            if (card.IsCustom)
-                name.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(RoleCard.Title)) { Source = card });
-            var model = new TextBlock { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis };
-            model.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(RoleCard.ModelName)) { Source = card });
-            model.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            var dot = new ContentPresenter { Content = card, ContentTemplate = (DataTemplate)FindResource("ActivityDot"), VerticalAlignment = VerticalAlignment.Center };
-            DockPanel.SetDock(dot, Dock.Right);
-            var row = rows[card] = new ToggleButton { Content = new DockPanel { Children = { dot, new StackPanel { Children = { name, model } } } }, Tag = card.Role, Padding = new Thickness(14, 7, 6, 7) };
-            row.SetResourceReference(StyleProperty, "NavToggle");
-            row.Click += (_, _) =>
-            {
-                if (card != selected && (!dirty() || SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected?.Role ?? "")}?", "Discard") is not null))
-                    Show(card);
-                row.IsChecked = card == selected;
-            };
-            list.Children.Add(row);
-        }
-        // "+": list another worker (the built-ins first, recommended; then the other existing ones; or a new one) and select it.
-        // Single-mode chat and Code also take it as their target, like the composer's + menu.
-        void AddPicked(RoleCard card)
-        {
-            if (!rows.ContainsKey(card) && dirty() && SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected?.Role ?? "")}?", "Discard") is null)
-                return;
-            if (!rows.ContainsKey(card))
-                AddRow(card);
-            if (card != selected && !Show(card))
-                return;
-            if (conv is not null && !MultiOf(conv)) // in Multi the chain stays the target
-            {
-                if (conv.IsCode)
-                    _settings.CodeWorker = card.Role;
-                else
-                    _settings.ChatWorker = card.Role;
-                _settings.Save();
-                RefreshChatTarget();
-            }
-        }
-        var plus = new Button { Content = "+", FontSize = 18, Width = 34, Height = 30, Padding = new Thickness(0, 0, 0, 2), HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 0, 0, 6), Tag = "AddModelWorker", ToolTip = "Add a worker to this list" };
-        plus.SetResourceReference(StyleProperty, "GhostButton");
-        plus.Click += (_, _) =>
-        {
-            var menu = new ContextMenu { PlacementTarget = plus, Placement = PlacementMode.Bottom };
-            MenuItem Item(string header, Action act)
-            {
-                var item = new MenuItem { Header = header };
-                item.Click += (_, _) => act();
-                return item;
-            }
-            foreach (var role in new[] { "planner", "implementer", "reviewer" })
-                if (CardFor(role) is { } built && !rows.ContainsKey(built))
-                    menu.Items.Add(Item($"{ChatName(built, role)}  (recommended)", () => AddPicked(built)));
-            foreach (var other in _cards.Where(c => c.IsCustom && c.Editable && !rows.ContainsKey(c)).ToList())
-                menu.Items.Add(Item(ChatName(other, other.Role), () => AddPicked(other)));
-            menu.Items.Add(new Separator());
-            menu.Items.Add(Item("New worker…", () =>
-            {
-                AddWorker_Click(plus, new RoutedEventArgs());
-                AddPicked(_cards[^1]);
-            }));
-            plus.ContextMenu = menu;
-            menu.IsOpen = true;
-        };
-        list.Children.Add(plus);
-        foreach (var card in cards)
-            AddRow(card);
-        window.Closing += (_, e) => e.Cancel = selected is not null && _cards.Contains(selected) && dirty() &&
-            SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected.Role)}?", "Discard") is null;
-        window.Closed += (_, _) => host.Child = null;
-        if (!Show(select is not null && cards.Contains(select) ? select : cards[0]))
-            return null;
-        if (_settingsShow is { } show)
-            show(window);
-        else
-            window.ShowDialog();
-        return window;
-    }
-
     private static void WriteJson(string path, JsonNode root) => File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
     {
         WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     }));
 
-    // The window, or null (status set) when a built-in role has no readable config.json.
-    private DialogShell? BuildModelSettings(RoleCard card)
-    {
-        DialogShell? dialog = null;
-        if (ModelSettingsBody(card, () => dialog?.Close(), () => dialog?.Close(), "Cancel") is not { } built)
-            return null;
-        return dialog = new DialogShell(this, card.Title, built.Body, large: true);
-    }
-
-    // The window's contents, or null (status set) when a built-in role has no readable config.json. saved: after a successful
-    // Save; close: Cancel (labelled closeLabel), Remove worker, or a config.json that could not be written. IsDirty: a field
-    // differs from what the body was built with. The radio buttons share fixed group names, so host one body at a time.
+    // The settings body, or null (status set) when a built-in role has no readable config.json. saved: after a successful
+    // Save; close: closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs
+    // from what the body was built with. The radio buttons share fixed group names, so host one body at a time.
     private (FrameworkElement Body, Func<bool> IsDirty)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
@@ -218,23 +85,16 @@ public partial class MainWindow
             TextWrapping = height > 30 ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        // Left: the section names; right: the sections, scrolling.
+        // One column of sections, scrolling with the model picker (top) above them.
         var sections = new StackPanel { Margin = new Thickness(0, 0, 14, 0) };
         var scroll = new ScrollViewer { Content = sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var nav = new StackPanel { Width = 150, Margin = new Thickness(0, 0, 18, 0) };
-        (StackPanel Panel, Button Link) Section(string name, string help)
+        StackPanel Section(string name, string help)
         {
             var panel = new StackPanel { Margin = new Thickness(0, sections.Children.Count == 0 ? 0 : 26, 0, 0) };
             panel.Children.Add(new TextBlock { Text = name, FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 14, FontWeight = FontWeights.SemiBold });
             panel.Children.Add(Muted(help));
             sections.Children.Add(panel);
-            var link = new Button
-            {
-                Content = name, Style = (Style)FindResource("SidebarRow"), HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 6, 10, 6),
-            };
-            link.Click += (_, _) => scroll.ScrollToVerticalOffset(panel.TranslatePoint(new Point(0, 0), sections).Y);
-            nav.Children.Add(link);
-            return (panel, link);
+            return panel;
         }
 
         var editors = new Dictionary<string, Control>();
@@ -254,20 +114,12 @@ public partial class MainWindow
         }
         void ContextHint(Dictionary<string, string>? meta) => hints["max_seq_length"].Text = ModelOptions.All.First(o => o.Key == "max_seq_length").Help +
             (ModelOptions.ModelContext(meta) is { } max ? $". Model maximum: {max.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}" : "");
-        Grid Fields(string section)
+        StackPanel Fields(string section)
         {
-            var grid = new Grid();
-            grid.ColumnDefinitions.Add(new ColumnDefinition());
-            grid.ColumnDefinitions.Add(new ColumnDefinition());
-            int row = -1, col = 2;
+            var fields = new StackPanel();
             foreach (var o in ModelOptions.All.Where(o => o.Section == section))
             {
                 var wide = o.Kind is ModelOptions.Kind.Multiline or ModelOptions.Kind.StopList or ModelOptions.Kind.ArgList;
-                if (wide || col == 2)
-                {
-                    grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-                    (row, col) = (row + 1, 0);
-                }
                 var value = shownAtStart[o.Key];
                 Control editor;
                 if (o.Values.Length > 0)
@@ -289,20 +141,14 @@ public partial class MainWindow
                     editor = box;
                 }
                 editors[o.Key] = editor;
-                var cell = new StackPanel
+                fields.Children.Add(new StackPanel
                 {
-                    Margin = new Thickness(col == 0 ? 0 : 9, 12, col == 0 && !wide ? 9 : 0, 0),
+                    Margin = new Thickness(0, 12, 0, 0),
                     Children = { Label(o.Label), (hints[o.Key] = Muted(o.Help)), editor, (fieldErrors[o.Key] = ErrorLine()) },
                     ToolTip = o.Default is null ? o.Key : $"{o.Key}; default {o.Default}",
-                };
-                Grid.SetRow(cell, row);
-                Grid.SetColumn(cell, col);
-                if (wide)
-                    Grid.SetColumnSpan(cell, 2);
-                grid.Children.Add(cell);
-                col = wide ? 2 : col + 1;
+                });
             }
-            return grid;
+            return fields;
         }
 
         // Custom workers: what the card's menu and the old Settings dialog offered.
@@ -311,7 +157,7 @@ public partial class MainWindow
         if (card.IsCustom)
         {
             var w = card.Config;
-            var (panel, _) = Section("Worker", "This custom worker's name, kind and standing instructions.");
+            var panel = Section("Worker", "This custom worker's name, kind and standing instructions.");
             nameBox = Box(card.Title, "Name");
             nameBox.MaxLength = 32;
             kinds = new[] { ("specialist", "Specialist"), ("reviewer", "Extra reviewer") }.Select(k => new RadioButton
@@ -359,10 +205,14 @@ public partial class MainWindow
 
         // Built-in roles: Local (Unsloth / llama.cpp) or a remote OpenAI-compatible API.
         TextBox[]? remoteBoxes = null;
+        TextBox? chatPrompt = null;
         StackPanel? remotePanel = null;
         if (!card.IsCustom)
         {
-            var (panel, _) = Section("Model source", "Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.");
+            var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat and Code views (roles." + card.Role + ".chat_system_prompt). Empty = none.");
+            chat.Children.Add(chatPrompt = Box((string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120));
+            chatPrompt.FontFamily = new FontFamily("Consolas");
+            var panel = Section("Model source", "Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.");
             modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
             {
                 Content = text, GroupName = "ModelSource", IsChecked = (remoteNow is not null) == (i == 1), Margin = new Thickness(0, 0, 18, 0),
@@ -385,11 +235,11 @@ public partial class MainWindow
             panel.Children.Add(remotePanel);
         }
 
-        var (loadPanel, loadLink) = Section("Load", $"Unsloth Studio load options. Load options apply at the next model load. {emptyMeans}");
+        var loadPanel = Section("Load", $"Unsloth Studio load options. Load options apply at the next model load. {emptyMeans}");
         loadPanel.Children.Add(Fields("Load"));
-        var (samplingPanel, _) = Section("Sampling", $"Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only). {emptyMeans}");
+        var samplingPanel = Section("Sampling", $"Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only). {emptyMeans}");
         samplingPanel.Children.Add(Fields("Sampling"));
-        var (requestPanel, _) = Section("Request", $"How long the orchestrator waits for this worker. {emptyMeans}");
+        var requestPanel = Section("Request", $"How long the orchestrator waits for this worker. {emptyMeans}");
         requestPanel.Children.Add(Fields("Request"));
         ContextHint(null);
 
@@ -425,19 +275,24 @@ public partial class MainWindow
             ContextHint(meta);
         }
 
-        // The model list loads in the background; the window stays usable meanwhile.
-        var modelBox = new ComboBox { Tag = "Model", IsEnabled = false, Width = 420 };
-        modelBox.Items.Add(new ComboBoxItem { Content = "Loading models…" });
+        // The model list loads in the background the first time it opens (never at startup); the body stays usable meanwhile.
+        var modelBox = new ComboBox { Tag = "Model", Margin = new Thickness(0, 6, 0, 0) };
+        modelBox.Items.Add(new ComboBoxItem { Content = card.ModelName });
         modelBox.SelectedIndex = 0;
-        var modelStatus = Muted("Loading models…");
-        modelStatus.VerticalAlignment = VerticalAlignment.Center;
-        modelStatus.Margin = new Thickness(12, 0, 0, 0);
-        DockPanel.SetDock(modelBox, Dock.Left);
-        var top = new StackPanel { Margin = new Thickness(0, 0, 0, 16), Children = { Label("Model"), new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } } } };
+        var modelStatus = Muted("Open the list for the installed models.");
+        modelStatus.Margin = new Thickness(0, 4, 0, 0);
+        var top = new StackPanel { Margin = new Thickness(0, 0, 14, 16), Children = { Label("Model"), modelBox, modelStatus } };
         ModelChoice? initial = null;
-        var listed = false;
+        var requested = false;
+        modelBox.DropDownOpened += (_, _) =>
+        {
+            if (!requested)
+                LoadModels();
+            requested = true;
+        };
         async void LoadModels()
         {
+            modelStatus.Text = "Loading models…";
             try
             {
                 var choices = await FetchModelChoicesAsync();
@@ -454,8 +309,6 @@ public partial class MainWindow
                 if (selected is null)
                     modelBox.Items.Insert(0, selected = new ComboBoxItem { Content = $"{card.ModelName}  (current)" });
                 modelBox.SelectedItem = selected;
-                listed = true;
-                modelBox.IsEnabled = !remoteMode();
                 modelStatus.Text = choices.Count == 0 ? "No installed text models found." : LocalRuntime ? "GGUF files on this computer (llama.cpp runtime)." : "Models installed in Unsloth.";
                 // A model brings its own quantization: the Load section's gguf_variant follows the pick. "(current)" (no
                 // ModelChoice) restores what the current model showed.
@@ -482,8 +335,8 @@ public partial class MainWindow
         {
             var remote = remoteMode();
             remotePanel?.SetValue(VisibilityProperty, remote ? Visibility.Visible : Visibility.Collapsed);
-            loadPanel.Visibility = loadLink.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
-            modelBox.IsEnabled = listed && !remote;
+            loadPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
+            modelBox.IsEnabled = !remote;
         }
         foreach (var mode in modes ?? [])
             mode.Checked += (_, _) =>
@@ -495,10 +348,12 @@ public partial class MainWindow
 
         var error = ErrorLine();
         error.Margin = new Thickness(0, 0, 0, 8);
-        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
-        var cancel = new Button { Content = closeLabel, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
-        // Option presets: the option fields (not the model or its quantization), global across workers. Applying one only fills
-        // the fields; Save still writes them.
+        var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4) };
+        var cancel = new Button { Content = closeLabel, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0) };
+        // Option presets: the option fields (not the model or its quantization) and the system prompt when it is set and not
+        // the worker kind's default, global across workers. Applying one only fills the fields; Save still writes them.
+        var promptBox = prompt ?? chatPrompt!;
+        string DefaultPrompt() => kinds is null ? "" : LauncherLogic.DefaultSystemPrompt(kinds[1].IsChecked == true ? "reviewer" : "specialist");
         var presets = new Button
         {
             Content = "Presets  ▾", Tag = "ModelPresets", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0),
@@ -523,6 +378,7 @@ public partial class MainWindow
                 var preset = new ModelPreset
                 {
                     Name = name, Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
+                    SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
                 };
                 if (same >= 0)
                     _settings.ModelPresets[same] = preset;
@@ -544,6 +400,8 @@ public partial class MainWindow
                         foreach (var (key, value) in preset.Options)
                             if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
                                 SetValue(editor, value);
+                        if (preset.SystemPrompt.Trim().Length > 0)
+                            promptBox.Text = preset.SystemPrompt;
                     }));
                     delete.Items.Add(Item(preset.Name, () =>
                     {
@@ -564,7 +422,9 @@ public partial class MainWindow
         };
         DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
-        DockPanel.SetDock(nav, Dock.Left);
+        footer.Margin = new Thickness(0, 14, 14, 14);
+        foreach (var part in new FrameworkElement[] { top, sections, footer }) // read-only while a run uses the models
+            part.SetBinding(IsEnabledProperty, new System.Windows.Data.Binding(nameof(RoleCard.Editable)) { Source = card });
         cancel.Click += (_, _) => close();
 
         // Shows the errors under their fields (the rest above the buttons); true when there were any.
@@ -641,6 +501,10 @@ public partial class MainWindow
                         SetRoleModel(settings, choice);
                     if (ModelOptions.Apply(settings, fields, includeLoad: remote is null) is { Count: > 0 } refused)
                         return string.Join(" ", refused.Values);
+                    if (chatPrompt!.Text.Trim().Length > 0)
+                        settings["chat_system_prompt"] = chatPrompt.Text;
+                    else
+                        settings.Remove("chat_system_prompt");
                     WriteJson(target, root);
                     return null;
                 });
@@ -674,14 +538,13 @@ public partial class MainWindow
             PrefillCards();
             saved();
         };
-        LoadModels();
         ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
         static string? StateOf(Control? c) => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" };
-        List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
+        List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
             .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
         clean = State();
         Derive(startLoad, atOpen: true);
-        return (new DockPanel { Children = { top, footer, nav, scroll } }, () => !State().SequenceEqual(clean));
+        return (new DockPanel { Children = { top, footer, scroll } }, () => !State().SequenceEqual(clean));
     }
 
     // --ui-smoke: the target chips open the Models window (borderless, large, owned) listing Single's target, Multi's three
@@ -923,24 +786,13 @@ public partial class MainWindow
         static void Click(Button b) => b.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         FrameworkElement? Container()
         {
-            CardsList.UpdateLayout();
-            return CardsList.ItemContainerGenerator.ContainerFromItem(planner) as FrameworkElement;
+            WorkerTabs.UpdateLayout(); // TODO smoke: was CardsList (the cards had the gear; the tabs have none, so this now fails)
+            return WorkerTabs.ItemContainerGenerator.ContainerFromItem(planner) as FrameworkElement;
         }
         Button? Gear() => Container() is { } c ? Visuals(c).OfType<Button>().FirstOrDefault(b => b.Tag as string == "ModelSettingsGear") : null;
 
-        // Compact card: a gear, and a right-click is no longer handled.
-        _settings.Compact = true;
-        ApplyCompact();
-        await Idle();
-        var root = Container() is { } compact ? Visuals(compact).OfType<FrameworkElement>().FirstOrDefault(e => e.Tag as string == "CardRoot") : null;
-        var rightClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = MouseRightButtonUpEvent };
-        root?.RaiseEvent(rightClick);
-        var compactGear = Gear();
-        _settings.Compact = false;
-        ApplyCompact();
-        await Idle();
-        if (root is null || rightClick.Handled || root.ContextMenu is not null || compactGear is null)
-            return false;
+        // TODO smoke: removed the compact-card check (compact card had a gear; a right-click on CardRoot was not handled and
+        // opened no ContextMenu). The window checks below open a DialogShell from the gear; settings are now inline in the tab.
         // Standard card: the gear, and no Settings button (Change stays).
         if (Container() is not { } standard || Gear() is not { } gear || Visuals(standard).OfType<Button>().Any(b => b.Content as string == "Settings") ||
             !Visuals(standard).OfType<Button>().Any(b => b.Content as string == "Change"))

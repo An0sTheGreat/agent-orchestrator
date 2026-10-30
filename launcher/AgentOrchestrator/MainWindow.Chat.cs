@@ -222,12 +222,8 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    // The Models window on the listed workers, the Single target selected (Multi: the first, the Planner).
-    private DialogShell? OpenModelOptions(Conversation c)
-    {
-        var cards = ListedWorkers(c).Where(k => k.Editable).ToList();
-        return OpenModelConfig(cards, c, MultiOf(c) ? null : TargetOf(c));
-    }
+    // The Single target's worker tab (Multi: the Planner's).
+    private void OpenModelOptions(Conversation c) => OpenWorkerTab(MultiOf(c) ? CardFor("planner") : TargetOf(c));
 
     // The Chat and Code views' Single / Multi toggles.
     private void ChatMode_Click(object sender, RoutedEventArgs e)
