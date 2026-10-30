@@ -159,6 +159,8 @@ internal sealed class AppSettings
     public List<WorkerSetting> Workers { get; set; } = new();
     // Named worker sets, global across projects.
     public List<WorkerPreset> Presets { get; set; } = new();
+    // Named sets of Model settings option fields (ModelOptions keys), global across workers.
+    public List<ModelPreset> ModelPresets { get; set; } = new();
     public string Theme { get; set; } = "ParchmentDark";
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
@@ -250,6 +252,12 @@ internal sealed class WorkerSetting
         copy.ModelOptions = new Dictionary<string, string>(ModelOptions);
         return copy;
     }
+}
+
+internal sealed class ModelPreset
+{
+    public string Name { get; set; } = "";
+    public Dictionary<string, string> Options { get; set; } = new();
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.

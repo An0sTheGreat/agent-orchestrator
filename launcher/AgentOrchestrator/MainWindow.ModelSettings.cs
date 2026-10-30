@@ -182,6 +182,17 @@ public partial class MainWindow
             }
         }
         var current = role is null ? ModelOptions.Effective(card.Config) : ModelOptions.Read(role);
+        // Absent keys show their default: the model's own (its GGUF header) or the static one. auto: the fields showing a
+        // default, with that value; while one still shows it, picking another model swaps in the new model's.
+        var w0 = card.Config;
+        JsonObject? LoadOf(ModelChoice? c) => c is not null ? new JsonObject { ["model_path"] = c.LoadPath, ["gguf_variant"] = c.Variant, ["gguf_file"] = c.File }
+            : role is not null ? role["auto_load"] as JsonObject
+            : w0.ModelPath is { } p ? new JsonObject { ["model_path"] = p, ["gguf_variant"] = w0.ModelVariant, ["gguf_file"] = w0.GgufFile } : null;
+        Dictionary<string, string>? MetaOf(JsonObject? load) => LauncherLogic.ReadGgufMetadata(LauncherLogic.ResolveGguf(load, _settings.ModelsFolder ?? "", LauncherLogic.HubCache()));
+        var startLoad = LoadOf(null);
+        var startMeta = MetaOf(startLoad);
+        var shownAtStart = ModelOptions.Prefill(current, ModelOptions.Defaults(startMeta, startLoad?["model_path"] is not null));
+        var auto = ModelOptions.All.Where(o => current.GetValueOrDefault(o.Key, "").Trim().Length == 0).ToDictionary(o => o.Key, o => shownAtStart[o.Key]);
         var red = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
         var emptyMeans = card.IsCustom ? "Empty = the Implementer's value." : "Empty = the default (the key is removed).";
 
@@ -222,6 +233,21 @@ public partial class MainWindow
 
         var editors = new Dictionary<string, Control>();
         var fieldErrors = new Dictionary<string, TextBlock>();
+        var hints = new Dictionary<string, TextBlock>();
+        string Value(Control c) => c is ComboBox b ? b.SelectedItem is string s && s != "(default)" ? s : "" : ((TextBox)c).Text;
+        void SetValue(Control c, string v)
+        {
+            if (c is not ComboBox b)
+                ((TextBox)c).Text = v;
+            else
+            {
+                if (v.Length > 0 && !b.Items.Contains(v))
+                    b.Items.Add(v);
+                b.SelectedItem = v.Length > 0 ? v : "(default)";
+            }
+        }
+        void ContextHint(Dictionary<string, string>? meta) => hints["max_seq_length"].Text = ModelOptions.All.First(o => o.Key == "max_seq_length").Help +
+            (ModelOptions.ModelContext(meta) is { } max ? $". Model maximum: {max.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}" : "");
         Grid Fields(string section)
         {
             var grid = new Grid();
@@ -236,7 +262,7 @@ public partial class MainWindow
                     grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
                     (row, col) = (row + 1, 0);
                 }
-                var value = current.GetValueOrDefault(o.Key, "");
+                var value = shownAtStart[o.Key];
                 Control editor;
                 if (o.Values.Length > 0)
                 {
@@ -260,7 +286,8 @@ public partial class MainWindow
                 var cell = new StackPanel
                 {
                     Margin = new Thickness(col == 0 ? 0 : 9, 12, col == 0 && !wide ? 9 : 0, 0),
-                    Children = { Label(o.Label), Muted(o.Help), editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = o.Key,
+                    Children = { Label(o.Label), (hints[o.Key] = Muted(o.Help)), editor, (fieldErrors[o.Key] = ErrorLine()) },
+                    ToolTip = o.Default is null ? o.Key : $"{o.Key}; default {o.Default}",
                 };
                 Grid.SetRow(cell, row);
                 Grid.SetColumn(cell, col);
@@ -359,6 +386,7 @@ public partial class MainWindow
         samplingPanel.Children.Add(Fields("Sampling"));
         var (requestPanel, _) = Section("Request", $"How long the orchestrator waits for this worker. {emptyMeans}");
         requestPanel.Children.Add(Fields("Request"));
+        ContextHint(startMeta);
 
         // The model list loads in the background; the window stays usable meanwhile.
         var modelBox = new ComboBox { Tag = "Model", IsEnabled = false, Width = 420 };
@@ -396,8 +424,16 @@ public partial class MainWindow
                 // A model brings its own quantization: the Load section's gguf_variant follows the pick.
                 modelBox.SelectionChanged += (_, _) =>
                 {
-                    if (modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice picked } && editors["gguf_variant"] is TextBox variant)
+                    if (modelBox.SelectedItem is not ComboBoxItem { Tag: ModelChoice picked })
+                        return;
+                    if (editors["gguf_variant"] is TextBox variant)
                         variant.Text = picked.Variant ?? "";
+                    var meta = MetaOf(LoadOf(picked));
+                    var fresh = ModelOptions.Defaults(meta, load: true);
+                    foreach (var (key, shown) in auto.ToList())
+                        if (key != "gguf_variant" && Value(editors[key]) == shown)
+                            SetValue(editors[key], auto[key] = fresh.GetValueOrDefault(key, ""));
+                    ContextHint(meta);
                 };
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -425,10 +461,65 @@ public partial class MainWindow
         error.Margin = new Thickness(0, 0, 0, 8);
         var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
         var cancel = new Button { Content = closeLabel, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        // Option presets: the option fields (not the model or its quantization), global across workers. Applying one only fills
+        // the fields; Save still writes them.
+        var presets = new Button
+        {
+            Content = "Presets  ▾", Tag = "ModelPresets", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0),
+            ToolTip = "Save these options as a preset, or fill them from one",
+        };
+        presets.Click += (_, _) =>
+        {
+            var menu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Top };
+            MenuItem Item(string header, Action act)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => act();
+                return item;
+            }
+            menu.Items.Add(Item("Save as preset…", () =>
+            {
+                if (SidebarAsk("Save preset", "Name this set of model options.", "Save", "")?.Trim() is not { Length: > 0 } name)
+                    return;
+                var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                if (same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
+                    return;
+                var preset = new ModelPreset { Name = name, Options = editors.Where(p => p.Key != "gguf_variant").ToDictionary(p => p.Key, p => Value(p.Value)) };
+                if (same >= 0)
+                    _settings.ModelPresets[same] = preset;
+                else
+                    _settings.ModelPresets.Add(preset);
+                _settings.Save();
+                Toast($"Preset {name} saved");
+            }));
+            if (_settings.ModelPresets.Count > 0)
+            {
+                menu.Items.Add(new Separator());
+                var delete = new MenuItem { Header = "Delete preset" };
+                foreach (var preset in _settings.ModelPresets.ToList())
+                {
+                    menu.Items.Add(Item(preset.Name, () =>
+                    {
+                        foreach (var (key, value) in preset.Options)
+                            if (editors.TryGetValue(key, out var editor))
+                                SetValue(editor, value);
+                    }));
+                    delete.Items.Add(Item(preset.Name, () =>
+                    {
+                        _settings.ModelPresets.Remove(preset);
+                        _settings.Save();
+                    }));
+                }
+                menu.Items.Add(new Separator());
+                menu.Items.Add(delete);
+            }
+            presets.ContextMenu = menu;
+            menu.IsOpen = true;
+        };
         var footer = new StackPanel
         {
             Margin = new Thickness(0, 14, 0, 0),
-            Children = { error, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { cancel, save } } },
+            Children = { error, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { presets, cancel, save } } },
         };
         DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
@@ -451,7 +542,7 @@ public partial class MainWindow
 
         save.Click += (_, _) =>
         {
-            var fields = editors.ToDictionary(p => p.Key, p => p.Value is ComboBox c ? c.SelectedItem is string s && s != "(default)" ? s : "" : ((TextBox)p.Value).Text);
+            var fields = editors.ToDictionary(p => p.Key, p => Value(p.Value));
             var choice = Picked();
             if (card.IsCustom)
             {
@@ -672,7 +763,45 @@ public partial class MainWindow
             if (asked.Count != 2 || Listed(multi) != "planner,implementer,reviewer*")
                 return false;
             multi.Close();
-            return !multi.IsVisible && asked.Count == 2 && File.ReadAllBytes(config).SequenceEqual(bytes);
+            if (multi.IsVisible || asked.Count != 2 || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return false;
+
+            // Defaults fill the absent keys without counting as changes; option presets: save on the Reviewer, apply on the
+            // Implementer (fields only, nothing written), delete.
+            void Preset(Window w, string header, string? sub = null)
+            {
+                var button = Tree(w).OfType<Button>().First(b => b.Tag as string == "ModelPresets");
+                Click(button);
+                var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header);
+                (sub is null ? item : item.Items.OfType<MenuItem>().First(i => (string)i.Header == sub)).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                button.ContextMenu.IsOpen = false;
+            }
+            if (await Open(ChatTargetChip) is not { } presetWindow || Field(presetWindow, "top_p").Text != "0.95")
+                return false;
+            Click(Rows(presetWindow)[2]);
+            await Idle();
+            if (asked.Count != 2 || Listed(presetWindow) != "planner,implementer,reviewer*" || Field(presetWindow, "temperature").Text != "0.6")
+                return false;
+            Field(presetWindow, "temperature").Text = "0.21";
+            Field(presetWindow, "top_k").Text = "7";
+            answer = "Smoke options";
+            Preset(presetWindow, "Save as preset…");
+            if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options") is not { } stored || stored.Options.GetValueOrDefault("temperature") != "0.21" ||
+                stored.Options.ContainsKey("gguf_variant"))
+                return false;
+            answer = "";
+            Click(Rows(presetWindow)[1]); // discards the Reviewer's change
+            await Idle();
+            if (Listed(presetWindow) != "planner,implementer*,reviewer" || Field(presetWindow, "temperature").Text != "0.33")
+                return false;
+            Preset(presetWindow, "Smoke options");
+            if (Field(presetWindow, "temperature").Text != "0.21" || Field(presetWindow, "top_k").Text != "7" || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return false;
+            Preset(presetWindow, "Delete preset", "Smoke options");
+            if (_settings.ModelPresets.Any(p => p.Name == "Smoke options"))
+                return false;
+            presetWindow.Close();
+            return !presetWindow.IsVisible && File.ReadAllBytes(config).SequenceEqual(bytes);
         }
         finally
         {
@@ -789,12 +918,15 @@ public partial class MainWindow
                 Model(window).Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake) is not { } fakeItem || !Model(window).IsEnabled)
                 return false;
             snap("27-model-settings", window);
-            Model(window).SelectedItem = fakeItem;
+            Model(window).SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
+            if (Field(window, "max_seq_length").Text != "32768" || Field(window, "n_batch").Text != "2048" || Field(window, "seed").Text != "")
+                return false;
             Field(window, "temperature").Text = "0.45";
             Click(Labelled(window, "Save"));
             await Idle();
             var load = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!;
             if (window.IsVisible || (double?)load["sampling"]?["temperature"] != 0.45 || (string?)load["auto_load"]?["model_path"] != "Fake-Model-Q4_K_M" ||
+                (int?)load["auto_load"]?["max_seq_length"] != 32768 || (double?)load["sampling"]?["top_p"] != 0.95 ||
                 (string?)load["auto_load"]?["gguf_variant"] != "Q4_K_M" || (string?)load["auto_load"]?["gguf_file"] != fake || planner.ModelName != LauncherLogic.DescribeModel("Fake-Model-Q4_K_M", "Q4_K_M").Name)
                 return false;
 

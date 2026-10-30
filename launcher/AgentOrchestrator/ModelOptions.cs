@@ -10,8 +10,10 @@ internal static class ModelOptions
 {
     public enum Kind { Int, Number, Text, Multiline, Choice, Bool, NumberList, IntList, StopList, ArgList }
 
-    // Target: "auto_load", "sampling", "sampling.extra_body" or "role" (the role object itself).
-    public sealed record Option(string Key, string Target, Kind Kind, string Help, double Min = double.MinValue, double Max = double.MaxValue, string[]? Choices = null)
+    // Target: "auto_load", "sampling", "sampling.extra_body" or "role" (the role object itself). Default: what the window
+    // fills in when the key is absent and the model's GGUF says nothing (null: left empty).
+    public sealed record Option(string Key, string Target, Kind Kind, string Help, double Min = double.MinValue, double Max = double.MaxValue, string[]? Choices = null,
+        string? Default = null)
     {
         public string Section => Target switch { "auto_load" => "Load", "role" => "Request", _ => "Sampling" };
         public string[] Values => Kind == Kind.Bool ? ["on", "off"] : Choices ?? [];
@@ -39,37 +41,37 @@ internal static class ModelOptions
     public static readonly Option[] All =
     [
         new("gguf_variant", "auto_load", Kind.Text, "Quantization of a Hugging Face GGUF repo, e.g. Q4_K_M"),
-        new("max_seq_length", "auto_load", Kind.Int, "Context length; 0 = auto", 0, 1048576),
-        new("cache_type_kv", "auto_load", Kind.Choice, "KV cache precision", Choices: CacheTypes),
-        new("n_parallel", "auto_load", Kind.Int, "Parallel request slots, 1 to 64", 1, 64),
-        new("n_batch", "auto_load", Kind.Int, "Logical batch size; default 2048", 1, 65536),
-        new("n_ubatch", "auto_load", Kind.Int, "Physical batch size; default 512", 1, 65536),
-        new("ctx_checkpoints", "auto_load", Kind.Int, "Context checkpoints, 0 to 256; default 32", 0, 256),
-        new("cache_ram", "auto_load", Kind.Int, "Prompt cache in MiB; default 8192, -1 = unlimited", -1, Big),
-        new("load_mode", "auto_load", Kind.Choice, "How the weights are mapped into memory", Choices: ["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"]),
-        new("gpu_memory_mode", "auto_load", Kind.Choice, "manual uses the GPU layer count", Choices: ["auto", "manual"]),
-        new("gpu_layers", "auto_load", Kind.Int, "Layers on the GPU; -1 = fit", -1, Big),
-        new("n_cpu_moe", "auto_load", Kind.Int, "MoE expert layers kept on the CPU; default 0", 0, Big),
+        new("max_seq_length", "auto_load", Kind.Int, "Context length; 0 = auto", 0, 1048576, Default: "32768"),
+        new("cache_type_kv", "auto_load", Kind.Choice, "KV cache precision", Choices: CacheTypes, Default: "f16"),
+        new("n_parallel", "auto_load", Kind.Int, "Parallel request slots, 1 to 64", 1, 64, Default: "1"),
+        new("n_batch", "auto_load", Kind.Int, "Logical batch size", 1, 65536, Default: "2048"),
+        new("n_ubatch", "auto_load", Kind.Int, "Physical batch size", 1, 65536, Default: "512"),
+        new("ctx_checkpoints", "auto_load", Kind.Int, "Context checkpoints, 0 to 256", 0, 256, Default: "32"),
+        new("cache_ram", "auto_load", Kind.Int, "Prompt cache in MiB; -1 = unlimited", -1, Big, Default: "8192"),
+        new("load_mode", "auto_load", Kind.Choice, "How the weights are mapped into memory", Choices: ["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"], Default: "auto"),
+        new("gpu_memory_mode", "auto_load", Kind.Choice, "manual uses the GPU layer count", Choices: ["auto", "manual"], Default: "auto"),
+        new("gpu_layers", "auto_load", Kind.Int, "Layers on the GPU; -1 = fit", -1, Big, Default: "-1"),
+        new("n_cpu_moe", "auto_load", Kind.Int, "MoE expert layers kept on the CPU", 0, Big, Default: "0"),
         new("tensor_split", "auto_load", Kind.NumberList, "Share per GPU, comma separated, e.g. 3,1"),
         new("gpu_ids", "auto_load", Kind.IntList, "GPUs to use, comma separated, e.g. 0,1"),
-        new("tensor_parallel", "auto_load", Kind.Bool, "Split each layer across the GPUs"),
-        new("speculative_type", "auto_load", Kind.Choice, "Speculative decoding", Choices: ["auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off"]),
-        new("spec_draft_n_max", "auto_load", Kind.Int, "Draft tokens per step, 1 to 16", 1, 16),
-        new("spec_draft_cache_type", "auto_load", Kind.Choice, "Draft KV cache precision", Choices: CacheTypes),
-        new("reasoning_budget", "auto_load", Kind.Int, "Thinking tokens; -1 = unlimited, 0 = off", -1, Big),
+        new("tensor_parallel", "auto_load", Kind.Bool, "Split each layer across the GPUs", Default: "off"),
+        new("speculative_type", "auto_load", Kind.Choice, "Speculative decoding", Choices: ["auto", "mtp", "dspark", "dflash", "ngram", "mtp+ngram", "off"], Default: "auto"),
+        new("spec_draft_n_max", "auto_load", Kind.Int, "Draft tokens per step, 1 to 16", 1, 16, Default: "16"),
+        new("spec_draft_cache_type", "auto_load", Kind.Choice, "Draft KV cache precision", Choices: CacheTypes, Default: "f16"),
+        new("reasoning_budget", "auto_load", Kind.Int, "Thinking tokens; -1 = unlimited, 0 = off", -1, Big, Default: "-1"),
         new("reasoning_budget_message", "auto_load", Kind.Text, "Inserted when the budget runs out"),
-        new("disable_vision", "auto_load", Kind.Bool, "Skip the vision projector"),
-        new("cpu_fallback", "auto_load", Kind.Bool, "Load on the CPU when the GPU is short of memory"),
+        new("disable_vision", "auto_load", Kind.Bool, "Skip the vision projector", Default: "off"),
+        new("cpu_fallback", "auto_load", Kind.Bool, "Load on the CPU when the GPU is short of memory", Default: "off"),
         new("chat_template_override", "auto_load", Kind.Multiline, "Jinja chat template used instead of the model's own"),
         new("llama_extra_args", "auto_load", Kind.ArgList, "Extra llama-server arguments: one per line, or space separated"),
-        new("temperature", "sampling", Kind.Number, "0 to 2; default 0.6", 0, 2),
-        new("top_p", "sampling", Kind.Number, "0 to 1; default 0.95", 0, 1),
-        new("top_k", "sampling.extra_body", Kind.Int, "-1 to 100; default 20", -1, 100),
-        new("min_p", "sampling.extra_body", Kind.Number, "0 to 1; default 0.01", 0, 1),
-        new("repetition_penalty", "sampling.extra_body", Kind.Number, "1 to 2; default 1.0", 1, 2),
-        new("presence_penalty", "sampling", Kind.Number, "-2 to 2; default 0", -2, 2),
-        new("frequency_penalty", "sampling", Kind.Number, "-2 to 2; default 0", -2, 2),
-        new("max_tokens", "sampling", Kind.Int, "Longest reply, in tokens", 1, 1048576),
+        new("temperature", "sampling", Kind.Number, "0 to 2", 0, 2, Default: "0.6"),
+        new("top_p", "sampling", Kind.Number, "0 to 1", 0, 1, Default: "0.95"),
+        new("top_k", "sampling.extra_body", Kind.Int, "-1 to 100", -1, 100, Default: "20"),
+        new("min_p", "sampling.extra_body", Kind.Number, "0 to 1", 0, 1, Default: "0.01"),
+        new("repetition_penalty", "sampling.extra_body", Kind.Number, "1 to 2", 1, 2, Default: "1.0"),
+        new("presence_penalty", "sampling", Kind.Number, "-2 to 2", -2, 2, Default: "0"),
+        new("frequency_penalty", "sampling", Kind.Number, "-2 to 2", -2, 2, Default: "0"),
+        new("max_tokens", "sampling", Kind.Int, "Longest reply, in tokens", 1, 1048576, Default: "8192"),
         new("seed", "sampling", Kind.Int, "Fixed seed for repeatable replies; -1 = random", -1, uint.MaxValue),
         new("stop", "sampling", Kind.StopList, "Stop strings: one per line, or comma separated"),
         new("enable_thinking", "sampling", Kind.Bool, "Reason before answering; off suits workers that edit files"),
@@ -105,6 +107,35 @@ internal static class ModelOptions
             var n => Plain(n),
         };
     });
+
+    // The model's context window from its GGUF header values (<arch>.context_length), or null.
+    public static long? ModelContext(IReadOnlyDictionary<string, string>? meta) =>
+        meta?.GetValueOrDefault("general.architecture") is { } arch && meta.GetValueOrDefault(arch + ".context_length") is { } n &&
+        long.TryParse(n, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && v > 0 ? v : null;
+
+    public const long ContextCap = 32768;
+
+    // What each option shows while its key is absent: the model's own value (meta: its GGUF header values, null = unknown),
+    // else the option's static default. Context length: the model's, capped at ContextCap. load false (no model to load):
+    // the load options stay empty, as Apply would refuse them.
+    public static Dictionary<string, string> Defaults(IReadOnlyDictionary<string, string>? meta, bool load)
+    {
+        var defaults = All.Where(o => o.Default is not null && (load || o.Target != "auto_load")).ToDictionary(o => o.Key, o => o.Default!);
+        if (meta is null)
+            return defaults;
+        if (load && ModelContext(meta) is { } context)
+            defaults["max_seq_length"] = Math.Min(context, ContextCap).ToString(CultureInfo.InvariantCulture);
+        if (LauncherLogic.ThinkingFromTemplate(meta.GetValueOrDefault("tokenizer.chat_template")) is true)
+            defaults["enable_thinking"] = "on";
+        foreach (var (gguf, key) in new[] { ("temp", "temperature"), ("top_p", "top_p"), ("top_k", "top_k"), ("min_p", "min_p"), ("penalty_repeat", "repetition_penalty") })
+            if (meta.GetValueOrDefault("general.sampling." + gguf) is { } value && Parse(All.First(o => o.Key == key), value).Error is null)
+                defaults[key] = value;
+        return defaults;
+    }
+
+    // What the window shows: each configured value, else its default ("" for none).
+    public static Dictionary<string, string> Prefill(IReadOnlyDictionary<string, string> configured, IReadOnlyDictionary<string, string> defaults) =>
+        All.ToDictionary(o => o.Key, o => configured.GetValueOrDefault(o.Key, "") is { Length: > 0 } value ? value : defaults.GetValueOrDefault(o.Key, ""));
 
     private static string Range(Option o) => o.Max >= Big
         ? $"{o.Min.ToString(CultureInfo.InvariantCulture)} or more"
@@ -250,6 +281,27 @@ internal static class ModelOptions
             "load options without auto_load.model_path must be refused: " + J(noModel));
         Check(Apply(noModel, new Dictionary<string, string> { ["max_seq_length"] = "", ["n_batch"] = "64" }, false).Count == 0 && J(noModel) == """{"sampling":{}}""",
             "empty load fields, and load fields of a remote role, must not create auto_load: " + J(noModel));
+
+        // Defaults: configured > the model's GGUF values > static; the context capped; unknown metadata -> static only.
+        var unknown = Defaults(null, load: true);
+        Check(unknown["max_seq_length"] == "32768" && unknown["n_batch"] == "2048" && unknown["temperature"] == "0.6" && !unknown.ContainsKey("enable_thinking") &&
+              !unknown.ContainsKey("gguf_variant") && !unknown.ContainsKey("seed") && !unknown.ContainsKey("timeout_seconds"), "static defaults: " + string.Join(" ", unknown));
+        Check(!Defaults(null, load: false).ContainsKey("n_batch") && Defaults(null, false)["top_p"] == "0.95", "no model: load options stay empty");
+        var meta = new Dictionary<string, string>
+        {
+            ["general.architecture"] = "qwen3", ["qwen3.context_length"] = "262144", ["llama.context_length"] = "4096", ["general.sampling.temp"] = "0.7",
+            ["general.sampling.top_k"] = "40", ["general.sampling.min_p"] = "5", ["tokenizer.chat_template"] = "{% if enable_thinking %}<think>{% endif %}",
+        };
+        var derived = Defaults(meta, load: true);
+        Check(ModelContext(meta) == 262144 && derived["max_seq_length"] == "32768" && derived["temperature"] == "0.7" && derived["top_k"] == "40" &&
+              derived["min_p"] == "0.01" && derived["enable_thinking"] == "on" && derived["n_batch"] == "2048", "model defaults: " + string.Join(" ", derived));
+        meta["qwen3.context_length"] = "8192";
+        meta["tokenizer.chat_template"] = "plain";
+        derived = Defaults(meta, load: true);
+        Check(derived["max_seq_length"] == "8192" && !derived.ContainsKey("enable_thinking"), "small context, plain template: " + string.Join(" ", derived));
+        var prefill = Prefill(new Dictionary<string, string> { ["temperature"] = "0.3", ["top_p"] = "", ["max_seq_length"] = "16384" }, derived);
+        Check(prefill["temperature"] == "0.3" && prefill["top_p"] == "0.95" && prefill["top_k"] == "40" && prefill["max_seq_length"] == "16384" && prefill["seed"] == "" &&
+              prefill.Count == All.Length, "prefill: " + string.Join(" ", prefill));
 
         var worker = new WorkerSetting { Temperature = "0.4", Thinking = "Off", ContextLength = "8192", ModelOptions = { ["top_k"] = "5", ["max_seq_length"] = "" } };
         var copy = worker.Clone();

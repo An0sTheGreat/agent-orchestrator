@@ -127,7 +127,7 @@ internal static class LauncherLogic
     // A thinking model's template has a thinking switch, starts the reply with <think> in its generation prompt, or uses
     // gpt-oss's / Magistral's reasoning markers. "<think>" or reasoning_content elsewhere is not enough: non-thinking
     // models (Qwen3 Instruct 2507) mention them only to strip earlier reasoning from the history.
-    private static bool? ThinkingFromTemplate(string? template)
+    internal static bool? ThinkingFromTemplate(string? template)
     {
         if (template is null)
             return null;
@@ -155,11 +155,15 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
     }
 
-    private static readonly Dictionary<string, string?> GgufTemplateCache = new();
+    private static readonly Dictionary<string, Dictionary<string, string>?> GgufTemplateCache = new();
 
-    // The GGUF metadata value tokenizer.chat_template, read by streaming the header (v2/v3, little-endian) up to that key.
-    // Null on any malformed data, I/O error, a missing key or a null path. Cached per path, size and modification time.
-    public static string? ReadGgufChatTemplate(string? path)
+    // The GGUF metadata value tokenizer.chat_template; null on any malformed data, I/O error, a missing key or a null path.
+    public static string? ReadGgufChatTemplate(string? path) => ReadGgufMetadata(path)?.GetValueOrDefault("tokenizer.chat_template");
+
+    // The GGUF header values the launcher uses (general.architecture, tokenizer.chat_template, <arch>.context_length,
+    // general.sampling.*), as text, read by streaming the header (v2/v3, little-endian). Null on any malformed data, I/O
+    // error or a null path. Cached per path, size and modification time.
+    public static Dictionary<string, string>? ReadGgufMetadata(string? path)
     {
         if (path is null)
             return null;
@@ -170,17 +174,17 @@ internal static class LauncherLogic
             lock (GgufTemplateCache)
                 if (GgufTemplateCache.TryGetValue(key, out var hit))
                     return hit;
-            var template = ScanGgufChatTemplate(path);
+            var meta = ScanGgufMetadata(path);
             lock (GgufTemplateCache)
-                GgufTemplateCache[key] = template;
-            return template;
+                GgufTemplateCache[key] = meta;
+            return meta;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
     }
 
     internal static int GgufTemplateCacheCount { get { lock (GgufTemplateCache) return GgufTemplateCache.Count; } }
 
-    private static string? ScanGgufChatTemplate(string path)
+    private static Dictionary<string, string>? ScanGgufMetadata(string path)
     {
         const ulong MaxString = 64 << 20;
         try
@@ -224,15 +228,30 @@ internal static class LauncherLogic
                     default: throw new InvalidDataException();
                 }
             }
+            var meta = new Dictionary<string, string>();
             for (ulong i = 0; i < count; i++)
             {
-                var name = Str(true);
+                var name = Str(true)!;
                 var type = r.ReadUInt32();
-                if (name == "tokenizer.chat_template")
-                    return type == 8 ? Str(true) : null;
-                Skip(type);
+                var wanted = name is "general.architecture" or "tokenizer.chat_template" || name.EndsWith(".context_length", StringComparison.Ordinal) ||
+                    name.StartsWith("general.sampling.", StringComparison.Ordinal);
+                string? value = !wanted ? null : type switch
+                {
+                    8 => Str(true),
+                    4 => r.ReadUInt32().ToString(CultureInfo.InvariantCulture),
+                    5 => r.ReadInt32().ToString(CultureInfo.InvariantCulture),
+                    10 => r.ReadUInt64().ToString(CultureInfo.InvariantCulture),
+                    11 => r.ReadInt64().ToString(CultureInfo.InvariantCulture),
+                    6 => r.ReadSingle().ToString(CultureInfo.InvariantCulture),
+                    12 => r.ReadDouble().ToString(CultureInfo.InvariantCulture),
+                    _ => null,
+                };
+                if (value is not null)
+                    meta[name] = value;
+                else
+                    Skip(type);
             }
-            return null;
+            return meta;
         }
         catch (Exception e) when (e is EndOfStreamException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or OverflowException)
         { return null; }
@@ -1656,6 +1675,26 @@ internal static class LauncherLogic
                 IsThinkingModel("org/Agent-GGUF", new JsonObject { ["model_path"] = "org/Agent-GGUF", ["gguf_variant"] = "Q8_0" }, "", hub) ||
                 ResolveGguf(new JsonObject { ["model_path"] = "org/Other" }, "", hub) is not null)
                 throw new InvalidOperationException("GGUF resolution failed.");
+            // The header values the Model settings window derives its defaults from.
+            var metaFile = Path.Combine(tplArea, "meta.gguf");
+            using (var fs = File.Create(metaFile))
+            using (var w = new BinaryWriter(fs, System.Text.Encoding.UTF8))
+            {
+                void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(7UL);
+                S("general.architecture"); w.Write(8u); S("qwen3");
+                S("general.sampling.temp"); w.Write(6u); w.Write(0.7f);
+                S("tokenizer.ggml.tokens"); w.Write(9u); w.Write(8u); w.Write(2UL); S("a"); S("b");
+                S("general.sampling.top_k"); w.Write(5u); w.Write(40);
+                S("qwen3.context_length"); w.Write(4u); w.Write(262144u);
+                S("general.sampling.flag"); w.Write(7u); w.Write((byte)1);
+                S("tokenizer.chat_template"); w.Write(8u); S("{{ x }}");
+            }
+            var read = ReadGgufMetadata(metaFile);
+            if (read is null || read.Count != 5 || read["general.architecture"] != "qwen3" || read["general.sampling.temp"] != "0.7" || read["general.sampling.top_k"] != "40" ||
+                read["qwen3.context_length"] != "262144" || read["tokenizer.chat_template"] != "{{ x }}" || ReadGgufMetadata(bad) is not null ||
+                ModelOptions.Defaults(read, load: true) is not { } fromFile || fromFile["max_seq_length"] != "32768" || fromFile["temperature"] != "0.7")
+                throw new InvalidOperationException("GGUF metadata read failed: " + string.Join(" ", read ?? new()));
             if (GgufTemplateCacheCount == 0 || ReadGgufChatTemplate(think) is null)
                 throw new InvalidOperationException("GGUF template cache failed.");
         }
