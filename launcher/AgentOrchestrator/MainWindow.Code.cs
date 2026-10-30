@@ -5,7 +5,7 @@ using System.Windows.Controls;
 
 namespace AgentOrchestrator;
 
-// Code view: a conversation with one worker about a folder (`orchestrator.py --code`), whose tool calls read and edit
+// Code view: a conversation with one worker, or Planner -> Implementer -> Reviewer (Multi), about a folder (`orchestrator.py --code`), whose tool calls read and edit
 // its files, beside the project run's output. Turns share the Chat plumbing (RunTurn); one turn of either kind at a time.
 public partial class MainWindow
 {
@@ -32,11 +32,18 @@ public partial class MainWindow
         var text = action == "chat" ? CodeInput.Text.Trim() : null;
         if (text is { Length: 0 } || !EnsureCodeConversation(project))
             return Task.FromResult(false);
-        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, false,
-            role => LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-                project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(false, CardFor(role))),
-            LauncherLogic.BuildCodeStartInfo, $"Code ({action})");
+        var multi = CodeTurnMulti(action);
+        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, multi, role => CodeRequest(action, role, text, project),
+            LauncherLogic.BuildCodeStartInfo, $"Code ({action}{(multi ? ", multi" : "")})");
     }
+
+    private bool CodeTurnMulti(string action) => action == "chat" && CodeMulti; // write_project is always one worker
+
+    // The request of a Code turn; text null: no user message.
+    private string CodeRequest(string action, string role, string? text, string project) =>
+        LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
+            project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CodeTurnMulti(action), CardFor(role)),
+            mode: CodeTurnMulti(action) ? "multi" : "single");
 
     // A Code turn or run never gets write access to the Agent Orchestrator folder (templates, prompts, orchestrator.py).
     private bool RefuseWorkflowRoot(string project)
@@ -296,12 +303,11 @@ public partial class MainWindow
             else
                 CodeExtraFolders.Add(folder);
         }
+        _settings.CodeMode = saved.Mode;
         if (CardFor(saved.Worker) is not null)
-        {
             _settings.CodeWorker = saved.Worker;
-            _settings.Save();
-        }
-        Replay(_code, saved.Messages, false, _settings.CodeWorker);
+        _settings.Save();
+        Replay(_code, saved.Messages, saved.Mode == "multi", _settings.CodeWorker);
         ShowContext(true, saved.Context);
         _code.Tokens = saved.Tokens ?? 0;
         RefreshCodeFolders();
@@ -314,7 +320,7 @@ public partial class MainWindow
         if (_codeConv is not { } c)
             return;
         c.Folders = CodeExtraFolders.ToList();
-        c.Worker = _settings.CodeWorker;
+        (c.Mode, c.Worker) = (_settings.CodeMode, _settings.CodeWorker);
         c.Messages = _code.History.ToList();
         c.Context = _codeContext;
         c.Tokens = _code.Tokens;

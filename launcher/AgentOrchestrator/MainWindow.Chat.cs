@@ -48,7 +48,7 @@ public partial class MainWindow
     private Conversation _chat = null!, _code = null!, _turn = null!; // _turn: the conversation of the running (or last) turn
     private List<LauncherLogic.ChatMessage> _chatHistory => _chat.History;
     private Conversation ConvOf(object sender) => _code.Owns(sender) ? _code : _chat;
-    private bool MultiOf(Conversation c) => !c.IsCode && ChatMulti;
+    private bool MultiOf(Conversation c) => c.IsCode ? CodeMulti : ChatMulti;
     private RoleCard? TargetOf(Conversation c) => c.IsCode ? CodeTarget() : ChatTarget();
 
     // One assistant reply: sections (thinking, Plan / Draft / Review) above the prominent answer.
@@ -80,6 +80,8 @@ public partial class MainWindow
         RefreshExtras();
         if (_settings.ChatMode != "multi")
             _settings.ChatMode = "single";
+        if (_settings.CodeMode != "multi")
+            _settings.CodeMode = "single";
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "implementer";
         if (CardFor(_settings.CodeWorker) is null)
@@ -92,6 +94,7 @@ public partial class MainWindow
     }
 
     private bool ChatMulti => _settings.ChatMode == "multi";
+    private bool CodeMulti => _settings.CodeMode == "multi";
 
     private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) ?? CardFor("implementer");
 
@@ -106,8 +109,10 @@ public partial class MainWindow
         ChatMultiToggle.IsChecked = ChatMulti;
         var target = ChatTarget();
         ChatTargetChip.Content = ChatMulti ? ChainLabel : $"To: {ChatName(target, target?.Role ?? "")}  ▾";
+        CodeSingleToggle.IsChecked = !CodeMulti;
+        CodeMultiToggle.IsChecked = CodeMulti;
         var code = CodeTarget();
-        CodeTargetChip.Content = $"To: {ChatName(code, code?.Role ?? "")}  ▾";
+        CodeTargetChip.Content = CodeMulti ? ChainLabel : $"To: {ChatName(code, code?.Role ?? "")}  ▾";
         RefreshCardVisibility();
         RefreshEffort();
     }
@@ -143,7 +148,7 @@ public partial class MainWindow
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
-        ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
+        ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = CodeSingleToggle.IsEnabled = CodeMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null;
         CodeProjectButton.IsEnabled = !_chatBusy && !runActive && SelectedProjectPath().Length > 0;
@@ -174,11 +179,11 @@ public partial class MainWindow
         return menu;
     }
 
-    // Picking a worker makes it the target; in Chat it is the Single-mode one (and switches to Single, so the choice is visible).
+    // Picking a worker makes it the Single-mode target (and switches to Single, so the choice is visible).
     private void PickWorker(Conversation c, string role)
     {
         if (c.IsCode)
-            _settings.CodeWorker = role;
+            (_settings.CodeWorker, _settings.CodeMode) = (role, "single");
         else
             (_settings.ChatWorker, _settings.ChatMode) = (role, "single");
         _settings.Save();
@@ -198,9 +203,14 @@ public partial class MainWindow
             : TargetOf(c) is { } target ? [target] : [], c);
     }
 
+    // The Chat and Code views' Single / Multi toggles.
     private void ChatMode_Click(object sender, RoutedEventArgs e)
     {
-        _settings.ChatMode = ((FrameworkElement)sender).Tag as string == "multi" ? "multi" : "single";
+        var mode = ((FrameworkElement)sender).Tag as string == "multi" ? "multi" : "single";
+        if (sender == CodeSingleToggle || sender == CodeMultiToggle)
+            _settings.CodeMode = mode;
+        else
+            _settings.ChatMode = mode;
         _settings.Save();
         RefreshChatTarget();
     }

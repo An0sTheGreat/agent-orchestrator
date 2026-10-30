@@ -137,17 +137,18 @@ The launcher's **Code** view (sidebar: Chat, Code, Options) works like a coding 
 - **New chat** (Code header, or the sidebar while the Code view is shown) asks for a working folder; several chats can share one. Chats are saved under `%APPDATA%\Agent Orchestrator\conversations`, not in the project, and listed in the sidebar like Claude's: **New project** groups chats, and each chat's menu (right-click or **…**) has Rename, Move up/down, Move to a project, Archive and Delete. Drag a chat onto another chat, a project or **Recents** to move it, and drag a project onto another to reorder them. Archived chats sit in a collapsible **Archived** section. If the saved list can't be read, it is shown read-only so nothing is overwritten.
 - Conversations in the **Chat** view are saved in the same list once they get a reply (marked with a speech bubble) and reopen in the Chat view with their Single/Multi mode and worker.
 - The Code header's **Project** menu holds the per-folder options: **Use a PROJECT.md…** (an existing one is backed up), **Edit PROJECT.md**, **Task limits…**, **Folders…** and **Run one reviewed task, then stop**.
-- Talk to any loaded worker; **+** picks which one; the target chip opens the Models window to configure its model (in Multi mode, the Planner's, Implementer's and Reviewer's). It can list, read and search files, and create or edit files directly in the project folder.
+- **Single / Multi** (Code header, like Chat's; Multi by default): Single talks to one worker; Multi runs each message through the Planner (reads the files and plans, no edits), the Implementer (makes the change) and the Reviewer (checks the changed files, fixes real errors and answers). Conversations reopen in their mode.
+- Talk to any loaded worker; **+** picks which one (and switches to Single); the target chip opens the Models window to configure its model (in Multi mode, the Planner's, Implementer's and Reviewer's). It can list, read and search files, and create or edit files directly in the project folder.
 - **Project > Folders… > Add folder…** grants extra folders, each one **Read only** or **Full edit**. Nothing outside the granted folders can be read or written. `api_key.txt` and `.git` are always refused, and links or junctions that point outside are skipped.
 - No `PROJECT.md` is needed to start. Once you agree on a project, the agent calls `write_project_md` and the Implementer writes `PROJECT.md` from the template in this folder. An existing file is kept as `PROJECT.backup-<time>.md`. You can also bring your own `PROJECT.md`.
 - When you tell the agent to begin, or press **Start project**, the Planner first writes `PROJECT.md` from the files if there is none. The workflow files are then added (an existing `PROJECT.md` is kept), the view switches to **Run output**, and the normal Planner → Implementer → Reviewer run starts.
 
 Command line: `python orchestrator.py --project <folder with config.json> --events --code <request.json>`.
 
-- `request.json` is `{"action": "chat"|"write_project", "worker": "<role or custom id>", "messages": [...], "folders": [{"path": "<absolute>", "access": "write"|"read"}]}`.
+- `request.json` is `{"action": "chat"|"write_project", "mode": "single"|"multi", "worker": "<role or custom id>", "messages": [...], "folders": [{"path": "<absolute>", "access": "write"|"read"}]}`. `mode` defaults to `single`; `multi` (action `chat` only, `worker` ignored) runs Planner → Implementer → Reviewer and needs the three built-in roles in `config.json`.
 - `folders[0]` is the project and is always writable.
-- Tools are `list_files`, `read_file`, `search_files`, `write_file`, `replace_text`, `write_project_md` and `start_project`.
-- Events: every tool call is a `tool` event, then `code_project {role,path}`, `code_start {role}` and the final `code_reply {role,text}`.
+- Tools are `list_files`, `read_file`, `search_files`, `write_file`, `replace_text`, `write_project_md` and `start_project`. In Multi the Planner gets only the first three, the Implementer all of them, the Reviewer all but `write_project_md` and `start_project`.
+- Events: every tool call is a `tool` event, then `code_project {role,path}`, `code_start {role}` and the final `code_reply {role,text}`. Multi adds `chat_stage {role,stage:"plan"|"implement"|"review",title}` before each stage.
 - Chat and Code turns share the GPU, so only one runs at a time and none during a project run.
 
 ## Custom workers

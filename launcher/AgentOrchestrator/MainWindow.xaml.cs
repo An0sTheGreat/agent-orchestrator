@@ -1467,7 +1467,7 @@ public partial class MainWindow : Window
             Snap("28-effort-chip");
             PickChatWorker("implementer"); // Qwen2.5-Coder-3B-Instruct, reasoning budget 0: does not think
             if (ChatEffortChip.IsEnabled || (string)ChatEffortChip.ToolTip != "This model doesn't think" || SentEffort("implementer") != "" ||
-                CodeEffortChip.IsEnabled != (CodeTarget()!.Role == "planner"))
+                CodeEffortChip.IsEnabled != (CodeMulti || CodeTarget()!.Role == "planner")) // Code Multi: the Planner thinks
                 return Fail();
             ChatMode_Click(ChatMultiToggle, new RoutedEventArgs()); // Multi: the Planner thinks
             await Settle();
@@ -1744,6 +1744,18 @@ public partial class MainWindow : Window
             var toolRow = codeReply.Content.Children.OfType<Expander>().SingleOrDefault();
             if (codeReply.Final != "Fixed" || codeReply.Answer?.Text != "Fixed" || _code.History.Count != 2 || ChatPanel.Children.Count != chatCount ||
                 toolRow is null || ((TextBlock)((StackPanel)toolRow.Header).Children[1]).Text != "src/a.js" || _chatBusy)
+                return Fail();
+            // Code Multi: the chip names the chain and a Code turn asks for mode "multi" (write_project stays single); + switches to Single.
+            var codeMode = (_settings.CodeMode, _settings.CodeWorker);
+            ChatMode_Click(CodeMultiToggle, new RoutedEventArgs());
+            string ModeOf(string action) => (string)JsonNode.Parse(CodeRequest(action, "implementer", action == "chat" ? "Fix it" : null, @"Y:\app"))!["mode"]!;
+            var codeMultiOk = CodeMulti && !ChatMulti && (string)CodeTargetChip.Content == ChainLabel && CodeMultiToggle.IsChecked == true &&
+                CodeSingleToggle.IsChecked == false && ModeOf("chat") == "multi" && ModeOf("write_project") == "single";
+            PickWorker(_code, "implementer");
+            var codeSingleOk = !CodeMulti && ((string)CodeTargetChip.Content).Contains("Implementer") && CodeSingleToggle.IsChecked == true && ModeOf("chat") == "single";
+            (_settings.CodeMode, _settings.CodeWorker) = codeMode;
+            RefreshChatTarget();
+            if (!codeMultiOk || !codeSingleOk)
                 return Fail();
             ShowCodeRun(true);
             await Settle();

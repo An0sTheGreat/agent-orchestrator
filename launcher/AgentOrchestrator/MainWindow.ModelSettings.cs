@@ -559,7 +559,8 @@ public partial class MainWindow
             await Idle();
             return OwnedWindows.OfType<DialogShell>().LastOrDefault(w => w.IsVisible && w.Title == "Models");
         }
-        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme);
+        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme, _settings.CodeMode);
+        _settings.CodeMode = "single"; // the Code chip below configures its one target
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
         Directory.CreateDirectory(models);
         (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models); // a disk scan: never a real Unsloth server
@@ -647,7 +648,7 @@ public partial class MainWindow
             answer = ""; // a check that failed with a change pending still closes the window
             foreach (var open in OwnedWindows.OfType<DialogShell>().Where(w => w.Title == "Models").ToList())
                 open.Close();
-            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme) = saved;
+            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme, _settings.CodeMode) = saved;
             ApplyTheme();
             RefreshChatTarget();
             Directory.Delete(models, recursive: true);
