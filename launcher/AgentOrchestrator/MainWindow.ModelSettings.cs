@@ -797,9 +797,9 @@ public partial class MainWindow
                 return Fail("tabs at the default width");
             var texts = SmokeVisuals(SmokeTab(planner)!).OfType<TextBlock>().Select(t => new System.Windows.Documents.TextRange(t.ContentStart, t.ContentEnd).Text).ToList();
             if (!texts.Contains(planner.Title) || !texts.Contains(planner.ModelName) || !texts.Contains(planner.TokensPerSec) ||
-                !texts.Contains($"{planner.TaskTokens} task · {planner.TurnTotal} turn"))
+                !texts.Contains($"{planner.TaskTokensShort} task · {planner.TurnTotalShort} turn"))
                 return Fail("tab text: " + string.Join(" | ", texts));
-            snap("tabs-default", DetailsPanel);
+            snap("tabs-default", null);
 
             // A narrow column: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
             DetailsColumn.Width = new GridLength(260);
@@ -810,7 +810,7 @@ public partial class MainWindow
             await Idle();
             if (WorkerTabsScroll.HorizontalOffset <= 0)
                 return Fail("the wheel scrolls the strip");
-            snap("tabs-narrow", DetailsPanel);
+            snap("tabs-narrow", null);
             SetWorkerRail(false); // back to the saved width
             await Idle();
 
@@ -834,7 +834,7 @@ public partial class MainWindow
             // fields (no model_path: the load options empty again), so Save is not refused.
             if (await FakeItem() is not { } fakeItem || !Model().IsEnabled)
                 return Fail("the model list");
-            snap("tabs-settings", DetailsPanel);
+            snap("tabs-settings", null);
             SmokeField("top_k").Text = "33";
             Model().SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
             if (!await Until(() => SmokeField("max_seq_length").Text == "32768") || SmokeField("n_batch").Text != "2048" || SmokeField("seed").Text != "" ||

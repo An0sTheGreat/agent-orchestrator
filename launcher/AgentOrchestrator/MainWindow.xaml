@@ -763,7 +763,7 @@
              WorkerTabWidth fits three tabs across the column, down to a minimum; narrower columns scroll the strip. -->
         <DataTemplate x:Key="WorkerTabTemplate">
             <Button Tag="WorkerTab" Width="{DynamicResource WorkerTabWidth}" Margin="0,0,6,0" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}"
-                    Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding ModelName}">
+                    Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="TabBox" Background="{DynamicResource Card}" BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1"
@@ -782,16 +782,15 @@
                 <StackPanel>
                     <DockPanel>
                         <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource ActivityDot}" Margin="0,-6,-6,-6" />
-                        <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" FontSize="10.5" Foreground="{DynamicResource AccentLight}"
-                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" FontSize="9.5" Foreground="{DynamicResource AccentLight}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Title}" />
                     </DockPanel>
                     <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                     <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SetupTip}"
                                Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
                     <TextBlock Text="{Binding TokensPerSec}" FontSize="11" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextTrimming="CharacterEllipsis" Margin="0,5,0,0" />
-                    <TextBlock FontSize="10.5" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" TextTrimming="CharacterEllipsis"
-                               ToolTip="Last completed task's tokens · this turn's tokens">
-                        <Run Text="{Binding TaskTokens, Mode=OneWay}" /><Run Text=" task · " /><Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" turn" />
+                    <TextBlock FontSize="10.5" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular">
+                        <Run Text="{Binding TaskTokensShort, Mode=OneWay}" /><Run Text=" task · " /><Run Text="{Binding TurnTotalShort, Mode=OneWay}" /><Run Text=" turn" />
                     </TextBlock>
                 </StackPanel>
             </Button>
@@ -1194,7 +1193,7 @@
                     <TextBlock DockPanel.Dock="Left" Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
                             Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
-                            ToolTip="Save, apply or delete named sets of workers and their settings" />
+                            ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
                 </DockPanel>
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">

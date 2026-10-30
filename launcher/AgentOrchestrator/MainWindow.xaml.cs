@@ -1114,15 +1114,26 @@ public partial class MainWindow : Window
         {
             Directory.CreateDirectory(presetProject);
             var presetConfig = Path.Combine(presetProject, "config.json");
-            string Config(string temperature) => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """}},"implementer":{"base_url":"http://h/v1"},"reviewer":{}}}""";
+            string Config(string temperature, string prompt = "") => """{"roles":{"planner":{"sampling":{"temperature":""" + temperature + """},"chat_system_prompt":"Planner: """ + prompt + "\"},\"implementer\":{\"base_url\":\"http://h/v1\"},\"reviewer\":{}}}";
             string Cards() => string.Join("|", _cards.Select(c => $"{c.Role}:{c.Title}"));
-            File.WriteAllText(presetConfig, Config("0.3"));
+            File.WriteAllText(presetConfig, Config("0.3", "saved"));
             ProjectPath = presetProject;
+            var presetWorker = new RoleCard("smoke-preset", "PRESET W", custom: true);
+            presetWorker.Config.ModelOptions["top_k"] = "7";
+            _cards.Add(presetWorker);
+            SaveWorkers();
             var saved = Cards();
             SavePreset("Smoke");
+            presetWorker.Config.ModelOptions["top_k"] = "9"; // an edit saved after the preset
+            SaveWorkers();
             AddWorker_Click(AddWorkerButton, new RoutedEventArgs());
-            File.WriteAllText(presetConfig, Config("0.9"));
+            File.WriteAllText(presetConfig, Config("0.9", "changed"));
             if (Cards() == saved || _settings.Presets.Count(p => p.Name == "Smoke") != 1)
+                return Fail();
+            SelectWorker(CardFor("planner")); // the open tab must show the restored values after the apply
+            RefreshWorkerTab(force: true); // (the config was rewritten behind it)
+            await Settle();
+            if (SmokeField("ChatSystemPrompt").Text != "Planner: changed")
                 return Fail();
             var menu = BuildPresetsMenu();
             menu.IsOpen = true;
@@ -1139,6 +1150,11 @@ public partial class MainWindow : Window
             double Temperature(string path) => (double)JsonNode.Parse(File.ReadAllText(path))!["roles"]!["planner"]!["sampling"]!["temperature"]!;
             if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3)
                 return Fail();
+            // Both parts of the parent preset come back (a built-in's chat prompt, a custom worker's option), the tab stays and shows them.
+            if ((string)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["chat_system_prompt"]! != "Planner: saved" ||
+                CardFor("smoke-preset")!.Config.ModelOptions["top_k"] != "7" || _shownWorker?.Role != "planner" || !CardFor("planner")!.IsSelected ||
+                SmokeField("ChatSystemPrompt").Text != "Planner: saved")
+                return Fail();
             File.WriteAllText(workerConfig, Config("0.9"));
             ProjectPath = "";
             ApplyPreset(_settings.Presets.Single(p => p.Name == "Smoke"));
@@ -1148,6 +1164,10 @@ public partial class MainWindow : Window
             DeletePreset(_settings.Presets.Single(p => p.Name == "Smoke"));
             if (_settings.Presets.Any(p => p.Name == "Smoke"))
                 return Fail();
+            RemoveWorker(CardFor("smoke-preset")!);
+            File.WriteAllText(presetConfig, Config("0.3"));
+            File.WriteAllText(workerConfig, Config("0.9"));
+            RefreshWorkerTab(force: true);
 
             // The workflow root's config.json is the project template: syncing with it selected must leave it untouched.
             var templatePath = Path.Combine(_workflowRoot ?? "", "config.json");
@@ -2563,7 +2583,7 @@ public partial class MainWindow : Window
                     SetWorkerRail(false);
                     SelectWorker(CardFor("planner"));
                     await Settle();
-                    Snap("27-model-settings-" + theme, DetailsPanel);
+                    Snap("27-model-settings-" + theme);
                 }
             }
         }
@@ -3465,6 +3485,10 @@ public partial class MainWindow : Window
     {
         if (_process is not null)
             return;
+        if (_shownWorker is { } open && _cards.Contains(open) && _workerDirty() &&
+            SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(open, open.Role)}?", "Discard") is null)
+            return;
+        var keepRole = _shownWorker?.Role;
         bool rolesApplied;
         try
         {
@@ -3483,6 +3507,8 @@ public partial class MainWindow : Window
         SaveWorkers();
         SyncCustomWorkers();
         PrefillCards();
+        SelectWorker(_cards.FirstOrDefault(c => c.Role == keepRole) ?? FirstVisibleWorker());
+        RefreshWorkerTab(force: true); // the restored settings, also when the same worker stays open
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
         {

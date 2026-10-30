@@ -51,6 +51,16 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public string TurnDetail => $"↑ {_bankedPrompt + _livePrompt:N0} prompt   ↓ {_bankedCompletion + _liveCompletion:N0} generated";
     // Tokens this worker used in the last completed task ("—" before one completes); unchanged while the next task runs.
     public string TaskTokens => _taskTokens?.ToString("N0") ?? "—";
+    // Compact forms for the worker tab (1.5k, 2M); the full numbers are in its tooltip.
+    public string TaskTokensShort => _taskTokens is { } t ? Compact(t) : "—";
+    public string TurnTotalShort => Compact(_bankedPrompt + _bankedCompletion + _livePrompt + _liveCompletion);
+    public string TabTip => $"{Title}\n{ModelName}\n{TokensPerSec}\nLast task: {TaskTokens} tokens · this turn: {TurnTotal} tokens";
+    private static string Compact(long n) => n switch
+    {
+        < 1000 => n.ToString(),
+        < 1_000_000 => (n / 1000.0).ToString("0.#") + "k",
+        _ => (n / 1_000_000.0).ToString("0.#") + "M",
+    };
     private long _taskSum; // usage-confirmed tokens since task_start: what the turn totals settle on, never live estimates
     private long? _taskTokens;
 
@@ -60,6 +70,8 @@ internal sealed class RoleCard : INotifyPropertyChanged
     {
         _taskTokens = _taskSum;
         Raise(nameof(TaskTokens));
+        Raise(nameof(TaskTokensShort));
+        Raise(nameof(TabTip));
     }
 
     public void SetModel(LauncherLogic.ModelInfo info)
@@ -137,6 +149,8 @@ internal sealed class RoleCard : INotifyPropertyChanged
     private void NotifyTotals()
     {
         Raise(nameof(TurnTotal));
+        Raise(nameof(TurnTotalShort));
+        Raise(nameof(TabTip));
         Raise(nameof(TurnDetail));
     }
 
@@ -150,7 +164,12 @@ internal sealed class RoleCard : INotifyPropertyChanged
         Raise(name!);
     }
 
-    private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    private void Raise(string name)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        if (name is nameof(Title) or nameof(ModelName) or nameof(TokensPerSec))
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(TabTip)));
+    }
 }
 
 internal sealed class AppSettings
