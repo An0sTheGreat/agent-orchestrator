@@ -1299,8 +1299,12 @@ public partial class MainWindow : Window
             specialist.IsChecked = true;
             var swapped = promptBox.Text == LauncherLogic.DefaultSystemPrompt("specialist");
             reviewerKind.IsChecked = true;
+            // Its options show what it inherits (the Implementer's temperature); Save keeps only what differs, so it still inherits.
+            var inheritedTemperature = FindIn<TextBox>(prefilled, t => t.Tag as string == "temperature")?.Text;
+            FindIn<TextBox>(prefilled, t => t.Tag as string == "top_k")!.Text = "12";
             FindIn<Button>(prefilled, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-            if (!swapped || tester.Config.SystemPrompt != LauncherLogic.DefaultSystemPrompt("reviewer") || tester.Config.Description != LauncherLogic.DefaultDescription("reviewer"))
+            if (!swapped || tester.Config.SystemPrompt != LauncherLogic.DefaultSystemPrompt("reviewer") || tester.Config.Description != LauncherLogic.DefaultDescription("reviewer") ||
+                inheritedTemperature != "0.33" || string.Join(",", tester.Config.ModelOptions.Select(p => $"{p.Key}={p.Value}")) != "top_k=12")
                 return Fail();
             prefilled.Close();
             await Settle();

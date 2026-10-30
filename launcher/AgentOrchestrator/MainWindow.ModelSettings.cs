@@ -182,16 +182,22 @@ public partial class MainWindow
             }
         }
         var current = role is null ? ModelOptions.Effective(card.Config) : ModelOptions.Read(role);
-        // Absent keys show their default: the model's own (its GGUF header) or the static one. auto: the fields showing a
-        // default, with that value; while one still shows it, picking another model swaps in the new model's.
+        // Absent keys show their default (ModelOptions.Defaults): the model's own (its GGUF header, read off the UI thread by
+        // Derive) or the static one; for a custom worker the Implementer's value first; for a remote role none. auto: the
+        // fields showing a default, with that value; while one still shows it, a new model read, model pick or mode switch
+        // swaps in the new default.
         var w0 = card.Config;
         JsonObject? LoadOf(ModelChoice? c) => c is not null ? new JsonObject { ["model_path"] = c.LoadPath, ["gguf_variant"] = c.Variant, ["gguf_file"] = c.File }
             : role is not null ? role["auto_load"] as JsonObject
             : w0.ModelPath is { } p ? new JsonObject { ["model_path"] = p, ["gguf_variant"] = w0.ModelVariant, ["gguf_file"] = w0.GgufFile } : null;
-        Dictionary<string, string>? MetaOf(JsonObject? load) => LauncherLogic.ReadGgufMetadata(LauncherLogic.ResolveGguf(load, _settings.ModelsFolder ?? "", LauncherLogic.HubCache()));
+        var inherited = card.IsCustom ? LauncherLogic.InheritedOptions(ActiveConfigPath(), Path.Combine(_workflowRoot ?? "", "config.json")) : null;
         var startLoad = LoadOf(null);
-        var startMeta = MetaOf(startLoad);
-        var shownAtStart = ModelOptions.Prefill(current, ModelOptions.Defaults(startMeta, startLoad?["model_path"] is not null));
+        var hasModel = startLoad?["model_path"] is not null;
+        Dictionary<string, string>? meta = null;
+        RadioButton[]? modes = null;
+        var remoteMode = () => modes is null ? remoteNow is not null : modes[1].IsChecked == true;
+        Dictionary<string, string> Base() => remoteMode() ? new() : ModelOptions.Defaults(meta, hasModel, inherited);
+        var shownAtStart = ModelOptions.Prefill(current, Base());
         var auto = ModelOptions.All.Where(o => current.GetValueOrDefault(o.Key, "").Trim().Length == 0).ToDictionary(o => o.Key, o => shownAtStart[o.Key]);
         var red = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
         var emptyMeans = card.IsCustom ? "Empty = the Implementer's value." : "Empty = the default (the key is removed).";
@@ -352,7 +358,6 @@ public partial class MainWindow
         }
 
         // Built-in roles: Local (Unsloth / llama.cpp) or a remote OpenAI-compatible API.
-        RadioButton[]? modes = null;
         TextBox[]? remoteBoxes = null;
         StackPanel? remotePanel = null;
         if (!card.IsCustom)
@@ -386,7 +391,39 @@ public partial class MainWindow
         samplingPanel.Children.Add(Fields("Sampling"));
         var (requestPanel, _) = Section("Request", $"How long the orchestrator waits for this worker. {emptyMeans}");
         requestPanel.Children.Add(Fields("Request"));
-        ContextHint(startMeta);
+        ContextHint(null);
+
+        // Swaps the current defaults into the fields still showing the previous ones (a user's edit stays); returns their keys.
+        List<string> Rederive()
+        {
+            var fresh = Base();
+            var changed = new List<string>();
+            foreach (var (key, shown) in auto.ToList())
+                if (key != "gguf_variant" && Value(editors[key]) == shown)
+                {
+                    SetValue(editors[key], auto[key] = fresh.GetValueOrDefault(key, ""));
+                    changed.Add(key);
+                }
+            return changed;
+        }
+        // Reads the model's GGUF header off the UI thread, then rederives; only the latest read applies. The values derived at
+        // open are part of the clean state, not changes.
+        var derivation = 0;
+        List<string?> clean = [];
+        async void Derive(JsonObject? load, bool atOpen = false)
+        {
+            var mine = ++derivation;
+            var (folder, hub, copy) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache(), load?.DeepClone().AsObject());
+            var read = await Task.Run(() => LauncherLogic.ReadGgufMetadata(LauncherLogic.ResolveGguf(copy, folder, hub)));
+            if (mine != derivation)
+                return;
+            meta = read;
+            var keys = editors.Keys.ToList();
+            foreach (var key in Rederive())
+                if (atOpen)
+                    clean[keys.IndexOf(key)] = StateOf(editors[key]);
+            ContextHint(meta);
+        }
 
         // The model list loads in the background; the window stays usable meanwhile.
         var modelBox = new ComboBox { Tag = "Model", IsEnabled = false, Width = 420 };
@@ -398,7 +435,6 @@ public partial class MainWindow
         DockPanel.SetDock(modelBox, Dock.Left);
         var top = new StackPanel { Margin = new Thickness(0, 0, 0, 16), Children = { Label("Model"), new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } } } };
         ModelChoice? initial = null;
-        var remoteMode = () => modes?[1].IsChecked == true;
         var listed = false;
         async void LoadModels()
         {
@@ -421,19 +457,15 @@ public partial class MainWindow
                 listed = true;
                 modelBox.IsEnabled = !remoteMode();
                 modelStatus.Text = choices.Count == 0 ? "No installed text models found." : LocalRuntime ? "GGUF files on this computer (llama.cpp runtime)." : "Models installed in Unsloth.";
-                // A model brings its own quantization: the Load section's gguf_variant follows the pick.
+                // A model brings its own quantization: the Load section's gguf_variant follows the pick. "(current)" (no
+                // ModelChoice) restores what the current model showed.
                 modelBox.SelectionChanged += (_, _) =>
                 {
-                    if (modelBox.SelectedItem is not ComboBoxItem { Tag: ModelChoice picked })
-                        return;
+                    var picked = (modelBox.SelectedItem as ComboBoxItem)?.Tag as ModelChoice;
                     if (editors["gguf_variant"] is TextBox variant)
-                        variant.Text = picked.Variant ?? "";
-                    var meta = MetaOf(LoadOf(picked));
-                    var fresh = ModelOptions.Defaults(meta, load: true);
-                    foreach (var (key, shown) in auto.ToList())
-                        if (key != "gguf_variant" && Value(editors[key]) == shown)
-                            SetValue(editors[key], auto[key] = fresh.GetValueOrDefault(key, ""));
-                    ContextHint(meta);
+                        variant.Text = picked is null ? shownAtStart["gguf_variant"] : picked.Variant ?? "";
+                    hasModel = picked is not null || startLoad?["model_path"] is not null;
+                    Derive(LoadOf(picked));
                 };
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException)
@@ -454,7 +486,11 @@ public partial class MainWindow
             modelBox.IsEnabled = listed && !remote;
         }
         foreach (var mode in modes ?? [])
-            mode.Checked += (_, _) => SyncMode();
+            mode.Checked += (_, _) =>
+            {
+                SyncMode();
+                Rederive(); // a remote role shows no local defaults
+            };
         SyncMode();
 
         var error = ErrorLine();
@@ -484,7 +520,10 @@ public partial class MainWindow
                 var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
                 if (same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
                     return;
-                var preset = new ModelPreset { Name = name, Options = editors.Where(p => p.Key != "gguf_variant").ToDictionary(p => p.Key, p => Value(p.Value)) };
+                var preset = new ModelPreset
+                {
+                    Name = name, Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
+                };
                 if (same >= 0)
                     _settings.ModelPresets[same] = preset;
                 else
@@ -500,8 +539,10 @@ public partial class MainWindow
                 {
                     menu.Items.Add(Item(preset.Name, () =>
                     {
+                        // values only; load options only with a model to load (Save would refuse them)
+                        var load = hasModel && !remoteMode();
                         foreach (var (key, value) in preset.Options)
-                            if (editors.TryGetValue(key, out var editor))
+                            if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
                                 SetValue(editor, value);
                     }));
                     delete.Items.Add(Item(preset.Name, () =>
@@ -562,7 +603,8 @@ public partial class MainWindow
                 w.Kind = kind;
                 w.Description = description!.Text.Trim();
                 w.SystemPrompt = prompt!.Text;
-                w.ModelOptions = fields.Where(p => p.Value.Trim().Length > 0).ToDictionary();
+                var inherits = Base(); // a value equal to what it would inherit is not stored, so the Implementer's changes still reach it
+                w.ModelOptions = fields.Where(p => p.Value.Trim().Length > 0 && p.Value != inherits.GetValueOrDefault(p.Key, "")).ToDictionary();
                 (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) = ("", "", "", "", "", "Auto"); // now in ModelOptions
                 if (title != card.Title)
                     card.Title = title;
@@ -634,10 +676,12 @@ public partial class MainWindow
         };
         LoadModels();
         ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
-        string State() => string.Join("\u0001", editors.Values.Concat(new Control?[] { nameBox, description, prompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
-            .Select(c => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" })) + (Picked() is not null);
-        var clean = State();
-        return (new DockPanel { Children = { top, footer, nav, scroll } }, () => State() != clean);
+        static string? StateOf(Control? c) => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" };
+        List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
+            .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
+        clean = State();
+        Derive(startLoad, atOpen: true);
+        return (new DockPanel { Children = { top, footer, nav, scroll } }, () => !State().SequenceEqual(clean));
     }
 
     // --ui-smoke: the target chips open the Models window (borderless, large, owned) listing Single's target, Multi's three
@@ -780,22 +824,33 @@ public partial class MainWindow
                 return false;
             Click(Rows(presetWindow)[2]);
             await Idle();
-            if (asked.Count != 2 || Listed(presetWindow) != "planner,implementer,reviewer*" || Field(presetWindow, "temperature").Text != "0.6")
+            if (asked.Count != 2 || Listed(presetWindow) != "planner,implementer,reviewer*" || Field(presetWindow, "temperature").Text != "0.8")
+                return false;
+            // Remote shows no local defaults (providers may reject them); Local brings them back.
+            RadioButton Source(string label) => Tree(presetWindow).OfType<RadioButton>().First(r => r.Content as string == label);
+            Source("Remote API").IsChecked = true;
+            var remoteShown = Field(presetWindow, "temperature").Text + Field(presetWindow, "top_p").Text;
+            Source("Local").IsChecked = true;
+            if (remoteShown != "" || Field(presetWindow, "temperature").Text != "0.8")
                 return false;
             Field(presetWindow, "temperature").Text = "0.21";
             Field(presetWindow, "top_k").Text = "7";
             answer = "Smoke options";
             Preset(presetWindow, "Save as preset…");
             if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options") is not { } stored || stored.Options.GetValueOrDefault("temperature") != "0.21" ||
-                stored.Options.ContainsKey("gguf_variant"))
+                stored.Options.ContainsKey("gguf_variant") || stored.Options.ContainsKey("seed"))
                 return false;
+            // As if saved on a worker with a model, or by an older version: a load value and an empty one; neither is applied
+            // to the Implementer, which has no model to load.
+            (stored.Options["n_batch"], stored.Options["top_p"]) = ("64", "");
             answer = "";
             Click(Rows(presetWindow)[1]); // discards the Reviewer's change
             await Idle();
             if (Listed(presetWindow) != "planner,implementer*,reviewer" || Field(presetWindow, "temperature").Text != "0.33")
                 return false;
             Preset(presetWindow, "Smoke options");
-            if (Field(presetWindow, "temperature").Text != "0.21" || Field(presetWindow, "top_k").Text != "7" || !File.ReadAllBytes(config).SequenceEqual(bytes))
+            if (Field(presetWindow, "temperature").Text != "0.21" || Field(presetWindow, "top_k").Text != "7" || Field(presetWindow, "n_batch").Text != "" ||
+                Field(presetWindow, "top_p").Text != "0.95" || !File.ReadAllBytes(config).SequenceEqual(bytes))
                 return false;
             Preset(presetWindow, "Delete preset", "Smoke options");
             if (_settings.ModelPresets.Any(p => p.Name == "Smoke options"))
@@ -913,14 +968,41 @@ public partial class MainWindow
             Button Labelled(DialogShell w, string label) => Find<Button>(w, b => b.Content as string == label)!;
             var bytes = File.ReadAllBytes(config);
 
-            // Save: a model from the list and a temperature.
+            static async Task<bool> Until(Func<bool> done)
+            {
+                for (var i = 0; i < 50 && !done(); i++)
+                    await Task.Delay(100);
+                return done();
+            }
+            ComboBoxItem? FakeItem(DialogShell w) => Model(w).Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake);
+
+            // The model's defaults arrive off the UI thread and never replace an edit; re-selecting "(current)" restores the
+            // fields (no model_path: the load options empty again), so Save is not refused.
             if (await Open() is not { } window || window.WindowStyle != WindowStyle.None || window.Owner != this || window.Width < 600 ||
-                Model(window).Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake) is not { } fakeItem || !Model(window).IsEnabled)
+                FakeItem(window) is not { } fakeItem || !Model(window).IsEnabled)
                 return false;
             snap("27-model-settings", window);
+            Field(window, "top_k").Text = "33";
             Model(window).SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
-            if (Field(window, "max_seq_length").Text != "32768" || Field(window, "n_batch").Text != "2048" || Field(window, "seed").Text != "")
+            if (!await Until(() => Field(window, "max_seq_length").Text == "32768") || Field(window, "n_batch").Text != "2048" || Field(window, "seed").Text != "" ||
+                Field(window, "max_tokens").Text != "" || Field(window, "top_k").Text != "33" ||
+                Model(window).Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag is null) is not { } currentItem)
                 return false;
+            Model(window).SelectedItem = currentItem;
+            if (!await Until(() => Field(window, "max_seq_length").Text == "") || Field(window, "n_batch").Text != "")
+                return false;
+            Click(Labelled(window, "Save"));
+            await Idle();
+            if (window.IsVisible || JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!["auto_load"] is not null)
+                return false;
+
+            // Save: a model from the list and a temperature.
+            if (await Open() is not { } picking || FakeItem(picking) is not { } fakeAgain)
+                return false;
+            Model(picking).SelectedItem = fakeAgain;
+            if (!await Until(() => Field(picking, "max_seq_length").Text == "32768"))
+                return false;
+            window = picking;
             Field(window, "temperature").Text = "0.45";
             Click(Labelled(window, "Save"));
             await Idle();

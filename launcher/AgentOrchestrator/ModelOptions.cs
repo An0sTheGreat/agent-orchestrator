@@ -65,17 +65,18 @@ internal static class ModelOptions
         new("cpu_fallback", "auto_load", Kind.Bool, "Load on the CPU when the GPU is short of memory"),
         new("chat_template_override", "auto_load", Kind.Multiline, "Jinja chat template used instead of the model's own"),
         new("llama_extra_args", "auto_load", Kind.ArgList, "Extra llama-server arguments: one per line, or space separated"),
-        new("temperature", "sampling", Kind.Number, "0 to 2", 0, 2, Default: "0.6"),
+        // Sampling defaults are llama-server's own, so writing one changes nothing.
+        new("temperature", "sampling", Kind.Number, "0 to 2", 0, 2, Default: "0.8"),
         new("top_p", "sampling", Kind.Number, "0 to 1", 0, 1, Default: "0.95"),
-        new("top_k", "sampling.extra_body", Kind.Int, "-1 to 100", -1, 100, Default: "20"),
-        new("min_p", "sampling.extra_body", Kind.Number, "0 to 1", 0, 1, Default: "0.01"),
+        new("top_k", "sampling.extra_body", Kind.Int, "-1 to 100", -1, 100, Default: "40"),
+        new("min_p", "sampling.extra_body", Kind.Number, "0 to 1", 0, 1, Default: "0.05"),
         new("repetition_penalty", "sampling.extra_body", Kind.Number, "1 to 2", 1, 2, Default: "1.0"),
         new("presence_penalty", "sampling", Kind.Number, "-2 to 2", -2, 2, Default: "0"),
         new("frequency_penalty", "sampling", Kind.Number, "-2 to 2", -2, 2, Default: "0"),
-        new("max_tokens", "sampling", Kind.Int, "Longest reply, in tokens", 1, 1048576, Default: "8192"),
+        new("max_tokens", "sampling", Kind.Int, "Longest reply, in tokens; empty = no limit", 1, 1048576),
         new("seed", "sampling", Kind.Int, "Fixed seed for repeatable replies; -1 = random", -1, uint.MaxValue),
         new("stop", "sampling", Kind.StopList, "Stop strings: one per line, or comma separated"),
-        new("enable_thinking", "sampling", Kind.Bool, "Reason before answering; off suits workers that edit files"),
+        new("enable_thinking", "sampling", Kind.Bool, "Reason before answering; off suits workers that edit files; empty = the model's own default"),
         new("reasoning_effort", "sampling", Kind.Choice, "For models that take an effort level", Choices: ["none", "minimal", "low", "medium", "high", "max", "xhigh"]),
         new("timeout_seconds", "role", Kind.Int, "Seconds to wait for a reply, 1 to 86400", 1, 86400),
     ];
@@ -118,19 +119,20 @@ internal static class ModelOptions
 
     // What each option shows while its key is absent: the model's own value (meta: its GGUF header values, null = unknown),
     // else the option's static default. Context length: the model's, capped at ContextCap. load false (no model to load):
-    // the load options stay empty, as Apply would refuse them.
-    public static Dictionary<string, string> Defaults(IReadOnlyDictionary<string, string>? meta, bool load)
+    // the load options stay empty, as Apply would refuse them. inherited (a custom worker: what it inherits from the
+    // Implementer, LauncherLogic.InheritedOptions) wins over both. Thinking is never filled: a template with a thinking
+    // switch does not say which way the model defaults.
+    public static Dictionary<string, string> Defaults(IReadOnlyDictionary<string, string>? meta, bool load, IReadOnlyDictionary<string, string>? inherited = null)
     {
         var defaults = All.Where(o => o.Default is not null && (load || o.Target != "auto_load")).ToDictionary(o => o.Key, o => o.Default!);
-        if (meta is null)
-            return defaults;
         if (load && ModelContext(meta) is { } context)
             defaults["max_seq_length"] = Math.Min(context, ContextCap).ToString(CultureInfo.InvariantCulture);
-        if (LauncherLogic.ThinkingFromTemplate(meta.GetValueOrDefault("tokenizer.chat_template")) is true)
-            defaults["enable_thinking"] = "on";
         foreach (var (gguf, key) in new[] { ("temp", "temperature"), ("top_p", "top_p"), ("top_k", "top_k"), ("min_p", "min_p"), ("penalty_repeat", "repetition_penalty") })
-            if (meta.GetValueOrDefault("general.sampling." + gguf) is { } value && Parse(All.First(o => o.Key == key), value).Error is null)
+            if (meta?.GetValueOrDefault("general.sampling." + gguf) is { } value && Parse(All.First(o => o.Key == key), value).Error is null)
                 defaults[key] = value;
+        foreach (var o in All)
+            if (inherited?.GetValueOrDefault(o.Key) is { Length: > 0 } value && (load || o.Target != "auto_load"))
+                defaults[o.Key] = value;
         return defaults;
     }
 
@@ -285,7 +287,8 @@ internal static class ModelOptions
 
         // Defaults: configured > the model's GGUF values > static; the context capped; unknown metadata -> static only.
         var unknown = Defaults(null, load: true);
-        Check(unknown["max_seq_length"] == "32768" && unknown["n_batch"] == "2048" && unknown["temperature"] == "0.6" && !unknown.ContainsKey("enable_thinking") &&
+        Check(unknown["max_seq_length"] == "32768" && unknown["n_batch"] == "2048" && unknown["temperature"] == "0.8" && unknown["top_k"] == "40" && unknown["min_p"] == "0.05" &&
+              !unknown.ContainsKey("enable_thinking") && !unknown.ContainsKey("max_tokens") &&
               !unknown.ContainsKey("gguf_variant") && !unknown.ContainsKey("seed") && !unknown.ContainsKey("timeout_seconds"), "static defaults: " + string.Join(" ", unknown));
         Check(!Defaults(null, load: false).ContainsKey("n_batch") && Defaults(null, false)["top_p"] == "0.95", "no model: load options stay empty");
         var meta = new Dictionary<string, string>
@@ -295,7 +298,12 @@ internal static class ModelOptions
         };
         var derived = Defaults(meta, load: true);
         Check(ModelContext(meta) == 262144 && derived["max_seq_length"] == "32768" && derived["temperature"] == "0.7" && derived["top_k"] == "40" &&
-              derived["min_p"] == "0.01" && derived["enable_thinking"] == "on" && derived["n_batch"] == "2048", "model defaults: " + string.Join(" ", derived));
+              derived["min_p"] == "0.05" && !derived.ContainsKey("enable_thinking") && derived["n_batch"] == "2048", "model defaults: " + string.Join(" ", derived));
+        // A custom worker: the Implementer's values over the model's; its load values only with a model to load.
+        var inherited = new Dictionary<string, string> { ["temperature"] = "0.33", ["n_batch"] = "64", ["top_p"] = "" };
+        var custom = Defaults(meta, load: true, inherited);
+        Check(custom["temperature"] == "0.33" && custom["n_batch"] == "64" && custom["top_p"] == "0.95" && custom["top_k"] == "40" &&
+              !Defaults(meta, load: false, inherited).ContainsKey("n_batch"), "inherited defaults: " + string.Join(" ", custom));
         meta["qwen3.context_length"] = "8192";
         meta["tokenizer.chat_template"] = "plain";
         derived = Defaults(meta, load: true);

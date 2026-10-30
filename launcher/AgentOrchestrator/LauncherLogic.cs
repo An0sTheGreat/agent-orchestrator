@@ -184,9 +184,11 @@ internal static class LauncherLogic
 
     internal static int GgufTemplateCacheCount { get { lock (GgufTemplateCache) return GgufTemplateCache.Count; } }
 
+    // A malformed or unknown entry after the header ends the scan with what was read so far.
     private static Dictionary<string, string>? ScanGgufMetadata(string path)
     {
         const ulong MaxString = 64 << 20;
+        Dictionary<string, string>? meta = null;
         try
         {
             using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
@@ -228,7 +230,7 @@ internal static class LauncherLogic
                     default: throw new InvalidDataException();
                 }
             }
-            var meta = new Dictionary<string, string>();
+            meta = new Dictionary<string, string>();
             for (ulong i = 0; i < count; i++)
             {
                 var name = Str(true)!;
@@ -254,7 +256,7 @@ internal static class LauncherLogic
             return meta;
         }
         catch (Exception e) when (e is EndOfStreamException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or OverflowException)
-        { return null; }
+        { return meta; }
     }
 
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
@@ -1224,6 +1226,34 @@ internal static class LauncherLogic
         return IsRemote(template) ? template!["local_settings"] as JsonObject : template;
     }
 
+    // What a custom worker copies from the Implementer before its own options: the local timeout_seconds and auto_load
+    // (see LocalImplementer) and the sampling, but enable_thinking.
+    private static void Inherit(JsonObject entry, JsonObject? implementer, JsonObject? local)
+    {
+        if (local?["timeout_seconds"] is { } timeout)
+            entry["timeout_seconds"] = timeout.DeepClone();
+        entry["auto_load"] = local?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
+        var sampling = implementer?["sampling"]?.DeepClone() as JsonObject ?? new JsonObject();
+        sampling.Remove("enable_thinking");
+        entry["sampling"] = sampling;
+    }
+
+    // The option values a custom worker inherits for what it leaves empty (as ModelOptions.Read shows them; gguf_variant
+    // follows the worker's own model). None when the config cannot be read.
+    public static Dictionary<string, string> InheritedOptions(string configPath, string? templatePath)
+    {
+        try
+        {
+            var implementer = JsonNode.Parse(File.ReadAllText(configPath))?["roles"]?["implementer"] as JsonObject;
+            var entry = new JsonObject();
+            Inherit(entry, implementer, LocalImplementer(implementer, templatePath));
+            var options = ModelOptions.Read(entry);
+            options.Remove("gguf_variant");
+            return options;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return new(); }
+    }
+
     // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
     // local connection settings and auto_load defaults (see LocalImplementer) and its sampling, then applies its own
     // model and settings.
@@ -1261,10 +1291,8 @@ internal static class LauncherLogic
                     entry[key] = value.DeepClone();
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
             entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
-            if (local?["timeout_seconds"] is { } timeout)
-                entry["timeout_seconds"] = timeout.DeepClone();
-
-            var load = local?["auto_load"]?.DeepClone() as JsonObject ?? new JsonObject();
+            Inherit(entry, implementer, local);
+            var load = (JsonObject)entry["auto_load"]!;
             load["model_path"] = w.ModelPath;
             if (string.IsNullOrEmpty(w.ModelVariant))
                 load.Remove("gguf_variant");
@@ -1274,11 +1302,6 @@ internal static class LauncherLogic
                 load.Remove("gguf_file");
             else
                 load["gguf_file"] = w.GgufFile;
-            entry["auto_load"] = load;
-
-            var sampling = implementer?["sampling"]?.DeepClone() as JsonObject ?? new JsonObject();
-            sampling.Remove("enable_thinking");
-            entry["sampling"] = sampling;
             ModelOptions.Apply(entry, ModelOptions.Effective(w), includeLoad: true); // the worker's own values; the rest stay the Implementer's
             array.Add(entry);
         }
@@ -1681,7 +1704,7 @@ internal static class LauncherLogic
             using (var w = new BinaryWriter(fs, System.Text.Encoding.UTF8))
             {
                 void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
-                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(7UL);
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(9UL);
                 S("general.architecture"); w.Write(8u); S("qwen3");
                 S("general.sampling.temp"); w.Write(6u); w.Write(0.7f);
                 S("tokenizer.ggml.tokens"); w.Write(9u); w.Write(8u); w.Write(2UL); S("a"); S("b");
@@ -1689,6 +1712,8 @@ internal static class LauncherLogic
                 S("qwen3.context_length"); w.Write(4u); w.Write(262144u);
                 S("general.sampling.flag"); w.Write(7u); w.Write((byte)1);
                 S("tokenizer.chat_template"); w.Write(8u); S("{{ x }}");
+                S("general.future"); w.Write(99u); // an unknown type: the scan stops, keeping what it read
+                S("general.sampling.min_p"); w.Write(6u); w.Write(0.1f);
             }
             var read = ReadGgufMetadata(metaFile);
             if (read is null || read.Count != 5 || read["general.architecture"] != "qwen3" || read["general.sampling.temp"] != "0.7" || read["general.sampling.top_k"] != "40" ||
