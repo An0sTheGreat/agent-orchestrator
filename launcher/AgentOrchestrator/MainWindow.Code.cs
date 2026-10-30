@@ -247,7 +247,7 @@ public partial class MainWindow
     {
         if (_codeConv is not null)
             return true;
-        if (!StoreDo(() => _codeConv = _store.Create(project)) || _codeConv is null)
+        if (!StoreDo(() => _codeConv = _store.Create(project, mode: _settings.CodeMode)) || _codeConv is null)
             return false;
         _settings.LastConversation = _codeConv.Id;
         _settings.Save();

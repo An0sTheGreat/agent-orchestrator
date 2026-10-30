@@ -89,7 +89,7 @@ public partial class MainWindow
                 AddRow(card);
             if (card != selected && !Show(card))
                 return;
-            if (conv is not null && (conv.IsCode || !ChatMulti))
+            if (conv is not null && !MultiOf(conv)) // in Multi the chain stays the target
             {
                 if (conv.IsCode)
                     _settings.CodeWorker = card.Role;

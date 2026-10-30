@@ -211,7 +211,14 @@ public partial class MainWindow
     {
         var mode = ((FrameworkElement)sender).Tag as string == "multi" ? "multi" : "single";
         if (sender == CodeSingleToggle || sender == CodeMultiToggle)
+        {
             _settings.CodeMode = mode;
+            if (_codeConv is { } open) // reopening it brings back this mode, even before a turn saves it
+            {
+                open.Mode = mode;
+                StoreDo(() => _store.Save(open));
+            }
+        }
         else
             _settings.ChatMode = mode;
         _settings.Save();

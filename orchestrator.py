@@ -3330,8 +3330,12 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         draft = chat_call(config, "implementer", "implement", system, ask(f"PLAN (from the Planner)\n{plan}"),
                           (CODE_TOOLS + tools, handlers, f"\n{folders_context(folders)}"))
         review = {**read_only, **code_write_handlers(folders)}
-        final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip(),
-                          ask(f"PLAN (from the Planner)\n{plan}\n\nIMPLEMENTER'S REPLY\n{draft}"), (CODE_TOOLS[:5] + tools, review, context))
+        try:  # the Implementer's edits are on disk: a failed review must not lose its reply
+            final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip(),
+                              ask(f"PLAN (from the Planner)\n{plan}\n\nIMPLEMENTER'S REPLY\n{draft}"), (CODE_TOOLS[:5] + tools, review, context))
+        except WorkflowError as exc:
+            print(f"[code] the review failed ({exc})")
+            final = ""
         if not final:
             print("[code] the Reviewer returned nothing usable; answering with the Implementer's reply")
         role, text = ("reviewer", final) if final else ("implementer", draft)

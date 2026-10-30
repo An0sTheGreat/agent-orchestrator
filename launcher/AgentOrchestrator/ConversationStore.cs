@@ -110,12 +110,12 @@ internal sealed class ConversationStore
     }
 
     // Null when the store is read-only.
-    public Conversation? Create(string folder, string kind = "code")
+    public Conversation? Create(string folder, string kind = "code", string mode = "single")
     {
         if (ReadOnly)
             return null;
         var now = DateTime.Now;
-        var c = new Conversation { Id = NewId(), Kind = kind, Folder = folder, Created = now, Updated = now };
+        var c = new Conversation { Id = NewId(), Kind = kind, Folder = folder, Mode = mode, Created = now, Updated = now };
         _conversations[c.Id] = c;
         Write(PathOf(c.Id), c);
         _index.Items.Insert(0, c.Id);

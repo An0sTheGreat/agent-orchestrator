@@ -2590,6 +2590,16 @@ class CodeTests(unittest.TestCase):
             _, _, events, _ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
                                         {"planner": ["P"], "implementer": ["DRAFT-B"], "reviewer": ["<think>only thoughts"]})
         self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "DRAFT-B"}])
+        # so does a review that fails outright: the Implementer's edits are already on disk
+        real = orchestrator.chat_call
+        def failing(config, role, *args):
+            if role == "reviewer":
+                raise orchestrator.WorkflowError("exceeded max_tool_steps")
+            return real(config, role, *args)
+        with patch.object(orchestrator.sys, "stdout", out), patch.object(orchestrator, "chat_call", failing):
+            _, _, events, _ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
+                                        {"planner": ["P"], "implementer": ["DRAFT-B"]})
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "DRAFT-B"}])
 
     def test_single_is_the_default_and_multi_needs_the_builtins(self):
         code, log, events, _ = self.code({"action": "chat", "worker": "reviewer", "messages": self.MSGS}, {"reviewer": ["done"]})
