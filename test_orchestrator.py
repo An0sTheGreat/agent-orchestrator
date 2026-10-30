@@ -742,6 +742,109 @@ class OrchestratorTests(unittest.TestCase):
                 client.complete("m", [], {})
         self.assertIn("API 400", str(ctx.exception))
 
+    OK_REPLY = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+    OVERFLOW = "implementer: API 400 from http://x/v1/chat/completions: context length exceeded"
+
+    def _long_history(self):
+        """system, task, five read_file steps with big results, then one step with two calls and their two results."""
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "the task"}]
+        for i in range(5):
+            call = {"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": f"f{i}.py"})}}
+            messages += [{"role": "assistant", "content": "", "tool_calls": [call]}, {"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 700}]
+        calls = [{"id": f"d{i}", "type": "function", "function": {"name": "search_files", "arguments": json.dumps({"pattern": "def"})}} for i in range(2)]
+        messages.append({"role": "assistant", "content": "", "tool_calls": calls})
+        messages += [{"role": "tool", "tool_call_id": f"d{i}", "content": "y" * 100} for i in range(2)]
+        return messages
+
+    def _compacting_client(self, n_ctx, summary, main):
+        """A client with context size n_ctx; summary calls get `summary` (raised if an exception), others call main(n)."""
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role, client.context_size = "implementer", lambda: n_ctx
+        sent = []
+
+        def answer(via, body):
+            body = json.loads(json.dumps(body))  # the messages list is mutated in place later
+            sent.append((via, body))
+            if body["messages"][0]["content"] == orchestrator.COMPACT_PROMPT:
+                if isinstance(summary, Exception):
+                    raise summary
+                return {"choices": [{"message": {"content": summary}, "finish_reason": "stop"}]}
+            return main(sum(1 for _, b in sent if b["messages"][0]["content"] != orchestrator.COMPACT_PROMPT))
+
+        client._request = lambda method, route, body=None: answer("request", body)
+        client._stream_chat = lambda body: answer("stream", body)
+        return client, sent
+
+    def test_complete_compacts_a_history_over_the_threshold(self):
+        messages = self._long_history()
+        tail = messages[-3:]
+        client, sent = self._compacting_client(1000, "SUMMARY", lambda n: self.OK_REPLY)
+        events, out = [], io.StringIO()
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator.ApiClient, "_monitor_row", lambda client, started: {}), contextlib.redirect_stdout(out):
+            self.assertEqual(client.complete("m", messages, {"max_tokens": 100})["content"], "ok")
+        # one quiet summary call (no streaming, thinking off, its own max_tokens), then the compacted request
+        self.assertEqual([via for via, _ in sent], ["request", "stream"])
+        self.assertEqual((sent[0][1]["max_tokens"], sent[0][1]["enable_thinking"]), (1500, False))
+        self.assertIn("f0.py", sent[0][1]["messages"][1]["content"])
+        self.assertEqual(messages[0], {"role": "system", "content": "sys"})
+        self.assertEqual(messages[1], {"role": "user", "content": "the task" + orchestrator.COMPACT_MARK + "SUMMARY"})
+        self.assertEqual(messages[2:], tail)  # starts at an assistant message, its two tool results kept with it
+        self.assertEqual(sent[1][1]["messages"], messages)
+        compacted = [d for e, d in events if e == "compacted"]
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual(compacted[0]["role"], "implementer")
+        self.assertGreater(compacted[0]["before"], 720)
+        self.assertLess(compacted[0]["after"], compacted[0]["before"])
+        self.assertIn(f"[implementer] context compacted: {compacted[0]['before']} → {compacted[0]['after']} tokens", out.getvalue())
+        self.assertEqual([d.get("text") for e, d in events if e == "message"], ["ok"])  # nothing of the summary streamed
+
+    def test_context_error_compacts_once_and_retries(self):
+        def overflow_first(n):
+            if n == 1:
+                raise orchestrator.WorkflowError(self.OVERFLOW)
+            return self.OK_REPLY
+
+        messages = self._long_history()
+        client, sent = self._compacting_client(None, "SUMMARY", overflow_first)  # unknown n_ctx: only the error triggers it
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(client.complete("m", messages, {})["content"], "ok")
+        self.assertEqual(len(sent), 3)  # failed request, summary, retry
+        self.assertIn(orchestrator.COMPACT_MARK + "SUMMARY", messages[1]["content"])
+        self.assertEqual(messages[2]["role"], "assistant")
+        self.assertEqual(sent[2][1]["messages"], messages)
+        # still too long after compacting: the existing error, after one compaction only
+        client, sent = self._compacting_client(None, "SUMMARY", lambda n: (_ for _ in ()).throw(orchestrator.WorkflowError(self.OVERFLOW)))
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                client.complete("m", self._long_history(), {})
+        self.assertIn("exceeded the model's context length", str(ctx.exception))
+        self.assertEqual(sum(1 for _, b in sent if b["messages"][0]["content"] == orchestrator.COMPACT_PROMPT), 1)
+
+    def test_compaction_falls_back_to_a_tool_call_note_when_the_summary_fails(self):
+        messages = self._long_history()
+        client, _ = self._compacting_client(1000, orchestrator.WorkflowError("API 500"), lambda n: self.OK_REPLY)
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", messages, {"max_tokens": 100})
+        summary = messages[1]["content"].partition(orchestrator.COMPACT_MARK)[2]
+        self.assertIn("Tool calls made", summary)
+        self.assertIn("- read_file f0.py", summary)
+        self.assertIn("- read_file f4.py", summary)
+        self.assertEqual(messages[2]["role"], "assistant")
+
+    def test_too_short_history_is_not_compacted_and_the_error_stands(self):
+        call = {"id": "c", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "z" * 5000},
+                    {"role": "assistant", "content": "", "tool_calls": [call]}, {"role": "tool", "tool_call_id": "c", "content": "r"}]
+        original = json.loads(json.dumps(messages))
+        client, sent = self._compacting_client(1000, "SUMMARY", lambda n: (_ for _ in ()).throw(orchestrator.WorkflowError(self.OVERFLOW)))
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(orchestrator.WorkflowError) as ctx:
+                client.complete("m", messages, {"max_tokens": 100})
+        self.assertIn("exceeded the model's context length", str(ctx.exception))
+        self.assertEqual(messages, original)
+        self.assertEqual(len(sent), 1)  # no summary call
+
     def _scripted_agent(self, replies, folder, allowed, config=None):
         """Run the writable implementer against scripted replies; returns (result, client)."""
         class Client:
@@ -3453,7 +3556,8 @@ class LlamaCppTests(unittest.TestCase):
     def chat(self, client, sampling, replies=None):
         """Run client.complete against canned payloads; returns the request bodies it sent."""
         replies = replies or [{"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}]
-        with patch.object(client, "_request", side_effect=replies) as request:
+        with patch.object(client, "_request", side_effect=replies) as request, \
+                patch.object(client, "context_size", return_value=None):  # complete() asks it; no live server here
             client.complete(self.PATH, [{"role": "user", "content": "hi"}], sampling)
         return [call.args[2] for call in request.call_args_list]
 
@@ -3468,6 +3572,7 @@ class LlamaCppTests(unittest.TestCase):
     def test_llama_ask_once_without_thinking(self):
         sent = []
         with patch.object(orchestrator.ApiClient, "ensure_model", return_value=self.PATH), \
+                patch.object(orchestrator.ApiClient, "context_size", return_value=None), \
                 patch.object(orchestrator.ApiClient, "_request",
                              lambda self_, method, path, body: sent.append(body) or {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}):
             self.assertEqual(orchestrator.ask_once({"roles": {"planner": self.ROLE}}, "planner", "s", "u", False, thinking=False), "ok")
