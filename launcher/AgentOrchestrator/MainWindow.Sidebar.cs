@@ -34,31 +34,38 @@ public partial class MainWindow
         _sidebarMenus.Clear();
         _sidebarDrops.Clear();
         var view = _store.View();
+        // Each view lists its own kind: Chat-view chats in Chat, folder conversations in Code (projects show in both).
+        // ponytail: Move up/down swaps with the store neighbour, which may be the other kind's (no visible move then).
+        var chat = NavChat.IsChecked == true;
+        List<Entry> Mine(IEnumerable<Entry> entries) => entries.Where(e => (e.Kind == "chat") == chat).ToList();
         SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
         SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
         foreach (var group in view.Groups)
         {
-            var header = SidebarHeader(ProjectName(group), group.Collapsed, group.Items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
+            var items = Mine(group.Items);
+            var header = SidebarHeader(ProjectName(group), group.Collapsed, items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
             Draggable(header, "project:" + group.Id);
             SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups)), group.Id,
                 (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, group.Id) : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
             if (!group.Collapsed)
-                for (var i = 0; i < group.Items.Count; i++)
-                    SidebarList.Children.Add(ChatRow(group.Items[i], group.Id, i, group.Items.Count, view.Groups, archived: false));
+                for (var i = 0; i < items.Count; i++)
+                    SidebarList.Children.Add(ChatRow(items[i], group.Id, i, items.Count, view.Groups, archived: false));
         }
-        if (view.Ungrouped.Count > 0 || view.Groups.Count > 0) // with projects, RECENTS is where a chat is dragged out to
+        var ungrouped = Mine(view.Ungrouped);
+        if (ungrouped.Count > 0 || view.Groups.Count > 0) // with projects, RECENTS is where a chat is dragged out to
         {
             var recents = new TextBlock { Text = "RECENTS", Tag = "RECENTS", Margin = new Thickness(8, 14, 0, 6) };
             recents.SetResourceReference(StyleProperty, "SectionHeader");
             SidebarList.Children.Add(DropTarget(new Grid { Children = { recents } }, "RECENTS", (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, null) : null));
-            for (var i = 0; i < view.Ungrouped.Count; i++)
-                SidebarList.Children.Add(ChatRow(view.Ungrouped[i], null, i, view.Ungrouped.Count, view.Groups, archived: false));
+            for (var i = 0; i < ungrouped.Count; i++)
+                SidebarList.Children.Add(ChatRow(ungrouped[i], null, i, ungrouped.Count, view.Groups, archived: false));
         }
-        if (view.Archived.Count > 0)
+        var archivedRows = Mine(view.Archived);
+        if (archivedRows.Count > 0)
         {
-            SidebarList.Children.Add(SidebarHeader("ARCHIVED", view.ArchivedCollapsed, view.Archived.Count, () => _store.SetArchivedCollapsed(!view.ArchivedCollapsed)));
+            SidebarList.Children.Add(SidebarHeader("ARCHIVED", view.ArchivedCollapsed, archivedRows.Count, () => _store.SetArchivedCollapsed(!view.ArchivedCollapsed)));
             if (!view.ArchivedCollapsed)
-                foreach (var entry in view.Archived)
+                foreach (var entry in archivedRows)
                     SidebarList.Children.Add(ChatRow(entry, null, 0, 1, view.Groups, archived: true));
         }
         RefreshTitleChat(view);

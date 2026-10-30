@@ -2187,7 +2187,10 @@ public partial class MainWindow : Window
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null || ChatContextRing.Tag is not null)
                     return Fail();
-                ShowView(); // from the Code view, its row opens the Chat view
+                ShowView(); // the Code view lists only Code conversations; the Chat view lists the chat
+                if (Rows().Contains(savedChat.Id))
+                    return Fail();
+                ShowView(chat: true);
                 ClickRow(savedChat.Id);
                 await Settle();
                 Snap("23-sidebar-chat");
