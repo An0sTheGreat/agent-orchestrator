@@ -384,6 +384,72 @@ class OrchestratorTests(unittest.TestCase):
         with patch.object(orchestrator, "urlopen", return_value=Response()), patch.object(orchestrator, "emit"):
             self.assertEqual(client._stream_chat({})["choices"][0]["finish_reason"], "length")
 
+    def test_think_splitter_start_modes(self):
+        def split(start, chunks):
+            splitter = orchestrator.ThinkSplitter(start)
+            pieces = [p for chunk in chunks for p in splitter.feed(chunk)] + splitter.flush()
+            return {kind: "".join(t for k, t in pieces if k == kind) for kind in ("thinking", "text")}
+        self.assertEqual(split(True, ["reason", "ing</th", "ink>\n\nans", "wer"]), {"thinking": "reasoning", "text": "\n\nanswer"})
+        self.assertEqual(split(True, ["\n<th", "ink>r</think>a"]), {"thinking": "r", "text": "a"})  # model opened it anyway
+        self.assertEqual(split(None, ["abc", "</think>ans"]), {"thinking": "abc", "text": "ans"})  # unknown template
+        self.assertEqual(split(None, ["<think>x</think>y"]), {"thinking": "x", "text": "y"})
+        self.assertEqual(split(None, ["hello"]), {"thinking": "", "text": "hello"})
+        long = orchestrator.ThinkSplitter(None)
+        self.assertEqual(long.feed("x" * 250), [("text", "x" * 250)])  # undecided only for the first AUTO_HOLD chars
+
+    def _sse_client(self, chunks, template):
+        class Response:
+            headers = type("H", (), {"get_content_type": staticmethod(lambda: "text/event-stream")})()
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def __iter__(self):
+                for chunk in chunks:
+                    yield f"data: {json.dumps({'choices': [{'delta': chunk}]})}\n".encode()
+                yield b"data: [DONE]\n"
+
+        client = orchestrator.ApiClient({"base_url": "http://127.0.0.1:1/v1", "api_key": "no-key", "auto_load": {"model_path": "q"}})
+        client.role, client.llama_port = "implementer", 1
+        client._request_at = lambda base, method, route, body=None: {"chat_template": template} if route == "/props" else {}
+        self.enterContext(patch.dict(orchestrator.THINK_TEMPLATES, clear=True))
+        return client, Response
+
+    QWEN_TEMPLATE = "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n<think>\\n' }}{%- endif %}"
+    PLAIN_TEMPLATE = "{%- if add_generation_prompt %}{{- '<|im_start|>assistant\\n' }}{%- endif %}"
+
+    def _stream(self, chunks, template, body=None):
+        client, response = self._sse_client(chunks, template)
+        with patch.object(orchestrator, "urlopen", return_value=response()), patch.object(orchestrator, "emit") as emit:
+            message = client._stream_chat(body or {"model": "m", "messages": []})["choices"][0]["message"]
+        return message, [(c.kwargs["kind"], c.kwargs["text"]) for c in emit.call_args_list]
+
+    def test_stream_starts_in_thinking_when_the_template_opens_think(self):
+        chunks = [{"content": "reason"}, {"content": "ing…</think>"}, {"content": "\n\nanswer"}]
+        message, deltas = self._stream(chunks, self.QWEN_TEMPLATE)
+        self.assertEqual("".join(t for k, t in deltas if k == "thinking"), "reasoning…")
+        self.assertEqual([k for k, _ in deltas], ["thinking", "thinking", "text"])
+        self.assertEqual(orchestrator.answer_text(message), "answer")
+        # thinking disabled for this call: not started in thinking, all text; split_reasoning still splits a bare </think>
+        off = {"model": "m", "messages": [], "chat_template_kwargs": {"enable_thinking": False}}
+        message, deltas = self._stream(chunks, self.QWEN_TEMPLATE, off)
+        self.assertEqual({k for k, _ in deltas}, {"text"})
+        self.assertEqual(orchestrator.split_reasoning(message), ("reasoning…", "answer"))
+
+    def test_stream_stays_text_for_a_non_thinking_template_and_keeps_reasoning_content(self):
+        message, deltas = self._stream([{"content": "plain "}, {"content": "answer"}], self.PLAIN_TEMPLATE)
+        self.assertEqual((deltas, message["content"]), ([("text", "plain "), ("text", "answer")], "plain answer"))
+        # llama-server's own reasoning parser: reasoning_content first, then the answer as content
+        message, deltas = self._stream([{"reasoning_content": "hm"}, {"content": "hi"}], self.QWEN_TEMPLATE)
+        self.assertEqual((deltas, message["content"], message["reasoning_content"]), ([("thinking", "hm"), ("text", "hi")], "hi", "hm"))
+
+    def test_split_reasoning_cases(self):
+        split = orchestrator.split_reasoning
+        self.assertEqual(split({"content": "plan</think>\n\nanswer"}), ("plan", "answer"))
+        self.assertEqual(split({"content": "<think>plan</think>answer"}), ("plan", "answer"))
+        self.assertEqual(split({"content": "answer", "reasoning_content": "r"}), ("r", "answer"))
+        self.assertEqual(split({"content": "just text"}), ("", "just text"))
+        self.assertTrue(orchestrator.opens_think(self.QWEN_TEMPLATE))
+        self.assertFalse(orchestrator.opens_think(self.PLAIN_TEMPLATE) or orchestrator.opens_think("<think> no prompt"))
+
     def test_enable_thinking_is_sent_top_level_only_when_configured(self):
         for sampling, expected in (({"enable_thinking": False, "max_tokens": 5}, False), ({"max_tokens": 5}, "absent")):
             config = {"roles": {"planner": {"base_url": "http://x/v1", "api_key": "k", "sampling": sampling}}}

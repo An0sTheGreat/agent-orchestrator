@@ -59,6 +59,18 @@ internal static class LauncherLogic
         return string.Join(" · ", parts);
     }
 
+    // While a call streams: "Planner · 37.5 tok/s · 1,204 tokens" (streamed chunks, about one token each).
+    public static string LiveLine(string name, double tps, long tokens)
+    {
+        var parts = new List<string>();
+        if (name.Length > 0)
+            parts.Add(name);
+        if (tps > 0)
+            parts.Add(tps.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " tok/s");
+        parts.Add(tokens.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " tokens");
+        return string.Join(" · ", parts);
+    }
+
     public static string TotalsLine(long turn, long task) => $"Turn: {ContextSnapshot.Tokens(turn)} tokens · Task: {ContextSnapshot.Tokens(task)} tokens";
 
     // "just now", "3 minutes ago", "2 hours ago", "yesterday", then a date, as the footer under a message shows it.
@@ -1505,7 +1517,8 @@ internal static class LauncherLogic
             BuildCodeRequest("chat", "implementer", timed, @"Y:\P", []).Contains("time", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("A message time reached the engine request.");
         if (StatsLine("Planner", 42.14, 1234, 5678) != "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" || StatsLine("", 0, 5, 7) != "5 generated · 7 prompt" ||
-            TotalsLine(12345, 45600) != "Turn: 12.3k tokens · Task: 45.6k tokens" || TotalsLine(950, 1_200_000) != "Turn: 950 tokens · Task: 1.2M tokens")
+            TotalsLine(12345, 45600) != "Turn: 12.3k tokens · Task: 45.6k tokens" || TotalsLine(950, 1_200_000) != "Turn: 950 tokens · Task: 1.2M tokens" ||
+            LiveLine("Planner", 37.5, 1204) != "Planner · 37.5 tok/s · 1,204 tokens" || LiveLine("Planner", 0, 1) != "Planner · 1 tokens")
             throw new InvalidOperationException("Stats formatting failed.");
         var at = new DateTimeOffset(2026, 6, 15, 12, 0, 0, DateTimeOffset.Now.Offset);
         if (RelativeTime(at.AddSeconds(-30), at) != "just now" || RelativeTime(at.AddSeconds(5), at) != "just now" ||

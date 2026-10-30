@@ -683,6 +683,7 @@ public partial class MainWindow
         }
         _activeRole = null;
         _chatClosed.Clear();
+        _callLive.Clear();
         var loadedThisTurn = _turnLoaded.ToList();
         _turnLoaded = new();
         if (!_settings.ChatKeepLoaded)
@@ -805,6 +806,7 @@ public partial class MainWindow
         r.TurnTokens += total;
         _turn.Tokens += total;
         r.Last = line;
+        _callLive.Remove(role);
         foreach (var block in _chatClosed.Where(b => b.Role == role).ToList())
         {
             _chatClosed.Remove(block);
@@ -854,6 +856,7 @@ public partial class MainWindow
         {
             block.Body = EnsureAnswer(r); // the answer streams straight into the prominent text, not a section
             block.View = r.Rendered;
+            r.Content.Children.Add(block.Live = NewLiveLine());
             return block;
         }
         block.Body = BodyText("", mono: false, muted: kind == "thinking", conv: _turn);
@@ -868,6 +871,7 @@ public partial class MainWindow
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         r.Content.Children.Add(block.Expander);
+        r.Content.Children.Add(block.Live = NewLiveLine()); // outside the section, so it shows while the section is folded
         FadeIn(block.Expander);
         SetPulse(block, true);
         return block;
@@ -1098,6 +1102,7 @@ public partial class MainWindow
             return;
         _reply.Block = null;
         _chatClosed.Add(block);
+        DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Expander is null)
             return;
         SetPulse(block, false);
