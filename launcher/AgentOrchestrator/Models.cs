@@ -9,7 +9,7 @@ namespace AgentOrchestrator;
 internal sealed class RoleCard : INotifyPropertyChanged
 {
     private string _modelName = "Not loaded", _weights = "—", _quant = "—", _status = "Idle", _tps = "—";
-    private bool _isActive, _dropHover, _dragging, _editable = true;
+    private bool _isActive, _selected, _editable = true;
     private string _title;
     private long _bankedPrompt, _bankedCompletion, _livePrompt, _liveCompletion;
 
@@ -25,9 +25,9 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool IsCustom { get; }
     public bool IsBuiltIn => !IsCustom;
     public string Title { get => _title; set => Set(ref _title, IsCustom ? value : _title); }
-    public bool IsDragging { get => _dragging; set => Set(ref _dragging, value); }
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
-    public bool DropHover { get => _dropHover; set => Set(ref _dropHover, value); }
+    // The worker tab whose settings the column shows (MainWindow.WorkerTabs.cs); a selected tab stays shown even when Hidden.
+    public bool IsSelected { get => _selected; set => Set(ref _selected, value); }
     // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: the built-in workers in the Chat view's Single mode).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
@@ -168,7 +168,7 @@ internal sealed class AppSettings
     public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
-    public bool Compact { get; set; }
+    public string SelectedWorker { get; set; } = ""; // the worker tab shown in the details column ("" = the first)
     public bool SidebarCollapsed { get; set; }
     // Chat view: "single" (one worker) or "multi" (Planner -> Implementer -> Reviewer), and the single-mode target worker id.
     public string ChatMode { get; set; } = "single";

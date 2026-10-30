@@ -578,6 +578,28 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto" /><Setter Property="Height" Value="8" />
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="ScrollBar">
+                                <Grid Background="Transparent">
+                                    <Track x:Name="PART_Track">
+                                        <Track.DecreaseRepeatButton><RepeatButton Command="ScrollBar.PageLeftCommand" Opacity="0" /></Track.DecreaseRepeatButton>
+                                        <Track.Thumb>
+                                            <Thumb>
+                                                <Thumb.Template><ControlTemplate TargetType="Thumb"><Border Background="{DynamicResource Muted}" CornerRadius="3" Margin="0,2" Opacity="0.6" /></ControlTemplate></Thumb.Template>
+                                            </Thumb>
+                                        </Track.Thumb>
+                                        <Track.IncreaseRepeatButton><RepeatButton Command="ScrollBar.PageRightCommand" Opacity="0" /></Track.IncreaseRepeatButton>
+                                    </Track>
+                                </Grid>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
         </Style>
 
         <!-- Collapsible thinking / tool sections -->
@@ -688,15 +710,7 @@
             <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
 
-        <ItemsPanelTemplate x:Key="StandardPanel">
-            <local:CardGridPanel MinItemWidth="300" MaxItemWidth="300" MaxColumns="2" Spacing="10" />
-        </ItemsPanelTemplate>
-        <ItemsPanelTemplate x:Key="CompactPanel">
-            <local:CardGridPanel MinItemWidth="190" MaxItemWidth="190" MaxColumns="3" Spacing="10" />
-        </ItemsPanelTemplate>
-
-        <!-- Small square card: title plus a pulsing status dot -->
-        <!-- The worker's activity dot: grey when idle, the accent with a pulse while it works (compact card, worker rail). -->
+        <!-- The worker's activity dot: grey when idle, the accent with a pulse while it works (worker tabs, worker rail). -->
         <DataTemplate x:Key="ActivityDot">
             <Grid Width="26" Height="26">
                 <Ellipse Width="12" Height="12" Fill="{DynamicResource Accent}" Opacity="0" RenderTransformOrigin="0.5,0.5">
@@ -745,71 +759,50 @@
             </Grid>
         </DataTemplate>
 
-        <DataTemplate x:Key="CompactCardTemplate">
-            <Grid x:Name="CardRoot" Tag="CardRoot" Cursor="SizeAll" ToolTip="Drag to reorder"
-                  PreviewMouseLeftButtonDown="Handle_Down" Background="Transparent">
-                <Grid.Style>
-                    <Style TargetType="Grid">
-                        <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
-                    </Style>
-                </Grid.Style>
-            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="14"
-                    BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1">
-                <Grid>
-                    <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource ActivityDot}" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,-4,-4,0" />
-                    <StackPanel>
-                        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" FontSize="11" Margin="0,0,24,0"
-                                   Style="{StaticResource SectionHeader}" Foreground="{DynamicResource AccentLight}" />
-                        <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" Margin="0,8,0,0" />
-                        <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10.5" Foreground="{DynamicResource Muted}" Margin="0,4,0,0" ToolTip="{Binding SetupTip}" Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
-                        <StackPanel Orientation="Horizontal" Margin="0,5,0,0">
-                            <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Weights}" FontSize="10" /></Border>
-                            <Border Style="{StaticResource Chip}" Padding="6,1" CornerRadius="6"><TextBlock Text="{Binding Quant}" FontSize="10" /></Border>
-                        </StackPanel>
-                        <TextBlock Text="{Binding TokensPerSec}" Style="{StaticResource CardValue}" FontSize="15" Margin="0,8,0,0" />
-                        <TextBlock FontSize="11" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" Margin="0,1,0,0"
-                                   TextTrimming="CharacterEllipsis" ToolTip="Last completed task's tokens · this turn's tokens">
-                            <Run Text="{Binding TaskTokens, Mode=OneWay}" /><Run Text=" task  ·  " /><Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" tokens" />
-                        </TextBlock>
-                    </StackPanel>
-                </Grid>
-            </Border>
-            <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
-            <Button Style="{StaticResource GhostButton}" Tag="ModelSettingsGear" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,6,6" Padding="5,3"
-                    IsEnabled="{Binding Editable}" ToolTip="Model settings" AutomationProperties.Name="Model settings" Click="ModelSettings_Click">
-                <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="13" />
-            </Button>
-            </Grid>
-            <DataTemplate.Triggers>
-                <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
-                    <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
-                    <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
-                </Trigger>
-            </DataTemplate.Triggers>
-        </DataTemplate>
-
-        <DataTemplate x:Key="RoleCardTemplate">
-            <Grid x:Name="CardRoot" Tag="CardRoot">
-                <Grid.Style>
-                    <Style TargetType="Grid">
-                        <Style.Triggers><DataTrigger Binding="{Binding IsDragging}" Value="True"><Setter Property="Opacity" Value="0.3" /></DataTrigger></Style.Triggers>
-                    </Style>
-                </Grid.Style>
-            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="16,14" BorderThickness="1">
-                <Border.Style>
-                    <Style TargetType="Border">
-                        <Setter Property="BorderBrush" Value="{DynamicResource EdgeHighlight}" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding DropHover}" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </Border.Style>
+        <!-- One worker tab (MainWindow.WorkerTabs.cs): title and activity dot, model, then tok/s and task / turn tokens.
+             WorkerTabWidth fits three tabs across the column, down to a minimum; narrower columns scroll the strip. -->
+        <DataTemplate x:Key="WorkerTabTemplate">
+            <Button Tag="WorkerTab" Width="{DynamicResource WorkerTabWidth}" Margin="0,0,6,0" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}"
+                    Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding ModelName}">
+                <Button.Template>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="TabBox" Background="{DynamicResource Card}" BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1"
+                                CornerRadius="{DynamicResource SmallRadius}" Padding="9,6,6,7">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="TabBox" Property="Background" Value="{DynamicResource Hover}" />
+                                <Setter TargetName="TabBox" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                            </DataTrigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Button.Template>
                 <StackPanel>
                     <DockPanel>
-                        <TextBlock DockPanel.Dock="Left" Text="&#x2630;" Foreground="{DynamicResource Muted}" FontSize="14" Margin="0,0,10,0" VerticalAlignment="Center"
-                                   Cursor="SizeAll" ToolTip="Drag to reorder" Background="Transparent" PreviewMouseLeftButtonDown="Handle_Down" />
-                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="&#x2715;" Padding="7,2" Margin="4,0,0,0" FontSize="11"
-                                ToolTip="Remove this worker" Visibility="{Binding IsCustom, Converter={StaticResource BoolVis}}" Click="RemoveWorker_Click" />
+                        <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource ActivityDot}" Margin="0,-6,-6,-6" />
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" FontSize="10.5" Foreground="{DynamicResource AccentLight}"
+                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                    <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SetupTip}"
+                               Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
+                    <TextBlock Text="{Binding TokensPerSec}" FontSize="11" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextTrimming="CharacterEllipsis" Margin="0,5,0,0" />
+                    <TextBlock FontSize="10.5" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular" TextTrimming="CharacterEllipsis"
+                               ToolTip="Last completed task's tokens · this turn's tokens">
+                        <Run Text="{Binding TaskTokens, Mode=OneWay}" /><Run Text=" task · " /><Run Text="{Binding TurnTotal, Mode=OneWay}" /><Run Text=" turn" />
+                    </TextBlock>
+                </StackPanel>
+            </Button>
+        </DataTemplate>
+
+        <!-- The worker rail's hover card (MainWindow.WorkerRail.cs): the worker's live figures; the gear opens its tab. -->
+        <DataTemplate x:Key="RailCardTemplate">
+            <Grid x:Name="CardRoot" Tag="CardRoot">
+            <Border Background="{DynamicResource Card}" CornerRadius="{DynamicResource PanelRadius}" Padding="16,14" BorderThickness="1" BorderBrush="{DynamicResource EdgeHighlight}">
+                <StackPanel>
+                    <DockPanel>
                         <Border DockPanel.Dock="Right" CornerRadius="9" Padding="9,2" VerticalAlignment="Center">
                             <Border.Style>
                                 <Style TargetType="Border">
@@ -826,33 +819,11 @@
                                 </TextBlock.Style>
                             </TextBlock>
                         </Border>
-                        <Grid VerticalAlignment="Center">
-                            <TextBlock Text="{Binding Title}" VerticalAlignment="Center">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock" BasedOn="{StaticResource SectionHeader}">
-                                        <Setter Property="Foreground" Value="{DynamicResource AccentLight}" />
-                                        <Style.Triggers><DataTrigger Binding="{Binding IsCustom}" Value="True"><Setter Property="Visibility" Value="Collapsed" /></DataTrigger></Style.Triggers>
-                                    </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
-                            <TextBox Text="{Binding Title, UpdateSourceTrigger=PropertyChanged}" FontWeight="SemiBold" FontSize="11" Padding="8,3"
-                                     Background="{DynamicResource Hover}" ToolTip="Worker title (editable)" LostFocus="TitleBox_LostFocus" MaxLength="32">
-                                <TextBox.Style>
-                                    <Style TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
-                                        <Setter Property="Visibility" Value="Collapsed" />
-                                        <Style.Triggers><DataTrigger Binding="{Binding IsCustom}" Value="True"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers>
-                                    </Style>
-                                </TextBox.Style>
-                            </TextBox>
-                        </Grid>
+                        <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" Foreground="{DynamicResource AccentLight}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                     </DockPanel>
 
                     <TextBlock Text="MODEL" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
-                    <DockPanel Margin="0,2,0,0">
-                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Change" Padding="9,3" FontSize="11" Margin="8,0,0,0"
-                                IsEnabled="{Binding Editable}" ToolTip="Pick from the models installed in Unsloth" Click="ChangeModel_Click" />
-                        <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" VerticalAlignment="Center" />
-                    </DockPanel>
+                    <TextBlock Text="{Binding ModelName}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ModelName}" Margin="0,2,0,0" />
 
                     <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10.5" Foreground="{DynamicResource Muted}" Margin="0,4,0,0" ToolTip="{Binding SetupTip}" Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
                     <TextBlock Text="WEIGHTS / QUANTIZATION" Style="{StaticResource SectionHeader}" FontSize="10" Margin="0,14,0,0" />
@@ -877,18 +848,11 @@
                     <TextBlock Text="{Binding TurnDetail}" Foreground="{DynamicResource Muted}" FontSize="11" Margin="0,2,0,0" />
                 </StackPanel>
             </Border>
-            <Border x:Name="HoverFill" Style="{StaticResource HoverRim}" CornerRadius="{DynamicResource PanelRadius}" />
             <Button Style="{StaticResource GhostButton}" Tag="ModelSettingsGear" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,8,8" Padding="5,3"
-                    IsEnabled="{Binding Editable}" ToolTip="Model settings" AutomationProperties.Name="Model settings" Click="ModelSettings_Click">
+                    ToolTip="Model settings: show this worker's tab" AutomationProperties.Name="Model settings" Click="RailCardSettings_Click">
                 <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="13" />
             </Button>
             </Grid>
-            <DataTemplate.Triggers>
-                <Trigger SourceName="CardRoot" Property="IsMouseOver" Value="True">
-                    <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
-                    <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
-                </Trigger>
-            </DataTemplate.Triggers>
         </DataTemplate>
     </Window.Resources>
 
@@ -1222,36 +1186,40 @@
                         <ContentControl x:Name="ContextSectionBody" Margin="4,8,0,0" Visibility="Collapsed" />
                     </StackPanel>
                 </Border>
-                <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
-                              MouseMove="Drag_Move" MouseLeftButtonUp="Drag_Up" LostMouseCapture="Drag_Up">
-                    <StackPanel Margin="17">
-                        <DockPanel Margin="0,0,0,12">
-                            <Button x:Name="RailCollapseButton" DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
-                                    Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse worker details">
-                                <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
-                            </Button>
-                            <ToggleButton x:Name="CompactToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="Compact_Click"
-                                          ToolTip="Compact view: small square cards" />
-                            <TextBlock DockPanel.Dock="Right" Text="COMPACT" Style="{StaticResource SectionHeader}" FontSize="9" VerticalAlignment="Center" Margin="0,0,8,0" />
-                            <TextBlock DockPanel.Dock="Left" Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                            <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
-                                    Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
-                                    ToolTip="Save, apply or delete named sets of workers and their settings" />
-                        </DockPanel>
-                        <ItemsControl x:Name="CardsList" ItemTemplate="{StaticResource RoleCardTemplate}">
+                <DockPanel DockPanel.Dock="Top" Margin="17,17,17,10">
+                    <Button x:Name="RailCollapseButton" DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
+                            Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse worker details">
+                        <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                    </Button>
+                    <TextBlock DockPanel.Dock="Left" Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
+                            Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
+                            ToolTip="Save, apply or delete named sets of workers and their settings" />
+                </DockPanel>
+                <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
+                <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
+                    <Button x:Name="AddWorkerButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="+" FontSize="16" Width="28" Padding="0,0,0,2"
+                            Margin="4,0,0,8" Click="AddWorker_Click" ToolTip="Add a worker with a custom title and model" AutomationProperties.Name="Add worker" />
+                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                  SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
+                        <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                             <ItemsControl.ItemContainerStyle>
                                 <Style TargetType="ContentPresenter">
                                     <Style.Triggers>
-                                        <DataTrigger Binding="{Binding Hidden}" Value="True">
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
+                                            </MultiDataTrigger.Conditions>
                                             <Setter Property="Visibility" Value="Collapsed" />
-                                        </DataTrigger>
+                                        </MultiDataTrigger>
                                     </Style.Triggers>
                                 </Style>
                             </ItemsControl.ItemContainerStyle>
                         </ItemsControl>
-                        <Button x:Name="AddWorkerButton" Content="+  Add worker" Margin="0,10,0,0" Click="AddWorker_Click" ToolTip="Add a worker with a custom title and model" />
-                    </StackPanel>
-                </ScrollViewer>
+                    </ScrollViewer>
+                </DockPanel>
+                <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
               </DockPanel>
             </Border>
             <!-- Collapsed worker details: one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
@@ -1282,7 +1250,7 @@
                             Click="AddWorker_Click" IsEnabled="{Binding IsEnabled, ElementName=AddWorkerButton}" ToolTip="Add a worker" AutomationProperties.Name="Add worker" />
                     <Popup x:Name="RailPopup" Placement="Left" AllowsTransparency="True" PopupAnimation="Fade">
                         <Border Width="320" Padding="0,0,6,0" Background="Transparent" MouseEnter="RailPopup_MouseEnter" MouseLeave="RailHover_MouseLeave">
-                            <ContentControl x:Name="RailCard" ContentTemplate="{StaticResource RoleCardTemplate}" />
+                            <ContentControl x:Name="RailCard" ContentTemplate="{StaticResource RailCardTemplate}" />
                         </Border>
                     </Popup>
                 </StackPanel>
@@ -1425,10 +1393,6 @@
             </Border>
         </Grid>
 
-        <!-- A picture of the worker card being dragged follows the pointer on this layer -->
-        <Canvas x:Name="DragLayer" Grid.RowSpan="4" Grid.ColumnSpan="2" IsHitTestVisible="False" Visibility="Collapsed">
-            <Image x:Name="DragGhost" Opacity="0.85" />
-        </Canvas>
 
         <!-- Toasts (MainWindow.Toast): newest at the bottom, just above the status bar -->
         <StackPanel x:Name="ToastStack" Grid.Row="2" Grid.Column="1" IsHitTestVisible="False" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
