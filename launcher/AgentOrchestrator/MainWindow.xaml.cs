@@ -97,15 +97,16 @@ public partial class MainWindow : Window
             Log("Place this EXE in the Agent Setup folder or its dist subfolder.");
         }
         else
-        {
-            ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
-            Log($"Workflow: {_workflowRoot}");
-            TryLoadApiKeyFile();
-            PrefillCards();
-            RefreshPrimary();
-            if (_store.Get(_settings.LastConversation) is not null)
-                OpenCodeConversation(_settings.LastConversation);
-        }
+            HoldWorkerTab(() => // one build of the worker tab for all of this
+            {
+                ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
+                Log($"Workflow: {_workflowRoot}");
+                TryLoadApiKeyFile();
+                PrefillCards();
+                RefreshPrimary();
+                if (_store.Get(_settings.LastConversation) is not null)
+                    OpenCodeConversation(_settings.LastConversation);
+            });
         RefreshSidebarList();
     }
 
@@ -113,7 +114,7 @@ public partial class MainWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
-        if (_workflowRoot is null || _chatBusy) // a chat reply is using the models
+        if (_workflowRoot is null || _chatBusy || !SaveWorkerEditsFirst()) // a chat reply is using the models
             return;
 
         var project = SelectedProjectPath();
@@ -2999,7 +3000,7 @@ public partial class MainWindow : Window
             return false;
         }
         var dialog = BuildRestartDialog(project);
-        if (!(_restartConfirm is { } confirm ? confirm(dialog) : dialog.ShowDialog() == true))
+        if (!(_restartConfirm is { } confirm ? confirm(dialog) : dialog.ShowDialog() == true) || !DiscardWorkerEdits()) // the config.json is replaced below
         {
             SetStatus("Restart cancelled", "#F7C873");
             return false;
@@ -3009,13 +3010,18 @@ public partial class MainWindow : Window
             Log($"Restart stopped: {failure.Path} could not be moved to the Recycle Bin ({failure.Error}). Items recycled before it are in the Recycle Bin; the rest of the project is unchanged and no run was started.");
             SetStatus("Restart stopped", "#FF667A");
             Toast($"Restart stopped: {Path.GetFileName(failure.Path)} could not be recycled", "#FF667A");
+            RefreshWorkerTab(force: true); // the edits were discarded above
             RefreshPrimary();
             return false;
         }
         var copied = LauncherLogic.InitializeProject(_workflowRoot, project, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot)); // PROJECT.md exists, so it is kept
         Log($"Project restarted: everything but PROJECT.md moved to the Recycle Bin. Added: {string.Join(", ", copied)}");
         Toast("Project restarted");
-        PrefillCards();
+        HoldWorkerTab(() =>
+        {
+            PrefillCards();
+            RefreshWorkerTab(force: true); // the tab was built from the config.json just replaced
+        });
         RefreshPrimary();
         return true;
     }
@@ -3121,15 +3127,25 @@ public partial class MainWindow : Window
 
     private string _projectPath = "";
 
-    // The project folder is chosen with the folder picker; setting it refreshes everything that depends on it.
+    // The project folder is chosen with the folder picker; setting it refreshes everything that depends on it. Another
+    // folder with unsaved edits to the worker tab asks first; keeping them keeps the project (callers that act before the
+    // switch ask first themselves: DiscardWorkerEdits). The tab is rebuilt for the new project's config.
     private string ProjectPath
     {
         get => _projectPath;
         set
         {
+            var switching = value != _projectPath;
+            if (switching && !DiscardWorkerEdits())
+                return;
             _projectPath = value;
-            RefreshCodeFolder();
-            PrefillCards();
+            HoldWorkerTab(() =>
+            {
+                RefreshCodeFolder();
+                PrefillCards();
+                if (switching)
+                    RefreshWorkerTab(force: true);
+            });
             RefreshPrimary();
         }
     }
@@ -3194,7 +3210,8 @@ public partial class MainWindow : Window
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
-        if (e.Handled || (Keyboard.Modifiers & ModifierKeys.Control) == 0 || (Keyboard.Modifiers & ModifierKeys.Alt) != 0)
+        if (e.Handled || (Keyboard.Modifiers & ModifierKeys.Control) == 0 || (Keyboard.Modifiers & ModifierKeys.Alt) != 0 ||
+            Keyboard.FocusedElement is Visual focused && WorkerSettingsHost.IsAncestorOf(focused)) // typing in the worker tab
             return;
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
@@ -3485,8 +3502,7 @@ public partial class MainWindow : Window
     {
         if (_process is not null)
             return;
-        if (_shownWorker is { } open && _cards.Contains(open) && _workerDirty() &&
-            SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(open, open.Role)}?", "Discard") is null)
+        if (!DiscardWorkerEdits())
             return;
         var keepRole = _shownWorker?.Role;
         bool rolesApplied;
@@ -3499,16 +3515,20 @@ public partial class MainWindow : Window
         {
             Log($"Could not update config.json: {exception.Message}");
             SetStatus("Could not update config.json", "#FF667A");
+            RefreshWorkerTab(force: true); // the edits were discarded above
             return;
         }
         _settings.Workers = preset.Workers;
-        _cards.Clear();
-        LoadWorkers(); // keeps only valid entries and re-adds any missing built-in worker
-        SaveWorkers();
-        SyncCustomWorkers();
-        PrefillCards();
-        SelectWorker(_cards.FirstOrDefault(c => c.Role == keepRole) ?? FirstVisibleWorker());
-        RefreshWorkerTab(force: true); // the restored settings, also when the same worker stays open
+        HoldWorkerTab(() => // one build of the tab, not one per step
+        {
+            _cards.Clear();
+            LoadWorkers(); // keeps only valid entries and re-adds any missing built-in worker
+            SaveWorkers();
+            SyncCustomWorkers();
+            PrefillCards();
+            SelectWorker(_cards.FirstOrDefault(c => c.Role == keepRole) ?? FirstVisibleWorker());
+            RefreshWorkerTab(force: true); // the restored settings, also when the same worker stays open
+        });
         Log($"Preset applied: {preset.Name}");
         if (preset.Roles.Count > 0 && !rolesApplied)
         {
@@ -3943,6 +3963,11 @@ public partial class MainWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
+        if (!DiscardWorkerEdits())
+        {
+            e.Cancel = true; // the user kept the worker tab's unsaved edits
+            return;
+        }
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))
             (_settings.WindowLeft, _settings.WindowTop, _settings.WindowWidth, _settings.WindowHeight) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);

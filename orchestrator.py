@@ -3533,13 +3533,13 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         context = f"{extra_system}\n\n{folders_context(folders)}"
         ask = lambda extra: [*messages[:-1], {"role": "user", "content": f"{messages[-1]['content']}\n\n{extra}"}]
         read_only = {**code_handlers(folders), **extra_handlers}
-        plan = chat_call(config, "planner", "plan", load_text(ROOT / "prompts" / "code_planner.txt").strip(), messages,
+        plan = chat_call(config, "planner", "plan", load_text(ROOT / "prompts" / "code_planner.txt").strip() + role_block(config, "planner"), messages,
                          (CODE_TOOLS[:3] + tools, read_only, context))
         draft = chat_call(config, "implementer", "implement", system, ask(f"PLAN (from the Planner)\n{plan}"),
                           (CODE_TOOLS + tools, handlers, f"\n{folders_context(folders)}"))
         review = {**read_only, **code_write_handlers(folders)}
         try:  # the Implementer's edits are on disk: a failed review must not lose its reply
-            final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip(),
+            final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip() + role_block(config, "reviewer"),
                               ask(f"PLAN (from the Planner)\n{plan}\n\nIMPLEMENTER'S REPLY\n{draft}"), (CODE_TOOLS[:5] + tools, review, context))
         except WorkflowError as exc:
             print(f"[code] the review failed ({exc})")

@@ -21,10 +21,11 @@ public partial class MainWindow
         WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     }));
 
-    // The settings body, or null (status set) when a built-in role has no readable config.json. saved: after a successful
-    // Save; close: closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs
-    // from what the body was built with. The radio buttons share fixed group names, so host one body at a time.
-    private (FrameworkElement Body, Func<bool> IsDirty)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
+    // The settings body, or null when a built-in role has no readable config.json. saved: after a successful Save; close:
+    // closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs from what the
+    // body was built with. Save: the Save button; true when it wrote the edits. The radio buttons share fixed group names,
+    // so host one body at a time.
+    private (FrameworkElement Body, Func<bool> IsDirty, Func<bool> Save)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
@@ -32,10 +33,7 @@ public partial class MainWindow
         if (!card.IsCustom)
         {
             if (!File.Exists(path))
-            {
-                SetStatus("No config.json to change", "#F7C873");
                 return null;
-            }
             try
             {
                 role = JsonNode.Parse(File.ReadAllText(path))!["roles"]![card.Role]!.AsObject();
@@ -44,7 +42,6 @@ public partial class MainWindow
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
             {
                 Log($"Could not read config.json: {exception.Message}");
-                SetStatus("Could not read config.json", "#FF667A");
                 return null;
             }
         }
@@ -188,8 +185,11 @@ public partial class MainWindow
             {
                 if (AskDialog("Remove worker", $"Remove {card.Title}? Its settings are deleted.", "Remove") is null)
                     return;
-                RemoveWorker(card); // first: the Models window asks before closing only while its worker exists
-                close();
+                HoldWorkerTab(() =>
+                {
+                    RemoveWorker(card); // first: the Models window asks before closing only while its worker exists
+                    close();
+                });
                 Log($"{card.Title}: removed");
             };
             foreach (var part in new UIElement[]
@@ -441,10 +441,19 @@ public partial class MainWindow
             return errors.Count > 0;
         }
 
-        save.Click += (_, _) =>
+        save.Click += (_, _) => Save();
+        bool Save()
         {
             var fields = editors.ToDictionary(p => p.Key, p => Value(p.Value));
             var choice = Picked();
+            if (!card.IsCustom && !string.Equals(ActiveConfigPath(), path, StringComparison.OrdinalIgnoreCase))
+            {
+                // built for another project's config (the project changed behind the tab): never write its values there
+                Log($"{card.Title}: not saved, the project's config.json changed since the tab was opened ({path}); the tab now shows the current one");
+                Toast($"{card.Title}: not saved, the project changed", "#FF667A");
+                close();
+                return false;
+            }
             if (card.IsCustom)
             {
                 var w = card.Config;
@@ -457,7 +466,7 @@ public partial class MainWindow
                 if (title != card.Title && LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } titleProblem)
                     errors["Name"] = titleProblem;
                 if (ShowErrors(errors))
-                    return;
+                    return false;
                 if (choice is not null)
                     AssignModel(card, choice);
                 w.Kind = kind;
@@ -474,7 +483,7 @@ public partial class MainWindow
                 Log($"{card.Title}: model settings saved");
                 Toast($"{card.Title}: settings saved");
                 saved();
-                return;
+                return true;
             }
 
             var remote = remoteMode() ? new LauncherLogic.RemoteRole(remoteBoxes![0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, "") : null;
@@ -485,7 +494,7 @@ public partial class MainWindow
             if (remote is not null && LauncherLogic.ValidateRemoteRole(remote) is { } remoteProblem)
                 problems["Remote"] = remoteProblem;
             if (ShowErrors(problems))
-                return;
+                return false;
             string? problem;
             try
             {
@@ -514,12 +523,12 @@ public partial class MainWindow
                 Log($"Could not update config.json: {exception.Message}");
                 SetStatus("Could not update config.json", "#FF667A");
                 close();
-                return;
+                return false;
             }
             if (problem is not null)
             {
                 ShowErrors(new() { [""] = problem });
-                return;
+                return false;
             }
             if (choice is not null && remote is null)
             {
@@ -535,16 +544,20 @@ public partial class MainWindow
                 Toast($"{card.Title}: set {remote.KeyEnv.Trim()} in your environment, then restart the launcher", "#F7C873");
             else
                 Toast($"{card.Title}: settings saved");
-            PrefillCards();
-            saved();
-        };
+            HoldWorkerTab(() =>
+            {
+                PrefillCards();
+                saved();
+            });
+            return true;
+        }
         ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
         static string? StateOf(Control? c) => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" };
         List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
             .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
         clean = State();
         Derive(startLoad, atOpen: true);
-        return (new DockPanel { Children = { top, footer, scroll } }, () => !State().SequenceEqual(clean));
+        return (new DockPanel { Children = { top, footer, scroll } }, () => !State().SequenceEqual(clean), Save);
     }
 
     // --ui-smoke: the target chips' "Options…" opens the worker details column (expanding the rail) on the target's tab: Single
@@ -681,6 +694,33 @@ public partial class MainWindow
             await Idle();
             if (SmokeField("temperature").Text != "0.33" || SmokeField("ChatSystemPrompt").Text != "" || _workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes))
                 return Fail("Revert a preset");
+
+            // An unsaved edit: switching the project asks, no answer keeps the project and the edit; closing the window asks,
+            // no answer cancels the close; starting a run or a turn asks to save first, Cancel starts nothing.
+            var project = _projectPath;
+            var workerConfig = LauncherLogic.EnsureWorkerConfig(_workflowRoot!);
+            var workerBytes = File.ReadAllBytes(workerConfig);
+            (SmokeField("temperature").Text, answer) = ("0.66", null);
+            ProjectPath = "";
+            if (asked[^1] != "Unsaved changes" || _projectPath != project || SmokeField("temperature").Text != "0.66" || !_workerDirty())
+                return Fail("a project switch with an unsaved edit");
+            var closing = new System.ComponentModel.CancelEventArgs();
+            OnClosing(this, closing);
+            if (!closing.Cancel || asked[^1] != "Unsaved changes" || !_workerDirty())
+                return Fail("closing with an unsaved edit");
+            if (SaveWorkerEditsFirst() || asked[^1] != "Save changes" || !_workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("a start with an unsaved edit: Cancel");
+            // A project changed behind the tab: Save writes neither config and shows the current project's settings.
+            _projectPath = "";
+            answer = "save";
+            if (SaveWorkerEditsFirst() || _workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes) || !File.ReadAllBytes(workerConfig).SequenceEqual(workerBytes))
+                return Fail("Save after the project changed");
+            _projectPath = project;
+            RefreshWorkerTab(force: true);
+            // Save first: written, then the start goes on (the same value as typed differently: later checks expect 0.33).
+            SmokeField("temperature").Text = "0.330";
+            if (!_workerDirty() ||!SaveWorkerEditsFirst() || _workerDirty() || (double?)JsonNode.Parse(File.ReadAllText(config))!["roles"]!["implementer"]!["sampling"]?["temperature"] != 0.33)
+                return Fail("a start with an unsaved edit: Save");
             return true;
         }
         finally

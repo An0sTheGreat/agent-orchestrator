@@ -2749,6 +2749,15 @@ class CodeTests(unittest.TestCase):
 
     MSGS = [{"role": "user", "content": "add a readme"}]
 
+    def test_multi_stages_get_their_role_chat_system_prompt(self):
+        self.config["roles"]["reviewer"]["chat_system_prompt"] = "Review strictly."
+        code, log, *_ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
+                                  {"planner": ["P"], "implementer": ["DRAFT"], "reviewer": ["FINAL"]})
+        self.assertEqual(code, 0)
+        reviewer = next(e for e in log if e["role"] == "reviewer")
+        self.assertIn("=== YOUR ROLE: Reviewer ===\nReview strictly.", reviewer["system"])
+        self.assertNotIn("YOUR ROLE", next(e for e in log if e["role"] == "planner")["system"])  # a role without one adds nothing
+
     def test_long_code_chat_is_summarized_before_the_turn(self):
         history = []
         for i in range(4):

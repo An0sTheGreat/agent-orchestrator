@@ -229,7 +229,7 @@ public partial class MainWindow
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
         }
-        if (PickFolder("Choose the folder to work in") is not { } folder)
+        if (PickFolder("Choose the folder to work in") is not { } folder || !DiscardWorkerEdits()) // the switch below rebuilds the tab
             return;
         CloseCodeConversation();
         ProjectPath = folder;
@@ -271,6 +271,11 @@ public partial class MainWindow
             if (!Path.IsPathFullyQualified(conversation.Folder)) // hand-edited or damaged: there is no folder to work in
             {
                 Toast("This chat has no folder, so it can't be opened", "#FF667A");
+                RefreshSidebarList();
+                return;
+            }
+            if (!DiscardWorkerEdits()) // the switch below rebuilds the tab
+            {
                 RefreshSidebarList();
                 return;
             }

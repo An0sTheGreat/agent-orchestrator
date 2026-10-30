@@ -452,7 +452,7 @@ public partial class MainWindow
     private async Task<bool> RunTurn(Conversation c, string? text, string role, bool multi, Func<string, string> buildRequest,
         Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label)
     {
-        if (_chatBusy || _process is not null || _workflowRoot is null || !RuntimeReady())
+        if (_chatBusy || _process is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
             return false;
         if (ApiKeyBox.Password.Length == 0)
             TryLoadApiKeyFile();
