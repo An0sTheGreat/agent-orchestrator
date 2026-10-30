@@ -874,6 +874,16 @@ public partial class MainWindow
                 SetChatStatus($"{name} is using {Str(ev, "name")}…");
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
                 break;
+            case "compacted": // the engine summarized earlier steps to fit the context window; its print line is in the log
+                EndChatBlock();
+                if (_reply is { } compactReply)
+                {
+                    DetachAnswer(compactReply); // text after it starts below the line
+                    var note = new TextBlock { Text = CompactedLine(ev), FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "stats" };
+                    note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+                    compactReply.Content.Children.Add(note);
+                }
+                break;
             case "code_project":
                 Log($"[{name}] wrote {Str(ev, "path")}");
                 Toast("PROJECT.md written");
@@ -883,6 +893,8 @@ public partial class MainWindow
                 break;
         }
     }
+
+    private static string CompactedLine(JsonElement ev) => $"Context compacted · {Tokens((long)Num(ev, "before"))} → {Tokens((long)Num(ev, "after"))} tokens";
 
     private readonly List<StreamBlock> _chatClosed = new(); // blocks closed since their call's usage event
 

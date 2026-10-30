@@ -466,6 +466,10 @@ public partial class MainWindow : Window
                     AddStatsLine(ended, LauncherLogic.StatsLine(ChatName(card, role), Num(ev, "tps"), (long)Num(ev, "completion"), (long)Num(ev, "prompt")), Num(ev, "tps"));
                 }
                 break;
+            case "compacted": // its print line is already in the log
+                EndStream(false);
+                AddNote("CONTEXT", $"{card?.Title ?? role}: {CompactedLine(ev)}");
+                break;
             case "task":
                 EndStream(false);
                 Log($"Task {Str(ev, "id")}: {Str(ev, "outcome")}");
@@ -1078,6 +1082,9 @@ public partial class MainWindow : Window
         Feed("""{"e":"task_start"}""", """{"e":"usage","role":"planner","prompt":200,"completion":100,"tps":30}""",
              """{"e":"task","id":"T2","outcome":"counters"}""");
         if (_cards.Any(c => c.TaskTokens != "—") || !_taskWatch.IsRunning || TaskTimeText.Text != "0:00")
+            return Fail();
+        Feed("""{"e":"compacted","role":"implementer","before":30100,"after":8200}"""); // a note in the run output
+        if (!_transcript.ToString().Contains(": Context compacted · 30.1k → 8.2k tokens"))
             return Fail();
         Feed(Enumerable.Repeat("""{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", 5)
             .Append("""{"e":"usage","role":"implementer","prompt":1000,"completion":500,"tps":40}""")
@@ -1741,6 +1748,7 @@ public partial class MainWindow : Window
                 return Fail();
             _lines.Enqueue(Delta("implementer", "text", "Looking"));
             _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
+            _lines.Enqueue(Ev("""{"e":"compacted","role":"implementer","before":30100,"after":8200}"""));
             _lines.Enqueue(Delta("implementer", "text", "Now fixing"));
             DrainLines();
             // Saved before the reply: a crash now keeps the message, with a note in place of the reply.
@@ -1759,7 +1767,9 @@ public partial class MainWindow : Window
             // In the order it happened: the text before the tool call stays above it, the reply after it below.
             var parts = codeReply.Content.Children.Cast<UIElement>().ToList();
             var early = parts.OfType<TextBox>().FirstOrDefault(t => t.Text == "Looking");
+            var compactedNote = parts.OfType<TextBlock>().FirstOrDefault(t => t.Text == "Context compacted · 30.1k → 8.2k tokens"); // a muted line where it happened
             if (early is null || parts.IndexOf(early) > parts.IndexOf(toolRow) || parts.IndexOf(toolRow) > parts.IndexOf(codeReply.Answer!) ||
+                compactedNote is null || parts.IndexOf(compactedNote) < parts.IndexOf(toolRow) || parts.IndexOf(compactedNote) > parts.IndexOf(codeReply.Answer!) ||
                 _codeConv?.Messages is not [_, { Content: "Fixed" }])
                 return Fail();
             if (!hadCodeConv && _codeConv is { } madeConv) // leave the store as the checks below expect it
