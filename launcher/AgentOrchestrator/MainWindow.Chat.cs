@@ -125,6 +125,14 @@ public partial class MainWindow
             card.Hidden = hide && card.IsBuiltIn;
     }
 
+    // The workers the worker details column lists for c's view (Chat Single leaves out the built-ins), plus c's Single target
+    // when that is a hidden built-in: the target chip's dropdown and its Models window.
+    private List<RoleCard> ListedWorkers(Conversation c)
+    {
+        var target = MultiOf(c) ? null : TargetOf(c);
+        return _cards.Where(k => c.IsCode || ChatMulti || !k.IsBuiltIn || k == target).ToList();
+    }
+
     // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
     // and why sending is unavailable. A turn of either kind locks both.
     private void RefreshChatInput()
@@ -159,12 +167,12 @@ public partial class MainWindow
 
     // ---- worker menu (+ button and target chip)
 
-    private ContextMenu BuildWorkerMenu(FrameworkElement target, Conversation? c = null)
+    private ContextMenu BuildWorkerMenu(FrameworkElement target, Conversation? c = null, IEnumerable<RoleCard>? cards = null)
     {
         c ??= _chat;
         RefreshSetupProblems();
         var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Top };
-        foreach (var card in _cards)
+        foreach (var card in cards ?? _cards)
         {
             var name = ChatName(card, card.Role);
             var broken = card.IsCustom ? card.SetupProblem : null;
@@ -198,12 +206,25 @@ public partial class MainWindow
 
     private void ChatPlus_Click(object sender, RoutedEventArgs e) => BuildWorkerMenu((Button)sender, ConvOf(sender)).IsOpen = true;
 
-    // The target chip configures the model(s) it names: Multi's three workers, else the target (the + button picks the target).
+    // The target chip: a dropdown (upward) of the listed workers, picking one makes it the target; "Options…" on top opens
+    // the Models window with the same workers.
     private void ChatTarget_Click(object sender, RoutedEventArgs e)
     {
+        var chip = (Button)sender;
         var c = ConvOf(sender);
-        OpenModelConfig(MultiOf(c) ? new[] { "planner", "implementer", "reviewer" }.Select(CardFor).OfType<RoleCard>().ToList()
-            : TargetOf(c) is { } target ? [target] : [], c);
+        var menu = chip.ContextMenu = BuildWorkerMenu(chip, c, ListedWorkers(c));
+        var options = new MenuItem { Header = "Options…", ToolTip = "Model settings for these workers", IsEnabled = _process is null };
+        options.Click += (_, _) => Dispatcher.InvokeAsync(() => OpenModelOptions(c), System.Windows.Threading.DispatcherPriority.Background);
+        menu.Items.Insert(0, options);
+        menu.Items.Insert(1, new Separator { Style = (Style)FindResource("MenuSeparator") });
+        menu.IsOpen = true;
+    }
+
+    // The Models window on the listed workers, the Single target selected (Multi: the first, the Planner).
+    private DialogShell? OpenModelOptions(Conversation c)
+    {
+        var cards = ListedWorkers(c).Where(k => k.Editable).ToList();
+        return OpenModelConfig(cards, c, MultiOf(c) ? null : TargetOf(c));
     }
 
     // The Chat and Code views' Single / Multi toggles.

@@ -34,7 +34,7 @@ public partial class MainWindow
 
     // The composer's target chip: the Models window, a list of the workers (name, model, activity dot) beside the selected
     // one's model settings. Save keeps the window open; switching worker or closing with unsaved changes asks first.
-    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards, Conversation? conv = null)
+    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards, Conversation? conv = null, RoleCard? select = null)
     {
         if (_process is not null || cards.Count == 0 || cards.Any(c => !c.Editable))
             return null;
@@ -131,7 +131,7 @@ public partial class MainWindow
         window.Closing += (_, e) => e.Cancel = selected is not null && _cards.Contains(selected) && dirty() &&
             SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected.Role)}?", "Discard") is null;
         window.Closed += (_, _) => host.Child = null;
-        if (!Show(cards[0]))
+        if (!Show(select is not null && cards.Contains(select) ? select : cards[0]))
             return null;
         if (_settingsShow is { } show)
             show(window);
@@ -553,12 +553,24 @@ public partial class MainWindow
         static List<ToggleButton> Rows(Window w) => Tree(w).OfType<ToggleButton>().Where(t => t.GetType() == typeof(ToggleButton)).ToList();
         static string Listed(Window w) => string.Join(",", Rows(w).Select(r => (string)r.Tag + (r.IsChecked == true ? "*" : "")));
         static TextBox Field(Window w, string key) => Tree(w).OfType<TextBox>().First(t => t.Tag as string == key);
+        // The chip's dropdown: "Options…", a separator, then the listed workers ("*": the checked target).
+        List<string> Dropdown(Button chip)
+        {
+            Click(chip);
+            var items = chip.ContextMenu.Items.OfType<MenuItem>().ToList();
+            chip.ContextMenu.IsOpen = false;
+            return items.Select(i => (string)i.Header + (i.IsChecked ? "*" : "")).ToList();
+        }
         async Task<DialogShell?> Open(Button chip)
         {
             Click(chip);
+            var options = chip.ContextMenu.Items.OfType<MenuItem>().First();
+            options.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            chip.ContextMenu.IsOpen = false;
             await Idle();
             return OwnedWindows.OfType<DialogShell>().LastOrDefault(w => w.IsVisible && w.Title == "Models");
         }
+        const string chipTip = "Choose the worker to message, or open model Options";
         var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme, _settings.CodeMode);
         _settings.CodeMode = "single"; // the Code chip below configures its one target
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
@@ -569,11 +581,16 @@ public partial class MainWindow
         _codeChoice = title => { asked.Add(title); return answer; };
         try
         {
-            // Single: the target; Code: the Code target. Closing with nothing changed asks nothing.
+            // Single chat: the listed workers (the built-ins are hidden, so only the target); Code: every worker, the target
+            // selected. Closing with nothing changed asks nothing.
             (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker) = ("single", "reviewer", "planner");
             RefreshChatTarget();
+            var customs = _cards.Where(k => k.IsCustom).Select(k => k.Role).ToList();
+            string Expect(params string[] roles) => string.Join(",", roles.Concat(customs));
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Reviewer*", ..] chatDrop || chatDrop.Count != 2 + customs.Count)
+                return false;
             if (await Open(ChatTargetChip) is not { } single || single.WindowStyle != WindowStyle.None || single.Owner != this || single.Width < 600 ||
-                Listed(single) != "reviewer*" || ChatTargetChip.ToolTip as string != "Configure model")
+                Listed(single) != Expect("reviewer*") || ChatTargetChip.ToolTip as string != chipTip)
                 return false;
             // The "+" menu: the built-ins not yet listed come first, marked recommended, then "New worker…". Picking adds the row,
             // selects it and (Single chat / Code) makes it the target.
@@ -590,17 +607,23 @@ public partial class MainWindow
             }
             var addHeads = await PickAdd(single, "Implementer  (recommended)");
             if (!addHeads.Take(2).SequenceEqual(["Planner  (recommended)", "Implementer  (recommended)"]) || addHeads[^1] != "New worker…" ||
-                Listed(single) != "reviewer,implementer*" || _settings.ChatWorker != "implementer")
+                Listed(single) != string.Join(",", customs.Prepend("reviewer").Append("implementer*")) || _settings.ChatWorker != "implementer")
                 return false;
             single.Close();
             _settings.CodeWorker = "planner";
             RefreshChatTarget();
-            if (single.IsVisible || await Open(CodeTargetChip) is not { } code || Listed(code) != "planner*" || CodeTargetChip.ToolTip as string != "Configure model")
-                return false;
-            await PickAdd(code, "Reviewer  (recommended)");
-            if (Listed(code) != "planner,reviewer*" || _settings.CodeWorker != "reviewer")
+            if (single.IsVisible || await Open(CodeTargetChip) is not { } code || Listed(code) != Expect("planner*", "implementer", "reviewer") ||
+                CodeTargetChip.ToolTip as string != chipTip)
                 return false;
             code.Close();
+            // Picking from the dropdown makes the worker the target without opening the window.
+            Click(CodeTargetChip);
+            CodeTargetChip.ContextMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "reviewer").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            CodeTargetChip.ContextMenu.IsOpen = false;
+            await Idle();
+            if (_settings.CodeWorker != "reviewer" || OwnedWindows.OfType<DialogShell>().Any(w => w.IsVisible && w.Title == "Models") ||
+                Dropdown(CodeTargetChip) is not ["Options…", "Planner", "Implementer", "Reviewer*", ..])
+                return false;
             (_settings.ChatWorker, _settings.CodeWorker) = ("reviewer", "planner");
             RefreshChatTarget();
 

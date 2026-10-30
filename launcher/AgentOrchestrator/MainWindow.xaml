@@ -1111,7 +1111,7 @@
                             </Grid>
                             <DockPanel Grid.Row="1" Margin="4,6,2,0">
                                 <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
-                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Configure model" />
+                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Choose the worker to message, or open model Options" />
                                 <Button x:Name="CodeEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
@@ -1349,7 +1349,7 @@
                         </Grid>
                         <DockPanel Grid.Row="1" Margin="4,6,2,0">
                             <Button x:Name="ChatTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
-                                    Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Configure model" />
+                                    Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Choose the worker to message, or open model Options" />
                             <Button x:Name="ChatEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                     Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                             <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
