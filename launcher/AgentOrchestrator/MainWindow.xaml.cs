@@ -456,6 +456,11 @@ public partial class MainWindow : Window
             case "usage":
                 Activate(role, "Working");
                 card?.AddUsage((long)Num(ev, "prompt"), (long)Num(ev, "completion"), Num(ev, "tps"));
+                foreach (var ended in _runClosed.Where(b => b.Role == role).ToList()) // the call that just ended: its thinking and response
+                {
+                    _runClosed.Remove(ended);
+                    AddStatsLine(ended, LauncherLogic.StatsLine(ChatName(card, role), Num(ev, "tps"), (long)Num(ev, "completion"), (long)Num(ev, "prompt")), Num(ev, "tps"));
+                }
                 break;
             case "task":
                 EndStream(false);
@@ -616,7 +621,7 @@ public partial class MainWindow : Window
             body = panel;
         }
         else
-            body = block.Body = BodyText("", mono: false, muted: kind == "thinking");
+            body = new StackPanel { Children = { (block.Body = BodyText("", mono: false, muted: kind == "thinking")) } }; // room for the stats line
 
         var title = kind == "tool" ? "TOOL" : kind == "text" ? "RESPONSE" : "THINKING";
         block.Expander = BuildExpander(title, "", body, out block.Preview); // collapsed; the user opens what they want to read
@@ -655,6 +660,8 @@ public partial class MainWindow : Window
         if (_stream is not { } block)
             return;
         _stream = null;
+        if (block.Kind != "tool")
+            _runClosed.Add(block);
         SetPulse(block, false);
         if (block.Preview is not null)
             block.Preview.Text = PreviewFor(block);
@@ -671,6 +678,20 @@ public partial class MainWindow : Window
                 Fold(block);
                 break;
         }
+    }
+
+    private readonly List<StreamBlock> _runClosed = new(); // closed thinking / response blocks waiting for their call's usage event
+
+    // The call's stats as a muted line at the bottom of the section, and its speed after the collapsed preview.
+    private void AddStatsLine(StreamBlock block, string text, double tps)
+    {
+        if (block.Expander?.Content is not StackPanel panel)
+            return;
+        var line = new TextBlock { Text = text, FontSize = 11, Margin = new Thickness(0, 6, 0, 0), Tag = "stats", TextWrapping = TextWrapping.Wrap };
+        line.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        panel.Children.Add(line);
+        if (block.Preview is not null && tps > 0)
+            block.Preview.Text += $"  ·  {tps:0.#} tok/s";
     }
 
     private void CompleteTool(StreamBlock block, string name, string args, string result)
@@ -2050,7 +2071,7 @@ public partial class MainWindow : Window
                 (TextBlock Stamp, Button Copy)? FooterAt(int index) => ChatPanel.Children[index] switch
                 {
                     StackPanel { Children: [Border, StackPanel { Children: [TextBlock s, Button b] }] } => (s, b), // a user bubble
-                    StackPanel { Children: [.., StackPanel { Children: [TextBlock s, Button b] }] } root when !root.Children.OfType<Button>().Any() => (s, b), // a reply
+                    StackPanel { Children: [.., StackPanel { Children: [TextBlock s, Button b, TextBlock] }] } root when !root.Children.OfType<Button>().Any() => (s, b), // a reply (the tail is its call / turn / task stats)
                     _ => null,
                 };
                 string? copiedMessage = null;
@@ -2082,6 +2103,64 @@ public partial class MainWindow : Window
                 Snap("31-message-footer-parchment");
                 _settings.Theme = footerTheme;
                 ApplyTheme();
+
+                // Output stats: each model call's tok/s and tokens under its thinking / stage sections, the answer's in the reply
+                // footer with the Turn and Task totals; the Task total is saved with the chat.
+                string StatsIn(Expander e) => ((StackPanel)e.Content).Children.OfType<TextBlock>().FirstOrDefault(t => t.Tag as string == "stats")?.Text ?? "";
+                string StatsName(string role) => ChatName(CardFor(role), role);
+                var taskBefore = _chat.Tokens;
+                StartChatTurn("Stats question", false);
+                foreach (var line in new[]
+                {
+                    Ev("""{"e":"chat_stage","role":"implementer","stage":"answer","title":"Implementer"}"""),
+                    Delta("implementer", "thinking", "pondering"), Delta("implementer", "text", "streamed"),
+                    Ev("""{"e":"done","role":"implementer","final":true}"""),
+                    Ev("""{"e":"usage","role":"implementer","prompt":5678,"completion":1234,"tps":42.14}"""),
+                    Ev("""{"e":"chat_reply","role":"implementer","text":"Stats answer"}"""),
+                })
+                    _lines.Enqueue(line);
+                DrainLines();
+                var statsOne = _reply!;
+                FinishChatTurn(0, false, null);
+                var oneLine = LauncherLogic.StatsLine(StatsName("implementer"), 42.14, 1234, 5678);
+                var thinkingSection = statsOne.Content.Children.OfType<Expander>().Single();
+                if (StatsIn(thinkingSection) != oneLine || !oneLine.Contains("42.1 tok/s") || !oneLine.Contains("1,234 generated") || !oneLine.Contains("5,678 prompt") ||
+                    !((TextBlock)((StackPanel)thinkingSection.Header).Children[1]).Text.Contains("42.1 tok/s") ||
+                    statsOne.Stats.Text != $"{oneLine} · {LauncherLogic.TotalsLine(6912, taskBefore + 6912)}" || !statsOne.Stats.Text.Contains("Turn: 6.9k tokens"))
+                    return Fail();
+                ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
+                StartChatTurn("Stats multi", true);
+                var multiEvents = new List<string>();
+                foreach (var (role, stage, title, n) in new[] { ("planner", "plan", "Plan", 1), ("implementer", "draft", "Draft", 2), ("reviewer", "review", "Review", 3) })
+                {
+                    multiEvents.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
+                    multiEvents.Add(Delta(role, "text", $"{title} body"));
+                    multiEvents.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
+                    multiEvents.Add(Ev($$"""{"e":"usage","role":"{{role}}","prompt":{{n * 100}},"completion":{{n * 10}},"tps":{{n * 10}}}"""));
+                }
+                multiEvents.Add(Ev("""{"e":"chat_reply","role":"reviewer","text":"Multi answer"}"""));
+                foreach (var line in multiEvents)
+                    _lines.Enqueue(line);
+                DrainLines();
+                var statsMulti = _reply!;
+                FinishChatTurn(0, false, null);
+                var stageSections = statsMulti.Content.Children.OfType<Expander>().ToList();
+                var stageRoles = new[] { "planner", "implementer", "reviewer" };
+                if (stageSections.Count != 3 || stageSections.Select((e, i) => StatsIn(e) == LauncherLogic.StatsLine(StatsName(stageRoles[i]), (i + 1) * 10, (i + 1) * 10, (i + 1) * 100)).Contains(false) ||
+                    statsMulti.Stats.Text != $"{LauncherLogic.StatsLine(StatsName("reviewer"), 30, 30, 300)} · {LauncherLogic.TotalsLine(660, taskBefore + 6912 + 660)}" ||
+                    _chat.Tokens != taskBefore + 6912 + 660)
+                    return Fail();
+                foreach (var e in stageSections.Append(thinkingSection))
+                    e.IsExpanded = true;
+                await Settle();
+                Snap("34-output-stats");
+                NewChat_Click(ChatSend, new RoutedEventArgs());
+                if (_chat.Tokens != 0 || _store.Get(savedChat.Id)?.Tokens != taskBefore + 6912 + 660)
+                    return Fail();
+                OpenChatConversation(savedChat.Id);
+                ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+                if (_chat.Tokens != taskBefore + 6912 + 660 || _chatConv != savedChat)
+                    return Fail();
                 answer = "yes";
                 ClickItem(savedChat.Id, "Delete…");
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is not null)
@@ -2425,7 +2504,7 @@ public partial class MainWindow : Window
     {
         var parts = new List<string> { ((TextBlock)((StackPanel)expander.Header).Children[0]).Text };
         IEnumerable<UIElement> pieces = expander.Content is Panel panel ? panel.Children.OfType<UIElement>() : new[] { (UIElement)expander.Content };
-        foreach (var piece in pieces.Where(p => p.Visibility == Visibility.Visible))
+        foreach (var piece in pieces.Where(p => p.Visibility == Visibility.Visible && p is not TextBlock { Tag: "stats" }))
             parts.Add(piece switch { TextBox box => box.Text, TextBlock label => label.Text, RichTextBox { Tag: TextBox raw } => raw.Text, _ => "" });
         return string.Join("\n", parts);
     }

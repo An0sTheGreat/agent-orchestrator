@@ -303,6 +303,7 @@ public partial class MainWindow
         }
         Replay(_code, saved.Messages, false, _settings.CodeWorker);
         ShowContext(true, saved.Context);
+        _code.Tokens = saved.Tokens ?? 0;
         RefreshCodeFolders();
         RefreshChatTarget();
     }
@@ -316,6 +317,7 @@ public partial class MainWindow
         c.Worker = _settings.CodeWorker;
         c.Messages = _code.History.ToList();
         c.Context = _codeContext;
+        c.Tokens = _code.Tokens;
         c.Title ??= TakeTurnTitle();
         StoreDo(() => _store.Save(c));
         RefreshSidebarList();
