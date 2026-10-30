@@ -168,6 +168,8 @@ def split_reasoning(message: dict[str, Any]) -> tuple[str, str]:
     content = str(message.get("content") or "")
     thinking = str(message.get("reasoning_content") or "")
     match = re.search(r"<think>(.*?)</think>", content, re.S)
+    if not match and "<think>" not in content:
+        match = re.match(r"(.*?)</think>", content, re.S)  # the chat template opened <think> itself
     if match:
         thinking = "\n".join(part for part in (thinking, match.group(1)) if part).strip()
         content = (content[:match.start()] + content[match.end():]).strip()
@@ -182,13 +184,31 @@ def has_output(message: dict[str, Any]) -> bool:
 
 
 class ThinkSplitter:
-    """Splits streamed content into (kind, text) pieces, honouring inline <think>...</think> blocks."""
+    """Splits streamed content into (kind, text) pieces, honouring inline <think>...</think> blocks.
+    start_thinking=True: the chat template's generation prompt already opened <think>, so the output starts inside
+    reasoning and only closes it with </think>. None: unknown; hold the first characters until a </think> before any
+    <think> shows that it did."""
 
-    def __init__(self) -> None:
-        self.buf, self.thinking = "", False
+    AUTO_HOLD = 200  # ponytail: unknown templates only catch reasoning whose </think> lands this early; the /props check covers llama.cpp
+
+    def __init__(self, start_thinking: bool | None = False) -> None:
+        self.buf, self.thinking = "", bool(start_thinking)
+        self.pending, self.auto = start_thinking is not False, start_thinking is None
 
     def feed(self, text: str) -> list[tuple[str, str]]:
         self.buf += text
+        if self.pending:
+            head = self.buf.lstrip()
+            if len(head) < len("<think>") and "<think>".startswith(head):
+                return []  # could still be an opening tag
+            if head.startswith("<think>"):  # the model opened it itself after all
+                self.buf, self.thinking = head[len("<think>"):], True
+            elif self.auto:
+                close, opened = head.find("</think>"), head.find("<think>")
+                if close < 0 and opened < 0 and len(head) < self.AUTO_HOLD:
+                    return []
+                self.thinking = close >= 0 and (opened < 0 or close < opened)
+            self.pending = False
         out: list[tuple[str, str]] = []
         while True:
             tag = "</think>" if self.thinking else "<think>"
@@ -440,7 +460,8 @@ class ApiClient:
         calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
         finish = None
-        splitter = ThinkSplitter()
+        splitter = ThinkSplitter(self._starts_thinking(body))
+        seen_content = False
 
         def put(kind: str, text: str) -> None:
             (reasoning if kind == "thinking" else content).append(text)
@@ -465,9 +486,13 @@ class ApiClient:
                         finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
+                        text = delta.get("content") or ""
                         if thought:
+                            if not seen_content:  # the server split the reasoning out itself: content is the answer
+                                splitter = ThinkSplitter()
                             put("thinking", thought)
-                        for kind, text in splitter.feed(delta.get("content") or ""):
+                        seen_content = seen_content or bool(text)
+                        for kind, text in splitter.feed(text):
                             put(kind, text)
                         for call in delta.get("tool_calls") or []:
                             slot = calls.setdefault(call.get("index", 0), {"id": "", "name": "", "arguments": ""})
@@ -492,6 +517,25 @@ class ApiClient:
                 for index, slot in sorted(calls.items())
             ]
         return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage, "_streamed": True}
+
+    def _starts_thinking(self, body: dict[str, Any]) -> bool | None:
+        """Whether streamed content begins inside reasoning (ThinkSplitter's start_thinking): False when thinking is off
+        for this call or the chat template doesn't open <think>, True when it does, None when the template is unknown.
+        The template is asked once per process and model."""
+        if self.remote or self._thinking_off(body):
+            return False
+        key = (self.llama_port or self.management_url, str((self.auto_load or {}).get("model_path", "")))
+        if key not in THINK_TEMPLATES:
+            template = None
+            try:
+                if self.llama_port:
+                    template = self._request_at(f"http://127.0.0.1:{self.llama_port}", "GET", "/props").get("chat_template")
+                elif self.management_url:
+                    template = self._request_at(self.management_url, "GET", "/api/inference/status").get("chat_template")
+            except (WorkflowError, OSError, ValueError, AttributeError):
+                template = None
+            THINK_TEMPLATES[key] = opens_think(template) if isinstance(template, str) and template else None
+        return THINK_TEMPLATES[key]
 
     def _monitor_row(self, started: float) -> dict[str, Any]:
         """Unsloth's own per-request stats (same source as the live-TPS mod); empty if unavailable."""
@@ -555,6 +599,13 @@ class ApiClient:
 
 
 CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port or management url, model path) -> n_ctx
+THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)
+
+
+def opens_think(template: str) -> bool:
+    """True if a chat template's generation prompt (what follows its last add_generation_prompt) writes <think>."""
+    head, found, tail = template.rpartition("add_generation_prompt")
+    return bool(found) and "<think>" in tail
 CONTEXT_NOTE = re.compile(r"\n\n(SKILLS|WEB SEARCH|UTILITIES)\n.*?(?=\n\n|\Z)", re.S)  # request_extras' system notes
 
 
