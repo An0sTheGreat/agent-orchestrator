@@ -477,6 +477,7 @@ public partial class MainWindow
                     card.Title = title;
                 SaveWorkers();
                 SyncCustomWorkers();
+                ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
                 Log($"{card.Title}: model settings saved");
                 Toast($"{card.Title}: settings saved");
                 saved();
@@ -530,6 +531,8 @@ public partial class MainWindow
                 card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
                 SaveWorkers();
             }
+            if (remote is null)
+                ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
             Log($"{card.Title}: model settings saved{(remote is null ? "" : $" (remote API {remote.BaseUrl.Trim()}, model {remote.Model.Trim()})")}");
             if (remote is not null && Environment.GetEnvironmentVariable(remote.KeyEnv.Trim()) is null)
                 Toast($"{card.Title}: set {remote.KeyEnv.Trim()} in your environment, then restart the launcher", "#F7C873");

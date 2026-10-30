@@ -2170,6 +2170,15 @@ public partial class MainWindow : Window
                 _settings.Theme = ringTheme;
                 ApplyTheme();
                 _contextPopup.IsOpen = false;
+                // A context length saved for the measured worker shows at once (0 = auto waits); another worker's leaves it.
+                ContextLengthSaved("planner", "64000");
+                ContextLengthSaved("reviewer", "0");
+                var otherKept = ChatContextRing.ToolTip as string == "12.3k / 32k tokens (38%)";
+                ContextLengthSaved("reviewer", "64000");
+                var resized = ChatContextRing.ToolTip as string == "12.3k / 64k tokens (19%)";
+                ContextLengthSaved("reviewer", "32000");
+                if (!otherKept || !resized)
+                    return Fail();
                 // The worker column's Context section: closed (with the summary) until opened; open shows the same rows and is saved.
                 if (ContextSectionBody.Visibility == Visibility.Visible || ContextSummary.Text != "38%  ·  12.3k / 32k")
                     return Fail();

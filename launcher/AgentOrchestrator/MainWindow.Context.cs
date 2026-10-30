@@ -12,6 +12,7 @@ namespace AgentOrchestrator;
 public sealed class ContextSnapshot
 {
     public long? NCtx { get; set; } // null: unknown (remote role)
+    public string? Role { get; set; } // the worker whose call this measured (null in snapshots saved before it was kept)
     public long Prompt { get; set; }
     public long Completion { get; set; }
     public Dictionary<string, long> Parts { get; set; } = new();
@@ -22,7 +23,8 @@ public sealed class ContextSnapshot
     public static ContextSnapshot From(JsonElement ev)
     {
         static long Long(JsonElement e, string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
-        var s = new ContextSnapshot { Prompt = Long(ev, "prompt_tokens"), Completion = Long(ev, "completion_tokens") };
+        var s = new ContextSnapshot { Prompt = Long(ev, "prompt_tokens"), Completion = Long(ev, "completion_tokens"),
+            Role = ev.TryGetProperty("role", out var role) && role.ValueKind == JsonValueKind.String ? role.GetString() : null };
         if (Long(ev, "n_ctx") is > 0 and var n)
             s.NCtx = n;
         if (ev.TryGetProperty("parts", out var parts) && parts.ValueKind == JsonValueKind.Object)
@@ -98,6 +100,20 @@ public partial class MainWindow
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
         RefreshContextSection();
+    }
+
+    // A context length saved in the Models window shows at once on each view whose last measured call was that worker's (an
+    // older saved snapshot without a role: the view's Single target). Empty or 0 (auto) is only known after the next call.
+    private void ContextLengthSaved(string role, string? value)
+    {
+        if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n <= 0)
+            return;
+        foreach (var code in new[] { false, true })
+            if (ContextOf(code) is { } s && (s.Role ?? TargetOf(code ? _code : _chat)?.Role) == role)
+            {
+                s.NCtx = n;
+                ShowContext(code, s);
+            }
     }
 
     // The worker details column's Context section: the shown view's snapshot; open or closed as last left (saved).
