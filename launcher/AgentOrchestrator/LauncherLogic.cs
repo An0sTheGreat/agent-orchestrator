@@ -80,9 +80,17 @@ internal static class LauncherLogic
         (autoLoad?["reasoning_budget"] is JsonValue budget && double.TryParse(budget.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var b) && b != 0 ||
         Regex.IsMatch(modelPathOrName, @"qwen3|qwq|deepseek-r1|r1-distill|gpt-oss|phi-4.*reasoning|magistral|glm-(4\.[5-9]|z1)|thinking|reasoning", RegexOptions.IgnoreCase));
 
-    private static bool? ThinkingFromTemplate(string? template) =>
-        template is null ? null : new[] { "<think>", "</think>", "enable_thinking", "reasoning_content", "<|channel|>analysis", "[THINK]" }
-            .Any(m => template.Contains(m, StringComparison.Ordinal));
+    // A thinking model's template has a thinking switch, starts the reply with <think> in its generation prompt, or uses
+    // gpt-oss's / Magistral's reasoning markers. "<think>" or reasoning_content elsewhere is not enough: non-thinking
+    // models (Qwen3 Instruct 2507) mention them only to strip earlier reasoning from the history.
+    private static bool? ThinkingFromTemplate(string? template)
+    {
+        if (template is null)
+            return null;
+        var prompt = template.LastIndexOf("add_generation_prompt", StringComparison.Ordinal);
+        return new[] { "enable_thinking", "<|channel|>analysis", "[THINK]" }.Any(m => template.Contains(m, StringComparison.Ordinal)) ||
+            prompt >= 0 && template.IndexOf("<think>", prompt, StringComparison.Ordinal) >= 0;
+    }
 
     // The role's GGUF file: auto_load.gguf_file when it exists, else the local scan (the Change picker's) for the repo in
     // auto_load.model_path, preferring auto_load.gguf_variant. Null when none is found.
@@ -1542,9 +1550,14 @@ internal static class LauncherLogic
                 !IsThinkingModel("qwen3-fake", Load(cut, "qwen3-fake"), "") || IsThinkingModel("Some-Agent-35B", Load(cut, "Some-Agent-35B"), "") ||
                 !IsThinkingModel("Qwen3-X", Load(bad, "Qwen3-X"), "") || IsThinkingModel("Some-Agent-35B", Load(think, "Some-Agent-35B")))
                 throw new InvalidOperationException("Template-driven IsThinkingModel failed.");
-            foreach (var marker in new[] { "<think>", "</think>", "enable_thinking", "reasoning_content", "<|channel|>analysis", "[THINK]" })
+            foreach (var marker in new[] { "enable_thinking", "<|channel|>analysis", "[THINK]", "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}" })
                 if (!IsThinkingModel("Plain", Load(Gguf("m.gguf", "a " + marker + " b"), "Plain"), ""))
                     throw new InvalidOperationException($"Marker {marker} not detected.");
+            // Qwen3 Instruct 2507: <think> and reasoning_content only to strip earlier reasoning; the reply starts plainly.
+            const string instruct = "{% if '</think>' in content %}{% set reasoning_content = content.split('</think>')[0] %}{% endif %}" +
+                "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";
+            if (IsThinkingModel("qwen3-4b-instruct-2507", Load(Gguf("instruct.gguf", instruct), "qwen3-4b-instruct-2507"), ""))
+                throw new InvalidOperationException("A template that only strips <think> from history must not count as thinking.");
             // HF cache layout resolved from model_path + gguf_variant
             var hubFile = Path.Combine(tplArea, "hub", "models--org--Agent-GGUF", "snapshots", "x");
             Directory.CreateDirectory(hubFile);
