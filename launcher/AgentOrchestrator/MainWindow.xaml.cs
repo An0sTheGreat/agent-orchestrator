@@ -1420,7 +1420,7 @@ public partial class MainWindow : Window
             StartChatTurn("Race", false);
             _lines.Enqueue(Ev("""{"e":"chat_reply","role":"reviewer","text":"Raced reply"}"""));
             DrainLines();
-            if (FinishChatTurn(0, true, null) || _chatBusy || _chatHistory.Count != 2 || _chatHistory[1] != new LauncherLogic.ChatMessage("assistant", "Raced reply") ||
+            if (FinishChatTurn(0, true, null) || _chatBusy || _chatHistory.Count != 2 || _chatHistory[1] is not { Role: "assistant", Content: "Raced reply", Time: not null } ||
                 _reply!.Final != "Raced reply" || _reply.Answer?.Text != "Raced reply")
                 return Fail();
             StartChatTurn("Really stopped", false);
@@ -1725,7 +1725,7 @@ public partial class MainWindow : Window
                 await Settle();
                 Snap("19-code-resumed");
                 if (_codeConv != first || _store.Get(second.Id) is not null || SelectedProjectPath() != codeProject || _code.History.Count != 2 ||
-                    CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not Border { Child: TextBox { Text: "Hi" } } ||
+                    CodeExtraFolders.Count != 1 || CodePanel.Children.Count != 2 || CodePanel.Children[0] is not StackPanel { Children: [Border { Child: TextBox { Text: "Hi" } }, ..] } ||
                     CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
                     CodeEmpty.Visibility == Visibility.Visible || File.ReadAllText(firstPath) != savedText)
                     return Fail();
@@ -2016,6 +2016,43 @@ public partial class MainWindow : Window
                 if (NavChat.IsChecked != true || _chatConv != savedChat || _chatHistory.Count != 4 || ChatPanel.Children.Count != 4 || _codeConv != chatA ||
                     SidebarList.Children.Cast<UIElement>().Select(Main).Single(m => m is ToggleButton { IsChecked: true }).Tag as string != savedChat.Id)
                     return Fail();
+                // Under every message: a muted timestamp (exact time on hover) and a copy icon; the reopened chat shows its saved times.
+                var savedTimes = _store.Get(savedChat.Id)!.Messages.Select(m => m.Time).ToList();
+                (TextBlock Stamp, Button Copy)? FooterAt(int index) => ChatPanel.Children[index] switch
+                {
+                    StackPanel { Children: [Border, StackPanel { Children: [TextBlock s, Button b] }] } => (s, b), // a user bubble
+                    StackPanel { Children: [.., StackPanel { Children: [TextBlock s, Button b] }] } root when !root.Children.OfType<Button>().Any() => (s, b), // a reply
+                    _ => null,
+                };
+                string? copiedMessage = null;
+                _copyMessageHook = text => copiedMessage = text;
+                var footers = Enumerable.Range(0, 4).Select(FooterAt).ToList();
+                if (footers.Any(f => f is null) || savedTimes.Any(t => t is null) || footers.Select((f, i) => f!.Value.Stamp.ToolTip as string != savedTimes[i]!.Value.ToLocalTime().ToString("f")).Any(wrong => wrong) ||
+                    footers.Any(f => f!.Value.Stamp.Text != "just now" || ((TextBlock)f.Value.Copy.Content).Text != Markdown.CopyGlyph))
+                    return Fail();
+                footers[3]!.Value.Copy.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                var replyChecked = ((TextBlock)footers[3]!.Value.Copy.Content).Text == Markdown.CopiedGlyph;
+                footers[2]!.Value.Copy.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                _copyMessageHook = null;
+                if (!replyChecked || copiedMessage != "Follow-up" || FindTextButtons(ChatPanel).Any(t => t == "Copy reply"))
+                    return Fail();
+                var realNow = Now;
+                Now = () => realNow().AddHours(3); // the minute timer's refresh
+                RefreshStamps();
+                var aged = footers.All(f => f!.Value.Stamp.Text == "3 hours ago");
+                Now = realNow;
+                RefreshStamps();
+                if (!aged || footers[0]!.Value.Stamp.Text != "just now")
+                    return Fail();
+                await Settle();
+                Snap("31-message-footer");
+                var footerTheme = _settings.Theme;
+                _settings.Theme = "Parchment";
+                ApplyTheme();
+                await Settle();
+                Snap("31-message-footer-parchment");
+                _settings.Theme = footerTheme;
+                ApplyTheme();
                 answer = "yes";
                 ClickItem(savedChat.Id, "Delete…");
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is not null)
@@ -2363,6 +2400,9 @@ public partial class MainWindow : Window
             parts.Add(piece switch { TextBox box => box.Text, TextBlock label => label.Text, RichTextBox { Tag: TextBox raw } => raw.Text, _ => "" });
         return string.Join("\n", parts);
     }
+
+    private static IEnumerable<string> FindTextButtons(DependencyObject root) =>
+        LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => (child is Button { Content: string text } ? [text] : Enumerable.Empty<string>()).Concat(FindTextButtons(child)));
 
     private void CopyToClipboard(string text, string done, string empty)
     {
