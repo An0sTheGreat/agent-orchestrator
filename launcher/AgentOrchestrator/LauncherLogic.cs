@@ -70,9 +70,18 @@ internal static class LauncherLogic
         return skills.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
+    // A model that thinks before answering: a role whose auto_load sets a non-zero reasoning_budget, or a known reasoning
+    // family by name (Qwen3/3.5, QwQ, DeepSeek-R1 and its distills, gpt-oss, Phi-4 reasoning, Magistral, GLM-4.5+ / Z1).
+    // ponytail: name list, extend it as reasoning families appear.
+    public static bool IsThinkingModel(string modelPathOrName, JsonObject? autoLoad) =>
+        autoLoad?["reasoning_budget"] is JsonValue budget && double.TryParse(budget.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var b) && b != 0 ||
+        Regex.IsMatch(modelPathOrName, @"qwen3|qwq|deepseek-r1|r1-distill|gpt-oss|phi-4.*reasoning|magistral|glm-(4\.[5-9]|z1)|thinking|reasoning", RegexOptions.IgnoreCase);
+
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
-    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false) =>
+    // effort: thinking effort for every model call of the turn ("" = the model's default; off, low, medium, high, max).
+    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
+        string effort = "") =>
         JsonSerializer.Serialize(new
         {
             mode = mode == "multi" ? "multi" : "single",
@@ -82,6 +91,7 @@ internal static class LauncherLogic
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
             title,
+            effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
@@ -102,7 +112,7 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null, bool title = false) =>
+        Extras? extras = null, bool title = false, string effort = "") =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
@@ -114,6 +124,7 @@ internal static class LauncherLogic
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
             title,
+            effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string apiKey, string requestFile)
@@ -1373,6 +1384,20 @@ internal static class LauncherLogic
         if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("single", "implementer", chat, title: true))!["title"]! ||
             !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:pp", [], title: true))!["title"]!)
             throw new InvalidOperationException("The first-turn title flag failed.");
+        if ((string)single["effort"]! != "" || (string)JsonNode.Parse(BuildChatRequest("multi", "x", chat, effort: "high"))!["effort"]! != "high" ||
+            (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:pp", [], effort: "off"))!["effort"]! != "off")
+            throw new InvalidOperationException("The effort field failed.");
+        foreach (var (name, budget, thinks) in new (string, int?, bool)[]
+        {
+            ("unsloth/Qwen3.5-4B-GGUF", null, true), ("Qwen3-8B", null, true), ("QwQ-32B", null, true), ("deepseek-ai/DeepSeek-R1-0528", null, true),
+            ("DeepSeek-R1-Distill-Llama-8B", null, true), ("openai/gpt-oss-20b", null, true), ("Phi-4-mini-reasoning", null, true),
+            ("Magistral-Small-2509", null, true), ("GLM-4.5-Air", null, true), ("GLM-Z1-9B", null, true), ("Kimi-K2-Thinking", null, true),
+            ("unsloth/Qwen2.5-Coder-3B-Instruct-GGUF", null, false), ("unsloth/Phi-4-mini-instruct-GGUF", null, false), ("GLM-4-9B", null, false),
+            ("Qwen2.5-Coder-3B-Instruct", 0, false), ("Qwen2.5-Coder-3B-Instruct", 4096, true), ("Llama-3.1-8B", -1, true), ("Qwen3-8B", 0, true),
+        })
+            if (IsThinkingModel(name, budget is null ? new JsonObject { ["model_path"] = name } : new JsonObject { ["reasoning_budget"] = budget }) != thinks ||
+                budget is null && IsThinkingModel(name, null) != thinks)
+                throw new InvalidOperationException($"IsThinkingModel({name}, {budget}) should be {thinks}.");
         var skillArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-skills-{Guid.NewGuid():N}");
         try
         {
