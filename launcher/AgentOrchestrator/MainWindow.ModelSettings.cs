@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -31,6 +32,65 @@ public partial class MainWindow
             window.ShowDialog();
     }
 
+    // The composer's target chip: the Models window, a list of the workers (name, model, activity dot) beside the selected
+    // one's model settings. Save keeps the window open; switching worker or closing with unsaved changes asks first.
+    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards)
+    {
+        if (_process is not null || cards.Count == 0 || cards.Any(c => !c.Editable))
+            return null;
+        var host = new Border();
+        var list = new StackPanel { Width = 200, Margin = new Thickness(0, 0, 18, 0) };
+        DockPanel.SetDock(list, Dock.Left);
+        var window = new DialogShell(this, "Models", new DockPanel { Children = { list, host } }, large: true);
+        RoleCard? selected = null;
+        var dirty = () => false;
+        var rows = new Dictionary<RoleCard, ToggleButton>();
+        bool Show(RoleCard card)
+        {
+            var shown = host.Child;
+            host.Child = null; // the radio groups are shared by name: never two bodies at once
+            if (ModelSettingsBody(card, () => Show(card), window.Close, "Close") is not { } built)
+            {
+                host.Child = shown;
+                return false;
+            }
+            (host.Child, dirty, selected) = (built.Body, built.IsDirty, card);
+            foreach (var (c, row) in rows)
+                row.IsChecked = c == card;
+            return true;
+        }
+        foreach (var card in cards)
+        {
+            var name = new TextBlock { Text = ChatName(card, card.Role), FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
+            if (card.IsCustom)
+                name.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(RoleCard.Title)) { Source = card });
+            var model = new TextBlock { FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis };
+            model.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(nameof(RoleCard.ModelName)) { Source = card });
+            model.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var dot = new ContentPresenter { Content = card, ContentTemplate = (DataTemplate)FindResource("ActivityDot"), VerticalAlignment = VerticalAlignment.Center };
+            DockPanel.SetDock(dot, Dock.Right);
+            var row = rows[card] = new ToggleButton { Content = new DockPanel { Children = { dot, new StackPanel { Children = { name, model } } } }, Tag = card.Role, Padding = new Thickness(14, 7, 6, 7) };
+            row.SetResourceReference(StyleProperty, "NavToggle");
+            row.Click += (_, _) =>
+            {
+                if (card != selected && (!dirty() || SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected?.Role ?? "")}?", "Discard") is not null))
+                    Show(card);
+                row.IsChecked = card == selected;
+            };
+            list.Children.Add(row);
+        }
+        window.Closing += (_, e) => e.Cancel = selected is not null && _cards.Contains(selected) && dirty() &&
+            SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected.Role)}?", "Discard") is null;
+        window.Closed += (_, _) => host.Child = null;
+        if (!Show(cards[0]))
+            return null;
+        if (_settingsShow is { } show)
+            show(window);
+        else
+            window.ShowDialog();
+        return window;
+    }
+
     private static void WriteJson(string path, JsonNode root) => File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
     {
         WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -38,6 +98,17 @@ public partial class MainWindow
 
     // The window, or null (status set) when a built-in role has no readable config.json.
     private DialogShell? BuildModelSettings(RoleCard card)
+    {
+        DialogShell? dialog = null;
+        if (ModelSettingsBody(card, () => dialog?.Close(), () => dialog?.Close(), "Cancel") is not { } built)
+            return null;
+        return dialog = new DialogShell(this, card.Title, built.Body, large: true);
+    }
+
+    // The window's contents, or null (status set) when a built-in role has no readable config.json. saved: after a successful
+    // Save; close: Cancel (labelled closeLabel), Remove worker, or a config.json that could not be written. IsDirty: a field
+    // differs from what the body was built with. The radio buttons share fixed group names, so host one body at a time.
+    private (FrameworkElement Body, Func<bool> IsDirty)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
@@ -155,7 +226,6 @@ public partial class MainWindow
         // Custom workers: what the card's menu and the old Settings dialog offered.
         TextBox? nameBox = null, description = null, prompt = null;
         RadioButton[]? kinds = null;
-        var dialogRef = (DialogShell?)null;
         if (card.IsCustom)
         {
             var w = card.Config;
@@ -181,8 +251,8 @@ public partial class MainWindow
             {
                 if (AskDialog("Remove worker", $"Remove {card.Title}? Its settings are deleted.", "Remove") is null)
                     return;
-                dialogRef?.Close();
-                RemoveWorker(card);
+                RemoveWorker(card); // first: the Models window asks before closing only while its worker exists
+                close();
                 Log($"{card.Title}: removed");
             };
             foreach (var part in new UIElement[]
@@ -296,7 +366,7 @@ public partial class MainWindow
         var error = ErrorLine();
         error.Margin = new Thickness(0, 0, 0, 8);
         var save = new Button { Content = "Save", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 4, 16, 4), IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var cancel = new Button { Content = closeLabel, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
         var footer = new StackPanel
         {
             Margin = new Thickness(0, 14, 0, 0),
@@ -305,8 +375,7 @@ public partial class MainWindow
         DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
         DockPanel.SetDock(nav, Dock.Left);
-        var dialog = dialogRef = new DialogShell(this, card.Title, new DockPanel { Children = { top, footer, nav, scroll } }, large: true);
-        cancel.Click += (_, _) => dialog.Close();
+        cancel.Click += (_, _) => close();
 
         // Shows the errors under their fields (the rest above the buttons); true when there were any.
         bool ShowErrors(Dictionary<string, string> errors)
@@ -325,7 +394,7 @@ public partial class MainWindow
         save.Click += (_, _) =>
         {
             var fields = editors.ToDictionary(p => p.Key, p => p.Value is ComboBox c ? c.SelectedItem is string s && s != "(default)" ? s : "" : ((TextBox)p.Value).Text);
-            var choice = modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
+            var choice = Picked();
             if (card.IsCustom)
             {
                 var w = card.Config;
@@ -356,7 +425,7 @@ public partial class MainWindow
                 SyncCustomWorkers();
                 Log($"{card.Title}: model settings saved");
                 Toast($"{card.Title}: settings saved");
-                dialog.Close();
+                saved();
                 return;
             }
 
@@ -392,7 +461,7 @@ public partial class MainWindow
             {
                 Log($"Could not update config.json: {exception.Message}");
                 SetStatus("Could not update config.json", "#FF667A");
-                dialog.Close();
+                close();
                 return;
             }
             if (problem is not null)
@@ -413,10 +482,103 @@ public partial class MainWindow
             else
                 Toast($"{card.Title}: settings saved");
             PrefillCards();
-            dialog.Close();
+            saved();
         };
         LoadModels();
-        return dialog;
+        ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
+        string State() => string.Join("\u0001", editors.Values.Concat(new Control?[] { nameBox, description, prompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
+            .Select(c => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" })) + (Picked() is not null);
+        var clean = State();
+        return (new DockPanel { Children = { top, footer, nav, scroll } }, () => State() != clean);
+    }
+
+    // --ui-smoke: the target chips open the Models window (borderless, large, owned) listing Single's target, Multi's three
+    // workers, or the Code target; Save writes the worker and keeps the window open; switching worker with an unsaved change
+    // asks, and Discard writes nothing. config: the active config.json, holding roles.implementer.
+    private async Task<bool> ModelConfigSmoke(string config, Action<string, FrameworkElement?> snap)
+    {
+        static Task Idle() => Task.Delay(400);
+        static IEnumerable<DependencyObject> Tree(DependencyObject d) =>
+            LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().SelectMany(c => Tree(c).Prepend(c));
+        static void Click(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        static List<ToggleButton> Rows(Window w) => Tree(w).OfType<ToggleButton>().Where(t => t.GetType() == typeof(ToggleButton)).ToList();
+        static string Listed(Window w) => string.Join(",", Rows(w).Select(r => (string)r.Tag + (r.IsChecked == true ? "*" : "")));
+        static TextBox Field(Window w, string key) => Tree(w).OfType<TextBox>().First(t => t.Tag as string == key);
+        async Task<DialogShell?> Open(Button chip)
+        {
+            Click(chip);
+            await Idle();
+            return OwnedWindows.OfType<DialogShell>().LastOrDefault(w => w.IsVisible && w.Title == "Models");
+        }
+        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme);
+        var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
+        Directory.CreateDirectory(models);
+        (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models); // a disk scan: never a real Unsloth server
+        var asked = new List<string>();
+        string? answer = null;
+        _codeChoice = title => { asked.Add(title); return answer; };
+        try
+        {
+            // Single: the target; Code: the Code target. Closing with nothing changed asks nothing.
+            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker) = ("single", "reviewer", "planner");
+            RefreshChatTarget();
+            if (await Open(ChatTargetChip) is not { } single || single.WindowStyle != WindowStyle.None || single.Owner != this || single.Width < 600 ||
+                Listed(single) != "reviewer*" || ChatTargetChip.ToolTip as string != "Configure model")
+                return false;
+            single.Close();
+            if (single.IsVisible || await Open(CodeTargetChip) is not { } code || Listed(code) != "planner*" || CodeTargetChip.ToolTip as string != "Configure model")
+                return false;
+            code.Close();
+
+            // Multi: the three workers, the Planner first.
+            _settings.ChatMode = "multi";
+            RefreshChatTarget();
+            if (code.IsVisible || asked.Count > 0 || ChatTargetChip.Cursor != Cursors.Hand || await Open(ChatTargetChip) is not { } multi ||
+                Listed(multi) != "planner*,implementer,reviewer")
+                return false;
+            snap("33-model-config", multi);
+            _settings.Theme = "Parchment";
+            ApplyTheme();
+            await Idle();
+            snap("33-model-config-parchment", multi);
+            _settings.Theme = saved.Theme;
+            ApplyTheme();
+
+            // Save keeps the window open on the Implementer.
+            Click(Rows(multi)[1]);
+            await Idle();
+            Field(multi, "temperature").Text = "0.33";
+            Click(Tree(multi).OfType<Button>().First(b => b.Content as string == "Save"));
+            await Idle();
+            if (!multi.IsVisible || Listed(multi) != "planner,implementer*,reviewer" ||
+                (double?)JsonNode.Parse(File.ReadAllText(config))!["roles"]!["implementer"]!["sampling"]?["temperature"] != 0.33)
+                return false;
+
+            // An unsaved change: switching asks; no answer stays, Discard switches and writes nothing; closing then asks nothing.
+            var bytes = File.ReadAllBytes(config);
+            Field(multi, "temperature").Text = "0.77";
+            Click(Rows(multi)[2]);
+            await Idle();
+            if (asked.Count != 1 || Listed(multi) != "planner,implementer*,reviewer" || Field(multi, "temperature").Text != "0.77")
+                return false;
+            answer = "";
+            Click(Rows(multi)[2]);
+            await Idle();
+            if (asked.Count != 2 || Listed(multi) != "planner,implementer,reviewer*")
+                return false;
+            multi.Close();
+            return !multi.IsVisible && asked.Count == 2 && File.ReadAllBytes(config).SequenceEqual(bytes);
+        }
+        finally
+        {
+            answer = ""; // a check that failed with a change pending still closes the window
+            foreach (var open in OwnedWindows.OfType<DialogShell>().Where(w => w.Title == "Models").ToList())
+                open.Close();
+            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme) = saved;
+            ApplyTheme();
+            RefreshChatTarget();
+            Directory.Delete(models, recursive: true);
+        }
     }
 
     // --ui-smoke: the cards have a gear and no Settings button or right-click menu; the gear opens this window (borderless,

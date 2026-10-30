@@ -1126,6 +1126,8 @@ public partial class MainWindow : Window
             var planner = CardFor("planner")!;
             if (!await ModelSettingsSmoke(planner, presetConfig, Snap))
                 return Fail();
+            if (!await ModelConfigSmoke(presetConfig, Snap))
+                return Fail();
 
             // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
             async Task<bool> Show(DialogShell dialog, string name)
