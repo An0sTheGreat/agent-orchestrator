@@ -3706,6 +3706,7 @@ public partial class MainWindow : Window
         Reveal(ChatView, chat);
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown
         RefreshContextSection();
+        ApplyPromptView();
         if (chat || (code && !_codeRun))
         {
             RefreshChatTarget();

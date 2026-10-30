@@ -16,6 +16,29 @@ namespace AgentOrchestrator;
 // launcher's settings and inherit what they leave empty from the Implementer.
 public partial class MainWindow
 {
+    // A built-in role's fixed prompts from the workflow folder: the project run's, then the Code conversation's.
+    private string WorkflowPrompt(string role)
+    {
+        string Read(string file)
+        {
+            try { return _workflowRoot is null ? "" : File.ReadAllText(Path.Combine(_workflowRoot, "prompts", file)).Trim(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return ""; }
+        }
+        var code = role == "implementer" ? "code.txt" : $"code_{role}.txt";
+        return $"PROJECT RUN (prompts/{role}.txt)\n\n{Read(role + ".txt")}\n\n\nCODE CONVERSATION (prompts/{code})\n\n{Read(code)}";
+    }
+
+    // Shows the Chat prompt section in the Chat view and the fixed workflow prompt section in the Code view.
+    private void ApplyPromptView(Panel? sections = null)
+    {
+        var chat = NavChat.IsChecked == true;
+        foreach (var section in (sections ?? WorkerSettingsHost.Child as Panel) is { } root ? LogicalTreeHelper.GetChildren(root).OfType<FrameworkElement>().SelectMany(Flatten) : [])
+            if (section.Tag is "ChatPromptSection" or "WorkflowPromptSection")
+                section.Visibility = (section.Tag as string == "ChatPromptSection") == chat ? Visibility.Visible : Visibility.Collapsed;
+        static IEnumerable<FrameworkElement> Flatten(FrameworkElement e) =>
+            LogicalTreeHelper.GetChildren(e).OfType<FrameworkElement>().SelectMany(Flatten).Prepend(e);
+    }
+
     private static void WriteJson(string path, JsonNode root) => File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
     {
         WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
@@ -209,9 +232,20 @@ public partial class MainWindow
         StackPanel? remotePanel = null;
         if (!card.IsCustom)
         {
-            var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat and Code views (roles." + card.Role + ".chat_system_prompt). Empty = none.");
+            // The Chat view: an optional prompt of the user's. The Code view: the role's fixed workflow prompts, read only
+            // (the multi-agent workflow depends on them). ApplyPromptView shows the one for the view on screen.
+            var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
+            chat.Tag = "ChatPromptSection";
             chat.Children.Add(chatPrompt = Box((string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120));
             chatPrompt.FontFamily = new FontFamily("Consolas");
+            var workflow = Section("System prompt (workflow)", "Fixed: the instructions this role follows in project runs and Code conversations. Not editable.");
+            workflow.Tag = "WorkflowPromptSection";
+            var fixedPrompt = Box(WorkflowPrompt(card.Role), "WorkflowPrompt", 220);
+            (fixedPrompt.FontFamily, fixedPrompt.IsReadOnly, fixedPrompt.TextWrapping, fixedPrompt.VerticalScrollBarVisibility) =
+                (new FontFamily("Consolas"), true, TextWrapping.Wrap, ScrollBarVisibility.Auto);
+            fixedPrompt.SetResourceReference(ForegroundProperty, "Muted");
+            workflow.Children.Add(fixedPrompt);
+            ApplyPromptView(sections);
             var panel = Section("Model source", "Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.");
             modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
             {

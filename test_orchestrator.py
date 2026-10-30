@@ -2749,14 +2749,16 @@ class CodeTests(unittest.TestCase):
 
     MSGS = [{"role": "user", "content": "add a readme"}]
 
-    def test_multi_stages_get_their_role_chat_system_prompt(self):
-        self.config["roles"]["reviewer"]["chat_system_prompt"] = "Review strictly."
+    def test_builtin_roles_keep_their_fixed_code_prompts(self):
+        # chat_system_prompt is for the Chat view: Code turns keep the built-ins' fixed workflow prompts.
+        for role in ("planner", "implementer", "reviewer"):
+            self.config["roles"][role]["chat_system_prompt"] = "Chat only."
         code, log, *_ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
                                   {"planner": ["P"], "implementer": ["DRAFT"], "reviewer": ["FINAL"]})
         self.assertEqual(code, 0)
-        reviewer = next(e for e in log if e["role"] == "reviewer")
-        self.assertIn("=== YOUR ROLE: Reviewer ===\nReview strictly.", reviewer["system"])
-        self.assertNotIn("YOUR ROLE", next(e for e in log if e["role"] == "planner")["system"])  # a role without one adds nothing
+        self.assertTrue(log and all("Chat only." not in e["system"] for e in log))
+        code, log, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS}, {"implementer": ["done"]})
+        self.assertNotIn("Chat only.", log[0]["system"])
 
     def test_long_code_chat_is_summarized_before_the_turn(self):
         history = []
