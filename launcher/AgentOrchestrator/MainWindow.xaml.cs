@@ -1430,7 +1430,9 @@ public partial class MainWindow : Window
                 return Fail();
             ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
             await Settle();
-            if (!SingleShown() || !await WorkerRailSmoke(Snap) || !SingleShown())
+            // Hidden cards take no slot: the first shown card starts the grid's top-left cell.
+            var firstShown = _cards.Where(Shown).Select(card => (UIElement)CardsList.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
+            if (!SingleShown() || firstShown?.TranslatePoint(new Point(), CardsList) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !SingleShown())
                 return Fail();
             ShowView();
             await Settle();
