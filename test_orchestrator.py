@@ -2541,19 +2541,21 @@ class ConversationCompactionTests(unittest.TestCase):
 
     ESSAY = "word " * 2000  # a 2000-word reply: ~2.9k estimated tokens
 
-    def turn(self, request, n_ctx=8192, summary="SUMMARY TEXT", max_tokens=4096):
-        """One --chat turn against fakes with context window n_ctx; returns (calls, events)."""
+    def turn(self, request, n_ctx=8192, summary="SUMMARY TEXT", max_tokens=4096, base=object, settings=None):
+        """One --chat turn against fakes with context window n_ctx; returns (calls, events). `base` (with `settings` merged
+        into every role) swaps in a real client class whose own window and loading are under test."""
         calls, events = [], []
 
-        class Fake:
-            def __init__(self, settings):
-                self.settings, self.role, self.title = settings, "", ""
+        class Fake(base):
+            if base is object:
+                def __init__(self, settings):
+                    self.settings, self.role, self.title = settings, "", ""
 
-            def context_size(self):
-                return n_ctx
+                def window_before_load(self):
+                    return n_ctx
 
-            def ensure_model(self, role, interactive):
-                return "m"
+                def ensure_model(self, role, interactive):
+                    return "m"
 
             def complete(self, model, messages, sampling, tools=None):
                 calls.append({"messages": messages, "sampling": sampling})
@@ -2563,7 +2565,7 @@ class ConversationCompactionTests(unittest.TestCase):
                     return {"role": "assistant", "content": summary}
                 return {"role": "assistant", "content": "the answer"}
 
-        roles = {r: {"base_url": "http://x", "sampling": {"max_tokens": max_tokens}} for r in orchestrator.BUILTIN_ROLES}
+        roles = {r: {"base_url": "http://x", "sampling": {"max_tokens": max_tokens}, **(settings or {})} for r in orchestrator.BUILTIN_ROLES}
         out = io.StringIO()
         out.reconfigure = lambda **kw: None
         with tempfile.TemporaryDirectory() as folder:
@@ -2571,11 +2573,35 @@ class ConversationCompactionTests(unittest.TestCase):
             req = Path(folder) / "request.json"
             req.write_text(json.dumps(request), encoding="utf-8")
             argv = ["o", "--project", folder, "--chat", str(req), "--events", "--non-interactive"]
-            with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+            record = lambda e, **d: events.append((e, d)) if orchestrator.EVENTS else None  # as emit: nothing while silenced
+            with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", record), \
                     patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv), \
-                    patch.object(orchestrator.sys, "stdout", out):
+                    patch.object(orchestrator.sys, "stdout", out), patch.dict(orchestrator.LOADED_BY_RUN, clear=True), \
+                    patch.dict(orchestrator.LOADED_NOW, clear=True):
                 self.assertEqual(orchestrator.main(), 0)
         return calls, events
+
+    def unsloth_turn(self):
+        """A --chat turn on a real client against a fake Unsloth that holds another model with a 32k window; the role
+        loads its own at 8k. Returns (calls, events, CONTEXT_SIZES after the turn)."""
+        server = {"model": "other-model", "ctx": 32768}
+
+        def request_at(client, base, method, route, body=None):
+            if route == "/models":
+                return {"data": [{"id": server["model"]}]}
+            if route == "/api/inference/status":
+                return {"context_length": server["ctx"], "requested_context_length": server["ctx"]}
+            if route == "/api/inference/load":
+                server.update(model=body["model_path"], ctx=body["max_seq_length"])
+                return {}
+            return {"entries": []}
+
+        settings = {"base_url": "http://u/v1", "management_url": "http://u", "api_key": "k", "expected_model_contains": "mine",
+                    "auto_load": {"model_path": "org/mine", "max_seq_length": 8192}}
+        with patch.object(orchestrator.ApiClient, "_request_at", request_at), patch.dict(orchestrator.CONTEXT_SIZES, clear=True):
+            calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history()},
+                                      base=orchestrator.ApiClient, settings=settings)
+            return calls, events, dict(orchestrator.CONTEXT_SIZES)
 
     def history(self, last_reply=None):
         messages = []
@@ -2640,6 +2666,25 @@ class ConversationCompactionTests(unittest.TestCase):
         self.assertNotIn("ESSAY0", calls[1]["messages"][1]["content"])
         self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [8])
 
+    def test_window_before_the_load_is_the_roles_not_the_loaded_models(self):
+        calls, events, sizes = self.unsloth_turn()
+        self.assertEqual(calls[0]["messages"][0]["content"], orchestrator.CONVERSATION_PROMPT)  # 8k, not the other model's 32k
+        self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [8])
+        self.assertNotIn(32768, sizes.values())  # no pre-load guess cached for the turn
+
+    def test_summary_model_load_is_reported_to_the_launcher(self):
+        calls, events, _ = self.unsloth_turn()
+        names = [e for e, _ in events]
+        self.assertIn(("loading", {"role": "implementer", "path": "org/mine", "url": "http://u"}), events)
+        self.assertLess(names.index("loading"), names.index("history_compacted"))  # the summary call's load, not the answer's
+        self.assertIn("model", names[:names.index("history_compacted")])
+
+    def test_stored_summary_before_an_earlier_exchange_is_not_the_current_message(self):
+        msgs = [{"role": "user", "content": "First"}, {"role": "assistant", "content": "Reply"}, {"role": "user", "content": "Next"}]
+        calls, _ = self.turn({"mode": "single", "worker": "implementer", "messages": msgs, "summary": "OLD", "summary_covers": 4})
+        self.assertEqual(calls[0]["messages"][1:], [{"role": "user", "content": "Earlier in this conversation (summary):\nOLD\n\n---\n\nFirst"},
+                                                     *msgs[1:]])
+
 
 def tool_call(name, **arguments):
     return {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": name, "arguments": json.dumps(arguments)}}]}
@@ -2659,7 +2704,7 @@ class CodeTests(unittest.TestCase):
                         {"path": str(self.shared), "access": "read"}]
         self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES}}
 
-    def code(self, request, replies):
+    def code(self, request, replies, n_ctx=None):
         request = {"folders": self.folders, **request}
         replies = {k: list(v) for k, v in replies.items()}
         log, events, unloaded = [], [], []
@@ -2667,6 +2712,9 @@ class CodeTests(unittest.TestCase):
         class Fake:
             def __init__(self, settings):
                 self.settings, self.role, self.title = settings, "", ""
+
+            def window_before_load(self):
+                return n_ctx
 
             def ensure_model(self, role, interactive):
                 return "m"
@@ -2686,6 +2734,17 @@ class CodeTests(unittest.TestCase):
         return code, log, events, unloaded
 
     MSGS = [{"role": "user", "content": "add a readme"}]
+
+    def test_long_code_chat_is_summarized_before_the_turn(self):
+        history = []
+        for i in range(4):
+            history += [{"role": "user", "content": f"Change {i}"}, {"role": "assistant", "content": f"DIFF{i} " + "line " * 2000}]
+        code, log, events, _ = self.code({"action": "chat", "worker": "implementer", "messages": history + self.MSGS},
+                                         {"implementer": ["SUMMARY TEXT", "done"]}, n_ctx=8192)
+        self.assertEqual(code, 0)
+        self.assertEqual(log[0]["system"], orchestrator.CONVERSATION_PROMPT)
+        self.assertEqual(log[1]["messages"], [{"role": "user", "content": "Earlier in this conversation (summary):\nSUMMARY TEXT\n\nCurrent message:\nadd a readme"}])
+        self.assertEqual([(d["summary"], d["covers"]) for e, d in events if e == "history_compacted"], [("SUMMARY TEXT", 8)])
 
     def test_effort_applies_to_the_code_turn_but_not_the_title(self):
         code, log, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "effort": "max", "title": True},

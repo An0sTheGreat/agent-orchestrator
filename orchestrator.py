@@ -318,6 +318,12 @@ class ApiClient:
         return ", ".join(diffs)
 
     def ensure_model(self, role: str, interactive: bool) -> str:
+        model = self._ensure_model(role, interactive)
+        server, path = self._context_key()
+        LOADED_NOW[server] = path
+        return model
+
+    def _ensure_model(self, role: str, interactive: bool) -> str:
         load_error = ""
         name = self.title or role
         if self.llama_port:
@@ -605,8 +611,7 @@ class ApiClient:
         None for a remote role or when unknown. Asked once per process and model."""
         if self.remote:
             return None
-        auto = self.auto_load or {}
-        key = (self.llama_port or self.management_url, str(auto.get("model_path", "")))
+        auto, key = self.auto_load or {}, self._context_key()
         if key not in CONTEXT_SIZES:
             size = None
             try:
@@ -622,6 +627,20 @@ class ApiClient:
                 size = auto.get("max_seq_length")
             CONTEXT_SIZES[key] = size if isinstance(size, int) and size > 0 else None
         return CONTEXT_SIZES[key]
+
+    def _context_key(self) -> tuple[Any, str]:
+        return self.llama_port or self.management_url, str((self.auto_load or {}).get("model_path", ""))
+
+    def window_before_load(self) -> int | None:
+        """The context window before this turn loads the model, never asked of the server (it may hold another model now):
+        the role's auto_load.max_seq_length, else the measured one if this model is the one known loaded, else None."""
+        if self.remote:
+            return None
+        size = (self.auto_load or {}).get("max_seq_length")
+        if isinstance(size, int) and size > 0:
+            return size
+        server, path = self._context_key()
+        return self.context_size() if LOADED_NOW.get(server) == path else None
 
     def _emit_turn(self, message: dict[str, Any], payload: dict[str, Any], started: float, streamed: bool = False,
                    body: dict[str, Any] | None = None) -> None:
@@ -651,6 +670,7 @@ class ApiClient:
 
 
 CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port or management url, model path) -> n_ctx
+LOADED_NOW: dict[Any, str] = {}  # llama port or management url -> the model path this process last ensured there
 THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)
 
 
@@ -706,13 +726,15 @@ def fit_render(render: str, room: int, overhead: int) -> str:
 
 
 def with_summary(messages: list[dict[str, Any]], summary: str) -> list[dict[str, Any]]:
-    """The conversation with an earlier summary as background: prefixed to the first message when it is the user's;
-    when the kept history starts with an assistant reply, as its own user message before it (roles stay user-first)."""
+    """The conversation with an earlier summary as background: prefixed to the first message when it is the user's
+    (labelled "Current message" only when it is also the last); when the kept history starts with an assistant reply,
+    as its own user message before it (roles stay user-first)."""
     if not summary:
         return messages
     head = f"{SUMMARY_PREFIX}{summary.strip()}"
     if messages and messages[0]["role"] == "user":
-        return [{**messages[0], "content": f"{head}\n\nCurrent message:\n{messages[0]['content']}"}, *messages[1:]]
+        separator = "\n\nCurrent message:\n" if len(messages) == 1 else "\n\n---\n\n"
+        return [{**messages[0], "content": f"{head}{separator}{messages[0]['content']}"}, *messages[1:]]
     return [{"role": "user", "content": head}, *messages]
 
 
@@ -728,7 +750,7 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     sizes = []
     for role in roles:
         client, sampling = role_settings(config, role)
-        if n := getattr(client, "context_size", lambda: None)():  # fakes in tests may lack it
+        if n := getattr(client, "window_before_load", lambda: None)():  # fakes in tests may lack it
             sizes.append((n, role, client, sampling))
     if not sizes:
         return full
@@ -745,15 +767,16 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     head = (f"EARLIER SUMMARY\n{summary.strip()}\n\n" if summary else "") + "CONVERSATION\n"
     render = fit_render(render_history(earlier), room, len(CONVERSATION_PROMPT) + len(head))
     quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}
-    events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
     try:
-        model = client.ensure_model(role, False)
-        text = answer_text(client.complete(model, [{"role": "system", "content": CONVERSATION_PROMPT}, {"role": "user", "content": head + render}],
-                                           {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
+        model = client.ensure_model(role, False)  # with events: the launcher records a load, to unload it later
+        events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
+        try:
+            text = answer_text(client.complete(model, [{"role": "system", "content": CONVERSATION_PROMPT}, {"role": "user", "content": head + render}],
+                                               {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
+        finally:
+            EVENTS = events
     except (WorkflowError, OSError, ValueError):
         text = ""
-    finally:
-        EVENTS = events
     if not text:  # the full history goes as it is; the in-request compactor or a context error follows
         print(f"[{client.title or role}] the conversation summary failed; sending the full history")
         return full
