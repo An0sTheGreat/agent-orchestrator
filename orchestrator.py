@@ -378,6 +378,9 @@ class ApiClient:
             body.update({"tools": tools, "tool_choice": "auto"})
         if self.llama_port and "enable_thinking" in body:
             body = self._thinking(body, bool(body["enable_thinking"]))  # llama-server reads it inside chat_template_kwargs
+        if self.llama_port and "reasoning_effort" in body:  # so does a gpt-oss template's reasoning_effort
+            effort = body.pop("reasoning_effort")
+            body["chat_template_kwargs"] = {**(body.get("chat_template_kwargs") or {}), "reasoning_effort": effort}
         if self.thinking_off:
             body = self._thinking(body, False)
         fell_back = False
@@ -764,6 +767,7 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
         settings = next((w for w in custom_workers(config) if w["id"] == role), None) or config["roles"][role]
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
+    sampling.update(config.get("turn_effort") or {})  # a chat/Code request's effort (with_effort)
     if not settings.get("management_url") and settings.get("api_key_env") == "UNSLOTH_API_KEY" \
             and (urlsplit(str(settings.get("base_url", ""))).hostname or "").lower() not in LOOPBACK_HOSTS:
         raise WorkflowError(f"{display_name(config, role)}: a remote role must not use UNSLOTH_API_KEY (the local Unsloth key); "
@@ -2842,6 +2846,16 @@ def request_extras(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[
     return [EXTRA_TOOLS[name] for name in names], handlers, "".join(f"\n\n{note}" for note in notes)
 
 
+EFFORT_SAMPLING = {"off": {"enable_thinking": False},
+                   **{level: {"enable_thinking": True, "reasoning_effort": level} for level in ("low", "medium", "high", "max")}}
+
+
+def with_effort(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    """`config` whose role_settings add the request's thinking effort to every call of the turn; "" or unknown = unchanged."""
+    effort = EFFORT_SAMPLING.get(str(request.get("effort") or ""))
+    return {**config, "turn_effort": effort} if effort else config
+
+
 def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]],
               extras: tuple[list[dict[str, Any]], dict[str, Any], str] = ([], {}, "")) -> str:
     client, sampling = role_settings(config, role)
@@ -2903,16 +2917,17 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         raise WorkflowError("Chat request needs messages ending with a user message")
     chat = load_text(ROOT / "prompts" / "chat.txt").strip()
     extras = request_extras(request)
+    turn = with_effort(config, request)  # the model calls of the turn; the quiet title call keeps `config`
     if request.get("mode") == "multi":
         missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
         if missing:
             raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
         convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
         prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt")
-        plan = chat_call(config, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}], extras)
-        draft = chat_call(config, "implementer", "draft", prompt("implementer"),
+        plan = chat_call(turn, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}], extras)
+        draft = chat_call(turn, "implementer", "draft", prompt("implementer"),
                           [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}"}], extras)
-        final = chat_call(config, "reviewer", "review", prompt("reviewer"),
+        final = chat_call(turn, "reviewer", "review", prompt("reviewer"),
                           [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}\n\nDRAFT\n{draft}"}], extras)
         if not final:
             print("[chat] the Reviewer returned nothing usable; answering with the draft")
@@ -2924,7 +2939,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
             system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
         else:
             system = f"{chat}\n\nYou are the {role.capitalize()} worker.\n"
-        text = chat_call(config, role, "answer", system, messages, extras)
+        text = chat_call(turn, role, "answer", system, messages, extras)
     else:
         raise WorkflowError(f"Unknown chat mode {request.get('mode')!r}")
     if not text:
@@ -3175,6 +3190,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         if access == "write" and (path == ROOT or ROOT in path.parents or path in ROOT.parents):
             raise WorkflowError(f"Folder {index + 1} overlaps the Agent Orchestrator folder ({ROOT}); it can only be granted read only")
         folders.append({"path": str(path), "access": access})
+    config, plain = with_effort(config, request), config  # the turn's model calls; the quiet title call keeps `plain`
     if action == "write_project":
         target = write_project(config, role, folders, messages, "")
         lines = [line.strip() for line in load_text(target).splitlines() if line.strip()]
@@ -3193,7 +3209,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("code_reply", role=role, text=text)
-    if request.get("title") and (title := chat_title(config, role, messages, text)):
+    if request.get("title") and (title := chat_title(plain, role, messages, text)):
         emit("chat_title", text=title)
     return 0
 
