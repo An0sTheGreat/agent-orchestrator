@@ -777,7 +777,7 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_complete_compacts_a_history_over_the_threshold(self):
         messages = self._long_history()
-        tail = messages[-3:]
+        tail = messages[-5:]  # the f4 step and the last one: what half the room leaves after system, task and summary
         client, sent = self._compacting_client(1000, "SUMMARY", lambda n: self.OK_REPLY)
         events, out = [], io.StringIO()
         with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
@@ -813,12 +813,18 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIn(orchestrator.COMPACT_MARK + "SUMMARY", messages[1]["content"])
         self.assertEqual(messages[2]["role"], "assistant")
         self.assertEqual(sent[2][1]["messages"], messages)
-        # still too long after compacting: the existing error, after one compaction only
+        # still too long after compacting: the existing error, after one compaction only (the kept tail holds several
+        # small steps, so a second compaction would have a middle to drop)
+        messages = self._long_history()
+        for i in range(4):
+            call = {"id": f"e{i}", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": f"g{i}.py"})}}
+            messages += [{"role": "assistant", "content": "", "tool_calls": [call]}, {"role": "tool", "tool_call_id": f"e{i}", "content": "w" * 20}]
         client, sent = self._compacting_client(None, "SUMMARY", lambda n: (_ for _ in ()).throw(orchestrator.WorkflowError(self.OVERFLOW)))
         with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(orchestrator.WorkflowError) as ctx:
-                client.complete("m", self._long_history(), {})
+                client.complete("m", messages, {})
         self.assertIn("exceeded the model's context length", str(ctx.exception))
+        self.assertGreaterEqual(sum(1 for m in messages if m["role"] == "assistant"), 2)
         self.assertEqual(sum(1 for _, b in sent if b["messages"][0]["content"] == orchestrator.COMPACT_PROMPT), 1)
 
     def test_compaction_falls_back_to_a_tool_call_note_when_the_summary_fails(self):
@@ -829,8 +835,70 @@ class OrchestratorTests(unittest.TestCase):
         summary = messages[1]["content"].partition(orchestrator.COMPACT_MARK)[2]
         self.assertIn("Tool calls made", summary)
         self.assertIn("- read_file f0.py", summary)
-        self.assertIn("- read_file f4.py", summary)
+        self.assertIn("- read_file f3.py", summary)
         self.assertEqual(messages[2]["role"], "assistant")
+
+    def test_compaction_fallback_lists_text_mode_tool_calls(self):
+        messages = self._long_history()
+        for m in messages:  # a template without tool calling: the calls are printed as JSON text
+            if m["role"] == "assistant":
+                m["content"] = "\n".join(json.dumps({"name": c["function"]["name"], "arguments": json.loads(c["function"]["arguments"])})
+                                         for c in m.pop("tool_calls"))
+        client, _ = self._compacting_client(1000, orchestrator.WorkflowError("API 500"), lambda n: self.OK_REPLY)
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", messages, {"max_tokens": 100})
+        summary = messages[1]["content"].partition(orchestrator.COMPACT_MARK)[2]
+        self.assertIn("- read_file f0.py", summary)
+        self.assertNotIn("- none", summary)
+
+    def test_summary_call_drops_reasoning_effort(self):
+        client, sent = self._compacting_client(1000, "SUMMARY", lambda n: self.OK_REPLY)
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", self._long_history(), {"max_tokens": 100, "enable_thinking": True, "reasoning_effort": "high"})
+        self.assertEqual(sent[0][1]["messages"][0]["content"], orchestrator.COMPACT_PROMPT)
+        self.assertNotIn("reasoning_effort", sent[0][1])
+        self.assertEqual(sent[1][1]["reasoning_effort"], "high")  # the step itself keeps it
+
+    def test_second_compaction_passes_the_earlier_summary_whole(self):
+        messages = self._long_history()
+        earlier = "p" * 5000 + "\nWhat remains: END-OF-SUMMARY"
+        messages[1]["content"] += orchestrator.COMPACT_MARK + earlier
+        client, sent = self._compacting_client(1000, "SUMMARY", lambda n: self.OK_REPLY)
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", messages, {"max_tokens": 100})
+        self.assertIn(earlier, sent[0][1]["messages"][1]["content"])
+
+    def test_summary_prompt_fits_half_the_room_with_task_and_system(self):
+        messages = self._long_history()
+        messages[1]["content"] = "z" * 5000
+        messages[2:2] = json.loads(json.dumps(messages[2:12]))  # ten big steps
+        client, sent = self._compacting_client(4100, "SUMMARY", lambda n: self.OK_REPLY)  # room 4000
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", messages, {"max_tokens": 100})
+        prompt = sent[0][1]["messages"]
+        self.assertEqual(prompt[0]["content"], orchestrator.COMPACT_PROMPT)
+        self.assertIn("...[trimmed]...", prompt[1]["content"])
+        self.assertLessEqual(sum(len(m["content"]) for m in prompt), 0.5 * 4000 * 3.5 + 50)  # 50: the trim marker
+
+    def test_large_task_does_not_compact_on_every_step(self):
+        """A 40k-char task (the implementer embeds the allowed files), n_ctx 32768, max_tokens 8192, 30 tool steps."""
+        tools = [{"type": "function", "function": {"name": "read_file", "parameters": {"type": "object"}}}]
+        messages = [{"role": "system", "content": "s" * 2000}, {"role": "user", "content": "t" * 40_000}]
+        client, sent = self._compacting_client(32768, "S" * 2000, lambda n: self.OK_REPLY)
+        summaries = lambda: sum(1 for _, b in sent if b["messages"][0]["content"] == orchestrator.COMPACT_PROMPT)
+        compacted_at = []
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            for step in range(30):
+                done = summaries()
+                client.complete("m", messages, {"max_tokens": 8192}, tools)
+                if summaries() > done:
+                    compacted_at.append(step)
+                call = {"id": f"c{step}", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": f"f{step}.py"})}}
+                messages += [{"role": "assistant", "content": "", "tool_calls": [call]},
+                             {"role": "tool", "tool_call_id": f"c{step}", "content": "r" * 6000}]
+        self.assertTrue(compacted_at)
+        self.assertFalse([s for s in compacted_at if s - 1 in compacted_at], compacted_at)  # never on consecutive steps
+        self.assertLessEqual(len(compacted_at), 8, compacted_at)
 
     def test_too_short_history_is_not_compacted_and_the_error_stands(self):
         call = {"id": "c", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}

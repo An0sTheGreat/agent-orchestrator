@@ -422,7 +422,7 @@ class ApiClient:
             except WorkflowError as exc:
                 text = str(exc).lower()
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
-                    if not compacted_on_error and self._compact(model, messages, sampling, tools):
+                    if not compacted_on_error and self._compact(model, messages, sampling, tools, force=True):
                         compacted_on_error = True  # body["messages"] is the same list, now compacted: retry once
                         continue
                     raise WorkflowError(
@@ -457,11 +457,12 @@ class ApiClient:
             return message
 
     def _compact(self, model: str, messages: list[dict[str, Any]], sampling: dict[str, Any],
-                 tools: list[dict[str, Any]] | None) -> bool:
+                 tools: list[dict[str, Any]] | None, force: bool = False) -> bool:
         """Shrink a history that no longer fits, in place (the caller's loop keeps appending to it): keep the system
         message, the first user message (the task) and a recent tail that starts at an assistant message (so tool calls
         keep their results); summarize the middle with one quiet call on this model and merge the summary into the first
-        user message. False (nothing changed) when there is no middle to drop."""
+        user message. False (nothing changed) when there is no middle to drop or, unless forced by a context error,
+        when dropping it would free under 20% of the room (so a large task does not compact on every step)."""
         global EVENTS
         first = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
         starts = [i for i in range(first + 1, len(messages)) if messages[i].get("role") == "assistant"] if first is not None else []
@@ -470,20 +471,24 @@ class ApiClient:
         before = estimate_tokens(messages, tools)
         n_ctx = self.context_size()
         room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2) if n_ctx else before  # unknown: the failed size
-        cut = next((i for i in starts if estimate_tokens(messages[i:]) <= 0.3 * room), starts[-1])
-        middle = messages[first + 1:cut]
-        if not middle:
-            return False
         task, _, earlier = str(messages[first].get("content") or "").partition(COMPACT_MARK)
-        render = render_history(([{"role": "summary", "content": earlier}] if earlier else []) + middle)
-        limit = int(0.5 * room * 3.5)  # chars: the summary call must fit this model's context too
+        allowance = min(1500, room // 10)  # the summary's share (its call's max_tokens is 1500)
+        # the tail gets what system + task + tools + summary leave of half the room: well under the 80% trigger
+        budget = room // 2 - estimate_tokens(messages[:first] + [{"content": task}], tools) - allowance
+        cut = next((i for i in starts if estimate_tokens(messages[i:]) <= budget), starts[-1])
+        middle = messages[first + 1:cut]
+        if not middle or (not force and estimate_tokens(middle) - allowance < 0.2 * room):
+            return False
+        head = f"TASK\n{clip(task)}\n\n" + (f"EARLIER SUMMARY\n{earlier.strip()}\n\n" if earlier else "") + "STEPS SO FAR\n"
+        render = render_history(middle)  # the earlier summary goes in whole: its own call capped it at 1500 tokens
+        limit = max(int(0.5 * room * 3.5) - len(COMPACT_PROMPT) - len(head), 1000)  # chars: the call must fit this model too
         if len(render) > limit:
             render = render[:limit // 3] + "\n\n...[trimmed]...\n\n" + render[-(limit - limit // 3):]
-        prompt = [{"role": "system", "content": COMPACT_PROMPT},
-                  {"role": "user", "content": f"TASK\n{clip(task)}\n\nSTEPS SO FAR\n{render}"}]
+        prompt = [{"role": "system", "content": COMPACT_PROMPT}, {"role": "user", "content": head + render}]
+        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}  # effort would spend the 1500 on thinking
         events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
         try:
-            summary = answer_text(self.complete(model, prompt, {**sampling, "max_tokens": 1500, "enable_thinking": False}))
+            summary = answer_text(self.complete(model, prompt, {**quiet, "max_tokens": 1500, "enable_thinking": False}))
         except (WorkflowError, OSError, ValueError):
             summary = ""
         finally:
@@ -716,7 +721,8 @@ def tool_call_note(messages: list[dict[str, Any]]) -> str:
     """The fallback summary when the summary call fails: the tool calls made, by name and path or pattern."""
     calls = []
     for m in messages:
-        for call in m.get("tool_calls") or []:
+        text_calls = text_tool_calls(str(m.get("content") or "")) if m.get("role") == "assistant" else []  # text-mode loops
+        for call in m.get("tool_calls") or text_calls:
             function = call.get("function") or {}
             args = _parsed_arguments(str(function.get("arguments") or "{}"))
             target = next((str(args[k]) for k in ("path", "pattern") if isinstance(args, dict) and args.get(k)), "")
@@ -1128,8 +1134,8 @@ def allowed_files_context(files: dict[str, str | None]) -> str:
     return "\n\n".join(parts)
 
 
-def text_tool_calls(text: str, tool_names: set[str]) -> list[dict[str, Any]]:
-    """Recover tool calls a model printed as JSON text instead of emitting them natively."""
+def text_tool_calls(text: str, tool_names: set[str] | None = None) -> list[dict[str, Any]]:
+    """Recover tool calls a model printed as JSON text instead of emitting them natively (any name when tool_names is None)."""
     decoder, calls, pos = json.JSONDecoder(), [], text.find("{")
     while pos != -1:
         try:
@@ -1137,7 +1143,8 @@ def text_tool_calls(text: str, tool_names: set[str]) -> list[dict[str, Any]]:
         except json.JSONDecodeError:
             pos = text.find("{", pos + 1)
             continue
-        if isinstance(obj, dict) and obj.get("name") in tool_names and isinstance(obj.get("arguments"), dict):
+        name = obj.get("name") if isinstance(obj, dict) else None
+        if isinstance(name, str) and (tool_names is None or name in tool_names) and isinstance(obj.get("arguments"), dict):
             calls.append({"id": f"text{len(calls)}", "function": {"name": obj["name"], "arguments": json.dumps(obj["arguments"])}})
         pos = text.find("{", end)
     return calls
