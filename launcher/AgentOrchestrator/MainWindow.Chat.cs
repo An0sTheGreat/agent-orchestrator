@@ -100,6 +100,16 @@ public partial class MainWindow
         ChatTargetChip.Cursor = ChatMulti ? Cursors.Arrow : Cursors.Hand;
         var code = CodeTarget();
         CodeTargetChip.Content = $"To: {ChatName(code, code?.Role ?? "")}  ▾";
+        RefreshCardVisibility();
+        RefreshEffort();
+    }
+
+    // The Chat view's Single mode hides the built-in workers' cards; Multi, the Code view and the run output show every card.
+    private void RefreshCardVisibility()
+    {
+        var hide = NavChat.IsChecked == true && !ChatMulti;
+        foreach (var card in _cards)
+            card.Hidden = hide && card.IsBuiltIn;
     }
 
     // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
@@ -364,7 +374,8 @@ public partial class MainWindow
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
             Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
-                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0),
+                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
+                    effort: EffortFor(ChatMulti, CardFor(role))),
                 LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
     }
 

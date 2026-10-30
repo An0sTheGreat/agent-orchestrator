@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -69,6 +71,73 @@ public partial class MainWindow
             Directory.CreateDirectory(AppSettings.SkillsRoot);
             Process.Start(new ProcessStartInfo(AppSettings.SkillsRoot) { UseShellExecute = true });
         }));
+        return menu;
+    }
+
+    // ---- thinking effort: one choice (_settings.ChatEffort) for Chat and Code, sent only when the model it reaches thinks
+
+    private static readonly (string Value, string Label)[] Efforts =
+        [("", "Default"), ("off", "Off (no thinking)"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("max", "Max")];
+
+    // Whether a worker's model thinks (LauncherLogic.IsThinkingModel), from the active config.json: roles[role] for a
+    // built-in worker, its custom_workers entry for a custom one.
+    private bool Thinks(RoleCard? card)
+    {
+        if (card is null)
+            return false;
+        JsonObject? entry = null;
+        try
+        {
+            var path = ActiveConfigPath();
+            if (File.Exists(path))
+            {
+                var root = JsonNode.Parse(File.ReadAllText(path));
+                entry = card.IsCustom
+                    ? root?["custom_workers"]?.AsArray().OfType<JsonObject>().FirstOrDefault(w => w["id"]?.ToString() == card.Role)
+                    : root?["roles"]?[card.Role] as JsonObject;
+            }
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
+        var load = entry?["auto_load"] as JsonObject;
+        return LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load);
+    }
+
+    // Multi (Planner -> Implementer -> Reviewer) thinks when any built-in worker does.
+    private bool Thinks(bool multi, RoleCard? card) => multi ? _cards.Where(k => k.IsBuiltIn).Any(Thinks) : Thinks(card);
+
+    // The effort a request carries: "" (the model's default) unless the model it reaches thinks.
+    private string EffortFor(bool multi, RoleCard? card) => Thinks(multi, card) ? _settings.ChatEffort : "";
+
+    private void RefreshEffort()
+    {
+        if (_chat is null)
+            return; // before InitChat
+        var label = Efforts.FirstOrDefault(e => e.Value == _settings.ChatEffort).Label?.Split(' ')[0] ?? "Default";
+        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatMulti, ChatTarget())), (CodeEffortChip, Thinks(false, CodeTarget())) })
+        {
+            chip.Content = $"Effort: {label}  ▾";
+            chip.IsEnabled = thinks;
+            chip.ToolTip = thinks ? "How much the model thinks before it answers" : "This model doesn't think";
+        }
+    }
+
+    private void Effort_Click(object sender, RoutedEventArgs e) => BuildEffortMenu((FrameworkElement)sender).IsOpen = true;
+
+    private ContextMenu BuildEffortMenu(FrameworkElement target)
+    {
+        var menu = NewPresetMenu(target);
+        menu.Placement = PlacementMode.Top;
+        foreach (var (value, label) in Efforts)
+        {
+            var item = PresetItem(label, () =>
+            {
+                _settings.ChatEffort = value;
+                _settings.Save();
+                RefreshEffort();
+            });
+            item.IsChecked = value == _settings.ChatEffort;
+            menu.Items.Add(item);
+        }
         return menu;
     }
 

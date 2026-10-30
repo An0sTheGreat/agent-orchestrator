@@ -2275,6 +2275,21 @@ class ChatTests(unittest.TestCase):
         self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
         self.assertEqual((files, unloaded), (["config.json", "request.json"], []))
 
+    def test_effort_sets_thinking_on_every_call_of_the_turn_but_not_the_title(self):
+        high = {"temperature": 1, "enable_thinking": True, "reasoning_effort": "high"}
+        _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": "high", "title": True},
+                               {"implementer": ["the answer", "A Title"]})
+        self.assertEqual(log[0]["sampling"], high)
+        self.assertEqual((log[1]["sampling"]["enable_thinking"], "reasoning_effort" in log[1]["sampling"]), (False, False))
+        _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": "off"})
+        self.assertEqual(log[0]["sampling"], {"temperature": 1, "enable_thinking": False})
+        _, log, *_ = self.chat({"mode": "multi", "messages": self.MSGS, "effort": "low"})
+        self.assertEqual([l["sampling"] for l in log],
+                         [{"temperature": i, "enable_thinking": True, "reasoning_effort": "low"} for i in range(3)])
+        for effort in ("", "bogus", None):
+            _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": effort})
+            self.assertEqual(log[0]["sampling"], {"temperature": 1}, effort)
+
     def test_multi_falls_back_to_draft_when_reviewer_is_empty(self):
         out = io.StringIO()
         out.reconfigure = lambda **kw: None
@@ -2315,7 +2330,7 @@ class CodeTests(unittest.TestCase):
                 return "m"
 
             def complete(self, model, messages, sampling, tools=None):
-                log.append({"role": self.role, "system": messages[0]["content"], "messages": list(messages[1:]), "tools": tools})
+                log.append({"role": self.role, "system": messages[0]["content"], "messages": list(messages[1:]), "tools": tools, "sampling": sampling})
                 reply = replies[self.role].pop(0)
                 return {"role": "assistant", "content": reply} if isinstance(reply, str) else reply
 
@@ -2329,6 +2344,14 @@ class CodeTests(unittest.TestCase):
         return code, log, events, unloaded
 
     MSGS = [{"role": "user", "content": "add a readme"}]
+
+    def test_effort_applies_to_the_code_turn_but_not_the_title(self):
+        code, log, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "effort": "max", "title": True},
+                                  {"implementer": ["done", "Readme"]})
+        self.assertEqual(code, 0)
+        self.assertEqual(log[0]["sampling"], {"enable_thinking": True, "reasoning_effort": "max"})
+        self.assertEqual(log[1]["sampling"]["enable_thinking"], False)
+        self.assertNotIn("reasoning_effort", log[1]["sampling"])
 
     def test_request_validation(self):
         good = {"action": "chat", "worker": "implementer", "messages": self.MSGS, "folders": self.folders}
@@ -2917,6 +2940,20 @@ class RemoteRoleTests(unittest.TestCase):
                     orchestrator.role_settings(config, "planner")  # a local server without Unsloth management is fine
         self.assertEqual(sent, [])
 
+    def test_remote_effort_keeps_reasoning_effort_and_drops_enable_thinking(self):
+        sent = []
+
+        def fake(request, timeout=None):
+            sent.append(json.loads(request.data))
+            return self.response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}})
+
+        config = orchestrator.with_effort(self.CONFIG, {"effort": "high"})
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False), \
+                patch.object(orchestrator, "urlopen", side_effect=fake), contextlib.redirect_stdout(io.StringIO()):
+            orchestrator.ask_once(config, "planner", "sys", "user", False)
+        self.assertNotIn("enable_thinking", sent[0])
+        self.assertEqual(sent[0]["reasoning_effort"], "high")
+
     def test_remote_body_omits_unsloth_only_fields_unless_send_extra_body(self):
         sent = []
 
@@ -3317,6 +3354,11 @@ class LlamaCppTests(unittest.TestCase):
         self.assertEqual(first["chat_template_kwargs"], {"x": 1})
         self.assertNotIn("enable_thinking", retry)
         self.assertEqual(retry["chat_template_kwargs"], {"x": 1, "enable_thinking": False})
+
+    def test_llama_reasoning_effort_goes_in_chat_template_kwargs(self):
+        (body,) = self.chat(self.client(), {"chat_template_kwargs": {"x": 1}, "enable_thinking": True, "reasoning_effort": "high"})
+        self.assertNotIn("reasoning_effort", body)
+        self.assertEqual(body["chat_template_kwargs"], {"x": 1, "enable_thinking": True, "reasoning_effort": "high"})
 
     def test_unsloth_thinking_switch_stays_top_level(self):
         os.environ["AGENT_ORCHESTRATOR_BACKEND"] = "unsloth"

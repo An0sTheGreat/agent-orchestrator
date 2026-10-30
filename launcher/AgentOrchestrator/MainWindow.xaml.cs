@@ -56,6 +56,7 @@ public partial class MainWindow : Window
         LoadWorkers();
         ApplyCompact();
         CardsList.ItemsSource = _cards;
+        _cards.CollectionChanged += (_, _) => RefreshCardVisibility(); // a preset rebuilds the cards
         _pump.Tick += (_, _) => DrainLines();
         _clock.Tick += (_, _) => ShowClocks();
         SizeChanged += (_, _) => FitDetailsColumn();
@@ -1348,6 +1349,68 @@ public partial class MainWindow : Window
             await Settle();
             Snap("16-chat-multi");
 
+            // The Chat view's Single mode hides the built-in workers' cards (a custom one stays); Multi and the Code view's
+            // run output show every card.
+            var visible = new RoleCard("smoke-visible", "Visible", custom: true);
+            _cards.Add(visible);
+            await Settle();
+            bool Shown(RoleCard card) => CardsList.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
+            bool AllShown() => _cards.All(card => !card.Hidden && Shown(card));
+            bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == card.IsCustom) && Shown(visible);
+            if (!AllShown())
+                return Fail();
+            ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+            await Settle();
+            if (!SingleShown())
+                return Fail();
+            ShowView();
+            await Settle();
+            if (!_codeRun || !AllShown())
+                return Fail();
+            ShowView(chat: true);
+            await Settle();
+            if (!SingleShown())
+                return Fail();
+
+            // The effort chip, in both composers: its menu opens upwards with six levels, a choice is saved and relabels both
+            // chips; a target model that does not think greys it out and its requests carry no effort. The worker config (temp
+            // data) gets a Planner that thinks and an Implementer that does not, and is put back afterwards.
+            var effortConfig = ActiveConfigPath();
+            var configBefore = File.ReadAllText(effortConfig);
+            var effortRoot = JsonNode.Parse(configBefore)!;
+            effortRoot["roles"]!["planner"] = new JsonObject { ["auto_load"] = new JsonObject { ["model_path"] = "org/Fake-Model-GGUF", ["reasoning_budget"] = 8192 } };
+            effortRoot["roles"]!["implementer"] = new JsonObject { ["auto_load"] = new JsonObject { ["model_path"] = "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF", ["reasoning_budget"] = 0 } };
+            File.WriteAllText(effortConfig, effortRoot.ToJsonString());
+            var effortMenu = BuildEffortMenu(CodeEffortChip);
+            var levels = effortMenu.Items.OfType<MenuItem>().ToList();
+            if (effortMenu.Placement != PlacementMode.Top || levels.Select(i => (string)i.Header).SequenceEqual(new[] { "Default", "Off (no thinking)", "Low", "Medium", "High", "Max" }) is false ||
+                levels[0].IsChecked is false || (string)ChatEffortChip.Content != "Effort: Default  ▾")
+                return Fail();
+            levels[4].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            if (_settings.ChatEffort != "high" || AppSettings.Load().ChatEffort != "high" || (string)ChatEffortChip.Content != "Effort: High  ▾" ||
+                (string)CodeEffortChip.Content != "Effort: High  ▾" || !BuildEffortMenu(ChatEffortChip).Items.OfType<MenuItem>().ElementAt(4).IsChecked)
+                return Fail();
+            string SentEffort(string role) =>
+                (string)JsonNode.Parse(LauncherLogic.BuildChatRequest("single", role, [new("user", "x")], effort: EffortFor(false, CardFor(role))))!["effort"]!;
+            PickChatWorker("planner"); // a reasoning budget: thinks
+            if (!ChatEffortChip.IsEnabled || SentEffort("planner") != "high")
+                return Fail();
+            await Settle();
+            Snap("28-effort-chip");
+            PickChatWorker("implementer"); // Qwen2.5-Coder-3B-Instruct, reasoning budget 0: does not think
+            if (ChatEffortChip.IsEnabled || (string)ChatEffortChip.ToolTip != "This model doesn't think" || SentEffort("implementer") != "" ||
+                CodeEffortChip.IsEnabled != (CodeTarget()!.Role == "planner"))
+                return Fail();
+            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs()); // Multi: the Planner thinks
+            await Settle();
+            if (!ChatEffortChip.IsEnabled || !AllShown())
+                return Fail();
+            _settings.ChatEffort = "";
+            PickChatWorker("reviewer");
+            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
+            RemoveWorker(visible);
+            File.WriteAllText(effortConfig, configBefore);
+
             NewChat_Click(ChatSend, new RoutedEventArgs());
             if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
                 return Fail();
@@ -2347,6 +2410,7 @@ public partial class MainWindow : Window
     // Show the configured models on the cards before anything runs.
     private void PrefillCards()
     {
+        RefreshEffort(); // callers have just changed a model or the project
         if (_process is not null || _initializing)
             return;
         using var config = ReadConfig(SelectedProjectPath());
@@ -2768,6 +2832,7 @@ public partial class MainWindow : Window
             else
                 foreach (var reason in skipped)
                     Log($"Not written to config.json, so it will not take part: {reason}");
+            RefreshEffort(); // a custom worker's model or reasoning budget may have changed
             return true;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
@@ -3193,6 +3258,7 @@ public partial class MainWindow : Window
         SaveWorkers();
         if (card.IsCustom)
             SyncCustomWorkers();
+        RefreshEffort();
     }
 
     // The orchestrator reads each built-in worker's model from config.json: the active one and the worker config.
@@ -3329,6 +3395,7 @@ public partial class MainWindow : Window
         var code = !chat;
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
+        RefreshCardVisibility(); // the run output skips RefreshChatTarget below
         Reveal(CodeView, code);
         Reveal(ChatView, chat);
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown

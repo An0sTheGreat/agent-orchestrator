@@ -1086,6 +1086,8 @@
                             <DockPanel Grid.Row="1" Margin="4,6,2,0">
                                 <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="ChatTarget_Click" ToolTip="Which worker receives your message" />
+                                <Button x:Name="CodeEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
+                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
                                     <ToggleButton x:Name="CodeSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                                   ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
@@ -1192,7 +1194,17 @@
                                     Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
                                     ToolTip="Save, apply or delete named sets of workers and their settings" />
                         </DockPanel>
-                        <ItemsControl x:Name="CardsList" ItemTemplate="{StaticResource RoleCardTemplate}" />
+                        <ItemsControl x:Name="CardsList" ItemTemplate="{StaticResource RoleCardTemplate}">
+                            <ItemsControl.ItemContainerStyle>
+                                <Style TargetType="ContentPresenter">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding Hidden}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ItemsControl.ItemContainerStyle>
+                        </ItemsControl>
                         <Button x:Name="AddWorkerButton" Content="+  Add worker" Margin="0,10,0,0" Click="AddWorker_Click" ToolTip="Add a worker with a custom title and model" />
                     </StackPanel>
                 </ScrollViewer>
@@ -1256,6 +1268,8 @@
                         <DockPanel Grid.Row="1" Margin="4,6,2,0">
                             <Button x:Name="ChatTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
                                     Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="ChatTarget_Click" ToolTip="Which worker receives your message" />
+                            <Button x:Name="ChatEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
+                                    Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                             <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
                                 <ToggleButton x:Name="ChatSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                               ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
