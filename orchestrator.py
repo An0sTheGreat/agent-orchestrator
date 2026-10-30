@@ -421,7 +421,7 @@ class ApiClient:
             if self.cut_off:
                 print(f"[{self.title or self.role}] reply cut off at the output limit (max_tokens={body.get('max_tokens', '?')})")
             if EVENTS:
-                self._emit_turn(message, payload, started, streamed)
+                self._emit_turn(message, payload, started, streamed, body)
             if fell_back and not self.thinking_off:
                 self.thinking_off = True
                 print(f"[{self.title or self.role}] thinking disabled for the rest of this turn")
@@ -504,7 +504,31 @@ class ApiClient:
         mine = [r for r in rows if r.get("kind") == "request" and r.get("via_api_key") and r.get("started_at", 0) >= started - 2]
         return max(mine, key=lambda r: r["started_at"]) if mine else {}
 
-    def _emit_turn(self, message: dict[str, Any], payload: dict[str, Any], started: float, streamed: bool = False) -> None:
+    def context_size(self) -> int | None:
+        """The loaded model's context window (llama-server /props, else Unsloth's status, else auto_load.max_seq_length);
+        None for a remote role or when unknown. Asked once per process and model."""
+        if self.remote:
+            return None
+        auto = self.auto_load or {}
+        key = (self.llama_port or self.management_url, str(auto.get("model_path", "")))
+        if key not in CONTEXT_SIZES:
+            size = None
+            try:
+                if self.llama_port:
+                    props = self._request_at(f"http://127.0.0.1:{self.llama_port}", "GET", "/props")
+                    size = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
+                elif self.management_url:
+                    status = self._request_at(self.management_url, "GET", "/api/inference/status")
+                    size = status.get("context_length") or status.get("requested_context_length")
+            except (WorkflowError, OSError, ValueError, AttributeError):
+                size = None
+            if not isinstance(size, int) or size <= 0:
+                size = auto.get("max_seq_length")
+            CONTEXT_SIZES[key] = size if isinstance(size, int) and size > 0 else None
+        return CONTEXT_SIZES[key]
+
+    def _emit_turn(self, message: dict[str, Any], payload: dict[str, Any], started: float, streamed: bool = False,
+                   body: dict[str, Any] | None = None) -> None:
         if streamed:
             emit("done", role=self.role, final=not message.get("tool_calls"))
         else:
@@ -516,14 +540,43 @@ class ApiClient:
         usage, row = payload.get("usage") or {}, self._monitor_row(started)
         elapsed = max(time.time() - started, 1e-3)
         completion = row.get("completion_tokens") or usage.get("completion_tokens") or 0
+        prompt = row.get("prompt_tokens") or usage.get("prompt_tokens") or 0
         emit(
             "usage",
             role=self.role,
-            prompt=row.get("prompt_tokens") or usage.get("prompt_tokens") or 0,
+            prompt=prompt,
             completion=completion,
             tps=row.get("tok_per_sec") or round(completion / elapsed, 2),
             prompt_tps=row.get("prompt_tok_per_sec"),
         )
+        if CHAT_MODE and body is not None:  # the launcher's context ring for this conversation
+            emit("context", role=self.role, n_ctx=self.context_size(), prompt_tokens=prompt, completion_tokens=completion,
+                 parts=context_parts(body.get("messages") or [], body.get("tools"), prompt))
+
+
+CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port or management url, model path) -> n_ctx
+CONTEXT_NOTE = re.compile(r"\n\n(SKILLS|WEB SEARCH|UTILITIES)\n.*?(?=\n\n|\Z)", re.S)  # request_extras' system notes
+
+
+def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None, prompt_tokens: int) -> dict[str, int]:
+    """prompt_tokens split by category in proportion to the characters sent (an estimate); sums exactly to prompt_tokens.
+    The WEB SEARCH/UTILITIES notes count as tools, the SKILLS note as skills, TOOL RESULTS messages as tool results."""
+    chars = dict.fromkeys(("system", "tools", "skills", "messages", "tool_results"), 0)
+    chars["tools"] = len(json.dumps(tools)) if tools else 0
+    for m in messages:
+        content = str(m.get("content") or "")
+        if m.get("role") == "system":
+            for note in CONTEXT_NOTE.finditer(content):
+                chars["skills" if note.group(1) == "SKILLS" else "tools"] += len(note.group(0))
+            chars["system"] += len(CONTEXT_NOTE.sub("", content))
+        elif m.get("role") == "tool" or content.startswith("TOOL RESULTS\n"):
+            chars["tool_results"] += len(content)
+        else:
+            chars["messages"] += len(content) + (len(json.dumps(m["tool_calls"])) if m.get("tool_calls") else 0)
+    total = sum(chars.values())
+    parts = {key: prompt_tokens * value // total if total else 0 for key, value in chars.items()}
+    parts["messages"] += prompt_tokens - sum(parts.values())  # rounding remainder
+    return parts
 
 
 # ---------------------------------------------------------------------------------------------------------------------

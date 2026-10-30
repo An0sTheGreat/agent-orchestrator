@@ -23,6 +23,7 @@ internal sealed class ConversationStore
         public DateTime Created { get; set; }
         public DateTime Updated { get; set; }
         public bool Archived { get; set; }
+        public ContextSnapshot? Context { get; set; } // the last turn's context usage; absent in older files
     }
 
     private sealed class Group

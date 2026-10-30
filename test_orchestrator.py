@@ -3465,5 +3465,116 @@ class LlamaCppTests(unittest.TestCase):
                 self.assertEqual(REAL_LLAMA_ALIVE(41), expected)
 
 
+class ContextTests(unittest.TestCase):
+    """The "context" event: after each model call of a --chat/--code turn, the prompt's split by category and n_ctx."""
+
+    USAGE = {"prompt_tokens": 1237, "completion_tokens": 56}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        self.enterContext(patch.dict(orchestrator.CONTEXT_SIZES, clear=True))
+
+    def turn(self, flag, request, replies, role=None):
+        """Run one turn through the real ApiClient (stream/request/model checks patched); returns (events, bodies)."""
+        role = role or {"base_url": "http://x/v1", "api_key": "k", "auto_load": {"model_path": "p", "max_seq_length": 4096}}
+        config = {"roles": {r: role for r in orchestrator.BUILTIN_ROLES}}
+        (self.base / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        req = self.base / "request.json"
+        req.write_text(json.dumps(request), encoding="utf-8")
+        events, bodies, replies = [], [], list(replies)
+
+        def stream(client, body):
+            bodies.append(body)
+            reply = replies.pop(0)
+            message = reply if isinstance(reply, dict) else {"role": "assistant", "content": reply}
+            return {"choices": [{"message": message, "finish_reason": "stop"}], "usage": self.USAGE, "_streamed": True}
+
+        title = {"choices": [{"message": {"role": "assistant", "content": "A Title"}, "finish_reason": "stop"}], "usage": self.USAGE}
+        argv = ["o", "--project", str(self.base), flag, str(req), "--events"]
+        out = io.StringIO()
+        out.reconfigure = lambda **kw: None
+        with patch.object(orchestrator.ApiClient, "_stream_chat", stream), \
+                patch.object(orchestrator.ApiClient, "_request", lambda client, method, route, body=None: title), \
+                patch.object(orchestrator.ApiClient, "ensure_model", lambda client, role, interactive: "m"), \
+                patch.object(orchestrator.ApiClient, "_monitor_row", lambda client, started: {}), \
+                patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv), \
+                patch.object(orchestrator.sys, "stdout", out):
+            self.assertEqual(orchestrator.main(), 0)
+        return [d for e, d in events if e == "context"], bodies
+
+    MSGS = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "explain X"}]
+
+    def test_chat_turn_emits_context_and_the_title_call_does_not(self):
+        contexts, bodies = self.turn("--chat", {"mode": "single", "worker": "implementer", "messages": self.MSGS, "title": True},
+                                     ["the answer"])
+        self.assertEqual(len(contexts), 1)  # the quiet title call emitted nothing
+        ctx = contexts[0]
+        self.assertEqual((ctx["role"], ctx["n_ctx"], ctx["prompt_tokens"], ctx["completion_tokens"]), ("implementer", 4096, 1237, 56))
+        self.assertEqual(set(ctx["parts"]), {"system", "tools", "skills", "messages", "tool_results"})
+        self.assertEqual(sum(ctx["parts"].values()), 1237)
+        self.assertEqual((ctx["parts"]["tools"], ctx["parts"]["skills"], ctx["parts"]["tool_results"]), (0, 0, 0))
+        self.assertTrue(ctx["parts"]["system"] > 0 and ctx["parts"]["messages"] > 0)
+
+    def test_tools_and_skills_parts_when_enabled(self):
+        skill = self.base / "skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text("---\nname: demo\ndescription: does demo things\n---\nbody", encoding="utf-8")
+        contexts, _ = self.turn("--chat", {"mode": "single", "worker": "implementer", "messages": self.MSGS, "search": True,
+                                           "skills": [str(skill)]}, ["the answer"])
+        parts = contexts[0]["parts"]
+        self.assertTrue(parts["tools"] > 0 and parts["skills"] > 0, parts)
+        self.assertEqual(sum(parts.values()), 1237)
+
+    def test_multi_emits_after_each_stage(self):
+        contexts, _ = self.turn("--chat", {"mode": "multi", "messages": self.MSGS}, ["PLAN", "DRAFT", "FINAL"])
+        self.assertEqual([c["role"] for c in contexts], ["planner", "implementer", "reviewer"])
+        self.assertTrue(all(sum(c["parts"].values()) == 1237 for c in contexts))
+
+    def test_code_turn_counts_tool_results(self):
+        root = self.base / "app"
+        root.mkdir()
+        (root / "a.txt").write_text("x" * 500, encoding="utf-8")
+        contexts, _ = self.turn("--code", {"action": "chat", "worker": "implementer", "messages": [{"role": "user", "content": "read a"}],
+                                           "folders": [{"path": str(root), "access": "write"}], "title": True},
+                                [tool_call("read_file", path="a.txt"), "done"])
+        self.assertEqual(len(contexts), 2)
+        self.assertEqual(contexts[0]["parts"]["tool_results"], 0)
+        self.assertGreater(contexts[1]["parts"]["tool_results"], 0)
+        self.assertGreater(contexts[1]["parts"]["tools"], 0)  # the Code file tools
+        self.assertTrue(all(sum(c["parts"].values()) == 1237 for c in contexts))
+
+    def test_n_ctx_sources(self):
+        llama = orchestrator.ApiClient({"base_url": "http://127.0.0.1:8899/v1", "api_key": "no-key", "auto_load": {"model_path": "q"}})
+        llama.llama_port = 8899
+        asked = []
+
+        def props(base, method, route, body=None):
+            asked.append(f"{base}{route}")
+            return {"default_generation_settings": {"n_ctx": 32768}}
+
+        with patch.object(llama, "_request_at", props):
+            self.assertEqual((llama.context_size(), llama.context_size()), (32768, 32768))
+        self.assertEqual(asked, ["http://127.0.0.1:8899/props"])  # cached per process
+        unsloth = orchestrator.ApiClient({"base_url": "http://u/v1", "management_url": "http://u", "api_key": "k",
+                                          "auto_load": {"model_path": "p", "max_seq_length": 8192}})
+        with patch.object(unsloth, "_request_at", side_effect=orchestrator.WorkflowError("down")):
+            self.assertEqual(unsloth.context_size(), 8192)  # status unavailable: the role's max_seq_length
+        orchestrator.CONTEXT_SIZES.clear()
+        with patch.object(unsloth, "_request_at", return_value={"context_length": 16384}):
+            self.assertEqual(unsloth.context_size(), 16384)
+        remote = orchestrator.ApiClient({"base_url": "https://api.example/v1", "api_key": "k", "model": "gpt"})
+        self.assertIsNone(remote.context_size())
+
+    def test_parts_sum_exactly_with_rounding(self):
+        for prompt in (0, 1, 7, 999, 100003):
+            parts = orchestrator.context_parts(
+                [{"role": "system", "content": "sys\n\nSKILLS\n- a: b\n\n=== YOUR ROLE"}, {"role": "user", "content": "q" * 13},
+                 {"role": "tool", "content": "r" * 29}], [{"type": "function"}], prompt)
+            self.assertEqual(sum(parts.values()), prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

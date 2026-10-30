@@ -1032,6 +1032,8 @@
                                     ToolTip="Let the Code worker read or edit another folder" />
                         </StackPanel>
                     </ContentControl>
+                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="10,0,0,0" VerticalAlignment="Center"
+                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                     <Button x:Name="CodeStartButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11"
                             Click="CodeStart_Click" ToolTip="Start or resume the project run in this folder (Ctrl+Enter)" ToolTipService.ShowOnDisabled="True" />
                     <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
@@ -1232,6 +1234,8 @@
                                   AutomationProperties.Name="Keep models loaded" />
                     <TextBlock DockPanel.Dock="Right" Text="Keep models loaded" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="0,0,8,0"
                                ToolTip="{Binding ToolTip, ElementName=ChatKeepToggle}" />
+                    <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,12,0" VerticalAlignment="Center"
+                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <Grid Grid.Row="1">
                     <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged">

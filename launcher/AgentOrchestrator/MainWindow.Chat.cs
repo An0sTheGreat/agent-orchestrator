@@ -81,6 +81,8 @@ public partial class MainWindow
         if (CardFor(_settings.CodeWorker) is null)
             _settings.CodeWorker = "implementer";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
+        ShowContext(false, null);
+        ShowContext(true, null);
         RefreshChatTarget();
         RefreshChatInput();
     }
@@ -308,6 +310,7 @@ public partial class MainWindow
         if (_chatConv is { } c)
         {
             (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
+            c.Context = _chatContext;
             c.Title ??= TakeTurnTitle();
             StoreDo(() => _store.Save(c));
         }
@@ -339,6 +342,7 @@ public partial class MainWindow
                 _settings.ChatWorker = saved.Worker;
             _settings.Save();
             Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
+            ShowContext(false, saved.Context);
         }
         ShowView(chat: true);
     }
@@ -368,6 +372,7 @@ public partial class MainWindow
         c.History.Clear();
         _reply = null;
         c.Empty.Visibility = Visibility.Visible;
+        ShowContext(c.IsCode, null);
         Jump(c);
     }
 
@@ -741,6 +746,9 @@ public partial class MainWindow
                 break;
             case "chat_title":
                 _turnTitle = Str(ev, "text");
+                break;
+            case "context":
+                ShowContext(_turn.IsCode, ContextSnapshot.From(ev));
                 break;
             case "tool":
                 EndChatBlock();

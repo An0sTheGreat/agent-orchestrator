@@ -1989,11 +1989,34 @@ public partial class MainWindow : Window
                 if (Math.Abs(PinOf(rerendered) - pinRoom) > 0.5)
                     return Fail();
                 SetChatFinal("Saved chat answer"); // the saved conversation below expects the original reply
+                // The context ring: empty before the first context event, then the turn's share of the window.
+                if (ChatContextRing.Tag is not null || ChatContextRing.ToolTip as string != "Context: no reply yet in this conversation")
+                    return Fail();
+                _lines.Enqueue(Ev("""{"e":"context","role":"reviewer","n_ctx":32000,"prompt_tokens":12000,"completion_tokens":300,"parts":{"system":1500,"tools":2000,"skills":500,"messages":6000,"tool_results":2000}}"""));
                 // The first turn's model-written title names the new chat; a later turn's title never replaces it.
                 _lines.Enqueue(Ev("""{"e":"chat_title","text":"Saved chat title"}"""));
                 DrainLines();
                 FinishChatTurn(0, false, null);
                 var savedChat = _chatConv;
+                if (ChatContextRing.Tag is not double ringFill || Math.Abs(ringFill - 12300 / 32000.0) > 1e-9 || ChatContextRing.ToolTip as string != "12.3k / 32k tokens (38%)")
+                    return Fail();
+                ContextRing_Click(ChatContextRing, new RoutedEventArgs());
+                await Settle();
+                var contextRows = ((StackPanel)((Border)_contextPopup!.Child).Child).Children.OfType<DockPanel>().Where(d => d.Tag is long).ToList();
+                if (!_contextPopup.IsOpen || contextRows.Count != 7 || contextRows.Sum(d => (long)d.Tag) != 32000
+                    || contextRows.Take(5).Sum(d => (long)d.Tag) != 12000) // the prompt rows add up to prompt_tokens
+                    return Fail();
+                Snap("30-context-ring");
+                Snap("30-context-popup", (FrameworkElement)_contextPopup.Child);
+                var ringTheme = _settings.Theme;
+                _settings.Theme = "Parchment";
+                ApplyTheme();
+                await Settle();
+                Snap("30-context-ring-parchment");
+                Snap("30-context-popup-parchment", (FrameworkElement)_contextPopup.Child);
+                _settings.Theme = ringTheme;
+                ApplyTheme();
+                _contextPopup.IsOpen = false;
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
                     return Fail();
                 StartChatTurn("Follow-up", false);
@@ -2004,12 +2027,14 @@ public partial class MainWindow : Window
                 if (_chatConv != savedChat || _store.Get(savedChat.Id) is not { Messages.Count: 4, Title: "Saved chat title" } || _store.View().Ungrouped.Count(e => e.Kind == "chat") != 1)
                     return Fail();
                 NewChat_Click(ChatSend, new RoutedEventArgs());
-                if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null)
+                if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null || ChatContextRing.Tag is not null)
                     return Fail();
                 ShowView(); // from the Code view, its row opens the Chat view
                 ClickRow(savedChat.Id);
                 await Settle();
                 Snap("23-sidebar-chat");
+                if (ChatContextRing.ToolTip as string != "12.3k / 32k tokens (38%)") // the saved chat brings back its context
+                    return Fail();
                 // The title bar names the open chat.
                 if (TitleChatButton.Visibility != Visibility.Visible || TitleChatText.Text != _store.View().Ungrouped.Single(e => e.Id == savedChat.Id).Title)
                     return Fail();
