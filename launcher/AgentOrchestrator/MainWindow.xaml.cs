@@ -1988,7 +1988,7 @@ public partial class MainWindow : Window
                     return Fail();
                 answer = "Renamed B";
                 ClickItem(chatB.Id, "Rename…");
-                if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: DockPanel { Children: [TextBlock { Text: "Renamed B" }] } }))
+                if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: DockPanel { Children: [TextBlock { Text: "" }, TextBlock { Text: "Renamed B" }] } })) // the Code braces, then the title
                     return Fail();
                 ClickItem(chatB.Id, "Move down");
                 if (Rows() != "+New chat,+New project,RECENTS,A,B" || SidebarItem(chatB.Id, "Move down").IsEnabled)

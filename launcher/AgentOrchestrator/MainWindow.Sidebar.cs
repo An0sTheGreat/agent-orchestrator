@@ -120,17 +120,15 @@ public partial class MainWindow
     }
 
     // One line: the title (ellipsis), highlighted when it is the chat open in the view shown; the folder (or "Chat") and
-    // last change in the tooltip. A Chat-view chat has a speech-bubble glyph.
+    // last change in the tooltip.
     private UIElement ChatRow(Entry entry, string? groupId, int index, int count, IReadOnlyList<GroupView> groups, bool archived)
     {
         var open = NavChat.IsChecked == true ? _chatConv : NavCode.IsChecked == true ? _codeConv : null;
         var content = new DockPanel();
-        if (entry.Kind == "chat")
-        {
-            var glyph = new TextBlock { Text = "\uE8BD", FontSize = 11, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
-            glyph.SetResourceReference(StyleProperty, "RailGlyph");
-            content.Children.Add(glyph);
-        }
+        // A chat's speech bubble or a Code conversation's braces, as on the Chat / Code toggle.
+        var glyph = new TextBlock { Text = entry.Kind == "chat" ? "\uE8BD" : "\uE943", FontSize = 11, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
+        glyph.SetResourceReference(StyleProperty, "RailGlyph");
+        content.Children.Add(glyph);
         content.Children.Add(new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis });
         var row = new ToggleButton
         {
