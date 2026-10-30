@@ -106,7 +106,6 @@ public partial class MainWindow
         ChatMultiToggle.IsChecked = ChatMulti;
         var target = ChatTarget();
         ChatTargetChip.Content = ChatMulti ? ChainLabel : $"To: {ChatName(target, target?.Role ?? "")}  ▾";
-        ChatTargetChip.Cursor = ChatMulti ? Cursors.Arrow : Cursors.Hand;
         var code = CodeTarget();
         CodeTargetChip.Content = $"To: {ChatName(code, code?.Role ?? "")}  ▾";
         RefreshCardVisibility();
@@ -186,10 +185,12 @@ public partial class MainWindow
 
     private void ChatPlus_Click(object sender, RoutedEventArgs e) => BuildWorkerMenu((Button)sender, ConvOf(sender)).IsOpen = true;
 
+    // The target chip configures the model(s) it names: Multi's three workers, else the target (the + button picks the target).
     private void ChatTarget_Click(object sender, RoutedEventArgs e)
     {
-        if (!MultiOf(ConvOf(sender)))
-            BuildWorkerMenu((Button)sender, ConvOf(sender)).IsOpen = true;
+        var c = ConvOf(sender);
+        OpenModelConfig(MultiOf(c) ? new[] { "planner", "implementer", "reviewer" }.Select(CardFor).OfType<RoleCard>().ToList()
+            : TargetOf(c) is { } target ? [target] : []);
     }
 
     private void ChatMode_Click(object sender, RoutedEventArgs e)
