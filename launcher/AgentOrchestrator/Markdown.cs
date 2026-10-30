@@ -160,6 +160,38 @@ internal static class Markdown
         return doc;
     }
 
+    // While a reply streams: the length of the longest prefix of text that more text cannot render differently, so its blocks
+    // can be kept and only the rest re-rendered (ToDocument of the prefix, then of the rest, gives ToDocument of the whole).
+    // A prefix ends after a closing code fence, or before a complete line that follows a blank line and does not continue a
+    // list (ToDocument's rule for ending lists). from: a length this returned before, or 0.
+    // ponytail: a table row that starts with ``` reads as a fence here; the turn's final full render corrects it.
+    public static int StableLength(string text, int from)
+    {
+        var (stable, blank) = (from, false);
+        string? fence = null;
+        for (int at = from, end; (end = text.IndexOf('\n', at)) >= 0; at = end + 1)
+        {
+            var line = text[at..end];
+            if (fence is not null)
+            {
+                if (line.TrimStart().StartsWith(fence))
+                    (fence, stable) = (null, end + 1);
+                continue;
+            }
+            if (line.Trim().Length == 0)
+            {
+                blank = true;
+                continue;
+            }
+            if (blank && !Item.IsMatch(line) && !line.StartsWith("  "))
+                stable = at;
+            blank = false;
+            if (Fence.Match(line) is { Success: true } open)
+                fence = open.Groups[1].Value;
+        }
+        return stable;
+    }
+
     private static Paragraph Para() => new() { Margin = new Thickness(0, 0, 0, 8), LineHeight = double.NaN };
 
     // A FlowDocument paragraph cannot round its corners, so a code block is a rounded card: the coloured code (wrapped, clear
