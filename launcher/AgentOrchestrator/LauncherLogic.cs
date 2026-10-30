@@ -70,12 +70,121 @@ internal static class LauncherLogic
         return skills.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
 
-    // A model that thinks before answering: a role whose auto_load sets a non-zero reasoning_budget, or a known reasoning
-    // family by name (Qwen3/3.5, QwQ, DeepSeek-R1 and its distills, gpt-oss, Phi-4 reasoning, Magistral, GLM-4.5+ / Z1).
+    // A model that thinks before answering. With modelsFolder given (null = skip the file check), the model file's own
+    // tokenizer.chat_template decides when it can be found and read; otherwise a role whose auto_load sets a non-zero
+    // reasoning_budget, or a known reasoning family by name (Qwen3/3.5, QwQ, DeepSeek-R1 and its distills, gpt-oss,
+    // Phi-4 reasoning, Magistral, GLM-4.5+ / Z1).
     // ponytail: name list, extend it as reasoning families appear.
-    public static bool IsThinkingModel(string modelPathOrName, JsonObject? autoLoad) =>
-        autoLoad?["reasoning_budget"] is JsonValue budget && double.TryParse(budget.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var b) && b != 0 ||
-        Regex.IsMatch(modelPathOrName, @"qwen3|qwq|deepseek-r1|r1-distill|gpt-oss|phi-4.*reasoning|magistral|glm-(4\.[5-9]|z1)|thinking|reasoning", RegexOptions.IgnoreCase);
+    public static bool IsThinkingModel(string modelPathOrName, JsonObject? autoLoad, string? modelsFolder = null, string? hubCache = null) =>
+        (modelsFolder is null ? null : ThinkingFromTemplate(ReadGgufChatTemplate(ResolveGguf(autoLoad, modelsFolder, hubCache ?? HubCache())))) ??
+        (autoLoad?["reasoning_budget"] is JsonValue budget && double.TryParse(budget.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var b) && b != 0 ||
+        Regex.IsMatch(modelPathOrName, @"qwen3|qwq|deepseek-r1|r1-distill|gpt-oss|phi-4.*reasoning|magistral|glm-(4\.[5-9]|z1)|thinking|reasoning", RegexOptions.IgnoreCase));
+
+    private static bool? ThinkingFromTemplate(string? template) =>
+        template is null ? null : new[] { "<think>", "</think>", "enable_thinking", "reasoning_content", "<|channel|>analysis", "[THINK]" }
+            .Any(m => template.Contains(m, StringComparison.Ordinal));
+
+    // The role's GGUF file: auto_load.gguf_file when it exists, else the local scan (the Change picker's) for the repo in
+    // auto_load.model_path, preferring auto_load.gguf_variant. Null when none is found.
+    public static string? ResolveGguf(JsonObject? autoLoad, string modelsFolder, string hubCache)
+    {
+        if (autoLoad is null)
+            return null;
+        if (autoLoad["gguf_file"]?.ToString() is { Length: > 0 } file && File.Exists(file))
+            return file;
+        if (autoLoad["model_path"]?.ToString() is not { Length: > 0 } repo)
+            return null;
+        var variant = autoLoad["gguf_variant"]?.ToString() ?? "";
+        try
+        {
+            var mine = FindLocalGgufs(modelsFolder, hubCache).Where(g => g.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase)).ToList();
+            return (mine.FirstOrDefault(g => variant.Length > 0 && g.Variant.Equals(variant, StringComparison.OrdinalIgnoreCase)) ?? mine.FirstOrDefault())?.File;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    private static readonly Dictionary<string, string?> GgufTemplateCache = new();
+
+    // The GGUF metadata value tokenizer.chat_template, read by streaming the header (v2/v3, little-endian) up to that key.
+    // Null on any malformed data, I/O error, a missing key or a null path. Cached per path, size and modification time.
+    public static string? ReadGgufChatTemplate(string? path)
+    {
+        if (path is null)
+            return null;
+        try
+        {
+            var info = new FileInfo(path);
+            var key = $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+            lock (GgufTemplateCache)
+                if (GgufTemplateCache.TryGetValue(key, out var hit))
+                    return hit;
+            var template = ScanGgufChatTemplate(path);
+            lock (GgufTemplateCache)
+                GgufTemplateCache[key] = template;
+            return template;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
+    }
+
+    internal static int GgufTemplateCacheCount { get { lock (GgufTemplateCache) return GgufTemplateCache.Count; } }
+
+    private static string? ScanGgufChatTemplate(string path)
+    {
+        const ulong MaxString = 64 << 20;
+        try
+        {
+            using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
+            using var r = new BinaryReader(fs, System.Text.Encoding.UTF8);
+            if (r.ReadUInt32() != 0x46554747u || r.ReadUInt32() is not (2 or 3))
+                return null;
+            r.ReadUInt64();
+            var count = r.ReadUInt64();
+            if (count > 1_000_000)
+                return null;
+            // a string's text, or null (bytes skipped) when !keep; throws InvalidDataException on an absurd length
+            string? Str(bool keep)
+            {
+                var len = r.ReadUInt64();
+                if (len > MaxString || (long)len > fs.Length - fs.Position)
+                    throw new InvalidDataException();
+                if (keep)
+                    return System.Text.Encoding.UTF8.GetString(r.ReadBytes((int)len));
+                fs.Seek((long)len, SeekOrigin.Current);
+                return null;
+            }
+            void Skip(uint type)
+            {
+                switch (type)
+                {
+                    case 0 or 1 or 7: fs.Seek(1, SeekOrigin.Current); break;
+                    case 2 or 3: fs.Seek(2, SeekOrigin.Current); break;
+                    case 4 or 5 or 6: fs.Seek(4, SeekOrigin.Current); break;
+                    case 10 or 11 or 12: fs.Seek(8, SeekOrigin.Current); break;
+                    case 8: Str(false); break;
+                    case 9:
+                        var elem = r.ReadUInt32();
+                        var n = r.ReadUInt64();
+                        if (n > (ulong)fs.Length || elem == 9) // nested arrays are not used by llama.cpp
+                            throw new InvalidDataException();
+                        for (ulong i = 0; i < n; i++)
+                            Skip(elem);
+                        break;
+                    default: throw new InvalidDataException();
+                }
+            }
+            for (ulong i = 0; i < count; i++)
+            {
+                var name = Str(true);
+                var type = r.ReadUInt32();
+                if (name == "tokenizer.chat_template")
+                    return type == 8 ? Str(true) : null;
+                Skip(type);
+            }
+            return null;
+        }
+        catch (Exception e) when (e is EndOfStreamException or InvalidDataException or IOException or UnauthorizedAccessException or ArgumentException or OverflowException)
+        { return null; }
+    }
 
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
@@ -1398,6 +1507,59 @@ internal static class LauncherLogic
             if (IsThinkingModel(name, budget is null ? new JsonObject { ["model_path"] = name } : new JsonObject { ["reasoning_budget"] = budget }) != thinks ||
                 budget is null && IsThinkingModel(name, null) != thinks)
                 throw new InvalidOperationException($"IsThinkingModel({name}, {budget}) should be {thinks}.");
+        // Chat-template detection from the GGUF file itself, with synthetic GGUFs.
+        var tplArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-tpl-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(tplArea);
+            string Gguf(string file, string? template, bool truncate = false, bool badMagic = false)
+            {
+                var p = Path.Combine(tplArea, file);
+                using (var fs = File.Create(p))
+                using (var w = new BinaryWriter(fs, System.Text.Encoding.UTF8))
+                {
+                    void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
+                    w.Write(badMagic ? 0x12345678u : 0x46554747u); w.Write(3u); w.Write(0UL); w.Write(template is null ? 3UL : 4UL);
+                    S("general.name"); w.Write(8u); S("Synthetic");
+                    S("general.file_type"); w.Write(4u); w.Write(15u);
+                    S("tokenizer.ggml.tokens"); w.Write(9u); w.Write(8u); w.Write(3UL); S("<s>"); S("hello"); S("</s>");
+                    if (template is not null) { S("tokenizer.chat_template"); w.Write(8u); S(template); }
+                }
+                if (truncate)
+                    using (var fs = new FileStream(p, FileMode.Open)) fs.SetLength(60);
+                return p;
+            }
+            JsonObject Load(string file, string name) => new() { ["gguf_file"] = file, ["model_path"] = name };
+            var think = Gguf("think.gguf", "{% if enable_thinking %}<think>{% endif %}");
+            var plain = Gguf("plain.gguf", "{{ messages }} plain chatml");
+            var cut = Gguf("cut.gguf", "<think>", truncate: true);
+            var bad = Gguf("bad.gguf", "<think>", badMagic: true);
+            var noTpl = Gguf("none.gguf", null);
+            if (ReadGgufChatTemplate(think) != "{% if enable_thinking %}<think>{% endif %}" || ReadGgufChatTemplate(noTpl) is not null ||
+                ReadGgufChatTemplate(cut) is not null || ReadGgufChatTemplate(bad) is not null || ReadGgufChatTemplate(Path.Combine(tplArea, "missing.gguf")) is not null)
+                throw new InvalidOperationException("GGUF chat template read failed.");
+            if (!IsThinkingModel("Some-Agent-35B", Load(think, "Some-Agent-35B"), "") || IsThinkingModel("qwen3-fake", Load(plain, "qwen3-fake"), "") ||
+                !IsThinkingModel("qwen3-fake", Load(cut, "qwen3-fake"), "") || IsThinkingModel("Some-Agent-35B", Load(cut, "Some-Agent-35B"), "") ||
+                !IsThinkingModel("Qwen3-X", Load(bad, "Qwen3-X"), "") || IsThinkingModel("Some-Agent-35B", Load(think, "Some-Agent-35B")))
+                throw new InvalidOperationException("Template-driven IsThinkingModel failed.");
+            foreach (var marker in new[] { "<think>", "</think>", "enable_thinking", "reasoning_content", "<|channel|>analysis", "[THINK]" })
+                if (!IsThinkingModel("Plain", Load(Gguf("m.gguf", "a " + marker + " b"), "Plain"), ""))
+                    throw new InvalidOperationException($"Marker {marker} not detected.");
+            // HF cache layout resolved from model_path + gguf_variant
+            var hubFile = Path.Combine(tplArea, "hub", "models--org--Agent-GGUF", "snapshots", "x");
+            Directory.CreateDirectory(hubFile);
+            File.Copy(think, Path.Combine(hubFile, "Agent-Q4_K_M.gguf"));
+            File.Copy(plain, Path.Combine(hubFile, "Agent-Q8_0.gguf"));
+            var hub = Path.Combine(tplArea, "hub");
+            var viaHub = new JsonObject { ["model_path"] = "org/Agent-GGUF", ["gguf_variant"] = "Q4_K_M" };
+            if (Path.GetFileName(ResolveGguf(viaHub, "", hub)) != "Agent-Q4_K_M.gguf" || !IsThinkingModel("org/Agent-GGUF", viaHub, "", hub) ||
+                IsThinkingModel("org/Agent-GGUF", new JsonObject { ["model_path"] = "org/Agent-GGUF", ["gguf_variant"] = "Q8_0" }, "", hub) ||
+                ResolveGguf(new JsonObject { ["model_path"] = "org/Other" }, "", hub) is not null)
+                throw new InvalidOperationException("GGUF resolution failed.");
+            if (GgufTemplateCacheCount == 0 || ReadGgufChatTemplate(think) is null)
+                throw new InvalidOperationException("GGUF template cache failed.");
+        }
+        finally { Directory.Delete(tplArea, recursive: true); }
         var skillArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-skills-{Guid.NewGuid():N}");
         try
         {
