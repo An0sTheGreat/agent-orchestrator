@@ -3267,17 +3267,26 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 
 
 def run_code(config: dict[str, Any], request_path: Path) -> int:
-    """One Code turn: a single worker with file tools confined to the request's folders."""
+    """One Code turn with file tools confined to the request's folders: a single worker, or (mode "multi")
+    Planner (read-only) -> Implementer -> Reviewer (fixes, then answers)."""
     request = json.loads(load_text(request_path))
     if not isinstance(request, dict):
         raise WorkflowError("Code request must be a JSON object")
     action = request.get("action")
     if action not in ("chat", "write_project"):
         raise WorkflowError(f"Unknown code action {action!r}")
+    mode = request.get("mode") or "single"
+    if mode not in ("single", "multi"):
+        raise WorkflowError(f"Unknown code mode {mode!r}")
+    multi = action == "chat" and mode == "multi"
     messages = chat_messages(request)
     if action == "chat" and (not messages or messages[-1]["role"] != "user"):
         raise WorkflowError("Code request needs messages ending with a user message")
-    role = str(request.get("worker") or "")
+    if multi:
+        missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
+        if missing:
+            raise WorkflowError(f"Multi Code needs the built-in workers; missing in config: {', '.join(missing)}")
+    role = "implementer" if multi else str(request.get("worker") or "")
     worker = chat_worker(config, role)
     raw = request.get("folders")
     if not isinstance(raw, list) or not raw:
@@ -3309,7 +3318,22 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     handlers.update(extra_handlers)
     system = load_text(ROOT / "prompts" / "code.txt").strip() + extra_system
     system += f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n" if worker else f"\n\nYou are the {role.capitalize()} worker.\n"
-    text = code_loop(config, role, f"{system}\n{folders_context(folders)}", messages, CODE_TOOLS + tools, handlers)
+    if multi:
+        context = f"{extra_system}\n\n{folders_context(folders)}"
+        ask = lambda extra: [*messages[:-1], {"role": "user", "content": f"{messages[-1]['content']}\n\n{extra}"}]
+        read_only = {**code_handlers(folders), **extra_handlers}
+        plan = chat_call(config, "planner", "plan", load_text(ROOT / "prompts" / "code_planner.txt").strip(), messages,
+                         (CODE_TOOLS[:3] + tools, read_only, context))
+        draft = chat_call(config, "implementer", "implement", system, ask(f"PLAN (from the Planner)\n{plan}"),
+                          (CODE_TOOLS + tools, handlers, f"\n{folders_context(folders)}"))
+        review = {**read_only, **code_write_handlers(folders)}
+        final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip(),
+                          ask(f"PLAN (from the Planner)\n{plan}\n\nIMPLEMENTER'S REPLY\n{draft}"), (CODE_TOOLS[:5] + tools, review, context))
+        if not final:
+            print("[code] the Reviewer returned nothing usable; answering with the Implementer's reply")
+        role, text = ("reviewer", final) if final else ("implementer", draft)
+    else:
+        text = code_loop(config, role, f"{system}\n{folders_context(folders)}", messages, CODE_TOOLS + tools, handlers)
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("code_reply", role=role, text=text)
