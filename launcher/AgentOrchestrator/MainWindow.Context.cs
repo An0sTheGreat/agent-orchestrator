@@ -70,6 +70,8 @@ public sealed class ContextSnapshot
         if (rows.Sum(r => r.Tokens) != 32_000)
             throw new InvalidOperationException("Context rows must fill the window");
         Is(new ContextSnapshot { Prompt = 5 }.Summary, "5 tokens (context size unknown)");
+        Is(string.Join(",", new[] { 0.01, 0.60, 0.604, 0.61, 0.89, 0.894, 0.895, 0.90, 1.0 }.Select(MainWindow.RingColor)),
+            "#4C8DFF,#4C8DFF,#4C8DFF,#E8A33D,#E8A33D,#E8A33D,#E5484D,#E5484D,#E5484D");
     }
 }
 
@@ -89,7 +91,7 @@ public partial class MainWindow
         var grid = new Grid { Width = 18, Height = 18 };
         grid.Children.Add(track);
         if (s is { NCtx: > 0 })
-            grid.Children.Add(Arc(s.Fraction, s.Fraction > 0.95 ? "#E5484D" : s.Fraction > 0.8 ? "#E8A33D" : null));
+            grid.Children.Add(Arc(s.Fraction, RingColor(s.Fraction)));
         else if (s is null)
             grid.Children.Add(new TextBlock { Text = "—", FontSize = 9, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
         ring.Content = grid;
@@ -118,6 +120,14 @@ public partial class MainWindow
         _settings.Save();
         RefreshContextSection();
     }
+
+    // Blue up to 60%, yellow to 89%, red from 90% (whole percent, as the popup shows it).
+    internal static string RingColor(double fraction) => Math.Round(fraction * 100) switch
+    {
+        >= 90 => "#E5484D",
+        > 60 => "#E8A33D",
+        _ => "#4C8DFF",
+    };
 
     private static Path Arc(double fraction, string? color)
     {
