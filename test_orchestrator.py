@@ -785,7 +785,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(client.complete("m", messages, {"max_tokens": 100})["content"], "ok")
         # one quiet summary call (no streaming, thinking off, its own max_tokens), then the compacted request
         self.assertEqual([via for via, _ in sent], ["request", "stream"])
-        self.assertEqual((sent[0][1]["max_tokens"], sent[0][1]["enable_thinking"]), (1500, False))
+        self.assertEqual((sent[0][1]["max_tokens"], sent[0][1]["enable_thinking"]), (200, False))  # scaled: room 900 → the 200 floor
         self.assertIn("f0.py", sent[0][1]["messages"][1]["content"])
         self.assertEqual(messages[0], {"role": "system", "content": "sys"})
         self.assertEqual(messages[1], {"role": "user", "content": "the task" + orchestrator.COMPACT_MARK + "SUMMARY"})
@@ -2534,6 +2534,111 @@ class ChatTests(unittest.TestCase):
             _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
         self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
         self.assertIn("Reviewer returned nothing usable", out.getvalue())
+
+
+class ConversationCompactionTests(unittest.TestCase):
+    """Chat/Code turns summarize a long history before the turn (compact_conversation) and apply a stored summary."""
+
+    ESSAY = "word " * 2000  # a 2000-word reply: ~2.9k estimated tokens
+
+    def turn(self, request, n_ctx=8192, summary="SUMMARY TEXT", max_tokens=4096):
+        """One --chat turn against fakes with context window n_ctx; returns (calls, events)."""
+        calls, events = [], []
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role, self.title = settings, "", ""
+
+            def context_size(self):
+                return n_ctx
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                calls.append({"messages": messages, "sampling": sampling})
+                if messages[0]["content"] == orchestrator.CONVERSATION_PROMPT:
+                    if isinstance(summary, Exception):
+                        raise summary
+                    return {"role": "assistant", "content": summary}
+                return {"role": "assistant", "content": "the answer"}
+
+        roles = {r: {"base_url": "http://x", "sampling": {"max_tokens": max_tokens}} for r in orchestrator.BUILTIN_ROLES}
+        out = io.StringIO()
+        out.reconfigure = lambda **kw: None
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "config.json").write_text(json.dumps({"roles": roles}), encoding="utf-8")
+            req = Path(folder) / "request.json"
+            req.write_text(json.dumps(request), encoding="utf-8")
+            argv = ["o", "--project", folder, "--chat", str(req), "--events", "--non-interactive"]
+            with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                    patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv), \
+                    patch.object(orchestrator.sys, "stdout", out):
+                self.assertEqual(orchestrator.main(), 0)
+        return calls, events
+
+    def history(self, last_reply=None):
+        messages = []
+        for i in range(4):
+            messages += [{"role": "user", "content": f"Write essay {i} please"}, {"role": "assistant", "content": f"ESSAY{i} " + self.ESSAY}]
+        if last_reply is not None:
+            messages[-1]["content"] = last_reply
+        return messages + [{"role": "user", "content": "What is 2 + 2?"}]
+
+    def test_long_chat_is_summarized_before_the_turn(self):
+        calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history()})
+        summary_call, answer = calls
+        self.assertEqual(summary_call["messages"][0]["content"], orchestrator.CONVERSATION_PROMPT)
+        self.assertEqual(summary_call["sampling"]["enable_thinking"], False)
+        self.assertLessEqual(summary_call["sampling"]["max_tokens"], 512)  # 8192 window, 4096 reply: room 4096 → 512
+        self.assertIn("Write essay 0", summary_call["messages"][1]["content"])
+        # the answer call: system + the latest user message only (the long last reply does not fit 20% of the room)
+        sent = answer["messages"][1:]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["content"], "Earlier in this conversation (summary):\nSUMMARY TEXT\n\nCurrent message:\nWhat is 2 + 2?")
+        self.assertNotIn("compact", sent[0]["content"].lower())
+        compacted = [d for e, d in events if e == "history_compacted"]
+        self.assertEqual(len(compacted), 1)
+        self.assertEqual((compacted[0]["summary"], compacted[0]["covers"]), ("SUMMARY TEXT", 8))
+        self.assertLess(compacted[0]["after"], 0.2 * compacted[0]["before"])
+
+    def test_a_short_last_reply_is_kept_verbatim(self):
+        calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history("Short reply.")})
+        sent = calls[1]["messages"][1:]
+        self.assertEqual([m["role"] for m in sent], ["user", "assistant", "user"])  # roles stay user-first
+        self.assertEqual(sent[0]["content"], "Earlier in this conversation (summary):\nSUMMARY TEXT")
+        self.assertEqual(sent[1:], self.history("Short reply.")[-2:])
+        self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [7])
+
+    def test_stored_summary_and_trimmed_messages_are_applied(self):
+        msgs = [{"role": "user", "content": "Next question"}]
+        calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": msgs, "summary": "OLD", "summary_covers": 8})
+        self.assertEqual(len(calls), 1)  # small: no summary call
+        self.assertEqual(calls[0]["messages"][1:], [{"role": "user", "content": "Earlier in this conversation (summary):\nOLD\n\nCurrent message:\nNext question"}])
+        self.assertFalse([e for e, _ in events if e == "history_compacted"])
+        # a later compaction folds the stored summary in; covers counts from the full history
+        calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history(), "summary": "OLD", "summary_covers": 3})
+        self.assertIn("EARLIER SUMMARY\nOLD", calls[0]["messages"][1]["content"])
+        self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [11])
+
+    def test_small_or_unknown_window_is_not_compacted(self):
+        for n_ctx in (131072, None):
+            calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history()}, n_ctx=n_ctx)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["messages"][1:], self.history())
+            self.assertFalse([e for e, _ in events if e == "history_compacted"])
+
+    def test_failed_summary_sends_the_full_history(self):
+        calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history()},
+                                  summary=orchestrator.WorkflowError("API 500"))
+        self.assertEqual(calls[1]["messages"][1:], self.history())
+        self.assertFalse([e for e, _ in events if e == "history_compacted"])
+
+    def test_multi_chat_compacts_once_for_all_three_workers(self):
+        calls, events = self.turn({"mode": "multi", "messages": self.history()})
+        self.assertEqual(sum(1 for c in calls if c["messages"][0]["content"] == orchestrator.CONVERSATION_PROMPT), 1)
+        self.assertNotIn("ESSAY0", calls[1]["messages"][1]["content"])
+        self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [8])
 
 
 def tool_call(name, **arguments):

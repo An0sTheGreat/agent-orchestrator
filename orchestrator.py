@@ -472,7 +472,7 @@ class ApiClient:
         n_ctx = self.context_size()
         room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2) if n_ctx else before  # unknown: the failed size
         task, _, earlier = str(messages[first].get("content") or "").partition(COMPACT_MARK)
-        allowance = min(1500, room // 10)  # the summary's share (its call's max_tokens is 1500)
+        allowance = min(summary_tokens(room), room // 10)  # the summary's share of the room
         # the tail gets what system + task + tools + summary leave of half the room: well under the 80% trigger
         budget = room // 2 - estimate_tokens(messages[:first] + [{"content": task}], tools) - allowance
         cut = next((i for i in starts if estimate_tokens(messages[i:]) <= budget), starts[-1])
@@ -480,15 +480,13 @@ class ApiClient:
         if not middle or (not force and estimate_tokens(middle) - allowance < 0.2 * room):
             return False
         head = f"TASK\n{clip(task)}\n\n" + (f"EARLIER SUMMARY\n{earlier.strip()}\n\n" if earlier else "") + "STEPS SO FAR\n"
-        render = render_history(middle)  # the earlier summary goes in whole: its own call capped it at 1500 tokens
-        limit = max(int(0.5 * room * 3.5) - len(COMPACT_PROMPT) - len(head), 1000)  # chars: the call must fit this model too
-        if len(render) > limit:
-            render = render[:limit // 3] + "\n\n...[trimmed]...\n\n" + render[-(limit - limit // 3):]
+        # the earlier summary goes in whole: its own call capped it; the call must fit this model too
+        render = fit_render(render_history(middle), room, len(COMPACT_PROMPT) + len(head))
         prompt = [{"role": "system", "content": COMPACT_PROMPT}, {"role": "user", "content": head + render}]
-        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}  # effort would spend the 1500 on thinking
+        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}  # effort would spend the summary on thinking
         events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
         try:
-            summary = answer_text(self.complete(model, prompt, {**quiet, "max_tokens": 1500, "enable_thinking": False}))
+            summary = answer_text(self.complete(model, prompt, {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False}))
         except (WorkflowError, OSError, ValueError):
             summary = ""
         finally:
@@ -684,10 +682,86 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
     return parts
 
 
-COMPACT_MARK = "\n\nCONTEXT SUMMARY (earlier steps were compacted to fit the context window)\n"
+COMPACT_MARK = "\n\nSummary of the earlier steps:\n"
 COMPACT_PROMPT = ("You compact an AI agent's working history so it can keep working without it. Summarize the steps below "
                   "for the agent itself, tersely, under these headings: Goal; Files read (and what mattered in them); "
                   "Changes made (file: what); Decisions; Errors; What remains. Reply with the summary only.")
+CONVERSATION_PROMPT = ("Summarize the earlier part of a conversation between a user and an assistant, so the assistant can "
+                       "continue it without the full text. Write tersely, under these headings: What the user asked for "
+                       "(over time); What was answered or decided (one line per earlier reply; never reproduce long outputs "
+                       "such as essays or code, only what they covered); User preferences and constraints; Open questions. "
+                       "Reply with the summary only.")
+SUMMARY_PREFIX = "Earlier in this conversation (summary):\n"
+
+
+def summary_tokens(room: int) -> int:
+    """max_tokens of a summary call: scaled with the window (8192 → ≤ 512), at most 1500."""
+    return min(1500, max(200, room // 8))
+
+
+def fit_render(render: str, room: int, overhead: int) -> str:
+    """A summary call's rendered history trimmed (middle out) so the call fits half the room; overhead in chars."""
+    limit = max(int(0.5 * room * 3.5) - overhead, 1000)
+    return render if len(render) <= limit else render[:limit // 3] + "\n\n...[trimmed]...\n\n" + render[-(limit - limit // 3):]
+
+
+def with_summary(messages: list[dict[str, Any]], summary: str) -> list[dict[str, Any]]:
+    """The conversation with an earlier summary as background: prefixed to the first message when it is the user's;
+    when the kept history starts with an assistant reply, as its own user message before it (roles stay user-first)."""
+    if not summary:
+        return messages
+    head = f"{SUMMARY_PREFIX}{summary.strip()}"
+    if messages and messages[0]["role"] == "user":
+        return [{**messages[0], "content": f"{head}\n\nCurrent message:\n{messages[0]['content']}"}, *messages[1:]]
+    return [{"role": "user", "content": head}, *messages]
+
+
+def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system: str, messages: list[dict[str, Any]],
+                         tools: list[dict[str, Any]] | None, request: dict[str, Any]) -> list[dict[str, Any]]:
+    """A Chat/Code turn's history, ready to send: the request's stored summary applied, and when it fills over 60% of the
+    room of the smallest known window among `roles`, everything but the latest user message (and the last reply, if
+    short) summarized first, with a history_compacted event for the launcher to store. Unchanged when no window is known
+    or the summary call fails."""
+    global EVENTS
+    summary, covered = str(request.get("summary") or ""), int(request.get("summary_covers") or 0)
+    full = with_summary(messages, summary)
+    sizes = []
+    for role in roles:
+        client, sampling = role_settings(config, role)
+        if n := getattr(client, "context_size", lambda: None)():  # fakes in tests may lack it
+            sizes.append((n, role, client, sampling))
+    if not sizes:
+        return full
+    n_ctx, role, client, sampling = min(sizes, key=lambda s: s[0])
+    room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
+    size = lambda history: estimate_tokens([{"content": system}, *history], tools)
+    before = size(full)
+    if before <= 0.6 * room:
+        return full
+    keep = 2 if len(messages) >= 3 and messages[-2]["role"] == "assistant" and estimate_tokens(messages[-2:]) <= 0.2 * room else 1
+    earlier, kept = messages[:-keep], messages[-keep:]
+    if not earlier:
+        return full
+    head = (f"EARLIER SUMMARY\n{summary.strip()}\n\n" if summary else "") + "CONVERSATION\n"
+    render = fit_render(render_history(earlier), room, len(CONVERSATION_PROMPT) + len(head))
+    quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}
+    events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
+    try:
+        model = client.ensure_model(role, False)
+        text = answer_text(client.complete(model, [{"role": "system", "content": CONVERSATION_PROMPT}, {"role": "user", "content": head + render}],
+                                           {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
+    except (WorkflowError, OSError, ValueError):
+        text = ""
+    finally:
+        EVENTS = events
+    if not text:  # the full history goes as it is; the in-request compactor or a context error follows
+        print(f"[{client.title or role}] the conversation summary failed; sending the full history")
+        return full
+    compacted = with_summary(kept, text)
+    after = size(compacted)
+    print(f"[{client.title or role}] conversation summarized: {before} → {after} tokens")
+    emit("history_compacted", role=role, summary=text, covers=covered + len(earlier), before=before, after=after)
+    return compacted
 
 
 def estimate_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
@@ -3127,8 +3201,9 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
         if missing:
             raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
-        convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
         prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt")
+        messages = compact_conversation(turn, BUILTIN_ROLES, prompt("reviewer"), messages, extras[0], request)  # the reviewer's call is the largest
+        convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
         plan = chat_call(turn, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}], extras)
         draft = chat_call(turn, "implementer", "draft", prompt("implementer"),
                           [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}"}], extras)
@@ -3144,6 +3219,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
             system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
         else:
             system = f"{chat}\n\nYou are the {role.capitalize()} worker.\n"
+        messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
         text = chat_call(turn, role, "answer", system, messages, extras)
     else:
         raise WorkflowError(f"Unknown chat mode {request.get('mode')!r}")
@@ -3422,6 +3498,8 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     handlers.update(extra_handlers)
     system = load_text(ROOT / "prompts" / "code.txt").strip() + extra_system
     system += f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n" if worker else f"\n\nYou are the {role.capitalize()} worker.\n"
+    messages = compact_conversation(config, BUILTIN_ROLES if multi else (role,), f"{system}\n{folders_context(folders)}", messages,
+                                    CODE_TOOLS + tools, request)
     if multi:
         context = f"{extra_system}\n\n{folders_context(folders)}"
         ask = lambda extra: [*messages[:-1], {"role": "user", "content": f"{messages[-1]['content']}\n\n{extra}"}]
