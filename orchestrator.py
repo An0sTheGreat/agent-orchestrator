@@ -390,6 +390,12 @@ class ApiClient:
         sampling: dict[str, Any],
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        n_ctx = self.context_size()
+        if n_ctx:  # compact before the window fills: 80% of what the reply's max_tokens leaves (at least half of n_ctx)
+            room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
+            if estimate_tokens(messages, tools) > 0.8 * room:
+                self._compact(model, messages, sampling, tools)
+        compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
             for key in UNSLOTH_ONLY_FIELDS:
@@ -416,6 +422,9 @@ class ApiClient:
             except WorkflowError as exc:
                 text = str(exc).lower()
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
+                    if not compacted_on_error and self._compact(model, messages, sampling, tools):
+                        compacted_on_error = True  # body["messages"] is the same list, now compacted: retry once
+                        continue
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
                         + ("Raise the role's auto_load.max_seq_length." if not self.remote else "Use a model with a larger context.")
@@ -446,6 +455,46 @@ class ApiClient:
                 self.thinking_off = True
                 print(f"[{self.title or self.role}] thinking disabled for the rest of this turn")
             return message
+
+    def _compact(self, model: str, messages: list[dict[str, Any]], sampling: dict[str, Any],
+                 tools: list[dict[str, Any]] | None) -> bool:
+        """Shrink a history that no longer fits, in place (the caller's loop keeps appending to it): keep the system
+        message, the first user message (the task) and a recent tail that starts at an assistant message (so tool calls
+        keep their results); summarize the middle with one quiet call on this model and merge the summary into the first
+        user message. False (nothing changed) when there is no middle to drop."""
+        global EVENTS
+        first = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
+        starts = [i for i in range(first + 1, len(messages)) if messages[i].get("role") == "assistant"] if first is not None else []
+        if not starts:
+            return False
+        before = estimate_tokens(messages, tools)
+        n_ctx = self.context_size()
+        room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2) if n_ctx else before  # unknown: the failed size
+        cut = next((i for i in starts if estimate_tokens(messages[i:]) <= 0.3 * room), starts[-1])
+        middle = messages[first + 1:cut]
+        if not middle:
+            return False
+        task, _, earlier = str(messages[first].get("content") or "").partition(COMPACT_MARK)
+        render = render_history(([{"role": "summary", "content": earlier}] if earlier else []) + middle)
+        limit = int(0.5 * room * 3.5)  # chars: the summary call must fit this model's context too
+        if len(render) > limit:
+            render = render[:limit // 3] + "\n\n...[trimmed]...\n\n" + render[-(limit - limit // 3):]
+        prompt = [{"role": "system", "content": COMPACT_PROMPT},
+                  {"role": "user", "content": f"TASK\n{clip(task)}\n\nSTEPS SO FAR\n{render}"}]
+        events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
+        try:
+            summary = answer_text(self.complete(model, prompt, {**sampling, "max_tokens": 1500, "enable_thinking": False}))
+        except (WorkflowError, OSError, ValueError):
+            summary = ""
+        finally:
+            EVENTS = events
+        if not summary:  # mechanical fallback; an earlier summary is kept
+            summary = (earlier.strip() + "\n\n" if earlier else "") + tool_call_note(middle)
+        messages[:] = messages[:first] + [{**messages[first], "content": task + COMPACT_MARK + summary}] + messages[cut:]
+        after = estimate_tokens(messages, tools)
+        print(f"[{self.title or self.role}] context compacted: {before} → {after} tokens")
+        emit("compacted", role=self.role, before=before, after=after)
+        return True
 
     def _stream_chat(self, body: dict[str, Any]) -> dict[str, Any]:
         """POST with stream=true; emit delta events as they arrive and return a normal-shaped response."""
@@ -628,6 +677,51 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
     parts = {key: prompt_tokens * value // total if total else 0 for key, value in chars.items()}
     parts["messages"] += prompt_tokens - sum(parts.values())  # rounding remainder
     return parts
+
+
+COMPACT_MARK = "\n\nCONTEXT SUMMARY (earlier steps were compacted to fit the context window)\n"
+COMPACT_PROMPT = ("You compact an AI agent's working history so it can keep working without it. Summarize the steps below "
+                  "for the agent itself, tersely, under these headings: Goal; Files read (and what mattered in them); "
+                  "Changes made (file: what); Decisions; Errors; What remains. Reply with the summary only.")
+
+
+def estimate_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
+    """A prompt's size in tokens, estimated as characters / 3.5."""
+    # ponytail: fixed ratio; calibrate against the last usage.prompt_tokens if compaction fires too early or late
+    chars = len(json.dumps(tools)) if tools else 0
+    for m in messages:
+        chars += len(str(m.get("content") or "")) + (len(json.dumps(m["tool_calls"])) if m.get("tool_calls") else 0)
+    return int(chars / 3.5)
+
+
+def clip(text: str, limit: int = 2000) -> str:
+    return text if len(text) <= limit else text[:limit] + " ...[truncated]"
+
+
+def render_history(messages: list[dict[str, Any]]) -> str:
+    """Messages as plain text for the compaction summary; each content and tool call clipped to ~2k characters."""
+    lines = []
+    for m in messages:
+        role = "tool result" if m.get("role") == "tool" else m.get("role")
+        content = answer_text(m) if role == "assistant" else str(m.get("content") or "")
+        if content:
+            lines.append(f"[{role}] {clip(content)}")
+        for call in m.get("tool_calls") or []:
+            function = call.get("function") or {}
+            lines.append(f"[tool call] {function.get('name', '?')} {clip(str(function.get('arguments') or ''))}")
+    return "\n\n".join(lines)
+
+
+def tool_call_note(messages: list[dict[str, Any]]) -> str:
+    """The fallback summary when the summary call fails: the tool calls made, by name and path or pattern."""
+    calls = []
+    for m in messages:
+        for call in m.get("tool_calls") or []:
+            function = call.get("function") or {}
+            args = _parsed_arguments(str(function.get("arguments") or "{}"))
+            target = next((str(args[k]) for k in ("path", "pattern") if isinstance(args, dict) and args.get(k)), "")
+            calls.append(f"- {function.get('name', '?')} {target}".rstrip())
+    return "(No summary could be written.) Tool calls made in the compacted steps:\n" + ("\n".join(calls) or "- none")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
