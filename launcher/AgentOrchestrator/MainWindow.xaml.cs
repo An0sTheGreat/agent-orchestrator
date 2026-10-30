@@ -63,7 +63,7 @@ public partial class MainWindow : Window
         Loaded += (_, _) => FitDetailsColumn();
         _workflowRoot = LauncherLogic.FindWorkflowRoot();
 
-        DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
+        InitWorkerRail();
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
         _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" ? _settings.Theme : "ParchmentDark";
@@ -906,6 +906,10 @@ public partial class MainWindow : Window
         }
 
         await Settle();
+        if (!WorkerRail.IsVisible || DetailsPanel.IsVisible) // collapsed to the rail by default; the checks below use the full column
+            return Fail();
+        SetWorkerRail(false);
+        await Settle();
         Snap("1-idle");
         SetSidebar(true);
         await Settle();
@@ -1361,7 +1365,7 @@ public partial class MainWindow : Window
                 return Fail();
             ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
             await Settle();
-            if (!SingleShown())
+            if (!SingleShown() || !await WorkerRailSmoke(Snap) || !SingleShown())
                 return Fail();
             ShowView();
             await Settle();
@@ -3259,7 +3263,7 @@ public partial class MainWindow : Window
 
     private void Handle_Down(object sender, MouseButtonEventArgs e)
     {
-        if (((FrameworkElement)sender).DataContext is not RoleCard card)
+        if (((FrameworkElement)sender).DataContext is not RoleCard card || !DetailsPanel.IsVisible) // the rail's hover card does not reorder
             return;
         if (LauncherLogic.IsInsideButton(e.OriginalSource as DependencyObject))
             return; // a button inside the card is a click, not a drag
