@@ -190,6 +190,7 @@ public partial class MainWindow : Window
             EndStream(false);
             _process?.Dispose();
             _process = null;
+            _callLive.Clear();
             foreach (var card in _cards)
             {
                 card.ClearLive();
@@ -371,6 +372,7 @@ public partial class MainWindow : Window
                 else
                     AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
                 CardFor(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
+                CountLive(k.Role, chunks, _chatBusy ? _reply?.Block : _stream);
             }
             chunks = 0;
             pending.Clear();
@@ -456,6 +458,7 @@ public partial class MainWindow : Window
             case "usage":
                 Activate(role, "Working");
                 card?.AddUsage((long)Num(ev, "prompt"), (long)Num(ev, "completion"), Num(ev, "tps"));
+                _callLive.Remove(role);
                 foreach (var ended in _runClosed.Where(b => b.Role == role).ToList()) // the call that just ended: its thinking and response
                 {
                     _runClosed.Remove(ended);
@@ -573,6 +576,7 @@ public partial class MainWindow : Window
         public int Index;
         public Expander? Expander;
         public TextBlock? Preview, Label;
+        public TextBlock? Live; // the call's running stats under the block until its usage event
         public TextBox Body = null!, Result = null!;
         public RichTextBox? View; // Chat and Code: Body rendered as Markdown (Body itself is hidden)
         public TextBlock ResultLabel = null!;
@@ -629,6 +633,8 @@ public partial class MainWindow : Window
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         AddBlock(block.Expander, kind == "tool" ? "\n[tool call]\n" : kind == "text" ? "\n[response]\n" : "\n[thinking]\n");
+        if (kind != "tool")
+            OutputPanel.Children.Add(block.Live = NewLiveLine());
         SetPulse(block, true);
         return block;
     }
@@ -660,6 +666,7 @@ public partial class MainWindow : Window
         if (_stream is not { } block)
             return;
         _stream = null;
+        DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Kind != "tool")
             _runClosed.Add(block);
         SetPulse(block, false);
@@ -692,6 +699,38 @@ public partial class MainWindow : Window
         panel.Children.Add(line);
         if (block.Preview is not null && tps > 0)
             block.Preview.Text += $"  ·  {tps:0.#} tok/s";
+    }
+
+    // While a call streams, a muted line under its open block: the call's delta chunks so far (about one token each) and
+    // their rate since its first delta, refreshed at most 4×/s. Its usage event swaps it for the exact StatsLine.
+    private sealed class CallLive { public double StartMs, ShownMs; public long Chunks; }
+    private readonly Dictionary<string, CallLive> _callLive = new();
+
+    private static TextBlock NewLiveLine()
+    {
+        var line = new TextBlock { FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "stats" };
+        line.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        return line;
+    }
+
+    private void CountLive(string role, int chunks, StreamBlock? block)
+    {
+        var now = _clockMs();
+        if (!_callLive.TryGetValue(role, out var call))
+            _callLive[role] = call = new CallLive { StartMs = now };
+        call.Chunks += chunks;
+        if (block?.Live is not { } line || block.Role != role || (line.Text.Length > 0 && now - call.ShownMs < 250))
+            return;
+        call.ShownMs = now;
+        var seconds = (now - call.StartMs) / 1000;
+        line.Text = LauncherLogic.LiveLine(ChatName(CardFor(role), role), seconds > 0 ? call.Chunks / seconds : 0, call.Chunks);
+    }
+
+    private static void DropLive(StreamBlock block)
+    {
+        if (block.Live?.Parent is Panel panel)
+            panel.Children.Remove(block.Live);
+        block.Live = null;
     }
 
     private void CompleteTool(StreamBlock block, string name, string args, string result)
@@ -2159,6 +2198,55 @@ public partial class MainWindow : Window
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chat.Tokens != 0 || _store.Get(savedChat.Id)?.Tokens != taskBefore + 6912 + 660)
                     return Fail();
+
+                // Live stats, on a stepped clock: thinking deltas open a THINKING section and the answer streams outside it; while
+                // a call streams, a muted line under its open block counts its chunks (tokens) and their rate, moving on with the
+                // stream; the call's usage event brings the exact stats line (in the section, and in the footer for the answer).
+                var liveClock = _clockMs;
+                var liveMs = 1000.0;
+                _clockMs = () => liveMs;
+                void FeedLive(IEnumerable<string> lines)
+                {
+                    foreach (var line in lines)
+                        _lines.Enqueue(line);
+                    DrainLines();
+                }
+                StartChatTurn("Live stats", false);
+                var liveName = StatsName("implementer");
+                FeedLive(new[] { Ev("""{"e":"chat_stage","role":"implementer","stage":"answer","title":"Implementer"}""") }
+                    .Concat(Enumerable.Repeat(Delta("implementer", "thinking", "mull "), 10)));
+                var liveReply = _reply!;
+                var thinkLive = liveReply.Block?.Live;
+                var firstCount = thinkLive?.Text;
+                liveMs += 500;
+                FeedLive(Enumerable.Repeat(Delta("implementer", "thinking", "mull "), 20));
+                if (thinkLive is null || firstCount != LauncherLogic.LiveLine(liveName, 0, 10) || thinkLive.Text != LauncherLogic.LiveLine(liveName, 60, 30))
+                    return Fail();
+                liveMs += 100; // within 250 ms of the last refresh: the line waits
+                FeedLive(Enumerable.Repeat(Delta("implementer", "thinking", "mull "), 5));
+                if (thinkLive.Text != LauncherLogic.LiveLine(liveName, 60, 30))
+                    return Fail();
+                FeedLive(new[] { Ev("""{"e":"done","role":"implementer","final":false}""") }.Concat(Enumerable.Repeat(Delta("implementer", "text", "Answer "), 5)));
+                var answerLive = liveReply.Block?.Live;
+                var liveSection = liveReply.Content.Children.OfType<Expander>().SingleOrDefault();
+                if (answerLive is null || answerLive.Text != LauncherLogic.LiveLine(liveName, 40 / 0.6, 40) || liveSection is null ||
+                    ((TextBlock)((StackPanel)liveSection.Header).Children[0]).Text != "THINKING" ||
+                    ((TextBox)((StackPanel)liveSection.Content).Children[0]).Text != string.Concat(Enumerable.Repeat("mull ", 35)) ||
+                    liveReply.AnswerText.ToString() != string.Concat(Enumerable.Repeat("Answer ", 5)) || liveReply.Content.Children.Contains(thinkLive))
+                    return Fail();
+                _clockMs = liveClock;
+                await Settle();
+                Snap("35-live-stats");
+                FeedLive(new[] { Ev("""{"e":"done","role":"implementer","final":true}"""),
+                    Ev("""{"e":"usage","role":"implementer","prompt":900,"completion":40,"tps":38.5}"""),
+                    Ev("""{"e":"chat_reply","role":"implementer","text":"Answer"}""") });
+                var liveExact = LauncherLogic.StatsLine(liveName, 38.5, 40, 900);
+                if (liveReply.Content.Children.Contains(thinkLive) || liveReply.Content.Children.Contains(answerLive) || StatsIn(liveSection) != liveExact)
+                    return Fail();
+                FinishChatTurn(-1, true, null); // stopped: shows the footer without saving the chat
+                if (!liveReply.Stats.Text.StartsWith(liveExact + " · "))
+                    return Fail();
+                NewChat_Click(ChatSend, new RoutedEventArgs());
                 OpenChatConversation(savedChat.Id);
                 ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
                 if (_chat.Tokens != taskBefore + 6912 + 660 || _chatConv != savedChat)
