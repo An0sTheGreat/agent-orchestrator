@@ -162,6 +162,7 @@ internal sealed class AppSettings
     public string Theme { get; set; } = "ParchmentDark";
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
+    public bool DetailsCollapsed { get; set; } = true; // the worker details column shows as the dot rail
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
     public bool Compact { get; set; }
