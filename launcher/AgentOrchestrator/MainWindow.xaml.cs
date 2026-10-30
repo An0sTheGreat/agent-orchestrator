@@ -1730,12 +1730,20 @@ public partial class MainWindow : Window
             if (!arrowHidden || CodeSend.Visibility != Visibility.Visible || CodeStop.Visibility != Visibility.Collapsed)
                 return Fail();
             CodeInput.Text = "";
+            var hadCodeConv = _codeConv is not null;
+            if (!EnsureCodeConversation(SelectedProjectPath())) // SendCode opens it before a turn
+                return Fail();
             StartTurn(_code, "Fix it", false, "implementer");
             if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible ||
                 CodeSend.Visibility == Visibility.Visible || ChatSend.Visibility == Visibility.Visible)
                 return Fail();
             _lines.Enqueue(Delta("implementer", "text", "Looking"));
             _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
+            _lines.Enqueue(Delta("implementer", "text", "Now fixing"));
+            DrainLines();
+            // Saved before the reply: a crash now keeps the message, with a note in place of the reply.
+            if (_codeConv?.Messages is not [{ Role: "user", Content: "Fix it" }, { Role: "assistant", Content: InterruptedReply }])
+                return Fail();
             _lines.Enqueue(Ev("""{"e":"code_reply","role":"implementer","text":"Fixed"}"""));
             DrainLines();
             var codeReply = _reply!;
@@ -1746,6 +1754,19 @@ public partial class MainWindow : Window
             if (codeReply.Final != "Fixed" || codeReply.Answer?.Text != "Fixed" || _code.History.Count != 2 || ChatPanel.Children.Count != chatCount ||
                 toolRow is null || ((TextBlock)((StackPanel)toolRow.Header).Children[1]).Text != "src/a.js" || _chatBusy)
                 return Fail();
+            // In the order it happened: the text before the tool call stays above it, the reply after it below.
+            var parts = codeReply.Content.Children.Cast<UIElement>().ToList();
+            var early = parts.OfType<TextBox>().FirstOrDefault(t => t.Text == "Looking");
+            if (early is null || parts.IndexOf(early) > parts.IndexOf(toolRow) || parts.IndexOf(toolRow) > parts.IndexOf(codeReply.Answer!) ||
+                _codeConv?.Messages is not [_, { Content: "Fixed" }])
+                return Fail();
+            if (!hadCodeConv && _codeConv is { } madeConv) // leave the store as the checks below expect it
+            {
+                StoreDo(() => _store.Delete(madeConv.Id));
+                _codeConv = null;
+                _settings.LastConversation = "";
+                RefreshSidebarList();
+            }
             // Code Multi: the chip names the chain and a Code turn asks for mode "multi" (write_project stays single); + switches to Single.
             var codeMode = (_settings.CodeMode, _settings.CodeWorker);
             ChatMode_Click(CodeMultiToggle, new RoutedEventArgs());

@@ -571,7 +571,10 @@ public partial class MainWindow
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
         _pendingUserTime = Now();
         if (text is not null)
+        {
             AddUserBubble(text, _pendingUserTime);
+            SavePendingTurn(c, text);
+        }
         _reply = AddReply(multi, role);
         _chatError = null;
         _chatStopRequested = false;
@@ -740,7 +743,49 @@ public partial class MainWindow
             CodeTurnFinished();
         else if (completed)
             SaveChatConversation();
+        else if (_pendingUser is not null) // drop the pending exchange SavePendingTurn wrote
+        {
+            if (c.IsCode)
+                SaveCodeConversation();
+            else if (c.History.Count > 0)
+                SaveChatConversation();
+            else if (_chatConv is { } empty) // the chat's first message failed: no chat to keep
+            {
+                StoreDo(() => _store.Delete(empty.Id));
+                _chatConv = null;
+                RefreshSidebarList();
+            }
+        }
         return stopped;
+    }
+
+    internal const string InterruptedReply = "(No reply: the app closed before this reply finished.)";
+
+    // Saved before the reply streams, so a crash or a killed app keeps the message, with a note in place of the reply. The
+    // turn's end saves over it: the real exchange, or the history without it when the turn failed.
+    private void SavePendingTurn(Conversation c, string text)
+    {
+        var pending = new List<LauncherLogic.ChatMessage>(c.History)
+            { new("user", text, _pendingUserTime), new("assistant", InterruptedReply, _pendingUserTime) };
+        if (c.IsCode)
+        {
+            if (_codeConv is { } code)
+            {
+                code.Messages = pending;
+                StoreDo(() => _store.Save(code));
+            }
+        }
+        else
+        {
+            if (_chatConv is null)
+                StoreDo(() => _chatConv = _store.Create("", "chat"));
+            if (_chatConv is { } chat)
+            {
+                (chat.Mode, chat.Worker, chat.Messages) = (_settings.ChatMode, _settings.ChatWorker, pending);
+                StoreDo(() => _store.Save(chat));
+            }
+        }
+        RefreshSidebarList();
     }
 
     private void SetChatBusy(bool busy)
@@ -823,6 +868,8 @@ public partial class MainWindow
                     line.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
                     stepReply.Content.Children.Add(line);
                 }
+                if (_reply is { } toolReply)
+                    DetachAnswer(toolReply);
                 Activate(role, "Using tools");
                 SetChatStatus($"{name} is using {Str(ev, "name")}…");
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
@@ -900,6 +947,7 @@ public partial class MainWindow
             r.Content.Children.Add(block.Live = NewLiveLine());
             return block;
         }
+        DetachAnswer(r);
         block.Body = BodyText("", mono: false, muted: kind == "thinking", conv: _turn);
         block.View = MarkdownView(block.Body);
         var content = new StackPanel();
@@ -916,6 +964,16 @@ public partial class MainWindow
         FadeIn(block.Expander);
         SetPulse(block, true);
         return block;
+    }
+
+    // Answer text that streamed before a tool call or a new section stays where it is; text after them starts a new answer
+    // below, so the reply reads in the order it happened. The final reply replaces only that last answer.
+    private static void DetachAnswer(ChatReply r)
+    {
+        if (r.Answer is null || r.Final is not null)
+            return;
+        (r.Answer, r.Rendered) = (null, null);
+        r.AnswerText.Clear();
     }
 
     private TextBox EnsureAnswer(ChatReply r)

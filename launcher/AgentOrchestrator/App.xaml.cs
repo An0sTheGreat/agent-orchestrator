@@ -46,7 +46,30 @@ public partial class App : Application
         }
 
         base.OnStartup(e);
+        // A UI exception is logged and shown, and the app keeps running; one that ends the process is logged first.
+        DispatcherUnhandledException += (_, args) =>
+        {
+            var path = LogCrash(args.Exception);
+            args.Handled = true;
+            MessageBox.Show($"Something went wrong: {args.Exception.Message}\n\nDetails were saved to {path}", "Agent Orchestrator",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        };
+        AppDomain.CurrentDomain.UnhandledException += (_, args) => LogCrash(args.ExceptionObject as Exception);
+        TaskScheduler.UnobservedTaskException += (_, args) => { LogCrash(args.Exception); args.SetObserved(); };
         MainWindow = new MainWindow();
         MainWindow.Show();
+    }
+
+    // Appends to crash.log in the data folder; returns its path. Never throws: it runs while the app is failing.
+    internal static string LogCrash(Exception? exception)
+    {
+        var path = System.IO.Path.Combine(AppSettings.DataRoot, "crash.log");
+        try
+        {
+            System.IO.Directory.CreateDirectory(AppSettings.DataRoot);
+            System.IO.File.AppendAllText(path, $"==== {DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}\n{exception}\n\n");
+        }
+        catch (Exception) { }
+        return path;
     }
 }
