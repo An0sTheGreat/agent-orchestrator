@@ -114,7 +114,7 @@ public partial class MainWindow
         if (_chat is null)
             return; // before InitChat
         var label = Efforts.FirstOrDefault(e => e.Value == _settings.ChatEffort).Label?.Split(' ')[0] ?? "Default";
-        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatMulti, ChatTarget())), (CodeEffortChip, Thinks(false, CodeTarget())) })
+        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatMulti, ChatTarget())), (CodeEffortChip, Thinks(CodeMulti, CodeTarget())) })
         {
             chip.Content = $"Effort: {label}  ▾";
             chip.IsEnabled = thinks;

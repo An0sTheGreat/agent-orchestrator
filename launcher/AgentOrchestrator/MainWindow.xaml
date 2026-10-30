@@ -1052,6 +1052,15 @@
                     </Border>
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
+                    <Border DockPanel.Dock="Right" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}"
+                            BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
+                        <StackPanel Orientation="Horizontal">
+                            <ToggleButton x:Name="CodeSingleToggle" Style="{StaticResource SegToggle}" Content="Single" Tag="single" Click="ChatMode_Click"
+                                          ToolTip="Message one worker" AutomationProperties.Name="Single worker mode" />
+                            <ToggleButton x:Name="CodeMultiToggle" Style="{StaticResource SegToggle}" Content="Multi" Tag="multi" Click="ChatMode_Click"
+                                          ToolTip="Planner → Implementer → Reviewer, answering with the reviewed result" AutomationProperties.Name="Multi-worker mode" />
+                        </StackPanel>
+                    </Border>
                 </DockPanel>
                 <Grid x:Name="CodeChat" Grid.Row="1">
                     <Grid.RowDefinitions>

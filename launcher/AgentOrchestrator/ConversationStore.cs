@@ -16,7 +16,7 @@ internal sealed class ConversationStore
         public string? Title { get; set; } // null: derived by TitleOf; set by Rename or a model-written title (first turn)
         public string Kind { get; set; } = "code"; // "code" or "chat"
         public string Folder { get; set; } = ""; // "" for a chat
-        public string Mode { get; set; } = "single"; // a chat's Single / Multi
+        public string Mode { get; set; } = "single"; // Single / Multi (Chat and Code)
         public List<LauncherLogic.CodeFolder> Folders { get; set; } = new();
         public string Worker { get; set; } = "implementer";
         public List<LauncherLogic.ChatMessage> Messages { get; set; } = new();

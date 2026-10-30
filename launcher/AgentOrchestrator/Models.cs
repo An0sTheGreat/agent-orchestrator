@@ -172,6 +172,7 @@ internal sealed class AppSettings
     public string ChatMode { get; set; } = "single";
     public string ChatWorker { get; set; } = "implementer";
     public string CodeWorker { get; set; } = "implementer"; // the Code view's target worker id
+    public string CodeMode { get; set; } = "multi"; // the Code view's "single" or "multi", like ChatMode
     // Thinking effort sent with Chat and Code messages: "" (the model's default), off, low, medium, high or max.
     public string ChatEffort { get; set; } = "";
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.

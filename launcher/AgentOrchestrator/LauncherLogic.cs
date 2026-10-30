@@ -273,10 +273,11 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null, bool title = false, string effort = "") =>
+        Extras? extras = null, bool title = false, string effort = "", string mode = "single") =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
+            mode = mode == "multi" ? "multi" : "single",
             worker,
             messages = messages.Select(m => new { role = m.Role, content = m.Content }),
             folders = extraFolders.Select(f => new { path = f.Path, access = f.Access == "write" ? "write" : "read" })
@@ -1564,6 +1565,9 @@ internal static class LauncherLogic
         if ((string)single["effort"]! != "" || (string)JsonNode.Parse(BuildChatRequest("multi", "x", chat, effort: "high"))!["effort"]! != "high" ||
             (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], effort: "off"))!["effort"]! != "off")
             throw new InvalidOperationException("The effort field failed.");
+        if ((string)code["mode"]! != "single" || (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "multi"))!["mode"]! != "multi" ||
+            (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "bogus"))!["mode"]! != "single")
+            throw new InvalidOperationException("The Code mode field failed.");
         foreach (var (name, budget, thinks) in new (string, int?, bool)[]
         {
             ("unsloth/Qwen3.5-4B-GGUF", null, true), ("Qwen3-8B", null, true), ("QwQ-32B", null, true), ("deepseek-ai/DeepSeek-R1-0528", null, true),

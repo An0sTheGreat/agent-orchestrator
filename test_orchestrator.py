@@ -2551,6 +2551,49 @@ class CodeTests(unittest.TestCase):
         self.assertEqual([d["result"] for e, d in events if e == "tool"], ["OK: PROJECT.md written (5 lines)"])
         self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_project", "code_reply"])
 
+    def test_multi_runs_planner_implementer_reviewer_with_their_tools(self):
+        (self.root / "app.py").write_text("x = 1\n", encoding="utf-8")
+        replies = {"planner": [tool_call("write_file", path="app.py", content="planner"), "PLAN-A"],
+                   "implementer": [tool_call("write_file", path="app.py", content="x = 2"), "DRAFT-B"],
+                   "reviewer": [tool_call("replace_text", path="app.py", old="x = 2", new="x = 3"), "FINAL-C"]}
+        code, log, events, _ = self.code({"action": "chat", "mode": "multi", "worker": "ignored", "messages": self.MSGS, "tools": True},
+                                         replies)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 3\n")
+        self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["reviewer"] * 2)
+        names = lambda entry: [t["function"]["name"] for t in entry["tools"]]
+        extras = ["calculator", "current_time", "fetch_page"]
+        self.assertEqual(names(log[0]), ["list_files", "read_file", "search_files"] + extras)
+        self.assertEqual(names(log[2]), [t["function"]["name"] for t in orchestrator.CODE_TOOLS] + extras)
+        self.assertEqual(names(log[4]), ["list_files", "read_file", "search_files", "write_file", "replace_text"] + extras)
+        self.assertEqual([d["result"].split(":")[0] for e, d in events if e == "tool"], ["ERROR", "OK", "OK"])
+        self.assertTrue(all("FOLDERS" in l["system"] and "UTILITIES" in l["system"] for l in log))
+        self.assertIn("Planner", log[0]["system"])
+        self.assertEqual(log[0]["messages"], self.MSGS)
+        self.assertEqual(log[2]["messages"][0]["content"], "add a readme\n\nPLAN (from the Planner)\nPLAN-A")
+        self.assertIn("Reviewer", log[4]["system"])
+        self.assertTrue("PLAN-A" in log[4]["messages"][0]["content"] and "DRAFT-B" in log[4]["messages"][0]["content"])
+        self.assertEqual([(d["stage"], d["role"]) for e, d in events if e == "chat_stage"],
+                         [("plan", "planner"), ("implement", "implementer"), ("review", "reviewer")])
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
+        # an empty Reviewer answer falls back to the Implementer's reply
+        out = io.StringIO()
+        out.reconfigure = lambda **kw: None
+        with patch.object(orchestrator.sys, "stdout", out):
+            _, _, events, _ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
+                                        {"planner": ["P"], "implementer": ["DRAFT-B"], "reviewer": ["<think>only thoughts"]})
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "DRAFT-B"}])
+
+    def test_single_is_the_default_and_multi_needs_the_builtins(self):
+        code, log, events, _ = self.code({"action": "chat", "worker": "reviewer", "messages": self.MSGS}, {"reviewer": ["done"]})
+        self.assertEqual((code, [l["role"] for l in log], [e for e, _ in events if e == "chat_stage"]), (0, ["reviewer"], []))
+        del self.config["roles"]["reviewer"]
+        req = self.cfg / "r.json"
+        for mode, message in (("multi", "Multi Code needs the built-in workers; missing in config: reviewer"), ("both", "Unknown code mode")):
+            req.write_text(json.dumps({"action": "chat", "mode": mode, "messages": self.MSGS, "folders": self.folders}), encoding="utf-8")
+            with self.subTest(mode), self.assertRaisesRegex(orchestrator.WorkflowError, message):
+                orchestrator.run_code(self.config, req)
+
     def test_chat_and_code_are_mutually_exclusive(self):
         err = io.StringIO()
         err.reconfigure = lambda **kw: None
