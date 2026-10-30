@@ -788,10 +788,54 @@ public partial class MainWindow
         return view;
     }
 
-    private static void Render(RichTextBox view)
+    private void Render(RichTextBox view)
     {
         var raw = (TextBox)view.Tag;
         view.Document = Markdown.ToDocument(raw.Text, raw.FontSize, muted: raw.FontStyle == FontStyles.Italic); // BodyText's muted text is italic
+        foreach (var card in Markdown.CodeBlocks(view.Document.Blocks))
+        {
+            // on screen only while loaded: a re-render's new document unloads the old cards
+            card.Loaded += (_, _) => { _codeBlocks.Add(card); PinCodeButtons(); };
+            card.Unloaded += (_, _) => _codeBlocks.Remove(card);
+            CopyButtonOf(card).Click += (sender, _) => CopyCode((Button)sender);
+        }
+    }
+
+    // ---- code blocks: a copy button that stays at the top right of the block's visible part
+
+    private readonly HashSet<Border> _codeBlocks = new(); // rendered code blocks currently loaded
+    private Action<string>? _copyCodeHook; // --ui-smoke: receives the copied code instead of the clipboard
+
+    private static Button CopyButtonOf(Border card) => (Button)((Grid)card.Child).Children[1];
+
+    private void CopyCode(Button copy)
+    {
+        var code = (string)copy.Tag;
+        if (_copyCodeHook is { } hook)
+            hook(code);
+        else
+            CopyToClipboard(code, "Code copied", "Code block is empty");
+        var glyph = (TextBlock)copy.Content;
+        glyph.Text = Markdown.CopiedGlyph; // a check while the toast shows
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+        timer.Tick += (_, _) => { timer.Stop(); glyph.Text = Markdown.CopyGlyph; };
+        timer.Start();
+    }
+
+    // While a block's top is scrolled above its conversation's viewport the button slides down with the viewport's top,
+    // until it meets the block's bottom padding; then it leaves with the block.
+    private void PinCodeButtons()
+    {
+        foreach (var card in _codeBlocks)
+        {
+            var scroll = _chat.Scroll.IsAncestorOf(card) ? _chat.Scroll : _code.Scroll.IsAncestorOf(card) ? _code.Scroll : null;
+            if (scroll is null || !card.IsVisible)
+                continue;
+            var copy = CopyButtonOf(card);
+            var top = card.TransformToAncestor(scroll).Transform(new Point()).Y;
+            var room = card.ActualHeight - card.Padding.Top - card.Padding.Bottom - copy.ActualHeight;
+            ((TranslateTransform)copy.RenderTransform).Y = Math.Clamp(-top, 0, Math.Max(0, room));
+        }
     }
 
     private void RenderSoon(RichTextBox view)
@@ -854,6 +898,7 @@ public partial class MainWindow
     private void ChatScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         var c = ConvOf(sender);
+        PinCodeButtons();
         if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
         {
             c.Follow = c.Scroll.VerticalOffset >= c.Scroll.ScrollableHeight - 8;

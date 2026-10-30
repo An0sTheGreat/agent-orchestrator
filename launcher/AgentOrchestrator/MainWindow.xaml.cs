@@ -1788,7 +1788,9 @@ public partial class MainWindow : Window
                     blocks.FirstOrDefault() is not System.Windows.Documents.Paragraph { FontWeight: var headingWeight } || headingWeight != FontWeights.SemiBold || lists.Count != 2 || lists[0].MarkerStyle != TextMarkerStyle.Disc ||
                     lists[1].MarkerStyle != TextMarkerStyle.Decimal || lists[0].ListItems.First().Blocks.OfType<System.Windows.Documents.List>().Count() != 1 ||
                     blocks.OfType<System.Windows.Documents.Table>().Single().RowGroups[0].Rows.Count != 2 || blocks.OfType<System.Windows.Documents.Section>().Count() != 1 ||
-                    !mdText.Contains("code **raw**") || mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
+                    Markdown.CodeBlocks(blocks).SingleOrDefault() is not { Child: Grid { Children: [TextBlock codeText, Button { Tag: "code **raw**" }] } } ||
+                    string.Concat(codeText.Inlines.OfType<System.Windows.Documents.Run>().Select(run => run.Text)) != "code **raw**" ||
+                    mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
                     blocks.OfType<System.Windows.Documents.Paragraph>().SelectMany(p => p.Inlines).OfType<System.Windows.Documents.Hyperlink>().Single().NavigateUri.AbsoluteUri != "https://example.org/p")
                     return Fail();
                 // Code is coloured (keywords, calls, strings, numbers, comments; # is a comment only where the language uses it)
@@ -1800,6 +1802,46 @@ public partial class MainWindow : Window
                 if (string.Concat(pieces.Select(x => x.Text)) != snippet || pieces.Count(x => x.Color is not null) != 6 ||
                     pieces.Any(x => x.Text.StartsWith("#include") && x.Color is not null) || Markdown.Highlight("# note", "python").Single().Color is null ||
                     inlineCode.ReadLocalValue(System.Windows.Documents.TextElement.ForegroundProperty) != DependencyProperty.UnsetValue)
+                    return Fail();
+                // A code block is a rounded card with a copy button that copies exactly its code and shows a check; the
+                // button stays at the top of the block's visible part while the conversation scrolls, capped at its end.
+                var longCode = string.Join("\n", Enumerable.Range(1, 80).Select(n => $"    total += Step({n}); // line {n}"));
+                SetChatFinal("Before\n\n```python\n" + longCode + "\n```\n\n" + string.Join("\n\n", Enumerable.Range(1, 40).Select(n => $"After {n}")));
+                await Settle();
+                var codeCard = Markdown.CodeBlocks(markdownReply.Rendered!.Document.Blocks).Single();
+                var copyCode = (Button)((Grid)codeCard.Child).Children[1];
+                string? copied = null;
+                _copyCodeHook = code => copied = code;
+                copyCode.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                _copyCodeHook = null;
+                if (codeCard.Parent is not System.Windows.Documents.BlockUIContainer || codeCard.CornerRadius.TopLeft <= 0 || copied != longCode ||
+                    ((TextBlock)copyCode.Content).Text != Markdown.CopiedGlyph || !_codeBlocks.Contains(codeCard))
+                    return Fail();
+                double PinOf(Border card) => ((TranslateTransform)((Grid)card.Child).Children[1].RenderTransform).Y;
+                double CardTop(Border card) => card.TransformToAncestor(ChatScroll).Transform(new Point()).Y;
+                var pinRoom = codeCard.ActualHeight - codeCard.Padding.Top - codeCard.Padding.Bottom - copyCode.ActualHeight;
+                if (PinOf(codeCard) != 0 && CardTop(codeCard) >= 0)
+                    return Fail();
+                ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + CardTop(codeCard) + 300); // the block's top 300 px above the viewport
+                await Settle();
+                if (Math.Abs(PinOf(codeCard) - 300) > 2 || PinOf(codeCard) > pinRoom)
+                    return Fail();
+                Snap("29-code-block");
+                Render(markdownReply.Rendered); // a re-render (as while streaming) keeps the button pinned, and drops the old card
+                await Settle();
+                var rerendered = Markdown.CodeBlocks(markdownReply.Rendered.Document.Blocks).Single();
+                if (Math.Abs(PinOf(rerendered) - 300) > 2 || _codeBlocks.Contains(codeCard) || !_codeBlocks.Contains(rerendered))
+                    return Fail();
+                var pinTheme = _settings.Theme;
+                _settings.Theme = "Parchment";
+                ApplyTheme();
+                await Settle();
+                Snap("29-code-block-parchment");
+                _settings.Theme = pinTheme;
+                ApplyTheme();
+                ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + CardTop(rerendered) + rerendered.ActualHeight - 5); // past the block's end
+                await Settle();
+                if (Math.Abs(PinOf(rerendered) - pinRoom) > 0.5)
                     return Fail();
                 SetChatFinal("Saved chat answer"); // the saved conversation below expects the original reply
                 // The first turn's model-written title names the new chat; a later turn's title never replaces it.

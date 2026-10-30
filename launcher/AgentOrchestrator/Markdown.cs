@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Media;
 
@@ -161,19 +162,43 @@ internal static class Markdown
 
     private static Paragraph Para() => new() { Margin = new Thickness(0, 0, 0, 8), LineHeight = double.NaN };
 
+    // A FlowDocument paragraph cannot round its corners, so a code block is a rounded card: the coloured code (wrapped, clear
+    // of the button's column) and a copy button at the top right, whose Tag is the raw code. MainWindow wires the button:
+    // copying, and keeping it in view while the block scrolls (its TranslateTransform).
     private static Block CodeBlock(string code, string language)
     {
-        var p = new Paragraph { FontFamily = new FontFamily("Consolas"), FontSize = 12.5, Padding = new Thickness(10, 8, 10, 8), Margin = new Thickness(0, 2, 0, 10) };
-        p.SetResourceReference(Block.BackgroundProperty, "Hover");
-        foreach (var (text, color) in Highlight(code, language))
+        var text = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
+        foreach (var (piece, color) in Highlight(code, language))
         {
-            var run = new Run(text);
+            var run = new Run(piece);
             if (color is not null)
                 run.SetResourceReference(TextElement.ForegroundProperty, color);
-            p.Inlines.Add(run);
+            text.Inlines.Add(run);
         }
-        return p;
+        var glyph = new TextBlock { Text = CopyGlyph, FontSize = 13 };
+        glyph.SetResourceReference(FrameworkElement.StyleProperty, "RailGlyph");
+        var copy = new Button
+        {
+            Content = glyph, Width = 26, Height = 26, Padding = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top, ToolTip = "Copy code", Tag = code, RenderTransform = new TranslateTransform(),
+            Cursor = System.Windows.Input.Cursors.Hand,
+        };
+        copy.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
+        var card = new Border { Child = new Grid { Children = { text, copy } }, Padding = new Thickness(10, 6, 6, 6) };
+        card.SetResourceReference(Border.BackgroundProperty, "Hover");
+        card.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
+        return new BlockUIContainer(card) { Margin = new Thickness(0, 2, 0, 10) };
     }
+
+    public const string CopyGlyph = "", CopiedGlyph = "";
+
+    // The code blocks' cards (Border > Grid of code text and copy button), quoted ones included.
+    public static IEnumerable<Border> CodeBlocks(IEnumerable<Block> blocks) => blocks.SelectMany(block => block switch
+    {
+        BlockUIContainer { Child: Border card } => new[] { card },
+        Section section => CodeBlocks(section.Blocks),
+        _ => Enumerable.Empty<Border>(),
+    });
 
     // ---- syntax colours for code blocks: one tokenizer for the common languages (VS Code dark colours, readable on every theme)
 
