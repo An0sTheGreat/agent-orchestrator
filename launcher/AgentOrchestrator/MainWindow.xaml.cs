@@ -1428,6 +1428,88 @@ public partial class MainWindow : Window
                 return Fail();
             NewChat_Click(ChatSend, new RoutedEventArgs());
 
+            // Smooth streaming, on a stepped clock: each frame reveals part of what arrived (the answer and the thinking), what
+            // shows is always the render of a prefix of it (never half a surrogate pair), a finished block keeps its object while
+            // only the tail re-renders, the result matches a full render, code blocks register and unregister as the tail
+            // replaces them and still pin, and a stopped turn shows everything at once.
+            ShowView(chat: true);
+            var realClock = _clockMs;
+            var fakeMs = 0.0;
+            _clockMs = () => fakeMs;
+            try
+            {
+                StartChatTurn("Stream smoothly", false);
+                AppendChatDelta("reviewer", "thinking", string.Concat(Enumerable.Repeat("Weighing the options. ", 40)));
+                AppendChatDelta("reviewer", "text", "First paragraph stays put.\n\n" + string.Join("\n", Enumerable.Repeat("Second paragraph grows word by word.", 30)) + "\n\n");
+                var answerView = _reply!.Rendered!;
+                var (answer, thinking) = ((MarkdownState)answerView.Tag, (MarkdownState)_markdownDirty.Single(v => v != answerView).Tag);
+                static string Structure(System.Windows.Documents.FlowDocument doc) => string.Join(",", doc.Blocks.Select(b => b.GetType().Name)) + "|" + Markdown.PlainText(doc);
+                System.Windows.Documents.Block? first = null;
+                var kept = 0; // frames that grew the tail and kept the first paragraph's block
+                bool Frame()
+                {
+                    var before = answer.Shown;
+                    fakeMs += 16;
+                    MarkdownFrame();
+                    var text = answer.Raw.Text;
+                    if (answer.Shown < before || answer.Shown > text.Length || (answer.Shown < text.Length && char.IsLowSurrogate(text[answer.Shown])) ||
+                        Structure(answerView.Document) != Structure(Markdown.ToDocument(text[..answer.Shown], answer.Raw.FontSize)))
+                        return false;
+                    if (first is not null && answerView.Document.Blocks.FirstBlock != first)
+                        return false;
+                    if (first is not null && answer.Shown > before)
+                        kept++;
+                    if (answer.StableBlocks > 0)
+                        first ??= answerView.Document.Blocks.FirstBlock;
+                    return true;
+                }
+                bool CatchUp()
+                {
+                    for (var frames = 0; answer.Shown < answer.Raw.Text.Length; frames++)
+                        if (frames > 500 || !Frame())
+                            return false;
+                    return true;
+                }
+                if (!Frame() || answer.Shown == 0 || answer.Shown >= answer.Raw.Text.Length || thinking.Shown == 0 || thinking.Shown >= thinking.Raw.Text.Length)
+                    return Fail();
+                var shownAfterOne = answer.Shown;
+                if (!Frame() || answer.Shown <= shownAfterOne || !CatchUp() || kept < 3)
+                    return Fail();
+                var code = string.Join("\n", Enumerable.Range(1, 12).Select(n => $"print({n})"));
+                AppendChatDelta("reviewer", "text", "```python\n" + code + "\n");
+                if (!CatchUp())
+                    return Fail();
+                await Settle(); // the open code block (the tail) loads
+                var openCard = Markdown.CodeBlocks(answerView.Document.Blocks).SingleOrDefault();
+                if (openCard is null || !_codeBlocks.Contains(openCard))
+                    return Fail();
+                AppendChatDelta("reviewer", "text", "```\n\n" + string.Join("\n\n", Enumerable.Range(1, 30).Select(n => $"After {n}")) + "\n\n- one\n- two 😀😀😀");
+                if (!CatchUp() || Structure(answerView.Document) != Structure(Markdown.ToDocument(answer.Raw.Text, answer.Raw.FontSize)))
+                    return Fail();
+                await Settle();
+                var streamedCard = Markdown.CodeBlocks(answerView.Document.Blocks).Single();
+                string? streamedCopy = null;
+                _copyCodeHook = c => streamedCopy = c;
+                CopyButtonOf(streamedCard).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                _copyCodeHook = null;
+                if (streamedCard == openCard || _codeBlocks.Contains(openCard) || !_codeBlocks.Contains(streamedCard) || streamedCopy != code)
+                    return Fail();
+                ChatScroll.ScrollToVerticalOffset(ChatScroll.VerticalOffset + streamedCard.TransformToAncestor(ChatScroll).Transform(new Point()).Y + 50);
+                await Settle();
+                if (Math.Abs(((TranslateTransform)CopyButtonOf(streamedCard).RenderTransform).Y - 50) > 2)
+                    return Fail();
+                AppendChatDelta("reviewer", "text", "\n\n" + string.Concat(Enumerable.Repeat("Cut off by Stop. ", 40)));
+                if (!Frame() || answer.Shown >= answer.Raw.Text.Length || !FinishChatTurn(-1, true, null) || answer.Shown != answer.Raw.Text.Length ||
+                    thinking.Shown != thinking.Raw.Text.Length || _markdownDirty.Count != 0 || _framing ||
+                    Structure(answerView.Document) != Structure(Markdown.ToDocument(answer.Raw.Text, answer.Raw.FontSize)))
+                    return Fail();
+            }
+            finally
+            {
+                _clockMs = realClock;
+            }
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+
             // Closing mid-reply: the turn's request file and created temp folder are deleted, a real project is not touched.
             var strayFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
             var strayDir = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");

@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -557,6 +558,7 @@ public partial class MainWindow
     {
         var c = _turn;
         var completed = false;
+        FlushMarkdown(); // a stopped or failed turn shows all it received
         if (_reply is { } reply)
         {
             EndChatBlock();
@@ -781,16 +783,26 @@ public partial class MainWindow
     }
 
     // Streamed text (the answer and the thinking / stage sections) shows as Markdown with coloured code: the TextBox keeps the
-    // raw text, hidden, and a read-only RichTextBox shows it rendered, at most every 200 ms while it streams.
-    private readonly HashSet<RichTextBox> _markdownDirty = new();
-    private DispatcherTimer? _markdownTimer;
+    // raw text, hidden, and a read-only RichTextBox shows it rendered. While it streams, every frame reveals a little more of
+    // it (a typewriter) and re-renders only the tail after its last finished block.
+    private sealed class MarkdownState
+    {
+        public required TextBox Raw;
+        public int Shown; // characters of Raw.Text on screen
+        public int Stable, StableBlocks; // the kept prefix (Markdown.StableLength) and the document blocks rendered from it
+    }
+
+    private readonly HashSet<RichTextBox> _markdownDirty = new(); // views still revealing
+    private bool _framing; // OnMarkdownFrame is subscribed
+    private double _frameAt;
+    private Func<double> _clockMs = () => Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency; // --ui-smoke steps its own
 
     private RichTextBox MarkdownView(TextBox raw)
     {
         var view = new RichTextBox
         {
             IsReadOnly = true, IsDocumentEnabled = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
-            Padding = new Thickness(0), Margin = raw.Margin, FontFamily = FontFamily, Cursor = Cursors.IBeam, Tag = raw,
+            Padding = new Thickness(0), Margin = raw.Margin, FontFamily = FontFamily, Cursor = Cursors.IBeam, Tag = new MarkdownState { Raw = raw },
         };
         view.SetResourceReference(TextBoxBase.SelectionBrushProperty, "AccentLight");
         ForwardWheel(view, _turn);
@@ -799,17 +811,62 @@ public partial class MainWindow
         return view;
     }
 
+    // All of the raw text, rendered from scratch.
     private void Render(RichTextBox view)
     {
-        var raw = (TextBox)view.Tag;
-        view.Document = Markdown.ToDocument(raw.Text, raw.FontSize, muted: raw.FontStyle == FontStyles.Italic); // BodyText's muted text is italic
-        foreach (var card in Markdown.CodeBlocks(view.Document.Blocks))
+        var s = (MarkdownState)view.Tag;
+        var text = s.Raw.Text;
+        view.Document = DocumentOf(s, text);
+        WireCodeBlocks(view.Document.Blocks);
+        (s.Shown, s.Stable, s.StableBlocks) = (text.Length, 0, 0);
+    }
+
+    private static FlowDocument DocumentOf(MarkdownState s, string markdown) =>
+        Markdown.ToDocument(markdown, s.Raw.FontSize, muted: s.Raw.FontStyle == FontStyles.Italic); // BodyText's muted text is italic
+
+    private void WireCodeBlocks(IEnumerable<Block> blocks)
+    {
+        foreach (var card in Markdown.CodeBlocks(blocks))
         {
             // on screen only while loaded: a re-render's new document unloads the old cards
             card.Loaded += (_, _) => { _codeBlocks.Add(card); PinCodeButtons(); };
             card.Unloaded += (_, _) => _codeBlocks.Remove(card);
             CopyButtonOf(card).Click += (sender, _) => CopyCode((Button)sender);
         }
+    }
+
+    // The first `shown` characters: the previous tail's blocks go, newly finished blocks are rendered once and kept, and
+    // the unfinished tail is rendered again.
+    private void RenderShown(RichTextBox view, MarkdownState s, string shown)
+    {
+        var blocks = view.Document.Blocks;
+        while (blocks.Count > s.StableBlocks)
+        {
+            var last = blocks.LastBlock;
+            blocks.Remove(last);
+            foreach (var card in Markdown.CodeBlocks([last]))
+                _codeBlocks.Remove(card);
+        }
+        var stable = Markdown.StableLength(shown, s.Stable);
+        if (stable > s.Stable)
+        {
+            s.StableBlocks += AddBlocks(view, s, shown[s.Stable..stable]);
+            s.Stable = stable;
+        }
+        AddBlocks(view, s, shown[stable..]);
+    }
+
+    private int AddBlocks(RichTextBox view, MarkdownState s, string markdown)
+    {
+        var source = DocumentOf(s, markdown);
+        var moved = source.Blocks.ToList();
+        WireCodeBlocks(moved);
+        foreach (var block in moved)
+        {
+            source.Blocks.Remove(block); // a block belongs to one document at a time
+            view.Document.Blocks.Add(block);
+        }
+        return moved.Count;
     }
 
     // ---- code blocks: a copy button that stays at the top right of the block's visible part
@@ -849,25 +906,67 @@ public partial class MainWindow
         }
     }
 
+    // New text for a view: frames run (on WPF's render loop) until every view shows all of its text.
     private void RenderSoon(RichTextBox view)
     {
         _markdownDirty.Add(view);
-        _markdownTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(200), DispatcherPriority.Background, (_, _) =>
-        {
-            foreach (var dirty in _markdownDirty)
-                Render(dirty);
-            _markdownDirty.Clear();
-            _markdownTimer!.Stop();
-        }, Dispatcher);
-        _markdownTimer.Start();
+        if (_framing)
+            return;
+        _framing = true;
+        _frameAt = _clockMs();
+        CompositionTarget.Rendering += OnMarkdownFrame;
     }
 
-    // The final reply replaces whatever streamed; render it now.
+    private void OnMarkdownFrame(object? sender, EventArgs e) => MarkdownFrame();
+
+    // One frame: each streaming view shows more of what it received, max(1, backlog * dt / 120 ms) characters, so a burst
+    // is caught up within about 120 ms and the text never lags far behind.
+    private void MarkdownFrame()
+    {
+        var now = _clockMs();
+        var dt = now - _frameAt;
+        _frameAt = now;
+        foreach (var view in _markdownDirty.ToList())
+        {
+            var s = (MarkdownState)view.Tag;
+            var text = s.Raw.Text;
+            var backlog = text.Length - s.Shown;
+            if (backlog > 0)
+            {
+                s.Shown += Math.Clamp((int)Math.Ceiling(backlog * dt / 120), 1, backlog);
+                if (s.Shown < text.Length && char.IsHighSurrogate(text[s.Shown - 1]))
+                    s.Shown++; // never half an emoji
+                RenderShown(view, s, text[..s.Shown]);
+            }
+            if (s.Shown >= text.Length)
+                _markdownDirty.Remove(view);
+        }
+        if (_markdownDirty.Count == 0)
+            StopFrames();
+    }
+
+    private void StopFrames()
+    {
+        if (_framing)
+            CompositionTarget.Rendering -= OnMarkdownFrame;
+        _framing = false;
+    }
+
+    // The turn ended: everything still revealing shows in full, rendered from scratch.
+    private void FlushMarkdown()
+    {
+        foreach (var view in _markdownDirty)
+            Render(view);
+        _markdownDirty.Clear();
+        StopFrames();
+    }
+
+    // The final reply replaces whatever streamed; it and every section still revealing show in full now.
     private void ShowMarkdown(ChatReply r)
     {
         EnsureAnswer(r);
-        _markdownDirty.Remove(r.Rendered!);
-        Render(r.Rendered!);
+        _markdownDirty.Add(r.Rendered!);
+        FlushMarkdown();
     }
 
     private void EndChatBlock()
