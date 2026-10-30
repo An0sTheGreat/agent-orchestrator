@@ -99,7 +99,8 @@ public partial class MainWindow
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
         var load = entry?["auto_load"] as JsonObject;
-        return LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load);
+        return LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load,
+            _settings.ModelsFolder ?? "");
     }
 
     // Multi (Planner -> Implementer -> Reviewer) thinks when any built-in worker does.
