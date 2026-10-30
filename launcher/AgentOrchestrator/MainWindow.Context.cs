@@ -95,6 +95,28 @@ public partial class MainWindow
         ring.Content = grid;
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
+        RefreshContextSection();
+    }
+
+    // The worker details column's Context section: the shown view's snapshot; open or closed as last left (saved).
+    private void RefreshContextSection()
+    {
+        var s = ContextOf(NavCode.IsChecked == true);
+        var open = _settings.ContextExpanded;
+        ContextSectionToggle.IsChecked = open;
+        ContextSummary.Text = s is null ? "—" : s.NCtx is > 0 ? $"{s.Fraction:0%}  ·  {Tokens(s.Used)} / {Tokens(s.NCtx.Value)}" : $"{Tokens(s.Used)} / ?";
+        var empty = new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 };
+        empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        ContextSectionBody.Content = !open ? null : s is null ? empty : ContextBody(s, title: false);
+        ContextSectionBody.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
+        ContextSummary.Visibility = open ? Visibility.Collapsed : Visibility.Visible; // the open body repeats it
+    }
+
+    private void ContextSection_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ContextExpanded = ContextSectionToggle.IsChecked == true;
+        _settings.Save();
+        RefreshContextSection();
     }
 
     private static Path Arc(double fraction, string? color)
@@ -124,6 +146,19 @@ public partial class MainWindow
 
     private Popup ContextPopup(ContextSnapshot s, FrameworkElement anchor)
     {
+        var panel = ContextBody(s, title: true);
+        panel.Width = 280;
+        var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1) };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        return new Popup { Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, HorizontalOffset = -262, VerticalOffset = 6,
+            StaysOpen = false, AllowsTransparency = true, PopupAnimation = PopupAnimation.Fade };
+    }
+
+    // The breakdown shared by the ring's popup and the worker column's Context section: usage, bar, one row per part.
+    private StackPanel ContextBody(ContextSnapshot s, bool title)
+    {
         TextBlock Text(string text, string brush = "TextPrimary", double size = 12, FontWeight? weight = null)
         {
             var t = new TextBlock { Text = text, FontSize = size, FontWeight = weight ?? FontWeights.Normal, VerticalAlignment = VerticalAlignment.Center };
@@ -132,9 +167,10 @@ public partial class MainWindow
         }
         Brush Fill(string color) => (Brush)new BrushConverter().ConvertFromString(color)!;
         var window = s.NCtx is > 0 ? s.NCtx.Value : Math.Max(1, s.Used);
-        var panel = new StackPanel { Width = 280 };
-        panel.Children.Add(Text("Context", size: 13, weight: FontWeights.SemiBold));
-        var head = new DockPanel { Margin = new Thickness(0, 6, 0, 8) };
+        var panel = new StackPanel();
+        if (title)
+            panel.Children.Add(Text("Context", size: 13, weight: FontWeights.SemiBold));
+        var head = new DockPanel { Margin = new Thickness(0, title ? 6 : 0, 0, 8) };
         var total = Text(s.NCtx is > 0 ? $"{Tokens(s.Used)} / {Tokens(window)}" : $"{Tokens(s.Used)} / ?", "Muted");
         DockPanel.SetDock(total, Dock.Right);
         head.Children.Add(total);
@@ -163,12 +199,7 @@ public partial class MainWindow
             line.Children.Add(Text(row.Name));
             panel.Children.Add(line);
         }
-        var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1) };
-        card.SetResourceReference(Border.BackgroundProperty, "Card");
-        card.SetResourceReference(Border.BorderBrushProperty, "Border");
-        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
-        return new Popup { Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, HorizontalOffset = -262, VerticalOffset = 6,
-            StaysOpen = false, AllowsTransparency = true, PopupAnimation = PopupAnimation.Fade };
+        return panel;
     }
 
     private static string Tokens(long n) => ContextSnapshot.Tokens(n);

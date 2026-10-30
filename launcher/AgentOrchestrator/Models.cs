@@ -163,6 +163,7 @@ internal sealed class AppSettings
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
     public bool DetailsCollapsed { get; set; } = true; // the worker details column shows as the dot rail
+    public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
     public bool Compact { get; set; }

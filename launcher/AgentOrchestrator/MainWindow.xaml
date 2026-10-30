@@ -1191,6 +1191,20 @@
 
             <!-- Right column: model details -->
             <Border x:Name="DetailsPanel" Grid.Column="3" Background="{DynamicResource Panel}">
+              <DockPanel>
+                <!-- Context: the open conversation's context usage, pinned to the column's bottom (MainWindow.Context.cs) -->
+                <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="13,6,17,10">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock x:Name="ContextSummary" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" />
+                            <ToggleButton x:Name="ContextSectionToggle" Style="{StaticResource BlockHeaderToggle}" HorizontalAlignment="Left" Click="ContextSection_Click"
+                                          ToolTip="Show or hide the context breakdown" AutomationProperties.Name="Context">
+                                <TextBlock Text="CONTEXT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                            </ToggleButton>
+                        </DockPanel>
+                        <ContentControl x:Name="ContextSectionBody" Margin="4,8,0,0" Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
                 <ScrollViewer x:Name="DetailsScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                               MouseMove="Drag_Move" MouseLeftButtonUp="Drag_Up" LostMouseCapture="Drag_Up">
                     <StackPanel Margin="17">
@@ -1221,6 +1235,7 @@
                         <Button x:Name="AddWorkerButton" Content="+  Add worker" Margin="0,10,0,0" Click="AddWorker_Click" ToolTip="Add a worker with a custom title and model" />
                     </StackPanel>
                 </ScrollViewer>
+              </DockPanel>
             </Border>
             <!-- Collapsed worker details: one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
             <Border x:Name="WorkerRail" Grid.Column="3" Width="44" Background="{DynamicResource Panel}" Visibility="Collapsed">

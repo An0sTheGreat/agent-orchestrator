@@ -2085,6 +2085,21 @@ public partial class MainWindow : Window
                 _settings.Theme = ringTheme;
                 ApplyTheme();
                 _contextPopup.IsOpen = false;
+                // The worker column's Context section: closed (with the summary) until opened; open shows the same rows and is saved.
+                if (ContextSectionBody.Visibility == Visibility.Visible || ContextSummary.Text != "38%  ·  12.3k / 32k")
+                    return Fail();
+                ContextSectionToggle.IsChecked = true;
+                ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
+                await Settle();
+                if (ContextSectionBody.Content is not StackPanel sectionBody || sectionBody.Children.OfType<DockPanel>().Count(d => d.Tag is long) != 7 || !AppSettings.Load().ContextExpanded)
+                    return Fail();
+                var railWas = _settings.DetailsCollapsed;
+                SetWorkerRail(false);
+                await Settle();
+                Snap("30-context-section");
+                SetWorkerRail(railWas);
+                ContextSectionToggle.IsChecked = false;
+                ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
                     return Fail();
                 StartChatTurn("Follow-up", false);
@@ -3721,6 +3736,7 @@ public partial class MainWindow : Window
         Reveal(CodeView, code);
         Reveal(ChatView, chat);
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown
+        RefreshContextSection();
         if (chat || (code && !_codeRun))
         {
             RefreshChatTarget();
