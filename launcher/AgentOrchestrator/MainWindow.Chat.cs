@@ -42,6 +42,8 @@ public partial class MainWindow
         public readonly List<LauncherLogic.ChatMessage> History = new();
         public bool Follow = true;
         public long Tokens; // all turns of this conversation (saved with it)
+        public string? Summary; // the engine's summary of History[..SummaryCovers] (history_compacted; saved with it)
+        public int SummaryCovers;
         public bool Owns(object o) => o == Input || o == Send || o == Scroll || o == Jump || o == Plus || o == Chip;
     }
 
@@ -363,6 +365,7 @@ public partial class MainWindow
             (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
             c.Context = _chatContext;
             c.Tokens = _chat.Tokens;
+            (c.Summary, c.SummaryCovers) = (_chat.Summary, _chat.SummaryCovers);
             c.Title ??= TakeTurnTitle();
             StoreDo(() => _store.Save(c));
         }
@@ -396,6 +399,7 @@ public partial class MainWindow
             Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
             ShowContext(false, saved.Context);
             _chat.Tokens = saved.Tokens ?? 0;
+            (_chat.Summary, _chat.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
         }
         ShowView(chat: true);
     }
@@ -424,6 +428,7 @@ public partial class MainWindow
         c.Panel.Children.Clear();
         c.History.Clear();
         c.Tokens = 0;
+        (c.Summary, c.SummaryCovers) = (null, 0);
         _reply = null;
         c.Empty.Visibility = Visibility.Visible;
         ShowContext(c.IsCode, null);
@@ -436,11 +441,14 @@ public partial class MainWindow
     {
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
-            Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti,
-                role => LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
-                    effort: EffortFor(ChatMulti, CardFor(role))),
+            Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti, role => ChatRequest(role, text),
                 LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
     }
+
+    // The request of a Chat turn: the stored summary stands in for the messages it covers.
+    private string ChatRequest(string role, string text) =>
+        LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
+            effort: EffortFor(ChatMulti, CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.
@@ -771,7 +779,7 @@ public partial class MainWindow
         {
             if (_codeConv is { } code)
             {
-                code.Messages = pending;
+                (code.Messages, code.Summary, code.SummaryCovers) = (pending, c.Summary, c.SummaryCovers);
                 StoreDo(() => _store.Save(code));
             }
         }
@@ -781,7 +789,7 @@ public partial class MainWindow
                 StoreDo(() => _chatConv = _store.Create("", "chat"));
             if (_chatConv is { } chat)
             {
-                (chat.Mode, chat.Worker, chat.Messages) = (_settings.ChatMode, _settings.ChatWorker, pending);
+                (chat.Mode, chat.Worker, chat.Messages, chat.Summary, chat.SummaryCovers) = (_settings.ChatMode, _settings.ChatWorker, pending, c.Summary, c.SummaryCovers);
                 StoreDo(() => _store.Save(chat));
             }
         }
@@ -874,7 +882,13 @@ public partial class MainWindow
                 SetChatStatus($"{name} is using {Str(ev, "name")}…");
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
                 break;
-            case "compacted": // the engine summarized earlier steps to fit the context window; its print line is in the log
+            // compacted: the engine summarized earlier steps to fit the context window; history_compacted: earlier messages,
+            // before the turn (the summary is kept, so later turns send it in their place). Their print lines are in the log.
+            case "compacted" or "history_compacted":
+                if (Str(ev, "e") == "history_compacted" && Str(ev, "summary") is { Length: > 0 } summary)
+                    (_turn.Summary, _turn.SummaryCovers) = (summary, (int)Num(ev, "covers"));
+                if (ContextOf(_turn.IsCode) is { } full) // the ring drops now, not at the next call's context event
+                    ShowContext(_turn.IsCode, full.Compacted((long)Num(ev, "after")));
                 EndChatBlock();
                 if (_reply is { } compactReply)
                 {

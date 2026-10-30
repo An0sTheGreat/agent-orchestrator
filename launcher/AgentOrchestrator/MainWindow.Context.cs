@@ -33,6 +33,20 @@ public sealed class ContextSnapshot
         return s;
     }
 
+    // After a compaction: the prompt is `after` tokens, no reply yet, its parts scaled down so the popup rows still add up to it.
+    public ContextSnapshot Compacted(long after)
+    {
+        var s = new ContextSnapshot { NCtx = NCtx, Role = Role, Prompt = after };
+        var sum = Parts.Values.Sum();
+        if (sum <= 0)
+            return s;
+        foreach (var (key, n) in Parts)
+            s.Parts[key] = n * after / sum;
+        var largest = s.Parts.MaxBy(p => p.Value).Key;
+        s.Parts[largest] += after - s.Parts.Values.Sum(); // the rounding remainder
+        return s;
+    }
+
     // (name, colour, tokens) per popup row, in bar order: the prompt's parts, this turn's reply, then free space.
     public static readonly (string Key, string Name, string Color)[] Categories =
     {
@@ -72,6 +86,10 @@ public sealed class ContextSnapshot
         if (rows.Sum(r => r.Tokens) != 32_000)
             throw new InvalidOperationException("Context rows must fill the window");
         Is(new ContextSnapshot { Prompt = 5 }.Summary, "5 tokens (context size unknown)");
+        var c = s.Compacted(3_333);
+        Is(c.Summary, "3.3k / 32k tokens (10%)");
+        if (c.Parts.Values.Sum() != 3_333 || c.Parts["messages"] <= c.Parts["system"] || c.Parts["tools"] != 0 || s.Prompt != 12_000)
+            throw new InvalidOperationException("A compacted snapshot's parts must add up to its prompt");
         Is(string.Join(",", new[] { 0.01, 0.60, 0.604, 0.61, 0.89, 0.894, 0.895, 0.90, 1.0 }.Select(MainWindow.RingColor)),
             "#4C8DFF,#4C8DFF,#4C8DFF,#E8A33D,#E8A33D,#E8A33D,#E5484D,#E5484D,#E5484D");
     }

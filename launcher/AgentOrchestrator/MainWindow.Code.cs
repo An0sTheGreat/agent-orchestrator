@@ -43,7 +43,8 @@ public partial class MainWindow
     private string CodeRequest(string action, string role, string? text, string project) =>
         LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
             project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CodeTurnMulti(action), CardFor(role)),
-            mode: CodeTurnMulti(action) ? "multi" : "single");
+            mode: CodeTurnMulti(action) ? "multi" : "single",
+            summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0); // write_project reads it all
 
     // A Code turn or run never gets write access to the Agent Orchestrator folder (templates, prompts, orchestrator.py).
     private bool RefuseWorkflowRoot(string project)
@@ -350,6 +351,7 @@ public partial class MainWindow
         Replay(_code, saved.Messages, saved.Mode == "multi", _settings.CodeWorker);
         ShowContext(true, saved.Context);
         _code.Tokens = saved.Tokens ?? 0;
+        (_code.Summary, _code.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
         RefreshCodeFolders();
         RefreshChatTarget();
     }
@@ -364,6 +366,7 @@ public partial class MainWindow
         c.Messages = _code.History.ToList();
         c.Context = _codeContext;
         c.Tokens = _code.Tokens;
+        (c.Summary, c.SummaryCovers) = (_code.Summary, _code.SummaryCovers);
         c.Title ??= TakeTurnTitle();
         StoreDo(() => _store.Save(c));
         RefreshSidebarList();

@@ -241,19 +241,22 @@ internal static class LauncherLogic
     // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
     // effort: thinking effort for every model call of the turn ("" = the model's default; off, low, medium, high, max).
+    // summary: the engine's stored summary of the first summaryCovers messages, which are then left out ("": none).
     public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
-        string effort = "") =>
+        string effort = "", string summary = "", int summaryCovers = 0) =>
         JsonSerializer.Serialize(new
         {
             mode = mode == "multi" ? "multi" : "single",
             worker,
-            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
             title,
             effort,
-        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+            summary,
+            summary_covers = summary.Length > 0 ? summaryCovers : 0,
+        },new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
     {
@@ -273,13 +276,15 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null, bool title = false, string effort = "", string mode = "single") =>
+        Extras? extras = null, bool title = false, string effort = "", string mode = "single", string summary = "", int summaryCovers = 0) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
             mode = mode == "multi" ? "multi" : "single",
             worker,
-            messages = messages.Select(m => new { role = m.Role, content = m.Content }),
+            messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
+            summary,
+            summary_covers = summary.Length > 0 ? summaryCovers : 0,
             folders = extraFolders.Select(f => new { path = f.Path, access = f.Access == "write" ? "write" : "read" })
                 .Prepend(new { path = projectFolder, access = "write" }),
             search = extras?.Search ?? false,
@@ -1578,6 +1583,14 @@ internal static class LauncherLogic
         if ((string)code["mode"]! != "single" || (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "multi"))!["mode"]! != "multi" ||
             (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "bogus"))!["mode"]! != "single")
             throw new InvalidOperationException("The Code mode field failed.");
+        // A stored summary stands in for the messages it covers; none by default.
+        foreach (var summed in new[] { BuildChatRequest("single", "implementer", chat, summary: "S", summaryCovers: 2),
+                     BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], summary: "S", summaryCovers: 2) }.Select(r => JsonNode.Parse(r)!))
+            if ((string)summed["summary"]! != "S" || (int)summed["summary_covers"]! != 2 || summed["messages"]!.AsArray() is not [{ } only] ||
+                (string)only["content"]! != "again")
+                throw new InvalidOperationException("The conversation summary failed.");
+        if ((string)single["summary"]! != "" || (int)single["summary_covers"]! != 0 || (string)code["summary"]! != "" || (int)code["summary_covers"]! != 0)
+            throw new InvalidOperationException("A request without a summary carried one.");
         foreach (var (name, budget, thinks) in new (string, int?, bool)[]
         {
             ("unsloth/Qwen3.5-4B-GGUF", null, true), ("Qwen3-8B", null, true), ("QwQ-32B", null, true), ("deepseek-ai/DeepSeek-R1-0528", null, true),

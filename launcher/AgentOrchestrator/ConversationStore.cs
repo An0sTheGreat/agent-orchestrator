@@ -25,6 +25,8 @@ internal sealed class ConversationStore
         public bool Archived { get; set; }
         public long? Tokens { get; set; } // tokens used by all turns of this conversation (the footer's Task total); absent in older files
         public ContextSnapshot? Context { get; set; } // the last turn's context usage; absent in older files
+        public string? Summary { get; set; } // the engine's summary of Messages[..SummaryCovers] (history_compacted); null: none yet
+        public int SummaryCovers { get; set; }
     }
 
     private sealed class Group
@@ -340,6 +342,8 @@ internal sealed class ConversationStore
         c.Worker ??= "implementer";
         c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
         c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
+        if (string.IsNullOrWhiteSpace(c.Summary) || c.SummaryCovers < 0 || c.SummaryCovers > c.Messages.Count)
+            (c.Summary, c.SummaryCovers) = (null, 0); // a summary that does not fit the messages: the engine summarizes afresh
         return c;
     }
 
@@ -488,13 +492,14 @@ internal sealed class ConversationStore
             var edited = new string('e', 32);
             File.WriteAllText(Path.Combine(conversations, edited + ".json"), """
                 {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
-                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}],"worker":null,"folder":null}
+                 "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}],"worker":null,"folder":null,
+                 "summary":"S","summaryCovers":1}
                 """);
-            File.WriteAllText(Path.Combine(conversations, c.Id + ".json"), """{"messages":null,"folders":null}""");
+            File.WriteAllText(Path.Combine(conversations, c.Id + ".json"), """{"messages":null,"folders":null,"summary":"S","summaryCovers":1}""");
             s = Reload();
-            Check(s.Get(edited) is { Folder: "", Worker: "implementer" } e && e.Messages.SequenceEqual([new LauncherLogic.ChatMessage("user", "ok")]) &&
+            Check(s.Get(edited) is { Folder: "", Worker: "implementer", Summary: "S", SummaryCovers: 1 } e && e.Messages.SequenceEqual([new LauncherLogic.ChatMessage("user", "ok")]) &&
                   e.Folders.SequenceEqual([new LauncherLogic.CodeFolder(@"Y:\lib", "read"), new LauncherLogic.CodeFolder(@"Y:\w", "write")]) &&
-                  s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0 }, "hand-edited conversation cleaned");
+                  s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0, Summary: null, SummaryCovers: 0 }, "hand-edited conversation cleaned");
             s.Delete(edited);
             s.Delete(c.Id);
 

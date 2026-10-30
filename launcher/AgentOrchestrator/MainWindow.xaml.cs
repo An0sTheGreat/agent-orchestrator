@@ -1772,6 +1772,14 @@ public partial class MainWindow : Window
                 compactedNote is null || parts.IndexOf(compactedNote) < parts.IndexOf(toolRow) || parts.IndexOf(compactedNote) > parts.IndexOf(codeReply.Answer!) ||
                 _codeConv?.Messages is not [_, { Content: "Fixed" }])
                 return Fail();
+            // A Code chat turn sends the stored summary in place of the messages it covers; write_project reads the whole history.
+            (_code.Summary, _code.SummaryCovers) = ("CS", 2);
+            var codeSummed = JsonNode.Parse(CodeRequest("chat", "implementer", "Next", @"Y:\app"))!;
+            var projectFull = JsonNode.Parse(CodeRequest("write_project", "implementer", null, @"Y:\app"))!;
+            (_code.Summary, _code.SummaryCovers) = (null, 0);
+            if ((string)codeSummed["summary"]! != "CS" || codeSummed["messages"]!.AsArray().Count != 1 || (string)projectFull["summary"]! != "" ||
+                projectFull["messages"]!.AsArray().Count != 2)
+                return Fail();
             if (!hadCodeConv && _codeConv is { } madeConv) // leave the store as the checks below expect it
             {
                 StoreDo(() => _store.Delete(madeConv.Id));
@@ -2203,6 +2211,20 @@ public partial class MainWindow : Window
                 FinishChatTurn(0, false, null);
                 if (_chatConv != savedChat || _store.Get(savedChat.Id) is not { Messages.Count: 4, Title: "Saved chat title" } || _store.View().Ungrouped.Count(e => e.Kind == "chat") != 1)
                     return Fail();
+                // A history summarized before the turn: the ring drops at once, the summary is saved with the chat, and the next
+                // request sends it in place of the messages it covers.
+                StartChatTurn("Third", false);
+                _lines.Enqueue(Ev("""{"e":"history_compacted","role":"reviewer","summary":"SUM","covers":4,"before":12300,"after":3200}"""));
+                DrainLines();
+                var compactedRing = ChatContextRing.ToolTip as string;
+                var historyNote = _reply!.Content.Children.OfType<TextBlock>().Any(t => t.Text == "Context compacted · 12.3k → 3.2k tokens");
+                SetChatFinal("Third answer");
+                FinishChatTurn(0, false, null);
+                var summed = JsonNode.Parse(ChatRequest("reviewer", "Fourth"))!;
+                if (compactedRing != "3.2k / 32k tokens (10%)" || !historyNote || _store.Get(savedChat.Id) is not { Messages.Count: 6, Summary: "SUM", SummaryCovers: 4 } ||
+                    (string)summed["summary"]! != "SUM" || (int)summed["summary_covers"]! != 4 ||
+                    string.Join("|", summed["messages"]!.AsArray().Select(m => (string)m!["content"]!)) != "Third|Third answer|Fourth")
+                    return Fail();
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null || ChatContextRing.Tag is not null)
                     return Fail();
@@ -2213,12 +2235,12 @@ public partial class MainWindow : Window
                 ClickRow(savedChat.Id);
                 await Settle();
                 Snap("23-sidebar-chat");
-                if (ChatContextRing.ToolTip as string != "12.3k / 32k tokens (38%)") // the saved chat brings back its context
+                if (ChatContextRing.ToolTip as string != "3.2k / 32k tokens (10%)" || _chat is not { Summary: "SUM", SummaryCovers: 4 }) // the saved chat brings back its context and summary
                     return Fail();
                 // The title bar names the open chat.
                 if (TitleChatButton.Visibility != Visibility.Visible || TitleChatText.Text != _store.View().Ungrouped.Single(e => e.Id == savedChat.Id).Title)
                     return Fail();
-                if (NavChat.IsChecked != true || _chatConv != savedChat || _chatHistory.Count != 4 || ChatPanel.Children.Count != 4 || _codeConv != chatA ||
+                if (NavChat.IsChecked != true || _chatConv != savedChat || _chatHistory.Count != 6 || ChatPanel.Children.Count != 6 || _codeConv != chatA ||
                     SidebarList.Children.Cast<UIElement>().Select(Main).Single(m => m is ToggleButton { IsChecked: true }).Tag as string != savedChat.Id)
                     return Fail();
                 // Under every message: a muted timestamp (exact time on hover) and a copy icon; the reopened chat shows its saved times.
