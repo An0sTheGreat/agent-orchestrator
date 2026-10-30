@@ -2408,10 +2408,12 @@ class CustomWorkerTests(unittest.TestCase):
 class ChatTests(unittest.TestCase):
     """--chat: single worker or Planner -> Implementer -> Reviewer, in a folder holding only config.json."""
 
-    def chat(self, request, replies=None, workers=None):
+    def chat(self, request, replies=None, workers=None, role_prompts=None):
         replies = {k: list(v) for k, v in (replies or {}).items()}
         roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model", "sampling": {"temperature": i}}
                  for i, r in enumerate(("planner", "implementer", "reviewer"))}
+        for r, text in (role_prompts or {}).items():
+            roles[r]["chat_system_prompt"] = text
         config = {"roles": roles, **({"custom_workers": workers} if workers else {})}
         log, events, unloaded = [], [], []
 
@@ -2457,6 +2459,18 @@ class ChatTests(unittest.TestCase):
         # G3: no workflow files, models stay loaded
         self.assertEqual(files, ["config.json", "request.json"])
         self.assertEqual(unloaded, [])
+
+    def test_builtin_chat_system_prompt_is_optional_and_appended(self):
+        chat_txt = (Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip()
+        _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS},
+                               role_prompts={"implementer": "  Answer in French.  "})
+        self.assertTrue(log[0]["system"].startswith(chat_txt))
+        self.assertIn("=== YOUR ROLE: Implementer ===\nAnswer in French.\n", log[0]["system"])
+        # Multi: each stage gets its own role's prompt; a blank one adds nothing.
+        _, log, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, role_prompts={"planner": "Plan tersely.", "reviewer": " "})
+        self.assertEqual([e["model"] for e in log], ["planner-model", "implementer-model", "reviewer-model"])
+        self.assertIn("=== YOUR ROLE: Planner ===\nPlan tersely.", log[0]["system"])
+        self.assertNotIn("YOUR ROLE", log[1]["system"] + log[2]["system"])
 
     def test_single_custom_worker_and_unknown_worker(self):
         worker = {"id": "spec1", "title": "Tester", "kind": "specialist", "description": "d", "system_prompt": "Be a tester.",

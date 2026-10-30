@@ -3186,6 +3186,15 @@ def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
     return worker
 
 
+def role_block(config: dict[str, Any], role: str, worker: dict[str, Any] | None = None) -> str:
+    """Appended to a Chat/Code system prompt: a custom worker's prompt, else the built-in role's optional
+    roles.<role>.chat_system_prompt under the same header; "" when a built-in has none."""
+    if worker:
+        return f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
+    extra = str(((config.get("roles") or {}).get(role) or {}).get("chat_system_prompt") or "").strip()
+    return f"\n\n=== YOUR ROLE: {role.capitalize()} ===\n{extra}\n" if extra else ""
+
+
 def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]], reply: str) -> str:
     """A short title for a new conversation, from its first exchange, written by the role that answered (its model is
     loaded). Quiet: no events stream into the reply. "" when the model fails or returns nothing usable."""
@@ -3224,7 +3233,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
         if missing:
             raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
-        prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt")
+        prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt") + role_block(config, role)
         messages = compact_conversation(turn, BUILTIN_ROLES, prompt("reviewer"), messages, extras[0], request)  # the reviewer's call is the largest
         convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
         plan = chat_call(turn, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}], extras)
@@ -3238,10 +3247,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     elif request.get("mode") == "single":
         role = str(request.get("worker") or "")
         worker = chat_worker(config, role)
-        if worker:
-            system = f"{chat}\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
-        else:
-            system = f"{chat}\n\nYou are the {role.capitalize()} worker.\n"
+        system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
         messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
         text = chat_call(turn, role, "answer", system, messages, extras)
     else:
@@ -3520,7 +3526,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     tools, extra_handlers, extra_system = request_extras(request)
     handlers.update(extra_handlers)
     system = load_text(ROOT / "prompts" / "code.txt").strip() + extra_system
-    system += f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n" if worker else f"\n\nYou are the {role.capitalize()} worker.\n"
+    system += role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n"
     messages = compact_conversation(config, BUILTIN_ROLES if multi else (role,), f"{system}\n{folders_context(folders)}", messages,
                                     CODE_TOOLS + tools, request)
     if multi:
