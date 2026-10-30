@@ -34,7 +34,7 @@ public partial class MainWindow
 
     // The composer's target chip: the Models window, a list of the workers (name, model, activity dot) beside the selected
     // one's model settings. Save keeps the window open; switching worker or closing with unsaved changes asks first.
-    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards)
+    private DialogShell? OpenModelConfig(IReadOnlyList<RoleCard> cards, Conversation? conv = null)
     {
         if (_process is not null || cards.Count == 0 || cards.Any(c => !c.Editable))
             return null;
@@ -59,7 +59,7 @@ public partial class MainWindow
                 row.IsChecked = c == card;
             return true;
         }
-        foreach (var card in cards)
+        void AddRow(RoleCard card)
         {
             var name = new TextBlock { Text = ChatName(card, card.Role), FontWeight = FontWeights.SemiBold, TextTrimming = TextTrimming.CharacterEllipsis };
             if (card.IsCustom)
@@ -79,6 +79,55 @@ public partial class MainWindow
             };
             list.Children.Add(row);
         }
+        // "+": list another worker (the built-ins first, recommended; then the other existing ones; or a new one) and select it.
+        // Single-mode chat and Code also take it as their target, like the composer's + menu.
+        void AddPicked(RoleCard card)
+        {
+            if (!rows.ContainsKey(card) && dirty() && SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected?.Role ?? "")}?", "Discard") is null)
+                return;
+            if (!rows.ContainsKey(card))
+                AddRow(card);
+            if (card != selected && !Show(card))
+                return;
+            if (conv is not null && (conv.IsCode || !ChatMulti))
+            {
+                if (conv.IsCode)
+                    _settings.CodeWorker = card.Role;
+                else
+                    _settings.ChatWorker = card.Role;
+                _settings.Save();
+                RefreshChatTarget();
+            }
+        }
+        var plus = new Button { Content = "+", FontSize = 18, Width = 34, Height = 30, Padding = new Thickness(0, 0, 0, 2), HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 0, 0, 6), Tag = "AddModelWorker", ToolTip = "Add a worker to this list" };
+        plus.SetResourceReference(StyleProperty, "GhostButton");
+        plus.Click += (_, _) =>
+        {
+            var menu = new ContextMenu { PlacementTarget = plus, Placement = PlacementMode.Bottom };
+            MenuItem Item(string header, Action act)
+            {
+                var item = new MenuItem { Header = header };
+                item.Click += (_, _) => act();
+                return item;
+            }
+            foreach (var role in new[] { "planner", "implementer", "reviewer" })
+                if (CardFor(role) is { } built && !rows.ContainsKey(built))
+                    menu.Items.Add(Item($"{ChatName(built, role)}  (recommended)", () => AddPicked(built)));
+            foreach (var other in _cards.Where(c => c.IsCustom && c.Editable && !rows.ContainsKey(c)).ToList())
+                menu.Items.Add(Item(ChatName(other, other.Role), () => AddPicked(other)));
+            menu.Items.Add(new Separator());
+            menu.Items.Add(Item("New worker…", () =>
+            {
+                AddWorker_Click(plus, new RoutedEventArgs());
+                AddPicked(_cards[^1]);
+            }));
+            plus.ContextMenu = menu;
+            menu.IsOpen = true;
+        };
+        list.Children.Add(plus);
+        foreach (var card in cards)
+            AddRow(card);
         window.Closing += (_, e) => e.Cancel = selected is not null && _cards.Contains(selected) && dirty() &&
             SidebarAsk("Unsaved changes", $"Discard the unsaved changes to {ChatName(selected, selected.Role)}?", "Discard") is null;
         window.Closed += (_, _) => host.Child = null;
@@ -525,10 +574,34 @@ public partial class MainWindow
             if (await Open(ChatTargetChip) is not { } single || single.WindowStyle != WindowStyle.None || single.Owner != this || single.Width < 600 ||
                 Listed(single) != "reviewer*" || ChatTargetChip.ToolTip as string != "Configure model")
                 return false;
+            // The "+" menu: the built-ins not yet listed come first, marked recommended, then "New worker…". Picking adds the row,
+            // selects it and (Single chat / Code) makes it the target.
+            async Task<List<string>> PickAdd(Window w, string header)
+            {
+                var plus = Tree(w).OfType<Button>().First(b => b.Tag as string == "AddModelWorker");
+                Click(plus);
+                var items = plus.ContextMenu.Items.OfType<MenuItem>().ToList();
+                var heads = items.Select(i => (string)i.Header).ToList();
+                items.First(i => (string)i.Header == header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                plus.ContextMenu.IsOpen = false;
+                await Idle();
+                return heads;
+            }
+            var addHeads = await PickAdd(single, "Implementer  (recommended)");
+            if (!addHeads.Take(2).SequenceEqual(["Planner  (recommended)", "Implementer  (recommended)"]) || addHeads[^1] != "New worker…" ||
+                Listed(single) != "reviewer,implementer*" || _settings.ChatWorker != "implementer")
+                return false;
             single.Close();
+            _settings.CodeWorker = "planner";
+            RefreshChatTarget();
             if (single.IsVisible || await Open(CodeTargetChip) is not { } code || Listed(code) != "planner*" || CodeTargetChip.ToolTip as string != "Configure model")
                 return false;
+            await PickAdd(code, "Reviewer  (recommended)");
+            if (Listed(code) != "planner,reviewer*" || _settings.CodeWorker != "reviewer")
+                return false;
             code.Close();
+            (_settings.ChatWorker, _settings.CodeWorker) = ("reviewer", "planner");
+            RefreshChatTarget();
 
             // Multi: the three workers, the Planner first.
             _settings.ChatMode = "multi";
@@ -578,6 +651,46 @@ public partial class MainWindow
             ApplyTheme();
             RefreshChatTarget();
             Directory.Delete(models, recursive: true);
+        }
+    }
+
+    // --ui-smoke: the Code header puts the context ring directly left of the Conversation / Run output toggle; while a turn
+    // runs, its status sits in the top row just left of the stop square and the bottom hint steps aside; idle shows the hint.
+    private async Task<bool> UiTweaksSmoke(Action<string, FrameworkElement?> snap)
+    {
+        var (wasChat, turn) = (NavChat.IsChecked == true, _turn);
+        try
+        {
+            ShowView(chat: false);
+            ShowCodeRun(false);
+            await Task.Delay(400);
+            var toggleBox = (Border)((StackPanel)CodeConversationToggle.Parent).Parent;
+            var header = (DockPanel)toggleBox.Parent;
+            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(toggleBox) + 1 ||
+                CodeContextRing.TranslatePoint(new Point(CodeContextRing.ActualWidth, 0), header).X > toggleBox.TranslatePoint(new Point(0, 0), header).X)
+                return false;
+            _chatBusy = true;
+            _turn = _code;
+            RefreshChatInput();
+            await Task.Delay(400);
+            var top = (Grid)CodeStop.Parent;
+            if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || CodeBusyText.Text != "Replying…" || CodeStop.Visibility != Visibility.Visible ||
+                Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeStop) - 1 || Grid.GetRow(CodeBusyText) != 0 ||
+                CodeBusyText.TranslatePoint(new Point(CodeBusyText.ActualWidth, 0), top).X > CodeStop.TranslatePoint(new Point(0, 0), top).X ||
+                CodeHint.Visibility == Visibility.Visible || CodeHint.Text.Contains("Replying") ||
+                ChatBusyText.Text.Contains("Replying")) // the other conversation is only locked
+                return false;
+            snap("36-ui-tweaks", null);
+            _chatBusy = false;
+            RefreshChatInput();
+            return CodeBusyText.Visibility == Visibility.Collapsed && CodeHint.Visibility == Visibility.Visible && CodeHint.Text.StartsWith("Enter to send");
+        }
+        finally
+        {
+            (_chatBusy, _turn) = (false, turn);
+            RefreshChatInput();
+            ShowCodeRun(true);
+            ShowView(chat: wasChat);
         }
     }
 

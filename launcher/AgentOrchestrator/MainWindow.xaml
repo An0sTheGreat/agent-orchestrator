@@ -1037,8 +1037,6 @@
                                     ToolTip="Let the Code worker read or edit another folder" />
                         </StackPanel>
                     </ContentControl>
-                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="10,0,0,0" VerticalAlignment="Center"
-                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                     <Button x:Name="CodeStartButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11"
                             Click="CodeStart_Click" ToolTip="Start or resume the project run in this folder (Ctrl+Enter)" ToolTipService.ShowOnDisabled="True" />
                     <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
@@ -1052,6 +1050,8 @@
                                           ToolTip="Model output and the execution log of the project run" AutomationProperties.Name="Run output" />
                         </StackPanel>
                     </Border>
+                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,10,0" VerticalAlignment="Center"
+                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <Grid x:Name="CodeChat" Grid.Row="1">
                     <Grid.RowDefinitions>
@@ -1080,6 +1080,8 @@
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
+                                <TextBlock x:Name="CodeBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                                           MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                                 <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
                                         VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                     <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
@@ -1301,6 +1303,8 @@
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                      VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
+                            <TextBlock x:Name="ChatBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
+                                       MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                             <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
                                     VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                 <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
