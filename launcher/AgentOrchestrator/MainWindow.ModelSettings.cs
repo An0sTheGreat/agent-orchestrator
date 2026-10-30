@@ -547,37 +547,35 @@ public partial class MainWindow
         return (new DockPanel { Children = { top, footer, scroll } }, () => !State().SequenceEqual(clean));
     }
 
-    // --ui-smoke: the target chips open the Models window (borderless, large, owned) listing Single's target, Multi's three
-    // workers, or the Code target; Save writes the worker and keeps the window open; switching worker with an unsaved change
-    // asks, and Discard writes nothing. config: the active config.json, holding roles.implementer.
+    // --ui-smoke: the target chips' "Options…" opens the worker details column (expanding the rail) on the target's tab: Single
+    // chat's target, the Code target, Multi's Planner. Save writes the worker and keeps the tab; leaving a tab with an unsaved
+    // change asks: no answer stays, Discard switches and writes nothing. Absent keys show their defaults (a remote role none);
+    // option presets save the fields and the system prompt, apply them (fields only, nothing written) and delete; Revert drops
+    // what a preset filled. config: the active config.json, holding roles.implementer.
     private async Task<bool> ModelConfigSmoke(string config, Action<string, FrameworkElement?> snap)
     {
         static Task Idle() => Task.Delay(400);
-        static IEnumerable<DependencyObject> Tree(DependencyObject d) =>
-            LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().SelectMany(c => Tree(c).Prepend(c));
-        static void Click(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-        static List<ToggleButton> Rows(Window w) => Tree(w).OfType<ToggleButton>().Where(t => t.GetType() == typeof(ToggleButton)).ToList();
-        static string Listed(Window w) => string.Join(",", Rows(w).Select(r => (string)r.Tag + (r.IsChecked == true ? "*" : "")));
-        static TextBox Field(Window w, string key) => Tree(w).OfType<TextBox>().First(t => t.Tag as string == key);
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: worker tab options: {what}"); return false; }
         // The chip's dropdown: "Options…", a separator, then the listed workers ("*": the checked target).
-        List<string> Dropdown(Button chip)
+        static List<string> Dropdown(Button chip)
         {
-            Click(chip);
+            SmokeClick(chip);
             var items = chip.ContextMenu.Items.OfType<MenuItem>().ToList();
             chip.ContextMenu.IsOpen = false;
             return items.Select(i => (string)i.Header + (i.IsChecked ? "*" : "")).ToList();
         }
-        async Task<DialogShell?> Open(Button chip)
+        // Options… from a collapsed rail: the worker whose tab the column then shows.
+        async Task<RoleCard?> Open(Button chip)
         {
-            Click(chip);
-            var options = chip.ContextMenu.Items.OfType<MenuItem>().First();
-            options.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            SetWorkerRail(true);
+            SmokeClick(chip);
+            chip.ContextMenu.Items.OfType<MenuItem>().First().RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             chip.ContextMenu.IsOpen = false;
             await Idle();
-            return OwnedWindows.OfType<DialogShell>().LastOrDefault(w => w.IsVisible && w.Title == "Models");
+            return DetailsPanel.IsVisible && !_settings.DetailsCollapsed ? _shownWorker : null;
         }
         const string chipTip = "Choose the worker to message, or open model Options";
-        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme, _settings.CodeMode);
+        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.CodeMode);
         _settings.CodeMode = "single"; // the Code chip below configures its one target
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
         Directory.CreateDirectory(models);
@@ -585,149 +583,110 @@ public partial class MainWindow
         var asked = new List<string>();
         string? answer = null;
         _codeChoice = title => { asked.Add(title); return answer; };
+        var (planner, implementer, reviewer) = (CardFor("planner")!, CardFor("implementer")!, CardFor("reviewer")!);
         try
         {
-            // Single chat: the listed workers (the built-ins are hidden, so only the target); Code: every worker, the target
-            // selected. Closing with nothing changed asks nothing.
+            // Single chat: the dropdown lists the target (the built-ins are hidden) and the custom workers; Options… opens the
+            // target's tab. Code: the Code target's tab.
             (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker) = ("single", "reviewer", "planner");
             RefreshChatTarget();
-            var customs = _cards.Where(k => k.IsCustom).Select(k => k.Role).ToList();
-            string Expect(params string[] roles) => string.Join(",", roles.Concat(customs));
-            if (Dropdown(ChatTargetChip) is not ["Options…", "Reviewer*", ..] chatDrop || chatDrop.Count != 2 + customs.Count)
-                return false;
-            if (await Open(ChatTargetChip) is not { } single || single.WindowStyle != WindowStyle.None || single.Owner != this || single.Width < 600 ||
-                Listed(single) != Expect("reviewer*") || ChatTargetChip.ToolTip as string != chipTip)
-                return false;
-            // The "+" menu: the built-ins not yet listed come first, marked recommended, then "New worker…". Picking adds the row,
-            // selects it and (Single chat / Code) makes it the target.
-            async Task<List<string>> PickAdd(Window w, string header)
-            {
-                var plus = Tree(w).OfType<Button>().First(b => b.Tag as string == "AddModelWorker");
-                Click(plus);
-                var items = plus.ContextMenu.Items.OfType<MenuItem>().ToList();
-                var heads = items.Select(i => (string)i.Header).ToList();
-                items.First(i => (string)i.Header == header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                plus.ContextMenu.IsOpen = false;
-                await Idle();
-                return heads;
-            }
-            var addHeads = await PickAdd(single, "Implementer  (recommended)");
-            if (!addHeads.Take(2).SequenceEqual(["Planner  (recommended)", "Implementer  (recommended)"]) || addHeads[^1] != "New worker…" ||
-                Listed(single) != string.Join(",", customs.Prepend("reviewer").Append("implementer*")) || _settings.ChatWorker != "implementer")
-                return false;
-            single.Close();
-            _settings.CodeWorker = "planner";
-            RefreshChatTarget();
-            if (single.IsVisible || await Open(CodeTargetChip) is not { } code || Listed(code) != Expect("planner*", "implementer", "reviewer") ||
-                CodeTargetChip.ToolTip as string != chipTip)
-                return false;
-            code.Close();
-            // Picking from the dropdown makes the worker the target without opening the window.
-            Click(CodeTargetChip);
+            var customs = _cards.Count(k => k.IsCustom);
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Reviewer*", ..] chatDrop || chatDrop.Count != 2 + customs || ChatTargetChip.ToolTip as string != chipTip)
+                return Fail("Single chat dropdown");
+            if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
+                return Fail("Single chat Options…");
+            if (await Open(CodeTargetChip) != planner || CodeTargetChip.ToolTip as string != chipTip)
+                return Fail("Code Options…");
+            // Picking from the dropdown makes the worker the target and leaves the tab alone.
+            SmokeClick(CodeTargetChip);
             CodeTargetChip.ContextMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "reviewer").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             CodeTargetChip.ContextMenu.IsOpen = false;
             await Idle();
-            if (_settings.CodeWorker != "reviewer" || OwnedWindows.OfType<DialogShell>().Any(w => w.IsVisible && w.Title == "Models") ||
-                Dropdown(CodeTargetChip) is not ["Options…", "Planner", "Implementer", "Reviewer*", ..])
-                return false;
+            if (_settings.CodeWorker != "reviewer" || _shownWorker != planner || Dropdown(CodeTargetChip) is not ["Options…", "Planner", "Implementer", "Reviewer*", ..])
+                return Fail("dropdown pick");
             (_settings.ChatWorker, _settings.CodeWorker) = ("reviewer", "planner");
-            RefreshChatTarget();
 
-            // Multi: the three workers, the Planner first.
+            // Multi: the Planner's tab.
             _settings.ChatMode = "multi";
             RefreshChatTarget();
-            if (code.IsVisible || asked.Count > 0 || ChatTargetChip.Cursor != Cursors.Hand || await Open(ChatTargetChip) is not { } multi ||
-                Listed(multi) != "planner*,implementer,reviewer")
-                return false;
-            snap("33-model-config", multi);
-            _settings.Theme = "Parchment";
-            ApplyTheme();
-            await Idle();
-            snap("33-model-config-parchment", multi);
-            _settings.Theme = saved.Theme;
-            ApplyTheme();
+            SelectWorker(reviewer);
+            if (asked.Count > 0 || ChatTargetChip.Cursor != Cursors.Hand || await Open(ChatTargetChip) != planner)
+                return Fail("Multi Options…");
 
-            // Save keeps the window open on the Implementer.
-            Click(Rows(multi)[1]);
+            // Save keeps the Implementer's tab.
+            SmokeClickTab(implementer);
             await Idle();
-            Field(multi, "temperature").Text = "0.33";
-            Click(Tree(multi).OfType<Button>().First(b => b.Content as string == "Save"));
+            SmokeField("temperature").Text = "0.33";
+            SmokeClick(SmokeButton("Save"));
             await Idle();
-            if (!multi.IsVisible || Listed(multi) != "planner,implementer*,reviewer" ||
-                (double?)JsonNode.Parse(File.ReadAllText(config))!["roles"]!["implementer"]!["sampling"]?["temperature"] != 0.33)
-                return false;
+            if (_shownWorker != implementer || (double?)JsonNode.Parse(File.ReadAllText(config))!["roles"]!["implementer"]!["sampling"]?["temperature"] != 0.33)
+                return Fail("Save");
 
-            // An unsaved change: switching asks; no answer stays, Discard switches and writes nothing; closing then asks nothing.
+            // An unsaved change: another tab asks; no answer stays, Discard switches and writes nothing.
             var bytes = File.ReadAllBytes(config);
-            Field(multi, "temperature").Text = "0.77";
-            Click(Rows(multi)[2]);
+            SmokeField("temperature").Text = "0.77";
+            SmokeClickTab(reviewer);
             await Idle();
-            if (asked.Count != 1 || Listed(multi) != "planner,implementer*,reviewer" || Field(multi, "temperature").Text != "0.77")
-                return false;
+            if (asked is not ["Unsaved changes"] || _shownWorker != implementer || !implementer.IsSelected || reviewer.IsSelected || SmokeField("temperature").Text != "0.77")
+                return Fail("unsaved change: no answer");
             answer = "";
-            Click(Rows(multi)[2]);
+            SmokeClickTab(reviewer);
             await Idle();
-            if (asked.Count != 2 || Listed(multi) != "planner,implementer,reviewer*")
-                return false;
-            multi.Close();
-            if (multi.IsVisible || asked.Count != 2 || !File.ReadAllBytes(config).SequenceEqual(bytes))
-                return false;
+            if (asked.Count != 2 || _shownWorker != reviewer || !reviewer.IsSelected || implementer.IsSelected || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("unsaved change: Discard");
 
-            // Defaults fill the absent keys without counting as changes; option presets: save on the Reviewer, apply on the
-            // Implementer (fields only, nothing written), delete.
-            void Preset(Window w, string header, string? sub = null)
+            // Defaults fill the absent keys; a remote role shows none (providers may reject them), Local brings them back.
+            RadioButton Source(string label) => SmokeFind<RadioButton>(WorkerSettingsHost, r => r.Content as string == label)!;
+            if (SmokeField("temperature").Text != "0.8" || SmokeField("top_p").Text != "0.95" || _workerDirty())
+                return Fail("defaults");
+            Source("Remote API").IsChecked = true;
+            var remoteShown = SmokeField("temperature").Text + SmokeField("top_p").Text;
+            Source("Local").IsChecked = true;
+            if (remoteShown != "" || SmokeField("temperature").Text != "0.8")
+                return Fail("remote defaults");
+
+            // Option presets: save on the Reviewer (with its chat system prompt), apply on the Implementer, delete.
+            void Preset(string header, string? sub = null)
             {
-                var button = Tree(w).OfType<Button>().First(b => b.Tag as string == "ModelPresets");
-                Click(button);
+                var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
+                SmokeClick(button);
                 var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header);
                 (sub is null ? item : item.Items.OfType<MenuItem>().First(i => (string)i.Header == sub)).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 button.ContextMenu.IsOpen = false;
             }
-            if (await Open(ChatTargetChip) is not { } presetWindow || Field(presetWindow, "top_p").Text != "0.95")
-                return false;
-            Click(Rows(presetWindow)[2]);
-            await Idle();
-            if (asked.Count != 2 || Listed(presetWindow) != "planner,implementer,reviewer*" || Field(presetWindow, "temperature").Text != "0.8")
-                return false;
-            // Remote shows no local defaults (providers may reject them); Local brings them back.
-            RadioButton Source(string label) => Tree(presetWindow).OfType<RadioButton>().First(r => r.Content as string == label);
-            Source("Remote API").IsChecked = true;
-            var remoteShown = Field(presetWindow, "temperature").Text + Field(presetWindow, "top_p").Text;
-            Source("Local").IsChecked = true;
-            if (remoteShown != "" || Field(presetWindow, "temperature").Text != "0.8")
-                return false;
-            Field(presetWindow, "temperature").Text = "0.21";
-            Field(presetWindow, "top_k").Text = "7";
+            SmokeField("temperature").Text = "0.21";
+            SmokeField("top_k").Text = "7";
+            SmokeField("ChatSystemPrompt").Text = "Smoke prompt";
             answer = "Smoke options";
-            Preset(presetWindow, "Save as preset…");
+            Preset("Save as preset…");
             if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options") is not { } stored || stored.Options.GetValueOrDefault("temperature") != "0.21" ||
-                stored.Options.ContainsKey("gguf_variant") || stored.Options.ContainsKey("seed"))
-                return false;
+                stored.Options.ContainsKey("gguf_variant") || stored.Options.ContainsKey("seed") || stored.SystemPrompt != "Smoke prompt")
+                return Fail("save a preset");
             // As if saved on a worker with a model, or by an older version: a load value and an empty one; neither is applied
             // to the Implementer, which has no model to load.
             (stored.Options["n_batch"], stored.Options["top_p"]) = ("64", "");
             answer = "";
-            Click(Rows(presetWindow)[1]); // discards the Reviewer's change
+            SmokeClickTab(implementer); // discards the Reviewer's change
             await Idle();
-            if (Listed(presetWindow) != "planner,implementer*,reviewer" || Field(presetWindow, "temperature").Text != "0.33")
-                return false;
-            Preset(presetWindow, "Smoke options");
-            if (Field(presetWindow, "temperature").Text != "0.21" || Field(presetWindow, "top_k").Text != "7" || Field(presetWindow, "n_batch").Text != "" ||
-                Field(presetWindow, "top_p").Text != "0.95" || !File.ReadAllBytes(config).SequenceEqual(bytes))
-                return false;
-            Preset(presetWindow, "Delete preset", "Smoke options");
+            if (asked[^1] != "Unsaved changes" || _shownWorker != implementer || SmokeField("temperature").Text != "0.33" || SmokeField("ChatSystemPrompt").Text != "")
+                return Fail("discard the Reviewer's change");
+            Preset("Smoke options");
+            if (SmokeField("temperature").Text != "0.21" || SmokeField("top_k").Text != "7" || SmokeField("n_batch").Text != "" || SmokeField("top_p").Text != "0.95" ||
+                SmokeField("ChatSystemPrompt").Text != "Smoke prompt" || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("apply a preset");
+            Preset("Delete preset", "Smoke options");
             if (_settings.ModelPresets.Any(p => p.Name == "Smoke options"))
-                return false;
-            presetWindow.Close();
-            return !presetWindow.IsVisible && File.ReadAllBytes(config).SequenceEqual(bytes);
+                return Fail("delete a preset");
+            SmokeClick(SmokeButton("Revert"));
+            await Idle();
+            if (SmokeField("temperature").Text != "0.33" || SmokeField("ChatSystemPrompt").Text != "" || _workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("Revert a preset");
+            return true;
         }
         finally
         {
-            answer = ""; // a check that failed with a change pending still closes the window
-            foreach (var open in OwnedWindows.OfType<DialogShell>().Where(w => w.Title == "Models").ToList())
-                open.Close();
-            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.Theme, _settings.CodeMode) = saved;
-            ApplyTheme();
+            RefreshWorkerTab(force: true); // a check that failed with a change pending
+            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.CodeMode) = saved;
             RefreshChatTarget();
             Directory.Delete(models, recursive: true);
         }
@@ -773,117 +732,175 @@ public partial class MainWindow
         }
     }
 
-    // --ui-smoke: the cards have a gear and no Settings button or right-click menu; the gear opens this window (borderless,
-    // large, owned), its model list has the GGUFs on disk (llama.cpp runtime), Save writes the role, Cancel and an invalid
-    // value write nothing. config: the active config.json, holding roles.planner.
+    // --ui-smoke helpers for the worker tabs and the inline settings body (WorkerSettingsHost).
+    private static IEnumerable<DependencyObject> SmokeVisuals(DependencyObject d) =>
+        Enumerable.Range(0, VisualTreeHelper.GetChildrenCount(d)).Select(i => VisualTreeHelper.GetChild(d, i)).SelectMany(c => SmokeVisuals(c).Prepend(c));
+    private static T? SmokeFind<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
+        d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => SmokeFind(c, match)).FirstOrDefault(r => r is not null);
+    private static void SmokeClick(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+    private TextBox SmokeField(string key) => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == key)!;
+    private Button SmokeButton(string label) => SmokeFind<Button>(WorkerSettingsHost, b => b.Content as string == label)!;
+    private FrameworkElement? SmokeTab(RoleCard card)
+    {
+        WorkerTabs.UpdateLayout();
+        return WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) as FrameworkElement;
+    }
+    private void SmokeClickTab(RoleCard card) => SmokeClick(SmokeVisuals(SmokeTab(card)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab"));
+
+    // --ui-smoke: the rail card's gear opens the column on its worker's tab; one tab per shown worker, three fit the default
+    // column, a narrower one scrolls the strip (the wheel too); a tab shows title, model, tok/s and task · turn tokens. The
+    // Planner's tab: its model list loads on the first open (the GGUFs on disk, llama.cpp runtime), a model's defaults never
+    // replace an edit, Save writes the role and keeps the tab, Revert and an invalid value write nothing, and the chat system
+    // prompt is saved and removed when blank. config: the active config.json, holding roles.planner.
     private async Task<bool> ModelSettingsSmoke(RoleCard planner, string config, Action<string, FrameworkElement?> snap)
     {
         static Task Idle() => Task.Delay(400);
-        static IEnumerable<DependencyObject> Visuals(DependencyObject d) =>
-            Enumerable.Range(0, VisualTreeHelper.GetChildrenCount(d)).Select(i => VisualTreeHelper.GetChild(d, i)).SelectMany(c => Visuals(c).Prepend(c));
-        static T? Find<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
-            d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => Find(c, match)).FirstOrDefault(r => r is not null);
-        static void Click(Button b) => b.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
-        FrameworkElement? Container()
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: worker tabs: {what}"); return false; }
+        static async Task<bool> Until(Func<bool> done)
         {
-            WorkerTabs.UpdateLayout(); // TODO smoke: was CardsList (the cards had the gear; the tabs have none, so this now fails)
-            return WorkerTabs.ItemContainerGenerator.ContainerFromItem(planner) as FrameworkElement;
+            for (var i = 0; i < 50 && !done(); i++)
+                await Task.Delay(100);
+            return done();
         }
-        Button? Gear() => Container() is { } c ? Visuals(c).OfType<Button>().FirstOrDefault(b => b.Tag as string == "ModelSettingsGear") : null;
-
-        // TODO smoke: removed the compact-card check (compact card had a gear; a right-click on CardRoot was not handled and
-        // opened no ContextMenu). The window checks below open a DialogShell from the gear; settings are now inline in the tab.
-        // Standard card: the gear, and no Settings button (Change stays).
-        if (Container() is not { } standard || Gear() is not { } gear || Visuals(standard).OfType<Button>().Any(b => b.Content as string == "Settings") ||
-            !Visuals(standard).OfType<Button>().Any(b => b.Content as string == "Change"))
-            return false;
+        ComboBox Model() => SmokeFind<ComboBox>(WorkerSettingsHost, c => c.Tag as string == "Model")!;
+        JsonNode Role() => JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!;
 
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-window");
         var fake = Path.Combine(models, "Fake-Model-Q4_K_M.gguf");
         Directory.CreateDirectory(models);
         File.WriteAllText(fake, "");
-        var runtime = _settings.Runtime;
+        var (runtime, ask) = (_settings.Runtime, _codeChoice);
         (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models);
+        var asked = 0;
+        _codeChoice = _ => { asked++; return null; }; // nothing below leaves a tab with unsaved edits
         try
         {
-            async Task<DialogShell?> Open()
-            {
-                Click(gear);
-                await Idle();
-                var window = OwnedWindows.OfType<DialogShell>().LastOrDefault(w => w.IsVisible && w.Title == planner.Title);
-                for (var i = 0; window is not null && i < 50 && Find<ComboBox>(window, c => c.Tag as string == "Model")!.Items.OfType<ComboBoxItem>().All(item => item.Tag is null); i++)
-                    await Task.Delay(100);
-                return window;
-            }
-            ComboBox Model(DialogShell w) => Find<ComboBox>(w, c => c.Tag as string == "Model")!;
-            TextBox Field(DialogShell w, string key) => Find<TextBox>(w, t => t.Tag as string == key)!;
-            Button Labelled(DialogShell w, string label) => Find<Button>(w, b => b.Content as string == label)!;
-            var bytes = File.ReadAllBytes(config);
+            // The rail card's gear: the column opens on that worker's tab.
+            var implementer = CardFor("implementer")!;
+            SetWorkerRail(true);
+            await Idle();
+            RailDots.UpdateLayout();
+            ShowRailCard((FrameworkElement)VisualTreeHelper.GetChild(RailDots.ItemContainerGenerator.ContainerFromItem(implementer), 0));
+            await Idle();
+            if (SmokeVisuals(RailCard).OfType<Button>().FirstOrDefault(b => b.Tag as string == "ModelSettingsGear") is not { } gear)
+                return Fail("hover card gear");
+            SmokeClick(gear);
+            await Idle();
+            if (RailPopup.IsOpen || !DetailsPanel.IsVisible || _settings.DetailsCollapsed || _shownWorker != implementer || !implementer.IsSelected)
+                return Fail("the gear opens the tab");
 
-            static async Task<bool> Until(Func<bool> done)
+            // One tab per shown worker; three fit the default column.
+            var width = (double)Resources["WorkerTabWidth"];
+            if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)) || Math.Abs(width - Math.Max(88, WorkerTabsScroll.ActualWidth / 3 - 6)) > 0.5 ||
+                3 * (width + 6) > WorkerTabsScroll.ActualWidth + 1 || (_cards.Count(c => !c.Hidden) <= 3 && WorkerTabsScroll.ScrollableWidth > 1) ||
+                Math.Abs(SmokeTab(planner)!.ActualWidth - width - 6) > 0.5)
+                return Fail("tabs at the default width");
+            var texts = SmokeVisuals(SmokeTab(planner)!).OfType<TextBlock>().Select(t => new System.Windows.Documents.TextRange(t.ContentStart, t.ContentEnd).Text).ToList();
+            if (!texts.Contains(planner.Title) || !texts.Contains(planner.ModelName) || !texts.Contains(planner.TokensPerSec) ||
+                !texts.Contains($"{planner.TaskTokens} task · {planner.TurnTotal} turn"))
+                return Fail("tab text: " + string.Join(" | ", texts));
+            snap("tabs-default", DetailsPanel);
+
+            // A narrow column: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
+            DetailsColumn.Width = new GridLength(260);
+            await Idle();
+            if (WorkerTabsScroll.ScrollableWidth <= 0 || (double)Resources["WorkerTabWidth"] != 88)
+                return Fail("a narrow column scrolls");
+            WorkerTabsScroll.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = PreviewMouseWheelEvent });
+            await Idle();
+            if (WorkerTabsScroll.HorizontalOffset <= 0)
+                return Fail("the wheel scrolls the strip");
+            snap("tabs-narrow", DetailsPanel);
+            SetWorkerRail(false); // back to the saved width
+            await Idle();
+
+            // Selecting a tab shows that worker's settings; the model list is not loaded until it opens.
+            SmokeClickTab(planner);
+            await Idle();
+            if (_shownWorker != planner || !planner.IsSelected || implementer.IsSelected || _settings.SelectedWorker != "planner" ||
+                SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is null ||
+                Model().Items.Count != 1 || Model().Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null))
+                return Fail("the Planner's tab");
+            async Task<ComboBoxItem?> FakeItem()
             {
-                for (var i = 0; i < 50 && !done(); i++)
-                    await Task.Delay(100);
-                return done();
+                var box = Model();
+                box.IsDropDownOpen = true;
+                box.IsDropDownOpen = false;
+                await Until(() => box.Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null));
+                return box.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake);
             }
-            ComboBoxItem? FakeItem(DialogShell w) => Model(w).Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake);
 
             // The model's defaults arrive off the UI thread and never replace an edit; re-selecting "(current)" restores the
             // fields (no model_path: the load options empty again), so Save is not refused.
-            if (await Open() is not { } window || window.WindowStyle != WindowStyle.None || window.Owner != this || window.Width < 600 ||
-                FakeItem(window) is not { } fakeItem || !Model(window).IsEnabled)
-                return false;
-            snap("27-model-settings", window);
-            Field(window, "top_k").Text = "33";
-            Model(window).SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
-            if (!await Until(() => Field(window, "max_seq_length").Text == "32768") || Field(window, "n_batch").Text != "2048" || Field(window, "seed").Text != "" ||
-                Field(window, "max_tokens").Text != "" || Field(window, "top_k").Text != "33" ||
-                Model(window).Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag is null) is not { } currentItem)
-                return false;
-            Model(window).SelectedItem = currentItem;
-            if (!await Until(() => Field(window, "max_seq_length").Text == "") || Field(window, "n_batch").Text != "")
-                return false;
-            Click(Labelled(window, "Save"));
+            if (await FakeItem() is not { } fakeItem || !Model().IsEnabled)
+                return Fail("the model list");
+            snap("tabs-settings", DetailsPanel);
+            SmokeField("top_k").Text = "33";
+            Model().SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
+            if (!await Until(() => SmokeField("max_seq_length").Text == "32768") || SmokeField("n_batch").Text != "2048" || SmokeField("seed").Text != "" ||
+                SmokeField("max_tokens").Text != "" || SmokeField("top_k").Text != "33" ||
+                Model().Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag is null) is not { } currentItem)
+                return Fail("a model's defaults");
+            Model().SelectedItem = currentItem;
+            if (!await Until(() => SmokeField("max_seq_length").Text == "") || SmokeField("n_batch").Text != "")
+                return Fail("the current model");
+            var body = WorkerSettingsHost.Child;
+            SmokeClick(SmokeButton("Save"));
             await Idle();
-            if (window.IsVisible || JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!["auto_load"] is not null)
-                return false;
+            if (_shownWorker != planner || WorkerSettingsHost.Child == body || _workerDirty() || Role()["auto_load"] is not null || SmokeField("top_k").Text != "33")
+                return Fail("Save keeps the tab");
 
             // Save: a model from the list and a temperature.
-            if (await Open() is not { } picking || FakeItem(picking) is not { } fakeAgain)
-                return false;
-            Model(picking).SelectedItem = fakeAgain;
-            if (!await Until(() => Field(picking, "max_seq_length").Text == "32768"))
-                return false;
-            window = picking;
-            Field(window, "temperature").Text = "0.45";
-            Click(Labelled(window, "Save"));
+            if (await FakeItem() is not { } fakeAgain)
+                return Fail("the model list after Save");
+            Model().SelectedItem = fakeAgain;
+            if (!await Until(() => SmokeField("max_seq_length").Text == "32768"))
+                return Fail("a model's defaults after Save");
+            SmokeField("temperature").Text = "0.45";
+            SmokeClick(SmokeButton("Save"));
             await Idle();
-            var load = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!;
-            if (window.IsVisible || (double?)load["sampling"]?["temperature"] != 0.45 || (string?)load["auto_load"]?["model_path"] != "Fake-Model-Q4_K_M" ||
+            var load = Role();
+            if (_shownWorker != planner || (double?)load["sampling"]?["temperature"] != 0.45 || (string?)load["auto_load"]?["model_path"] != "Fake-Model-Q4_K_M" ||
                 (int?)load["auto_load"]?["max_seq_length"] != 32768 || (double?)load["sampling"]?["top_p"] != 0.95 ||
                 (string?)load["auto_load"]?["gguf_variant"] != "Q4_K_M" || (string?)load["auto_load"]?["gguf_file"] != fake || planner.ModelName != LauncherLogic.DescribeModel("Fake-Model-Q4_K_M", "Q4_K_M").Name)
-                return false;
+                return Fail("Save a model");
 
-            // Cancel discards; an invalid value keeps the window open with the error under the field, and writes nothing.
-            bytes = File.ReadAllBytes(config);
-            if (await Open() is not { } cancelled)
-                return false;
-            Field(cancelled, "temperature").Text = "0.9";
-            Click(Labelled(cancelled, "Cancel"));
+            // Revert drops an edit; an invalid value shows the error under the field; neither writes anything.
+            var bytes = File.ReadAllBytes(config);
+            SmokeField("temperature").Text = "0.9";
+            if (!_workerDirty())
+                return Fail("an edit is unsaved");
+            SmokeClick(SmokeButton("Revert"));
             await Idle();
-            if (cancelled.IsVisible || !File.ReadAllBytes(config).SequenceEqual(bytes) || await Open() is not { } invalid)
-                return false;
-            Field(invalid, "temperature").Text = "5";
-            Field(invalid, "top_p").Text = "0.5";
-            Click(Labelled(invalid, "Save"));
+            if (SmokeField("temperature").Text != "0.45" || _workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("Revert");
+            SmokeField("temperature").Text = "5";
+            SmokeField("top_p").Text = "0.5";
+            SmokeClick(SmokeButton("Save"));
             await Idle();
-            var shown = invalid.IsVisible && Find<TextBlock>(invalid, t => t.Visibility == Visibility.Visible && t.Text.StartsWith("A number, 0 to 2")) is not null;
-            invalid.Close();
-            return shown && File.ReadAllBytes(config).SequenceEqual(bytes);
+            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Visibility == Visibility.Visible && t.Text.StartsWith("A number, 0 to 2")) is null ||
+                !File.ReadAllBytes(config).SequenceEqual(bytes))
+                return Fail("an invalid value");
+            SmokeClick(SmokeButton("Revert"));
+            await Idle();
+
+            // The chat system prompt: saved to roles.planner.chat_system_prompt, removed when blank.
+            SmokeField("ChatSystemPrompt").Text = "Answer briefly.";
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            if ((string?)Role()["chat_system_prompt"] != "Answer briefly." || SmokeField("ChatSystemPrompt").Text != "Answer briefly.")
+                return Fail("the chat system prompt");
+            SmokeField("ChatSystemPrompt").Text = "  ";
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            if (Role().AsObject().ContainsKey("chat_system_prompt") || SmokeField("ChatSystemPrompt").Text != "")
+                return Fail("a blank chat system prompt");
+            return asked == 0 || Fail("asked");
         }
         finally
         {
-            (_settings.Runtime, _settings.ModelsFolder) = (runtime, "");
+            (_settings.Runtime, _settings.ModelsFolder, _codeChoice) = (runtime, "", ask);
+            RefreshWorkerTab(force: true);
             Directory.Delete(models, recursive: true);
         }
     }

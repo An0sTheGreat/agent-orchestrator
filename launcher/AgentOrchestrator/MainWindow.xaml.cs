@@ -1025,7 +1025,6 @@ public partial class MainWindow : Window
             await Settle();
             ShowView();
             await Settle();
-            // TODO smoke: removed the compact toggle (ran the hover storyboards with compact cards and standard cards).
             PlayHoverStoryboards(this);
         }
         // Scrolled away from the end: new output brings in the jump pill, which returns to following.
@@ -1103,7 +1102,6 @@ public partial class MainWindow : Window
             return Fail(); // the planner's turn starts fresh; the last completed task's tokens stay
         await Settle();
         Snap("9-task-counters");
-        // TODO smoke: removed snapshot 9b-task-counters-compact (the task counters on compact cards).
         StopClocks(); // what the run's cleanup does on Stop
         var (stoppedTask, stoppedTurn) = (TaskTimeText.Text, TurnTimeText.Text);
         await Task.Delay(1100);
@@ -1184,14 +1182,11 @@ public partial class MainWindow : Window
             }
             var mdFile = Path.Combine(presetProject, "PROJECT.md");
             File.WriteAllText(mdFile, "# Smoke project\n");
-            // TODO smoke: was BuildModelSettings(planner) (the gear's Model settings window, snapshot 9-settings-dialog); the
-            // body now lives in the worker tab, wrapped in a dialog here only to keep the snapshot.
-            var settingsDialog = new DialogShell(this, planner.Title, ModelSettingsBody(planner, () => { }, () => { }, "Revert")!.Value.Body, large: true);
             var limitsDialog = BuildTaskLimitsDialog(presetConfig, ("6", ""), [("Implementer", 16384)]);
             if (limitsDialog.Warning.Text != "6 files per task may not fit Implementer's 16k context" || limitsDialog.Warning.Visibility != Visibility.Visible
                 || !await Show(limitsDialog.Dialog, "9b-task-limits-dialog"))
                 return Fail();
-            if (!await Show(settingsDialog, "9-settings-dialog") ||!await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
+            if (!await Show(BuildAskDialog("Save preset", "Name this set of workers and their settings.", "Save", "").Dialog, "10-prompt")
                 || !await Show(BuildExistingProjectMdDialog(mdFile).Dialog, "11-existing-projectmd"))
                 return Fail();
 
@@ -1282,9 +1277,9 @@ public partial class MainWindow : Window
             if (tester.HasSetupProblem || synced.Count != 1 || (string)synced[0]!["title"]! != "Docs" || (string)synced[0]!["kind"]! != "reviewer" ||
                 (string)synced[0]!["system_prompt"]! != LauncherLogic.DefaultSystemPrompt("reviewer"))
                 return Fail();
-            // TODO smoke: was BuildModelSettings(tester) twice (the custom worker's settings window: prefilled kind defaults, Save,
-            // snapshot 12-custom-settings-dialog); now the tab's body wrapped in a dialog.
-            var prefilled = new DialogShell(this, tester.Title, ModelSettingsBody(tester, () => { }, () => { }, "Revert")!.Value.Body, large: true);
+            SelectWorker(tester); // its tab
+            await Settle();
+            var prefilled = WorkerSettingsHost;
             static T? FindIn<T>(DependencyObject d, Func<T, bool> match) where T : DependencyObject =>
                 d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => FindIn(c, match)).FirstOrDefault(r => r is not null);
             var promptBox = FindIn<TextBox>(prefilled, t => t.Tag as string == "SystemPrompt");
@@ -1302,11 +1297,10 @@ public partial class MainWindow : Window
             if (!swapped || tester.Config.SystemPrompt != LauncherLogic.DefaultSystemPrompt("reviewer") || tester.Config.Description != LauncherLogic.DefaultDescription("reviewer") ||
                 inheritedTemperature != "0.33" || string.Join(",", tester.Config.ModelOptions.Select(p => $"{p.Key}={p.Value}")) != "top_k=12")
                 return Fail();
-            prefilled.Close();
             await Settle();
-            var customDialog = new DialogShell(this, tester.Title, ModelSettingsBody(tester, () => { }, () => { }, "Revert")!.Value.Body, large: true);
-            if (!HasTag(customDialog, "SystemPrompt") || !HasTag(customDialog, "Description") || HasTag(settingsDialog, "SystemPrompt") || !HasTag(settingsDialog, "Base URL") ||
-                !await Show(customDialog, "12-custom-settings-dialog"))
+            if (_shownWorker != tester || !HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "Description") || !SelectWorker(planner))
+                return Fail();
+            if (HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "Base URL"))
                 return Fail();
             RemoveWorker(tester);
             if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
@@ -1430,15 +1424,17 @@ public partial class MainWindow : Window
             var visible = new RoleCard("smoke-visible", "Visible", custom: true);
             _cards.Add(visible);
             await Settle();
-            // TODO smoke: CardsList -> WorkerTabs (a selected hidden tab now stays shown; the grid-origin check below assumed cards).
+            // The tabs follow: a hidden built-in's tab stays while it is the selected one (here the Planner's).
             bool Shown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
             bool AllShown() => _cards.All(card => !card.Hidden && Shown(card));
-            bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == card.IsCustom) && Shown(visible);
+            bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == (card.IsCustom || card.IsSelected)) && Shown(visible) &&
+                                  CardFor("planner") is { IsSelected: true, Hidden: true };
+            SelectWorker(CardFor("planner"));
             if (!AllShown())
                 return Fail();
             ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
             await Settle();
-            // Hidden cards take no slot: the first shown card starts the grid's top-left cell.
+            // Hidden tabs take no slot: the first shown tab starts the strip.
             var firstShown = _cards.Where(Shown).Select(card => (UIElement)WorkerTabs.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
             if (!SingleShown() || firstShown?.TranslatePoint(new Point(), WorkerTabs) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !SingleShown())
                 return Fail();
@@ -2454,7 +2450,6 @@ public partial class MainWindow : Window
         if (CodeProjectButton.IsEnabled)
             return Fail();
         Snap("3-running");
-        // TODO smoke: removed snapshot 4-compact (the compact cards while a run is active).
         _process.Dispose();
         _process = null;
         SetRunning(false);
@@ -2563,20 +2558,13 @@ public partial class MainWindow : Window
                 await Settle();
                 Snap("26-settings-window-" + theme, _settingsWindow);
                 _settingsWindow!.Close();
-                // On the llama.cpp runtime the model list is a local disk scan: the smoke never calls a real Unsloth server.
-                var runtimeBefore = _settings.Runtime;
-                _settings.Runtime = LauncherLogic.LlamaRuntime;
-                // TODO smoke: was BuildModelSettings(planner) (the settings window per theme); now the tab body in a dialog.
-                if (theme is "Parchment" or "Graphite" && ModelSettingsBody(CardFor("planner")!, () => { }, () => { }, "Revert") is { } modelBody)
+                if (theme is "Parchment" or "Graphite") // the column with the Planner's tab and its settings
                 {
-                    var modelWindow = new DialogShell(this, "Planner", modelBody.Body, large: true);
-                    modelWindow.ShowActivated = false;
-                    modelWindow.Show();
+                    SetWorkerRail(false);
+                    SelectWorker(CardFor("planner"));
                     await Settle();
-                    Snap("27-model-settings-" + theme, modelWindow);
-                    modelWindow.Close();
+                    Snap("27-model-settings-" + theme, DetailsPanel);
                 }
-                _settings.Runtime = runtimeBefore;
             }
         }
         return true;
