@@ -56,6 +56,8 @@ public partial class MainWindow
         public StackPanel Content = null!;
         public TextBlock Status = null!;
         public Button Copy = null!;
+        public StackPanel Footer = null!; // timestamp and copy icon, shown once the reply is complete
+        public TextBlock Stamp = null!;
         public bool Multi;
         public string Stage = "answer", StageTitle = "";
         public StreamBlock? Block;
@@ -347,13 +349,14 @@ public partial class MainWindow
         _turn = c;
         foreach (var message in messages)
             if (message.Role == "user")
-                AddUserBubble(message.Content);
+                AddUserBubble(message.Content, message.Time);
             else
             {
                 var reply = _reply = AddReply(multi, role);
                 SetChatFinal(message.Content);
                 reply.Status.Visibility = Visibility.Collapsed;
-                reply.Copy.Visibility = Visibility.Visible;
+                SetStamp(reply.Stamp, message.Time);
+                reply.Footer.Visibility = Visibility.Visible;
             }
         _reply = null;
         c.History.AddRange(messages);
@@ -496,6 +499,7 @@ public partial class MainWindow
 
     // The user's message (none for a Code action) and an empty reply appear, and the GPU-sharing lock goes on.
     private string? _pendingUser;
+    private DateTimeOffset _pendingUserTime;
 
     private void StartChatTurn(string text, bool multi) => StartTurn(_chat, text, multi, ChatTarget()?.Role ?? "");
 
@@ -506,8 +510,9 @@ public partial class MainWindow
         _turnLoaded = new();
         _codeStartRequested = false;
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
+        _pendingUserTime = Now();
         if (text is not null)
-            AddUserBubble(text);
+            AddUserBubble(text, _pendingUserTime);
         _reply = AddReply(multi, role);
         _chatError = null;
         _chatStopRequested = false;
@@ -516,19 +521,80 @@ public partial class MainWindow
     }
 
     // The user's message bubble and an empty reply (header, content, status, Copy), added to _turn's conversation.
-    private void AddUserBubble(string text)
+    private void AddUserBubble(string text, DateTimeOffset? time)
     {
         var box = BodyText(text, mono: false, muted: false, conv: _turn);
         box.FontSize = 14;
         var bubble = new Border
         {
-            Child = box, Padding = new Thickness(14, 10, 14, 10), Margin = new Thickness(60, 10, 0, 6), MaxWidth = 640,
+            Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,
             HorizontalAlignment = HorizontalAlignment.Right, BorderThickness = new Thickness(1),
         };
         bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
         bubble.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
         bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
-        ChatAdd(bubble);
+        var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => text);
+        SetStamp(stamp, time);
+        ChatAdd(new StackPanel { Children = { bubble, row }, Margin = new Thickness(60, 10, 0, 6), HorizontalAlignment = HorizontalAlignment.Right });
+    }
+
+    // ---- message footers: a muted relative timestamp (exact time on hover) and a copy icon under every message
+
+    private readonly List<(TextBlock Label, DateTimeOffset Time)> _stamps = new();
+    private DispatcherTimer? _stampTimer; // one for the window; a minute is as fine as the text gets
+    internal Func<DateTimeOffset> Now = () => DateTimeOffset.Now; // --ui-smoke steps its own
+    private Action<string>? _copyMessageHook; // --ui-smoke: receives the copied message instead of the clipboard
+
+    private (StackPanel Row, TextBlock Stamp, Button Copy) MessageFooter(HorizontalAlignment align, Func<string> text)
+    {
+        var stamp = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 4, 0) };
+        stamp.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var glyph = new TextBlock { Text = Markdown.CopyGlyph, FontSize = 12 };
+        glyph.SetResourceReference(StyleProperty, "RailGlyph");
+        var copy = new Button { Content = glyph, Width = 24, Height = 24, Padding = new Thickness(0), ToolTip = "Copy", Cursor = System.Windows.Input.Cursors.Hand };
+        copy.SetResourceReference(StyleProperty, "GhostButton");
+        copy.Click += (_, _) =>
+        {
+            if (_copyMessageHook is { } hook)
+                hook(text());
+            else
+                CopyToClipboard(text(), "Copied", "Nothing to copy");
+            glyph.Text = Markdown.CopiedGlyph; // a check for a moment
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
+            timer.Tick += (_, _) => { timer.Stop(); glyph.Text = Markdown.CopyGlyph; };
+            timer.Start();
+        };
+        _stampTimer ??= StartStampTimer();
+        return (new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = align, Margin = new Thickness(0, 2, 0, 0), Children = { stamp, copy } }, stamp, copy);
+    }
+
+    private DispatcherTimer StartStampTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(1) };
+        timer.Tick += (_, _) => RefreshStamps();
+        timer.Start();
+        return timer;
+    }
+
+    // Shows the time (nothing for an old saved message without one) and keeps it fresh.
+    private void SetStamp(TextBlock label, DateTimeOffset? time)
+    {
+        _stamps.RemoveAll(s => s.Label == label);
+        if (time is not { } t)
+        {
+            label.Text = "";
+            return;
+        }
+        label.ToolTip = t.ToLocalTime().ToString("f");
+        label.Text = LauncherLogic.RelativeTime(t, Now());
+        _stamps.Add((label, t));
+    }
+
+    internal void RefreshStamps()
+    {
+        _stamps.RemoveAll(s => PresentationSource.FromVisual(s.Label) is null); // cleared conversations
+        foreach (var (label, time) in _stamps)
+            label.Text = LauncherLogic.RelativeTime(time, Now());
     }
 
     private ChatReply AddReply(bool multi, string role)
@@ -540,14 +606,12 @@ public partial class MainWindow
         var reply = new ChatReply { Multi = multi, Content = new StackPanel() };
         reply.Status = new TextBlock { Text = "Starting…", FontStyle = FontStyles.Italic, FontSize = 12, Margin = new Thickness(2, 4, 0, 0) };
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        reply.Copy = new Button { Content = "Copy reply", Padding = new Thickness(10, 4, 10, 4), FontSize = 11, HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 4, 0, 0), Visibility = Visibility.Collapsed, ToolTip = "Copy the reply" };
-        reply.Copy.SetResourceReference(StyleProperty, "GhostButton");
-        reply.Copy.Click += (_, _) => CopyToClipboard(reply.Final ?? reply.AnswerText.ToString(), "Reply copied", "Reply is empty");
+        (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
+        reply.Footer.Visibility = Visibility.Collapsed;
         root.Children.Add(header);
         root.Children.Add(reply.Content);
         root.Children.Add(reply.Status);
-        root.Children.Add(reply.Copy);
+        root.Children.Add(reply.Footer);
         ChatAdd(root);
         return reply;
     }
@@ -577,12 +641,14 @@ public partial class MainWindow
                     SetChatFinal(answer);
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
-                    c.History.Add(new LauncherLogic.ChatMessage("user", user));
-                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer));
+                    c.History.Add(new LauncherLogic.ChatMessage("user", user, _pendingUserTime));
+                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now()));
                 }
                 completed = true;
             }
-            reply.Copy.Visibility = answer is null ? Visibility.Collapsed : Visibility.Visible;
+            if (answer is not null)
+                SetStamp(reply.Stamp, Now());
+            reply.Footer.Visibility = answer is null ? Visibility.Collapsed : Visibility.Visible;
         }
         foreach (var card in _cards)
         {

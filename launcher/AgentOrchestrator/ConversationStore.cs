@@ -390,7 +390,7 @@ internal sealed class ConversationStore
             var b = s.Create(@"C:\Work\Alpha")!;
             var c = s.Create(@"C:\Work\Gamma\")!;
             Check(a.Id != b.Id && IdName.IsMatch(a.Id) && File.Exists(Path.Combine(conversations, a.Id + ".json")), "create");
-            a.Messages.Add(new("user", "  Fix   the\nlogin bug please, it fails whenever the password has a space "));
+            a.Messages.Add(new("user", "  Fix   the\nlogin bug please, it fails whenever the password has a space ", new DateTimeOffset(2026, 3, 4, 5, 6, 7, TimeSpan.FromHours(2))));
             a.Messages.Add(new("assistant", "Done."));
             a.Folders.Add(new(@"C:\Ref", "read"));
             a.Worker = "reviewer";
@@ -399,6 +399,7 @@ internal sealed class ConversationStore
             var la = s.Get(a.Id);
             Check(la is not null && la.Folder == a.Folder && la.Worker == "reviewer" && la.Created == a.Created &&
                   la.Messages.SequenceEqual(a.Messages) && la.Folders.SequenceEqual(a.Folders), "round trip");
+            Check(la!.Messages[0].Time == new DateTimeOffset(2026, 3, 4, 5, 6, 7, TimeSpan.FromHours(2)) && la.Messages[1].Time is null, "message time saved and loaded");
             Check(Ids(s.View().Ungrouped) == Of(c, b, a), "newest first");
             Check(TitleOf(la!) == "Fix the login bug please, it fails whene…" && TitleOf(s.Get(b.Id)!) == "Alpha" &&
                   TitleOf(s.Get(c.Id)!) == "Gamma" && TitleOf(new Conversation()) == "New conversation", "derived titles");

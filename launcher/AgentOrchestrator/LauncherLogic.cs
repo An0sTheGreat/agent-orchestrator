@@ -44,7 +44,24 @@ internal static class LauncherLogic
 
     // ---- chat: one orchestrator process per user message, fed the whole conversation through a request file
 
-    public sealed record ChatMessage(string Role, string Content);
+    public sealed record ChatMessage(string Role, string Content, DateTimeOffset? Time = null); // Time: when it was sent / completed (null in old saved chats); never sent to the engine
+
+    // "just now", "3 minutes ago", "2 hours ago", "yesterday", then a date, as the footer under a message shows it.
+    public static string RelativeTime(DateTimeOffset time, DateTimeOffset now)
+    {
+        var age = now - time;
+        if (age < TimeSpan.FromMinutes(1))
+            return "just now";
+        if (age < TimeSpan.FromHours(1))
+            return age.Minutes == 1 ? "1 minute ago" : $"{age.Minutes} minutes ago";
+        if (age < TimeSpan.FromHours(24))
+            return age.Hours == 1 ? "1 hour ago" : $"{age.Hours} hours ago";
+        var days = (now.ToLocalTime().Date - time.ToLocalTime().Date).Days;
+        if (days == 1)
+            return "yesterday";
+        var local = time.ToLocalTime();
+        return local.ToString(local.Year == now.ToLocalTime().Year ? "MMM d" : "MMM d, yyyy", System.Globalization.CultureInfo.CurrentCulture);
+    }
 
     // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
     public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills);
@@ -1467,6 +1484,17 @@ internal static class LauncherLogic
             chatInfo.Environment["UNSLOTH_API_KEY"] != "test-key" || chatInfo.Environment["PYTHONUNBUFFERED"] != "1")
             throw new InvalidOperationException("Chat start info failed.");
         var chat = new[] { new ChatMessage("user", "hi \"there\"\nline2 é"), new ChatMessage("assistant", "hello"), new ChatMessage("user", "again") };
+        var timed = new[] { new ChatMessage("user", "hi", DateTimeOffset.Now) };
+        if (BuildChatRequest("single", "implementer", timed).Contains("time", StringComparison.OrdinalIgnoreCase) ||
+            BuildCodeRequest("chat", "implementer", timed, @"Y:\P", []).Contains("time", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("A message time reached the engine request.");
+        var at = new DateTimeOffset(2026, 6, 15, 12, 0, 0, DateTimeOffset.Now.Offset);
+        if (RelativeTime(at.AddSeconds(-30), at) != "just now" || RelativeTime(at.AddSeconds(5), at) != "just now" ||
+            RelativeTime(at.AddMinutes(-1), at) != "1 minute ago" || RelativeTime(at.AddMinutes(-3), at) != "3 minutes ago" ||
+            RelativeTime(at.AddHours(-1), at) != "1 hour ago" || RelativeTime(at.AddHours(-2), at) != "2 hours ago" ||
+            RelativeTime(at.AddHours(-23), at) != "23 hours ago" || RelativeTime(at.AddHours(-30), at) != "yesterday" ||
+            RelativeTime(at.AddDays(-3), at) != "Jun 12" || RelativeTime(at.AddYears(-1), at) != "Jun 15, 2025")
+            throw new InvalidOperationException("Relative time formatting failed.");
         var single = JsonNode.Parse(BuildChatRequest("single", "implementer", chat))!;
         var customId = Guid.NewGuid().ToString("N");
         var multi = JsonNode.Parse(BuildChatRequest("multi", customId, chat.Take(1)))!;
