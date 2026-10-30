@@ -38,7 +38,7 @@ public partial class MainWindow
         public required FrameworkElement Empty;
         public required Button Jump, Send, Stop, Plus, Chip;
         public required TextBox Input;
-        public required TextBlock Hint;
+        public required TextBlock Hint, Busy;
         public readonly List<LauncherLogic.ChatMessage> History = new();
         public bool Follow = true;
         public long Tokens; // all turns of this conversation (saved with it)
@@ -74,9 +74,9 @@ public partial class MainWindow
     private void InitChat()
     {
         _chat = _turn = new Conversation { IsCode = false, Panel = ChatPanel, Scroll = ChatScroll, Empty = ChatEmpty, Jump = ChatJumpPill, Send = ChatSend, Stop = ChatStop,
-            Plus = ChatPlus, Chip = ChatTargetChip, Input = ChatInput, Hint = ChatHint };
+            Plus = ChatPlus, Chip = ChatTargetChip, Input = ChatInput, Hint = ChatHint, Busy = ChatBusyText };
         _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
-            Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint };
+            Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint, Busy = CodeBusyText };
         RefreshExtras();
         if (_settings.ChatMode != "multi")
             _settings.ChatMode = "single";
@@ -134,9 +134,14 @@ public partial class MainWindow
             c.Stop.Visibility = _chatBusy || runActive ? Visibility.Visible : Visibility.Collapsed;
             c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && c.Input.Text.Trim().Length > 0;
             c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && c.Input.Text.Trim().Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-            c.Hint.Text = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
+            // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
+            var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" : _chatBusy ? $"{(c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
-                : _unloading ? "Unloading models…" : "Enter to send  ·  Shift+Enter for a new line";
+                : _unloading ? "Unloading models…" : "";
+            c.Busy.Text = status;
+            c.Busy.ToolTip = status;
+            c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
         ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
@@ -190,7 +195,7 @@ public partial class MainWindow
     {
         var c = ConvOf(sender);
         OpenModelConfig(MultiOf(c) ? new[] { "planner", "implementer", "reviewer" }.Select(CardFor).OfType<RoleCard>().ToList()
-            : TargetOf(c) is { } target ? [target] : []);
+            : TargetOf(c) is { } target ? [target] : [], c);
     }
 
     private void ChatMode_Click(object sender, RoutedEventArgs e)

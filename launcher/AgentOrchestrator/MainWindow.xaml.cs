@@ -1128,6 +1128,8 @@ public partial class MainWindow : Window
                 return Fail();
             if (!await ModelConfigSmoke(presetConfig, Snap))
                 return Fail();
+            if (!await UiTweaksSmoke(Snap))
+                return Fail();
 
             // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
             async Task<bool> Show(DialogShell dialog, string name)
