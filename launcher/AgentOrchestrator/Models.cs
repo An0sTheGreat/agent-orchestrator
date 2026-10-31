@@ -214,6 +214,10 @@ internal sealed class AppSettings
     public bool CenterChat { get; set; } = true;
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
+    // The in-app browser: open in the right column, its last page, and whether it opens the pages the model reads.
+    public bool BrowserOpen { get; set; }
+    public string BrowserUrl { get; set; } = "";
+    public bool BrowserFollow { get; set; } = true;
     // Where local models run: "unsloth" (Unsloth Studio's API) or "llamacpp" (llama-server from <data>\llama.cpp).
     public string Runtime { get; set; } = "unsloth";
     public string ModelsFolder { get; set; } = ""; // llamacpp only: searched for GGUF files besides the Hugging Face cache; "" = none

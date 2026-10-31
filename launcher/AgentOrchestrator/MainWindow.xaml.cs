@@ -112,6 +112,9 @@ public partial class MainWindow : Window
             });
         ShowView(chat: true); // the app opens in Chat; the last Code conversation waits in the Code view
         RefreshProfile();
+        Markdown.OpenLink = OpenLink;
+        if (_settings.BrowserOpen)
+            OpenBrowser(null);
     }
 
     // ---------------------------------------------------------------- run control
@@ -456,6 +459,7 @@ public partial class MainWindow : Window
                 break;
             case "tool":
                 Activate(role, "Using tools");
+                BrowserFollowTool(Str(ev, "name"), Str(ev, "args"));
                 if (_pendingTools.Count > 0)
                     CompleteTool(_pendingTools.Dequeue(), Str(ev, "name"), Str(ev, "args"), Str(ev, "result"));
                 else
@@ -2737,6 +2741,34 @@ public partial class MainWindow : Window
                 return Fail();
             }
             NewChat_Click(this, new RoutedEventArgs());
+        }
+        // The browser: the globe opens it in the right column in place of the worker details (saved); a model search shows there
+        // when it follows the model; the globe again, or opening a worker's settings, gives the column back.
+        {
+            var collapsed = _settings.DetailsCollapsed;
+            ShowView(chat: true);
+            ChatBrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            var opened = BrowserPanel.IsVisible && !DetailsPanel.IsVisible && !WorkerRail.IsVisible && _settings.BrowserOpen && BrowserAddress.Text == "https://duckduckgo.com/";
+            _settings.BrowserFollow = true;
+            BrowserFollowTool("web_search", """{"query":"agent orchestrator"}""");
+            var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
+            BrowserFollowTool("calculator", """{"expression":"1+1"}""");
+            var ignored = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
+            ChatBrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);
+            OpenBrowser("example.org");
+            SelectWorker(CardFor("planner"));
+            SetWorkerRail(false);
+            await Settle();
+            var handedBack = !BrowserPanel.IsVisible && DetailsPanel.IsVisible && !_settings.BrowserOpen;
+            SetWorkerRail(collapsed);
+            if (!opened || !followed || !ignored || !closed || !handedBack)
+            {
+                Console.Error.WriteLine($"browser {opened} {followed} {ignored} {closed} {handedBack}");
+                return Fail();
+            }
         }
         // The profile: usage adds to the lifetime count shown under the name, and the card opens from the sidebar with the stats.
         var lifetime = _stats.Lifetime;

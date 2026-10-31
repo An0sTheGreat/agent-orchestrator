@@ -38,6 +38,11 @@ public partial class MainWindow
     {
         _settings.DetailsCollapsed = collapsed;
         RailPopup.IsOpen = false;
+        if (BrowserPanel.IsVisible) // the worker details take the column back from the browser
+        {
+            BrowserPanel.Visibility = Visibility.Collapsed;
+            _settings.BrowserOpen = false;
+        }
         WorkerRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
         DetailsPanel.Visibility = SplitterBar.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SplitterColumn.Width = new GridLength(collapsed ? 0 : 6);

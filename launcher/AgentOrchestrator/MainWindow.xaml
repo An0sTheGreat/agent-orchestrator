@@ -1081,6 +1081,10 @@
                                           ToolTip="Model output and the execution log of the project run" AutomationProperties.Name="Run output" />
                         </StackPanel>
                     </Border>
+<Button x:Name="CodeBrowserButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
+                            Click="Browser_Click" ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
+                        <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="14" />
+                    </Button>
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
@@ -1290,6 +1294,44 @@
                 <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
               </DockPanel>
             </Border>
+            <!-- Browser (MainWindow.Browser.cs): shown in the right column in place of the worker details while open -->
+            <Border x:Name="BrowserPanel" Grid.Column="3" Background="{DynamicResource Panel}" Visibility="Collapsed">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
+                        <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
+                                Click="BrowserClose_Click" ToolTip="Close the browser (back to the worker details)" AutomationProperties.Name="Close browser">
+                            <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <TextBlock DockPanel.Dock="Left" Text="BROWSER" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                        <ToggleButton x:Name="BrowserFollowToggle" DockPanel.Dock="Right" Style="{StaticResource ChipToggle}" Click="BrowserFollow_Click" VerticalAlignment="Center"
+                                      ToolTip="Open each page the model reads (fetch_page) here as it reads it" AutomationProperties.Name="Follow the model">
+                            <TextBlock Text="Follow the model" />
+                        </ToggleButton>
+                        <Border />
+                    </DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="10,0,10,8">
+                        <Button x:Name="BrowserBack" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="BrowserBack_Click" ToolTip="Back" AutomationProperties.Name="Back">
+                            <TextBlock Text="&#xE72B;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button x:Name="BrowserForward" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="BrowserForward_Click" ToolTip="Forward" AutomationProperties.Name="Forward">
+                            <TextBlock Text="&#xE72A;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="BrowserReload_Click" ToolTip="Reload" AutomationProperties.Name="Reload">
+                            <TextBlock Text="&#xE72C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="BrowserExternal_Click"
+                                ToolTip="Open this page in your default browser" AutomationProperties.Name="Open in default browser">
+                            <TextBlock Text="&#xE8A7;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <TextBox x:Name="BrowserAddress" Height="28" Margin="6,0,4,0" Padding="10,0" VerticalContentAlignment="Center" KeyDown="BrowserAddress_KeyDown"
+                                 AutomationProperties.Name="Address" ToolTip="A web address, or words to search for" />
+                    </DockPanel>
+                    <Grid>
+                        <ContentControl x:Name="BrowserHost" />
+                        <TextBlock x:Name="BrowserMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Visibility="Collapsed" />
+                    </Grid>
+                </DockPanel>
+            </Border>
             <!-- Collapsed worker details: one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
             <Border x:Name="WorkerRail" Grid.Column="3" Width="44" Background="{DynamicResource Panel}" Visibility="Collapsed">
                 <StackPanel Margin="0,12,0,0">
@@ -1330,6 +1372,10 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,8" LastChildFill="False">
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+<Button x:Name="ChatBrowserButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,0" VerticalAlignment="Center"
+                            Click="Browser_Click" ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
+                        <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="14" />
+                    </Button>
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>

@@ -935,6 +935,7 @@ public partial class MainWindow
                     DetachAnswer(toolReply);
                 Activate(role, "Using tools");
                 SetChatStatus($"{name} is using {Str(ev, "name")}…");
+                BrowserFollowTool(Str(ev, "name"), ev.TryGetProperty("args", out var shown) && shown.ValueKind != JsonValueKind.String ? shown.GetRawText() : Str(ev, "args"));
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
                 break;
             // compacted: the engine summarized earlier steps to fit the context window; history_compacted: earlier messages,

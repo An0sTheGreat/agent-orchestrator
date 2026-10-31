@@ -13,6 +13,7 @@ public partial class App : Application
             Markdown.SelfTest();
             UsageStats.SelfTest();
             VramEstimate.SelfTest();
+            AgentOrchestrator.MainWindow.BrowserSelfTest();
             Shutdown(0);
             return;
         }

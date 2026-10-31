@@ -12,6 +12,9 @@ namespace AgentOrchestrator;
 // references, so a theme change restyles rendered replies. Anything it does not recognise shows as plain text.
 internal static class Markdown
 {
+    // Where a clicked link opens (the app's browser); null: the default browser.
+    public static Action<string>? OpenLink;
+
     private static readonly Regex Heading = new(@"^(#{1,6})\s+(.*?)\s*#*\s*$");
     private static readonly Regex Rule = new(@"^\s{0,3}([-*_])(\s*\1){2,}\s*$");
     private static readonly Regex Item = new(@"^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$");
@@ -387,7 +390,13 @@ internal static class Markdown
                 var link = new Hyperlink { NavigateUri = uri, ToolTip = uri.AbsoluteUri };
                 AddInlines(link.Inlines, label, links: false);
                 link.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
-                link.RequestNavigate += (_, e) => Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+                link.RequestNavigate += (_, e) =>
+                {
+                    if (OpenLink is { } open)
+                        open(e.Uri.AbsoluteUri);
+                    else
+                        Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
+                };
                 target.Add(link);
             }
         }

@@ -995,7 +995,7 @@ public partial class MainWindow
         }
     }
 
-    // --ui-smoke: the Code header puts the context ring directly left of the Conversation / Run output toggle; while a turn
+    // --ui-smoke: the Code header puts the context ring, then the browser globe, left of the Conversation / Run output toggle; while a turn
     // runs, its status sits in the top row just left of the stop square and the bottom hint steps aside; idle shows the hint.
     private async Task<bool> UiTweaksSmoke(Action<string, FrameworkElement?> snap)
     {
@@ -1007,7 +1007,8 @@ public partial class MainWindow
             await Task.Delay(400);
             var toggleBox = (Border)((StackPanel)CodeConversationToggle.Parent).Parent;
             var header = (DockPanel)toggleBox.Parent;
-            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(toggleBox) + 1 ||
+            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeBrowserButton) != header.Children.IndexOf(toggleBox) + 1 || // the browser globe right of the ring
+                header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(toggleBox) + 2 ||
                 CodeContextRing.TranslatePoint(new Point(CodeContextRing.ActualWidth, 0), header).X > toggleBox.TranslatePoint(new Point(0, 0), header).X)
                 return false;
             _chatBusy = true;
