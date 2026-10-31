@@ -102,6 +102,8 @@ public partial class MainWindow : Window
                 ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
                 Log($"Workflow: {_workflowRoot}");
                 TryLoadApiKeyFile();
+                if (_settings.LoadFailed)
+                    Log("settings.json could not be read; settings changed this session will not be saved.");
                 MigrateRoles();
                 PrefillCards();
                 RefreshPrimary();
@@ -1051,7 +1053,7 @@ public partial class MainWindow : Window
             AddBuiltInRole("reviewer");
             SelectWorker(main);
             await Settle();
-            if (_cards.Any(c => c.Hidden) || !TabShown(implementer) || !TabShown(reviewer))
+            if (_cards.Any(c => c.Hidden) || !TabShown(implementer) || !TabShown(reviewer) || main.HasCovers)
                 return Fail();
         }
         foreach (var json in new[]
@@ -3350,20 +3352,13 @@ public partial class MainWindow : Window
         RefreshCardVisibility();
     }
 
-    // Once: an implementer or reviewer whose model differs from the planner's stays added (others now run as the planner),
-    // and the saved presets are cleared for a fresh start.
+    // Once: an implementer or reviewer with a model of its own (LauncherLogic.HasOwnModel) stays added (others now run as
+    // the planner), and the saved presets are cleared for a fresh start. An unreadable config: nothing changes, next start retries.
     private void MigrateRoles()
     {
-        if (_settings.RolesMigrated)
+        if (_settings.RolesMigrated || LauncherLogic.RolesWithOwnModel(ActiveConfigPath()) is not { } added)
             return;
-        try
-        {
-            var path = ActiveConfigPath();
-            var roles = path.Length > 0 ? JsonNode.Parse(File.ReadAllText(path))?["roles"] : null;
-            _settings.AddedRoles = Roles.Skip(1).Where(r => roles?[r] is JsonObject o && o["same_as"] is null &&
-                LauncherLogic.ModelKey(o) != LauncherLogic.ModelKey(roles["planner"])).ToList();
-        }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { }
+        _settings.AddedRoles = added;
         _settings.Presets.Clear();
         _settings.ModelPresets.Clear();
         _settings.RolesMigrated = true;
@@ -3401,15 +3396,26 @@ public partial class MainWindow : Window
 
     // The orchestrator reads custom workers from config.json; keep the active config (and the worker config) in step
     // with the cards. Returns false when the write failed. With collectSkipped the caller reports the skipped workers itself.
-    private bool SyncCustomWorkers(List<string>? collectSkipped = null)
+    // A project's not-added role with a model of its own keeps it (the user is told once) unless removing that role is the change.
+    private readonly HashSet<string> _ownModelNotices = new(StringComparer.OrdinalIgnoreCase);
+
+    private bool SyncCustomWorkers(List<string>? collectSkipped = null, string? removedRole = null)
     {
         RefreshSetupProblems();
         try
         {
             var skipped = Array.Empty<string>();
-            foreach (var path in WorkerConfigTargets())
+            var targets = WorkerConfigTargets();
+            foreach (var path in targets)
             {
-                LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles);
+                var keepOwn = path != targets[^1] ? Roles.Skip(1).Where(r => r != removedRole) : []; // the worker config is always last
+                foreach (var role in LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles, keepOwn))
+                    if (_ownModelNotices.Add($"{path}|{role}"))
+                    {
+                        var notice = $"{Path.GetFileName(Path.GetDirectoryName(path))}: its {RoleName(role)} has its own model; add the {RoleName(role)} to use it";
+                        Log(notice);
+                        Toast(notice, "#F7C873");
+                    }
                 skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
             }
             if (collectSkipped is not null)
@@ -3705,7 +3711,7 @@ public partial class MainWindow : Window
         _settings.Save();
         HoldWorkerTab(() =>
         {
-            SyncCustomWorkers();
+            SyncCustomWorkers(removedRole: role);
             SelectWorker(CardFor("planner"));
             RefreshCardVisibility();
             PrefillCards();

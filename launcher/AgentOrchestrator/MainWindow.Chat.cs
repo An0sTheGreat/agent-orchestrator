@@ -117,7 +117,10 @@ public partial class MainWindow
         foreach (var card in _cards)
             card.Hidden = card.IsBuiltIn && card.Role != "planner" && !_settings.AddedRoles.Contains(card.Role);
         if (CardFor("planner") is { } main)
-            main.Covers = string.Join(" · ", Roles.Where(r => r == "planner" || CardFor(r) is not { Hidden: false }).Select(RoleName));
+        {
+            var covered = Roles.Where(r => r == "planner" || CardFor(r) is not { Hidden: false }).Select(RoleName).ToList();
+            main.Covers = covered.Count > 1 ? string.Join(" · ", covered) : ""; // no Covers line for the planner alone
+        }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
     }

@@ -101,7 +101,7 @@ public partial class MainWindow
                 var root = JsonNode.Parse(File.ReadAllText(path));
                 entry = card.IsCustom
                     ? root?["custom_workers"]?.AsArray().OfType<JsonObject>().FirstOrDefault(w => w["id"]?.ToString() == card.Role)
-                    : root?["roles"]?[card.Role] as JsonObject;
+                    : root?["roles"]?[ConfigRole(card.Role)] as JsonObject; // a not-added role runs as the planner
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }

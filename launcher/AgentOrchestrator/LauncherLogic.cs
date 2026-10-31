@@ -1098,17 +1098,21 @@ internal static class LauncherLogic
 
     // Implementer/reviewer not in addedRoles run as the planner: "same_as": "planner", their other keys kept (custom workers
     // still copy the implementer's connection). An added role loses same_as and, when that leaves it with no model, gets a
-    // copy of the planner's settings. Writes only when something changed.
-    public static void WriteRoleFallbacks(string configPath, IEnumerable<string> addedRoles)
+    // copy of the planner's settings. Writes only when something changed. keepOwn (a project's config): a not-added role
+    // named there with a model of its own (HasOwnModel) is left as it is; returns those roles.
+    public static string[] WriteRoleFallbacks(string configPath, IEnumerable<string> addedRoles, IEnumerable<string>? keepOwn = null)
     {
         var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
             ?? throw new InvalidOperationException("config.json is not a JSON object.");
         var roles = (root["roles"] ??= new JsonObject()).AsObject();
         var before = roles.ToJsonString();
+        var kept = new List<string>();
         foreach (var name in BuiltInRoles.Skip(1))
         {
             var role = roles[name] as JsonObject;
-            if (!addedRoles.Contains(name))
+            if (!addedRoles.Contains(name) && keepOwn?.Contains(name) == true && HasOwnModel(role, roles["planner"]))
+                kept.Add(name);
+            else if (!addedRoles.Contains(name))
                 (role ?? (JsonObject)(roles[name] = new JsonObject()))["same_as"] = "planner";
             else
             {
@@ -1126,6 +1130,30 @@ internal static class LauncherLogic
             {
                 WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
             }));
+        return [.. kept];
+    }
+
+    // The role keys that make a model a role's own: which model, where, and how it is loaded, sampled and waited on.
+    private static readonly string[] OwnModelKeys = ["base_url", "model", "auto_load", "sampling", "timeout_seconds"];
+
+    // Whether a built-in role runs a model of its own rather than the planner's: no same_as, and one of OwnModelKeys set
+    // (not empty) to something other than the planner's value.
+    public static bool HasOwnModel(JsonNode? role, JsonNode? planner) =>
+        role is JsonObject o && o["same_as"] is null &&
+        OwnModelKeys.Any(k => o[k] is { } value && value is not JsonObject { Count: 0 } && !JsonNode.DeepEquals(value, planner?[k]));
+
+    // The implementer/reviewer in configPath with a model of their own (HasOwnModel); null when it cannot be read.
+    public static List<string>? RolesWithOwnModel(string configPath)
+    {
+        try
+        {
+            var roles = JsonNode.Parse(File.ReadAllText(configPath))?["roles"];
+            return BuiltInRoles.Skip(1).Where(r => HasOwnModel(roles?[r], roles?["planner"])).ToList();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     // What identifies a built-in role's model (remote model id, or the local load path, variant and file); "" when none.
@@ -2026,6 +2054,46 @@ internal static class LauncherLogic
             fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
             if ((string?)fb["roles"]!["implementer"]!["same_as"] != "planner" || (string?)fb["roles"]!["reviewer"]!["same_as"] != "planner")
                 throw new InvalidOperationException("Role fallbacks: a missing role must be written as same_as.");
+            // Own model: a role keeps its own unless its model and model options equal the planner's (an absent or empty key is the planner's).
+            var ownPlanner = JsonNode.Parse("{\"base_url\":\"u\",\"model\":\"m\",\"sampling\":{\"temperature\":0.5}}");
+            if (HasOwnModel(JsonNode.Parse("{\"base_url\":\"u\",\"model\":\"m\",\"sampling\":{\"temperature\":0.5},\"display_name\":\"I\"}"), ownPlanner) ||
+                HasOwnModel(JsonNode.Parse("{\"display_name\":\"I\",\"auto_load\":{}}"), ownPlanner) ||
+                HasOwnModel(JsonNode.Parse("{\"base_url\":\"r\",\"same_as\":\"planner\"}"), ownPlanner) || HasOwnModel(null, ownPlanner) ||
+                !HasOwnModel(JsonNode.Parse("{\"base_url\":\"r\",\"model\":\"m\"}"), ownPlanner) ||
+                !HasOwnModel(JsonNode.Parse("{\"model\":\"m\",\"sampling\":{\"temperature\":0.2}}"), ownPlanner) ||
+                !HasOwnModel(JsonNode.Parse("{\"auto_load\":{\"model_path\":\"m\"}}"), ownPlanner))
+                throw new InvalidOperationException("Own model: only a role whose model or model options differ from the planner's has its own.");
+            // A project's not-added role with its own model is kept (and reported) when keepOwn names it; the rest get same_as.
+            File.WriteAllText(fallbacks, "{\"roles\":{\"planner\":{\"model\":\"m\"},\"implementer\":{\"model\":\"x\"},\"reviewer\":{\"model\":\"m\"}}}");
+            var keptOwn = WriteRoleFallbacks(fallbacks, [], ["reviewer"]);
+            fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
+            if (keptOwn.Length != 0 || (string?)fb["roles"]!["implementer"]!["same_as"] != "planner" || (string?)fb["roles"]!["reviewer"]!["same_as"] != "planner")
+                throw new InvalidOperationException("Role fallbacks: a role keepOwn does not name, or one without its own model, must get same_as.");
+            File.WriteAllText(fallbacks, "{\"roles\":{\"planner\":{\"model\":\"m\"},\"implementer\":{\"model\":\"x\"},\"reviewer\":{\"model\":\"m\"}}}");
+            keptOwn = WriteRoleFallbacks(fallbacks, [], ["implementer", "reviewer"]);
+            fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
+            if (keptOwn is not ["implementer"] || fb["roles"]!["implementer"]!["same_as"] is not null || (string?)fb["roles"]!["reviewer"]!["same_as"] != "planner")
+                throw new InvalidOperationException("Role fallbacks: a project's role with its own model must be left as it is.");
+            // Migration reads the roles with their own model; an unreadable config gives null (nothing migrates).
+            File.WriteAllText(fallbacks, "{\"roles\":{\"planner\":{\"model\":\"m\"},\"implementer\":{\"model\":\"m\",\"sampling\":{\"top_p\":0.9}},\"reviewer\":{\"model\":\"m\"}}}");
+            var badConfig = Path.Combine(testArea, "bad-config.json");
+            File.WriteAllText(badConfig, "{not json");
+            if (RolesWithOwnModel(fallbacks) is not ["implementer"] || RolesWithOwnModel(badConfig) is not null || RolesWithOwnModel("") is not null ||
+                RolesWithOwnModel(Path.Combine(testArea, "missing.json")) is not null)
+                throw new InvalidOperationException("Migration must find the roles with their own model and nothing in an unreadable config.");
+            // Settings that exist but cannot be read are never saved over.
+            var dataBefore = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA");
+            try
+            {
+                Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", testArea);
+                var settingsFile = Path.Combine(testArea, "settings.json");
+                File.WriteAllText(settingsFile, "{broken");
+                var unread = AppSettings.Load();
+                unread.Save();
+                if (!unread.LoadFailed || File.ReadAllText(settingsFile) != "{broken")
+                    throw new InvalidOperationException("Settings that failed to load must not be saved over.");
+            }
+            finally { Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", dataBefore); }
             // Task limits: read and write; an empty field removes its key, then the empty task_limits; other keys stay.
             var limitsConfig = Path.Combine(testArea, "limits.json");
             File.WriteAllText(limitsConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"auto_load\":{\"max_seq_length\":16384}},\"reviewer\":{\"auto_load\":{\"max_seq_length\":32768}}}}");

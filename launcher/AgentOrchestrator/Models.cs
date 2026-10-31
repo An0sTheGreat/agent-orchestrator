@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AgentOrchestrator;
 
@@ -235,11 +236,18 @@ internal sealed class AppSettings
         if (!File.Exists(FilePath))
             return new() { RolesMigrated = true }; // a new user: nothing to migrate
         try { return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new(); }
-        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new(); }
+        catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new() { LoadFailed = true }; }
     }
+
+    // settings.json exists but could not be read (locked, unreadable, bad JSON): these are defaults, so Save never
+    // writes them over the user's file.
+    [JsonIgnore]
+    public bool LoadFailed { get; private init; }
 
     public void Save()
     {
+        if (LoadFailed)
+            return;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
