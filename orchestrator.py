@@ -397,9 +397,9 @@ class ApiClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         n_ctx = self.context_size()
-        if n_ctx:  # compact before the window fills: 80% of what the reply's max_tokens leaves (at least half of n_ctx)
+        if n_ctx:  # compact before the window fills: COMPACT_AT of what the reply's max_tokens leaves (at least half of n_ctx)
             room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
-            if estimate_tokens(messages, tools) > 0.8 * room:
+            if estimate_tokens(messages, tools) > COMPACT_AT * room:
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
@@ -703,6 +703,9 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
 
 
 COMPACT_MARK = "\n\nSummary of the earlier steps:\n"
+# Compaction starts when the prompt passes this share of the room: the context window less the reply's max_tokens (at
+# least half the window). Shared by the pre-turn conversation summary and the in-request compactor.
+COMPACT_AT = 0.9
 COMPACT_PROMPT = ("You compact an AI agent's working history so it can keep working without it. Summarize the steps below "
                   "for the agent itself, tersely, under these headings: Goal; Files read (and what mattered in them); "
                   "Changes made (file: what); Decisions; Errors; What remains. Reply with the summary only.")
@@ -758,7 +761,7 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
     size = lambda history: estimate_tokens([{"content": system}, *history], tools)
     before = size(full)
-    if before <= 0.6 * room:
+    if before <= COMPACT_AT * room:
         return full
     keep = 2 if len(messages) >= 3 and messages[-2]["role"] == "assistant" and estimate_tokens(messages[-2:]) <= 0.2 * room else 1
     earlier, kept = messages[:-keep], messages[-keep:]

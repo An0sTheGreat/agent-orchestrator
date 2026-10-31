@@ -335,7 +335,9 @@ internal static class Markdown
         return table;
     }
 
-    public static void AddInlines(InlineCollection target, string text)
+    // links: false inside a link's own text, which would otherwise match itself again (a bare URL is its own label) and
+    // recurse until the stack overflows.
+    public static void AddInlines(InlineCollection target, string text, bool links = true)
     {
         var at = 0;
         foreach (Match m in Inline.Matches(text))
@@ -343,6 +345,11 @@ internal static class Markdown
             if (m.Index > at)
                 target.Add(new Run(text[at..m.Index]));
             at = m.Index + m.Length;
+            if (!links && (m.Groups["url"].Success || m.Groups["bare"].Success))
+            {
+                target.Add(new Run(m.Groups["label"].Success ? m.Groups["label"].Value : m.Value));
+                continue;
+            }
             if (m.Groups["codetext"].Success)
             {
                 // inline code keeps the text colour on a light chip, like other AI chat apps
@@ -353,19 +360,19 @@ internal static class Markdown
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)
             {
                 var bold = new Bold();
-                AddInlines(bold.Inlines, m.Groups["bold"].Success ? m.Groups["bold"].Value : m.Groups["bold2"].Value);
+                AddInlines(bold.Inlines, m.Groups["bold"].Success ? m.Groups["bold"].Value : m.Groups["bold2"].Value, links);
                 target.Add(bold);
             }
             else if (m.Groups["em"].Success || m.Groups["em2"].Success)
             {
                 var em = new Italic();
-                AddInlines(em.Inlines, m.Groups["em"].Success ? m.Groups["em"].Value : m.Groups["em2"].Value);
+                AddInlines(em.Inlines, m.Groups["em"].Success ? m.Groups["em"].Value : m.Groups["em2"].Value, links);
                 target.Add(em);
             }
             else if (m.Groups["strike"].Success)
             {
                 var strike = new Span { TextDecorations = TextDecorations.Strikethrough };
-                AddInlines(strike.Inlines, m.Groups["strike"].Value);
+                AddInlines(strike.Inlines, m.Groups["strike"].Value, links);
                 target.Add(strike);
             }
             else
@@ -378,7 +385,7 @@ internal static class Markdown
                     continue;
                 }
                 var link = new Hyperlink { NavigateUri = uri, ToolTip = uri.AbsoluteUri };
-                AddInlines(link.Inlines, label);
+                AddInlines(link.Inlines, label, links: false);
                 link.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
                 link.RequestNavigate += (_, e) => Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true });
                 target.Add(link);
@@ -386,6 +393,17 @@ internal static class Markdown
         }
         if (at < text.Length)
             target.Add(new Run(text[at..]));
+    }
+
+    // --self-test: a bare URL, a link labelled with its URL, and a bare URL in bold each render as one link (they used to
+    // recurse until the stack overflowed, which ends the app without any error).
+    public static void SelfTest()
+    {
+        var doc = ToDocument("see https://example.com/a and [https://x.org](https://x.org) **https://b.io**", 14);
+        static IEnumerable<Inline> All(IEnumerable<Inline> inlines) => inlines.SelectMany(i => i is Span s ? All(s.Inlines).Prepend(i) : [i]);
+        var links = doc.Blocks.OfType<Paragraph>().SelectMany(p => All(p.Inlines)).OfType<Hyperlink>().Count();
+        if (links != 3 || PlainText(doc).Trim() != "see https://example.com/a and https://x.org https://b.io")
+            throw new InvalidOperationException($"Markdown links: {links} links, text '{PlainText(doc).Trim()}'");
     }
 
     // The document's text with its structure flattened, for tests.

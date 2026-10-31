@@ -10,6 +10,7 @@ public partial class App : Application
         {
             LauncherLogic.SelfTest();
             ConversationStore.SelfTest();
+            Markdown.SelfTest();
             Shutdown(0);
             return;
         }
