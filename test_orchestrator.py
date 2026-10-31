@@ -2554,7 +2554,9 @@ class ChatTests(unittest.TestCase):
             self.assertIsNone(orchestrator.chat_worker(config, role))
         self.assertIn("Reviewer: p\n", orchestrator.team_context(config))  # the planner's auto_load model
         self.assertIn("Be strict.", orchestrator.role_block(config, "reviewer"))
-        own = {"roles": {**config["roles"], "implementer": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "impl-model"}}}
+        added = {"roles": {"planner": {**config["roles"]["planner"], "chat_system_prompt": "Be brief."}}}
+        self.assertEqual(orchestrator.role_block(added, "implementer"), "\n\n=== YOUR ROLE: Implementer ===\nBe brief.\n")  # not added: the planner's
+        own ={"roles": {**config["roles"], "implementer": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "impl-model"}}}
         self.assertEqual(orchestrator.role_settings(own, "implementer")[0].expected, "impl-model")
         for bad in ({"roles": {}}, {"roles": {"implementer": {"base_url": "http://x", "api_key": "k"}}}):
             with self.assertRaisesRegex(orchestrator.WorkflowError, "planner"):
@@ -2986,12 +2988,50 @@ class LeadTests(unittest.TestCase):
 
     def test_workflow_files_at_the_root_cannot_be_written_but_project_md_can(self):
         folders = [{"path": str(self.root), "access": "write"}]
-        for name in ("config.json", "STATE.md", "HANDOFF.md"):
-            with self.subTest(name), self.assertRaisesRegex(orchestrator.WorkflowError, "managed by the workflow"):
-                orchestrator.code_path(name, folders, write=True)
+        for marker in ("PROJECT.md", "STATE.md", ".ao_checkpoint.json"):  # an orchestrator project root
+            (self.root / marker).write_text("x", encoding="utf-8")
+            for name in ("config.json", "STATE.md", "HANDOFF.md", "ISSUES.md", ".ao_checkpoint.json"):
+                with self.subTest(marker=marker, name=name), self.assertRaisesRegex(orchestrator.WorkflowError, "managed by the workflow"):
+                    orchestrator.code_path(name, folders, write=True)
+            (self.root / marker).unlink()
+        (self.root / "STATE.md").write_text("x", encoding="utf-8")
         orchestrator.code_path("STATE.md", folders)  # reading is fine
         orchestrator.code_path("PROJECT.md", folders, write=True)
         orchestrator.code_path("docs/config.json", folders, write=True)  # only the root's records are protected
+
+    def test_a_plain_repo_root_keeps_its_config_and_issues_editable_and_checks_ignore_its_config(self):
+        folders = [{"path": str(self.root), "access": "write"}]
+        for name in ("config.json", "ISSUES.md", "handoff.md"):
+            self.assertEqual(orchestrator.code_path(name, folders, write=True), self.root / name)
+        writes = orchestrator.code_write_handlers(folders)["write_file"]
+        command = [orchestrator.sys.executable, "-c", "print('ran')"]
+        self.assertEqual(writes("config.json", json.dumps({"validation_commands": {"evil": command}})), "OK")
+        self.assertNotIn("VALIDATION", orchestrator.run_checks(self.config, folders))  # the turn's config, not the written one
+
+    def test_the_lead_re_ensures_its_model_after_a_delegation(self):
+        # One model server: the sub-agent's load swaps the lead's model out, so the lead must load its own again.
+        config = {"roles": {"planner": {"auto_load": {"model_path": "lead.gguf"}}, "implementer": {"auto_load": {"model_path": "sub.gguf"}}}}
+        loaded, calls, replies = [""], [], {"planner": [tool_call("delegate", worker="implementer", brief="b"), "FINAL"], "implementer": ["R"]}
+
+        class Client:
+            def __init__(self, role):
+                self.role, self.cut_off = role, False
+
+            def ensure_model(self, role, interactive):
+                loaded[0] = config["roles"][role]["auto_load"]["model_path"]
+                return f"{role}-id"
+
+            def complete(self, model, messages, sampling, tools=None):
+                calls.append((self.role, model, loaded[0]))
+                reply = replies[self.role].pop(0)
+                return {"role": "assistant", "content": reply} if isinstance(reply, str) else reply
+
+        handlers = {"delegate": orchestrator.delegator(config, ([], {}, ""), None, 3, ("planner", "lead", "planner"))}
+        with patch.object(orchestrator, "role_settings", lambda c, role: (Client(role), {})), patch.object(orchestrator, "emit", lambda e, **d: None):
+            text = orchestrator.code_loop(config, "planner", "S", self.MSGS, [orchestrator.DELEGATE_TOOL], handlers)
+        self.assertEqual(text, "FINAL")
+        self.assertEqual(calls, [("planner", "planner-id", "lead.gguf"), ("implementer", "implementer-id", "sub.gguf"),
+                                 ("planner", "planner-id", "lead.gguf")])
 
     def test_run_checks_without_checks_and_with_a_python_syntax_error(self):
         (self.root / "notes.txt").write_text("x", encoding="utf-8")
@@ -3083,7 +3123,21 @@ class LeadRunTests(unittest.TestCase):
         task = log[0]["messages"][0]["content"]
         for part in ("PROJECT.md\n# Project", "## Done: Item A", "FILES (project root)\n", "STATE.md"):
             self.assertIn(part, task)
-        self.assertEqual(log[1]["messages"][-1], {"role": "user", "content": orchestrator.LEAD_NUDGE})
+        self.assertEqual(log[1]["messages"][-1], {"role": "user", "content": orchestrator.LEAD_NUDGE + "\n\nDONE SO FAR (STATE.md): Item A"})
+
+    def test_three_nudges_in_a_row_stop_the_run_with_an_error(self):
+        replies = ["a", "b", "c", tool_call("todo", items=["x"]), "d", "e", "f", "g"]  # a tool call resets the count
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "replied 4 times in a row without a tool call"):
+            self.run_project({"planner": replies})  # __main__ prints it as an ERROR line, exit code 1
+        self.assertNotIn("## Done", self.text("STATE.md"))
+
+    def test_record_progress_returns_the_done_list(self):
+        replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok"),
+                               tool_call("finish", summary="done")]}
+        _, _, events = self.run_project(replies)
+        results = [d["result"] for e, d in events if e == "tool" and d["name"] == "record_progress"]
+        self.assertEqual(results, ["OK: recorded 'First' in STATE.md\nDONE SO FAR (STATE.md): First",
+                                   "OK: recorded 'Second' in STATE.md\nDONE SO FAR (STATE.md): First; Second"])
 
     def test_once_stops_after_the_first_recorded_item(self):
         replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok")]}

@@ -3204,7 +3204,8 @@ def role_block(config: dict[str, Any], role: str, worker: dict[str, Any] | None 
     roles.<role>.chat_system_prompt under the same header; "" when a built-in has none."""
     if worker:
         return f"\n\n=== YOUR ROLE: {worker['title']} ===\n{worker['system_prompt'].strip()}\n"
-    extra = str(((config.get("roles") or {}).get(role) or {}).get("chat_system_prompt") or "").strip()
+    own = ((config.get("roles") or {}).get(role) or {}).get("chat_system_prompt")  # a same_as role may still set its own
+    extra = str(own or (role_config(config, role) or {}).get("chat_system_prompt") or "").strip()
     return f"\n\n=== YOUR ROLE: {role.capitalize()} ===\n{extra}\n" if extra else ""
 
 
@@ -3290,14 +3291,18 @@ def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> P
         raise WorkflowError(f"Path is protected: {raw}")
     if write and max(inside, key=lambda f: len(Path(f["path"]).parts))["access"] != "write":
         raise WorkflowError(f"Path is in a read-only folder: {raw}")
-    if write and path.parent == Path(folders[0]["path"]).resolve() and path.name.lower() in WORKFLOW_FILES:
+    root = Path(folders[0]["path"]).resolve()
+    if write and path.parent == root and path.name.lower() in TOOL_PROTECTED_FILES \
+            and any((root / name).is_file() for name in ORCHESTRATOR_MARKERS):
         raise WorkflowError(f"{path.name} is managed by the workflow and cannot be edited with file tools: {raw}")
     return path
 
 
-# The project root's workflow records and settings: written by the engine (record_progress, the run) or the launcher,
-# never by a model's file tools. PROJECT.md stays editable (init-project writes it).
-WORKFLOW_FILES = {"config.json", "state.md", "handoff.md", "task.md", "result.md", "review.md", "issues.md", "contract.md", ".ao_checkpoint.json"}
+# An orchestrator project root's workflow records and settings: written by the engine (record_progress, the run) or the
+# launcher, never by a model's file tools. PROJECT.md stays editable (init-project writes it). Any other root (a user's own
+# repo) keeps its config.json/ISSUES.md editable; run_checks only runs the config loaded at turn start.
+TOOL_PROTECTED_FILES = {"config.json", "state.md", "handoff.md", "task.md", "result.md", "review.md", "issues.md", "contract.md", ".ao_checkpoint.json"}
+ORCHESTRATOR_MARKERS = ("PROJECT.md", "STATE.md", CHECKPOINT_FILE)
 
 
 def code_safe(path: Path, folders: list[dict[str, str]]) -> bool:
@@ -3387,14 +3392,16 @@ def code_write_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
 
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
-              stop: Any = None, nudge: str = "") -> str:
+              stop: Any = None, nudge: Any = "") -> str:
     """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply. With
-    `nudge`, such a reply gets `nudge` sent back instead, and only `stop()` turning true after a tool batch ends the loop.
-    At most config[cap[0]] (default cap[1]) model calls."""
+    `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
+    error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
+    calls. After a batch that ran another model (delegate, write_project_md), the role's model is ensured again: a
+    single-model server may have swapped it."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
-    max_steps, name, prev_text_calls, cutoffs = int(config.get(cap[0], cap[1])), display_name(config, role), None, 0
+    max_steps, name, prev_text_calls, cutoffs, nudges = int(config.get(cap[0], cap[1])), display_name(config, role), None, 0, 0
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -3431,9 +3438,12 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
         if not calls and not nudge:
             return answer_text(response)
         if not calls:
-            messages.append({"role": "user", "content": nudge})
+            if nudges >= 3:
+                raise WorkflowError(f"{name} replied {nudges + 1} times in a row without a tool call; stopping the run")
+            nudges += 1
+            messages.append({"role": "user", "content": nudge() if callable(nudge) else nudge})
             continue
-        results = []
+        nudges, results = 0, []
         for call in calls:
             function = call.get("function") or {}
             tool = str(function.get("name") or "?")
@@ -3451,6 +3461,8 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 results.append(f"{tool}: {result}")
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
+        if {str((c.get("function") or {}).get("name")) for c in calls} & {"delegate", "write_project_md"}:
+            model = client.ensure_model(role, False)
         if stop and stop():
             return answer_text(response)
     raise WorkflowError(f"{name} exceeded {cap[0]}={max_steps}")
@@ -3574,7 +3586,14 @@ def record_progress(project_root: Path, item: str, outcome: str) -> str:
     emit("task", id=item, outcome=outcome)
     emit("task_end", id=item, status="passed")
     emit("task_start")
-    return f"OK: recorded '{item}' in STATE.md"
+    return f"OK: recorded '{item}' in STATE.md\n{done_items(project_root)}"
+
+
+def done_items(project_root: Path) -> str:
+    """STATE.md's finished items on one line, so the lead sees them even after its context was compacted."""
+    path = project_root / "STATE.md"
+    items = re.findall(r"^## Done: (.+)$", load_text(path), re.M) if path.is_file() else []
+    return "DONE SO FAR (STATE.md): " + ("; ".join(i.strip() for i in items) or "(none yet)")
 
 
 def run_lead_project(config: dict[str, Any], project_root: Path, once: bool) -> int:
@@ -3615,7 +3634,7 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool) -> 
     emit("task_start")
     emit("chat_stage", role="planner", stage="lead", title=title)
     code_loop(config, "planner", system, [{"role": "user", "content": user}], tools, handlers, ("max_lead_steps", 200),
-              lambda: done["finished"] or (once and done["progress"] > 0), LEAD_NUDGE)
+              lambda: done["finished"] or (once and done["progress"] > 0), lambda: f"{LEAD_NUDGE}\n\n{done_items(project_root)}")
     return 0
 
 
