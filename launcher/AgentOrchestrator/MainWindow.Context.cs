@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Shapes;
 
 namespace AgentOrchestrator;
@@ -131,8 +132,11 @@ public partial class MainWindow
         return _settings.CenterChat && (scroll.ActualWidth - ChatWidth) / 2 >= PinWidth + 20;
     }
 
-    // The header's Context card: "Context" and its arrow on the left, the percentage (Settings) and the ring on the right; open,
-    // its breakdown hangs below it (the pin), as wide as the card.
+    // The header's Context card: "Context" and its arrow on the left, the percentage (Settings) and the ring on the right. Open,
+    // its breakdown (the pin, an overlay under the header) joins it as one card: the header loses its bottom edge and corners,
+    // the breakdown its top ones, and the breakdown slides open and shut (AnimatePin).
+    private readonly HashSet<ContentControl> _pinsClosing = new();
+
     private void RefreshContextPins()
     {
         foreach (var code in new[] { false, true })
@@ -140,23 +144,63 @@ public partial class MainWindow
             var pin = code ? CodeContextPin : ChatContextPin;
             var ring = code ? CodeContextRing : ChatContextRing;
             var room = CanPin(code);
-            var show = _settings.ContextPinned && room;
+            var closing = _pinsClosing.Contains(pin);
+            var show = (_settings.ContextPinned || closing) && room;
             ring.Content = ContextFace(ContextOf(code), show, room ? PinWidth : double.NaN);
-            pin.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            pin.Content = show ? ContextCard(ContextOf(code), title: false) : null;
-            if (show && pin.Parent is FrameworkElement area && ring.IsVisible)
+            if (!show)
+            {
+                pin.BeginAnimation(HeightProperty, null);
+                pin.Visibility = Visibility.Collapsed;
+                pin.Content = null;
+                _pinsClosing.Remove(pin);
+                continue;
+            }
+            pin.Content = ContextCard(ContextOf(code), title: false, attached: true);
+            pin.Visibility = Visibility.Visible;
+            if (pin.Parent is FrameworkElement area && ring.IsVisible)
             {
                 area.UpdateLayout();
-                var right = area.ActualWidth - ring.TranslatePoint(new Point(ring.ActualWidth, 0), area).X;
-                pin.Margin = new Thickness(0, 0, Math.Max(0, right), 0); // under the card, right edges level
+                var corner = ring.TranslatePoint(new Point(ring.ActualWidth, ring.ActualHeight), area);
+                pin.Margin = new Thickness(0, corner.Y, Math.Max(0, area.ActualWidth - corner.X), 0); // flush under the header, right edges level
             }
         }
+    }
+
+    // Opening: from nothing to the breakdown's height; closing: back to nothing, then the card closes. 240 ms, decelerating,
+    // as the sidebar's slide. A breakdown that changes while open sizes itself (the height goes back to auto).
+    private void AnimatePin(ContentControl pin, bool open)
+    {
+        pin.UpdateLayout();
+        var full = pin.ActualHeight;
+        if (open)
+        {
+            pin.Measure(new Size(PinWidth, double.PositiveInfinity));
+            full = pin.DesiredSize.Height;
+        }
+        var slide = new DoubleAnimation(open ? 0 : full, open ? full : 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = Decelerate };
+        slide.Completed += (_, _) =>
+        {
+            pin.BeginAnimation(HeightProperty, null);
+            pin.BeginAnimation(OpacityProperty, null);
+            pin.Height = double.NaN;
+            if (!open && _pinsClosing.Remove(pin))
+                RefreshContextPins();
+        };
+        pin.ClipToBounds = true;
+        pin.BeginAnimation(HeightProperty, slide);
+        pin.BeginAnimation(OpacityProperty, new DoubleAnimation(open ? 0 : 1, open ? 1 : 0, TimeSpan.FromMilliseconds(240)) { EasingFunction = Decelerate });
+    }
+
+    private CornerRadius Radius(bool top, bool bottom)
+    {
+        var r = TryFindResource("ControlRadius") is CornerRadius c ? c : new CornerRadius(8);
+        return new CornerRadius(top ? r.TopLeft : 0, top ? r.TopRight : 0, bottom ? r.BottomRight : 0, bottom ? r.BottomLeft : 0);
     }
 
     private FrameworkElement ContextFace(ContextSnapshot? s, bool open, double width)
     {
         TextBlock Text(string text, string brush, double size = 12) =>
-            (TextBlock)new TextBlock { Text = text, FontSize = size, VerticalAlignment = VerticalAlignment.Center }.WithForeground(brush);
+            new TextBlock { Text = text, FontSize = size, VerticalAlignment = VerticalAlignment.Center }.WithForeground(brush);
         var track = new Ellipse { Width = 18, Height = 18, StrokeThickness = 2.5 };
         track.SetResourceReference(Shape.StrokeProperty, "Border");
         var ring = new Grid { Width = 18, Height = 18, VerticalAlignment = VerticalAlignment.Center };
@@ -180,10 +224,10 @@ public partial class MainWindow
         var arrow = Text(open ? "\u25BE" : "\u25B8", "Muted", 10);
         arrow.Margin = new Thickness(6, 1, 12, 0);
         face.Children.Add(arrow);
-        var card = new Border { Child = face, Padding = new Thickness(12, 5, 8, 5), BorderThickness = new Thickness(1), Width = width, MinWidth = 140 };
+        var card = new Border { Child = face, Padding = new Thickness(12, 5, 8, open ? 6 : 5), BorderThickness = new Thickness(1, 1, 1, open ? 0 : 1), Width = width,
+            MinWidth = 140, CornerRadius = Radius(top: true, bottom: !open) };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
-        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         return card;
     }
 
@@ -193,8 +237,9 @@ public partial class MainWindow
             RefreshContextPins();
     }
 
-    // The breakdown of the popup (title: with its "Context" heading) and of the open card; s null: no reply yet.
-    private Border ContextCard(ContextSnapshot? s, bool title = true)
+    // The breakdown of the popup (title: with its "Context" heading) and of the open card (attached: the lower part of the
+    // header's card, no top edge or corners); s null: no reply yet.
+    private Border ContextCard(ContextSnapshot? s, bool title = true, bool attached = false)
     {
         StackPanel panel;
         if (s is null)
@@ -206,10 +251,10 @@ public partial class MainWindow
         }
         else
             panel = ContextBody(s, title);
-        var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1), Tag = "ContextCard" };
+        var card = new Border { Child = panel, Padding = new Thickness(14, attached ? 4 : 12, 14, 12), BorderThickness = new Thickness(1, attached ? 0 : 1, 1, 1), Tag = "ContextCard",
+            CornerRadius = Radius(top: !attached, bottom: true) };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
-        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         return card;
     }
 
@@ -278,9 +323,16 @@ public partial class MainWindow
         var code = sender == CodeContextRing;
         if (CanPin(code))
         {
-            _settings.ContextPinned = !_settings.ContextPinned;
+            var pin = code ? CodeContextPin : ChatContextPin;
+            if (_pinsClosing.Contains(pin))
+                return; // already sliding shut
+            var open = !_settings.ContextPinned;
+            _settings.ContextPinned = open;
             _settings.Save();
+            if (!open)
+                _pinsClosing.Add(pin); // the card stays open until the breakdown has slid shut
             RefreshContextPins();
+            AnimatePin(pin, open);
             return;
         }
         if (ContextOf(code) is not { } s)

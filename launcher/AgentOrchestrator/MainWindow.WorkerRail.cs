@@ -34,8 +34,13 @@ public partial class MainWindow
     }
 
     // Collapsed: the rail alone, no splitter; expanded: the column at its saved width (the splitter resizes it as before).
+    // Switching between them on screen slides the column like the sidebar (240 ms, decelerating): the details keep their
+    // full width and are uncovered or clipped as the column grows or shrinks.
     private void SetWorkerRail(bool collapsed)
     {
+        var target = Math.Clamp(_settings.DetailsWidth, 260, 1400);
+        var from = DetailsColumn.ActualWidth;
+        var slide = IsLoaded && IsVisible && from > 0 && (collapsed ? DetailsPanel.IsVisible && !BrowserPanel.IsVisible : WorkerRail.IsVisible);
         _settings.DetailsCollapsed = collapsed;
         RailPopup.IsOpen = false;
         if (BrowserPanel.IsVisible) // the worker details take the column back from the browser
@@ -46,9 +51,52 @@ public partial class MainWindow
         WorkerRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
         DetailsPanel.Visibility = SplitterBar.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SplitterColumn.Width = new GridLength(collapsed ? 0 : 6);
-        DetailsColumn.MinWidth = collapsed ? 0 : 260;
-        DetailsColumn.Width = collapsed ? GridLength.Auto : new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
-        FitDetailsColumn();
+        void Settle()
+        {
+            DetailsPanel.ClearValue(WidthProperty);
+            DetailsPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
+            DetailsPanel.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+            DetailsColumn.MinWidth = collapsed ? 0 : 260;
+            DetailsColumn.Width = collapsed ? GridLength.Auto : new GridLength(target);
+            FitDetailsColumn();
+        }
+        if (!slide)
+        {
+            StopColumnTween();
+            Settle();
+            return;
+        }
+        DetailsPanel.Visibility = Visibility.Visible; // shown while it slides, under the rail when collapsing
+        DetailsPanel.Width = collapsed ? from : target;
+        DetailsPanel.HorizontalAlignment = HorizontalAlignment.Left;
+        DetailsColumn.MinWidth = 0;
+        TweenColumn(from, collapsed ? WorkerRail.Width : target, Settle);
+    }
+
+    // A ColumnDefinition's GridLength width can't take a DoubleAnimation, so the slide is stepped each frame.
+    private EventHandler? _columnTween;
+
+    private void TweenColumn(double from, double to, Action done)
+    {
+        StopColumnTween();
+        var start = System.Diagnostics.Stopwatch.GetTimestamp();
+        _columnTween = (_, _) =>
+        {
+            var t = Math.Min(1, System.Diagnostics.Stopwatch.GetElapsedTime(start).TotalMilliseconds / 240);
+            DetailsColumn.Width = new GridLength(from + (to - from) * Decelerate.Ease(t));
+            if (t < 1)
+                return;
+            StopColumnTween();
+            done();
+        };
+        CompositionTarget.Rendering += _columnTween;
+    }
+
+    private void StopColumnTween()
+    {
+        if (_columnTween is not null)
+            CompositionTarget.Rendering -= _columnTween;
+        _columnTween = null;
     }
 
     private void RailDot_MouseEnter(object sender, MouseEventArgs e) => ShowRailCard((FrameworkElement)sender);

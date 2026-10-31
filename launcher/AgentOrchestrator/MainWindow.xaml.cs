@@ -2751,12 +2751,12 @@ public partial class MainWindow : Window
             }
             NewChat_Click(this, new RoutedEventArgs());
         }
-        // The browser: the globe opens it in the right column in place of the worker details (saved); a model search shows there
+        // The browser: the title bar's globe opens it in the right column in place of the worker details (saved); a model search shows there
         // when it follows the model; the globe again, or opening a worker's settings, gives the column back.
         {
             var collapsed = _settings.DetailsCollapsed;
             ShowView(chat: true);
-            ChatBrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var opened = BrowserPanel.IsVisible && !DetailsPanel.IsVisible && !WorkerRail.IsVisible && _settings.BrowserOpen && BrowserAddress.Text == "https://duckduckgo.com/";
             _settings.BrowserFollow = true;
@@ -2764,7 +2764,7 @@ public partial class MainWindow : Window
             var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
             BrowserFollowTool("calculator", """{"expression":"1+1"}""");
             var ignored = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
-            ChatBrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);
             OpenBrowser("example.org");

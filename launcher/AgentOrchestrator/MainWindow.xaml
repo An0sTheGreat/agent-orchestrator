@@ -947,6 +947,10 @@
                     </StackPanel>
                 </Border>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="BrowserButton" Style="{StaticResource TitleButton}" Click="Browser_Click"
+                            ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
+                        <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                    </Button>
                     <Button Style="{StaticResource TitleButton}" Content="─" Click="Minimize_Click" />
                     <Button x:Name="MaximizeButton" Style="{StaticResource TitleButton}" Content="□" Click="Maximize_Click" />
                     <Button Style="{StaticResource CloseButton}" Content="×" Click="Close_Click" />
@@ -1081,10 +1085,6 @@
                                           ToolTip="Model output and the execution log of the project run" AutomationProperties.Name="Run output" />
                         </StackPanel>
                     </Border>
-<Button x:Name="CodeBrowserButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
-                            Click="Browser_Click" ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
-                        <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="14" />
-                    </Button>
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
@@ -1333,7 +1333,7 @@
                 </DockPanel>
             </Border>
             <!-- Collapsed worker details: one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
-            <Border x:Name="WorkerRail" Grid.Column="3" Width="44" Background="{DynamicResource Panel}" Visibility="Collapsed">
+            <Border x:Name="WorkerRail" Grid.Column="3" Width="44" HorizontalAlignment="Left" Panel.ZIndex="1" Background="{DynamicResource Panel}" Visibility="Collapsed">
                 <StackPanel Margin="0,12,0,0">
                     <Button x:Name="RailExpandButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,10"
                             Click="WorkerRailToggle_Click" ToolTip="Show worker details" AutomationProperties.Name="Show worker details">
@@ -1372,10 +1372,6 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,8" LastChildFill="False">
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-<Button x:Name="ChatBrowserButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,0" VerticalAlignment="Center"
-                            Click="Browser_Click" ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
-                        <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="14" />
-                    </Button>
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
