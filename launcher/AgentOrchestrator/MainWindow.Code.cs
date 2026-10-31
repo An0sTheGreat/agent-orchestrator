@@ -615,6 +615,14 @@ public partial class MainWindow
             RefreshCodeFolder();
             return;
         }
+        // A run keeps its folder's conversation in the sidebar (with no chat yet it would count as empty and be dropped),
+        // so the project can be found again after the app closes; the run's log is in the logs folder (Log).
+        if (EnsureCodeConversation(folder) && _codeConv is { Title: null } conv)
+        {
+            conv.Title = $"{Path.GetFileName(folder.TrimEnd('\\', '/'))} · project run";
+            StoreDo(() => _store.Save(conv));
+            RefreshSidebarList();
+        }
         try
         {
             var copied = LauncherLogic.InitializeProject(_workflowRoot, folder, customConfigFile: LauncherLogic.EnsureWorkerConfig(_workflowRoot));

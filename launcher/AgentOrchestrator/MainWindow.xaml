@@ -1157,8 +1157,11 @@
                                     <TextBlock x:Name="LogCount" Text="0" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center" />
                                 </StackPanel>
                             </ToggleButton>
-                            <Button x:Name="CopyLogButton" Style="{StaticResource GhostButton}" Content="Copy full log" Padding="10,4" FontSize="11"
-                                    HorizontalAlignment="Right" Margin="0,0,14,0" Click="CopyLog_Click" />
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,14,0">
+                                <Button Style="{StaticResource GhostButton}" Content="Open logs" Padding="10,4" FontSize="11" Click="OpenLogs_Click"
+                                        ToolTip="The saved execution logs, one file per day (kept 14 days)" />
+                                <Button x:Name="CopyLogButton" Style="{StaticResource GhostButton}" Content="Copy full log" Padding="10,4" FontSize="11" Click="CopyLog_Click" />
+                            </StackPanel>
                         </Grid>
                         <TextBox x:Name="LogBox" Height="230" IsReadOnly="True" TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12" Visibility="Collapsed"
                                  Margin="14,0,14,12" Background="{DynamicResource AppBackground}"

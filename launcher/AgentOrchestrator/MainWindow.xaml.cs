@@ -933,10 +933,38 @@ public partial class MainWindow : Window
 
     // ---------------------------------------------------------------- execution log
 
+    // The execution log also goes to a file per day in <data>\logs, so a run's errors survive the app closing (the Run
+    // output's "Open logs" opens the folder). Files older than 14 days are removed at the first write of a session.
+    internal static string LogsRoot => Path.Combine(AppSettings.DataRoot, "logs");
+    private bool _logsPruned;
+
+    private void WriteLogFile(string line)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogsRoot);
+            if (!_logsPruned)
+            {
+                _logsPruned = true;
+                foreach (var old in new DirectoryInfo(LogsRoot).GetFiles("*.log").Where(f => f.LastWriteTime < DateTime.Now.AddDays(-14)))
+                    old.Delete();
+            }
+            File.AppendAllText(Path.Combine(LogsRoot, $"{DateTime.Now:yyyy-MM-dd}.log"), line + Environment.NewLine);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // logging never stops the app
+    }
+
+    private void OpenLogs_Click(object sender, RoutedEventArgs e)
+    {
+        Directory.CreateDirectory(LogsRoot);
+        Process.Start(new ProcessStartInfo(LogsRoot) { UseShellExecute = true });
+    }
+
     private void Log(string text)
     {
         var line = $"{DateTime.Now:HH:mm:ss}  {text}";
         _log.AppendLine(line);
+        WriteLogFile(line);
         LogBox.AppendText(line + Environment.NewLine);
         LogCount.Text = (++_logLines).ToString();
         if (LogToggle.IsChecked == true)
