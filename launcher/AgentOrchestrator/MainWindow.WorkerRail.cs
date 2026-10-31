@@ -38,47 +38,59 @@ public partial class MainWindow
     // full width and are uncovered or clipped as the column grows or shrinks.
     private void SetWorkerRail(bool collapsed)
     {
+        StopColumnTween(); // a slide still running finishes first, before the pages change
+        // what leaves the column when collapsing: the browser when it is open there (it gives the column back), else the details
+        var leaving = BrowserPanel.IsVisible ? BrowserPanel : DetailsPanel;
+        var slide = collapsed ? leaving.IsVisible : WorkerRail.IsVisible;
+        _settings.DetailsCollapsed = collapsed;
+        if (BrowserPanel.IsVisible) // closed by this, not at startup
+            _settings.BrowserOpen = false;
+        RailPopup.IsOpen = false;
+        BrowserPanel.Visibility = Visibility.Collapsed;
+        WorkerRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
+        DetailsPanel.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        SlideColumn(collapsed ? leaving : DetailsPanel, collapsed, slide);
+    }
+
+    // The right column between the rail (collapsed) and a page at its saved width (the details or the browser). slide: the
+    // switch happens on screen, so it slides like the sidebar (240 ms, decelerating): the page keeps its full width and is
+    // uncovered or clipped as the column grows or shrinks; a collapsing page stays under the rail until the slide ends.
+    private void SlideColumn(FrameworkElement page, bool collapsed, bool slide)
+    {
         var target = Math.Clamp(_settings.DetailsWidth, 260, 1400);
         var from = DetailsColumn.ActualWidth;
-        var slide = IsLoaded && IsVisible && from > 0 && (collapsed ? DetailsPanel.IsVisible && !BrowserPanel.IsVisible : WorkerRail.IsVisible);
-        _settings.DetailsCollapsed = collapsed;
-        RailPopup.IsOpen = false;
-        if (BrowserPanel.IsVisible) // the worker details take the column back from the browser
-        {
-            BrowserPanel.Visibility = Visibility.Collapsed;
-            _settings.BrowserOpen = false;
-        }
-        WorkerRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        DetailsPanel.Visibility = SplitterBar.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+        SplitterBar.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SplitterColumn.Width = new GridLength(collapsed ? 0 : 6);
         void Settle()
         {
-            DetailsPanel.ClearValue(WidthProperty);
-            DetailsPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
-            DetailsPanel.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
+            page.ClearValue(WidthProperty);
+            page.HorizontalAlignment = HorizontalAlignment.Stretch;
+            page.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible; // (an interrupted slide's cleanup may have hidden it)
             DetailsColumn.MinWidth = collapsed ? 0 : 260;
             DetailsColumn.Width = collapsed ? GridLength.Auto : new GridLength(target);
             FitDetailsColumn();
         }
-        if (!slide)
+        StopColumnTween();
+        if (!slide || !IsLoaded || !IsVisible || from <= 0)
         {
-            StopColumnTween();
             Settle();
             return;
         }
-        DetailsPanel.Visibility = Visibility.Visible; // shown while it slides, under the rail when collapsing
-        DetailsPanel.Width = collapsed ? from : target;
-        DetailsPanel.HorizontalAlignment = HorizontalAlignment.Left;
+        page.Visibility = Visibility.Visible;
+        page.Width = collapsed ? from : target;
+        page.HorizontalAlignment = HorizontalAlignment.Left;
         DetailsColumn.MinWidth = 0;
         TweenColumn(from, collapsed ? WorkerRail.Width : target, Settle);
     }
 
     // A ColumnDefinition's GridLength width can't take a DoubleAnimation, so the slide is stepped each frame.
     private EventHandler? _columnTween;
+    private Action? _columnTweenDone; // a slide cut short still finishes its layout before the next starts
 
     private void TweenColumn(double from, double to, Action done)
     {
         StopColumnTween();
+        _columnTweenDone = done;
         var start = System.Diagnostics.Stopwatch.GetTimestamp();
         _columnTween = (_, _) =>
         {
@@ -87,7 +99,6 @@ public partial class MainWindow
             if (t < 1)
                 return;
             StopColumnTween();
-            done();
         };
         CompositionTarget.Rendering += _columnTween;
     }
@@ -97,6 +108,9 @@ public partial class MainWindow
         if (_columnTween is not null)
             CompositionTarget.Rendering -= _columnTween;
         _columnTween = null;
+        var done = _columnTweenDone;
+        _columnTweenDone = null;
+        done?.Invoke();
     }
 
     private void RailDot_MouseEnter(object sender, MouseEventArgs e) => ShowRailCard((FrameworkElement)sender);

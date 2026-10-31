@@ -29,15 +29,14 @@ public partial class MainWindow
     // url null: the last page, else the home page.
     private void OpenBrowser(string? url)
     {
+        StopColumnTween(); // a slide still running finishes first
         if (!BrowserPanel.IsVisible)
         {
             RailPopup.IsOpen = false;
+            var fromRail = WorkerRail.IsVisible; // from the rail the column slides open; from the details it only swaps pages
             WorkerRail.Visibility = DetailsPanel.Visibility = Visibility.Collapsed;
-            BrowserPanel.Visibility = SplitterBar.Visibility = Visibility.Visible;
-            SplitterColumn.Width = new GridLength(6);
-            DetailsColumn.MinWidth = 260;
-            DetailsColumn.Width = new GridLength(Math.Clamp(_settings.DetailsWidth, 260, 1400));
-            FitDetailsColumn();
+            BrowserPanel.Visibility = Visibility.Visible;
+            SlideColumn(BrowserPanel, collapsed: false, slide: fromRail);
             BrowserFollowToggle.IsChecked = _settings.BrowserFollow;
             _settings.BrowserOpen = true;
             _settings.Save();

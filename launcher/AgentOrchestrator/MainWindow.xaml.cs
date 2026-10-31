@@ -2677,9 +2677,10 @@ public partial class MainWindow : Window
             await Settle();
             ChatContextRing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
-            var shown = ChatContextPin.IsVisible && _settings.ContextPinned && ChatContextPin.Content is Border { Tag: "ContextCard" };
+            var shown = ChatContextPin.IsVisible && _settings.ContextPinned && ChatContextPin.Content is Border { Tag: "ContextCard" } && _overlays[false].Body.IsVisible;
             ShowContext(false, new ContextSnapshot { Prompt = 500, Completion = 100, NCtx = 8192 });
-            var follows = ChatContextPin.Content is Border { Child: StackPanel card } && card.Children.OfType<DockPanel>().Any(d => d.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("600 / ")));
+            await Settle();
+            var follows = SmokeFind<TextBlock>(_overlays[false].Body, t => t.Text.StartsWith("600 / ")) is not null; // one card: the breakdown under its header
             bool Percent() => ChatContextRing.Content is Border { Child: DockPanel face } && face.Children.OfType<TextBlock>().Any(t => t.Tag as string == "ContextPercent" && t.Text == "7%");
             var percentOff = !Percent(); // off by default; Settings turns it on
             ContextPercentToggle.IsChecked = true;
@@ -2693,7 +2694,7 @@ public partial class MainWindow : Window
                 return Fail();
             ChatContextRing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
-            if (!shown || !follows || ChatContextPin.IsVisible || _settings.ContextPinned)
+            if (!shown || !follows || _overlays[false].Body.IsVisible || _settings.ContextPinned)
                 return Fail();
             StartChatTurn("Hello?");
             _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"delta","role":"planner","kind":"thinking","text":"Hi there"}""");
@@ -2767,7 +2768,7 @@ public partial class MainWindow : Window
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);
-            OpenBrowser("example.org");
+            OpenBrowser(null); // no new page: one finishing later would take the focus from the popups below
             SelectWorker(CardFor("planner"));
             SetWorkerRail(false);
             await Settle();
