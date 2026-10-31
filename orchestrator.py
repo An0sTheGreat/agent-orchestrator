@@ -3290,7 +3290,14 @@ def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> P
         raise WorkflowError(f"Path is protected: {raw}")
     if write and max(inside, key=lambda f: len(Path(f["path"]).parts))["access"] != "write":
         raise WorkflowError(f"Path is in a read-only folder: {raw}")
+    if write and path.parent == Path(folders[0]["path"]).resolve() and path.name.lower() in WORKFLOW_FILES:
+        raise WorkflowError(f"{path.name} is managed by the workflow and cannot be edited with file tools: {raw}")
     return path
+
+
+# The project root's workflow records and settings: written by the engine (record_progress, the run) or the launcher,
+# never by a model's file tools. PROJECT.md stays editable (init-project writes it).
+WORKFLOW_FILES = {"config.json", "state.md", "handoff.md", "task.md", "result.md", "review.md", "issues.md", "contract.md", ".ao_checkpoint.json"}
 
 
 def code_safe(path: Path, folders: list[dict[str, str]]) -> bool:

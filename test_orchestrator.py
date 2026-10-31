@@ -2984,6 +2984,15 @@ class LeadTests(unittest.TestCase):
         self.assertEqual([d["result"] for e, d in events if e == "tool"], ["ERROR: tool 'delegate' is unavailable", "REVIEW"])
         self.assertNotIn("implementer", [l["role"] for l in log])
 
+    def test_workflow_files_at_the_root_cannot_be_written_but_project_md_can(self):
+        folders = [{"path": str(self.root), "access": "write"}]
+        for name in ("config.json", "STATE.md", "HANDOFF.md"):
+            with self.subTest(name), self.assertRaisesRegex(orchestrator.WorkflowError, "managed by the workflow"):
+                orchestrator.code_path(name, folders, write=True)
+        orchestrator.code_path("STATE.md", folders)  # reading is fine
+        orchestrator.code_path("PROJECT.md", folders, write=True)
+        orchestrator.code_path("docs/config.json", folders, write=True)  # only the root's records are protected
+
     def test_run_checks_without_checks_and_with_a_python_syntax_error(self):
         (self.root / "notes.txt").write_text("x", encoding="utf-8")
         self.assertTrue(orchestrator.run_checks(self.config, self.folders).startswith("No checks apply here"))
