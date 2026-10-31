@@ -105,16 +105,16 @@ public partial class MainWindow
             TextWrapping = height > 30 ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        // One column of sections, scrolling with the model picker (top) above them.
-        var sections = new StackPanel { Margin = new Thickness(0, 0, 14, 0) };
+        // The groups of related settings, one column or two (SettingsColumns), added in SettingsGroups' order once built.
+        var sections = new SettingsColumns { Margin = new Thickness(0, 0, 14, 0) };
         var scroll = new ScrollViewer { Content = sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var blocks = new Dictionary<string, StackPanel>();
         StackPanel Section(string name, string help)
         {
-            var panel = new StackPanel { Margin = new Thickness(0, sections.Children.Count == 0 ? 0 : 26, 0, 0) };
+            var panel = new StackPanel();
             panel.Children.Add(new TextBlock { Text = name, FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 14, FontWeight = FontWeights.SemiBold });
             panel.Children.Add(Muted(help));
-            sections.Children.Add(panel);
-            return panel;
+            return blocks[name] = panel;
         }
 
         var editors = new Dictionary<string, Control>();
@@ -134,10 +134,11 @@ public partial class MainWindow
         }
         void ContextHint(Dictionary<string, string>? meta) => hints["max_seq_length"].Text = ModelOptions.All.First(o => o.Key == "max_seq_length").Help +
             (ModelOptions.ModelContext(meta) is { } max ? $". Model maximum: {max.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}" : "");
-        StackPanel Fields(string section)
+        var rows = new Dictionary<string, StackPanel>();
+        StackPanel Fields(string group)
         {
             var fields = new StackPanel();
-            foreach (var o in ModelOptions.All.Where(o => o.Section == section))
+            foreach (var o in ModelOptions.All.Where(o => SettingsGroupOf(o.Key) == group))
             {
                 var wide = o.Kind is ModelOptions.Kind.Multiline or ModelOptions.Kind.StopList or ModelOptions.Kind.ArgList;
                 var value = shownAtStart[o.Key];
@@ -161,7 +162,7 @@ public partial class MainWindow
                     editor = box;
                 }
                 editors[o.Key] = editor;
-                fields.Children.Add(new StackPanel
+                fields.Children.Add(rows[o.Key] = new StackPanel
                 {
                     Margin = new Thickness(0, 12, 0, 0),
                     Children = { Label(o.Label), (hints[o.Key] = Muted(o.Help)), editor, (fieldErrors[o.Key] = ErrorLine()) },
@@ -229,7 +230,7 @@ public partial class MainWindow
         // Built-in roles: Local (Unsloth / llama.cpp) or a remote OpenAI-compatible API.
         TextBox[]? remoteBoxes = null;
         TextBox? chatPrompt = null;
-        StackPanel? remotePanel = null;
+        StackPanel? remotePanel = null, source = null;
         if (!card.IsCustom)
         {
             // The Chat view: an optional prompt of the user's. The Code view: the role's fixed workflow prompts, read only
@@ -245,8 +246,7 @@ public partial class MainWindow
                 (new FontFamily("Consolas"), true, TextWrapping.Wrap, ScrollBarVisibility.Auto);
             fixedPrompt.SetResourceReference(ForegroundProperty, "Muted");
             workflow.Children.Add(fixedPrompt);
-            ApplyPromptView(sections);
-            var panel = Section("Model source", "Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.");
+            var panel = source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), Muted("Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.") } };
             modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
             {
                 Content = text, GroupName = "ModelSource", IsChecked = (remoteNow is not null) == (i == 1), Margin = new Thickness(0, 0, 18, 0),
@@ -269,12 +269,16 @@ public partial class MainWindow
             panel.Children.Add(remotePanel);
         }
 
-        var loadPanel = Section("Load", $"Unsloth Studio load options. Load options apply at the next model load. {emptyMeans}");
-        loadPanel.Children.Add(Fields("Load"));
-        var samplingPanel = Section("Sampling", $"Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only). {emptyMeans}");
-        samplingPanel.Children.Add(Fields("Sampling"));
-        var requestPanel = Section("Request", $"How long the orchestrator waits for this worker. {emptyMeans}");
-        requestPanel.Children.Add(Fields("Request"));
+        // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups
+        // holding nothing else.
+        var loadOnly = new List<StackPanel>();
+        foreach (var (name, help) in SettingsGroups.Where(g => g.Help is not null))
+            if (Fields(name) is { Children.Count: > 0 } fields)
+            {
+                Section(name, $"{help} {emptyMeans}").Children.Add(fields);
+                if (ModelOptions.All.Where(o => SettingsGroupOf(o.Key) == name).All(o => o.Target == "auto_load"))
+                    loadOnly.Add(blocks[name]);
+            }
         ContextHint(null);
 
         // Swaps the current defaults into the fields still showing the previous ones (a user's edit stays); returns their keys.
@@ -315,7 +319,14 @@ public partial class MainWindow
         modelBox.SelectedIndex = 0;
         var modelStatus = Muted("Open the list for the installed models.");
         modelStatus.Margin = new Thickness(0, 4, 0, 0);
-        var top = new StackPanel { Margin = new Thickness(0, 0, 14, 16), Children = { Label("Model"), modelBox, modelStatus } };
+        var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, Fields("Model"), source })
+            if (part is not null)
+                top.Children.Add(part);
+        foreach (var (name, _) in SettingsGroups)
+            if (blocks.TryGetValue(name, out var block))
+                sections.Children.Add(block);
+        ApplyPromptView(sections);
         ModelChoice? initial = null;
         var requested = false;
         modelBox.DropDownOpened += (_, _) =>
@@ -369,7 +380,8 @@ public partial class MainWindow
         {
             var remote = remoteMode();
             remotePanel?.SetValue(VisibilityProperty, remote ? Visibility.Visible : Visibility.Collapsed);
-            loadPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
+            foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
+                hidden.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             modelBox.IsEnabled = !remote;
         }
         foreach (var mode in modes ?? [])
@@ -454,10 +466,9 @@ public partial class MainWindow
             Margin = new Thickness(0, 14, 0, 0),
             Children = { error, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { presets, cancel, save } } },
         };
-        DockPanel.SetDock(top, Dock.Top);
         DockPanel.SetDock(footer, Dock.Bottom);
         footer.Margin = new Thickness(0, 14, 14, 14);
-        foreach (var part in new FrameworkElement[] { top, sections, footer }) // read-only while a run uses the models
+        foreach (var part in new FrameworkElement[] { sections, footer }) // read-only while a run uses the models
             part.SetBinding(IsEnabledProperty, new System.Windows.Data.Binding(nameof(RoleCard.Editable)) { Source = card });
         cancel.Click += (_, _) => close();
 
@@ -591,8 +602,35 @@ public partial class MainWindow
             .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
         clean = State();
         Derive(startLoad, atOpen: true);
-        return (new DockPanel { Children = { top, footer, scroll } }, () => !State().SequenceEqual(clean), Save);
+        return (new DockPanel { Children = { footer, scroll } }, () => !State().SequenceEqual(clean), Save);
     }
+
+    // The settings body's groups in display order (one column, or two read left to right); Help: an option group's note (null:
+    // built by ModelSettingsBody itself). An option whose key SettingsGroupKeys does not name goes in Other.
+    private static readonly (string Name, string? Help)[] SettingsGroups =
+    [
+        ("Model", null), ("Context & memory", "Load options: apply at the next model load."), ("Batching", "Load options: apply at the next model load."),
+        ("GPU", "Load options: apply at the next model load."), ("Speculative decoding", "Load options: apply at the next model load."),
+        ("Reasoning", "The budget applies at the next model load; thinking and effort are sent with every request."),
+        ("Sampling", "Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only)."),
+        ("Output", "Sent with every request."), ("Request", "How long the orchestrator waits for this worker."),
+        ("Advanced", "Load options: apply at the next model load."), ("Other", "Other options."),
+        ("System prompt (Chat)", null), ("System prompt (workflow)", null), ("Worker", null),
+    ];
+    private static readonly Dictionary<string, string[]> SettingsGroupKeys = new()
+    {
+        ["Model"] = ["gguf_variant"],
+        ["Context & memory"] = ["max_seq_length", "cache_type_kv", "n_parallel", "ctx_checkpoints", "cache_ram", "load_mode"],
+        ["Batching"] = ["n_batch", "n_ubatch"],
+        ["GPU"] = ["gpu_memory_mode", "gpu_layers", "n_cpu_moe", "tensor_split", "gpu_ids", "tensor_parallel", "cpu_fallback", "disable_vision"],
+        ["Speculative decoding"] = ["speculative_type", "spec_draft_n_max", "spec_draft_cache_type"],
+        ["Reasoning"] = ["reasoning_budget", "reasoning_budget_message", "enable_thinking", "reasoning_effort"],
+        ["Sampling"] = ["temperature", "top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty", "frequency_penalty", "seed"],
+        ["Output"] = ["max_tokens", "stop"],
+        ["Request"] = ["timeout_seconds"],
+        ["Advanced"] = ["chat_template_override", "llama_extra_args"],
+    };
+    private static string SettingsGroupOf(string key) => SettingsGroupKeys.FirstOrDefault(g => g.Value.Contains(key)).Key ?? "Other";
 
     // --ui-smoke: the target chips' "Options…" opens the worker details column (expanding the rail) on the target's tab: Single
     // chat's target, the Code target, Multi's Planner. Save writes the worker and keeps the tab; leaving a tab with an unsaved
@@ -977,5 +1015,42 @@ public partial class MainWindow
             RefreshWorkerTab(force: true);
             Directory.Delete(models, recursive: true);
         }
+    }
+}
+
+// The settings body's groups: one column, or two from TwoColumnsAt wide, each group whole in the shorter column, in order.
+// Re-flows on every measure (a width or visibility change), so the editors, their state and focus stay put.
+internal sealed class SettingsColumns : Panel
+{
+    public const double TwoColumnsAt = 620;
+    private const double ColumnGap = 28, RowGap = 26;
+    private readonly List<(int Column, double Y)> _slots = [];
+    private bool _two;
+
+    protected override Size MeasureOverride(Size available)
+    {
+        _two = !double.IsInfinity(available.Width) && available.Width >= TwoColumnsAt;
+        var width = _two ? (available.Width - ColumnGap) / 2 : available.Width;
+        var heights = new double[_two ? 2 : 1];
+        var widest = 0.0;
+        _slots.Clear();
+        foreach (UIElement child in InternalChildren)
+        {
+            child.Measure(new Size(width, double.PositiveInfinity));
+            var column = _two && heights[1] < heights[0] ? 1 : 0;
+            var y = heights[column] > 0 ? heights[column] + RowGap : 0;
+            _slots.Add((column, y));
+            if (child.Visibility != Visibility.Collapsed)
+                (heights[column], widest) = (y + child.DesiredSize.Height, Math.Max(widest, child.DesiredSize.Width));
+        }
+        return new Size(double.IsInfinity(available.Width) ? widest : available.Width, heights.Max());
+    }
+
+    protected override Size ArrangeOverride(Size final)
+    {
+        var width = _two ? (final.Width - ColumnGap) / 2 : final.Width;
+        for (var i = 0; i < InternalChildren.Count; i++)
+            InternalChildren[i].Arrange(new Rect(_slots[i].Column * (width + ColumnGap), _slots[i].Y, width, InternalChildren[i].DesiredSize.Height));
+        return final;
     }
 }
