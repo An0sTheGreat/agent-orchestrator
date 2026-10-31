@@ -2451,6 +2451,22 @@ class ChatTests(unittest.TestCase):
 
     MSGS = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "explain X"}]
 
+    def test_images_join_only_the_turns_message_in_the_request_body(self):
+        with tempfile.TemporaryDirectory() as folder:
+            image = Path(folder) / "p.png"
+            image.write_bytes(b"\x89PNG")
+            self.chat({"worker": "planner", "messages": self.MSGS, "images": [str(image), str(Path(folder) / "missing.png"), "relative.png"]})
+            self.assertEqual(orchestrator.TURN_IMAGES, ("explain X", ["data:image/png;base64,iVBORw=="]))
+            # a compaction-framed message still matches; earlier messages and history stay text
+            framed = [*self.MSGS[:2], {"role": "user", "content": "Earlier (summary): ... Current message: explain X"}]
+            sent = orchestrator.with_images(framed)
+            self.assertEqual(sent[:2], self.MSGS[:2])
+            self.assertEqual(sent[2]["content"], [{"type": "text", "text": framed[2]["content"]},
+                                                  {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw=="}}])
+            self.assertIsInstance(framed[2]["content"], str)
+            self.chat({"worker": "planner", "messages": self.MSGS})  # the next turn without images sends plain text
+            self.assertIs(orchestrator.with_images(framed), framed)
+
     def test_single_builtin_uses_own_settings_and_streams_reply(self):
         code, log, events, unloaded, files = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS},
                                                        {"implementer": ["<think>hmm</think>the answer"]})

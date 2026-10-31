@@ -1880,7 +1880,7 @@ public partial class MainWindow : Window
             RefreshChatTarget();
             var leadName = CardFor("planner")!.ModelName;
             if (CodeTarget()?.Role != "planner" || (string)CodeTargetChip.Content != $"Lead: {(leadName == "Not loaded" ? "no model" : leadName)}  ▾" ||
-                !NoMode("chat") || !NoMode("write_project") || ListedWorkers(_code).Count != 0 || CodePlus.Visibility != Visibility.Collapsed)
+                !NoMode("chat") || !NoMode("write_project") || ListedWorkers(_code).Count != 0 || CodePlus.Visibility != Visibility.Visible)
                 return Fail();
             ShowCodeRun(true);
             await Settle();
@@ -2634,6 +2634,35 @@ public partial class MainWindow : Window
             if (settings.IsVisible || _settingsWindow is not null || SettingsHolder.Child != SettingsContent)
                 return Fail();
         }
+        // Attachments: "+" offers files/photos and a folder; a text file, a photo and a folder become chips, then the message
+        // carries the texts (the bubble shows only names) and the request the photo; a binary file is refused.
+        {
+            var area = Path.Combine(AppSettings.DataRoot, "smoke-attach");
+            Directory.CreateDirectory(Path.Combine(area, "src", "node_modules"));
+            File.WriteAllText(Path.Combine(area, "notes.txt"), "remember the milk");
+            File.WriteAllText(Path.Combine(area, "src", "app.cs"), "class App {}");
+            File.WriteAllText(Path.Combine(area, "src", "node_modules", "junk.js"), "junk");
+            File.WriteAllBytes(Path.Combine(area, "photo.png"), [0x89, 0x50, 0x4E, 0x47, 0]);
+            File.WriteAllBytes(Path.Combine(area, "blob.bin"), [1, 0, 2]);
+            ShowView(chat: true);
+            ChatPlus.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var plusMenu = ChatPlus.ContextMenu;
+            var plusItems = plusMenu?.Items.OfType<MenuItem>().Select(i => (string)i.Header).ToList();
+            if (plusMenu is not null)
+                plusMenu.IsOpen = false;
+            foreach (var path in new[] { "notes.txt", "photo.png", "src", "blob.bin" })
+                Attach(_chat, Path.Combine(area, path));
+            var composed = ComposeMessage(_chat, "Look");
+            var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("planner", [new("user", composed)], CurrentExtras() with { Images = _turnImages }))!;
+            if (plusItems is not ["Add files or photos", "Add folder"] || ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
+                !composed.StartsWith("Look" + AttachMarker) || !composed.Contains("remember the milk") || !composed.Contains("<file name=\"src/app.cs\">") ||
+                composed.Contains("junk") || composed.Contains("blob") || request["images"]!.AsArray().Count != 1 ||
+                BubbleText(composed) != "Look\n\n📎 notes.txt, photo.png, src/")
+                return Fail();
+            _chatAttachments.Clear();
+            RefreshAttachments(_chat);
+            Directory.Delete(area, recursive: true);
+        }
         // The profile: usage adds to the lifetime count shown under the name, and the card opens from the sidebar with the stats.
         var lifetime = _stats.Lifetime;
         RecordUsage(1234);
@@ -3325,6 +3354,9 @@ public partial class MainWindow : Window
                 break;
             case Key.B when !shift:
                 SetSidebar(!_settings.SidebarCollapsed);
+                break;
+            case Key.U when !shift && !_chatBusy && (ChatView.IsVisible || CodeChat.IsVisible):
+                AddFiles(ChatView.IsVisible ? _chat : _code);
                 break;
             case Key.E:
                 SetAllExpanded(!shift);

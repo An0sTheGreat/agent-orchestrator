@@ -143,8 +143,9 @@ public partial class MainWindow
             var mine = _chatBusy && _turn == c;
             c.Input.IsEnabled = c.Plus.IsEnabled = c.Chip.IsEnabled = !_chatBusy;
             c.Stop.Visibility = _chatBusy || runActive ? Visibility.Visible : Visibility.Collapsed;
-            c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && c.Input.Text.Trim().Length > 0;
-            c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && c.Input.Text.Trim().Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            var hasInput = c.Input.Text.Trim().Length > 0 || AttachmentsOf(c).Count > 0;
+            c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && hasInput;
+            c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && hasInput ? Visibility.Visible : Visibility.Collapsed;
             // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
             var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" : _chatBusy ? $"{(c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
@@ -200,8 +201,6 @@ public partial class MainWindow
     }
 
     private void PickChatWorker(string role) => PickWorker(_chat, role);
-
-    private void ChatPlus_Click(object sender, RoutedEventArgs e) => BuildWorkerMenu((Button)sender, ConvOf(sender)).IsOpen = true;
 
     // The target chip: a dropdown (upward) of the listed workers, picking one makes it the target; "Options…" on top opens
     // the Models window with the same workers.
@@ -427,7 +426,7 @@ public partial class MainWindow
 
     private void SendChat()
     {
-        var text = ChatInput.Text.Trim();
+        var text = ComposeMessage(_chat, ChatInput.Text.Trim());
         if (text.Length > 0)
             Forget(RunTurn(_chat, text, ChatTarget()!.Role, role => ChatRequest(role, text),
                 LauncherLogic.BuildChatStartInfo, "Chat"));
@@ -435,7 +434,7 @@ public partial class MainWindow
 
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
     private string ChatRequest(string role, string text) =>
-        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
+        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras() with { Images = _turnImages }, title: _chatHistory.Count == 0,
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
@@ -570,6 +569,8 @@ public partial class MainWindow
         {
             AddUserBubble(text, _pendingUserTime);
             SavePendingTurn(c, text);
+            AttachmentsOf(c).Clear(); // they went with this message
+            RefreshAttachments(c);
         }
         _reply = AddReply(role);
         _chatError = null;
@@ -581,7 +582,7 @@ public partial class MainWindow
     // The user's message bubble and an empty reply (header, content, status, Copy), added to _turn's conversation.
     private void AddUserBubble(string text, DateTimeOffset? time)
     {
-        var box = BodyText(text, mono: false, muted: false, conv: _turn);
+        var box = BodyText(BubbleText(text), mono: false, muted: false, conv: _turn);
         box.FontSize = 14;
         var bubble = new Border
         {

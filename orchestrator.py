@@ -7,6 +7,7 @@ Uses only the Python standard library and an OpenAI-compatible chat API.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import difflib
 import fnmatch
@@ -402,7 +403,7 @@ class ApiClient:
             if estimate_tokens(messages, tools) > COMPACT_AT * room:
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
-        body: dict[str, Any] = {"model": model, "messages": messages, **sampling}
+        body: dict[str, Any] = {"model": model, "messages": with_images(messages), **sampling}
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
             for key in UNSLOTH_ONLY_FIELDS:
                 body.pop(key, None)
@@ -706,6 +707,40 @@ COMPACT_MARK = "\n\nSummary of the earlier steps:\n"
 # Compaction starts when the prompt passes this share of the room: the context window less the reply's max_tokens (at
 # least half the window). Shared by the pre-turn conversation summary and the in-request compactor.
 COMPACT_AT = 0.9
+
+# Images attached to the turn's message (the request's "images": absolute file paths): (the message's text, data URLs).
+# They join that message only in the request body (with_images), so history, compaction and token estimates stay text.
+TURN_IMAGES: tuple[str, list[str]] = ("", [])
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp"}
+IMAGE_MAX_BYTES = 20_000_000
+
+
+def turn_images(request: dict[str, Any], text: str) -> None:
+    """Reads the request's images for the message `text`; a missing, unknown or oversized file is skipped."""
+    global TURN_IMAGES
+    urls = []
+    for raw in request.get("images") or []:
+        path = Path(str(raw))
+        mime = IMAGE_TYPES.get(path.suffix.lower())
+        if not (path.is_absolute() and mime and path.is_file() and path.stat().st_size <= IMAGE_MAX_BYTES):
+            print(f"[images] skipped {raw}")
+            continue
+        urls.append(f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}")
+    TURN_IMAGES = (text if urls else "", urls)
+
+
+def with_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages to send: the last user message holding the turn's text (compaction may frame it) gets its images as
+    OpenAI-style content parts. Unchanged when the turn has none."""
+    text, urls = TURN_IMAGES
+    if not urls:
+        return messages
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if m.get("role") == "user" and isinstance(m.get("content"), str) and text in m["content"]:
+            parts = [{"type": "text", "text": m["content"]}, *({"type": "image_url", "image_url": {"url": u}} for u in urls)]
+            return [*messages[:i], {**m, "content": parts}, *messages[i + 1:]]
+    return messages
 COMPACT_PROMPT = ("You compact an AI agent's working history so it can keep working without it. Summarize the steps below "
                   "for the agent itself, tersely, under these headings: Goal; Files read (and what mattered in them); "
                   "Changes made (file: what); Decisions; Errors; What remains. Reply with the summary only.")
@@ -3255,6 +3290,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     handlers = {**handlers, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title))}
     extras = ([*tools, DELEGATE_TOOL], handlers, note)
     system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
+    turn_images(request, messages[-1]["content"])
     messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
     text = chat_call(turn, role, "answer", system, messages, extras)
     if not text:
@@ -3712,6 +3748,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         goal = next((line for line in lines if not line.startswith("#")), lines[0].lstrip("# "))  # the goal sentence, else the title
         emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
         return 0
+    turn_images(request, messages[-1]["content"])
     text = lead_loop(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")

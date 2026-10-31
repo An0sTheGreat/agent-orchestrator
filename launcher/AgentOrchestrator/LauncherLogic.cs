@@ -91,7 +91,8 @@ internal static class LauncherLogic
     }
 
     // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
-    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills);
+    // Images: photo paths attached to this message (the engine sends them with it only).
+    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null);
 
     public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
@@ -302,6 +303,7 @@ internal static class LauncherLogic
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
+            images = extras?.Images ?? [],
             title,
             effort,
             summary,
@@ -339,6 +341,7 @@ internal static class LauncherLogic
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
+            images = extras?.Images ?? [],
             title,
             effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
