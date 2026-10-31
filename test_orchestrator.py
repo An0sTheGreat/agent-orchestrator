@@ -3010,11 +3010,15 @@ class LeadTests(unittest.TestCase):
         self.assertLessEqual(len(result), orchestrator.CHECKS_LIMIT + len(" ...[truncated]"))
         self.assertTrue(result.endswith("...[truncated]"))
 
-    def test_legacy_mode_and_worker_are_ignored(self):
-        for legacy in ({"mode": "multi", "worker": "reviewer"}, {"mode": "single", "worker": "implementer"}, {"mode": "bogus"}):
-            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, **legacy}, {"planner": ["done"]})
-            self.assertEqual((code, [l["role"] for l in log]), (0, ["planner"]), legacy)
-            self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "done"}])
+    def test_a_configured_worker_leads_the_turn_else_the_planner(self):
+        # A legacy mode is ignored; the request's worker leads when configured (the picked worker of "Create PROJECT.md with a model").
+        for request, lead in (({"mode": "multi", "worker": "reviewer"}, "reviewer"), ({"mode": "single", "worker": "implementer"}, "implementer"),
+                              ({"mode": "bogus"}, "planner"), ({"worker": "nobody"}, "planner")):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, **request}, {lead: ["done"]})
+            self.assertEqual((code, [l["role"] for l in log]), (0, [lead]), request)
+            self.assertIn("the lead coding agent", log[0]["system"])
+            self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": lead, "text": "done"}])
+            self.assertEqual([(d["role"], d["stage"]) for e, d in events if e == "chat_stage"], [(lead, "lead")])
 
 
 class LeadRunTests(unittest.TestCase):

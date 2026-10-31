@@ -3525,27 +3525,28 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
     return delegate
 
 
-def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any]) -> str:
-    """A Code turn's lead agent (the planner role): plans with todo, works with the file tools, verifies with run_checks and
-    delegates self-contained work to implementer/reviewer sub-agents (config max_delegations per turn, default 6)."""
+def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
+              role: str = "planner") -> str:
+    """A Code turn's lead agent (`role`, by default the planner): plans with todo, works with the file tools, verifies with
+    run_checks and delegates self-contained work to implementer/reviewer sub-agents (config max_delegations per turn, default 6)."""
     tools, extra_handlers, note = request_extras(request)
-    title = display_name(config, "planner")
+    title = display_name(config, role)
     handlers = {**code_handlers(folders), **code_write_handlers(folders), **extra_handlers}
     handlers["write_project_md"] = lambda notes="": (
         f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
     handlers["start_project"] = lambda: (
         "ERROR: the project root has no PROJECT.md; ask the user to add one (or write it with write_project_md when they ask)"
         if not (Path(folders[0]["path"]) / "PROJECT.md").is_file()
-        else (emit("code_start", role="planner"), "OK: the project run will start after this reply.")[1])
+        else (emit("code_start", role=role), "OK: the project run will start after this reply.")[1])
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
     handlers["run_checks"] = lambda: run_checks(config, folders)
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
-                                     ("planner", "lead", title))
+                                     (role, "lead", title))
     system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
-    messages = compact_conversation(config, ("planner",), system, messages, tools, request)
-    emit("chat_stage", role="planner", stage="lead", title=title)
-    return code_loop(config, "planner", system, messages, tools, handlers)
+    messages = compact_conversation(config, (role,), system, messages, tools, request)
+    emit("chat_stage", role=role, stage="lead", title=title)
+    return code_loop(config, role, system, messages, tools, handlers)
 
 
 PROGRESS_TOOL = function_tool("record_progress", "Record one finished PROJECT.md item in STATE.md, after you verified it: a short "
@@ -3648,8 +3649,9 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 
 
 def run_code(config: dict[str, Any], request_path: Path) -> int:
-    """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop;
-    `worker` and a legacy `mode` are ignored), "write_project" writes PROJECT.md with the request's worker."""
+    """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop) as the
+    request's `worker` when that names a configured worker, else the planner (a legacy `mode` is ignored); "write_project"
+    writes PROJECT.md with the request's worker."""
     request = json.loads(load_text(request_path))
     if not isinstance(request, dict):
         raise WorkflowError("Code request must be a JSON object")
@@ -3659,7 +3661,9 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     messages = chat_messages(request)
     if action == "chat" and (not messages or messages[-1]["role"] != "user"):
         raise WorkflowError("Code request needs messages ending with a user message")
-    role = str(request.get("worker") or "planner") if action == "write_project" else "planner"
+    role = str(request.get("worker") or "planner")
+    if action == "chat" and role not in BUILTIN_ROLES and all(w["id"] != role for w in custom_workers(config)):
+        role = "planner"
     chat_worker(config, role)
     raw = request.get("folders")
     if not isinstance(raw, list) or not raw:
@@ -3683,10 +3687,10 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         goal = next((line for line in lines if not line.startswith("#")), lines[0].lstrip("# "))  # the goal sentence, else the title
         emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
         return 0
-    text = lead_loop(config, folders, messages, request)
+    text = lead_loop(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")
-    emit("code_reply", role="planner", text=text)
+    emit("code_reply", role=role, text=text)
     if request.get("title") and (title := chat_title(plain, "planner", messages, text)):
         emit("chat_title", text=title)
     return 0
