@@ -3379,12 +3379,15 @@ def code_write_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
 
 
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
-              tools: list[dict[str, Any]], handlers: dict[str, Any]) -> str:
-    """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply."""
+              tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
+              stop: Any = None, nudge: str = "") -> str:
+    """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply. With
+    `nudge`, such a reply gets `nudge` sent back instead, and only `stop()` turning true after a tool batch ends the loop.
+    At most config[cap[0]] (default cap[1]) model calls."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
-    max_steps, name, prev_text_calls, cutoffs = int(config.get("max_tool_steps", 30)), display_name(config, role), None, 0
+    max_steps, name, prev_text_calls, cutoffs = int(config.get(cap[0], cap[1])), display_name(config, role), None, 0
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -3418,8 +3421,11 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
             continue
         cutoffs = 0
-        if not calls:
+        if not calls and not nudge:
             return answer_text(response)
+        if not calls:
+            messages.append({"role": "user", "content": nudge})
+            continue
         results = []
         for call in calls:
             function = call.get("function") or {}
@@ -3438,7 +3444,9 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 results.append(f"{tool}: {result}")
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
-    raise WorkflowError(f"{name} exceeded max_tool_steps={max_steps}")
+        if stop and stop():
+            return answer_text(response)
+    raise WorkflowError(f"{name} exceeded {cap[0]}={max_steps}")
 
 
 DELEGATE_TOOL = function_tool(
@@ -3451,15 +3459,19 @@ TODO_TOOL = function_tool("todo", "Set your short checklist for this turn: pass 
                           {"items": {"type": "array", "items": {"type": "string"}}}, ["items"])
 CHECKS_TOOL = function_tool("run_checks", "Run the project's available checks (syntax, JavaScript code check, page load, configured "
                             "validation commands) on the project root; returns a short result.", {}, [])
-CHAT_DELEGATIONS, SUB_REPORT_LIMIT = 3, 4000
+CHAT_DELEGATIONS, SUB_REPORT_LIMIT, CHECKS_LIMIT = 3, 4000, 3000
 
 
 def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
-    """The project-run checks that apply to the project root, one block each; a note when none apply."""
+    """The project-run checks that apply to the project root, one block each with the error details (file, line,
+    message, command output), clipped to CHECKS_LIMIT characters; a note when none apply."""
     root = Path(folders[0]["path"])
     files = [p.relative_to(root).as_posix() for p, is_dir in code_walk(root, folders)
              if not is_dir and p.suffix.lower() in {".py", ".js", ".mjs", ".cjs", ".json"}]
-    lines = [syntax_gate(root, files)[1]] if files else []
+    lines = []
+    if files:
+        defects, line = syntax_gate(root, files)
+        lines.append(line + "".join(f"\n- {d['file']}: {d['evidence']}" for d in defects))
     lines.append(code_gate(root, files, None, config)[1])
     lines.append(behaviour_gate(root, config)[1].split("\nVisible elements", 1)[0])  # no text sample
     validations = config.get("validation_commands") or {}
@@ -3467,7 +3479,7 @@ def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
         status, _, output = execute_tool("run_validation", {"name": name}, root, [], validations, False).partition("\n")
         lines.append(f"VALIDATION {name}: {status}\n{output[-1500:]}".rstrip())
     lines = [line for line in lines if line and line != "CODE CHECK: skipped (no JavaScript)"]
-    return "\n".join(lines) or "No checks apply here (no Python, JavaScript or JSON files, no index.html, no validation commands)."
+    return clip("\n".join(lines), CHECKS_LIMIT) or "No checks apply here (no Python, JavaScript or JSON files, no index.html, no validation commands)."
 
 
 def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[str, Any], str],
@@ -3527,6 +3539,76 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     messages = compact_conversation(config, ("planner",), system, messages, tools, request)
     emit("chat_stage", role="planner", stage="lead", title=title)
     return code_loop(config, "planner", system, messages, tools, handlers)
+
+
+PROGRESS_TOOL = function_tool("record_progress", "Record one finished PROJECT.md item in STATE.md, after you verified it: a short "
+                              "item name and its outcome (what now works, how you checked).",
+                              {"item": {"type": "string"}, "outcome": {"type": "string"}}, ["item", "outcome"])
+FINISH_TOOL = function_tool("finish", "End the project run: PROJECT.md's completion criteria are met, or nothing more can be done "
+                            "(say what is left and why). The summary is recorded in STATE.md.",
+                            {"summary": {"type": "string"}}, ["summary"])
+LEAD_NUDGE = ("Keep working through PROJECT.md with the tools. Record each verified item with record_progress, and call "
+              "finish(summary) when the completion criteria are met or nothing more can be done.")
+
+
+def record_progress(project_root: Path, item: str, outcome: str) -> str:
+    """Append "## Done: <item>" (time, outcome) to STATE.md (dropping a trailing Project complete) and set HANDOFF.md's Last done."""
+    item, outcome = " ".join(str(item).split()), " ".join(str(outcome).split())
+    if not item:
+        raise WorkflowError("item is empty")
+    stamp = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    path = project_root / "STATE.md"
+    state = strip_complete(load_text(path)) if path.is_file() else "# Verified state"
+    write_atomic(path, f"{state}\n\n## Done: {item}\n- Time: {stamp}\n- Outcome: {outcome}")
+    write_atomic(project_root / HANDOFF_FILE, f"# Handoff\n\nLead project run in progress.\nLast done: {item}\n- Time: {stamp}\n"
+                 f"- Outcome: {outcome}\n\nThe next run resumes from STATE.md.")
+    print(f"[progress] Done: {item}")
+    emit("task", id=item, outcome=outcome)
+    emit("task_end", id=item, status="passed")
+    emit("task_start")
+    return f"OK: recorded '{item}' in STATE.md"
+
+
+def run_lead_project(config: dict[str, Any], project_root: Path, once: bool) -> int:
+    """Start project: the lead (planner role) works through PROJECT.md with the Code tools, delegating, running checks,
+    recording each finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with
+    `once`, the first recorded item. The input carries STATE.md, so a new run resumes after the recorded items."""
+    if project_root == ROOT or ROOT in project_root.parents or project_root in ROOT.parents:
+        raise WorkflowError(f"The project overlaps the Agent Orchestrator folder ({ROOT}); the lead project run needs "
+                            "another --project (the legacy --pipeline can run here)")
+    folders = [{"path": str(project_root), "access": "write"}]
+    title, state = display_name(config, "planner"), project_root / "STATE.md"
+    done = {"finished": False, "progress": 0}
+
+    def progress(item: str, outcome: str) -> str:
+        result = record_progress(project_root, item, outcome)
+        done["progress"] += 1
+        return result
+
+    def finish(summary: str) -> str:
+        summary = " ".join(str(summary).split()) or "Project goal complete"
+        emit("task_end", id="finish", status="passed")
+        record_complete(project_root, summary)
+        print(f"\nCOMPLETE: {summary}")
+        done["finished"] = True
+        return "OK: the run ends now."
+
+    steps = int(config.get("max_lead_steps", 200))
+    handlers = {**code_handlers(folders), **code_write_handlers(folders), "run_checks": lambda: run_checks(config, folders),
+                "todo": lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items])),
+                "delegate": delegator(config, ([], {}, ""), folders, steps, ("planner", "lead", title)),
+                "record_progress": progress, "finish": finish}
+    tools = CODE_TOOLS[:5] + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL, PROGRESS_TOOL, FINISH_TOOL]
+    system = f"{load_text(ROOT / 'prompts' / 'lead_project.txt').strip()}\n\n{folders_context(folders)}"
+    user = (f"PROJECT.md\n{load_text(project_root / 'PROJECT.md').strip()}\n\n"
+            f"PROGRESS (STATE.md; every '## Done:' item is finished: do not redo it)\n"
+            f"{load_text(state).strip() if state.is_file() else '(none yet)'}\n\n"
+            f"FILES (project root)\n{handlers['list_files']()}")
+    emit("task_start")
+    emit("chat_stage", role="planner", stage="lead", title=title)
+    code_loop(config, "planner", system, [{"role": "user", "content": user}], tools, handlers, ("max_lead_steps", 200),
+              lambda: done["finished"] or (once and done["progress"] > 0), LEAD_NUDGE)
+    return 0
 
 
 def folders_context(folders: list[dict[str, str]]) -> str:
@@ -3610,7 +3692,9 @@ def _run() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", type=Path, default=ROOT, help="Project code root (default: this folder)")
     parser.add_argument("--non-interactive", action="store_true", help="Fail instead of waiting for model swaps")
-    parser.add_argument("--once", action="store_true", help="Stop after one task passes")
+    parser.add_argument("--once", action="store_true", help="Stop after one task passes (lead run: after the first recorded item)")
+    parser.add_argument("--pipeline", action="store_true", help="Legacy: run the Planner -> Implementer -> Reviewer task pipeline "
+                        "instead of the lead project run")
     parser.add_argument("--events", action="store_true", help="Emit structured @@AO event lines for the launcher UI")
     turn = parser.add_mutually_exclusive_group()
     turn.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
@@ -3632,15 +3716,19 @@ def _run() -> int:
         config = json.loads(load_text(project_root / "config.json"))
         custom_workers(config, warn=True)
         return run_chat(config, args.chat) if args.chat else run_code(config, args.code)
-    missing = sorted(name for name in WORKFLOW_FILES if not (project_root / name).is_file())
+    required = WORKFLOW_FILES if args.pipeline else {"PROJECT.md", "config.json"}
+    missing = sorted(name for name in required if not (project_root / name).is_file())
     if missing:
         raise WorkflowError(f"Project is not initialized; missing: {', '.join(missing)}")
     config = json.loads(load_text(project_root / "config.json"))
-    task_limits(config)
+    if args.pipeline:
+        task_limits(config)
     custom_workers(config, warn=True)
     project = load_text(project_root / "PROJECT.md").strip()
     if not project or "REPLACE THIS" in project or "[Describe the project" in project:
         raise WorkflowError("Describe the real goal in PROJECT.md before running")
+    if not args.pipeline:
+        return run_lead_project(config, project_root, args.once)
     prompts = {role: load_text(ROOT / "prompts" / f"{role}.txt") for role in ("planner", "implementer", "reviewer")}
     interactive = not args.non_interactive
     max_tasks = int(config.get("max_tasks", 20))

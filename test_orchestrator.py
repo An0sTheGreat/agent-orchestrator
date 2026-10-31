@@ -1406,7 +1406,7 @@ class OrchestratorTests(unittest.TestCase):
             orchestrator, "extract_review_with_repair",
             side_effect=lambda *a: ({"verdict": next(verdicts)}, "feedback text"),
         )
-        argv = patch.object(orchestrator.sys, "argv", ["o", "--project", str(root), *(["--once"] if once else []), "--non-interactive"])
+        argv = patch.object(orchestrator.sys, "argv", ["o", "--project", str(root), *(["--once"] if once else []), "--non-interactive", "--pipeline"])
         configure = patch.object(orchestrator, "configure_project", side_effect=lambda config, *a: config)
         with planner as plan_mock, agent_stub as agent_mock, review, argv, configure:
             code = orchestrator._run()
@@ -2147,7 +2147,7 @@ class CustomWorkerTests(unittest.TestCase):
                     return {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": args}}]}
                 return {"role": "assistant", "content": queues[self.role].pop(0) if queues.get(self.role) else PASS_JSON}
 
-        argv = ["o", "--project", str(root), "--non-interactive", *(["--once"] if once else [])]
+        argv = ["o", "--project", str(root), "--non-interactive", "--pipeline", *(["--once"] if once else [])]
         with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
                 patch.object(orchestrator, "request_plan", return_value={"status": "TASK", "task": task or self.TASK}), \
                 patch.object(orchestrator, "configure_project", side_effect=lambda c, *a: c), patch.object(orchestrator.sys, "argv", argv):
@@ -2988,13 +2988,118 @@ class LeadTests(unittest.TestCase):
         (self.root / "notes.txt").write_text("x", encoding="utf-8")
         self.assertTrue(orchestrator.run_checks(self.config, self.folders).startswith("No checks apply here"))
         (self.root / "bad.py").write_text("def f(:\n", encoding="utf-8")
-        self.assertEqual(orchestrator.run_checks(self.config, self.folders), "SYNTAX CHECK: FAILED (bad.py)")
+        result = orchestrator.run_checks(self.config, self.folders)
+        self.assertTrue(result.startswith("SYNTAX CHECK: FAILED (bad.py)\n- bad.py: SyntaxError: "), result)
+        self.assertIn("(line 1)", result)
+
+    def test_run_checks_returns_validation_output_clipped(self):
+        noisy = "import sys; print('x' * 2000); print('boom at x.py:3'); sys.exit(1)"
+        self.config["validation_commands"] = {"a": [orchestrator.sys.executable, "-c", noisy], "b": [orchestrator.sys.executable, "-c", noisy]}
+        result = orchestrator.run_checks(self.config, self.folders)
+        self.assertTrue(result.startswith("VALIDATION a: exit_code=1\n"), result[:100])
+        self.assertIn("boom at x.py:3", result)
+        self.assertLessEqual(len(result), orchestrator.CHECKS_LIMIT + len(" ...[truncated]"))
+        self.assertTrue(result.endswith("...[truncated]"))
 
     def test_legacy_mode_and_worker_are_ignored(self):
         for legacy in ({"mode": "multi", "worker": "reviewer"}, {"mode": "single", "worker": "implementer"}, {"mode": "bogus"}):
             code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, **legacy}, {"planner": ["done"]})
             self.assertEqual((code, [l["role"] for l in log]), (0, ["planner"]), legacy)
             self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "done"}])
+
+
+class LeadRunTests(unittest.TestCase):
+    """Start project (the default run): the lead works through PROJECT.md, records progress in STATE.md and finishes."""
+
+    STATE = "# Verified state\n\nNo tasks have passed yet.\n"
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        (self.root / "PROJECT.md").write_text("# Project\n\n## Project Goal\n\nA greeting script.\n", encoding="utf-8")
+        (self.root / "STATE.md").write_text(self.STATE, encoding="utf-8")
+        self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES}}
+
+    def run_project(self, replies, once=False):
+        replies = {k: list(v) for k, v in replies.items()}
+        log, events = [], []
+
+        class Fake:
+            def __init__(self, settings):
+                self.settings, self.role, self.title = settings, "", ""
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                log.append({"role": self.role, "system": messages[0]["content"], "messages": list(messages[1:]), "tools": tools})
+                reply = replies[self.role].pop(0)
+                return {"role": "assistant", "content": reply} if isinstance(reply, str) else reply
+
+        (self.root / "config.json").write_text(json.dumps(self.config), encoding="utf-8")
+        argv = ["o", "--project", str(self.root), "--non-interactive", "--events", *(["--once"] if once else [])]
+        with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv):
+            code = orchestrator.main()
+        return code, log, events
+
+    def text(self, name):
+        return (self.root / name).read_text(encoding="utf-8")
+
+    def test_runs_to_finish_and_records_progress(self):
+        replies = {"planner": [tool_call("todo", items=["[ ] greeting"]), tool_call("write_file", path="hello.py", content="print('hi')"),
+                               tool_call("run_checks"), tool_call("record_progress", item="Greeting script", outcome="hello.py prints hi"),
+                               tool_call("finish", summary="Greeting script done")]}
+        code, log, events = self.run_project(replies)
+        self.assertEqual((code, len(log)), (0, 5))
+        self.assertTrue(log[0]["system"].startswith((Path(orchestrator.ROOT) / "prompts" / "lead_project.txt").read_text(encoding="utf-8").strip()))
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]],
+                         [t["function"]["name"] for t in orchestrator.CODE_TOOLS[:5]] + ["todo", "run_checks", "delegate", "record_progress", "finish"])
+        state = self.text("STATE.md")
+        self.assertRegex(state, r"\n## Done: Greeting script\n- Time: .+\n- Outcome: hello.py prints hi\n")
+        self.assertRegex(state, r"\n## Project complete\n- Time: .+\n- Summary: Greeting script done\n$")
+        tools = [(d["name"], d["result"]) for e, d in events if e == "tool"]
+        self.assertIn(("run_checks", "SYNTAX CHECK: passed (hello.py)"), tools)
+        self.assertEqual([(e, d.get("id")) for e, d in events if e in ("task", "complete")], [("task", "Greeting script"), ("complete", None)])
+
+    def test_a_reply_without_tool_calls_is_nudged_and_resume_input_has_the_recorded_items(self):
+        (self.root / "STATE.md").write_text(self.STATE + "\n## Done: Item A\n- Outcome: works\n", encoding="utf-8")
+        code, log, _ = self.run_project({"planner": ["I will continue.", tool_call("finish", summary="All done")]})
+        self.assertEqual(code, 0)
+        task = log[0]["messages"][0]["content"]
+        for part in ("PROJECT.md\n# Project", "## Done: Item A", "FILES (project root)\n", "STATE.md"):
+            self.assertIn(part, task)
+        self.assertEqual(log[1]["messages"][-1], {"role": "user", "content": orchestrator.LEAD_NUDGE})
+
+    def test_once_stops_after_the_first_recorded_item(self):
+        replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok")]}
+        code, log, _ = self.run_project(replies, once=True)
+        self.assertEqual((code, len(log)), (0, 1))
+        self.assertIn("## Done: First", self.text("STATE.md"))
+        self.assertNotIn("Second", self.text("STATE.md"))
+        self.assertIn("Last done: First", self.text("HANDOFF.md"))
+
+    def test_step_cap_stops_with_an_error(self):
+        self.config["max_lead_steps"] = 2
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "exceeded max_lead_steps=2"):
+            self.run_project({"planner": ["thinking", "still thinking"]})  # __main__ prints it as an ERROR line, exit code 1
+        self.assertNotIn("## Done", self.text("STATE.md"))
+
+    def test_refuses_to_write_the_orchestrator_folder(self):
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "overlaps the Agent Orchestrator folder"):
+            orchestrator.run_lead_project(self.config, orchestrator.ROOT, False)
+
+    def test_delegation_inside_the_run(self):
+        replies = {"planner": [tool_call("delegate", worker="implementer", brief="Write hello.py"),
+                               tool_call("record_progress", item="Greeting", outcome="delegated"), tool_call("finish", summary="done")],
+                   "implementer": [tool_call("write_file", path="hello.py", content="print('hi')"), "Wrote hello.py."]}
+        code, log, events = self.run_project(replies)
+        self.assertEqual(code, 0)
+        self.assertEqual(self.text("hello.py"), "print('hi')\n")
+        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "implementer", "planner", "planner"])
+        self.assertEqual(log[1]["messages"], [{"role": "user", "content": "Write hello.py"}])
+        self.assertIn(("planner", "delegate", "Wrote hello.py."), [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"])
 
 
 BROWSER = orchestrator.find_browser()
@@ -3163,7 +3268,7 @@ class ContractTests(unittest.TestCase):
         def agent(config, role, system, user, *rest):
             agents.append((role, user, (root / orchestrator.CONTRACT_FILE).is_file()))
             return "did it"
-        argv = ["o", "--project", str(root), "--non-interactive"]
+        argv = ["o", "--project", str(root), "--non-interactive", "--pipeline"]
         with patch.object(orchestrator, "ask_once", side_effect=ask), patch.object(orchestrator, "run_agent", side_effect=agent), \
                 patch.object(orchestrator, "extract_review_with_repair", side_effect=lambda *a: ({"verdict": "PASS"}, "ok")), \
                 patch.object(orchestrator, "configure_project", side_effect=lambda c, *a: c), patch.object(orchestrator.sys, "argv", argv):

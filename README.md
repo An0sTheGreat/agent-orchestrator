@@ -6,7 +6,9 @@ Agent Orchestrator lets a set of small local language models build software toge
 
 ## Description
 
-You describe the goal, constraints, and acceptance criteria in a `PROJECT.md`. Agent Orchestrator then repeats a bounded loop:
+You describe the goal, constraints, and completion criteria in a `PROJECT.md`. **Start project** (`python orchestrator.py --project <folder> [--once]`) then runs the **lead project run**: the lead agent (the Planner role, `prompts/lead_project.txt`) works through `PROJECT.md` on its own with the Code tools (list/read/search/write/replace files in the project root, `todo`, `run_checks`, `delegate` to fresh Implementer/Reviewer sub-agents), verifies with `run_checks` (which returns the error details: file, line, message, command output, clipped to about 3,000 characters) and by reading files, and records each finished item with `record_progress(item, outcome)`, which appends `## Done: <item>` (time, outcome) to `STATE.md` and sets `Last done` in `HANDOFF.md`. `finish(summary)` ends the run with exit code 0 and the `## Project complete` section in `STATE.md`. The lead's input is `PROJECT.md`, `STATE.md` and a file inventory, so a new run resumes after the recorded items. `--once` stops after the first recorded item. `max_lead_steps` (default 200) caps the lead's model calls per run (each delegation keeps its own `max_tool_steps`); hitting it, or a fatal model error, prints an `ERROR:` line and exits 1. Long runs are kept workable by the in-request context compaction. The project folder may not overlap this folder. Its file tools reach the whole project root except `api_key.txt` and `.git`. Run output shows the lead and its workers on their cards (the usual `loading`, `model`, `delta`, `usage`, `tool` events); each recorded item is a `task {id: item, outcome}` event followed by `task_end` and `task_start`, and `finish` emits `complete {summary}`.
+
+`--pipeline` runs the legacy bounded loop instead:
 
 `planner -> implementer tools -> reviewer -> fix/review -> verified state -> planner`
 
@@ -14,6 +16,8 @@ You describe the goal, constraints, and acceptance criteria in a `PROJECT.md`. A
 - **Implementer** writes code with file tools limited to those files, and can run only the validation commands you have approved.
 - **Reviewer** is read-only. It judges the diff and validation evidence and returns `PASS` or `FAIL`.
 - **Verified state** (`STATE.md`) advances only after a `PASS`, so the next task always builds on reviewed work.
+
+The sections below on task limits, the configurator, the contract, the behaviour and code checks as gates, checkpoints and review rounds describe this legacy pipeline.
 
 Models are loaded one at a time through Unsloth's local API, so the three roles can share a single GPU, and they are unloaded again when a run ends. A Windows launcher (`dist\Agent Orchestrator.exe`) wraps the Python engine with project setup, a live model-output view, per-model token statistics, and an execution log.
 
@@ -63,13 +67,13 @@ The EXE is self-contained for .NET, but the workflow engine still requires Pytho
 5. Keep Unsloth Desktop open. The supplied config targets your installed Studio backend at port 8888 and the three model paths detected in your installation logs.
 6. Review the generated project-local `validation_commands` after the first run. Each command is an argument array, not a shell string.
 
-Run against code in this folder:
+Run the legacy pipeline against code in this folder:
 
 ```powershell
-python .\orchestrator.py
+python .\orchestrator.py --pipeline
 ```
 
-Run against another initialized project; its workflow records stay in that project:
+Run against another initialized project (the lead project run; add `--pipeline` for the legacy pipeline); its workflow records stay in that project:
 
 ```powershell
 python .\orchestrator.py --project 'Y:\path\to\project'
@@ -145,7 +149,7 @@ The launcher's **Code** view (sidebar: Chat, Code, Options) works like a coding 
 - Talk to any loaded worker; **+** picks which one (and switches to Single); the target chip opens the Models window to configure its model (in Multi mode, the Planner's, Implementer's and Reviewer's). It can list, read and search files, and create or edit files directly in the project folder.
 - **Project > Folders… > Add folder…** grants extra folders, each one **Read only** or **Full edit**. Nothing outside the granted folders can be read or written. `api_key.txt` and `.git` are always refused, and links or junctions that point outside are skipped.
 - No `PROJECT.md` is needed to start. Once you agree on a project, the agent calls `write_project_md` and the Implementer writes `PROJECT.md` from the template in this folder. An existing file is kept as `PROJECT.backup-<time>.md`. You can also bring your own `PROJECT.md`.
-- When you tell the agent to begin, or press **Start project**, the Planner first writes `PROJECT.md` from the files if there is none. The workflow files are then added (an existing `PROJECT.md` is kept), the view switches to **Run output**, and the normal Planner → Implementer → Reviewer run starts.
+- When you tell the agent to begin, or press **Start project**, the Planner first writes `PROJECT.md` from the files if there is none. The workflow files are then added (an existing `PROJECT.md` is kept), the view switches to **Run output**, and the lead project run starts.
 
 Command line: `python orchestrator.py --project <folder with config.json> --events --code <request.json>`.
 
