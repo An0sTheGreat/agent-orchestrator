@@ -93,25 +93,30 @@ internal static class LauncherLogic
     // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
     public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills);
 
-    public sealed record Skill(string Name, string Description, string Folder);
+    public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
     // Each folder under root holding a SKILL.md, by name; name and description come from its front matter (name defaults to the folder's).
-    public static List<Skill> ListSkills(string root)
+    // bundledRoot (the app's own skills, <workflow root>\skills) adds its skills as BuiltIn, except a folder name root
+    // also has: the user's copy overrides the bundled one.
+    public static List<Skill> ListSkills(string root, string? bundledRoot = null)
     {
         var skills = new List<Skill>();
-        if (!Directory.Exists(root))
-            return skills;
-        foreach (var folder in Directory.GetDirectories(root))
+        foreach (var (folder, builtIn) in Folders(root, false).Concat(Folders(bundledRoot, true)))
         {
+            if (builtIn && skills.Any(s => string.Equals(Path.GetFileName(s.Folder), Path.GetFileName(folder), StringComparison.OrdinalIgnoreCase)))
+                continue;
             string text;
             try { text = File.ReadAllText(Path.Combine(folder, "SKILL.md")); }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { continue; }
             var front = Regex.Match(text, @"\A---\s*\n(.*?)\n---", RegexOptions.Singleline);
             string Field(string key) => front.Success && Regex.Match(front.Groups[1].Value, $@"(?m)^{key}\s*:\s*(.+?)\s*$") is { Success: true } m
                 ? m.Groups[1].Value.Trim('\'', '"') : "";
-            skills.Add(new(Field("name") is { Length: > 0 } name ? name : Path.GetFileName(folder), Field("description"), folder));
+            skills.Add(new(Field("name") is { Length: > 0 } name ? name : Path.GetFileName(folder), Field("description"), folder, builtIn));
         }
         return skills.OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).ToList();
+
+        static IEnumerable<(string, bool)> Folders(string? root, bool builtIn) =>
+            root is not null && Directory.Exists(root) ? Directory.GetDirectories(root).Select(f => (f, builtIn)) : [];
     }
 
     // A model that thinks before answering. With modelsFolder given (null = skip the file check), the model file's own
@@ -1735,6 +1740,20 @@ internal static class LauncherLogic
             if (ListSkills(skillArea) is not [{ Name: "Alpha", Description: "Does A" } a, { Name: "beta", Description: "" }] ||
                 Path.GetFileName(a.Folder) != "zeta" || ListSkills(Path.Combine(skillArea, "missing")).Count != 0)
                 throw new InvalidOperationException("Skill listing failed.");
+            // Bundled skills join the user's as BuiltIn; a user folder of the same name (any case) overrides the bundled one.
+            var bundled = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-bundled-{Guid.NewGuid():N}");
+            try
+            {
+                foreach (var (folder, text) in new[] { ("ZETA", "---\nname: Bundled zeta\n---"), ("gamma", "---\nname: gamma\ndescription: Built in\n---") })
+                {
+                    Directory.CreateDirectory(Path.Combine(bundled, folder));
+                    File.WriteAllText(Path.Combine(bundled, folder, "SKILL.md"), text);
+                }
+                if (ListSkills(skillArea, bundled) is not [{ Name: "Alpha", BuiltIn: false }, { Name: "beta", BuiltIn: false }, { Name: "gamma", Description: "Built in", BuiltIn: true } g] ||
+                    !g.Folder.StartsWith(bundled) || ListSkills(Path.Combine(skillArea, "missing"), bundled) is not [{ Name: "Bundled zeta", BuiltIn: true }, { Name: "gamma" }])
+                    throw new InvalidOperationException("Bundled skill merge failed.");
+            }
+            finally { Directory.Delete(bundled, recursive: true); }
         }
         finally { Directory.Delete(skillArea, recursive: true); }
         var dataArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-conv-{Guid.NewGuid():N}");

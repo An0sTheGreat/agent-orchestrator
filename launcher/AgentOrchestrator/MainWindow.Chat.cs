@@ -163,7 +163,7 @@ public partial class MainWindow
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
         CodeStartButton.ToolTip = hasMd ? "Start or resume the project run in this folder (Ctrl+Enter)"
-            : "This folder has no PROJECT.md: add one (Add PROJECT.md… or Start from template) to start the project";
+            : "This folder has no PROJECT.md: create one with a model, add one or start from the template to start the project";
         CodeProjectButton.IsEnabled = !_chatBusy && !runActive && SelectedProjectPath().Length > 0;
     }
 
