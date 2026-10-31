@@ -5,7 +5,7 @@ using System.Windows.Controls;
 
 namespace AgentOrchestrator;
 
-// Code view: a conversation with the lead (the Planner, which delegates to the other workers) about a folder (`orchestrator.py --code`), whose tool calls read and edit
+// Code view: a conversation with the lead (the Planner, the primary agent; it may delegate to the other workers) about a folder (`orchestrator.py --code`), whose tool calls read and edit
 // its files, beside the project run's output. Turns share the Chat plumbing (RunTurn); one turn of either kind at a time.
 public partial class MainWindow
 {
@@ -13,7 +13,7 @@ public partial class MainWindow
     private bool _codeStartRequested; // the worker called start_project: the run starts once the turn succeeds
     private bool _codeRun; // the Code view shows Run output rather than the conversation
 
-    private RoleCard? CodeTarget() => CardFor("planner"); // the lead: it delegates to the other workers
+    private RoleCard? CodeTarget() => CardFor("planner"); // the lead: it does the work and may delegate to the other workers
 
     // action "chat" sends the typed message; "write_project" asks the worker (the Planner, say) to write PROJECT.md from
     // the conversation so far, with no user message.
@@ -127,9 +127,9 @@ public partial class MainWindow
         var hasMd = HasProjectMd();
         (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
             ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
-            : hasMd ? ("Start a conversation", "Message the lead below, or press Start project: the lead works through PROJECT.md, delegating to your workers.")
-            : ("Add a PROJECT.md to start the project", "A model can interview you and write PROJECT.md for this folder; Start project then has the lead " +
-                "work through it, delegating to your workers.");
+            : hasMd ? ("Start a conversation", "Message the lead below: it can work through PROJECT.md with you. Or press Start project for an autonomous run.")
+            : ("Add a PROJECT.md to start the project", "Discuss the project with the lead, then say init-project: it writes PROJECT.md and you can " +
+                "ask it to begin work. Start project runs it autonomously instead.");
         CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
         RefreshChatInput(); // the Project menu needs a folder; Start project needs PROJECT.md
@@ -175,7 +175,7 @@ public partial class MainWindow
     // The first message of a "Create PROJECT.md with a model…" conversation; every turn of a conversation that starts with
     // it carries the init-project skill (CodeRequest). The worker writes the file itself, from the skill's template.
     private const string InitProjectMessage = "Use the init-project skill to create PROJECT.md for this folder. Inspect the folder first, then ask me what you need. " +
-        "When we agree, save it with write_file as PROJECT.md in the project root (not write_project_md).";
+        "When we agree, save it with write_file as PROJECT.md in the project root.";
 
     private void CodeEmptyInit_Click(object sender, RoutedEventArgs e) => Forget(CreateProjectMdWithModel());
 

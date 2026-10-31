@@ -299,7 +299,9 @@ class ApiClient:
         return str(models[0]["id"])
 
     def load_mismatch(self) -> str:
-        """Why the loaded model's load settings differ from this role's auto_load ("" if same or unknowable)."""
+        """Why the loaded model cannot serve this role's auto_load ("" if it can, or unknowable). Compatible, so kept: a
+        context at least as large as wanted, and a thinking model for a role that wants none (reasoning_budget 0): this
+        client then turns thinking off per request (thinking_off). Sampling never counts: it is sent with each request."""
         if not (self.management_url and self.auto_load):
             return ""
         try:
@@ -307,15 +309,17 @@ class ApiClient:
         except WorkflowError:
             return ""
         # requested_* hold what the active load was invoked with; the unprefixed reasoning_budget is the effective value.
-        have = {
-            "max_seq_length": status.get("requested_context_length"),
-            "reasoning_budget": status.get("requested_reasoning_budget", status.get("reasoning_budget")),
-        }
-        diffs = [
-            f"{key} {have[key]} -> {self.auto_load[key]}"
-            for key in have
-            if key in self.auto_load and isinstance(have[key], int) and have[key] != self.auto_load[key]
-        ]
+        ctx, want_ctx = status.get("requested_context_length"), self.auto_load.get("max_seq_length")
+        budget = status.get("requested_reasoning_budget", status.get("reasoning_budget"))
+        want_budget = self.auto_load.get("reasoning_budget")
+        diffs = []
+        if isinstance(ctx, int) and isinstance(want_ctx, int) and ctx < want_ctx:
+            diffs.append(f"max_seq_length {ctx} -> {want_ctx}")
+        if isinstance(budget, int) and isinstance(want_budget, int) and budget != want_budget:
+            if want_budget == 0:
+                self.thinking_off = True
+            else:
+                diffs.append(f"reasoning_budget {budget} -> {want_budget}")
         return ", ".join(diffs)
 
     def ensure_model(self, role: str, interactive: bool) -> str:
@@ -970,8 +974,34 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
     return args + [str(arg) for arg in auto_load.get("llama_extra_args") or []]
 
 
+def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]:
+    """(whether a server started with `running` args can serve `wanted`, whether it must then turn thinking off per
+    request). Everything but the context and the reasoning budget must match; a context at least as large is fine, and a
+    server that thinks can serve a role with --reasoning-budget 0 by sending enable_thinking false."""
+    def split(args: list[str]) -> tuple[list[str], int | None, bool]:
+        args, ctx, no_thinking = list(args), None, False
+        for flag in ("-c", "--reasoning-budget"):
+            if flag in args[:-1]:
+                i = args.index(flag)
+                value = args[i + 1]
+                del args[i:i + 2]
+                if flag == "-c":
+                    ctx = int(value) if value.isdigit() else None
+                else:
+                    no_thinking = value == "0"
+        return args, ctx, no_thinking
+
+    have, want = split(running), split(wanted)
+    if have[0] != want[0] or have[1] != want[1] and not (have[1] and want[1] and have[1] >= want[1]):
+        return False, False
+    if have[2] and not want[2]:
+        return False, False  # the running server cannot think; this role wants to
+    return True, want[2] and not have[2]
+
+
 def llama_ensure(client: ApiClient, role: str) -> str:
-    """Serve the role's model on llama-server: reuse the running server if it has the same args, else restart it."""
+    """Serve the role's model on llama-server: reuse the running server if its args can serve this role
+    (llama_compatible), else restart it."""
     name = client.title or role
     exe = os.environ.get("AGENT_ORCHESTRATOR_LLAMA_SERVER", "")
     if not exe or not Path(exe).is_file():
@@ -982,7 +1012,13 @@ def llama_ensure(client: ApiClient, role: str) -> str:
     args = llama_args(model_file, client.auto_load, port)
     signature = " ".join(args)
     state = llama_state()
-    if not (state.get("signature") == signature and llama_alive(state.get("pid")) and llama_healthy(port)):
+    running = state.get("args")
+    usable, no_thinking = llama_compatible(running, args) if isinstance(running, list) else (state.get("signature") == signature, False)
+    if usable and llama_alive(state.get("pid")) and llama_healthy(port):
+        if state.get("signature") != signature:
+            print(f"[{name}] keeping the loaded {path}: its load settings also serve this role")
+        client.thinking_off = client.thinking_off or no_thinking
+    else:
         llama_stop()
         print(f"[{name}] loading {path} ({model_file.name}) on llama-server ...")
         log = llama_path(".log")
@@ -991,7 +1027,7 @@ def llama_ensure(client: ApiClient, role: str) -> str:
                 [exe, *args], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
             )
-        llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature,
+        llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature, "args": args,
                                                    "model_file": str(model_file), "log": str(log)}), encoding="utf-8")
         emit("loading", role=role, path=path)  # no url: the launcher would send Unsloth unload calls to it
         deadline = time.time() + client.timeout
@@ -3287,7 +3323,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     role = str(request.get("worker") or "planner")
     worker = chat_worker(config, role)
     title = display_name(config, role)
-    handlers = {**handlers, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title))}
+    lead_extras, research = with_research(handlers)
+    handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
     extras = ([*tools, DELEGATE_TOOL], handlers, note)
     system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
     turn_images(request, messages[-1]["content"])
@@ -3314,10 +3351,7 @@ CODE_TOOLS = [
                   {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
     function_tool("replace_text", "Replace one exact, unique string in a UTF-8 text file.",
                   {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, ["path", "old", "new"]),
-    function_tool("write_project_md", "Write the project root's PROJECT.md from the template, using the conversation and these notes.",
-                  {"notes": {"type": "string"}}, ["notes"]),
-    function_tool("start_project", "Ask the launcher to begin the project run after this reply.", {}, []),
-]
+]  # the lead writes PROJECT.md itself (init-project skill); the autonomous run starts only from the launcher's Start project
 
 
 def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> Path:
@@ -3438,8 +3472,8 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply. With
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
-    calls. After a batch that ran another model (delegate, write_project_md), the role's model is ensured again: a
-    single-model server may have swapped it."""
+    calls. After a batch that ran another model (delegate), the role's model is ensured again: a single-model server may
+    have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another)."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
@@ -3503,7 +3537,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 results.append(f"{tool}: {result}")
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
-        if {str((c.get("function") or {}).get("name")) for c in calls} & {"delegate", "write_project_md"}:
+        if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():
             return reply_text(response)
@@ -3511,16 +3545,58 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
 
 
 DELEGATE_TOOL = function_tool(
-    "delegate", "Hand a self-contained piece of work to a worker that starts with a fresh context: 'implementer' does the work "
-    "(in Code it can edit files), 'reviewer' checks work and reports problems. The worker sees only your brief, so state the goal, "
-    "the files or facts involved and what to report back. Returns the worker's final report.",
-    {"worker": {"type": "string", "enum": ["implementer", "reviewer"]}, "brief": {"type": "string"}}, ["worker", "brief"])
+    "delegate", "Optional: hand a self-contained piece of work to a worker that starts with a fresh context: 'reviewer' checks work "
+    "and reports problems without changing anything, 'implementer' makes a change (in Code it can edit files). It gets your tools' "
+    "access (web search when on) and the web results you read this turn, but nothing else of this conversation, so fill in the "
+    "fields. Returns the worker's final report.",
+    {"worker": {"type": "string", "enum": ["implementer", "reviewer"]},
+     "brief": {"type": "string", "description": "The objective: exactly what to do or check, and what to report back."},
+     "context": {"type": "string", "description": "What the worker needs from this conversation: requirements (PROJECT.md items), "
+                 "the user's constraints, research findings, decisions and earlier findings."},
+     "files": {"type": "array", "items": {"type": "string"}, "description": "The files involved."},
+     "acceptance": {"type": "array", "items": {"type": "string"}, "description": "How to tell the work is done."}},
+    ["worker", "brief"])
 TODO_TOOL = function_tool("todo", "Set your short checklist for this turn: pass the whole list each time, open items as "
                           "'[ ] ...' and finished ones as '[x] ...'. Returns the list.",
                           {"items": {"type": "array", "items": {"type": "string"}}}, ["items"])
 CHECKS_TOOL = function_tool("run_checks", "Run the project's available checks (syntax, JavaScript code check, page load, configured "
                             "validation commands) on the project root; returns a short result.", {}, [])
-CHAT_DELEGATIONS, SUB_REPORT_LIMIT, CHECKS_LIMIT = 3, 4000, 3000
+CHAT_DELEGATIONS, SUB_REPORT_LIMIT, CHECKS_LIMIT, RESEARCH_LIMIT = 3, 4000, 3000, 8000
+
+
+def with_research(handlers: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """`handlers` with web_search/fetch_page recording each result, and that record: a delegation hands it to the worker,
+    so the worker does not start ignorant of what the lead already read."""
+    research: list[str] = []
+
+    def noted(name: str, run: Any) -> Any:
+        def call(**arguments: Any) -> str:
+            result = run(**arguments)
+            research.append(f"{name} {json.dumps(arguments, ensure_ascii=False)}\n{clip(result, 3000)}")
+            return result
+        return call
+
+    return {name: noted(name, run) if name in ("web_search", "fetch_page") else run for name, run in handlers.items()}, research
+
+
+def handoff(brief: str, context: Any = "", files: Any = None, acceptance: Any = None, research: list[str] | None = None) -> str:
+    """A delegated worker's first message: the objective, the context fields the lead filled in, its recent web results."""
+    items = lambda value: [str(v) for v in value] if isinstance(value, list) else [str(value)] if value else []
+    parts = [f"OBJECTIVE\n{str(brief).strip()}"]
+    if str(context or "").strip():
+        parts.append(f"CONTEXT\n{str(context).strip()}")
+    for title, values in (("FILES", items(files)), ("ACCEPTANCE", items(acceptance))):
+        if values:
+            parts.append(title + "\n" + "\n".join(f"- {v}" for v in values))
+    if research:
+        kept: list[str] = []
+        for entry in reversed(research):  # ponytail: the latest whole entries win; older ones are dropped, not summarized
+            if kept and sum(map(len, kept)) + len(entry) > RESEARCH_LIMIT:
+                break
+            kept.insert(0, entry)
+        recent = "\n\n".join(kept)
+        parts.append(f"RESEARCH FROM THE LEAD'S TURN (web results it already read)\n{recent}")
+    return "\n\n".join(parts)
 
 
 def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
@@ -3544,14 +3620,15 @@ def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
 
 
 def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[str, Any], str],
-              folders: list[dict[str, str]] | None, cap: int, back: tuple[str, str, str]):
+              folders: list[dict[str, str]] | None, cap: int, back: tuple[str, str, str], research: list[str] | None = None):
     """The delegate tool's handler for one turn: at most `cap` sub-agents, each a fresh code_loop on its role (Planner
-    fallback) with its prompts/sub_<worker>.txt and the brief. With folders (Code) the implementer gets the file tools and
-    the reviewer the read tools + run_checks; in Chat both get only the request's extras. Sub-agents cannot delegate.
+    fallback) with its prompts/sub_<worker>.txt and the handoff (brief, the lead's context fields and `research`). Every
+    worker inherits the request's extras (web search, utilities, skills); with folders (Code) the implementer also gets the
+    file tools and the reviewer the read tools + run_checks. Sub-agents cannot delegate.
     `back` = (role, stage, title) of the caller, announced again when a delegation ends."""
     used = 0
 
-    def delegate(worker: str, brief: str) -> str:
+    def delegate(worker: str, brief: str, context: Any = "", files: Any = None, acceptance: Any = None) -> str:
         nonlocal used
         if worker not in ("implementer", "reviewer"):
             raise WorkflowError(f"unknown worker {worker!r}; use 'implementer' or 'reviewer'")
@@ -3560,18 +3637,19 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
         if not str(brief or "").strip():
             raise WorkflowError("the brief is empty")
         used += 1
-        tools, handlers, context = extras
+        tools, handlers, note = extras
         if folders:
             read = code_handlers(folders)
             if worker == "implementer":
                 tools, handlers = CODE_TOOLS[:5] + tools, {**read, **code_write_handlers(folders), **handlers}
             else:
                 tools, handlers = CODE_TOOLS[:3] + [CHECKS_TOOL] + tools, {**read, "run_checks": lambda: run_checks(config, folders), **handlers}
-            context += f"\n\n{folders_context(folders)}"
-        system = load_text(ROOT / "prompts" / f"sub_{worker}.txt").strip() + context
+            note += f"\n\n{folders_context(folders)}"
+        system = load_text(ROOT / "prompts" / f"sub_{worker}.txt").strip() + note
         emit("chat_stage", role=worker, stage="delegate", title=display_name(config, worker))
         try:
-            report = code_loop(config, worker, system, [{"role": "user", "content": str(brief)}], tools, handlers)
+            first = {"role": "user", "content": handoff(brief, context, files, acceptance, research)}
+            report = code_loop(config, worker, system, [first], tools, handlers)
         finally:
             emit("chat_stage", role=back[0], stage=back[1], title=back[2])
         return clip(report or "(the worker returned no report)", SUB_REPORT_LIMIT)
@@ -3579,23 +3657,27 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
     return delegate
 
 
+INIT_PROJECT_SKILL = ROOT / "skills" / "init-project"  # bundled; offered on every Code turn
+
+
 def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
               role: str = "planner") -> str:
-    """A Code turn's lead agent (`role`, by default the planner): plans with todo, works with the file tools, verifies with
-    run_checks and delegates self-contained work to implementer/reviewer sub-agents (config max_delegations per turn, default 6)."""
-    tools, extra_handlers, note = request_extras(request)
+    """A Code turn's lead agent (`role`, by default the planner), the primary agent: plans with todo, does the work with
+    the file tools, verifies with run_checks and may delegate to implementer/reviewer sub-agents (config max_delegations
+    per turn, default 6). It always has the bundled init-project skill, so it writes PROJECT.md itself; it never starts
+    the autonomous project run (the launcher's Start project does)."""
+    skills = [str(s) for s in request.get("skills") or []]
+    names = {skill_info(Path(s))["name"].lower() for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()}
+    if (INIT_PROJECT_SKILL / "SKILL.md").is_file() and skill_info(INIT_PROJECT_SKILL)["name"].lower() not in names:
+        skills.append(str(INIT_PROJECT_SKILL))  # a user skill of the same name replaces it
+    tools, extra_handlers, note = request_extras({**request, "skills": skills})
+    lead_extras, research = with_research(extra_handlers)  # workers get the plain ones: their searches are not the lead's
     title = display_name(config, role)
-    handlers = {**code_handlers(folders), **code_write_handlers(folders), **extra_handlers}
-    handlers["write_project_md"] = lambda notes="": (
-        f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
-    handlers["start_project"] = lambda: (
-        "ERROR: the project root has no PROJECT.md; ask the user to add one (or write it with write_project_md when they ask)"
-        if not (Path(folders[0]["path"]) / "PROJECT.md").is_file()
-        else (emit("code_start", role=role), "OK: the project run will start after this reply.")[1])
+    handlers = {**code_handlers(folders), **code_write_handlers(folders), **lead_extras}
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
     handlers["run_checks"] = lambda: run_checks(config, folders)
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
-                                     (role, "lead", title))
+                                     (role, "lead", title), research)
     system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
     messages = compact_conversation(config, (role,), system, messages, tools, request)

@@ -241,7 +241,7 @@ class OrchestratorTests(unittest.TestCase):
         return mine
 
     def test_loading_event_carries_management_url(self):
-        client, _ = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        client, _ = self._managed_client({"requested_context_length": 16384, "requested_reasoning_budget": 0})
         with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit") as emit:
             client.ensure_model("implementer", False)
         emit.assert_any_call("loading", role="implementer", path="u/M", url=client.management_url)
@@ -264,11 +264,26 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(reply({"content": ""}), "")
 
     def test_reloads_when_loaded_settings_differ(self):
-        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
-        mine = self._ensure(client)
-        loads = [c for c in calls if c[1] == "/api/inference/load"]
-        self.assertEqual(loads[0][2], client.auto_load)
-        self.assertIn("u/M", mine)
+        # a smaller context, or a load without thinking for a role that thinks, cannot serve the role
+        for status, want in (({"requested_context_length": 16384, "requested_reasoning_budget": 0}, {}),
+                             ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, {"reasoning_budget": 4096}),
+                             ({"requested_context_length": 32768, "requested_reasoning_budget": 8192}, {"reasoning_budget": 4096})):
+            client, calls = self._managed_client(status, **want)
+            mine = self._ensure(client)
+            loads = [c for c in calls if c[1] == "/api/inference/load"]
+            self.assertEqual(loads[0][2], client.auto_load, status)
+            self.assertIn("u/M", mine)
+
+    def test_a_compatible_load_is_kept_and_thinking_goes_off_per_request(self):
+        # Same model, a larger context, thinking on while this role wants none: no reload; this client sends thinking off.
+        client, calls = self._managed_client({"requested_context_length": 65536, "requested_reasoning_budget": 8192})
+        self._ensure(client)
+        self.assertFalse([c for c in calls if c[1] == "/api/inference/load"])
+        self.assertTrue(client.thinking_off)
+        self.assertIs(client._thinking({"x": 1}, not client.thinking_off)["enable_thinking"], False)
+        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 0})
+        self._ensure(client)
+        self.assertFalse(client.thinking_off)  # the load already has no thinking
 
     def test_no_reload_when_settings_match_or_status_unreadable(self):
         for status in ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, None, {}):
@@ -277,7 +292,7 @@ class OrchestratorTests(unittest.TestCase):
             self.assertFalse([c for c in calls if c[1] == "/api/inference/load"], status)
 
     def _failed_reload(self, models_after):
-        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
+        client, calls = self._managed_client({"requested_context_length": 16384, "requested_reasoning_budget": 0})
         seq = iter(["u/M"] + models_after)
 
         def model_id():
@@ -2901,21 +2916,26 @@ class CodeTests(unittest.TestCase):
         self.assertIn("FOLDERS", log[0]["system"])
         self.assertIn(f"{self.shared} (read)", log[0]["system"])
         self.assertEqual({t["function"]["name"] for t in log[0]["tools"]},
-                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "write_project_md", "start_project",
-                          "todo", "run_checks", "delegate"})
+                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "todo", "run_checks", "delegate",
+                          "load_skill"})
 
-    def test_start_project_emits_code_start(self):
-        (self.root / "PROJECT.md").write_text("# Project\n", encoding="utf-8")
-        replies = {"planner": [tool_call("start_project"), "Starting the project."]}
-        code, log, events, _ = self.code({"action": "chat", "worker": "planner", "messages": self.MSGS}, replies)
-        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_start", "code_reply"])
-        self.assertIn("OK: the project run will start", log[1]["messages"][-1]["content"])
-
-    def test_start_project_without_project_md_is_refused(self):
-        replies = {"planner": [tool_call("start_project"), "Please add a PROJECT.md."]}
-        code, log, events, _ = self.code({"action": "chat", "worker": "planner", "messages": self.MSGS}, replies)
-        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_reply"])
-        self.assertIn("ERROR: the project root has no PROJECT.md", log[1]["messages"][-1]["content"])
+    def test_begin_work_from_project_md_stays_with_the_lead(self):
+        # Scenario B: with a PROJECT.md the lead reads it and implements itself; nothing can start the project run or a worker.
+        (self.root / "PROJECT.md").write_text("# Project\n\n## Remaining Work\n\n- Phase 0: app.py prints hi\n", encoding="utf-8")
+        msgs = [*self.MSGS, {"role": "assistant", "content": "PROJECT.md is ready."}, {"role": "user", "content": "Use PROJECT.md and begin work."}]
+        replies = {"planner": [tool_call("read_file", path="PROJECT.md"), tool_call("write_file", path="app.py", content="print('hi')"),
+                               tool_call("run_checks"), tool_call("start_project"), "Phase 0 done: app.py prints hi."]}
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual({l["role"] for l in log}, {"planner"})
+        self.assertNotIn("start_project", {t["function"]["name"] for t in log[0]["tools"]})
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "print('hi')\n")
+        self.assertIn("PROJECT.md exists in the project root: yes", log[0]["system"])
+        self.assertEqual(log[0]["messages"][-1]["content"], "Use PROJECT.md and begin work.")  # the whole conversation, same lead
+        results = [(d["name"], d["result"]) for e, d in events if e == "tool"]
+        self.assertTrue(results[0][1].startswith("# Project"))
+        self.assertEqual(results[3], ("start_project", "ERROR: tool 'start_project' is unavailable"))
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_reply"])  # no code_start: no run
 
     PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
 
@@ -2939,14 +2959,35 @@ class CodeTests(unittest.TestCase):
         self.assertIn("better", (self.root / "PROJECT.md").read_text(encoding="utf-8"))
         self.assertEqual(len(list(self.root.glob("PROJECT.backup-*.md"))), 1)
 
-    def test_write_project_md_tool_uses_implementer(self):
-        replies = {"planner": [tool_call("write_project_md", notes="todo app"), "Wrote it."],
-                   "implementer": [self.PROJECT]}
-        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, replies)
-        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "planner"])
-        self.assertIn("NOTES\ntodo app", log[1]["messages"][0]["content"])
-        self.assertEqual([d["result"] for e, d in events if e == "tool"], ["OK: PROJECT.md written (5 lines)"])
-        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_project", "code_reply"])
+    def test_init_project_is_done_by_the_lead_itself(self):
+        # Scenario A/F: mid-conversation "init-project" with no skill switched on; the bundled skill is there, the lead
+        # loads it (and its template) and writes PROJECT.md itself; no worker, no run, nothing else written.
+        msgs = [{"role": "user", "content": "I want a todo app in plain JS, saved in localStorage."},
+                {"role": "assistant", "content": "Noted: plain JS, localStorage."}, {"role": "user", "content": "init-project"}]
+        skill = lambda **a: {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "load_skill", "arguments": json.dumps(a)}}]}
+        replies = {"planner": [skill(name="init-project"), skill(name="init-project", file="assets/PROJECT.md"),
+                               tool_call("list_files"), tool_call("write_file", path="PROJECT.md", content=self.PROJECT),
+                               "PROJECT.md is ready. Say when to begin work."]}
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual({l["role"] for l in log}, {"planner"})
+        self.assertIn("- init-project: ", log[0]["system"])
+        self.assertNotIn("write_project_md", {t["function"]["name"] for t in log[0]["tools"]})
+        self.assertIn("localStorage", log[0]["messages"][0]["content"])  # the lead has the discussion
+        results = [d["result"] for e, d in events if e == "tool"]
+        self.assertIn("name: init-project", results[0])
+        self.assertIn("## Project Goal", results[1])
+        self.assertEqual(results[3], "OK")
+        self.assertEqual((self.root / "PROJECT.md").read_text(encoding="utf-8"), self.PROJECT)
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["PROJECT.md"])
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_reply"])
+        # a user skill folder of the same name replaces the bundled one instead of adding a second
+        own = self.cfg / "my-init"  # matched by its SKILL.md name, not the folder
+        own.mkdir()
+        (own / "SKILL.md").write_text("---\nname: init-project\ndescription: mine\n---\n", encoding="utf-8")
+        code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "skills": [str(own)]}, {"planner": ["ok"]})
+        self.assertIn("- init-project: mine", log[0]["system"])
+        self.assertEqual(log[0]["system"].count("- init-project:"), 1)
 
     def test_chat_and_code_are_mutually_exclusive(self):
         err = io.StringIO()
@@ -2973,11 +3014,11 @@ class LeadTests(unittest.TestCase):
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 1\n")
         self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["planner"] + ["reviewer"] * 2 + ["planner"])
         code_tools = [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "delegate"])
-        self.assertEqual(self.names(log[2]), code_tools[:5])  # implementer: file tools, no delegate
-        self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks"])  # reviewer: read tools + run_checks
+        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "delegate", "load_skill"])
+        self.assertEqual(self.names(log[2]), code_tools[:5] + ["load_skill"])  # implementer: file tools + the extras, no delegate
+        self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks", "load_skill"])  # reviewer: read tools + run_checks
         for sub, brief in ((log[2], "Write app.py: x = 1"), (log[5], "Check app.py")):
-            self.assertEqual(sub["messages"], [{"role": "user", "content": brief}])  # fresh context: the brief only
+            self.assertEqual(sub["messages"], [{"role": "user", "content": f"OBJECTIVE\n{brief}"}])  # fresh context: the handoff only
             self.assertIn("FOLDERS", sub["system"])
         self.assertIn("implementer working for a lead agent", log[2]["system"])
         self.assertIn("reviewer working for a lead agent", log[5]["system"])
@@ -3008,6 +3049,32 @@ class LeadTests(unittest.TestCase):
         self.assertNotIn("delegate", self.names(log[1]))
         self.assertEqual([d["result"] for e, d in events if e == "tool"], ["ERROR: tool 'delegate' is unavailable", "REVIEW"])
         self.assertNotIn("implementer", [l["role"] for l in log])
+
+    def test_a_reviewer_gets_the_lead_s_context_and_research_and_search_stays_on(self):
+        # Scenarios D and G: the lead researches with Search on, then asks the read-only reviewer; the reviewer gets the
+        # handoff fields, the web results the lead read, and web search itself, and the lead continues after its report.
+        (self.root / "app.js").write_text("const x = 1;\n", encoding="utf-8")
+        replies = {"planner": [tool_call("web_search", query="localStorage limits"),
+                               tool_call("delegate", worker="reviewer", brief="Review app.js", context="User wants offline use.",
+                                         files=["app.js"], acceptance=["no network calls"]),
+                               tool_call("write_file", path="notes.md", content="reviewed"), "Reviewed; no problems."],
+                   "reviewer": [tool_call("write_file", path="app.js", content="hacked"), "No problems in app.js."]}
+        with patch.object(orchestrator, "web_search", lambda query: f"1. MDN: about 5 MB per origin ({query})"):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "search": True}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual([l["role"] for l in log], ["planner", "planner", "reviewer", "reviewer", "planner", "planner"])
+        handoff = log[2]["messages"][0]["content"]
+        for part in ("OBJECTIVE\nReview app.js", "CONTEXT\nUser wants offline use.", "FILES\n- app.js", "ACCEPTANCE\n- no network calls",
+                     "RESEARCH FROM THE LEAD'S TURN", 'web_search {"query": "localStorage limits"}', "about 5 MB per origin"):
+            self.assertIn(part, handoff)
+        self.assertIn("web_search", self.names(log[2]))  # Search inherited
+        self.assertNotIn("write_file", self.names(log[2]))  # still read-only
+        self.assertEqual((self.root / "app.js").read_text(encoding="utf-8"), "const x = 1;\n")
+        results = [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"]
+        self.assertIn(("reviewer", "write_file", "ERROR: tool 'write_file' is unavailable"), results)
+        self.assertIn(("planner", "delegate", "No problems in app.js."), results)
+        self.assertEqual(results[-1], ("planner", "write_file", "OK"))  # the lead keeps control
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "Reviewed; no problems."}])
 
     def test_workflow_files_at_the_root_cannot_be_written_but_project_md_can(self):
         folders = [{"path": str(self.root), "access": "write"}]
@@ -3079,7 +3146,7 @@ class LeadTests(unittest.TestCase):
                               ({"mode": "bogus"}, "planner"), ({"worker": "nobody"}, "planner")):
             code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, **request}, {lead: ["done"]})
             self.assertEqual((code, [l["role"] for l in log]), (0, [lead]), request)
-            self.assertIn("the lead coding agent", log[0]["system"])
+            self.assertIn("the primary coding agent", log[0]["system"])
             self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": lead, "text": "done"}])
             self.assertEqual([(d["role"], d["stage"]) for e, d in events if e == "chat_stage"], [(lead, "lead")])
 
@@ -3188,7 +3255,7 @@ class LeadRunTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(self.text("hello.py"), "print('hi')\n")
         self.assertEqual([l["role"] for l in log], ["planner", "implementer", "implementer", "planner", "planner"])
-        self.assertEqual(log[1]["messages"], [{"role": "user", "content": "Write hello.py"}])
+        self.assertEqual(log[1]["messages"], [{"role": "user", "content": "OBJECTIVE\nWrite hello.py"}])
         self.assertIn(("planner", "delegate", "Wrote hello.py."), [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"])
 
 
@@ -3834,7 +3901,7 @@ class ExtrasTests(unittest.TestCase):
             test.doCleanups()
         names = [t["function"]["name"] for t in log[0]["tools"]]
         self.assertEqual(names, [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-                         + ["todo", "run_checks", "delegate", "calculator", "current_time", "fetch_page"])
+                         + ["todo", "run_checks", "delegate", "calculator", "current_time", "fetch_page", "load_skill"])
         self.assertIn("UTILITIES\n", log[0]["system"])
 
 
@@ -3973,9 +4040,41 @@ class LlamaCppTests(unittest.TestCase):
         self.assertTrue(call.kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
         log = self.tmp / "temp" / "agent-orchestrator-llama.log"
         self.assertEqual(json.loads(self.state_file().read_text()),
-                         {"pid": 77, "port": 8899, "signature": " ".join(args), "model_file": str(model_file), "log": str(log)})
+                         {"pid": 77, "port": 8899, "signature": " ".join(args), "args": args, "model_file": str(model_file), "log": str(log)})
         self.emit.assert_any_call("loading", role="planner", path=self.PATH)  # no url: the launcher would unload via Unsloth
         self.assertIn(self.PATH, self.loaded)
+
+    def test_load_compatibility_ignores_sampling_and_allows_a_larger_context(self):
+        base = orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "max_seq_length": 32768, "reasoning_budget": 8192}, 8899)
+        args = lambda **auto: orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "max_seq_length": 32768,
+                                                                         "reasoning_budget": 8192, **auto}, 8899)
+        same = lambda auto: orchestrator.llama_compatible(base, args(**auto))
+        self.assertEqual(same({}), (True, False))
+        self.assertEqual(same({"max_seq_length": 16384}), (True, False))  # a smaller context fits in the loaded one
+        self.assertEqual(same({"reasoning_budget": 0}), (True, True))  # served with thinking off per request
+        for auto in ({"max_seq_length": 65536}, {"gpu_layers": 20}, {"cache_type_kv": "f16"}, {"model_path": "other/M"}):
+            self.assertEqual(same(auto), (False, False), auto)
+        no_think = args(reasoning_budget=0)
+        self.assertEqual(orchestrator.llama_compatible(no_think, base), (False, False))  # it cannot think again
+
+    def test_two_roles_on_one_model_with_other_sampling_share_the_server(self):
+        # Scenario H: implementer = same model and load, other sampling and no thinking: the running server is kept.
+        model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+        lead = {**self.AUTO, "reasoning_budget": 8192}
+        args = orchestrator.llama_args(model_file, lead, 8899)
+        self.write_state(41, " ".join(args))
+        state = json.loads(self.state_file().read_text())
+        self.state_file().write_text(json.dumps({**state, "args": args}))
+        self.alive.add(41)
+        roles = {"planner": {**self.ROLE, "auto_load": lead, "sampling": {"temperature": 0.6}},
+                 "implementer": {**self.ROLE, "sampling": {"temperature": 0.2, "top_k": 5}}}  # self.AUTO: reasoning_budget 0
+        client, sampling = orchestrator.role_settings({"roles": roles}, "implementer")
+        client.model_id = lambda: self.PATH
+        self.assertEqual(client.ensure_model("implementer", False), self.PATH)
+        self.popen.assert_not_called()
+        self.kill.assert_not_called()
+        self.assertTrue(client.thinking_off)
+        self.assertEqual(sampling, {"temperature": 0.2, "top_k": 5})  # sent per request
 
     def test_restarts_an_unhealthy_server_with_a_matching_signature(self):
         model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
