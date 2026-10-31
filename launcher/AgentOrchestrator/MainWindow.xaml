@@ -785,6 +785,10 @@
                         <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" FontSize="9.5" Foreground="{DynamicResource AccentLight}"
                                    TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Title}" />
                     </DockPanel>
+                    <TextBlock Tag="Covers" FontSize="9.5" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Covers}"
+                               Visibility="{Binding HasCovers, Converter={StaticResource BoolVis}}">
+                        <Run Text="Covers " /><Run Text="{Binding Covers, Mode=OneWay}" />
+                    </TextBlock>
                     <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                     <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SetupTip}"
                                Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
@@ -1195,7 +1199,7 @@
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
                     <Button x:Name="AddWorkerButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="+" FontSize="16" Width="28" Padding="0,0,0,2"
-                            Margin="4,0,0,8" Click="AddWorker_Click" ToolTip="Add a worker with a custom title and model" AutomationProperties.Name="Add worker" />
+                            Margin="4,0,0,8" Click="AddWorker_Click" ToolTip="Add the Implementer, the Reviewer or a custom worker" AutomationProperties.Name="Add worker" />
                     <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                                   SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
                         <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">

@@ -18,8 +18,13 @@ internal sealed class RoleCard : INotifyPropertyChanged
     {
         Role = role;
         IsCustom = custom;
-        _title = title ?? role.ToUpperInvariant();
+        _title = title ?? (role == "planner" ? "MAIN" : role.ToUpperInvariant());
     }
+
+    // The planner's tab: the built-in roles it currently covers ("Planner · Implementer · Reviewer"); "" on other tabs.
+    private string _covers = "";
+    public string Covers { get => _covers; set { if (_covers != value) { _covers = value; Raise(nameof(Covers)); Raise(nameof(HasCovers)); } } }
+    public bool HasCovers => _covers.Length > 0;
 
     public string Role { get; }
     public bool IsCustom { get; }
@@ -28,7 +33,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
     // The worker tab whose settings the column shows (MainWindow.WorkerTabs.cs); a selected tab stays shown even when Hidden.
     public bool IsSelected { get => _selected; set => Set(ref _selected, value); }
-    // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: the built-in workers in the Chat view).
+    // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: an implementer or reviewer not added).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
@@ -176,6 +181,10 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
+    // The built-in roles (implementer, reviewer) added through "+"; a role not added runs as the planner ("same_as": "planner").
+    public List<string> AddedRoles { get; set; } = new();
+    // The one-time move to AddedRoles (MainWindow.MigrateRoles) has run; a new user's settings start with it done.
+    public bool RolesMigrated { get; set; }
     // Named worker sets, global across projects.
     public List<WorkerPreset> Presets { get; set; } = new();
     // Named sets of Model settings option fields (ModelOptions keys), global across workers.
@@ -223,6 +232,8 @@ internal sealed class AppSettings
 
     public static AppSettings Load()
     {
+        if (!File.Exists(FilePath))
+            return new() { RolesMigrated = true }; // a new user: nothing to migrate
         try { return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new(); }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new(); }
     }
@@ -286,4 +297,6 @@ internal sealed class WorkerPreset
     public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
     // config.json task_limits as JSON; "{}" = none set (the defaults); null = saved without a project config, or before presets carried it.
     public string? TaskLimits { get; set; }
+    // AppSettings.AddedRoles when saved; null = a preset from before them (applying it leaves them).
+    public List<string>? AddedRoles { get; set; }
 }

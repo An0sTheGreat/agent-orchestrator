@@ -19,7 +19,7 @@ public partial class MainWindow
     {
         WorkerTabs.ItemsSource = _cards;
         Resources["WorkerTabWidth"] = 88.0;
-        SelectWorker(_cards.FirstOrDefault(c => c.Role == _settings.SelectedWorker) ?? FirstVisibleWorker());
+        SelectWorker(_cards.FirstOrDefault(c => c.Role == _settings.SelectedWorker && !c.Hidden) ?? FirstVisibleWorker());
         _cards.CollectionChanged += (_, _) =>
         {
             if (_shownWorker is null || !_cards.Contains(_shownWorker))

@@ -1096,6 +1096,42 @@ internal static class LauncherLogic
         return true;
     }
 
+    // Implementer/reviewer not in addedRoles run as the planner: "same_as": "planner", their other keys kept (custom workers
+    // still copy the implementer's connection). An added role loses same_as and, when that leaves it with no model, gets a
+    // copy of the planner's settings. Writes only when something changed.
+    public static void WriteRoleFallbacks(string configPath, IEnumerable<string> addedRoles)
+    {
+        var root = JsonNode.Parse(File.ReadAllText(configPath)) as JsonObject
+            ?? throw new InvalidOperationException("config.json is not a JSON object.");
+        var roles = (root["roles"] ??= new JsonObject()).AsObject();
+        var before = roles.ToJsonString();
+        foreach (var name in BuiltInRoles.Skip(1))
+        {
+            var role = roles[name] as JsonObject;
+            if (!addedRoles.Contains(name))
+                (role ?? (JsonObject)(roles[name] = new JsonObject()))["same_as"] = "planner";
+            else
+            {
+                role?.Remove("same_as");
+                if (role is not null && (role.ContainsKey("base_url") || role.ContainsKey("model")))
+                    continue;
+                var copy = roles["planner"]?.DeepClone() as JsonObject ?? new JsonObject();
+                foreach (var (key, value) in role?.ToList() ?? [])
+                    copy[key] = value?.DeepClone(); // the role's own keys (a chat prompt) stay
+                roles[name] = copy;
+            }
+        }
+        if (roles.ToJsonString() != before)
+            File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+            {
+                WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            }));
+    }
+
+    // What identifies a built-in role's model (remote model id, or the local load path, variant and file); "" when none.
+    public static string ModelKey(JsonNode? role) =>
+        role is null ? "" : $"{role["model"]}|{role["auto_load"]?["model_path"]}|{role["auto_load"]?["gguf_variant"]}|{role["auto_load"]?["gguf_file"]}";
+
     // The orchestrator's task_limits.max_allowed_files when the key is absent.
     public const int DefaultMaxFiles = 5;
 
@@ -1150,7 +1186,7 @@ internal static class LauncherLogic
         return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
-    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER"];
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN"];
 
     // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
     public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
@@ -1972,6 +2008,24 @@ internal static class LauncherLogic
             if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
                 presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
                 throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
+            // Role fallbacks: a role not added gets same_as (its keys kept); an added one loses it, and an empty one copies the planner.
+            var fallbacks = Path.Combine(testArea, "fallbacks.json");
+            File.WriteAllText(fallbacks, "{\"keep\":1,\"roles\":{\"planner\":{\"base_url\":\"u\",\"auto_load\":{\"model_path\":\"P\"}},\"implementer\":{\"base_url\":\"u\",\"display_name\":\"I\",\"auto_load\":{\"model_path\":\"I\"}},\"reviewer\":{\"same_as\":\"planner\",\"chat_system_prompt\":\"x\"}}}");
+            WriteRoleFallbacks(fallbacks, ["reviewer"]);
+            var fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
+            if ((string?)fb["roles"]!["implementer"]!["same_as"] != "planner" || (string?)fb["roles"]!["implementer"]!["display_name"] != "I" ||
+                fb["roles"]!["reviewer"]!["same_as"] is not null || (string?)fb["roles"]!["reviewer"]!["chat_system_prompt"] != "x" ||
+                ModelKey(fb["roles"]!["reviewer"]) != ModelKey(fb["roles"]!["planner"]) || (string?)fb["roles"]!["reviewer"]!["base_url"] != "u" || (int)fb["keep"]! != 1)
+                throw new InvalidOperationException("Role fallbacks: a not-added role must get same_as, an added empty one the planner's settings.");
+            WriteRoleFallbacks(fallbacks, ["implementer", "reviewer"]);
+            fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
+            if (fb["roles"]!["implementer"]!["same_as"] is not null || ModelKey(fb["roles"]!["implementer"]) == ModelKey(fb["roles"]!["planner"]))
+                throw new InvalidOperationException("Role fallbacks: an added role with a model must keep its own settings.");
+            File.WriteAllText(fallbacks, "{\"roles\":{\"planner\":{\"base_url\":\"u\"}}}");
+            WriteRoleFallbacks(fallbacks, []);
+            fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
+            if ((string?)fb["roles"]!["implementer"]!["same_as"] != "planner" || (string?)fb["roles"]!["reviewer"]!["same_as"] != "planner")
+                throw new InvalidOperationException("Role fallbacks: a missing role must be written as same_as.");
             // Task limits: read and write; an empty field removes its key, then the empty task_limits; other keys stay.
             var limitsConfig = Path.Combine(testArea, "limits.json");
             File.WriteAllText(limitsConfig, "{\"keep\":1,\"roles\":{\"implementer\":{\"auto_load\":{\"max_seq_length\":16384}},\"reviewer\":{\"auto_load\":{\"max_seq_length\":32768}}}}");

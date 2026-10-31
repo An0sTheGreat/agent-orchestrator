@@ -267,6 +267,24 @@ public partial class MainWindow
             note.Margin = new Thickness(0, 8, 0, 0);
             remotePanel.Children.Add(note);
             panel.Children.Add(remotePanel);
+            if (card.Role != "planner") // an added Implementer / Reviewer: removing it hands its work back to MAIN
+            {
+                var name = ChatName(card, card.Role);
+                var removeRole = new Button { Content = "Remove", Tag = "RemoveRole", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0),
+                    ToolTip = $"MAIN covers the {name} again; these settings are kept for when you add it back" };
+                removeRole.Click += (_, _) =>
+                {
+                    if (AskDialog("Remove worker", $"Remove the {name}? MAIN (the planner) takes over its work.", "Remove") is null)
+                        return;
+                    HoldWorkerTab(() =>
+                    {
+                        RemoveBuiltInRole(card.Role);
+                        close();
+                    });
+                    Log($"{name}: removed; MAIN covers it");
+                };
+                panel.Children.Add(removeRole);
+            }
         }
 
         // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups

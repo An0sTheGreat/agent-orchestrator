@@ -205,7 +205,7 @@ public partial class MainWindow
             return answer(title);
         RefreshSetupProblems();
         var list = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
-        foreach (var card in _cards.OrderBy(k => k.Role != "planner"))
+        foreach (var card in _cards.Where(k => !k.Hidden).OrderBy(k => k.Role != "planner"))
         {
             var broken = card.IsCustom ? card.SetupProblem : null;
             list.Children.Add(new RadioButton { Content = $"{ChatName(card, card.Role)} — {broken ?? card.ModelName}", Tag = card.Role, IsEnabled = broken is null,

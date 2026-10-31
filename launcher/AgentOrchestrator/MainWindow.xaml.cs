@@ -102,6 +102,7 @@ public partial class MainWindow : Window
                 ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
                 Log($"Workflow: {_workflowRoot}");
                 TryLoadApiKeyFile();
+                MigrateRoles();
                 PrefillCards();
                 RefreshPrimary();
                 if (_store.Get(_settings.LastConversation) is not null)
@@ -1155,7 +1156,7 @@ public partial class MainWindow : Window
             SavePreset("Smoke");
             presetWorker.Config.ModelOptions["top_k"] = "9"; // an edit saved after the preset
             SaveWorkers();
-            AddWorker_Click(AddWorkerButton, new RoutedEventArgs());
+            AddCustomWorker();
             File.WriteAllText(presetConfig, Config("0.9", "changed"));
             if (Cards() == saved || _settings.Presets.Count(p => p.Name == "Smoke") != 1)
                 return Fail();
@@ -1403,7 +1404,7 @@ public partial class MainWindow : Window
             var headers = workerMenu.Items.OfType<MenuItem>().ToList();
             var names = headers.Select(i => (string)i.Header).ToList();
             var broken = headers.FirstOrDefault(i => ((string)i.Header).StartsWith("Smoke chat"));
-            if (new[] { "Planner", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
+            if (new[] { "Main", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
                 return Fail();
             workerMenu.IsOpen = true;
             await Settle();
@@ -2863,9 +2864,12 @@ public partial class MainWindow : Window
         if (CardFor(role) is { IsCustom: true } custom) // custom workers live outside "roles"
             return custom.ModelVariant;
         using var config = ReadConfig(SelectedProjectPath());
-        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(role, out var r) &&
+        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(ConfigRole(role), out var r) &&
                r.TryGetProperty("auto_load", out var load) && load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null;
     }
+
+    // The roles.<entry> a worker's model is read from: an implementer or reviewer not added runs as the planner.
+    private string ConfigRole(string role) => role is "implementer" or "reviewer" && !_settings.AddedRoles.Contains(role) ? "planner" : role;
 
     // False when every role is remote or local models run on llama-server: no Unsloth key is needed and its monitor is not polled
     // (a role with a management_url but no auto_load still talks to Unsloth). Custom workers always use the local server
@@ -2892,7 +2896,7 @@ public partial class MainWindow : Window
     private string? RemoteModel(string role)
     {
         using var config = ReadConfig(SelectedProjectPath());
-        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(role, out var r) &&
+        return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(ConfigRole(role), out var r) &&
                !r.TryGetProperty("management_url", out _) && r.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
     }
 
@@ -2916,7 +2920,7 @@ public partial class MainWindow : Window
                 card.SetModel(LauncherLogic.RemoteModelInfo(remote));
                 continue;
             }
-            if (!roles.TryGetProperty(card.Role, out var r) || !r.TryGetProperty("auto_load", out var load) ||
+            if (!roles.TryGetProperty(ConfigRole(card.Role), out var r) || !r.TryGetProperty("auto_load", out var load) ||
                 !load.TryGetProperty("model_path", out var path) || path.GetString() is not { } id)
                 continue;
             if (r.TryGetProperty("display_name", out var label) && label.GetString() is { Length: > 0 } shown)
@@ -3302,6 +3306,28 @@ public partial class MainWindow : Window
             _cards.Add(card);
         }
         RefreshSetupProblems();
+        RefreshCardVisibility();
+    }
+
+    // Once: an implementer or reviewer whose model differs from the planner's stays added (others now run as the planner),
+    // and the saved presets are cleared for a fresh start.
+    private void MigrateRoles()
+    {
+        if (_settings.RolesMigrated)
+            return;
+        try
+        {
+            var path = ActiveConfigPath();
+            var roles = path.Length > 0 ? JsonNode.Parse(File.ReadAllText(path))?["roles"] : null;
+            _settings.AddedRoles = Roles.Skip(1).Where(r => roles?[r] is JsonObject o && o["same_as"] is null &&
+                LauncherLogic.ModelKey(o) != LauncherLogic.ModelKey(roles["planner"])).ToList();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { }
+        _settings.Presets.Clear();
+        _settings.ModelPresets.Clear();
+        _settings.RolesMigrated = true;
+        _settings.Save();
+        RefreshCardVisibility();
     }
 
     // Cards of custom workers the orchestrator would ignore show a light warning.
@@ -3341,7 +3367,10 @@ public partial class MainWindow : Window
         {
             var skipped = Array.Empty<string>();
             foreach (var path in WorkerConfigTargets())
+            {
+                LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles);
                 skipped = LauncherLogic.WriteCustomWorkers(path, CurrentWorkers(), Path.Combine(_workflowRoot ?? "", "config.json"));
+            }
             if (collectSkipped is not null)
                 collectSkipped.AddRange(skipped);
             else
@@ -3511,6 +3540,7 @@ public partial class MainWindow : Window
         try
         {
             preset = LauncherLogic.CapturePreset(name, ActiveConfigPath(), CurrentWorkers());
+            preset.AddedRoles = [.. _settings.AddedRoles];
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -3549,6 +3579,8 @@ public partial class MainWindow : Window
             return;
         }
         _settings.Workers = preset.Workers;
+        if (preset.AddedRoles is { } added)
+            _settings.AddedRoles = [.. added];
         HoldWorkerTab(() => // one build of the tab, not one per step
         {
             _cards.Clear();
@@ -3577,14 +3609,66 @@ public partial class MainWindow : Window
         Toast($"Preset deleted: {preset.Name}");
     }
 
-    private void AddWorker_Click(object sender, RoutedEventArgs e)
+    // "+": add the Implementer or the Reviewer (until then MAIN, the planner, covers it), or a custom worker.
+    private void AddWorker_Click(object sender, RoutedEventArgs e) => BuildAddWorkerMenu((FrameworkElement)sender).IsOpen = true;
+
+    private ContextMenu BuildAddWorkerMenu(FrameworkElement target)
+    {
+        var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Bottom };
+        foreach (var role in Roles.Skip(1))
+        {
+            var name = ChatName(null, role);
+            var added = _settings.AddedRoles.Contains(role);
+            var item = new MenuItem { Header = name, IsEnabled = !added, Tag = role, ToolTip = added ? $"{name} is already added" : $"A separate {name}; until added, MAIN covers it" };
+            ToolTipService.SetShowOnDisabled(item, true);
+            item.Click += (_, _) => AddBuiltInRole(role);
+            menu.Items.Add(item);
+        }
+        var custom = new MenuItem { Header = "Custom worker…", ToolTip = "Add a worker with a custom title and model", Tag = "custom" };
+        custom.Click += (_, _) => AddCustomWorker();
+        menu.Items.Add(custom);
+        return menu;
+    }
+
+    private void AddCustomWorker()
     {
         var n = 1;
         while (_cards.Any(c => string.Equals(c.Title, $"WORKER {n}", StringComparison.OrdinalIgnoreCase)))
             n++;
-        _cards.Add(new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true));
+        var card = new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true);
+        _cards.Add(card);
         SaveWorkers();
         RefreshSetupProblems();
+        SelectWorker(card);
+    }
+
+    // An added role gets its own roles.<role> entry back (or a copy of the planner's) and its tab; removing it runs it as
+    // the planner again ("same_as") and shows MAIN.
+    private void AddBuiltInRole(string role)
+    {
+        if (!_settings.AddedRoles.Contains(role))
+            _settings.AddedRoles.Add(role);
+        _settings.Save();
+        HoldWorkerTab(() =>
+        {
+            SyncCustomWorkers();
+            RefreshCardVisibility();
+            PrefillCards();
+            SelectWorker(CardFor(role));
+        });
+    }
+
+    private void RemoveBuiltInRole(string role)
+    {
+        _settings.AddedRoles.Remove(role);
+        _settings.Save();
+        HoldWorkerTab(() =>
+        {
+            SyncCustomWorkers();
+            SelectWorker(CardFor("planner"));
+            RefreshCardVisibility();
+            PrefillCards();
+        });
     }
 
     private void RemoveWorker(RoleCard card)
