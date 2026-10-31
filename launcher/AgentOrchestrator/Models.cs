@@ -212,6 +212,8 @@ internal sealed class AppSettings
     public bool ChatKeepLoaded { get; set; } = true;
     // Chat and Code conversations (messages and the message box) at a readable width in the middle of the column.
     public bool CenterChat { get; set; } = true;
+    // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
+    public bool ContextPinned { get; set; }
     // Where local models run: "unsloth" (Unsloth Studio's API) or "llamacpp" (llama-server from <data>\llama.cpp).
     public string Runtime { get; set; } = "unsloth";
     public string ModelsFolder { get; set; } = ""; // llamacpp only: searched for GGUF files besides the Hugging Face cache; "" = none

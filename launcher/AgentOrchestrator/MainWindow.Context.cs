@@ -116,6 +116,62 @@ public partial class MainWindow
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
         RefreshContextSection();
+        RefreshContextPins();
+    }
+
+    // Centered conversations leave room beside them: there the ring pins its card open (saved), showing the open chat's
+    // context as it changes. Without that room (or with centering off) the ring opens the usual popup.
+    private const double PinWidth = 280;
+
+    private bool CanPin(bool code)
+    {
+        var scroll = code ? CodeScroll : ChatScroll;
+        return _settings.CenterChat && (scroll.ActualWidth - ChatWidth) / 2 >= PinWidth + 20;
+    }
+
+    private void RefreshContextPins()
+    {
+        foreach (var code in new[] { false, true })
+        {
+            var pin = code ? CodeContextPin : ChatContextPin;
+            var ring = code ? CodeContextRing : ChatContextRing;
+            var show = _settings.ContextPinned && CanPin(code);
+            pin.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            pin.Content = show ? ContextCard(ContextOf(code)) : null;
+            if (show)
+                ring.SetResourceReference(BackgroundProperty, "Hover"); // pressed while its card is pinned
+            else
+                ring.ClearValue(BackgroundProperty);
+        }
+    }
+
+    private void ConversationScroll_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        if (e.WidthChanged)
+            RefreshContextPins();
+    }
+
+    // The card of the ring's popup and of the pinned view; s null: no reply yet.
+    private Border ContextCard(ContextSnapshot? s)
+    {
+        StackPanel panel;
+        if (s is null)
+        {
+            panel = new StackPanel();
+            var title = new TextBlock { Text = "Context", FontSize = 13, FontWeight = FontWeights.SemiBold };
+            title.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            var empty = new TextBlock { Text = "No reply yet in this conversation", FontSize = 12, Margin = new Thickness(0, 6, 0, 0) };
+            empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            panel.Children.Add(title);
+            panel.Children.Add(empty);
+        }
+        else
+            panel = ContextBody(s, title: true);
+        var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1), Tag = "ContextCard" };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        return card;
     }
 
     // A context length saved in the Models window shows at once on each view whose last measured call was that worker's (an
@@ -180,7 +236,15 @@ public partial class MainWindow
 
     private void ContextRing_Click(object sender, RoutedEventArgs e)
     {
-        if (ContextOf(sender == CodeContextRing) is not { } s)
+        var code = sender == CodeContextRing;
+        if (CanPin(code))
+        {
+            _settings.ContextPinned = !_settings.ContextPinned;
+            _settings.Save();
+            RefreshContextPins();
+            return;
+        }
+        if (ContextOf(code) is not { } s)
             return;
         _contextPopup = ContextPopup(s, (Button)sender);
         _contextPopup.IsOpen = true;
@@ -188,12 +252,8 @@ public partial class MainWindow
 
     private Popup ContextPopup(ContextSnapshot s, FrameworkElement anchor)
     {
-        var panel = ContextBody(s, title: true);
-        panel.Width = 280;
-        var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1) };
-        card.SetResourceReference(Border.BackgroundProperty, "Card");
-        card.SetResourceReference(Border.BorderBrushProperty, "Border");
-        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        var card = ContextCard(s);
+        card.Child.SetValue(WidthProperty, 280.0);
         return new Popup { Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, HorizontalOffset = -262, VerticalOffset = 6,
             StaysOpen = false, AllowsTransparency = true, PopupAnimation = PopupAnimation.Fade };
     }

@@ -1089,9 +1089,12 @@
                         <RowDefinition Height="*" /><RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
                     <Grid Margin="0,8,0,0">
-                        <ScrollViewer x:Name="CodeScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged">
+                        <ScrollViewer x:Name="CodeScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged"
+                                      SizeChanged="ConversationScroll_SizeChanged">
                             <StackPanel x:Name="CodePanel" Margin="20,0,12,12" />
                         </ScrollViewer>
+                        <!-- The context card pinned open by the ring (centered conversations with room beside them; MainWindow.Context.cs) -->
+                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed" />
                         <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
                             <!-- MainWindow.Code.cs RefreshCodeFolder sets the text and buttons: no folder, a folder without PROJECT.md, or one with it -->
@@ -1331,9 +1334,11 @@
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <Grid Grid.Row="1">
-                    <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged">
+                    <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged"
+                                  SizeChanged="ConversationScroll_SizeChanged">
                         <StackPanel x:Name="ChatPanel" Margin="20,0,12,12" />
                     </ScrollViewer>
+                    <ContentControl x:Name="ChatContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed" />
                     <StackPanel x:Name="ChatEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                         <TextBlock Text="Start a conversation" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
                         <TextBlock Text="Ask anything; the model can hand parts off to other workers when needed." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />

@@ -2663,6 +2663,38 @@ public partial class MainWindow : Window
             RefreshAttachments(_chat);
             Directory.Delete(area, recursive: true);
         }
+        // Centered and wide: the ring pins its card beside the chat (saved) and the card follows the context; clicked again it
+        // closes. A reply that came only as thinking shows once, as the answer.
+        {
+            var (width, pinned) = (Width, _settings.ContextPinned);
+            Width = 2400;
+            _settings.ContextPinned = false;
+            ShowView(chat: true);
+            await Settle();
+            ChatContextRing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            var shown = ChatContextPin.IsVisible && _settings.ContextPinned && ChatContextPin.Content is Border { Tag: "ContextCard" };
+            ShowContext(false, new ContextSnapshot { Prompt = 500, Completion = 100, NCtx = 8192 });
+            var follows = ChatContextPin.Content is Border { Child: StackPanel card } && card.Children.OfType<DockPanel>().Any(d => d.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("600 / ")));
+            await Settle();
+            Snap("29-context-pinned");
+            ChatContextRing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Settle();
+            if (!shown || !follows || ChatContextPin.IsVisible || _settings.ContextPinned)
+                return Fail();
+            StartChatTurn("Hello?");
+            _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"delta","role":"planner","kind":"thinking","text":"Hi there"}""");
+            _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"done","role":"planner"}""");
+            _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"chat_reply","role":"planner","text":"Hi there"}""");
+            DrainLines();
+            var once = _reply!.Content.Children.OfType<Expander>().Count() == 0 && _reply.Answer?.Text == "Hi there";
+            FinishChatTurn(0, false, null);
+            (Width, _settings.ContextPinned) = (width, pinned);
+            ShowContext(false, null);
+            await Settle();
+            if (!once)
+                return Fail();
+        }
         // The profile: usage adds to the lifetime count shown under the name, and the card opens from the sidebar with the stats.
         var lifetime = _stats.Lifetime;
         RecordUsage(1234);

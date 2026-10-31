@@ -234,6 +234,7 @@ public partial class MainWindow
         _settings.CenterChat = CenterChatToggle.IsChecked == true;
         _settings.Save();
         ApplyChatWidth();
+        RefreshContextPins();
     }
 
     // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
@@ -1016,6 +1017,12 @@ public partial class MainWindow
         if (_reply is not { } r)
             return;
         r.Final = text;
+        // A model that answered inside its thinking (a template that opens <think> and a model that never closes it): the
+        // engine sends that text as the reply, so the section repeating it goes and the answer shows once.
+        if (r.Answer is null)
+            foreach (var section in r.Content.Children.OfType<Expander>().ToList())
+                if (section.Content is StackPanel { Children.Count: > 0 } body && body.Children[0] is TextBox thought && thought.Text.Trim() == text.Trim())
+                    r.Content.Children.Remove(section);
         EnsureAnswer(r).Text = text;
         r.AnswerText.Clear().Append(text);
         ShowMarkdown(r);
