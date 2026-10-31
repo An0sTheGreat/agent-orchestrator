@@ -2585,7 +2585,7 @@ class ConversationCompactionTests(unittest.TestCase):
                     return "m"
 
             def complete(self, model, messages, sampling, tools=None):
-                calls.append({"messages": messages, "sampling": sampling})
+                calls.append({"messages": list(messages), "sampling": sampling})  # as sent: the tool loop appends the reply after
                 if messages[0]["content"] == orchestrator.CONVERSATION_PROMPT:
                     if isinstance(summary, Exception):
                         raise summary
@@ -2687,12 +2687,6 @@ class ConversationCompactionTests(unittest.TestCase):
         self.assertEqual(calls[1]["messages"][1:], self.history())
         self.assertFalse([e for e, _ in events if e == "history_compacted"])
 
-    def test_multi_chat_compacts_once_for_all_three_workers(self):
-        calls, events = self.turn({"mode": "multi", "messages": self.history()})
-        self.assertEqual(sum(1 for c in calls if c["messages"][0]["content"] == orchestrator.CONVERSATION_PROMPT), 1)
-        self.assertNotIn("ESSAY0", calls[1]["messages"][1]["content"])
-        self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [8])
-
     def test_window_before_the_load_is_the_roles_not_the_loaded_models(self):
         calls, events, sizes = self.unsloth_turn()
         self.assertEqual(calls[0]["messages"][0]["content"], orchestrator.CONVERSATION_PROMPT)  # 8k, not the other model's 32k
@@ -2762,31 +2756,28 @@ class CodeTests(unittest.TestCase):
 
     MSGS = [{"role": "user", "content": "add a readme"}]
 
-    def test_builtin_roles_keep_their_fixed_code_prompts(self):
-        # chat_system_prompt is for the Chat view: Code turns keep the built-ins' fixed workflow prompts.
-        for role in ("planner", "implementer", "reviewer"):
-            self.config["roles"][role]["chat_system_prompt"] = "Chat only."
-        code, log, *_ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
-                                  {"planner": ["P"], "implementer": ["DRAFT"], "reviewer": ["FINAL"]})
+    def test_builtin_roles_keep_the_fixed_lead_prompt(self):
+        # chat_system_prompt is for the Chat view: a Code turn's lead keeps prompts/lead.txt.
+        self.config["roles"]["planner"]["chat_system_prompt"] = "Chat only."
+        code, log, *_ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": ["done"]})
         self.assertEqual(code, 0)
-        self.assertTrue(log and all("Chat only." not in e["system"] for e in log))
-        code, log, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS}, {"implementer": ["done"]})
+        self.assertTrue(log[0]["system"].startswith((Path(orchestrator.ROOT) / "prompts" / "lead.txt").read_text(encoding="utf-8").strip()))
         self.assertNotIn("Chat only.", log[0]["system"])
 
     def test_long_code_chat_is_summarized_before_the_turn(self):
         history = []
         for i in range(4):
             history += [{"role": "user", "content": f"Change {i}"}, {"role": "assistant", "content": f"DIFF{i} " + "line " * 2000}]
-        code, log, events, _ = self.code({"action": "chat", "worker": "implementer", "messages": history + self.MSGS},
-                                         {"implementer": ["SUMMARY TEXT", "done"]}, n_ctx=8192)
+        code, log, events, _ = self.code({"action": "chat", "messages": history + self.MSGS},
+                                         {"planner": ["SUMMARY TEXT", "done"]}, n_ctx=8192)
         self.assertEqual(code, 0)
         self.assertEqual(log[0]["system"], orchestrator.CONVERSATION_PROMPT)
         self.assertEqual(log[1]["messages"], [{"role": "user", "content": "Earlier in this conversation (summary):\nSUMMARY TEXT\n\nCurrent message:\nadd a readme"}])
         self.assertEqual([(d["summary"], d["covers"]) for e, d in events if e == "history_compacted"], [("SUMMARY TEXT", 8)])
 
     def test_effort_applies_to_the_code_turn_but_not_the_title(self):
-        code, log, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "effort": "max", "title": True},
-                                  {"implementer": ["done", "Readme"]})
+        code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "effort": "max", "title": True},
+                                  {"planner": ["done", "Readme"]})
         self.assertEqual(code, 0)
         self.assertEqual(log[0]["sampling"], {"enable_thinking": True, "reasoning_effort": "max"})
         self.assertEqual(log[1]["sampling"]["enable_thinking"], False)
@@ -2798,7 +2789,7 @@ class CodeTests(unittest.TestCase):
             ([1], "must be a JSON object"),
             ({**good, "action": "run"}, "Unknown code action"),
             ({**good, "messages": [{"role": "assistant", "content": "x"}]}, "ending with a user message"),
-            ({**good, "worker": "nobody"}, "Unknown chat worker"),
+            ({**good, "action": "write_project", "worker": "nobody"}, "Unknown chat worker"),  # chat ignores worker
             ({**good, "folders": []}, "at least one folder"),
             ({**good, "folders": [{"path": "relative/dir", "access": "write"}]}, "Folder 1 is not an existing absolute"),
             ({**good, "folders": [{"path": str(self.root / "missing"), "access": "write"}]}, "Folder 1 is not an existing absolute"),
@@ -2865,27 +2856,28 @@ class CodeTests(unittest.TestCase):
 
     def test_project_folder_is_always_writable(self):
         folders = [{"path": str(self.root), "access": "read"}]
-        replies = {"implementer": [tool_call("write_file", path="a.txt", content="x"), "Done."]}
-        code, *_ = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS, "folders": folders}, replies)
+        replies = {"planner": [tool_call("write_file", path="a.txt", content="x"), "Done."]}
+        code, *_ = self.code({"action": "chat", "messages": self.MSGS, "folders": folders}, replies)
         self.assertEqual((code, (self.root / "a.txt").read_text(encoding="utf-8")), (0, "x\n"))
 
     def test_chat_turn_writes_file_and_reports(self):
         (self.shared / "lib.py").write_text("x = 1\n", encoding="utf-8")
-        replies = {"implementer": [tool_call("write_file", path="README.md", content="# App"),
-                                   tool_call("write_file", path=str(self.shared / "lib.py"), content="hacked"),
-                                   tool_call("replace_text", path="README.md", old="App", new="My app"),
-                                   "<think>ok</think>Added README.md."]}
-        code, log, events, unloaded = self.code({"action": "chat", "worker": "implementer", "messages": self.MSGS}, replies)
+        replies = {"planner": [tool_call("write_file", path="README.md", content="# App"),
+                               tool_call("write_file", path=str(self.shared / "lib.py"), content="hacked"),
+                               tool_call("replace_text", path="README.md", old="App", new="My app"),
+                               "<think>ok</think>Added README.md."]}
+        code, log, events, unloaded = self.code({"action": "chat", "messages": self.MSGS}, replies)
         self.assertEqual((code, unloaded), (0, []))
         self.assertEqual((self.root / "README.md").read_text(encoding="utf-8"), "# My app\n")
         self.assertEqual((self.shared / "lib.py").read_text(encoding="utf-8"), "x = 1\n")
         tools = [(d["name"], d["result"].split(":")[0]) for e, d in events if e == "tool"]
         self.assertEqual(tools, [("write_file", "OK"), ("write_file", "ERROR"), ("replace_text", "OK")])
-        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "Added README.md."}])
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "Added README.md."}])
         self.assertIn("FOLDERS", log[0]["system"])
         self.assertIn(f"{self.shared} (read)", log[0]["system"])
         self.assertEqual({t["function"]["name"] for t in log[0]["tools"]},
-                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "write_project_md", "start_project"})
+                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "write_project_md", "start_project",
+                          "todo", "run_checks", "delegate"})
 
     def test_start_project_emits_code_start(self):
         (self.root / "PROJECT.md").write_text("# Project\n", encoding="utf-8")
@@ -2923,66 +2915,13 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(len(list(self.root.glob("PROJECT.backup-*.md"))), 1)
 
     def test_write_project_md_tool_uses_implementer(self):
-        replies = {"reviewer": [tool_call("write_project_md", notes="todo app"), "Wrote it."],
+        replies = {"planner": [tool_call("write_project_md", notes="todo app"), "Wrote it."],
                    "implementer": [self.PROJECT]}
-        code, log, events, _ = self.code({"action": "chat", "worker": "reviewer", "messages": self.MSGS}, replies)
-        self.assertEqual([l["role"] for l in log], ["reviewer", "implementer", "reviewer"])
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, replies)
+        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "planner"])
         self.assertIn("NOTES\ntodo app", log[1]["messages"][0]["content"])
         self.assertEqual([d["result"] for e, d in events if e == "tool"], ["OK: PROJECT.md written (5 lines)"])
         self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_project", "code_reply"])
-
-    def test_multi_runs_planner_implementer_reviewer_with_their_tools(self):
-        (self.root / "app.py").write_text("x = 1\n", encoding="utf-8")
-        replies = {"planner": [tool_call("write_file", path="app.py", content="planner"), "PLAN-A"],
-                   "implementer": [tool_call("write_file", path="app.py", content="x = 2"), "DRAFT-B"],
-                   "reviewer": [tool_call("replace_text", path="app.py", old="x = 2", new="x = 3"), "FINAL-C"]}
-        code, log, events, _ = self.code({"action": "chat", "mode": "multi", "worker": "ignored", "messages": self.MSGS, "tools": True},
-                                         replies)
-        self.assertEqual(code, 0)
-        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 3\n")
-        self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["reviewer"] * 2)
-        names = lambda entry: [t["function"]["name"] for t in entry["tools"]]
-        extras = ["calculator", "current_time", "fetch_page"]
-        self.assertEqual(names(log[0]), ["list_files", "read_file", "search_files"] + extras)
-        self.assertEqual(names(log[2]), [t["function"]["name"] for t in orchestrator.CODE_TOOLS] + extras)
-        self.assertEqual(names(log[4]), ["list_files", "read_file", "search_files", "write_file", "replace_text"] + extras)
-        self.assertEqual([d["result"].split(":")[0] for e, d in events if e == "tool"], ["ERROR", "OK", "OK"])
-        self.assertTrue(all("FOLDERS" in l["system"] and "UTILITIES" in l["system"] for l in log))
-        self.assertIn("Planner", log[0]["system"])
-        self.assertEqual(log[0]["messages"], self.MSGS)
-        self.assertEqual(log[2]["messages"][0]["content"], "add a readme\n\nPLAN (from the Planner)\nPLAN-A")
-        self.assertIn("Reviewer", log[4]["system"])
-        self.assertTrue("PLAN-A" in log[4]["messages"][0]["content"] and "DRAFT-B" in log[4]["messages"][0]["content"])
-        self.assertEqual([(d["stage"], d["role"]) for e, d in events if e == "chat_stage"],
-                         [("plan", "planner"), ("implement", "implementer"), ("review", "reviewer")])
-        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
-        # an empty Reviewer answer falls back to the Implementer's reply
-        out = io.StringIO()
-        out.reconfigure = lambda **kw: None
-        with patch.object(orchestrator.sys, "stdout", out):
-            _, _, events, _ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
-                                        {"planner": ["P"], "implementer": ["DRAFT-B"], "reviewer": ["<think>only thoughts"]})
-        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "DRAFT-B"}])
-        # so does a review that fails outright: the Implementer's edits are already on disk
-        real = orchestrator.chat_call
-        def failing(config, role, *args):
-            if role == "reviewer":
-                raise orchestrator.WorkflowError("exceeded max_tool_steps")
-            return real(config, role, *args)
-        with patch.object(orchestrator.sys, "stdout", out), patch.object(orchestrator, "chat_call", failing):
-            _, _, events, _ = self.code({"action": "chat", "mode": "multi", "messages": self.MSGS},
-                                        {"planner": ["P"], "implementer": ["DRAFT-B"]})
-        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "implementer", "text": "DRAFT-B"}])
-
-    def test_single_is_the_default_and_multi_needs_the_builtins(self):
-        code, log, events, _ = self.code({"action": "chat", "worker": "reviewer", "messages": self.MSGS}, {"reviewer": ["done"]})
-        self.assertEqual((code, [l["role"] for l in log], [e for e, _ in events if e == "chat_stage"]), (0, ["reviewer"], []))
-        del self.config["roles"]["reviewer"]
-        req = self.cfg / "r.json"
-        for mode, message in (("multi", "Multi Code needs the built-in workers; missing in config: reviewer"), ("both", "Unknown code mode")):
-            req.write_text(json.dumps({"action": "chat", "mode": mode, "messages": self.MSGS, "folders": self.folders}), encoding="utf-8")
-            with self.subTest(mode), self.assertRaisesRegex(orchestrator.WorkflowError, message):
-                orchestrator.run_code(self.config, req)
 
     def test_chat_and_code_are_mutually_exclusive(self):
         err = io.StringIO()
@@ -2991,6 +2930,71 @@ class CodeTests(unittest.TestCase):
                 patch.object(orchestrator.sys, "stderr", err), self.assertRaises(SystemExit):
             orchestrator._run()
         self.assertIn("not allowed with argument", err.getvalue())
+
+
+class LeadTests(unittest.TestCase):
+    """A Code chat turn's lead agent (planner): todo, run_checks and delegate to fresh implementer/reviewer sub-agents."""
+
+    setUp, code, MSGS = CodeTests.setUp, CodeTests.code, CodeTests.MSGS
+    names = staticmethod(lambda entry: [t["function"]["name"] for t in entry["tools"]])
+
+    def test_lead_delegates_an_edit_then_a_review_that_runs_the_checks(self):
+        replies = {"planner": [tool_call("todo", items=["[ ] add app.py"]), tool_call("delegate", worker="implementer", brief="Write app.py: x = 1"),
+                               tool_call("delegate", worker="reviewer", brief="Check app.py"), "Added app.py; the review found no problems."],
+                   "implementer": [tool_call("write_file", path="app.py", content="x = 1"), "Wrote app.py."],
+                   "reviewer": [tool_call("run_checks"), "No problems: the syntax check passed."]}
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 1\n")
+        self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["planner"] + ["reviewer"] * 2 + ["planner"])
+        code_tools = [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
+        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "delegate"])
+        self.assertEqual(self.names(log[2]), code_tools[:5])  # implementer: file tools, no delegate
+        self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks"])  # reviewer: read tools + run_checks
+        for sub, brief in ((log[2], "Write app.py: x = 1"), (log[5], "Check app.py")):
+            self.assertEqual(sub["messages"], [{"role": "user", "content": brief}])  # fresh context: the brief only
+            self.assertIn("FOLDERS", sub["system"])
+        self.assertIn("implementer working for a lead agent", log[2]["system"])
+        self.assertIn("reviewer working for a lead agent", log[5]["system"])
+        results = [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"]
+        self.assertEqual(results, [("planner", "todo", "CHECKLIST\n[ ] add app.py"), ("implementer", "write_file", results[1][2]),
+                                   ("planner", "delegate", "Wrote app.py."), ("reviewer", "run_checks", "SYNTAX CHECK: passed (app.py)"),
+                                   ("planner", "delegate", "No problems: the syntax check passed.")])
+        self.assertTrue(results[1][2].startswith("OK"))
+        self.assertEqual([(d["role"], d["stage"]) for e, d in events if e == "chat_stage"],
+                         [("planner", "lead"), ("implementer", "delegate"), ("planner", "lead"), ("reviewer", "delegate"), ("planner", "lead")])
+        self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "Added app.py; the review found no problems."}])
+
+    def test_max_delegations_caps_the_turn(self):
+        self.config["max_delegations"] = 1
+        replies = {"planner": [tool_call("delegate", worker="implementer", brief="a"), tool_call("delegate", worker="implementer", brief="b"), "FINAL"],
+                   "implementer": ["R1"]}
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual([d["result"] for e, d in events if e == "tool"],
+                         ["R1", "ERROR: delegation limit reached (1 per turn); finish the work yourself"])
+        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "planner", "planner"])
+
+    def test_a_sub_agent_cannot_delegate(self):
+        replies = {"planner": [tool_call("delegate", worker="reviewer", brief="check"), "FINAL"],
+                   "reviewer": [tool_call("delegate", worker="implementer", brief="nested"), "REVIEW"]}
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, replies)
+        self.assertEqual(code, 0)
+        self.assertNotIn("delegate", self.names(log[1]))
+        self.assertEqual([d["result"] for e, d in events if e == "tool"], ["ERROR: tool 'delegate' is unavailable", "REVIEW"])
+        self.assertNotIn("implementer", [l["role"] for l in log])
+
+    def test_run_checks_without_checks_and_with_a_python_syntax_error(self):
+        (self.root / "notes.txt").write_text("x", encoding="utf-8")
+        self.assertTrue(orchestrator.run_checks(self.config, self.folders).startswith("No checks apply here"))
+        (self.root / "bad.py").write_text("def f(:\n", encoding="utf-8")
+        self.assertEqual(orchestrator.run_checks(self.config, self.folders), "SYNTAX CHECK: FAILED (bad.py)")
+
+    def test_legacy_mode_and_worker_are_ignored(self):
+        for legacy in ({"mode": "multi", "worker": "reviewer"}, {"mode": "single", "worker": "implementer"}, {"mode": "bogus"}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, **legacy}, {"planner": ["done"]})
+            self.assertEqual((code, [l["role"] for l in log]), (0, ["planner"]), legacy)
+            self.assertEqual([d for e, d in events if e == "code_reply"], [{"role": "planner", "text": "done"}])
 
 
 BROWSER = orchestrator.find_browser()
@@ -3601,7 +3605,7 @@ class ExtrasTests(unittest.TestCase):
             code, log, events, *_ = ChatTests().chat({"mode": "single", "worker": "implementer", "messages": ChatTests.MSGS, "search": True},
                                                      {"implementer": [call, "Plant in full sun [1](https://peony.org/care)"]})
         self.assertEqual(code, 0)
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["web_search", "fetch_page"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["web_search", "fetch_page", "delegate"])
         self.assertIn("WEB SEARCH\n", log[0]["system"])
         tool = [d for e, d in events if e == "tool"]
         self.assertEqual((tool[0]["name"], "https://peony.org/care" in tool[0]["result"]), ("web_search", True))
@@ -3623,19 +3627,19 @@ class ExtrasTests(unittest.TestCase):
         code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", "  "]})
         self.assertEqual([e for e, _ in events if e == "chat_title"], [])
 
-    def test_multi_chat_and_code_get_the_extras(self):
-        code, log, *_ = ChatTests().chat({"mode": "multi", "messages": ChatTests.MSGS, "tools": True})
+    def test_chat_and_code_get_the_extras(self):
+        code, log, *_ = ChatTests().chat({"messages": ChatTests.MSGS, "tools": True})
         self.assertEqual(code, 0)
-        self.assertEqual([[t["function"]["name"] for t in entry["tools"]] for entry in log], [["calculator", "current_time", "fetch_page"]] * 3)
+        self.assertEqual([[t["function"]["name"] for t in entry["tools"]] for entry in log], [["calculator", "current_time", "fetch_page", "delegate"]])
         test = CodeTests("test_request_validation")
         test.setUp()
         try:
-            code, log, *_ = test.code({"action": "chat", "worker": "implementer", "messages": CodeTests.MSGS, "tools": True}, {"implementer": ["done"]})
+            code, log, *_ = test.code({"action": "chat", "messages": CodeTests.MSGS, "tools": True}, {"planner": ["done"]})
         finally:
             test.doCleanups()
         names = [t["function"]["name"] for t in log[0]["tools"]]
-        self.assertEqual(names[:len(orchestrator.CODE_TOOLS)], [t["function"]["name"] for t in orchestrator.CODE_TOOLS])
-        self.assertEqual(names[len(orchestrator.CODE_TOOLS):], ["calculator", "current_time", "fetch_page"])
+        self.assertEqual(names, [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
+                         + ["todo", "run_checks", "delegate", "calculator", "current_time", "fetch_page"])
         self.assertIn("UTILITIES\n", log[0]["system"])
 
 
@@ -4016,8 +4020,8 @@ class ContextTests(unittest.TestCase):
         self.assertEqual((ctx["role"], ctx["n_ctx"], ctx["prompt_tokens"], ctx["completion_tokens"]), ("implementer", 4096, 1237, 56))
         self.assertEqual(set(ctx["parts"]), {"system", "tools", "skills", "messages", "tool_results"})
         self.assertEqual(sum(ctx["parts"].values()), 1237)
-        self.assertEqual((ctx["parts"]["tools"], ctx["parts"]["skills"], ctx["parts"]["tool_results"]), (0, 0, 0))
-        self.assertTrue(ctx["parts"]["system"] > 0 and ctx["parts"]["messages"] > 0)
+        self.assertEqual((ctx["parts"]["skills"], ctx["parts"]["tool_results"]), (0, 0))
+        self.assertTrue(ctx["parts"]["system"] > 0 and ctx["parts"]["messages"] > 0 and ctx["parts"]["tools"] > 0)  # delegate is always offered
 
     def test_tools_and_skills_parts_when_enabled(self):
         skill = self.base / "skill"
@@ -4029,16 +4033,16 @@ class ContextTests(unittest.TestCase):
         self.assertTrue(parts["tools"] > 0 and parts["skills"] > 0, parts)
         self.assertEqual(sum(parts.values()), 1237)
 
-    def test_multi_emits_after_each_stage(self):
-        contexts, _ = self.turn("--chat", {"mode": "multi", "messages": self.MSGS}, ["PLAN", "DRAFT", "FINAL"])
-        self.assertEqual([c["role"] for c in contexts], ["planner", "implementer", "reviewer"])
+    def test_delegated_sub_agent_calls_emit_too(self):
+        contexts, _ = self.turn("--chat", {"messages": self.MSGS}, [tool_call("delegate", worker="implementer", brief="b"), "REPORT", "FINAL"])
+        self.assertEqual([c["role"] for c in contexts], ["planner", "implementer", "planner"])
         self.assertTrue(all(sum(c["parts"].values()) == 1237 for c in contexts))
 
     def test_code_turn_counts_tool_results(self):
         root = self.base / "app"
         root.mkdir()
         (root / "a.txt").write_text("x" * 500, encoding="utf-8")
-        contexts, _ = self.turn("--code", {"action": "chat", "worker": "implementer", "messages": [{"role": "user", "content": "read a"}],
+        contexts, _ = self.turn("--code", {"action": "chat", "worker": "planner", "messages": [{"role": "user", "content": "read a"}],
                                            "folders": [{"path": str(root), "access": "write"}], "title": True},
                                 [tool_call("read_file", path="a.txt"), "done"])
         self.assertEqual(len(contexts), 2)
