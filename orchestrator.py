@@ -1063,12 +1063,22 @@ def display_name(config: dict[str, Any], role: str) -> str:
     return next((w["title"] for w in custom_workers(config) if w["id"] == role), role)
 
 
+def role_config(config: dict[str, Any], role: str) -> dict[str, Any] | None:
+    """A built-in role's settings: the Implementer/Reviewer fall back to the Planner (the base model) when missing from
+    config roles or marked "same_as": "planner"; None when neither is configured."""
+    roles = config.get("roles") or {}
+    if role in ("implementer", "reviewer") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
+        role = "planner"
+    return roles.get(role)
+
+
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
-    """Client + sampling for a built-in role, or for a custom worker when `role` is its id."""
-    if role in (config.get("roles") or {}):
-        settings = config["roles"][role]
-    else:
-        settings = next((w for w in custom_workers(config) if w["id"] == role), None) or config["roles"][role]
+    """Client + sampling for a built-in role (with the Planner fallback), or for a custom worker when `role` is its id."""
+    settings = role_config(config, role) if role in BUILTIN_ROLES else (config.get("roles") or {}).get(role)
+    if settings is None:
+        settings = next((w for w in custom_workers(config) if w["id"] == role), None)
+    if settings is None:
+        raise WorkflowError(f"{role!r} is not configured (config roles needs at least the planner)")
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
     sampling.update(config.get("turn_effort") or {})  # a chat/Code request's effort (with_effort)
@@ -2279,7 +2289,7 @@ def task_limits(config: dict[str, Any]) -> tuple[int, int]:
 def team_context(config: dict[str, Any]) -> str:
     lines = ["TEAM"]
     for role in ("implementer", "reviewer"):
-        r = config.get("roles", {}).get(role) or {}
+        r = role_config(config, role) or {}
         auto = r.get("auto_load") or {}
         name = r.get("display_name") or r.get("model") or auto.get("model_path") or r.get("expected_model_contains")
         parts = [str(name) if name else "unknown model"]
@@ -3184,8 +3194,8 @@ def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
     worker = next((w for w in custom_workers(config) if w["id"] == role), None)
     if role not in BUILTIN_ROLES and not worker:
         raise WorkflowError(f"Unknown chat worker {role!r}")
-    if role in BUILTIN_ROLES and role not in (config.get("roles") or {}):
-        raise WorkflowError(f"Chat worker {role!r} is missing from config roles")
+    if role in BUILTIN_ROLES and role_config(config, role) is None:
+        raise WorkflowError(f"Chat worker {role!r} is missing from config roles (and there is no planner to fall back to)")
     return worker
 
 
@@ -3221,8 +3231,8 @@ def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]]
 
 
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
-    """One chat turn: a single worker, or Planner -> Implementer -> Reviewer. No workflow files; tools only as the request
-    switches them on (search, utilities, skills)."""
+    """One chat turn on one worker (default: the planner) that may delegate deeper work. No workflow files; other tools
+    only as the request switches them on (search, utilities, skills). A legacy "mode" field is ignored."""
     request = json.loads(load_text(request_path))
     if not isinstance(request, dict):
         raise WorkflowError("Chat request must be a JSON object")
@@ -3230,31 +3240,16 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     if not messages or messages[-1]["role"] != "user":
         raise WorkflowError("Chat request needs messages ending with a user message")
     chat = load_text(ROOT / "prompts" / "chat.txt").strip()
-    extras = request_extras(request)
+    tools, handlers, note = request_extras(request)
     turn = with_effort(config, request)  # the model calls of the turn; the quiet title call keeps `config`
-    if request.get("mode") == "multi":
-        missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
-        if missing:
-            raise WorkflowError(f"Multi chat needs the built-in workers; missing in config: {', '.join(missing)}")
-        prompt = lambda role: load_text(ROOT / "prompts" / f"chat_{role}.txt") + role_block(config, role)
-        messages = compact_conversation(turn, BUILTIN_ROLES, prompt("reviewer"), messages, extras[0], request)  # the reviewer's call is the largest
-        convo = "CONVERSATION\n" + "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
-        plan = chat_call(turn, "planner", "plan", prompt("planner"), [{"role": "user", "content": convo}], extras)
-        draft = chat_call(turn, "implementer", "draft", prompt("implementer"),
-                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}"}], extras)
-        final = chat_call(turn, "reviewer", "review", prompt("reviewer"),
-                          [{"role": "user", "content": f"{convo}\n\nPLAN\n{plan}\n\nDRAFT\n{draft}"}], extras)
-        if not final:
-            print("[chat] the Reviewer returned nothing usable; answering with the draft")
-        role, text = ("reviewer", final) if final else ("implementer", draft)
-    elif request.get("mode") == "single":
-        role = str(request.get("worker") or "")
-        worker = chat_worker(config, role)
-        system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
-        messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
-        text = chat_call(turn, role, "answer", system, messages, extras)
-    else:
-        raise WorkflowError(f"Unknown chat mode {request.get('mode')!r}")
+    role = str(request.get("worker") or "planner")
+    worker = chat_worker(config, role)
+    title = display_name(config, role)
+    handlers = {**handlers, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title))}
+    extras = ([*tools, DELEGATE_TOOL], handlers, note)
+    system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
+    messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
+    text = chat_call(turn, role, "answer", system, messages, extras)
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("chat_reply", role=role, text=text)
@@ -3446,6 +3441,94 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     raise WorkflowError(f"{name} exceeded max_tool_steps={max_steps}")
 
 
+DELEGATE_TOOL = function_tool(
+    "delegate", "Hand a self-contained piece of work to a worker that starts with a fresh context: 'implementer' does the work "
+    "(in Code it can edit files), 'reviewer' checks work and reports problems. The worker sees only your brief, so state the goal, "
+    "the files or facts involved and what to report back. Returns the worker's final report.",
+    {"worker": {"type": "string", "enum": ["implementer", "reviewer"]}, "brief": {"type": "string"}}, ["worker", "brief"])
+TODO_TOOL = function_tool("todo", "Set your short checklist for this turn: pass the whole list each time, open items as "
+                          "'[ ] ...' and finished ones as '[x] ...'. Returns the list.",
+                          {"items": {"type": "array", "items": {"type": "string"}}}, ["items"])
+CHECKS_TOOL = function_tool("run_checks", "Run the project's available checks (syntax, JavaScript code check, page load, configured "
+                            "validation commands) on the project root; returns a short result.", {}, [])
+CHAT_DELEGATIONS, SUB_REPORT_LIMIT = 3, 4000
+
+
+def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
+    """The project-run checks that apply to the project root, one block each; a note when none apply."""
+    root = Path(folders[0]["path"])
+    files = [p.relative_to(root).as_posix() for p, is_dir in code_walk(root, folders)
+             if not is_dir and p.suffix.lower() in {".py", ".js", ".mjs", ".cjs", ".json"}]
+    lines = [syntax_gate(root, files)[1]] if files else []
+    lines.append(code_gate(root, files, None, config)[1])
+    lines.append(behaviour_gate(root, config)[1].split("\nVisible elements", 1)[0])  # no text sample
+    validations = config.get("validation_commands") or {}
+    for name in validations:
+        status, _, output = execute_tool("run_validation", {"name": name}, root, [], validations, False).partition("\n")
+        lines.append(f"VALIDATION {name}: {status}\n{output[-1500:]}".rstrip())
+    lines = [line for line in lines if line and line != "CODE CHECK: skipped (no JavaScript)"]
+    return "\n".join(lines) or "No checks apply here (no Python, JavaScript or JSON files, no index.html, no validation commands)."
+
+
+def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[str, Any], str],
+              folders: list[dict[str, str]] | None, cap: int, back: tuple[str, str, str]):
+    """The delegate tool's handler for one turn: at most `cap` sub-agents, each a fresh code_loop on its role (Planner
+    fallback) with its prompts/sub_<worker>.txt and the brief. With folders (Code) the implementer gets the file tools and
+    the reviewer the read tools + run_checks; in Chat both get only the request's extras. Sub-agents cannot delegate.
+    `back` = (role, stage, title) of the caller, announced again when a delegation ends."""
+    used = 0
+
+    def delegate(worker: str, brief: str) -> str:
+        nonlocal used
+        if worker not in ("implementer", "reviewer"):
+            raise WorkflowError(f"unknown worker {worker!r}; use 'implementer' or 'reviewer'")
+        if used >= cap:
+            raise WorkflowError(f"delegation limit reached ({cap} per turn); finish the work yourself")
+        if not str(brief or "").strip():
+            raise WorkflowError("the brief is empty")
+        used += 1
+        tools, handlers, context = extras
+        if folders:
+            read = code_handlers(folders)
+            if worker == "implementer":
+                tools, handlers = CODE_TOOLS[:5] + tools, {**read, **code_write_handlers(folders), **handlers}
+            else:
+                tools, handlers = CODE_TOOLS[:3] + [CHECKS_TOOL] + tools, {**read, "run_checks": lambda: run_checks(config, folders), **handlers}
+            context += f"\n\n{folders_context(folders)}"
+        system = load_text(ROOT / "prompts" / f"sub_{worker}.txt").strip() + context
+        emit("chat_stage", role=worker, stage="delegate", title=display_name(config, worker))
+        try:
+            report = code_loop(config, worker, system, [{"role": "user", "content": str(brief)}], tools, handlers)
+        finally:
+            emit("chat_stage", role=back[0], stage=back[1], title=back[2])
+        return clip(report or "(the worker returned no report)", SUB_REPORT_LIMIT)
+
+    return delegate
+
+
+def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any]) -> str:
+    """A Code turn's lead agent (the planner role): plans with todo, works with the file tools, verifies with run_checks and
+    delegates self-contained work to implementer/reviewer sub-agents (config max_delegations per turn, default 6)."""
+    tools, extra_handlers, note = request_extras(request)
+    title = display_name(config, "planner")
+    handlers = {**code_handlers(folders), **code_write_handlers(folders), **extra_handlers}
+    handlers["write_project_md"] = lambda notes="": (
+        f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
+    handlers["start_project"] = lambda: (
+        "ERROR: the project root has no PROJECT.md; ask the user to add one (or write it with write_project_md when they ask)"
+        if not (Path(folders[0]["path"]) / "PROJECT.md").is_file()
+        else (emit("code_start", role="planner"), "OK: the project run will start after this reply.")[1])
+    handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
+    handlers["run_checks"] = lambda: run_checks(config, folders)
+    handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
+                                     ("planner", "lead", title))
+    system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
+    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
+    messages = compact_conversation(config, ("planner",), system, messages, tools, request)
+    emit("chat_stage", role="planner", stage="lead", title=title)
+    return code_loop(config, "planner", system, messages, tools, handlers)
+
+
 def folders_context(folders: list[dict[str, str]]) -> str:
     lines = [f"- {f['path']} ({f['access']}{', project root' if i == 0 else ''})" for i, f in enumerate(folders)]
     exists = "yes" if (Path(folders[0]["path"]) / "PROJECT.md").is_file() else "no"
@@ -3476,27 +3559,19 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 
 
 def run_code(config: dict[str, Any], request_path: Path) -> int:
-    """One Code turn with file tools confined to the request's folders: a single worker, or (mode "multi")
-    Planner (read-only) -> Implementer -> Reviewer (fixes, then answers)."""
+    """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop;
+    `worker` and a legacy `mode` are ignored), "write_project" writes PROJECT.md with the request's worker."""
     request = json.loads(load_text(request_path))
     if not isinstance(request, dict):
         raise WorkflowError("Code request must be a JSON object")
     action = request.get("action")
     if action not in ("chat", "write_project"):
         raise WorkflowError(f"Unknown code action {action!r}")
-    mode = request.get("mode") or "single"
-    if mode not in ("single", "multi"):
-        raise WorkflowError(f"Unknown code mode {mode!r}")
-    multi = action == "chat" and mode == "multi"
     messages = chat_messages(request)
     if action == "chat" and (not messages or messages[-1]["role"] != "user"):
         raise WorkflowError("Code request needs messages ending with a user message")
-    if multi:
-        missing = [r for r in BUILTIN_ROLES if r not in (config.get("roles") or {})]
-        if missing:
-            raise WorkflowError(f"Multi Code needs the built-in workers; missing in config: {', '.join(missing)}")
-    role = "implementer" if multi else str(request.get("worker") or "")
-    worker = chat_worker(config, role)
+    role = str(request.get("worker") or "planner") if action == "write_project" else "planner"
+    chat_worker(config, role)
     raw = request.get("folders")
     if not isinstance(raw, list) or not raw:
         raise WorkflowError("Code request needs at least one folder")
@@ -3519,45 +3594,11 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         goal = next((line for line in lines if not line.startswith("#")), lines[0].lstrip("# "))  # the goal sentence, else the title
         emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
         return 0
-    handlers = {**code_handlers(folders), **code_write_handlers(folders)}
-    handlers["write_project_md"] = lambda notes="": (
-        f"OK: PROJECT.md written ({len(load_text(write_project(config, 'implementer', folders, messages, notes)).splitlines())} lines)")
-    handlers["start_project"] = lambda: (
-        "ERROR: the project root has no PROJECT.md; ask the user to add one (or write it with write_project_md when they ask)"
-        if not (Path(folders[0]["path"]) / "PROJECT.md").is_file()
-        else (emit("code_start", role=role), "OK: the project run will start after this reply.")[1])
-    tools, extra_handlers, extra_system = request_extras(request)
-    handlers.update(extra_handlers)
-    system = load_text(ROOT / "prompts" / "code.txt").strip() + extra_system
-    # Built-in roles keep their fixed Code prompts (the multi-agent workflow depends on them): their optional
-    # chat_system_prompt applies in the Chat view only. A custom worker's own prompt still applies.
-    system += (role_block(config, role, worker) if worker else "") or f"\n\nYou are the {role.capitalize()} worker.\n"
-    messages = compact_conversation(config, BUILTIN_ROLES if multi else (role,), f"{system}\n{folders_context(folders)}", messages,
-                                    CODE_TOOLS + tools, request)
-    if multi:
-        context = f"{extra_system}\n\n{folders_context(folders)}"
-        ask = lambda extra: [*messages[:-1], {"role": "user", "content": f"{messages[-1]['content']}\n\n{extra}"}]
-        read_only = {**code_handlers(folders), **extra_handlers}
-        plan = chat_call(config, "planner", "plan", load_text(ROOT / "prompts" / "code_planner.txt").strip(), messages,
-                         (CODE_TOOLS[:3] + tools, read_only, context))
-        draft = chat_call(config, "implementer", "implement", system, ask(f"PLAN (from the Planner)\n{plan}"),
-                          (CODE_TOOLS + tools, handlers, f"\n{folders_context(folders)}"))
-        review = {**read_only, **code_write_handlers(folders)}
-        try:  # the Implementer's edits are on disk: a failed review must not lose its reply
-            final = chat_call(config, "reviewer", "review", load_text(ROOT / "prompts" / "code_reviewer.txt").strip(),
-                              ask(f"PLAN (from the Planner)\n{plan}\n\nIMPLEMENTER'S REPLY\n{draft}"), (CODE_TOOLS[:5] + tools, review, context))
-        except WorkflowError as exc:
-            print(f"[code] the review failed ({exc})")
-            final = ""
-        if not final:
-            print("[code] the Reviewer returned nothing usable; answering with the Implementer's reply")
-        role, text = ("reviewer", final) if final else ("implementer", draft)
-    else:
-        text = code_loop(config, role, f"{system}\n{folders_context(folders)}", messages, CODE_TOOLS + tools, handlers)
+    text = lead_loop(config, folders, messages, request)
     if not text:
         raise WorkflowError("The model returned an empty reply")
-    emit("code_reply", role=role, text=text)
-    if request.get("title") and (title := chat_title(plain, role, messages, text)):
+    emit("code_reply", role="planner", text=text)
+    if request.get("title") and (title := chat_title(plain, "planner", messages, text)):
         emit("chat_title", text=title)
     return 0
 

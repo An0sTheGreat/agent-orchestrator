@@ -2449,7 +2449,8 @@ class ChatTests(unittest.TestCase):
                                                        {"implementer": ["<think>hmm</think>the answer"]})
         self.assertEqual(code, 0)
         self.assertEqual(len(log), 1)
-        self.assertEqual((log[0]["model"], log[0]["sampling"], log[0]["tools"]), ("implementer-model", {"temperature": 1}, None))
+        self.assertEqual((log[0]["model"], log[0]["sampling"]), ("implementer-model", {"temperature": 1}))
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate"])  # always offered
         self.assertIn((Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip(), log[0]["system"])
         self.assertIn("Implementer worker", log[0]["system"])
         self.assertIn("explain X", log[0]["input"])
@@ -2466,11 +2467,6 @@ class ChatTests(unittest.TestCase):
                                role_prompts={"implementer": "  Answer in French.  "})
         self.assertTrue(log[0]["system"].startswith(chat_txt))
         self.assertIn("=== YOUR ROLE: Implementer ===\nAnswer in French.\n", log[0]["system"])
-        # Multi: each stage gets its own role's prompt; a blank one adds nothing.
-        _, log, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, role_prompts={"planner": "Plan tersely.", "reviewer": " "})
-        self.assertEqual([e["model"] for e in log], ["planner-model", "implementer-model", "reviewer-model"])
-        self.assertIn("=== YOUR ROLE: Planner ===\nPlan tersely.", log[0]["system"])
-        self.assertNotIn("YOUR ROLE", log[1]["system"] + log[2]["system"])
 
     def test_single_custom_worker_and_unknown_worker(self):
         worker = {"id": "spec1", "title": "Tester", "kind": "specialist", "description": "d", "system_prompt": "Be a tester.",
@@ -2510,22 +2506,6 @@ class ChatTests(unittest.TestCase):
     def test_non_object_request_is_a_clean_error(self):
         self._bad_chat({"roles": {}}, [1, 2])
 
-    def test_multi_runs_three_stages_in_order(self):
-        code, log, events, unloaded, files = self.chat(
-            {"mode": "multi", "worker": "ignored", "messages": self.MSGS},
-            {"planner": ["<think>x</think>PLAN-A"], "implementer": ["DRAFT-B"], "reviewer": ["FINAL-C"]})
-        self.assertEqual(code, 0)
-        self.assertEqual([(l["model"], l["sampling"]["temperature"]) for l in log],
-                         [("planner-model", 0), ("implementer-model", 1), ("reviewer-model", 2)])
-        self.assertNotIn("PLAN-A", log[0]["input"])
-        self.assertIn("PLAN-A", log[1]["input"])
-        self.assertNotIn("x</think>", log[1]["input"] + log[2]["input"])
-        self.assertTrue("PLAN-A" in log[2]["input"] and "DRAFT-B" in log[2]["input"] and "explain X" in log[2]["input"])
-        self.assertEqual([(d["stage"], d["role"]) for e, d in events if e == "chat_stage"],
-                         [("plan", "planner"), ("draft", "implementer"), ("review", "reviewer")])
-        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "reviewer", "text": "FINAL-C"}])
-        self.assertEqual((files, unloaded), (["config.json", "request.json"], []))
-
     def test_effort_sets_thinking_on_every_call_of_the_turn_but_not_the_title(self):
         high = {"temperature": 1, "enable_thinking": True, "reasoning_effort": "high"}
         _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": "high", "title": True},
@@ -2534,20 +2514,53 @@ class ChatTests(unittest.TestCase):
         self.assertEqual((log[1]["sampling"]["enable_thinking"], "reasoning_effort" in log[1]["sampling"]), (False, False))
         _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": "off"})
         self.assertEqual(log[0]["sampling"], {"temperature": 1, "enable_thinking": False})
-        _, log, *_ = self.chat({"mode": "multi", "messages": self.MSGS, "effort": "low"})
-        self.assertEqual([l["sampling"] for l in log],
-                         [{"temperature": i, "enable_thinking": True, "reasoning_effort": "low"} for i in range(3)])
         for effort in ("", "bogus", None):
             _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": effort})
             self.assertEqual(log[0]["sampling"], {"temperature": 1}, effort)
 
-    def test_multi_falls_back_to_draft_when_reviewer_is_empty(self):
-        out = io.StringIO()
-        out.reconfigure = lambda **kw: None
-        with patch.object(orchestrator.sys, "stdout", out):
-            _, _, events, *_ = self.chat({"mode": "multi", "messages": self.MSGS}, {"reviewer": ["<think>only thoughts"]})
-        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "implementer", "text": "implementer text"}])
-        self.assertIn("Reviewer returned nothing usable", out.getvalue())
+    def test_legacy_mode_is_ignored_and_worker_defaults_to_planner(self):
+        for request in ({"mode": "multi", "messages": self.MSGS}, {"mode": "single", "messages": self.MSGS}, {"messages": self.MSGS}):
+            code, log, events, *_ = self.chat(request, {"planner": ["ANSWER"]})
+            self.assertEqual((code, [l["model"] for l in log]), (0, ["planner-model"]), request)
+            self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "planner", "text": "ANSWER"}])
+
+    def test_delegate_runs_a_fresh_sub_agent_with_only_the_extras_and_is_capped(self):
+        brief = lambda n: tool_call("delegate", worker="reviewer" if n == 2 else "implementer", brief=f"BRIEF{n}")
+        replies = {"planner": [brief(i) for i in range(4)] + ["FINAL"],
+                   "implementer": [tool_call("delegate", worker="reviewer", brief="nested"), "REPORT0", "REPORT1"],
+                   "reviewer": ["REVIEW2"]}
+        code, log, events, *_ = self.chat({"messages": self.MSGS, "tools": True}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual([d for e, d in events if e == "chat_reply"], [{"role": "planner", "text": "FINAL"}])
+        sub = [l for l in log if "BRIEF" in l["input"]]
+        self.assertTrue(sub and all("explain X" not in l["input"] for l in sub))  # fresh context: the brief only
+        self.assertIn("implementer working for a lead agent", sub[0]["system"])
+        self.assertIn("UTILITIES", sub[0]["system"])
+        self.assertEqual([t["function"]["name"] for t in sub[0]["tools"]], ["calculator", "current_time", "fetch_page"])  # no delegate
+        results = [d["result"] for e, d in events if e == "tool" and d["name"] == "delegate"]
+        self.assertTrue(results[0].startswith("ERROR: tool 'delegate' is unavailable"))  # the sub-agent cannot delegate
+        self.assertEqual(results[1:], ["REPORT0", "REPORT1", "REVIEW2", "ERROR: delegation limit reached (3 per turn); finish the work yourself"])
+        stages = [(d["role"], d["stage"]) for e, d in events if e == "chat_stage"]
+        self.assertEqual(stages, [("planner", "answer")] + [("implementer", "delegate"), ("planner", "answer")] * 2
+                         + [("reviewer", "delegate"), ("planner", "answer")])
+
+    def test_missing_or_same_as_builtin_falls_back_to_the_planner(self):
+        config = {"roles": {"planner": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "planner-model",
+                                        "sampling": {"temperature": 0.5}, "auto_load": {"model_path": "p"}},
+                            "reviewer": {"same_as": "planner", "chat_system_prompt": "Be strict."}}}
+        for role in ("implementer", "reviewer"):
+            client, sampling = orchestrator.role_settings(config, role)
+            self.assertEqual((client.expected, sampling, client.auto_load, client.role), ("planner-model", {"temperature": 0.5}, {"model_path": "p"}, role))
+            self.assertIsNone(orchestrator.chat_worker(config, role))
+        self.assertIn("Reviewer: p\n", orchestrator.team_context(config))  # the planner's auto_load model
+        self.assertIn("Be strict.", orchestrator.role_block(config, "reviewer"))
+        own = {"roles": {**config["roles"], "implementer": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "impl-model"}}}
+        self.assertEqual(orchestrator.role_settings(own, "implementer")[0].expected, "impl-model")
+        for bad in ({"roles": {}}, {"roles": {"implementer": {"base_url": "http://x", "api_key": "k"}}}):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "planner"):
+                orchestrator.role_settings(bad, "reviewer")
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "no planner to fall back to"):
+                orchestrator.chat_worker(bad, "reviewer")
 
 
 class ConversationCompactionTests(unittest.TestCase):
