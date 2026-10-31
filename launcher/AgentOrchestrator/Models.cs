@@ -214,6 +214,7 @@ internal sealed class AppSettings
     public bool CenterChat { get; set; } = true;
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
+    public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring
     // The in-app browser: open in the right column, its last page, and whether it opens the pages the model reads.
     public bool BrowserOpen { get; set; }
     public string BrowserUrl { get; set; } = "";

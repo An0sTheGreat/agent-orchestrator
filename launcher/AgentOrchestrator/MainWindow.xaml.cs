@@ -2680,8 +2680,17 @@ public partial class MainWindow : Window
             var shown = ChatContextPin.IsVisible && _settings.ContextPinned && ChatContextPin.Content is Border { Tag: "ContextCard" };
             ShowContext(false, new ContextSnapshot { Prompt = 500, Completion = 100, NCtx = 8192 });
             var follows = ChatContextPin.Content is Border { Child: StackPanel card } && card.Children.OfType<DockPanel>().Any(d => d.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("600 / ")));
+            bool Percent() => ChatContextRing.Content is Border { Child: DockPanel face } && face.Children.OfType<TextBlock>().Any(t => t.Tag as string == "ContextPercent" && t.Text == "7%");
+            var percentOff = !Percent(); // off by default; Settings turns it on
+            ContextPercentToggle.IsChecked = true;
+            ContextPercent_Click(ContextPercentToggle, new RoutedEventArgs());
+            var percentOn = Percent();
             await Settle();
             Snap("29-context-pinned");
+            ContextPercentToggle.IsChecked = false;
+            ContextPercent_Click(ContextPercentToggle, new RoutedEventArgs());
+            if (!percentOff || !percentOn)
+                return Fail();
             ChatContextRing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             if (!shown || !follows || ChatContextPin.IsVisible || _settings.ContextPinned)

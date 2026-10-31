@@ -129,6 +129,7 @@ public partial class MainWindow
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
         CenterChatToggle.IsChecked = _settings.CenterChat;
+        ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ApplyChatWidth();
         ShowContext(false, null);
         ShowContext(true, null);
@@ -274,6 +275,13 @@ public partial class MainWindow
     {
         foreach (var part in new FrameworkElement?[] { _chat.Panel, _parked?.Panel, CodePanel, ChatComposer, CodeComposer }.OfType<FrameworkElement>())
             part.MaxWidth = _settings.CenterChat ? ChatWidth : double.PositiveInfinity;
+    }
+
+    private void ContextPercent_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ContextPercent = ContextPercentToggle.IsChecked == true;
+        _settings.Save();
+        RefreshContextPins();
     }
 
     private void CenterChat_Click(object sender, RoutedEventArgs e)

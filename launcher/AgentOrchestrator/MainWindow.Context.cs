@@ -95,24 +95,26 @@ public sealed class ContextSnapshot
     }
 }
 
+internal static class TextBlockExtensions
+{
+    public static TextBlock WithForeground(this TextBlock t, string brush)
+    {
+        t.SetResourceReference(TextBlock.ForegroundProperty, brush);
+        return t;
+    }
+}
+
 public partial class MainWindow
 {
     private ContextSnapshot? _chatContext, _codeContext;
 
     private ContextSnapshot? ContextOf(bool code) => code ? _codeContext : _chatContext;
 
-    // The view's latest snapshot: stored, and shown on its ring (null leaves the empty ring).
+    // The view's latest snapshot: stored, and shown on its Context card (null: the empty ring).
     private void ShowContext(bool code, ContextSnapshot? s)
     {
         if (code) _codeContext = s; else _chatContext = s;
         var ring = code ? CodeContextRing : ChatContextRing;
-        var track = new Ellipse { Width = 18, Height = 18, StrokeThickness = 2.5 };
-        track.SetResourceReference(Shape.StrokeProperty, "Border");
-        var grid = new Grid { Width = 18, Height = 18 };
-        grid.Children.Add(track);
-        if (s is { NCtx: > 0 })
-            grid.Children.Add(Arc(s.Fraction, RingColor(s.Fraction)));
-        ring.Content = grid;
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
         RefreshContextSection();
@@ -129,20 +131,60 @@ public partial class MainWindow
         return _settings.CenterChat && (scroll.ActualWidth - ChatWidth) / 2 >= PinWidth + 20;
     }
 
+    // The header's Context card: "Context" and its arrow on the left, the percentage (Settings) and the ring on the right; open,
+    // its breakdown hangs below it (the pin), as wide as the card.
     private void RefreshContextPins()
     {
         foreach (var code in new[] { false, true })
         {
             var pin = code ? CodeContextPin : ChatContextPin;
             var ring = code ? CodeContextRing : ChatContextRing;
-            var show = _settings.ContextPinned && CanPin(code);
+            var room = CanPin(code);
+            var show = _settings.ContextPinned && room;
+            ring.Content = ContextFace(ContextOf(code), show, room ? PinWidth : double.NaN);
             pin.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            pin.Content = show ? ContextCard(ContextOf(code)) : null;
-            if (show)
-                ring.SetResourceReference(BackgroundProperty, "Hover"); // pressed while its card is pinned
-            else
-                ring.ClearValue(BackgroundProperty);
+            pin.Content = show ? ContextCard(ContextOf(code), title: false) : null;
+            if (show && pin.Parent is FrameworkElement area && ring.IsVisible)
+            {
+                area.UpdateLayout();
+                var right = area.ActualWidth - ring.TranslatePoint(new Point(ring.ActualWidth, 0), area).X;
+                pin.Margin = new Thickness(0, 0, Math.Max(0, right), 0); // under the card, right edges level
+            }
         }
+    }
+
+    private FrameworkElement ContextFace(ContextSnapshot? s, bool open, double width)
+    {
+        TextBlock Text(string text, string brush, double size = 12) =>
+            (TextBlock)new TextBlock { Text = text, FontSize = size, VerticalAlignment = VerticalAlignment.Center }.WithForeground(brush);
+        var track = new Ellipse { Width = 18, Height = 18, StrokeThickness = 2.5 };
+        track.SetResourceReference(Shape.StrokeProperty, "Border");
+        var ring = new Grid { Width = 18, Height = 18, VerticalAlignment = VerticalAlignment.Center };
+        ring.Children.Add(track);
+        if (s is { NCtx: > 0 })
+            ring.Children.Add(Arc(s.Fraction, RingColor(s.Fraction)));
+        DockPanel.SetDock(ring, Dock.Right);
+        var face = new DockPanel { LastChildFill = false };
+        face.Children.Add(ring);
+        if (_settings.ContextPercent && s is { NCtx: > 0 })
+        {
+            var percent = Text($"{s.Fraction:0%}", "Muted");
+            percent.Margin = new Thickness(0, 0, 8, 0);
+            percent.Tag = "ContextPercent";
+            DockPanel.SetDock(percent, Dock.Right);
+            face.Children.Add(percent);
+        }
+        var label = Text("Context", "TextPrimary");
+        label.FontWeight = FontWeights.SemiBold;
+        face.Children.Add(label);
+        var arrow = Text(open ? "\u25BE" : "\u25B8", "Muted", 10);
+        arrow.Margin = new Thickness(6, 1, 12, 0);
+        face.Children.Add(arrow);
+        var card = new Border { Child = face, Padding = new Thickness(12, 5, 8, 5), BorderThickness = new Thickness(1), Width = width, MinWidth = 140 };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        return card;
     }
 
     private void ConversationScroll_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -151,22 +193,19 @@ public partial class MainWindow
             RefreshContextPins();
     }
 
-    // The card of the ring's popup and of the pinned view; s null: no reply yet.
-    private Border ContextCard(ContextSnapshot? s)
+    // The breakdown of the popup (title: with its "Context" heading) and of the open card; s null: no reply yet.
+    private Border ContextCard(ContextSnapshot? s, bool title = true)
     {
         StackPanel panel;
         if (s is null)
         {
             panel = new StackPanel();
-            var title = new TextBlock { Text = "Context", FontSize = 13, FontWeight = FontWeights.SemiBold };
-            title.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-            var empty = new TextBlock { Text = "No reply yet in this conversation", FontSize = 12, Margin = new Thickness(0, 6, 0, 0) };
-            empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            panel.Children.Add(title);
-            panel.Children.Add(empty);
+            if (title)
+                panel.Children.Add(new TextBlock { Text = "Context", FontSize = 13, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 6) }.WithForeground("TextPrimary"));
+            panel.Children.Add(new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 }.WithForeground("Muted"));
         }
         else
-            panel = ContextBody(s, title: true);
+            panel = ContextBody(s, title);
         var card = new Border { Child = panel, Padding = new Thickness(14, 12, 14, 12), BorderThickness = new Thickness(1), Tag = "ContextCard" };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
