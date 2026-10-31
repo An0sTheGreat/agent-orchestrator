@@ -199,6 +199,9 @@ internal sealed class AppSettings
     public bool Once { get; set; } = true;
     public string SelectedWorker { get; set; } = ""; // the worker tab shown in the details column ("" = the first)
     public bool SidebarCollapsed { get; set; }
+    // The sidebar's profile: a display name ("" = the Windows user name) and the picture copied into the data folder.
+    public string ProfileName { get; set; } = "";
+    public string ProfilePicture { get; set; } = "";
     // The Chat view's target worker id (it may delegate to the others). The Code view always talks to the Planner, the lead.
     // Older settings files' ChatMode / CodeMode / CodeWorker are ignored on load.
     public string ChatWorker { get; set; } = "planner";

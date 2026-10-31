@@ -11,6 +11,7 @@ public partial class App : Application
             LauncherLogic.SelfTest();
             ConversationStore.SelfTest();
             Markdown.SelfTest();
+            UsageStats.SelfTest();
             Shutdown(0);
             return;
         }

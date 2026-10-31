@@ -101,7 +101,7 @@ public partial class MainWindow
 
     private ContextSnapshot? ContextOf(bool code) => code ? _codeContext : _chatContext;
 
-    // The view's latest snapshot: stored, and shown on its ring (null clears it to the grey "—" state).
+    // The view's latest snapshot: stored, and shown on its ring (null leaves the empty ring).
     private void ShowContext(bool code, ContextSnapshot? s)
     {
         if (code) _codeContext = s; else _chatContext = s;
@@ -112,8 +112,6 @@ public partial class MainWindow
         grid.Children.Add(track);
         if (s is { NCtx: > 0 })
             grid.Children.Add(Arc(s.Fraction, RingColor(s.Fraction)));
-        else if (s is null)
-            grid.Children.Add(new TextBlock { Text = "—", FontSize = 9, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
         ring.Content = grid;
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";

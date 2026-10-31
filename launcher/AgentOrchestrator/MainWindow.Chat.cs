@@ -773,6 +773,7 @@ public partial class MainWindow
             card.Editable = !busy;
         SetStatus(busy ? "Replying" : "Ready", busy ? "#8B7CFF" : "#667085");
         SetActivity(busy);
+        TimeTask(busy);
         RefreshChatInput();
     }
 
@@ -816,6 +817,7 @@ public partial class MainWindow
             case "usage":
                 Activate(role, "Working");
                 card?.AddUsage((long)Num(ev, "prompt"), (long)Num(ev, "completion"), Num(ev, "tps"));
+                RecordUsage((long)(Num(ev, "prompt") + Num(ev, "completion")));
                 ChatUsage(role, LauncherLogic.StatsLine(name, Num(ev, "tps"), (long)Num(ev, "completion"), (long)Num(ev, "prompt")), Num(ev, "tps"), (long)(Num(ev, "prompt") + Num(ev, "completion")));
                 break;
             case "chat_stage":

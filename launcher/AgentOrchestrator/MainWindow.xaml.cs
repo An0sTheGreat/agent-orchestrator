@@ -110,7 +110,8 @@ public partial class MainWindow : Window
                 if (_store.Get(_settings.LastConversation) is not null)
                     OpenCodeConversation(_settings.LastConversation);
             });
-        RefreshSidebarList();
+        ShowView(chat: true); // the app opens in Chat; the last Code conversation waits in the Code view
+        RefreshProfile();
     }
 
     // ---------------------------------------------------------------- run control
@@ -304,6 +305,7 @@ public partial class MainWindow : Window
         else if (!preserveStatus)
             SetStatus("Ready", "#667085");
         SetActivity(running);
+        TimeTask(running);
         RefreshPrimary();
         RefreshChatInput();
     }
@@ -462,6 +464,7 @@ public partial class MainWindow : Window
             case "usage":
                 Activate(role, "Working");
                 card?.AddUsage((long)Num(ev, "prompt"), (long)Num(ev, "completion"), Num(ev, "tps"));
+                RecordUsage((long)(Num(ev, "prompt") + Num(ev, "completion")));
                 _callLive.Remove(role);
                 foreach (var ended in _runClosed.Where(b => b.Role == role).ToList()) // the call that just ended: its thinking and response
                 {
@@ -2631,6 +2634,17 @@ public partial class MainWindow : Window
             if (settings.IsVisible || _settingsWindow is not null || SettingsHolder.Child != SettingsContent)
                 return Fail();
         }
+        // The profile: usage adds to the lifetime count shown under the name, and the card opens from the sidebar with the stats.
+        var lifetime = _stats.Lifetime;
+        RecordUsage(1234);
+        if (_stats.Lifetime != lifetime + 1234 || !ProfileTokensText.Text.EndsWith("lifetime tokens") || !File.Exists(Path.Combine(AppSettings.DataRoot, "stats.json")))
+            return Fail();
+        ProfileButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        await Settle();
+        if (_profilePopup is not { IsOpen: true, Child: FrameworkElement profileCard })
+            return Fail();
+        Snap("28-profile-card", profileCard);
+        _profilePopup.IsOpen = false;
         if (!await LocalRuntimeSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
