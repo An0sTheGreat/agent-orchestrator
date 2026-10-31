@@ -189,6 +189,11 @@ internal static class LauncherLogic
 
     internal static int GgufTemplateCacheCount { get { lock (GgufTemplateCache) return GgufTemplateCache.Count; } }
 
+    // The <arch>.* values VramEstimate uses.
+    private static readonly string[] VramKeys = [".block_count", ".embedding_length", ".attention.head_count", ".attention.head_count_kv",
+        ".attention.key_length", ".attention.value_length", ".full_attention_interval", ".expert_count", ".attention.sliding_window",
+        ".attention.sliding_window_pattern", ".attention.key_length_swa", ".attention.value_length_swa"];
+
     // A malformed or unknown entry after the header ends the scan with what was read so far.
     private static Dictionary<string, string>? ScanGgufMetadata(string path)
     {
@@ -241,7 +246,27 @@ internal static class LauncherLogic
                 var name = Str(true)!;
                 var type = r.ReadUInt32();
                 var wanted = name is "general.architecture" or "tokenizer.chat_template" || name.EndsWith(".context_length", StringComparison.Ordinal) ||
-                    name.StartsWith("general.sampling.", StringComparison.Ordinal);
+                    name.StartsWith("general.sampling.", StringComparison.Ordinal) || VramKeys.Any(k => name.EndsWith(k, StringComparison.Ordinal));
+                // Arrays: the vocabulary's size as "<name>.count"; a per-layer integer or bool list (hybrid models'
+                // KV heads, a sliding-window pattern) as "a,b,c", bools as 1 and 0.
+                if (type == 9 && (wanted || name == "tokenizer.ggml.tokens"))
+                {
+                    var elem = r.ReadUInt32();
+                    var n = r.ReadUInt64();
+                    if (n > (ulong)fs.Length)
+                        throw new InvalidDataException();
+                    if (name == "tokenizer.ggml.tokens")
+                        meta[name + ".count"] = n.ToString(CultureInfo.InvariantCulture);
+                    var ints = elem is 4 or 5 or 7 && n <= 4096 ? new List<string>() : null;
+                    for (ulong j = 0; j < n; j++)
+                        if (ints is null)
+                            Skip(elem);
+                        else
+                            ints.Add(elem switch { 4 => r.ReadUInt32().ToString(CultureInfo.InvariantCulture), 5 => r.ReadInt32().ToString(CultureInfo.InvariantCulture), _ => r.ReadByte() != 0 ? "1" : "0" });
+                    if (ints is not null && wanted)
+                        meta[name] = string.Join(",", ints);
+                    continue;
+                }
                 string? value = !wanted ? null : type switch
                 {
                     8 => Str(true),
@@ -508,6 +533,20 @@ internal static class LauncherLogic
             using var process = Process.Start(new ProcessStartInfo("nvidia-smi") { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
             var output = process?.StandardOutput.ReadToEndAsync();
             return process is not null && process.WaitForExit(5000) ? output!.GetAwaiter().GetResult() : null;
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
+    }
+
+    // The first NVIDIA GPU's total memory in bytes, or null (no driver, or unreadable).
+    public static long? GpuMemoryBytes()
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo("nvidia-smi", "--query-gpu=memory.total --format=csv,noheader,nounits")
+                { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true });
+            var output = process?.StandardOutput.ReadToEndAsync();
+            return process is not null && process.WaitForExit(5000) &&
+                long.TryParse(output!.GetAwaiter().GetResult().Split('\n')[0].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mib) ? mib << 20 : null;
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
     }
@@ -1769,10 +1808,11 @@ internal static class LauncherLogic
             using (var w = new BinaryWriter(fs, System.Text.Encoding.UTF8))
             {
                 void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
-                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(9UL);
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(10UL);
                 S("general.architecture"); w.Write(8u); S("qwen3");
                 S("general.sampling.temp"); w.Write(6u); w.Write(0.7f);
                 S("tokenizer.ggml.tokens"); w.Write(9u); w.Write(8u); w.Write(2UL); S("a"); S("b");
+                S("qwen3.attention.head_count_kv"); w.Write(9u); w.Write(4u); w.Write(2UL); w.Write(0u); w.Write(8u);
                 S("general.sampling.top_k"); w.Write(5u); w.Write(40);
                 S("qwen3.context_length"); w.Write(4u); w.Write(262144u);
                 S("general.sampling.flag"); w.Write(7u); w.Write((byte)1);
@@ -1781,7 +1821,7 @@ internal static class LauncherLogic
                 S("general.sampling.min_p"); w.Write(6u); w.Write(0.1f);
             }
             var read = ReadGgufMetadata(metaFile);
-            if (read is null || read.Count != 5 || read["general.architecture"] != "qwen3" || read["general.sampling.temp"] != "0.7" || read["general.sampling.top_k"] != "40" ||
+            if (read is null || read.Count != 7 || read["tokenizer.ggml.tokens.count"] != "2" || read["qwen3.attention.head_count_kv"] != "0,8" || read["general.architecture"] != "qwen3" || read["general.sampling.temp"] != "0.7" || read["general.sampling.top_k"] != "40" ||
                 read["qwen3.context_length"] != "262144" || read["tokenizer.chat_template"] != "{{ x }}" || ReadGgufMetadata(bad) is not null ||
                 ModelOptions.Defaults(read, load: true) is not { } fromFile || fromFile["max_seq_length"] != "32768" || fromFile["temperature"] != "0.7")
                 throw new InvalidOperationException("GGUF metadata read failed: " + string.Join(" ", read ?? new()));

@@ -12,6 +12,7 @@ public partial class App : Application
             ConversationStore.SelfTest();
             Markdown.SelfTest();
             UsageStats.SelfTest();
+            VramEstimate.SelfTest();
             Shutdown(0);
             return;
         }

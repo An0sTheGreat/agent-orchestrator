@@ -81,6 +81,7 @@ public partial class MainWindow
         var startLoad = LoadOf(null);
         var hasModel = startLoad?["model_path"] is not null;
         Dictionary<string, string>? meta = null;
+        (long Model, long Vision) files = (0, 0);
         RadioButton[]? modes = null;
         var remoteMode = () => modes is null ? remoteNow is not null : modes[1].IsChecked == true;
         Dictionary<string, string> Base() => remoteMode() ? new() : ModelOptions.Defaults(meta, hasModel, inherited);
@@ -320,15 +321,76 @@ public partial class MainWindow
         {
             var mine = ++derivation;
             var (folder, hub, copy) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache(), load?.DeepClone().AsObject());
-            var read = await Task.Run(() => LauncherLogic.ReadGgufMetadata(LauncherLogic.ResolveGguf(copy, folder, hub)));
+            var (read, sizes) = await Task.Run(() =>
+            {
+                var gguf = LauncherLogic.ResolveGguf(copy, folder, hub);
+                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf));
+            });
             if (mine != derivation)
                 return;
             meta = read;
+            files = sizes;
             var keys = editors.Keys.ToList();
             foreach (var key in Rederive())
                 if (atOpen)
                     clean[keys.IndexOf(key)] = StateOf(editors[key]);
             ContextHint(meta);
+            Vram();
+        }
+
+        // The VRAM meter (VramEstimate): the model's GGUF and the shown options, against the GPU's memory; it follows every edit.
+        var vramBlock = new StackPanel { Tag = "VramEstimate", Margin = new Thickness(0, 12, 0, 0) };
+        void Vram()
+        {
+            vramBlock.Children.Clear();
+            var estimate = remoteMode() ? null : VramEstimate.Estimate(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()));
+            vramBlock.Visibility = estimate is null ? Visibility.Collapsed : Visibility.Visible;
+            if (estimate is null)
+                return;
+            var gpu = _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : (long?)null;
+            var head = new DockPanel();
+            var total = new TextBlock { Text = VramEstimate.Gb(estimate.Total) + (gpu is { } g ? " / " + VramEstimate.Gb(g) : ""), FontSize = 12, FontWeight = FontWeights.SemiBold,
+                Foreground = gpu is { } g2 ? (Brush)new BrushConverter().ConvertFromString(RingColor((double)estimate.Total / g2))! : (Brush)FindResource("TextPrimary") };
+            DockPanel.SetDock(total, Dock.Right);
+            head.Children.Add(total);
+            head.Children.Add(Label("VRAM estimate"));
+            vramBlock.Children.Add(head);
+            var parts = new (string Name, long Bytes, string Color)[]
+            {
+                ("Weights", estimate.Weights, "#4C8DFF"), ("KV cache", estimate.Kv, "#8B7CFF"), ("Compute", estimate.Compute, "#E8A33D"), ("Vision", estimate.Vision, "#2BB3A3"),
+            };
+            var bar = new Grid { Height = 8 };
+            foreach (var (_, bytes, color) in parts.Append(("", Math.Max(0, (gpu ?? 0) - estimate.Total), "")).Where(p => p.Item2 > 0))
+            {
+                bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(bytes, GridUnitType.Star) });
+                var segment = new System.Windows.Shapes.Rectangle { Fill = color.Length == 0 ? Brushes.Transparent : (Brush)new BrushConverter().ConvertFromString(color)! };
+                Grid.SetColumn(segment, bar.ColumnDefinitions.Count - 1);
+                bar.Children.Add(segment);
+            }
+            var track = new Border { CornerRadius = new CornerRadius(4), Child = bar, ClipToBounds = true, Margin = new Thickness(0, 6, 0, 6) };
+            track.SetResourceReference(Border.BackgroundProperty, "Hover");
+            vramBlock.Children.Add(track);
+            var legend = new WrapPanel();
+            foreach (var (name, bytes, color) in parts.Where(p => p.Bytes > 0))
+                legend.Children.Add(new StackPanel
+                {
+                    Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 12, 2),
+                    Children =
+                    {
+                        new System.Windows.Shapes.Rectangle { Width = 8, Height = 8, RadiusX = 2, RadiusY = 2, Margin = new Thickness(0, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center,
+                            Fill = (Brush)new BrushConverter().ConvertFromString(color)! },
+                        Muted($"{name} {VramEstimate.Gb(bytes)}"),
+                    },
+                });
+            vramBlock.Children.Add(legend);
+            var over = gpu is { } g3 ? estimate.Total - g3 : 0;
+            var note = Muted(over > 0
+                ? $"About {VramEstimate.Gb(over)} over this GPU: lower the context length, pick a smaller KV cache type, or keep layers or MoE experts on the CPU."
+                : "An estimate from the model file and these settings; the real use can differ by a few hundred MB.");
+            if (over > 0)
+                note.Foreground = red;
+            note.Margin = new Thickness(0, 4, 0, 0);
+            vramBlock.Children.Add(note);
         }
 
         // The model list loads in the background the first time it opens (never at startup); the body stays usable meanwhile.
@@ -338,7 +400,7 @@ public partial class MainWindow
         var modelStatus = Muted("Open the list for the installed models.");
         modelStatus.Margin = new Thickness(0, 4, 0, 0);
         var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, Fields("Model"), source })
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, Fields("Model"), vramBlock, source })
             if (part is not null)
                 top.Children.Add(part);
         foreach (var (name, _) in SettingsGroups)
@@ -619,9 +681,20 @@ public partial class MainWindow
         List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
             .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
         clean = State();
+        foreach (var editor in editors.Values)
+            if (editor is TextBox box)
+                box.TextChanged += (_, _) => Vram();
+            else
+                ((ComboBox)editor).SelectionChanged += (_, _) => Vram();
+        foreach (var mode in modes ?? [])
+            mode.Checked += (_, _) => Vram();
+        _gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes);
+        _gpuMemory.ContinueWith(_ => Vram(), TaskScheduler.FromCurrentSynchronizationContext());
         Derive(startLoad, atOpen: true);
         return (new DockPanel { Children = { footer, scroll } }, () => !State().SequenceEqual(clean), Save);
     }
+
+    private static Task<long?>? _gpuMemory; // the first GPU's total memory (nvidia-smi), read once
 
     // The settings body's groups in display order (one column, or two read left to right); Help: an option group's note (null:
     // built by ModelSettingsBody itself). An option whose key SettingsGroupKeys does not name goes in Other.
