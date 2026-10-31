@@ -373,7 +373,7 @@ public partial class MainWindow : Window
                     AppendChatDelta(k.Role, k.Kind, pending.ToString());
                 else
                     AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
-                CardFor(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
+                CardForActivity(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
                 CountLive(k.Role, chunks, _chatBusy ? _reply?.Block : _stream);
             }
             chunks = 0;
@@ -423,7 +423,7 @@ public partial class MainWindow : Window
             return;
         }
         var role = Str(ev, "role");
-        var card = CardFor(role);
+        var card = CardForActivity(role);
         switch (Str(ev, "e"))
         {
             case "loading":
@@ -513,8 +513,9 @@ public partial class MainWindow : Window
     // A turn is a stretch of one role working; a different role taking over starts that role's turn fresh.
     private void Activate(string role, string status)
     {
-        if (CardFor(role) is not { } card)
+        if (CardForActivity(role) is not { } card)
             return;
+        role = card.Role; // a delegation to MAIN continues MAIN's turn
         if (_activeRole != role)
         {
             foreach (var other in _cards.Where(c => c.IsActive))
@@ -1014,6 +1015,45 @@ public partial class MainWindow : Window
         await Settle();
         if (Math.Abs(SidePane.ActualWidth - SidebarWidth) > 2 || !SidebarFull.IsVisible || SidebarRail.IsVisible)
             return Fail();
+        // One worker by default: MAIN covers every role, a delegation to a role not added lights MAIN, "+" adds a role (its
+        // own tab and config entry) and removing it runs it as MAIN again.
+        {
+            var main = CardFor("planner")!;
+            var (implementer, reviewer) = (CardFor("implementer")!, CardFor("reviewer")!);
+            List<string> Plus() => BuildAddWorkerMenu(this).Items.OfType<MenuItem>().Select(i => (string)i.Header + (i.IsEnabled ? "" : " (off)")).ToList();
+            bool TabShown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
+            var workerConfig = ActiveConfigPath();
+            JsonNode? ReviewerConfig() => JsonNode.Parse(File.ReadAllText(workerConfig))!["roles"]?["reviewer"];
+            if (!implementer.Hidden || !reviewer.Hidden || main.Hidden || TabShown(implementer) || TabShown(reviewer) || !TabShown(main) ||
+                main.Covers != "Planner · Implementer · Reviewer" || Plus() is not ["Implementer", "Reviewer", "Custom worker…"])
+                return Fail();
+            foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
+                _lines.Enqueue(LauncherLogic.EventPrefix + json);
+            DrainLines();
+            if (!main.IsActive || implementer.IsActive || _activeRole != "planner" || main.TokensPerSec != "21.0 tok/s" || !main.TurnDetail.Contains("↑ 7 prompt") ||
+                implementer.TokensPerSec != "—" || main.Covers != "Planner · Implementer · Reviewer")
+                return Fail();
+            main.ClearLive();
+            (main.IsActive, main.Status, _activeRole) = (false, "Idle", null);
+            AddBuiltInRole("reviewer");
+            await Settle();
+            if (reviewer.Hidden || !TabShown(reviewer) || _shownWorker != reviewer || main.Covers != "Planner · Implementer" ||
+                Plus() is not ["Implementer", "Reviewer (off)", "Custom worker…"] || ReviewerConfig()?["same_as"] is not null)
+                return Fail();
+            RemoveBuiltInRole("reviewer");
+            await Settle();
+            if (!reviewer.Hidden || TabShown(reviewer) || _shownWorker != main || !main.IsSelected || main.Covers != "Planner · Implementer · Reviewer" ||
+                (string?)ReviewerConfig()?["same_as"] != "planner")
+                return Fail();
+            Snap("0-one-worker");
+            // The checks below use all three built-ins.
+            AddBuiltInRole("implementer");
+            AddBuiltInRole("reviewer");
+            SelectWorker(main);
+            await Settle();
+            if (_cards.Any(c => c.Hidden) || !TabShown(implementer) || !TabShown(reviewer))
+                return Fail();
+        }
         foreach (var json in new[]
         {
             """{"e":"model","role":"planner","id":"smoke-model Q4_K_M"}""",
@@ -1154,6 +1194,7 @@ public partial class MainWindow : Window
             SaveWorkers();
             var saved = Cards();
             SavePreset("Smoke");
+            RemoveBuiltInRole("reviewer"); // the preset brings it back
             presetWorker.Config.ModelOptions["top_k"] = "9"; // an edit saved after the preset
             SaveWorkers();
             AddCustomWorker();
@@ -1178,7 +1219,8 @@ public partial class MainWindow : Window
             var workerConfig = LauncherLogic.EnsureWorkerConfig(_workflowRoot!);
             var templateBytes = File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json"));
             double Temperature(string path) => (double)JsonNode.Parse(File.ReadAllText(path))!["roles"]!["planner"]!["sampling"]!["temperature"]!;
-            if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3)
+            if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3 ||
+                string.Join(",", _settings.AddedRoles) != "implementer,reviewer" || CardFor("reviewer")!.Hidden)
                 return Fail();
             // Both parts of the parent preset come back (a built-in's chat prompt, a custom worker's option), the tab stays and shows them.
             if ((string)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["chat_system_prompt"]! != "Planner: saved" ||
@@ -1474,21 +1516,17 @@ public partial class MainWindow : Window
             await Settle();
             Snap("16-chat-delegate");
 
-            // The Chat view hides the built-in workers' cards (a custom one stays); the Code view's run output shows every card.
+            // Both views show the same cards: the added built-ins and the custom ones.
             var visible = new RoleCard("smoke-visible", "Visible", custom: true);
             _cards.Add(visible);
             await Settle();
-            // The tabs follow: a hidden built-in's tab stays while it is the selected one (here the Planner's).
             bool Shown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
             bool AllShown() => _cards.All(card => !card.Hidden && Shown(card));
-            bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == (card.IsCustom || card.IsSelected)) && Shown(visible) &&
-                                  CardFor("planner") is { IsSelected: true, Hidden: true };
             SelectWorker(CardFor("planner"));
             RefreshCardVisibility();
             await Settle();
-            // Hidden tabs take no slot: the first shown tab starts the strip.
             var firstShown = _cards.Where(Shown).Select(card => (UIElement)WorkerTabs.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
-            if (!SingleShown() || firstShown?.TranslatePoint(new Point(), WorkerTabs) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !SingleShown())
+            if (!AllShown() || firstShown?.TranslatePoint(new Point(), WorkerTabs) is not { X: < 1, Y: < 1 } || !await WorkerRailSmoke(Snap) || !AllShown())
                 return Fail();
             ShowView();
             await Settle();
@@ -1496,7 +1534,7 @@ public partial class MainWindow : Window
                 return Fail();
             ShowView(chat: true);
             await Settle();
-            if (!SingleShown())
+            if (!AllShown())
                 return Fail();
 
             // The effort chip, in both composers: its menu opens upwards with six levels, a choice is saved and relabels both
@@ -1950,7 +1988,7 @@ public partial class MainWindow : Window
                     return Fail();
                 // Project menu: its items; Use a PROJECT.md… copies a file in, then backs up the one it replaces.
                 string MenuItems() => string.Join("|", BuildProjectMenu().Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)") + (i.IsChecked ? " (on)" : "")));
-                const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Task limits…|Folders…|Run one reviewed task, then stop{1}";
+                const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Folders…|Stop after the first finished item{1}";
                 var onceMark = _settings.Once ? " (on)" : "";
                 if (!CodeProjectButton.IsEnabled || MenuItems() != string.Format(items, " (off)", onceMark))
                     return Fail();
@@ -2006,7 +2044,7 @@ public partial class MainWindow : Window
                 ProjectPath = "";
                 var noFolderState = EmptyState();
                 ProjectPath = keptFolder;
-                if (noFolderState != "Choose a folder to start|Visible|Collapsed|Collapsed|False")
+                if (noFolderState != "Choose a folder to start|Visible|Collapsed|Collapsed|Collapsed|False")
                     return Fail();
 
                 // A mirror write that fails (a problem or an exception) is only a warning, shown as a toast: the save still
@@ -3291,6 +3329,9 @@ public partial class MainWindow : Window
     // ---------------------------------------------------------------- worker cards
 
     private RoleCard? CardFor(string role) => _cards.FirstOrDefault(c => c.Role == role);
+
+    // The card an event's activity lands on: an Implementer or Reviewer that is not added runs as MAIN, so MAIN shows it.
+    private RoleCard? CardForActivity(string role) => CardFor(ConfigRole(role));
 
     // Saved order and user-created workers; the three built-in workers are always present.
     private void LoadWorkers()

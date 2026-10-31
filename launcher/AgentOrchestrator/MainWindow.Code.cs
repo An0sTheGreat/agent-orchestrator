@@ -489,10 +489,10 @@ public partial class MainWindow
         var menu = NewPresetMenu(CodeProjectButton);
         menu.Items.Add(PresetItem("Use a PROJECT.md…", UseProjectMd));
         menu.Items.Add(PresetItem("Edit PROJECT.md", () => EditProject_Click(this, new RoutedEventArgs()), File.Exists(Path.Combine(SelectedProjectPath(), "PROJECT.md"))));
-        menu.Items.Add(PresetItem("Task limits…", () => Dispatcher.InvokeAsync(() => TaskLimits_Click(this, new RoutedEventArgs()), System.Windows.Threading.DispatcherPriority.Background)));
+        // No Task limits… here: the lead project run ignores task limits (only the legacy --pipeline reads them).
         menu.Items.Add(PresetItem("Folders…", () => Dispatcher.InvokeAsync(ShowCodeFolders, System.Windows.Threading.DispatcherPriority.Background)));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
-        var once = PresetItem("Run one reviewed task, then stop", () => { }); // a checkable item toggles itself before Click
+        var once = PresetItem("Stop after the first finished item", () => { }); // a checkable item toggles itself before Click
         once.IsCheckable = true;
         once.IsChecked = _settings.Once;
         once.Click += (_, _) => { _settings.Once = once.IsChecked; _settings.Save(); };

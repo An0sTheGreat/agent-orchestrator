@@ -64,7 +64,7 @@ public partial class MainWindow
     }
 
     // --ui-smoke, from the Chat view with a custom card among the built-ins: the rail shows one dot per visible
-    // card (Single hides the built-ins' dots too), an active card's dot turns the accent, hovering opens that card in the
+    // card, an active card's dot turns the accent, hovering opens that card in the
     // popup, and the expand toggle shows the full column and is saved.
     private async Task<bool> WorkerRailSmoke(Action<string, FrameworkElement?> snap)
     {
@@ -86,7 +86,7 @@ public partial class MainWindow
         await Idle();
         if (!WorkerRail.IsVisible || DetailsPanel.IsVisible || SplitterBar.IsVisible || WorkerRail.ActualWidth > 50 || !AppSettings.Load().DetailsCollapsed)
             return Fail("collapsed layout");
-        if (!_cards.Any(c => c.Hidden) || !DotsMatch()) // the Chat view hides the built-ins
+        if (!DotsMatch()) // one dot per shown card (a role not added has none)
             return Fail("Chat view dots");
 
         var implementer = CardFor("implementer")!;

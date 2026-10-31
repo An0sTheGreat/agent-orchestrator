@@ -689,12 +689,12 @@ public partial class MainWindow
         var (planner, implementer, reviewer) = (CardFor("planner")!, CardFor("implementer")!, CardFor("reviewer")!);
         try
         {
-            // Chat: the dropdown lists the target (the built-ins are hidden) and the custom workers; Options… opens the
-            // target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
+            // Chat: the dropdown lists every shown worker (MAIN, the added roles, the custom workers), the target checked;
+            // Options… opens the target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
             _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
-            var customs = _cards.Count(k => k.IsCustom);
-            if (Dropdown(ChatTargetChip) is not ["Options…", "Reviewer*", ..] chatDrop || chatDrop.Count != 2 + customs || ChatTargetChip.ToolTip as string != chipTip)
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Main", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden) ||
+                ChatTargetChip.ToolTip as string != chipTip)
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
                 return Fail("Single chat Options…");

@@ -785,7 +785,7 @@ public partial class MainWindow
     private void HandleChatEvent(JsonElement ev)
     {
         var role = Str(ev, "role");
-        var card = CardFor(role);
+        var card = CardForActivity(role);
         var name = ChatName(card, role);
         switch (Str(ev, "e"))
         {
