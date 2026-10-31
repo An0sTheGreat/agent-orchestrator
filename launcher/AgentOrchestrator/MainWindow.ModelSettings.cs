@@ -660,8 +660,8 @@ public partial class MainWindow
             return DetailsPanel.IsVisible && !_settings.DetailsCollapsed ? _shownWorker : null;
         }
         const string chipTip = "Choose the worker to message, or open model Options";
-        var saved = (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.CodeMode);
-        _settings.CodeMode = "single"; // the Code chip below configures its one target
+        const string leadTip = "The lead (the Planner) answers and hands parts to your other workers; Options opens its model settings";
+        var saved = (_settings.ChatWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice);
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
         Directory.CreateDirectory(models);
         (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models); // a disk scan: never a real Unsloth server
@@ -671,32 +671,21 @@ public partial class MainWindow
         var (planner, implementer, reviewer) = (CardFor("planner")!, CardFor("implementer")!, CardFor("reviewer")!);
         try
         {
-            // Single chat: the dropdown lists the target (the built-ins are hidden) and the custom workers; Options… opens the
-            // target's tab. Code: the Code target's tab.
-            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker) = ("single", "reviewer", "planner");
+            // Chat: the dropdown lists the target (the built-ins are hidden) and the custom workers; Options… opens the
+            // target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
+            _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
             var customs = _cards.Count(k => k.IsCustom);
             if (Dropdown(ChatTargetChip) is not ["Options…", "Reviewer*", ..] chatDrop || chatDrop.Count != 2 + customs || ChatTargetChip.ToolTip as string != chipTip)
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
                 return Fail("Single chat Options…");
-            if (await Open(CodeTargetChip) != planner || CodeTargetChip.ToolTip as string != chipTip)
+            if (Dropdown(CodeTargetChip) is not ["Options…"] || !((string)CodeTargetChip.Content).StartsWith("Lead: ") ||
+                await Open(CodeTargetChip) != planner || CodeTargetChip.ToolTip as string != leadTip)
                 return Fail("Code Options…");
-            // Picking from the dropdown makes the worker the target and leaves the tab alone.
-            SmokeClick(CodeTargetChip);
-            CodeTargetChip.ContextMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "reviewer").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            CodeTargetChip.ContextMenu.IsOpen = false;
-            await Idle();
-            if (_settings.CodeWorker != "reviewer" || _shownWorker != planner || Dropdown(CodeTargetChip) is not ["Options…", "Planner", "Implementer", "Reviewer*", ..])
-                return Fail("dropdown pick");
-            (_settings.ChatWorker, _settings.CodeWorker) = ("reviewer", "planner");
-
-            // Multi: the Planner's tab.
-            _settings.ChatMode = "multi";
-            RefreshChatTarget();
             SelectWorker(reviewer);
-            if (asked.Count > 0 || ChatTargetChip.Cursor != Cursors.Hand || await Open(ChatTargetChip) != planner)
-                return Fail("Multi Options…");
+            if (asked.Count > 0 || ChatTargetChip.Cursor != Cursors.Hand || await Open(CodeTargetChip) != planner)
+                return Fail("Code Options… from another tab");
 
             // Save keeps the Implementer's tab.
             SmokeClickTab(implementer);
@@ -798,7 +787,7 @@ public partial class MainWindow
         finally
         {
             RefreshWorkerTab(force: true); // a check that failed with a change pending
-            (_settings.ChatMode, _settings.ChatWorker, _settings.CodeWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice, _settings.CodeMode) = saved;
+            (_settings.ChatWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice) = saved;
             RefreshChatTarget();
             Directory.Delete(models, recursive: true);
         }

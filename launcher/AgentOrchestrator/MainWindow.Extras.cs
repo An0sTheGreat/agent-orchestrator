@@ -110,18 +110,15 @@ public partial class MainWindow
             _settings.ModelsFolder ?? "");
     }
 
-    // Multi (Planner -> Implementer -> Reviewer) thinks when any built-in worker does.
-    private bool Thinks(bool multi, RoleCard? card) => multi ? _cards.Where(k => k.IsBuiltIn).Any(Thinks) : Thinks(card);
-
-    // The effort a request carries: "" (the model's default) unless the model it reaches thinks.
-    private string EffortFor(bool multi, RoleCard? card) => Thinks(multi, card) ? _settings.ChatEffort : "";
+    // The effort a request carries: "" (the model's default) unless the target worker's model thinks.
+    private string EffortFor(RoleCard? card) => Thinks(card) ? _settings.ChatEffort : "";
 
     private void RefreshEffort()
     {
         if (_chat is null)
             return; // before InitChat
         var label = Efforts.FirstOrDefault(e => e.Value == _settings.ChatEffort).Label?.Split(' ')[0] ?? "Default";
-        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatMulti, ChatTarget())), (CodeEffortChip, Thinks(CodeMulti, CodeTarget())) })
+        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatTarget())), (CodeEffortChip, Thinks(CodeTarget())) })
         {
             chip.Content = $"Effort: {label}  ▾";
             chip.IsEnabled = thinks;

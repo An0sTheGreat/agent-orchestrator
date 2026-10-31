@@ -16,7 +16,6 @@ internal sealed class ConversationStore
         public string? Title { get; set; } // null: derived by TitleOf; set by Rename or a model-written title (first turn)
         public string Kind { get; set; } = "code"; // "code" or "chat"
         public string Folder { get; set; } = ""; // "" for a chat
-        public string Mode { get; set; } = "single"; // Single / Multi (Chat and Code)
         public List<LauncherLogic.CodeFolder> Folders { get; set; } = new();
         public string Worker { get; set; } = "implementer";
         public List<LauncherLogic.ChatMessage> Messages { get; set; } = new();
@@ -112,12 +111,12 @@ internal sealed class ConversationStore
     }
 
     // Null when the store is read-only.
-    public Conversation? Create(string folder, string kind = "code", string mode = "single")
+    public Conversation? Create(string folder, string kind = "code")
     {
         if (ReadOnly)
             return null;
         var now = DateTime.Now;
-        var c = new Conversation { Id = NewId(), Kind = kind, Folder = folder, Mode = mode, Created = now, Updated = now };
+        var c = new Conversation { Id = NewId(), Kind = kind, Folder = folder, Created = now, Updated = now };
         _conversations[c.Id] = c;
         Write(PathOf(c.Id), c);
         _index.Items.Insert(0, c.Id);
@@ -338,7 +337,6 @@ internal sealed class ConversationStore
         c.Title = string.IsNullOrWhiteSpace(c.Title) ? null : c.Title;
         c.Kind = c.Kind == "chat" ? "chat" : "code";
         c.Folder ??= "";
-        c.Mode = c.Mode == "multi" ? "multi" : "single";
         c.Worker ??= "implementer";
         c.Messages = (c.Messages ?? []).Where(m => m is { Role: "user" or "assistant", Content: not null }).ToList();
         c.Folders = (c.Folders ?? []).Where(f => f is { Path.Length: > 0 }).Select(f => f.Access == "write" ? f : f with { Access = "read" }).ToList();
@@ -461,15 +459,14 @@ internal sealed class ConversationStore
             Check(s.Delete(a.Id) && !s.Delete(a.Id) && s.Get(a.Id) is null && !File.Exists(Path.Combine(conversations, a.Id + ".json")), "delete");
             Check(!s.Save(a) && !File.Exists(Path.Combine(conversations, a.Id + ".json")) && Ids(s.View().Ungrouped) == Of(c), "no resurrection");
 
-            // A Chat-view chat: kind, mode and no folder round-trip; an unknown kind or mode loads as code / single.
+            // A Chat-view chat: kind and no folder round-trip; an unknown kind loads as code, and an old file's mode is ignored.
             var chat = s.Create("", "chat")!;
-            chat.Mode = "multi";
             chat.Messages.Add(new("user", "plain question"));
             s.Save(chat);
-            File.WriteAllText(Path.Combine(conversations, new string('d', 32) + ".json"), """{"kind":"bogus","mode":"bogus","folder":"C:\\K"}""");
+            File.WriteAllText(Path.Combine(conversations, new string('d', 32) + ".json"), """{"kind":"bogus","mode":"multi","folder":"C:\\K"}""");
             s = Reload();
-            Check(s.Get(chat.Id) is { Kind: "chat", Mode: "multi", Folder: "" } && s.View().Ungrouped[0] is { Kind: "chat", Title: "plain question" } &&
-                  s.Get(new string('d', 32)) is { Kind: "code", Mode: "single" }, "chat kind");
+            Check(s.Get(chat.Id) is { Kind: "chat", Folder: "" } && s.View().Ungrouped[0] is { Kind: "chat", Title: "plain question" } &&
+                  s.Get(new string('d', 32)) is { Kind: "code" } && !File.ReadAllText(Path.Combine(conversations, chat.Id + ".json")).Contains("\"mode\""), "chat kind");
             s.Delete(chat.Id);
             s.Delete(new string('d', 32));
 

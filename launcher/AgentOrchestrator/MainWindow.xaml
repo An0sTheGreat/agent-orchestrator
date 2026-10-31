@@ -478,7 +478,7 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- Chat: segmented Single / Multi toggle, the borderless message box and the rounded composer around it. -->
+        <!-- Chat: segmented toggle, the borderless message box and the rounded composer around it. -->
         <Style x:Key="SegToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
             <Setter Property="Padding" Value="15,4" />
@@ -1015,15 +1015,6 @@
                     </Border>
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
-                    <Border DockPanel.Dock="Right" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}"
-                            BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
-                        <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="CodeSingleToggle" Style="{StaticResource SegToggle}" Content="Single" Tag="single" Click="ChatMode_Click"
-                                          ToolTip="Message one worker" AutomationProperties.Name="Single worker mode" />
-                            <ToggleButton x:Name="CodeMultiToggle" Style="{StaticResource SegToggle}" Content="Multi" Tag="multi" Click="ChatMode_Click"
-                                          ToolTip="Planner → Implementer → Reviewer, answering with the reviewed result" AutomationProperties.Name="Multi-worker mode" />
-                        </StackPanel>
-                    </Border>
                 </DockPanel>
                 <Grid x:Name="CodeChat" Grid.Row="1">
                     <Grid.RowDefinitions>
@@ -1057,8 +1048,9 @@
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <!-- Code always messages the lead (the Planner): no worker to choose -->
                                 <Button x:Name="CodePlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
-                                        VerticalAlignment="Bottom" Click="ChatPlus_Click" ToolTip="Choose which worker to message" AutomationProperties.Name="Choose worker" />
+                                        VerticalAlignment="Bottom" Visibility="Collapsed" AutomationProperties.Name="Choose worker" />
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
@@ -1076,7 +1068,7 @@
                             </Grid>
                             <DockPanel Grid.Row="1" Margin="4,6,2,0">
                                 <Button x:Name="CodeTargetChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}"
-                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Choose the worker to message, or open model Options" />
+                                        Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="The lead (the Planner) answers and hands parts to your other workers; Options opens its model settings" />
                                 <Button x:Name="CodeEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
@@ -1268,15 +1260,6 @@
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <Button x:Name="NewChatButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New chat" Padding="10,4" FontSize="11"
                             Click="NewChat_Click" ToolTip="Clear the conversation" />
-                    <Border DockPanel.Dock="Right" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}"
-                            BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
-                        <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="ChatSingleToggle" Style="{StaticResource SegToggle}" Content="Single" Tag="single" Click="ChatMode_Click"
-                                          ToolTip="Message one worker" AutomationProperties.Name="Single worker mode" />
-                            <ToggleButton x:Name="ChatMultiToggle" Style="{StaticResource SegToggle}" Content="Multi" Tag="multi" Click="ChatMode_Click"
-                                          ToolTip="Planner → Implementer → Reviewer, answering with the reviewed result" AutomationProperties.Name="Multi-worker mode" />
-                        </StackPanel>
-                    </Border>
                     <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center" Margin="0,0,16,0"
                                   ToolTip="On: models stay loaded between messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
                                   AutomationProperties.Name="Keep models loaded" />
@@ -1291,7 +1274,7 @@
                     </ScrollViewer>
                     <StackPanel x:Name="ChatEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                         <TextBlock Text="Start a conversation" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
-                        <TextBlock Text="Use + to pick a worker, or switch to Multi to run the whole chain." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
+                        <TextBlock Text="Ask anything; the model can hand parts off to other workers when needed." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
                     </StackPanel>
                     <Button x:Name="ChatJumpPill" Style="{StaticResource PrimaryButton}" Content="Jump to latest  ↓" FontSize="12" Padding="16,7"
                             HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" Opacity="0"

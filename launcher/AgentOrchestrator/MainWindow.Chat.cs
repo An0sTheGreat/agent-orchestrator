@@ -12,7 +12,7 @@ using System.Windows.Threading;
 
 namespace AgentOrchestrator;
 
-// Chat view: a conversation with one worker (Single) or with Planner -> Implementer -> Reviewer (Multi).
+// Chat view: a conversation with one worker, which may delegate parts to the others.
 // Every message starts one `orchestrator.py --chat` process; its events stream into the reply under construction.
 // The Code view's conversation (MainWindow.Code.cs) runs on the same plumbing: one turn at a time, of either kind.
 public partial class MainWindow
@@ -50,7 +50,6 @@ public partial class MainWindow
     private Conversation _chat = null!, _code = null!, _turn = null!; // _turn: the conversation of the running (or last) turn
     private List<LauncherLogic.ChatMessage> _chatHistory => _chat.History;
     private Conversation ConvOf(object sender) => _code.Owns(sender) ? _code : _chat;
-    private bool MultiOf(Conversation c) => c.IsCode ? CodeMulti : ChatMulti;
     private RoleCard? TargetOf(Conversation c) => c.IsCode ? CodeTarget() : ChatTarget();
 
     // One assistant reply: sections (thinking, Plan / Draft / Review) above the prominent answer.
@@ -64,7 +63,6 @@ public partial class MainWindow
         public TextBlock Stats = null!; // the footer's call / turn / task tokens
         public string? Last, Pending; // stats of the last call; of a call whose text streamed into the answer, not yet shown
         public long TurnTokens;
-        public bool Multi;
         public string Stage = "answer", StageTitle = "";
         public StreamBlock? Block;
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
@@ -80,14 +78,8 @@ public partial class MainWindow
         _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
             Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint, Busy = CodeBusyText };
         RefreshExtras();
-        if (_settings.ChatMode != "multi")
-            _settings.ChatMode = "single";
-        if (_settings.CodeMode != "multi")
-            _settings.CodeMode = "single";
         if (CardFor(_settings.ChatWorker) is null)
-            _settings.ChatWorker = "implementer";
-        if (CardFor(_settings.CodeWorker) is null)
-            _settings.CodeWorker = "implementer";
+            _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
         ShowContext(false, null);
         ShowContext(true, null);
@@ -95,44 +87,41 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
-    private bool ChatMulti => _settings.ChatMode == "multi";
-    private bool CodeMulti => _settings.CodeMode == "multi";
-
-    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) ?? CardFor("implementer");
+    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) ?? CardFor("planner");
 
     private static string ChatName(RoleCard? card, string role) =>
         card is { IsCustom: true } ? card.Title : role.Length == 0 ? role : char.ToUpperInvariant(role[0]) + role[1..];
 
-    private const string ChainLabel = "Planner → Implementer → Reviewer";
-
     private void RefreshChatTarget()
     {
-        ChatSingleToggle.IsChecked = !ChatMulti;
-        ChatMultiToggle.IsChecked = ChatMulti;
         var target = ChatTarget();
-        ChatTargetChip.Content = ChatMulti ? ChainLabel : $"To: {ChatName(target, target?.Role ?? "")}  ▾";
-        CodeSingleToggle.IsChecked = !CodeMulti;
-        CodeMultiToggle.IsChecked = CodeMulti;
-        var code = CodeTarget();
-        CodeTargetChip.Content = CodeMulti ? ChainLabel : $"To: {ChatName(code, code?.Role ?? "")}  ▾";
+        ChatTargetChip.Content = $"To: {ChatName(target, target?.Role ?? "")}  ▾";
+        RefreshLeadChip();
         RefreshCardVisibility();
         RefreshEffort();
     }
 
-    // The Chat view's Single mode hides the built-in workers' cards; Multi, the Code view and the run output show every card.
+    // The Code view always talks to the lead (the Planner): its chip names the lead's model.
+    private void RefreshLeadChip()
+    {
+        var model = CodeTarget()?.ModelName;
+        CodeTargetChip.Content = $"Lead: {(model is { Length: > 0 } and not "Not loaded" ? model : "no model")}  ▾";
+    }
+
+    // The Chat view hides the built-in workers' cards (its target stays listed); the Code view and the run output show every card.
     private void RefreshCardVisibility()
     {
-        var hide = NavChat.IsChecked == true && !ChatMulti;
+        var hide = NavChat.IsChecked == true;
         foreach (var card in _cards)
             card.Hidden = hide && card.IsBuiltIn;
     }
 
-    // The workers the worker details column lists for c's view (Chat Single leaves out the built-ins), plus c's Single target
-    // when that is a hidden built-in: the target chip's dropdown and its Models window.
+    // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat the custom workers and the
+    // target when that is a hidden built-in.
     private List<RoleCard> ListedWorkers(Conversation c)
     {
-        var target = MultiOf(c) ? null : TargetOf(c);
-        return _cards.Where(k => c.IsCode || ChatMulti || !k.IsBuiltIn || k == target).ToList();
+        var target = TargetOf(c);
+        return c.IsCode ? [] : _cards.Where(k => !k.IsBuiltIn || k == target).ToList();
     }
 
     // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
@@ -158,7 +147,7 @@ public partial class MainWindow
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
-        ChatSingleToggle.IsEnabled = ChatMultiToggle.IsEnabled = CodeSingleToggle.IsEnabled = CodeMultiToggle.IsEnabled = NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
+        NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
@@ -181,7 +170,7 @@ public partial class MainWindow
             var item = new MenuItem
             {
                 Header = broken is null ? name : $"{name}  —  {broken}",
-                IsChecked = !MultiOf(c) && card.Role == TargetOf(c)?.Role,
+                IsChecked = card.Role == TargetOf(c)?.Role,
                 IsEnabled = broken is null,
                 ToolTip = broken is null ? card.ModelName : card.SetupTip,
                 Tag = card.Role,
@@ -192,13 +181,12 @@ public partial class MainWindow
         return menu;
     }
 
-    // Picking a worker makes it the Single-mode target (and switches to Single, so the choice is visible).
+    // Picking a worker makes it Chat's target (Code always talks to the lead).
     private void PickWorker(Conversation c, string role)
     {
         if (c.IsCode)
-            (_settings.CodeWorker, _settings.CodeMode) = (role, "single");
-        else
-            (_settings.ChatWorker, _settings.ChatMode) = (role, "single");
+            return;
+        _settings.ChatWorker = role;
         _settings.Save();
         RefreshChatTarget();
         c.Input.Focus();
@@ -222,27 +210,8 @@ public partial class MainWindow
         menu.IsOpen = true;
     }
 
-    // The Single target's worker tab (Multi: the Planner's).
-    private void OpenModelOptions(Conversation c) => OpenWorkerTab(MultiOf(c) ? CardFor("planner") : TargetOf(c));
-
-    // The Chat and Code views' Single / Multi toggles.
-    private void ChatMode_Click(object sender, RoutedEventArgs e)
-    {
-        var mode = ((FrameworkElement)sender).Tag as string == "multi" ? "multi" : "single";
-        if (sender == CodeSingleToggle || sender == CodeMultiToggle)
-        {
-            _settings.CodeMode = mode;
-            if (_codeConv is { } open) // reopening it brings back this mode, even before a turn saves it
-            {
-                open.Mode = mode;
-                StoreDo(() => _store.Save(open));
-            }
-        }
-        else
-            _settings.ChatMode = mode;
-        _settings.Save();
-        RefreshChatTarget();
-    }
+    // The target's worker tab (Code: the lead's, the Planner).
+    private void OpenModelOptions(Conversation c) => OpenWorkerTab(TargetOf(c));
 
     // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
     private void ChatKeep_Click(object sender, RoutedEventArgs e)
@@ -358,7 +327,7 @@ public partial class MainWindow
             StoreDo(() => _chatConv = _store.Create("", "chat"));
         if (_chatConv is { } c)
         {
-            (c.Mode, c.Worker, c.Messages) = (_settings.ChatMode, _settings.ChatWorker, _chatHistory.ToList());
+            (c.Worker, c.Messages) = (_settings.ChatWorker, _chatHistory.ToList());
             c.Context = _chatContext;
             c.Tokens = _chat.Tokens;
             (c.Summary, c.SummaryCovers) = (_chat.Summary, _chat.SummaryCovers);
@@ -388,11 +357,10 @@ public partial class MainWindow
         {
             ClearConversation(_chat);
             _chatConv = saved;
-            _settings.ChatMode = saved.Mode;
             if (CardFor(saved.Worker) is not null)
                 _settings.ChatWorker = saved.Worker;
             _settings.Save();
-            Replay(_chat, saved.Messages, saved.Mode == "multi", ChatTarget()?.Role ?? "");
+            Replay(_chat, saved.Messages, ChatTarget()?.Role ?? "");
             ShowContext(false, saved.Context);
             _chat.Tokens = saved.Tokens ?? 0;
             (_chat.Summary, _chat.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
@@ -401,7 +369,7 @@ public partial class MainWindow
     }
 
     // Saved messages into a cleared conversation: user bubbles and finished replies.
-    private void Replay(Conversation c, List<LauncherLogic.ChatMessage> messages, bool multi, string role)
+    private void Replay(Conversation c, List<LauncherLogic.ChatMessage> messages, string role)
     {
         _turn = c;
         foreach (var message in messages)
@@ -409,7 +377,7 @@ public partial class MainWindow
                 AddUserBubble(message.Content, message.Time);
             else
             {
-                var reply = _reply = AddReply(multi, role);
+                var reply = _reply = AddReply(role);
                 SetChatFinal(message.Content);
                 reply.Status.Visibility = Visibility.Collapsed;
                 SetStamp(reply.Stamp, message.Time);
@@ -437,19 +405,19 @@ public partial class MainWindow
     {
         var text = ChatInput.Text.Trim();
         if (text.Length > 0)
-            Forget(RunTurn(_chat, text, ChatTarget()!.Role, ChatMulti, role => ChatRequest(role, text),
-                LauncherLogic.BuildChatStartInfo, $"Chat ({_settings.ChatMode})"));
+            Forget(RunTurn(_chat, text, ChatTarget()!.Role, role => ChatRequest(role, text),
+                LauncherLogic.BuildChatStartInfo, "Chat"));
     }
 
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
     private string ChatRequest(string role, string text) =>
-        LauncherLogic.BuildChatRequest(_settings.ChatMode, role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
-            effort: EffortFor(ChatMulti, CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
+        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(), title: _chatHistory.Count == 0,
+            effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.
     // True when the turn completed with a reply.
-    private async Task<bool> RunTurn(Conversation c, string? text, string role, bool multi, Func<string, string> buildRequest,
+    private async Task<bool> RunTurn(Conversation c, string? text, string role, Func<string, string> buildRequest,
         Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label)
     {
         if (_chatBusy || _process is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
@@ -471,7 +439,7 @@ public partial class MainWindow
             Toast("Message not sent: config.json could not be updated", "#FF667A");
             return false;
         }
-        if (!multi && CardFor(role) is { IsCustom: true, SetupProblem: { } problem } target)
+        if (CardFor(role) is { IsCustom: true, SetupProblem: { } problem } target)
         {
             Toast($"{ChatName(target, target.Role)} cannot be used: {problem}", "#F7C873");
             return false;
@@ -482,7 +450,7 @@ public partial class MainWindow
         var requestFile = _chatRequestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
         var exitCode = -1;
         string? failure = null;
-        StartTurn(c, text, multi, role);
+        StartTurn(c, text, role);
         var turn = ++_turnId;
         if (text is not null)
             c.Input.Clear();
@@ -564,9 +532,9 @@ public partial class MainWindow
     private string? _pendingUser;
     private DateTimeOffset _pendingUserTime;
 
-    private void StartChatTurn(string text, bool multi) => StartTurn(_chat, text, multi, ChatTarget()?.Role ?? "");
+    private void StartChatTurn(string text) => StartTurn(_chat, text, ChatTarget()?.Role ?? "");
 
-    private void StartTurn(Conversation c, string? text, bool multi, string role)
+    private void StartTurn(Conversation c, string? text, string role)
     {
         _turn = c;
         _pendingUser = text;
@@ -579,7 +547,7 @@ public partial class MainWindow
             AddUserBubble(text, _pendingUserTime);
             SavePendingTurn(c, text);
         }
-        _reply = AddReply(multi, role);
+        _reply = AddReply(role);
         _chatError = null;
         _chatStopRequested = false;
         _activeRole = null;
@@ -663,13 +631,13 @@ public partial class MainWindow
             label.Text = LauncherLogic.RelativeTime(time, Now());
     }
 
-    private ChatReply AddReply(bool multi, string role)
+    private ChatReply AddReply(string role)
     {
         var root = new StackPanel { Margin = new Thickness(0, 8, 0, 14) };
-        var header = new TextBlock { Text = multi ? ChainLabel : ChatName(CardFor(role), role), Margin = new Thickness(2, 0, 0, 6) };
+        var header = new TextBlock { Text = ChatName(CardFor(role), role), Margin = new Thickness(2, 0, 0, 6) };
         header.SetResourceReference(StyleProperty, "SectionHeader");
         header.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
-        var reply = new ChatReply { Multi = multi, Content = new StackPanel() };
+        var reply = new ChatReply { Content = new StackPanel() };
         reply.Status = new TextBlock { Text = "Starting…", FontStyle = FontStyles.Italic, FontSize = 12, Margin = new Thickness(2, 4, 0, 0) };
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
@@ -785,7 +753,7 @@ public partial class MainWindow
                 StoreDo(() => _chatConv = _store.Create("", "chat"));
             if (_chatConv is { } chat)
             {
-                (chat.Mode, chat.Worker, chat.Messages, chat.Summary, chat.SummaryCovers) = (_settings.ChatMode, _settings.ChatWorker, pending, c.Summary, c.SummaryCovers);
+                (chat.Worker, chat.Messages, chat.Summary, chat.SummaryCovers) = (_settings.ChatWorker, pending, c.Summary, c.SummaryCovers);
                 StoreDo(() => _store.Save(chat));
             }
         }
@@ -847,11 +815,14 @@ public partial class MainWindow
                 break;
             case "chat_stage":
                 EndChatBlock();
+                // The lead's text (Code) streams as the answer; a delegation's goes into a section named after the sub-agent.
                 if (_reply is { } r)
-                {
-                    r.Stage = Str(ev, "stage");
-                    r.StageTitle = Str(ev, "title");
-                }
+                    (r.Stage, r.StageTitle) = Str(ev, "stage") switch
+                    {
+                        "lead" => ("answer", ""),
+                        "delegate" => ("delegate", name),
+                        var s => (s, Str(ev, "title")),
+                    };
                 SetChatStatus($"{(Str(ev, "title") is { Length: > 0 } t ? t : name)}…");
                 break;
             case "chat_reply" or "code_reply":
@@ -976,7 +947,7 @@ public partial class MainWindow
         content.Children.Add(block.Body);
         content.Children.Add(block.View);
         var stage = r.StageTitle.Length > 0 ? r.StageTitle : r.Stage;
-        var title = kind == "thinking" ? (r.Multi && stage.Length > 0 ? $"THINKING  ·  {stage.ToUpperInvariant()}" : "THINKING") : stage.ToUpperInvariant();
+        var title = kind == "thinking" ? (r.Stage == "delegate" ? $"THINKING  ·  {stage.ToUpperInvariant()}" : "THINKING") : stage.ToUpperInvariant();
         block.Expander = BuildExpander(title, "", content, out block.Preview);
         block.Label = (TextBlock)((StackPanel)block.Expander.Header).Children[0];
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
@@ -1002,12 +973,6 @@ public partial class MainWindow
     {
         if (r.Answer is not null)
             return r.Answer;
-        if (r.Multi)
-        {
-            var label = Label("FINAL ANSWER", accent: true);
-            label.Margin = new Thickness(2, 10, 0, 4);
-            r.Content.Children.Add(label);
-        }
         var box = r.Answer = BodyText("", mono: false, muted: false, conv: _turn);
         box.FontSize = 14;
         box.Margin = new Thickness(2, 4, 0, 0);

@@ -1412,14 +1412,16 @@ public partial class MainWindow : Window
             RemoveWorker(stray);
 
             PickChatWorker("reviewer");
-            if (ChatMulti || !((string)ChatTargetChip.Content).Contains("Reviewer"))
+            // No Single / Multi toggles any more: Chat messages one worker, which may delegate.
+            if ((string)ChatTargetChip.Content != "To: Reviewer  ▾" || FindName("ChatSingleToggle") is not null || FindName("ChatMultiToggle") is not null ||
+                FindName("CodeSingleToggle") is not null || FindName("CodeMultiToggle") is not null)
                 return Fail();
             string Ev(string json) => LauncherLogic.EventPrefix + json;
             string Delta(string role, string kind, string text) => Ev($$"""{"e":"delta","role":"{{role}}","kind":"{{kind}}","text":"{{text}}"}""");
 
-            async Task<bool> Turn(string text, bool multi, string[] events, string reply)
+            async Task<bool> Turn(string text, string[] events, string reply)
             {
-                StartChatTurn(text, multi);
+                StartChatTurn(text);
                 if (!_chatBusy || CodeStartButton.IsEnabled)
                     return false;
                 foreach (var line in events)
@@ -1433,7 +1435,7 @@ public partial class MainWindow : Window
             }
 
             var reviewer = CardFor("reviewer")!;
-            if (!await Turn("Hello", false, new[]
+            if (!await Turn("Hello", new[]
             {
                 Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""),
                 Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf","url":"http://127.0.0.1:9"}"""),
@@ -1449,27 +1451,29 @@ public partial class MainWindow : Window
             await Settle();
             Snap("15-chat-single");
 
-            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
-            if (!ChatMulti || (string)ChatTargetChip.Content != ChainLabel)
-                return Fail();
-            var stages = new List<string>();
-            foreach (var (role, stage, title) in new[] { ("planner", "plan", "Plan"), ("implementer", "draft", "Draft"), ("reviewer", "review", "Review") })
+            // A delegation (orchestrator.py's delegate tool): the target answers, hands a part to the Implementer, whose thinking and
+            // text go into sections named after it, then answers again; no FINAL ANSWER label.
+            var delegated = new[]
             {
-                stages.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
-                stages.Add(Ev($$"""{"e":"loading","role":"{{role}}","path":"smoke/{{role}}.gguf","url":"http://127.0.0.1:9"}"""));
-                stages.Add(Ev($$"""{"e":"model","role":"{{role}}","id":"{{role}}-model"}"""));
-                stages.Add(Delta(role, "text", $"{title} body"));
-                stages.Add(Ev($$"""{"e":"done","role":"{{role}}","final":true}"""));
-            }
-            // The real Multi protocol (orchestrator.py run_chat): plan, draft, review stages, then only chat_reply carries the answer.
-            if (!await Turn("Build it", true, stages.ToArray(), "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
-                _reply!.Content.Children.OfType<Expander>().Count() != 3 || !_loadedByChat.Any(l => l.Path == "smoke/planner.gguf"))
+                Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer"}"""),
+                Delta("reviewer", "text", "Asking the implementer"),
+                Ev("""{"e":"chat_stage","role":"implementer","stage":"delegate","title":"Write the draft"}"""),
+                Ev("""{"e":"loading","role":"implementer","path":"smoke/implementer.gguf","url":"http://127.0.0.1:9"}"""),
+                Delta("implementer", "thinking", "hmm"),
+                Delta("implementer", "text", "Draft body"),
+                Ev("""{"e":"done","role":"implementer","final":true}"""),
+                Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer"}"""),
+                Delta("reviewer", "text", "Reviewed result"),
+            };
+            string SectionTitle(Expander e) => ((TextBlock)((StackPanel)e.Header).Children[0]).Text;
+            if (!await Turn("Build it", delegated, "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
+                _reply!.Content.Children.OfType<Expander>().Select(SectionTitle).SequenceEqual(new[] { "THINKING  ·  IMPLEMENTER", "IMPLEMENTER" }) is false ||
+                _reply.Content.Children.OfType<TextBlock>().Any(t => t.Text == "FINAL ANSWER") || !_loadedByChat.Any(l => l.Path == "smoke/implementer.gguf"))
                 return Fail();
             await Settle();
-            Snap("16-chat-multi");
+            Snap("16-chat-delegate");
 
-            // The Chat view's Single mode hides the built-in workers' cards (a custom one stays); Multi and the Code view's
-            // run output show every card.
+            // The Chat view hides the built-in workers' cards (a custom one stays); the Code view's run output shows every card.
             var visible = new RoleCard("smoke-visible", "Visible", custom: true);
             _cards.Add(visible);
             await Settle();
@@ -1479,9 +1483,7 @@ public partial class MainWindow : Window
             bool SingleShown() => _cards.All(card => card.Hidden == card.IsBuiltIn && Shown(card) == (card.IsCustom || card.IsSelected)) && Shown(visible) &&
                                   CardFor("planner") is { IsSelected: true, Hidden: true };
             SelectWorker(CardFor("planner"));
-            if (!AllShown())
-                return Fail();
-            ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
+            RefreshCardVisibility();
             await Settle();
             // Hidden tabs take no slot: the first shown tab starts the strip.
             var firstShown = _cards.Where(Shown).Select(card => (UIElement)WorkerTabs.ItemContainerGenerator.ContainerFromItem(card)).FirstOrDefault();
@@ -1515,7 +1517,7 @@ public partial class MainWindow : Window
                 (string)CodeEffortChip.Content != "Effort: High  ▾" || !BuildEffortMenu(ChatEffortChip).Items.OfType<MenuItem>().ElementAt(4).IsChecked)
                 return Fail();
             string SentEffort(string role) =>
-                (string)JsonNode.Parse(LauncherLogic.BuildChatRequest("single", role, [new("user", "x")], effort: EffortFor(false, CardFor(role))))!["effort"]!;
+                (string)JsonNode.Parse(LauncherLogic.BuildChatRequest(role, [new("user", "x")], effort: EffortFor(CardFor(role))))!["effort"]!;
             PickChatWorker("planner"); // a reasoning budget: thinks
             if (!ChatEffortChip.IsEnabled || SentEffort("planner") != "high")
                 return Fail();
@@ -1523,31 +1525,25 @@ public partial class MainWindow : Window
             Snap("28-effort-chip");
             PickChatWorker("implementer"); // Qwen2.5-Coder-3B-Instruct, reasoning budget 0: does not think
             if (ChatEffortChip.IsEnabled || (string)ChatEffortChip.ToolTip != "This model doesn't think" || SentEffort("implementer") != "" ||
-                CodeEffortChip.IsEnabled != (CodeMulti || CodeTarget()!.Role == "planner")) // Code Multi: the Planner thinks
-                return Fail();
-            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs()); // Multi: the Planner thinks
-            await Settle();
-            if (!ChatEffortChip.IsEnabled || !AllShown())
+                !CodeEffortChip.IsEnabled) // Code's target is the lead, the Planner, which thinks
                 return Fail();
             _settings.ChatEffort = "";
             PickChatWorker("reviewer");
-            ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
             RemoveWorker(visible);
             File.WriteAllText(effortConfig, configBefore);
 
             NewChat_Click(ChatSend, new RoutedEventArgs());
             if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
                 return Fail();
-            ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
 
             // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop still discards the turn.
-            StartChatTurn("Race", false);
+            StartChatTurn("Race");
             _lines.Enqueue(Ev("""{"e":"chat_reply","role":"reviewer","text":"Raced reply"}"""));
             DrainLines();
             if (FinishChatTurn(0, true, null) || _chatBusy || _chatHistory.Count != 2 || _chatHistory[1] is not { Role: "assistant", Content: "Raced reply", Time: not null } ||
                 _reply!.Final != "Raced reply" || _reply.Answer?.Text != "Raced reply")
                 return Fail();
-            StartChatTurn("Really stopped", false);
+            StartChatTurn("Really stopped");
             if (!FinishChatTurn(-1, true, null) || _chatBusy || _chatHistory.Count != 2)
                 return Fail();
             NewChat_Click(ChatSend, new RoutedEventArgs());
@@ -1562,7 +1558,7 @@ public partial class MainWindow : Window
             _clockMs = () => fakeMs;
             try
             {
-                StartChatTurn("Stream smoothly", false);
+                StartChatTurn("Stream smoothly");
                 AppendChatDelta("reviewer", "thinking", string.Concat(Enumerable.Repeat("Weighing the options. ", 40)));
                 AppendChatDelta("reviewer", "text", "First paragraph stays put.\n\n" + string.Join("\n", Enumerable.Repeat("Second paragraph grows word by word.", 30)) + "\n\n");
                 var answerView = _reply!.Rendered!;
@@ -1641,7 +1637,7 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(strayDir);
             File.WriteAllText(Path.Combine(strayDir, "config.json"), "{}");
             (_chatRequestFile, _chatTempFolder) = (strayFile, strayDir);
-            StartChatTurn("Busy", false);
+            StartChatTurn("Busy");
             _loadedByChat.Clear(); // the close path would unload these from a real server
             OnClosing(this, new CancelEventArgs()); // the real close path: no chat process here, only the files
             if (File.Exists(strayFile) || Directory.Exists(strayDir) || _chatRequestFile is not null || _chatTempFolder is not null)
@@ -1739,7 +1735,7 @@ public partial class MainWindow : Window
             _loadedByRun.Clear();
             async Task KeepTurn(params string[] names)
             {
-                StartChatTurn("K", false);
+                StartChatTurn("K");
                 foreach (var n in names)
                     _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/{{n}}.gguf","url":"{{UrlOf(fakeC)}}"}"""));
                 DrainLines();
@@ -1788,7 +1784,7 @@ public partial class MainWindow : Window
             var hadCodeConv = _codeConv is not null;
             if (!EnsureCodeConversation(SelectedProjectPath())) // SendCode opens it before a turn
                 return Fail();
-            StartTurn(_code, "Fix it", false, "implementer");
+            StartTurn(_code, "Fix it", "planner");
             if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible ||
                 CodeSend.Visibility == Visibility.Visible || ChatSend.Visibility == Visibility.Visible)
                 return Fail();
@@ -1833,17 +1829,14 @@ public partial class MainWindow : Window
                 _settings.LastConversation = "";
                 RefreshSidebarList();
             }
-            // Code Multi: the chip names the chain and a Code turn asks for mode "multi" (write_project stays single); + switches to Single.
-            var codeMode = (_settings.CodeMode, _settings.CodeWorker);
-            ChatMode_Click(CodeMultiToggle, new RoutedEventArgs());
-            string ModeOf(string action) => (string)JsonNode.Parse(CodeRequest(action, "implementer", action == "chat" ? "Fix it" : null, @"Y:\app"))!["mode"]!;
-            var codeMultiOk = CodeMulti && !ChatMulti && (string)CodeTargetChip.Content == ChainLabel && CodeMultiToggle.IsChecked == true &&
-                CodeSingleToggle.IsChecked == false && ModeOf("chat") == "multi" && ModeOf("write_project") == "single";
+            // Code always talks to the lead: the chip names the Planner's model, a pick does not move it, no request carries a mode,
+            // and the chip's dropdown is Options… alone.
+            bool NoMode(string action) => JsonNode.Parse(CodeRequest(action, "planner", action == "chat" ? "Fix it" : null, @"Y:\app"))!["mode"] is null;
             PickWorker(_code, "implementer");
-            var codeSingleOk = !CodeMulti && ((string)CodeTargetChip.Content).Contains("Implementer") && CodeSingleToggle.IsChecked == true && ModeOf("chat") == "single";
-            (_settings.CodeMode, _settings.CodeWorker) = codeMode;
             RefreshChatTarget();
-            if (!codeMultiOk || !codeSingleOk)
+            var leadName = CardFor("planner")!.ModelName;
+            if (CodeTarget()?.Role != "planner" || (string)CodeTargetChip.Content != $"Lead: {(leadName == "Not loaded" ? "no model" : leadName)}  ▾" ||
+                !NoMode("chat") || !NoMode("write_project") || ListedWorkers(_code).Count != 0 || CodePlus.Visibility != Visibility.Collapsed)
                 return Fail();
             ShowCodeRun(true);
             await Settle();
@@ -2132,7 +2125,7 @@ public partial class MainWindow : Window
                 // Chat-view chats: a completed reply saves one (no folder; later replies update it) that lists with the Code
                 // chats and opens in the Chat view; New chat leaves it saved; deleting it empties the Chat view.
                 ClearChatConversation();
-                StartChatTurn("Saved chat question", false);
+                StartChatTurn("Saved chat question");
                 SetChatFinal("Saved chat answer");
                 var markdownReply = _reply!;
                 const string sample = "# Peonies\n\nPlant in **full sun** and *well-drained* soil, see [guide](https://example.org/p).\n\n" +
@@ -2259,7 +2252,7 @@ public partial class MainWindow : Window
                 ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
                     return Fail();
-                StartChatTurn("Follow-up", false);
+                StartChatTurn("Follow-up");
                 SetChatFinal("Second answer");
                 _lines.Enqueue(Ev("""{"e":"chat_title","text":"Other title"}"""));
                 DrainLines();
@@ -2268,7 +2261,7 @@ public partial class MainWindow : Window
                     return Fail();
                 // A history summarized before the turn: the ring drops at once, the summary is saved with the chat, and the next
                 // request sends it in place of the messages it covers.
-                StartChatTurn("Third", false);
+                StartChatTurn("Third");
                 _lines.Enqueue(Ev("""{"e":"history_compacted","role":"reviewer","summary":"SUM","covers":4,"before":12300,"after":3200}"""));
                 DrainLines();
                 var compactedRing = ChatContextRing.ToolTip as string;
@@ -2341,7 +2334,7 @@ public partial class MainWindow : Window
                 string StatsIn(Expander e) => ((StackPanel)e.Content).Children.OfType<TextBlock>().FirstOrDefault(t => t.Tag as string == "stats")?.Text ?? "";
                 string StatsName(string role) => ChatName(CardFor(role), role);
                 var taskBefore = _chat.Tokens;
-                StartChatTurn("Stats question", false);
+                StartChatTurn("Stats question");
                 foreach (var line in new[]
                 {
                     Ev("""{"e":"chat_stage","role":"implementer","stage":"answer","title":"Implementer"}"""),
@@ -2360,10 +2353,9 @@ public partial class MainWindow : Window
                     !((TextBlock)((StackPanel)thinkingSection.Header).Children[1]).Text.Contains("42.1 tok/s") ||
                     statsOne.Stats.Text != $"{oneLine} · {LauncherLogic.TotalsLine(6912, taskBefore + 6912)}" || !statsOne.Stats.Text.Contains("Turn: 6.9k tokens"))
                     return Fail();
-                ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
-                StartChatTurn("Stats multi", true);
+                StartChatTurn("Stats multi"); // three delegations, a section each
                 var multiEvents = new List<string>();
-                foreach (var (role, stage, title, n) in new[] { ("planner", "plan", "Plan", 1), ("implementer", "draft", "Draft", 2), ("reviewer", "review", "Review", 3) })
+                foreach (var (role, stage, title, n) in new[] { ("planner", "delegate", "Plan", 1), ("implementer", "delegate", "Draft", 2), ("reviewer", "delegate", "Review", 3) })
                 {
                     multiEvents.Add(Ev($$"""{"e":"chat_stage","role":"{{role}}","stage":"{{stage}}","title":"{{title}}"}"""));
                     multiEvents.Add(Delta(role, "text", $"{title} body"));
@@ -2402,7 +2394,7 @@ public partial class MainWindow : Window
                         _lines.Enqueue(line);
                     DrainLines();
                 }
-                StartChatTurn("Live stats", false);
+                StartChatTurn("Live stats");
                 var liveName = StatsName("implementer");
                 FeedLive(new[] { Ev("""{"e":"chat_stage","role":"implementer","stage":"answer","title":"Implementer"}""") }
                     .Concat(Enumerable.Repeat(Delta("implementer", "thinking", "mull "), 10)));
@@ -2439,7 +2431,6 @@ public partial class MainWindow : Window
                     return Fail();
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 OpenChatConversation(savedChat.Id);
-                ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
                 if (_chat.Tokens != taskBefore + 6912 + 660 || _chatConv != savedChat)
                     return Fail();
                 answer = "yes";
@@ -2461,7 +2452,7 @@ public partial class MainWindow : Window
                 answer = "Smoke skill";
                 NewSkill();
                 var skillFolder = Path.Combine(AppSettings.SkillsRoot, "Smoke skill");
-                var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("single", "implementer", [new("user", "x")], CurrentExtras()))!;
+                var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!;
                 if (!File.Exists(Path.Combine(skillFolder, "SKILL.md")) || _settings.Skills is not ["Smoke skill"] || CodeSkillsButton.IsChecked != true ||
                     ((TextBlock)((StackPanel)ChatSkillsButton.Content).Children[1]).Text != "Skills · 1  ▾" || !(bool)request["search"]! || !(bool)request["tools"]! ||
                     (string)request["skills"]![0]! != skillFolder)
@@ -2652,7 +2643,7 @@ public partial class MainWindow : Window
         if (LlamaStatus.Text != "llama-server not installed" || (string)LlamaDownloadButton.Content != "Download llama-server")
             return Fail();
         var replies = _chat.Panel.Children.Count;
-        if (await RunTurn(_chat, "hi", "implementer", false, _ => "{}", LauncherLogic.BuildChatStartInfo, "Chat") ||
+        if (await RunTurn(_chat, "hi", "implementer", _ => "{}", LauncherLogic.BuildChatStartInfo, "Chat") ||
             _chatBusy || _chat.Panel.Children.Count != replies || !Toasted("Download llama-server in Settings first"))
             return Fail();
         // A stand-in llama-server.exe that runs: a copy of ping, so its process name is llama-server.
@@ -2932,6 +2923,7 @@ public partial class MainWindow : Window
                 id = shown;
             card.SetModel(LauncherLogic.DescribeModel(id, load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null));
         }
+        RefreshLeadChip(); // the Code chip names the Planner's model
     }
 
     // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.

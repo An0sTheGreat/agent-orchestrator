@@ -5,7 +5,7 @@ using System.Windows.Controls;
 
 namespace AgentOrchestrator;
 
-// Code view: a conversation with one worker, or Planner -> Implementer -> Reviewer (Multi), about a folder (`orchestrator.py --code`), whose tool calls read and edit
+// Code view: a conversation with the lead (the Planner, which delegates to the other workers) about a folder (`orchestrator.py --code`), whose tool calls read and edit
 // its files, beside the project run's output. Turns share the Chat plumbing (RunTurn); one turn of either kind at a time.
 public partial class MainWindow
 {
@@ -13,7 +13,7 @@ public partial class MainWindow
     private bool _codeStartRequested; // the worker called start_project: the run starts once the turn succeeds
     private bool _codeRun; // the Code view shows Run output rather than the conversation
 
-    private RoleCard? CodeTarget() => CardFor(_settings.CodeWorker) ?? CardFor("implementer");
+    private RoleCard? CodeTarget() => CardFor("planner"); // the lead: it delegates to the other workers
 
     // action "chat" sends the typed message; "write_project" asks the worker (the Planner, say) to write PROJECT.md from
     // the conversation so far, with no user message.
@@ -32,18 +32,14 @@ public partial class MainWindow
         var text = action == "chat" ? CodeInput.Text.Trim() : null;
         if (text is { Length: 0 } || !EnsureCodeConversation(project))
             return Task.FromResult(false);
-        var multi = CodeTurnMulti(action);
-        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, multi, role => CodeRequest(action, role, text, project),
-            LauncherLogic.BuildCodeStartInfo, $"Code ({action}{(multi ? ", multi" : "")})");
+        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, role => CodeRequest(action, role, text, project),
+            LauncherLogic.BuildCodeStartInfo, $"Code ({action})");
     }
-
-    private bool CodeTurnMulti(string action) => action == "chat" && CodeMulti; // write_project is always one worker
 
     // The request of a Code turn; text null: no user message.
     private string CodeRequest(string action, string role, string? text, string project) =>
         LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CodeTurnMulti(action), CardFor(role)),
-            mode: CodeTurnMulti(action) ? "multi" : "single",
+            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0); // write_project reads it all
 
     // A Code turn or run never gets write access to the Agent Orchestrator folder (templates, prompts, orchestrator.py).
@@ -130,9 +126,9 @@ public partial class MainWindow
         var hasMd = HasProjectMd();
         (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
             ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
-            : hasMd ? ("Start a conversation", "Message the worker below, or press Start project to run Planner → Implementer → Reviewer on PROJECT.md.")
-            : ("Add a PROJECT.md to start the project", "A model can interview you and write PROJECT.md for this folder; Start project then runs " +
-                "Planner → Implementer → Reviewer from it.");
+            : hasMd ? ("Start a conversation", "Message the lead below, or press Start project: the lead works through PROJECT.md, delegating to your workers.")
+            : ("Add a PROJECT.md to start the project", "A model can interview you and write PROJECT.md for this folder; Start project then has the lead " +
+                "work through it, delegating to your workers.");
         CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
         RefreshChatInput(); // the Project menu needs a folder; Start project needs PROJECT.md
@@ -196,10 +192,9 @@ public partial class MainWindow
         }
         if (ChooseWorker("Create PROJECT.md with a model", "Who should interview you about the project and write PROJECT.md?") is not { } role)
             return Task.FromResult(false);
-        PickWorker(_code, role);
         ShowCodeRun(false);
         CodeInput.Text = InitProjectMessage;
-        return SendCode();
+        return SendCode(worker: role); // the chosen worker takes this first turn; later turns go to the lead
     }
 
     // A worker to talk to: the Planner first and checked, then the others; a custom worker the orchestrator would skip is
@@ -309,7 +304,7 @@ public partial class MainWindow
     {
         if (_codeConv is not null)
             return true;
-        if (!StoreDo(() => _codeConv = _store.Create(project, mode: _settings.CodeMode)) || _codeConv is null)
+        if (!StoreDo(() => _codeConv = _store.Create(project)) || _codeConv is null)
             return false;
         _settings.LastConversation = _codeConv.Id;
         _settings.Save();
@@ -410,11 +405,7 @@ public partial class MainWindow
             else
                 CodeExtraFolders.Add(folder);
         }
-        _settings.CodeMode = saved.Mode;
-        if (CardFor(saved.Worker) is not null)
-            _settings.CodeWorker = saved.Worker;
-        _settings.Save();
-        Replay(_code, saved.Messages, saved.Mode == "multi", _settings.CodeWorker);
+        Replay(_code, saved.Messages, CodeTarget()?.Role ?? "planner");
         ShowContext(true, saved.Context);
         _code.Tokens = saved.Tokens ?? 0;
         (_code.Summary, _code.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
@@ -428,7 +419,7 @@ public partial class MainWindow
         if (_codeConv is not { } c)
             return;
         c.Folders = CodeExtraFolders.ToList();
-        (c.Mode, c.Worker) = (_settings.CodeMode, _settings.CodeWorker);
+        c.Worker = "planner"; // the lead
         c.Messages = _code.History.ToList();
         c.Context = _codeContext;
         c.Tokens = _code.Tokens;

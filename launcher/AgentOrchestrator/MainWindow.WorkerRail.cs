@@ -63,7 +63,7 @@ public partial class MainWindow
         RailPopup.IsOpen = true;
     }
 
-    // --ui-smoke, from the Chat view in Single mode with a custom card among the built-ins: the rail shows one dot per visible
+    // --ui-smoke, from the Chat view with a custom card among the built-ins: the rail shows one dot per visible
     // card (Single hides the built-ins' dots too), an active card's dot turns the accent, hovering opens that card in the
     // popup, and the expand toggle shows the full column and is saved.
     private async Task<bool> WorkerRailSmoke(Action<string, FrameworkElement?> snap)
@@ -86,12 +86,8 @@ public partial class MainWindow
         await Idle();
         if (!WorkerRail.IsVisible || DetailsPanel.IsVisible || SplitterBar.IsVisible || WorkerRail.ActualWidth > 50 || !AppSettings.Load().DetailsCollapsed)
             return Fail("collapsed layout");
-        if (!_cards.Any(c => c.Hidden) || !DotsMatch())
-            return Fail("Single mode dots");
-        ChatMode_Click(ChatMultiToggle, new RoutedEventArgs());
-        await Idle();
-        if (_cards.Any(c => c.Hidden) || !DotsMatch())
-            return Fail("Multi mode dots");
+        if (!_cards.Any(c => c.Hidden) || !DotsMatch()) // the Chat view hides the built-ins
+            return Fail("Chat view dots");
 
         var implementer = CardFor("implementer")!;
         if (Accent(implementer))
@@ -119,7 +115,6 @@ public partial class MainWindow
         _settings.Theme = theme;
         ApplyTheme();
         implementer.IsActive = false;
-        ChatMode_Click(ChatSingleToggle, new RoutedEventArgs());
 
         WorkerRailToggle_Click(RailExpandButton, new RoutedEventArgs());
         await Idle();

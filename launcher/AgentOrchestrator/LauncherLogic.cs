@@ -264,15 +264,14 @@ internal static class LauncherLogic
         { return meta; }
     }
 
-    // mode "single" talks to one worker (a built-in role id or a custom worker's Id); "multi" runs Planner -> Implementer -> Reviewer.
+    // worker: the one worker that answers (a built-in role id or a custom worker's Id); it may delegate parts to the others.
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
     // effort: thinking effort for every model call of the turn ("" = the model's default; off, low, medium, high, max).
     // summary: the engine's stored summary of the first summaryCovers messages, which are then left out ("": none).
-    public static string BuildChatRequest(string mode, string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
+    public static string BuildChatRequest(string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
         string effort = "", string summary = "", int summaryCovers = 0) =>
         JsonSerializer.Serialize(new
         {
-            mode = mode == "multi" ? "multi" : "single",
             worker,
             messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
             search = extras?.Search ?? false,
@@ -302,11 +301,10 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null, bool title = false, string effort = "", string mode = "single", string summary = "", int summaryCovers = 0) =>
+        Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
-            mode = mode == "multi" ? "multi" : "single",
             worker,
             messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
             summary,
@@ -1576,7 +1574,7 @@ internal static class LauncherLogic
             throw new InvalidOperationException("Chat start info failed.");
         var chat = new[] { new ChatMessage("user", "hi \"there\"\nline2 é"), new ChatMessage("assistant", "hello"), new ChatMessage("user", "again") };
         var timed = new[] { new ChatMessage("user", "hi", DateTimeOffset.Now) };
-        if (BuildChatRequest("single", "implementer", timed).Contains("time", StringComparison.OrdinalIgnoreCase) ||
+        if (BuildChatRequest("implementer", timed).Contains("time", StringComparison.OrdinalIgnoreCase) ||
             BuildCodeRequest("chat", "implementer", timed, @"Y:\P", []).Contains("time", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("A message time reached the engine request.");
         if (StatsLine("Planner", 42.14, 1234, 5678) != "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" || StatsLine("", 0, 5, 7) != "5 generated · 7 prompt" ||
@@ -1590,14 +1588,13 @@ internal static class LauncherLogic
             RelativeTime(at.AddHours(-23), at) != "23 hours ago" || RelativeTime(at.AddHours(-30), at) != "yesterday" ||
             RelativeTime(at.AddDays(-3), at) != "Jun 12" || RelativeTime(at.AddYears(-1), at) != "Jun 15, 2025")
             throw new InvalidOperationException("Relative time formatting failed.");
-        var single = JsonNode.Parse(BuildChatRequest("single", "implementer", chat))!;
+        var single = JsonNode.Parse(BuildChatRequest("implementer", chat))!;
         var customId = Guid.NewGuid().ToString("N");
-        var multi = JsonNode.Parse(BuildChatRequest("multi", customId, chat.Take(1)))!;
+        var custom = JsonNode.Parse(BuildChatRequest(customId, chat.Take(1)))!;
         var sm = single["messages"]!.AsArray();
-        if ((string)single["mode"]! != "single" || (string)single["worker"]! != "implementer" || sm.Count != 3 ||
+        if (single["mode"] is not null || (string)single["worker"]! != "implementer" || sm.Count != 3 ||
             (string)sm[0]!["role"]! != "user" || (string)sm[0]!["content"]! != "hi \"there\"\nline2 é" || (string)sm[1]!["role"]! != "assistant" ||
-            (string)sm[2]!["content"]! != "again" || (string)multi["mode"]! != "multi" || (string)multi["worker"]! != customId || multi["messages"]!.AsArray().Count != 1 ||
-            (string)JsonNode.Parse(BuildChatRequest("bogus", "planner", chat))!["mode"]! != "single")
+            (string)sm[2]!["content"]! != "again" || (string)custom["worker"]! != customId || custom["messages"]!.AsArray().Count != 1)
             throw new InvalidOperationException("Chat request failed.");
 
         var codeInfo = BuildCodeStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\code.json");
@@ -1615,23 +1612,22 @@ internal static class LauncherLogic
             (string)JsonNode.Parse(BuildCodeRequest("write_project", "planner", [], @"Y:\app", []))!["action"]! != "write_project" ||
             JsonNode.Parse(BuildCodeRequest("bogus", "planner", [], @"Y:\app", []))!["folders"]!.AsArray().Count != 1)
             throw new InvalidOperationException("Code request failed.");
-        var withExtras = JsonNode.Parse(BuildChatRequest("single", "implementer", chat, new(true, false, [@"Y:\skills\a"])))!;
+        var withExtras = JsonNode.Parse(BuildChatRequest("implementer", chat, new(true, false, [@"Y:\skills\a"])))!;
         var codeExtras = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], new(false, true, [])))!;
         if ((bool)single["search"]! || (bool)single["tools"]! || single["skills"]!.AsArray().Count != 0 || !(bool)withExtras["search"]! ||
             (bool)withExtras["tools"]! || (string)withExtras["skills"]![0]! != @"Y:\skills\a" || (bool)codeExtras["search"]! || !(bool)codeExtras["tools"]! ||
             (bool)code["tools"]!)
             throw new InvalidOperationException("Request extras failed.");
-        if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("single", "implementer", chat, title: true))!["title"]! ||
+        if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("implementer", chat, title: true))!["title"]! ||
             !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], title: true))!["title"]!)
             throw new InvalidOperationException("The first-turn title flag failed.");
-        if ((string)single["effort"]! != "" || (string)JsonNode.Parse(BuildChatRequest("multi", "x", chat, effort: "high"))!["effort"]! != "high" ||
+        if ((string)single["effort"]! != "" || (string)JsonNode.Parse(BuildChatRequest("x", chat, effort: "high"))!["effort"]! != "high" ||
             (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], effort: "off"))!["effort"]! != "off")
             throw new InvalidOperationException("The effort field failed.");
-        if ((string)code["mode"]! != "single" || (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "multi"))!["mode"]! != "multi" ||
-            (string)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], mode: "bogus"))!["mode"]! != "single")
-            throw new InvalidOperationException("The Code mode field failed.");
+        if (code["mode"] is not null) // the engine runs every Code chat turn as the lead; there is no mode to send
+            throw new InvalidOperationException("The Code request still sends a mode.");
         // A stored summary stands in for the messages it covers; none by default.
-        foreach (var summed in new[] { BuildChatRequest("single", "implementer", chat, summary: "S", summaryCovers: 2),
+        foreach (var summed in new[] { BuildChatRequest("implementer", chat, summary: "S", summaryCovers: 2),
                      BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], summary: "S", summaryCovers: 2) }.Select(r => JsonNode.Parse(r)!))
             if ((string)summed["summary"]! != "S" || (int)summed["summary_covers"]! != 2 || summed["messages"]!.AsArray() is not [{ } only] ||
                 (string)only["content"]! != "again")

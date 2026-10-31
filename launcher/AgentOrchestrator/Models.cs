@@ -28,7 +28,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool Editable { get => _editable; set => Set(ref _editable, value); }
     // The worker tab whose settings the column shows (MainWindow.WorkerTabs.cs); a selected tab stays shown even when Hidden.
     public bool IsSelected { get => _selected; set => Set(ref _selected, value); }
-    // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: the built-in workers in the Chat view's Single mode).
+    // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: the built-in workers in the Chat view).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
@@ -189,11 +189,9 @@ internal sealed class AppSettings
     public bool Once { get; set; } = true;
     public string SelectedWorker { get; set; } = ""; // the worker tab shown in the details column ("" = the first)
     public bool SidebarCollapsed { get; set; }
-    // Chat view: "single" (one worker) or "multi" (Planner -> Implementer -> Reviewer), and the single-mode target worker id.
-    public string ChatMode { get; set; } = "single";
-    public string ChatWorker { get; set; } = "implementer";
-    public string CodeWorker { get; set; } = "implementer"; // the Code view's target worker id
-    public string CodeMode { get; set; } = "multi"; // the Code view's "single" or "multi", like ChatMode
+    // The Chat view's target worker id (it may delegate to the others). The Code view always talks to the Planner, the lead.
+    // Older settings files' ChatMode / CodeMode / CodeWorker are ignored on load.
+    public string ChatWorker { get; set; } = "planner";
     // Thinking effort sent with Chat and Code messages: "" (the model's default), off, low, medium, high or max.
     public string ChatEffort { get; set; } = "";
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
