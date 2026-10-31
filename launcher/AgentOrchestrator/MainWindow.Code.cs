@@ -317,7 +317,7 @@ public partial class MainWindow
     // active (it would change the conversation that turn belongs to).
     private void OpenCodeConversation(string id)
     {
-        if (_chatBusy || _process is not null)
+        if ((_chatBusy && _turn.IsCode) || _process is not null) // a chat's reply leaves Code conversations free
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             RefreshSidebarList(); // the clicked row unchecks itself

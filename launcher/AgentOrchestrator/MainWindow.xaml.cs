@@ -2124,8 +2124,8 @@ public partial class MainWindow : Window
                 ClickRow("▸ARCHIVED");
                 if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,▾ARCHIVED,B")
                     return Fail();
-                _process = new Process(); // Delete is off while a run is active
-                var deleteOff = !SidebarItem(chatB.Id, "Delete…").IsEnabled;
+                _process = new Process(); // a run in another conversation leaves Delete on
+                var deleteOff = SidebarItem(chatB.Id, "Delete…").IsEnabled;
                 _process = null;
                 answer = "yes";
                 ClickItem(chatB.Id, "Delete…");
@@ -2694,6 +2694,49 @@ public partial class MainWindow : Window
             await Settle();
             if (!once)
                 return Fail();
+        }
+        // While a chat replies, other chats open (its view is parked and keeps streaming), and it comes back when reopened; its end
+        // saves it even when another chat is shown. Other chats can be deleted meanwhile; the replying one cannot.
+        {
+            ShowView(chat: true);
+            NewChat_Click(this, new RoutedEventArgs());
+            var other = _store.Create("", "chat")!;
+            other.Messages = [new("user", "Other question"), new("assistant", "Other answer")];
+            _store.Save(other);
+            var spare = _store.Create("", "chat")!;
+            spare.Messages = [new("user", "Spare"), new("assistant", "Spare answer")];
+            _store.Save(spare);
+            string Ev(string json) => LauncherLogic.EventPrefix + json;
+            StartChatTurn("Long question");
+            var running = _chatConv!;
+            var runningPanel = _chat.Panel;
+            OpenChatConversation(other.Id);
+            _lines.Enqueue(Ev("""{"e":"delta","role":"planner","kind":"text","text":"Partial"}"""));
+            DrainLines();
+            var parkedOk = _chatConv == other && _chatHistory.Count == 2 && _chat.Panel != runningPanel && ChatScroll.Content == _chat.Panel &&
+                RunningId == running.Id && _chat.Panel.Children.Count == 2;
+            _codeChoice = _ => "";
+            DeleteChat(new ConversationStore.Entry(running.Id, "x", "", DateTime.Now, "chat"));
+            var keptRunning = _store.Get(running.Id) is not null;
+            DeleteChat(new ConversationStore.Entry(spare.Id, "x", "", DateTime.Now, "chat"));
+            var deletedSpare = _store.Get(spare.Id) is null;
+            OpenChatConversation(running.Id); // back: the live view
+            var unparked = _chat.Panel == runningPanel && ChatScroll.Content == runningPanel && _chatConv == running;
+            OpenChatConversation(other.Id);
+            _lines.Enqueue(Ev("""{"e":"chat_reply","role":"planner","text":"Full answer"}"""));
+            DrainLines();
+            FinishChatTurn(0, false, null);
+            var saved = _store.Get(running.Id)?.Messages.Select(m => m.Content).ToList();
+            var otherIntact = _chatConv == other && _chatHistory.Count == 2 && _store.Get(other.Id)?.Messages.Count == 2;
+            OpenChatConversation(running.Id);
+            var reopened = _chatHistory.Count == 2 && _chatHistory[1].Content == "Full answer";
+            _codeChoice = null;
+            if (!parkedOk || !keptRunning || !deletedSpare || !unparked || saved is not ["Long question", "Full answer"] || !otherIntact || !reopened)
+            {
+                Console.Error.WriteLine($"park {parkedOk} {keptRunning} {deletedSpare} {unparked} {string.Join("|", saved ?? [])} {otherIntact} {reopened}");
+                return Fail();
+            }
+            NewChat_Click(this, new RoutedEventArgs());
         }
         // The profile: usage adds to the lifetime count shown under the name, and the card opens from the sidebar with the stats.
         var lifetime = _stats.Lifetime;

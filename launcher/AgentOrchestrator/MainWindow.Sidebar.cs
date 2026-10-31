@@ -129,6 +129,13 @@ public partial class MainWindow
         var glyph = new TextBlock { Text = entry.Kind == "chat" ? "\uE8BD" : "\uE943", FontSize = 11, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
         glyph.SetResourceReference(StyleProperty, "RailGlyph");
         content.Children.Add(glyph);
+        if (entry.Id == RunningId) // a reply or run is working in it
+        {
+            var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Working…" };
+            dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "Accent");
+            DockPanel.SetDock(dot, Dock.Right);
+            content.Children.Add(dot);
+        }
         content.Children.Add(new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis });
         var row = new ToggleButton
         {
@@ -269,7 +276,7 @@ public partial class MainWindow
         }
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
         menu.Items.Add(PresetItem(archived ? "Unarchive" : "Archive", () => StoreChange(() => _store.Archive(entry.Id, !archived))));
-        menu.Items.Add(PresetItem("Delete…", () => DeleteChat(entry), !CodeBusy));
+        menu.Items.Add(PresetItem("Delete…", () => DeleteChat(entry), entry.Id != RunningId));
         return menu;
     }
 
@@ -305,12 +312,12 @@ public partial class MainWindow
             StoreChange(() => _store.Rename(entry.Id, title));
     }
 
-    // The open chat is closed first (its view emptied); refused while a turn or run is active.
+    // The open chat is closed first (its view emptied); refused for the chat a reply or run is using.
     private void DeleteChat(Entry entry)
     {
-        if (CodeBusy)
+        if (entry.Id == RunningId)
         {
-            Toast("Wait for the reply or run to finish", "#F7C873");
+            Toast("Stop its reply or run first", "#F7C873");
             return;
         }
         if (SidebarAsk("Delete chat", $"Delete \"{entry.Title}\"? This can't be undone.", "Delete") is null)

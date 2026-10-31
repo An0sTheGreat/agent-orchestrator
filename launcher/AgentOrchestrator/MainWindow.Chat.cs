@@ -48,6 +48,53 @@ public partial class MainWindow
     }
 
     private Conversation _chat = null!, _code = null!, _turn = null!; // _turn: the conversation of the running (or last) turn
+
+    // A chat turn keeps running while the user opens another chat: its view (panel, history, context) is parked off screen and
+    // keeps streaming there; opening that chat again brings it back, and the turn's end saves it wherever it is.
+    private Conversation? _parked;
+    private ConversationStore.Conversation? _parkedConv;
+    private ContextSnapshot? _parkedContext;
+    private string _turnWorker = ""; // the Chat target when the turn started (opening another chat changes ChatWorker)
+
+    // The saved conversation a reply or project run is using (null: none): it cannot be deleted meanwhile.
+    private string? RunningId => _process is not null ? _codeConv?.Id : !_chatBusy ? null : _turn.IsCode ? _codeConv?.Id : _parked is not null ? _parkedConv?.Id : _chatConv?.Id;
+
+    private bool ChatTurnShown => _chatBusy && !_turn.IsCode && _turn == _chat;
+
+    private void ParkChatTurn()
+    {
+        var turn = _parked = _chat;
+        (_parkedConv, _parkedContext) = (_chatConv, _chatContext);
+        var panel = new StackPanel { Margin = turn.Panel.Margin, MaxWidth = turn.Panel.MaxWidth };
+        _chat = new Conversation { IsCode = false, Panel = panel, Scroll = ChatScroll, Empty = ChatEmpty, Jump = ChatJumpPill, Send = ChatSend, Stop = ChatStop,
+            Plus = ChatPlus, Chip = ChatTargetChip, Input = ChatInput, Hint = ChatHint, Busy = ChatBusyText };
+        // what the turn still touches while it streams: stand-ins, so the chat on screen is left alone
+        (turn.Scroll, turn.Empty, turn.Jump) = (new ScrollViewer(), new StackPanel(), new Button());
+        ChatScroll.Content = panel;
+        _chatConv = null;
+    }
+
+    private void UnparkChatTurn()
+    {
+        var turn = _parked!;
+        (turn.Scroll, turn.Empty, turn.Jump, turn.Follow) = (ChatScroll, ChatEmpty, ChatJumpPill, true);
+        _chat = turn;
+        ChatScroll.Content = turn.Panel;
+        ChatEmpty.Visibility = turn.Panel.Children.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _chatConv = _parkedConv;
+        ShowContext(false, _parkedContext);
+        (_parked, _parkedConv, _parkedContext) = (null, null, null);
+        Jump(turn);
+    }
+
+    // The running turn's context: shown, or kept for its parked view.
+    private void TurnContext(ContextSnapshot? s)
+    {
+        if (_turn == _parked)
+            _parkedContext = s;
+        else
+            ShowContext(_turn.IsCode, s);
+    }
     private List<LauncherLogic.ChatMessage> _chatHistory => _chat.History;
     private Conversation ConvOf(object sender) => _code.Owns(sender) ? _code : _chat;
     private RoleCard? TargetOf(Conversation c) => c.IsCode ? CodeTarget() : ChatTarget();
@@ -148,7 +195,7 @@ public partial class MainWindow
             c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && hasInput ? Visibility.Visible : Visibility.Collapsed;
             // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
             var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
-                : mine ? "Replying…" : _chatBusy ? $"{(c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
+                : mine ? "Replying…" : _chatBusy ? $"{(_turn.IsCode == c.IsCode ? (c.IsCode ? "Another conversation's" : "Another chat's") : c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
                 : _unloading ? "Unloading models…" : "";
             c.Busy.Text = status;
             c.Busy.ToolTip = status;
@@ -225,7 +272,7 @@ public partial class MainWindow
 
     private void ApplyChatWidth()
     {
-        foreach (var part in new FrameworkElement[] { ChatPanel, CodePanel, ChatComposer, CodeComposer })
+        foreach (var part in new FrameworkElement?[] { _chat.Panel, _parked?.Panel, CodePanel, ChatComposer, CodeComposer }.OfType<FrameworkElement>())
             part.MaxWidth = _settings.CenterChat ? ChatWidth : double.PositiveInfinity;
     }
 
@@ -323,8 +370,8 @@ public partial class MainWindow
 
     private void NewChat_Click(object sender, RoutedEventArgs e)
     {
-        if (_chatBusy)
-            return;
+        if (ChatTurnShown)
+            ParkChatTurn();
         ShowView(chat: true);
         ClearChatConversation();
         ChatInput.Focus();
@@ -347,14 +394,16 @@ public partial class MainWindow
 
     private void SaveChatConversation()
     {
-        if (_chatConv is null)
+        var parked = _parked is not null && _turn == _parked; // a turn's end while the user is in another chat
+        var ui = parked ? _parked! : _chat;
+        if (!parked && _chatConv is null)
             StoreDo(() => _chatConv = _store.Create("", "chat"));
-        if (_chatConv is { } c)
+        if ((parked ? _parkedConv : _chatConv) is { } c)
         {
-            (c.Worker, c.Messages) = (_settings.ChatWorker, _chatHistory.ToList());
-            c.Context = _chatContext;
-            c.Tokens = _chat.Tokens;
-            (c.Summary, c.SummaryCovers) = (_chat.Summary, _chat.SummaryCovers);
+            (c.Worker, c.Messages) = (parked ? _turnWorker : _settings.ChatWorker, ui.History.ToList());
+            c.Context = parked ? _parkedContext : _chatContext;
+            c.Tokens = ui.Tokens;
+            (c.Summary, c.SummaryCovers) = (ui.Summary, ui.SummaryCovers);
             c.Title ??= TakeTurnTitle();
             StoreDo(() => _store.Save(c));
         }
@@ -369,16 +418,19 @@ public partial class MainWindow
     }
 
     // A sidebar row: shows the saved chat in the Chat view with its mode and worker. Refused while a reply streams.
+    // While a chat replies, its view is parked and comes back when its chat is opened again.
     private void OpenChatConversation(string id)
     {
-        if (_chatBusy)
+        if (_parked is not null && _parkedConv?.Id == id)
         {
-            Toast("Wait for the reply to finish", "#F7C873");
-            RefreshSidebarList(); // the clicked row unchecks itself
+            UnparkChatTurn();
+            ShowView(chat: true);
             return;
         }
         if (_chatConv?.Id != id && _store.Get(id) is { } saved)
         {
+            if (ChatTurnShown)
+                ParkChatTurn();
             ClearConversation(_chat);
             _chatConv = saved;
             if (CardFor(saved.Worker) is not null)
@@ -393,8 +445,10 @@ public partial class MainWindow
     }
 
     // Saved messages into a cleared conversation: user bubbles and finished replies.
+    // A running turn (in another conversation) keeps its _turn and _reply.
     private void Replay(Conversation c, List<LauncherLogic.ChatMessage> messages, string role)
     {
+        var keep = _chatBusy ? (_turn, _reply) : (c, null);
         _turn = c;
         foreach (var message in messages)
             if (message.Role == "user")
@@ -407,7 +461,7 @@ public partial class MainWindow
                 SetStamp(reply.Stamp, message.Time);
                 reply.Footer.Visibility = Visibility.Visible;
             }
-        _reply = null;
+        (_turn, _reply) = keep;
         c.History.AddRange(messages);
     }
 
@@ -417,7 +471,8 @@ public partial class MainWindow
         c.History.Clear();
         c.Tokens = 0;
         (c.Summary, c.SummaryCovers) = (null, 0);
-        _reply = null;
+        if (c == _turn) // a running turn elsewhere keeps its reply
+            _reply = null;
         c.Empty.Visibility = Visibility.Visible;
         ShowContext(c.IsCode, null);
         Jump(c);
@@ -561,6 +616,7 @@ public partial class MainWindow
     private void StartTurn(Conversation c, string? text, string role)
     {
         _turn = c;
+        _turnWorker = _settings.ChatWorker;
         _pendingUser = text;
         _turnLoaded = new();
         _codeStartRequested = false;
@@ -747,13 +803,15 @@ public partial class MainWindow
                 SaveCodeConversation();
             else if (c.History.Count > 0)
                 SaveChatConversation();
-            else if (_chatConv is not null) // the chat's first message failed: kept, with a note in place of the reply (roles alternate)
+            else if ((_turn == _parked ? _parkedConv : _chatConv) is not null) // the chat's first message failed: kept, with a note in place of the reply (roles alternate)
             {
                 c.History.Add(new("user", _pendingUser, _pendingUserTime));
                 c.History.Add(new("assistant", FailedReply, _pendingUserTime));
                 SaveChatConversation();
             }
         }
+        if (_turn == _parked) // its chat is saved; the parked view goes (opening the chat loads it from the store)
+            (_parked, _parkedConv, _parkedContext) = (null, null, null);
         return stopped;
     }
 
@@ -797,6 +855,7 @@ public partial class MainWindow
         SetActivity(busy);
         TimeTask(busy);
         RefreshChatInput();
+        RefreshSidebarList(); // the running chat's marker
     }
 
     // ---- streaming into the reply
@@ -861,7 +920,7 @@ public partial class MainWindow
                 _turnTitle = Str(ev, "text");
                 break;
             case "context":
-                ShowContext(_turn.IsCode, ContextSnapshot.From(ev));
+                TurnContext(ContextSnapshot.From(ev));
                 break;
             case "tool":
                 EndChatBlock();
@@ -883,8 +942,8 @@ public partial class MainWindow
             case "compacted" or "history_compacted":
                 if (Str(ev, "e") == "history_compacted" && Str(ev, "summary") is { Length: > 0 } summary)
                     (_turn.Summary, _turn.SummaryCovers) = (summary, (int)Num(ev, "covers"));
-                if (ContextOf(_turn.IsCode) is { } full) // the ring drops now, not at the next call's context event
-                    ShowContext(_turn.IsCode, full.Compacted((long)Num(ev, "after")));
+                if ((_turn == _parked ? _parkedContext : ContextOf(_turn.IsCode)) is { } full) // the ring drops now, not at the next call's context event
+                    TurnContext(full.Compacted((long)Num(ev, "after")));
                 EndChatBlock();
                 if (_reply is { } compactReply)
                 {
