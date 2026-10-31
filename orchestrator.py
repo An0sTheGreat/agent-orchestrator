@@ -2969,6 +2969,12 @@ def answer_text(message: dict[str, Any]) -> str:
     return re.sub(r"<think>.*\Z", "", text, flags=re.S).strip()  # only a trailing unterminated block remains
 
 
+def reply_text(message: dict[str, Any]) -> str:
+    """The answer shown to the user: answer_text, else the reasoning when the model put its whole reply there (some
+    templates leave thinking open, so the answer streams as reasoning and the content stays empty)."""
+    return answer_text(message) or re.sub(r"</?think>", "", "\n".join(split_reasoning(message))).strip()
+
+
 # ---- extras for Chat and Code turns: web search, utilities and skills, each switched on by the request
 
 WEB_TIMEOUT, WEB_MAX_BYTES, WEB_MAX_TEXT, WEB_MAX_RESULTS = 20, 2_000_000, 20_000, 8
@@ -3178,7 +3184,7 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
     if extras[0]:
         return code_loop(config, role, system + extras[2], messages, extras[0], extras[1])
     model = client.ensure_model(role, False)
-    return answer_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
+    return reply_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
 
 def chat_messages(request: dict[str, Any]) -> list[dict[str, str]]:
@@ -3436,7 +3442,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             continue
         cutoffs = 0
         if not calls and not nudge:
-            return answer_text(response)
+            return reply_text(response)
         if not calls:
             if nudges >= 3:
                 raise WorkflowError(f"{name} replied {nudges + 1} times in a row without a tool call; stopping the run")
@@ -3464,7 +3470,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
         if {str((c.get("function") or {}).get("name")) for c in calls} & {"delegate", "write_project_md"}:
             model = client.ensure_model(role, False)
         if stop and stop():
-            return answer_text(response)
+            return reply_text(response)
     raise WorkflowError(f"{name} exceeded {cap[0]}={max_steps}")
 
 

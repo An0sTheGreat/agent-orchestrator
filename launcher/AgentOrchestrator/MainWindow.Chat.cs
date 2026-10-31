@@ -81,6 +81,8 @@ public partial class MainWindow
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
+        CenterChatToggle.IsChecked = _settings.CenterChat;
+        ApplyChatWidth();
         ShowContext(false, null);
         ShowContext(true, null);
         RefreshChatTarget();
@@ -152,7 +154,7 @@ public partial class MainWindow
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
-        NewChatButton.IsEnabled = ChatKeepToggle.IsEnabled = !_chatBusy;
+        ChatKeepToggle.IsEnabled = !_chatBusy;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
@@ -217,6 +219,23 @@ public partial class MainWindow
 
     // The target's worker tab (Code: the lead's, the Planner).
     private void OpenModelOptions(Conversation c) => OpenWorkerTab(TargetOf(c));
+
+    // Centered: the conversations keep ChatWidth in the middle of the column (a Stretch element narrower than its slot is
+    // centered); off: they fill it.
+    private const double ChatWidth = 860;
+
+    private void ApplyChatWidth()
+    {
+        foreach (var part in new FrameworkElement[] { ChatPanel, CodePanel, ChatComposer, CodeComposer })
+            part.MaxWidth = _settings.CenterChat ? ChatWidth : double.PositiveInfinity;
+    }
+
+    private void CenterChat_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.CenterChat = CenterChatToggle.IsChecked == true;
+        _settings.Save();
+        ApplyChatWidth();
+    }
 
     // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
     private void ChatKeep_Click(object sender, RoutedEventArgs e)
@@ -726,17 +745,18 @@ public partial class MainWindow
                 SaveCodeConversation();
             else if (c.History.Count > 0)
                 SaveChatConversation();
-            else if (_chatConv is { } empty) // the chat's first message failed: no chat to keep
+            else if (_chatConv is not null) // the chat's first message failed: kept, with a note in place of the reply (roles alternate)
             {
-                StoreDo(() => _store.Delete(empty.Id));
-                _chatConv = null;
-                RefreshSidebarList();
+                c.History.Add(new("user", _pendingUser, _pendingUserTime));
+                c.History.Add(new("assistant", FailedReply, _pendingUserTime));
+                SaveChatConversation();
             }
         }
         return stopped;
     }
 
     internal const string InterruptedReply = "(No reply: the app closed before this reply finished.)";
+    internal const string FailedReply = "(No reply: the reply failed; the error is in the log.)";
 
     // Saved before the reply streams, so a crash or a killed app keeps the message, with a note in place of the reply. The
     // turn's end saves over it: the real exchange, or the history without it when the turn failed.

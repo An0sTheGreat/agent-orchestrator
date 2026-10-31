@@ -256,6 +256,13 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(answer("answer<think>unfinished"), "answer")
         self.assertEqual(answer("<think>a</think>one <think>b</think>two <think>open"), "one two")
 
+    def test_reply_text_falls_back_to_reasoning_when_the_answer_is_empty(self):
+        reply = orchestrator.reply_text
+        self.assertEqual(reply({"content": "", "reasoning_content": "Hello! How can I help?"}), "Hello! How can I help?")
+        self.assertEqual(reply({"content": "<think>Hi there"}), "Hi there")
+        self.assertEqual(reply({"content": "answer", "reasoning_content": "thoughts"}), "answer")
+        self.assertEqual(reply({"content": ""}), "")
+
     def test_reloads_when_loaded_settings_differ(self):
         client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 8192})
         mine = self._ensure(client)

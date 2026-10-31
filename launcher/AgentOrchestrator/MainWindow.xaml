@@ -260,6 +260,44 @@
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
+        <!-- Sliders (the worker settings' context length and GPU layers): a thin track, accent fill up to a white knob. -->
+        <Style x:Key="SliderPart" TargetType="RepeatButton">
+            <Setter Property="OverridesDefaultStyle" Value="True" /><Setter Property="Focusable" Value="False" /><Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RepeatButton">
+                        <Border Height="4" CornerRadius="2" Background="{TemplateBinding Background}" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="Slider">
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Slider">
+                        <Grid Height="22" Background="Transparent">
+                            <Border Height="4" CornerRadius="2" Background="{DynamicResource Hover}" VerticalAlignment="Center" />
+                            <Track x:Name="PART_Track">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SliderPart}" Background="{DynamicResource Accent}" Command="Slider.DecreaseLarge" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Style="{StaticResource SliderPart}" Background="Transparent" Command="Slider.IncreaseLarge" />
+                                </Track.IncreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Width="16" Height="16">
+                                        <Thumb.Template>
+                                            <ControlTemplate TargetType="Thumb"><Ellipse Fill="White" Stroke="{DynamicResource Border}" StrokeThickness="1" /></ControlTemplate>
+                                        </Thumb.Template>
+                                    </Thumb>
+                                </Track.Thumb>
+                            </Track>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="ToggleSwitch" TargetType="ToggleButton">
             <Setter Property="Width" Value="42" /><Setter Property="Height" Value="23" /><Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -1073,7 +1111,7 @@
                                 HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" Opacity="0"
                                 ToolTip="Scroll to the newest reply and keep following it" Click="ChatJump_Click" />
                     </Grid>
-                    <Border Grid.Row="1" Style="{StaticResource ChatBox}" Margin="20,4,20,16">
+                    <Border x:Name="CodeComposer" Grid.Row="1" Style="{StaticResource ChatBox}" Margin="20,4,20,16">
                         <Grid>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <Grid>
@@ -1288,8 +1326,6 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,8" LastChildFill="False">
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                    <Button x:Name="NewChatButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New chat" Padding="10,4" FontSize="11"
-                            Click="NewChat_Click" ToolTip="Clear the conversation" />
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="4" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
@@ -1305,7 +1341,7 @@
                             HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,12" Visibility="Collapsed" Opacity="0"
                             ToolTip="Scroll to the newest reply and keep following it" Click="ChatJump_Click" />
                 </Grid>
-                <Border Grid.Row="2" Style="{StaticResource ChatBox}" Margin="20,4,20,16">
+                <Border x:Name="ChatComposer" Grid.Row="2" Style="{StaticResource ChatBox}" Margin="20,4,20,16">
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <Grid>
@@ -1378,6 +1414,14 @@
                     </Button>
                     </StackPanel>
                     <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    <TextBlock Text="Conversation" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                    <DockPanel Margin="0,14,0,0">
+                        <ToggleButton x:Name="CenterChatToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="CenterChat_Click" VerticalAlignment="Center"
+                                      AutomationProperties.Name="Center the conversation" />
+                        <TextBlock Text="Center the conversation" VerticalAlignment="Center" />
+                    </DockPanel>
+                    <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
+                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                     <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center"

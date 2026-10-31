@@ -110,11 +110,15 @@ public partial class MainWindow
         var sections = new SettingsColumns { Margin = new Thickness(0, 0, 14, 0) };
         var scroll = new ScrollViewer { Content = sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var blocks = new Dictionary<string, StackPanel>();
-        StackPanel Section(string name, string help)
+        // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
+        StackPanel Section(string name, string help, bool showHelp = true)
         {
-            var panel = new StackPanel();
-            panel.Children.Add(new TextBlock { Text = name, FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 14, FontWeight = FontWeights.SemiBold });
-            panel.Children.Add(Muted(help));
+            var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 10) };
+            var header = new TextBlock { Text = name.ToUpperInvariant(), FontSize = 11, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0), ToolTip = help };
+            header.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            panel.Children.Add(header);
+            if (showHelp)
+                panel.Children.Add(Muted(help));
             return blocks[name] = panel;
         }
 
@@ -133,9 +137,61 @@ public partial class MainWindow
                 b.SelectedItem = v.Length > 0 ? v : "(default)";
             }
         }
-        void ContextHint(Dictionary<string, string>? meta) => hints["max_seq_length"].Text = ModelOptions.All.First(o => o.Key == "max_seq_length").Help +
-            (ModelOptions.ModelContext(meta) is { } max ? $". Model maximum: {max.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}" : "");
+        void ContextHint(Dictionary<string, string>? meta)
+        {
+            if (hints.TryGetValue("max_seq_length", out var contextHint)) // built with the Model fields
+                contextHint.Text = ModelOptions.All.First(o => o.Key == "max_seq_length").Help +
+                (ModelOptions.ModelContext(meta) is { } max ? $". Model maximum: {max.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}" : "");
+            SliderRange(meta);
+        }
         var rows = new Dictionary<string, StackPanel>();
+        var sliderRanges = new Dictionary<string, Action<long>>();
+        // Context length: Auto (0) to the model's maximum, in 1,024-token steps. GPU layers: 0 to every layer (empty or -1
+        // show as all). The box and the slider follow each other; SliderRange sets the range from the model.
+        FrameworkElement SliderFor(string key, TextBox box)
+        {
+            var context = key == "max_seq_length";
+            var slider = new Slider { Minimum = 0, Maximum = context ? 131072 : 100, TickFrequency = context ? 1024 : 1, IsSnapToTickEnabled = true,
+                SmallChange = context ? 1024 : 1, LargeChange = context ? 8192 : 4, Tag = key + "_slider", Margin = new Thickness(0, 6, 0, 0) };
+            var max = Muted("");
+            DockPanel.SetDock(max, Dock.Right);
+            var ends = new DockPanel { Children = { max, Muted(context ? "Auto" : "0") } };
+            var syncing = false;
+            void FromBox()
+            {
+                syncing = true;
+                slider.Value = long.TryParse(box.Text.Trim(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var v) && v >= 0
+                    ? v : context ? 0 : slider.Maximum;
+                syncing = false;
+            }
+            slider.ValueChanged += (_, _) =>
+            {
+                if (!syncing)
+                    box.Text = ((long)slider.Value).ToString(System.Globalization.CultureInfo.InvariantCulture);
+            };
+            box.TextChanged += (_, _) =>
+            {
+                if (!syncing)
+                    FromBox();
+            };
+            sliderRanges[key] = top =>
+            {
+                syncing = true;
+                slider.Maximum = Math.Max(1, top);
+                max.Text = top.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+                syncing = false;
+                FromBox();
+            };
+            sliderRanges[key](context ? 131072 : 100);
+            return new StackPanel { Children = { slider, ends } };
+        }
+        // The sliders' ranges from the model's GGUF header: its context window, its layer count (+1: the output layer).
+        void SliderRange(Dictionary<string, string>? meta)
+        {
+            sliderRanges.GetValueOrDefault("max_seq_length")?.Invoke(ModelOptions.ModelContext(meta) ?? 131072);
+            var layers = meta?.GetValueOrDefault("general.architecture") is { } arch && long.TryParse(meta.GetValueOrDefault(arch + ".block_count"), out var n) ? n + 1 : 100;
+            sliderRanges.GetValueOrDefault("gpu_layers")?.Invoke(layers);
+        }
         StackPanel Fields(string group)
         {
             var fields = new StackPanel();
@@ -163,12 +219,32 @@ public partial class MainWindow
                     editor = box;
                 }
                 editors[o.Key] = editor;
-                fields.Children.Add(rows[o.Key] = new StackPanel
+                var tip = o.Default is null ? o.Key : $"{o.Key}; default {o.Default}";
+                hints[o.Key] = Muted(o.Help);
+                if (wide)
                 {
-                    Margin = new Thickness(0, 12, 0, 0),
-                    Children = { Label(o.Label), (hints[o.Key] = Muted(o.Help)), editor, (fieldErrors[o.Key] = ErrorLine()) },
-                    ToolTip = o.Default is null ? o.Key : $"{o.Key}; default {o.Default}",
-                });
+                    fields.Children.Add(rows[o.Key] = new StackPanel
+                    {
+                        Margin = new Thickness(0, 12, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = tip,
+                    });
+                    continue;
+                }
+                // Label left, a compact control right (as Unsloth Studio's run settings); the help shows on hover.
+                (editor.Width, editor.Margin, editor.HorizontalAlignment) = (o.Kind == ModelOptions.Kind.Text ? 170 : 120, new Thickness(12, 0, 0, 0), HorizontalAlignment.Right);
+                var name = Label(o.Label);
+                name.VerticalAlignment = VerticalAlignment.Center;
+                name.TextTrimming = TextTrimming.CharacterEllipsis;
+                var line = new DockPanel();
+                DockPanel.SetDock(editor, Dock.Right);
+                line.Children.Add(editor);
+                line.Children.Add(name);
+                hints[o.Key].Visibility = Visibility.Collapsed;
+                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { line }, ToolTip = $"{o.Help}\n{tip}" };
+                if (o.Key is "max_seq_length" or "gpu_layers" && editor is TextBox sliderBox)
+                    row.Children.Add(SliderFor(o.Key, sliderBox));
+                row.Children.Add(hints[o.Key]);
+                row.Children.Add(fieldErrors[o.Key] = ErrorLine());
+                fields.Children.Add(row);
             }
             return fields;
         }
@@ -294,7 +370,7 @@ public partial class MainWindow
         foreach (var (name, help) in SettingsGroups.Where(g => g.Help is not null))
             if (Fields(name) is { Children.Count: > 0 } fields)
             {
-                Section(name, $"{help} {emptyMeans}").Children.Add(fields);
+                Section(name, $"{help} {emptyMeans}", showHelp: false).Children.Add(fields);
                 if (ModelOptions.All.Where(o => SettingsGroupOf(o.Key) == name).All(o => o.Target == "auto_load"))
                     loadOnly.Add(blocks[name]);
             }
@@ -348,13 +424,27 @@ public partial class MainWindow
             if (estimate is null)
                 return;
             var gpu = _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : (long?)null;
-            var head = new DockPanel();
-            var total = new TextBlock { Text = VramEstimate.Gb(estimate.Total) + (gpu is { } g ? " / " + VramEstimate.Gb(g) : ""), FontSize = 12, FontWeight = FontWeights.SemiBold,
-                Foreground = gpu is { } g2 ? (Brush)new BrushConverter().ConvertFromString(RingColor((double)estimate.Total / g2))! : (Brush)FindResource("TextPrimary") };
-            DockPanel.SetDock(total, Dock.Right);
-            head.Children.Add(total);
-            head.Children.Add(Label("VRAM estimate"));
-            vramBlock.Children.Add(head);
+            // Total: the whole model wherever it runs (every layer counted, as if all were on the GPU).
+            var all = editors.ToDictionary(p => p.Key, p => p.Key is "gpu_layers" or "n_cpu_moe" ? "" : Value(p.Value).Trim());
+            var whole = VramEstimate.Estimate(meta, files.Model, files.Vision, all)!.Total;
+            vramBlock.Children.Add(Label("Estimated memory usage"));
+            DockPanel Pill(string name, string value, Brush? color = null)
+            {
+                var text = new TextBlock { Text = value, FontSize = 12, FontWeight = FontWeights.SemiBold };
+                if (color is null)
+                    text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+                else
+                    text.Foreground = color;
+                var pill = new Border { Child = text, Padding = new Thickness(10, 3, 10, 3), CornerRadius = new CornerRadius(11) };
+                pill.SetResourceReference(Border.BackgroundProperty, "Hover");
+                DockPanel.SetDock(pill, Dock.Right);
+                var label = new TextBlock { Text = name, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+                label.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+                return new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { pill, label } };
+            }
+            vramBlock.Children.Add(Pill("GPU", VramEstimate.Gb(estimate.Total) + (gpu is { } g ? " / " + VramEstimate.Gb(g) : ""),
+                gpu is { } g2 ? (Brush)new BrushConverter().ConvertFromString(RingColor((double)estimate.Total / g2))! : null));
+            vramBlock.Children.Add(Pill("Total", VramEstimate.Gb(Math.Max(whole, estimate.Total))));
             var parts = new (string Name, long Bytes, string Color)[]
             {
                 ("Weights", estimate.Weights, "#4C8DFF"), ("KV cache", estimate.Kv, "#8B7CFF"), ("Compute", estimate.Compute, "#E8A33D"), ("Vision", estimate.Vision, "#2BB3A3"),
@@ -399,8 +489,19 @@ public partial class MainWindow
         modelBox.SelectedIndex = 0;
         var modelStatus = Muted("Open the list for the installed models.");
         modelStatus.Margin = new Thickness(0, 4, 0, 0);
+        // Top: the picker, quantization, source, memory, context length with its slider, then the Advanced switch.
         var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, Fields("Model"), vramBlock, source })
+        var modelFields = Fields("Model");
+        modelFields.Children.Remove(rows["max_seq_length"]);
+        ContextHint(null);
+        var advanced = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), IsChecked = _settings.ModelAdvanced, Tag = "AdvancedSettings", VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(advanced, Dock.Right);
+        var advancedLabel = Label("Advanced settings");
+        advancedLabel.VerticalAlignment = VerticalAlignment.Center;
+        var advancedRow = new DockPanel { Margin = new Thickness(0, 16, 0, 0), Children = { advanced, advancedLabel },
+            ToolTip = "Memory, speed, output and server options" };
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, modelFields, source, vramBlock,
+                     rows["max_seq_length"], advancedRow })
             if (part is not null)
                 top.Children.Add(part);
         foreach (var (name, _) in SettingsGroups)
@@ -463,7 +564,20 @@ public partial class MainWindow
             foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
                 hidden.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             modelBox.IsEnabled = !remote;
+            if (advanced.IsChecked != true) // the Advanced switch shows the load and output groups; Sampling and the prompts always show
+                foreach (var name in AdvancedGroups)
+                    if (blocks.TryGetValue(name, out var block))
+                        block.Visibility = Visibility.Collapsed;
         }
+        advanced.Click += (_, _) =>
+        {
+            _settings.ModelAdvanced = advanced.IsChecked == true;
+            _settings.Save();
+            foreach (var name in AdvancedGroups)
+                if (blocks.TryGetValue(name, out var block))
+                    block.Visibility = Visibility.Visible;
+            SyncMode();
+        };
         foreach (var mode in modes ?? [])
             mode.Checked += (_, _) =>
             {
@@ -698,28 +812,25 @@ public partial class MainWindow
 
     // The settings body's groups in display order (one column, or two read left to right); Help: an option group's note (null:
     // built by ModelSettingsBody itself). An option whose key SettingsGroupKeys does not name goes in Other.
+    // Grouped as Unsloth Studio's run settings: Memory, Speed, Output and Server show with the Advanced switch (AdvancedGroups).
     private static readonly (string Name, string? Help)[] SettingsGroups =
     [
-        ("Model", null), ("Context & memory", "Load options: apply at the next model load."), ("Batching", "Load options: apply at the next model load."),
-        ("GPU", "Load options: apply at the next model load."), ("Speculative decoding", "Load options: apply at the next model load."),
-        ("Reasoning", "The budget applies at the next model load; thinking and effort are sent with every request."),
-        ("Sampling", "Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only)."),
-        ("Output", "Sent with every request."), ("Request", "How long the orchestrator waits for this worker."),
-        ("Advanced", "Load options: apply at the next model load."), ("Other", "Other options."),
+        ("Model", null), ("Sampling", "Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only)."),
+        ("Memory", "Load options: apply at the next model load."), ("Speed", "Load options: apply at the next model load."),
+        ("Output", "The reasoning budget, its message and the chat template apply at the next model load; the rest is sent with every request."),
+        ("Server", "Load options: apply at the next model load."), ("Request", "How long the orchestrator waits for this worker."), ("Other", "Other options."),
         ("System prompt (Chat)", null), ("System prompt (workflow)", null), ("Worker", null),
     ];
+    private static readonly string[] AdvancedGroups = ["Memory", "Speed", "Output", "Server", "Request", "Other"];
     private static readonly Dictionary<string, string[]> SettingsGroupKeys = new()
     {
-        ["Model"] = ["gguf_variant"],
-        ["Context & memory"] = ["max_seq_length", "cache_type_kv", "n_parallel", "ctx_checkpoints", "cache_ram", "load_mode"],
-        ["Batching"] = ["n_batch", "n_ubatch"],
-        ["GPU"] = ["gpu_memory_mode", "gpu_layers", "n_cpu_moe", "tensor_split", "gpu_ids", "tensor_parallel", "cpu_fallback", "disable_vision"],
-        ["Speculative decoding"] = ["speculative_type", "spec_draft_n_max", "spec_draft_cache_type"],
-        ["Reasoning"] = ["reasoning_budget", "reasoning_budget_message", "enable_thinking", "reasoning_effort"],
-        ["Sampling"] = ["temperature", "top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty", "frequency_penalty", "seed"],
-        ["Output"] = ["max_tokens", "stop"],
+        ["Model"] = ["gguf_variant", "max_seq_length"],
+        ["Sampling"] = ["temperature", "top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty", "frequency_penalty", "seed", "enable_thinking", "reasoning_effort"],
+        ["Memory"] = ["cache_type_kv", "gpu_memory_mode", "gpu_layers", "n_cpu_moe", "disable_vision", "ctx_checkpoints", "cache_ram", "cpu_fallback"],
+        ["Speed"] = ["speculative_type", "spec_draft_n_max", "spec_draft_cache_type", "n_parallel", "n_batch", "n_ubatch", "tensor_parallel", "tensor_split", "gpu_ids"],
+        ["Output"] = ["max_tokens", "stop", "reasoning_budget", "reasoning_budget_message", "chat_template_override"],
+        ["Server"] = ["load_mode", "llama_extra_args"],
         ["Request"] = ["timeout_seconds"],
-        ["Advanced"] = ["chat_template_override", "llama_extra_args"],
     };
     private static string SettingsGroupOf(string key) => SettingsGroupKeys.FirstOrDefault(g => g.Value.Contains(key)).Key ?? "Other";
 
