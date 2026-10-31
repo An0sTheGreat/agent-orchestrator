@@ -657,7 +657,7 @@ public partial class MainWindow
         bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
         bubble.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
         bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
-        var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => text);
+        var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => TypedText(text)); // Copy: what the user wrote, not the attached files
         SetStamp(stamp, time);
         ChatAdd(new StackPanel { Children = { bubble, row }, Margin = new Thickness(60, 10, 0, 6), HorizontalAlignment = HorizontalAlignment.Right });
     }

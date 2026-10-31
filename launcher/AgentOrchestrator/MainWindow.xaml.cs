@@ -2661,7 +2661,7 @@ public partial class MainWindow : Window
             if (plusItems is not ["Add files or photos", "Add folder"] || ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
                 !composed.StartsWith("Look" + AttachMarker) || !composed.Contains("remember the milk") || !composed.Contains("<file name=\"src/app.cs\">") ||
                 composed.Contains("junk") || composed.Contains("blob") || request["images"]!.AsArray().Count != 1 ||
-                BubbleText(composed) != "Look\n\n📎 notes.txt, photo.png, src/")
+                BubbleText(composed) != "Look\n\n📎 notes.txt, photo.png, src/" || TypedText(composed) != "Look" || TypedText("Plain") != "Plain")
                 return Fail();
             _chatAttachments.Clear();
             RefreshAttachments(_chat);

@@ -182,6 +182,10 @@ public partial class MainWindow
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return null; }
     }
 
+    // A sent message without its attachments: what the user typed.
+    internal static string TypedText(string message) =>
+        message.IndexOf(AttachMarker, StringComparison.Ordinal) is var at and >= 0 ? message[..at] : message;
+
     // A sent message as its bubble shows it: the typed text, then the attachments' names.
     internal static string BubbleText(string message)
     {
