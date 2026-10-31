@@ -42,7 +42,7 @@ public partial class MainWindow
     // The request of a Code turn; text null: no user message.
     private string CodeRequest(string action, string role, string? text, string project) =>
         LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-            project, CodeExtraFolders, CurrentExtras(), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CodeTurnMulti(action), CardFor(role)),
+            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage), title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CodeTurnMulti(action), CardFor(role)),
             mode: CodeTurnMulti(action) ? "multi" : "single",
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0); // write_project reads it all
 
@@ -131,10 +131,10 @@ public partial class MainWindow
         (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
             ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
             : hasMd ? ("Start a conversation", "Message the worker below, or press Start project to run Planner → Implementer → Reviewer on PROJECT.md.")
-            : ("Add a PROJECT.md to start the project", "Start project runs Planner → Implementer → Reviewer from this folder's PROJECT.md. " +
-                "Meanwhile you can still message the worker below.");
+            : ("Add a PROJECT.md to start the project", "A model can interview you and write PROJECT.md for this folder; Start project then runs " +
+                "Planner → Implementer → Reviewer from it.");
         CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
+        CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
         RefreshChatInput(); // the Project menu needs a folder; Start project needs PROJECT.md
     }
 
@@ -172,6 +172,67 @@ public partial class MainWindow
         RefreshCodeFolder();
         RefreshPrimary();
         EditProject_Click(this, new RoutedEventArgs());
+    }
+
+    private const string InitProjectSkill = "init-project"; // bundled in <workflow root>\skills
+    // The first message of a "Create PROJECT.md with a model…" conversation; every turn of a conversation that starts with
+    // it carries the init-project skill (CodeRequest). The worker writes the file itself, from the skill's template.
+    private const string InitProjectMessage = "Use the init-project skill to create PROJECT.md for this folder. Inspect the folder first, then ask me what you need. " +
+        "When we agree, save it with write_file as PROJECT.md in the project root (not write_project_md).";
+
+    private void CodeEmptyInit_Click(object sender, RoutedEventArgs e) => Forget(CreateProjectMdWithModel());
+
+    // Pick a worker (the Planner by default), make it the Single target and send InitProjectMessage: it interviews the user
+    // in this conversation and writes PROJECT.md; RefreshCodeFolder after the turn then enables Start project.
+    private Task<bool> CreateProjectMdWithModel()
+    {
+        var folder = SelectedProjectPath();
+        if (_chatBusy || _process is not null || folder.Length == 0 || RefuseWorkflowRoot(folder))
+            return Task.FromResult(false);
+        if (!AllSkills().Any(s => Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase)))
+        {
+            Toast("The init-project skill is missing from the app's skills folder", "#FF667A");
+            return Task.FromResult(false);
+        }
+        if (ChooseWorker("Create PROJECT.md with a model", "Who should interview you about the project and write PROJECT.md?") is not { } role)
+            return Task.FromResult(false);
+        PickWorker(_code, role);
+        ShowCodeRun(false);
+        CodeInput.Text = InitProjectMessage;
+        return SendCode();
+    }
+
+    // A worker to talk to: the Planner first and checked, then the others; a custom worker the orchestrator would skip is
+    // listed off, with why. Its role, or null when cancelled.
+    private string? ChooseWorker(string title, string message)
+    {
+        if (_codeChoice is { } answer)
+            return answer(title);
+        RefreshSetupProblems();
+        var list = new StackPanel { Margin = new Thickness(0, 10, 0, 0) };
+        foreach (var card in _cards.OrderBy(k => k.Role != "planner"))
+        {
+            var broken = card.IsCustom ? card.SetupProblem : null;
+            list.Children.Add(new RadioButton { Content = $"{ChatName(card, card.Role)} — {broken ?? card.ModelName}", Tag = card.Role, IsEnabled = broken is null,
+                ToolTip = broken is null ? null : card.SetupTip, Margin = new Thickness(0, 4, 0, 4) });
+        }
+        var radios = list.Children.OfType<RadioButton>().ToList();
+        if (radios.FirstOrDefault(r => r.IsEnabled) is { } first)
+            first.IsChecked = true;
+        string? result = null;
+        DialogShell? dialog = null;
+        var ok = new Button { Content = "Start", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(14, 5, 14, 5), IsDefault = true,
+            IsEnabled = radios.Any(r => r.IsEnabled) };
+        ok.Click += (_, _) => { result = radios.FirstOrDefault(r => r.IsChecked == true)?.Tag as string; dialog!.Close(); };
+        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(14, 5, 14, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        cancel.Click += (_, _) => dialog!.Close();
+        var panel = new StackPanel { MinWidth = 320 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 });
+        panel.Children.Add(list);
+        panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0), Children = { cancel, ok } });
+        dialog = new DialogShell(this, title, panel);
+        dialog.ShowDialog();
+        return result;
     }
 
     private void CodeStart_Click(object sender, RoutedEventArgs e) => StartCodeProject();
@@ -534,7 +595,7 @@ public partial class MainWindow
     }
 
     // Initializes the missing workflow files, then starts the normal run. The folder must already have a PROJECT.md:
-    // without one nothing starts and no model is asked to write it; the user adds it (Add PROJECT.md… or the template).
+    // without one nothing starts and no model is asked to write it; the user adds it (with a model, Add PROJECT.md… or the template).
     private void StartCodeProject()
     {
         var folder = SelectedProjectPath();
@@ -550,7 +611,7 @@ public partial class MainWindow
         if (!HasProjectMd())
         {
             SetStatus("Add a PROJECT.md first", "#F7C873");
-            Toast("Project not started: add a PROJECT.md to this folder (Add PROJECT.md… or Start from template)", "#F7C873");
+            Toast("Project not started: add a PROJECT.md to this folder (create it with a model, Add PROJECT.md… or Start from template)", "#F7C873");
             RefreshCodeFolder();
             return;
         }

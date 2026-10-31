@@ -1900,11 +1900,20 @@ public partial class MainWindow : Window
                 if (_codeConv != third || _store.Get(first.Id) is null || _code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeExtraFolders.Count != 1 ||
                     CodeExtraFolders[0] != new LauncherLogic.CodeFolder(codeExtra, "write"))
                     return Fail();
-                // A folder without PROJECT.md: the empty state offers Add / template, Start project is off (and says why), and
-                // neither Start nor the worker's start_project starts anything or asks a model to write the file.
-                string EmptyState() => $"{CodeEmptyTitle.Text}|{CodeEmptyChoose.Visibility}|{CodeEmptyAddMd.Visibility}|{CodeEmptyTemplate.Visibility}|{CodeStartButton.IsEnabled}";
-                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|False" || !ToolTipService.GetShowOnDisabled(CodeStartButton) ||
-                    CodeStartButton.ToolTip as string is not { } whyOff || !whyOff.Contains("no PROJECT.md"))
+                // A folder without PROJECT.md: the empty state offers Create with a model / Add / template, Start project is off
+                // (and says why), and neither Start nor the worker's start_project starts anything or asks a model to write the file.
+                // A conversation that starts with the Create message carries the bundled init-project skill on every turn.
+                string EmptyState() => $"{CodeEmptyTitle.Text}|{CodeEmptyChoose.Visibility}|{CodeEmptyInit.Visibility}|{CodeEmptyAddMd.Visibility}|{CodeEmptyTemplate.Visibility}|{CodeStartButton.IsEnabled}";
+                string? SkillsOf(string? text) => JsonNode.Parse(CodeRequest("chat", "planner", text, codeProject))!["skills"]!.AsArray().FirstOrDefault()?.ToString();
+                var latestOnly = SkillsOf(InitProjectMessage); // this conversation starts with "Hi": the first message decides
+                var keptHistory = _code.History.ToList();
+                _code.History[0] = new("user", InitProjectMessage);
+                var initLater = SkillsOf("Hi again");
+                _code.History.Clear();
+                _code.History.AddRange(keptHistory);
+                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|Visible|False" || !ToolTipService.GetShowOnDisabled(CodeStartButton) ||
+                    CodeStartButton.ToolTip as string is not { } whyOff || !whyOff.Contains("no PROJECT.md") ||
+                    latestOnly is not null || initLater != Path.Combine(_workflowRoot!, "skills", InitProjectSkill))
                     return Fail();
                 await Settle();
                 Snap("20a-code-no-projectmd");
@@ -1933,7 +1942,7 @@ public partial class MainWindow : Window
                 File.WriteAllText(mdSource, "# Mine\n");
                 _projectMdPick = () => mdSource;
                 UseProjectMd();
-                const string withMd = "Start a conversation|Collapsed|Collapsed|Collapsed|True";
+                const string withMd = "Start a conversation|Collapsed|Collapsed|Collapsed|Collapsed|True";
                 if (File.ReadAllText(mdTarget) != "# Mine\n" || MenuItems() != string.Format(items, "", onceMark) || EmptyState() != withMd ||
                     CodeStartButton.ToolTip as string != "Start or resume the project run in this folder (Ctrl+Enter)")
                     return Fail();
@@ -1946,7 +1955,7 @@ public partial class MainWindow : Window
                 // template in and opens it.
                 File.Delete(mdTarget);
                 RefreshCodeFolder();
-                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|False")
+                if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|Visible|False")
                     return Fail();
                 string? opened = null;
                 _openProjectMd = file => opened = file;
@@ -2434,9 +2443,10 @@ public partial class MainWindow : Window
                 skillsMenu.IsOpen = true;
                 await Settle();
                 Snap("24-skills-menu", skillsMenu);
-                var skillItem = skillsMenu.Items.OfType<MenuItem>().First();
+                var skillItem = skillsMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "Smoke skill");
                 skillsMenu.IsOpen = false;
-                if (skillItem is not { Header: "Smoke skill", IsChecked: true, ToolTip: "When to use this skill, in one sentence." })
+                if (skillItem is not { Header: "Smoke skill", IsChecked: true, ToolTip: "When to use this skill, in one sentence." } ||
+                    !skillsMenu.Items.OfType<MenuItem>().Any(i => i is { Header: "init-project (built-in)", IsChecked: false })) // bundled with the app
                     return Fail();
                 SetSkill("SMOKE skill", true); // a key in another case is the same folder: no duplicate, still sent
                 if (_settings.Skills.Count != 1 || CurrentExtras().Skills.Count != 1)

@@ -12,9 +12,16 @@ namespace AgentOrchestrator;
 // request (LauncherLogic.Extras); orchestrator.py turns them into tools.
 public partial class MainWindow
 {
-    private LauncherLogic.Extras CurrentExtras() =>
+    // initProject: also the init-project skill, for a Code conversation "Create PROJECT.md with a model…" started.
+    private LauncherLogic.Extras CurrentExtras(bool initProject = false) =>
         new(_settings.UseSearch, _settings.UseTools,
-            LauncherLogic.ListSkills(AppSettings.SkillsRoot).Where(s => HasSkill(Path.GetFileName(s.Folder))).Select(s => s.Folder).ToList());
+            AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) ||
+                initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
+                .Select(s => s.Folder).ToList());
+
+    // The user's skills (AppSettings.SkillsRoot) and the ones bundled with the app (<workflow root>\skills).
+    private List<LauncherLogic.Skill> AllSkills() =>
+        LauncherLogic.ListSkills(AppSettings.SkillsRoot, _workflowRoot is null ? null : Path.Combine(_workflowRoot, "skills"));
 
     private void RefreshExtras()
     {
@@ -50,11 +57,11 @@ public partial class MainWindow
     {
         var menu = NewPresetMenu(target);
         menu.Placement = PlacementMode.Top;
-        var skills = LauncherLogic.ListSkills(AppSettings.SkillsRoot);
+        var skills = AllSkills();
         foreach (var skill in skills)
         {
             var key = Path.GetFileName(skill.Folder);
-            var item = PresetItem(skill.Name, () => { }); // a checkable item toggles itself before Click
+            var item = PresetItem(skill.BuiltIn ? $"{skill.Name} (built-in)" : skill.Name, () => { }); // a checkable item toggles itself before Click
             item.IsCheckable = true;
             item.IsChecked = HasSkill(key);
             item.Tag = key;
