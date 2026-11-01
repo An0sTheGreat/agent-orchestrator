@@ -383,6 +383,9 @@ def setup(state_dir: Path, undo: bool = False) -> list[str]:
     cap, done = capability_sid(), []
     users = str(Path(os.environ.get("SystemDrive", "C:") + "\\Users"))
     for folder in [*fixed_drives(), users]:
+        if not has_acls(folder):
+            done.append(f"skipped {folder}: its file system (FAT32, exFAT) has no permissions, and the sandbox cannot open it")
+            continue
         try:
             set_folder_ace(folder, cap, None if undo else LIST_RIGHTS)
             done.append(f"{'unlisted' if undo else 'list'}: {folder}")
@@ -423,6 +426,22 @@ def environment_key(undo: bool, state_dir: Path, key: str = ENVIRONMENT_KEY) -> 
     if undo:
         saved.unlink(missing_ok=True)
     return f"{key}: {'AppContainer read restored' if undo else 'no longer readable by AppContainers'}"
+
+
+def has_acls(folder: str) -> bool:
+    """Whether the folder's volume keeps permissions (NTFS, ReFS); FAT32 and exFAT do not."""
+    flags = w.DWORD()
+    root = os.path.splitdrive(os.path.abspath(folder))[0] + "\\"
+    return bool(_k.GetVolumeInformationW(root, None, 0, None, None, ctypes.byref(flags), None, 0)) and bool(flags.value & 0x8)
+
+
+def environment_secrets() -> list[str]:
+    """Names of the secret-looking user environment variables (HKCU\\Environment), which a container could read
+    unless environment_key closed the key."""
+    import winreg
+    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        names = [winreg.EnumValue(key, i)[0] for i in range(winreg.QueryInfoKey(key)[1])]
+    return [name for name in names if SECRET_ENV.search(name)]
 
 
 def environment_protected() -> bool:
@@ -512,7 +531,8 @@ def clean_env(temp: Path) -> dict[str, str]:
         env[key] = str(temp)
     env.update({"NPM_CONFIG_CACHE": str(temp / "npm-cache"), "PIP_CACHE_DIR": str(temp / "pip-cache"),
                 "NUGET_PACKAGES": str(temp / "nuget"), "DOTNET_CLI_HOME": str(temp), "PYTHONPYCACHEPREFIX": str(temp / "pycache"),
-                "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "GIT_CONFIG_NOSYSTEM": "1"})
+                "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": str(temp / "gitconfig")})  # ~/.gitconfig is out of reach: no warning on every git call
     return env
 
 

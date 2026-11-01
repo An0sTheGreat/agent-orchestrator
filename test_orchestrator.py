@@ -3076,8 +3076,9 @@ class SandboxTests(unittest.TestCase):
         self.assertNotEqual(self.run_(child)[0], 0)
         self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ["secret.txt"])
         self.assertFalse((self.readonly / "c.txt").exists() or (Path.home() / "ao-sandbox-test-probe.txt").exists())
-        code, output = self.run_(f"Set-Content -Path '{self.granted / 'ps.txt'}' -Value hi; Get-Content '{self.granted / 'ps.txt'}'", "powershell")
-        self.assertEqual((code, output.strip()), (0, "hi"))  # plain text, no CLIXML
+        if not sandbox.environment_protected():  # PowerShell reads HKCU\Environment as it starts
+            code, output = self.run_(f"Set-Content -Path '{self.granted / 'ps.txt'}' -Value hi; Get-Content '{self.granted / 'ps.txt'}'", "powershell")
+            self.assertEqual((code, output.strip()), (0, "hi"))  # plain text, no CLIXML
         sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)  # the folder is no longer granted
         self.assertNotEqual(self.run_(f'type "{self.readonly / "data.txt"}"')[0], 0)
 
@@ -3135,12 +3136,15 @@ class SandboxTests(unittest.TestCase):
         self.assertIn(f"\\packages\\{self.name.lower()}\\ac\\temp]", output.lower())  # Windows' own, per container
         late = self.granted / "late.txt"
         started = time.time()
-        nap = "powershell -NoProfile -Command Start-Sleep"
-        code, _ = self.run_(f'start /b cmd /c "{nap} 3 & echo x> "{late}"" & {nap} 30', timeout=2)  # a background child
+        # a background child keeps rewriting late.txt (nothing can sleep in a container: no ping, timeout or PowerShell)
+        busy = "for /l %i in (1,1,2000000000) do @"
+        code, _ = self.run_(f'start /b cmd /c "{busy}echo %i>"{late}"" & {busy}rem', timeout=2)
         self.assertIsNone(code)
         self.assertLess(time.time() - started, 15)
-        time.sleep(5)
-        self.assertFalse(late.exists())  # the background child died with the job
+        self.assertTrue(late.exists())  # the child ran
+        stamp = late.stat().st_mtime_ns
+        time.sleep(2)
+        self.assertEqual(late.stat().st_mtime_ns, stamp)  # and died with the job
 
 
 @unittest.skipUnless(os.name == "nt", "the command sandbox is a Windows AppContainer")
@@ -3210,6 +3214,13 @@ class RunCommandTests(unittest.TestCase):
         self.assertIn("VALIDATION inside: PASSED", checks)
         self.assertFalse((self.outside / "v.txt").exists())
         self.assertTrue((self.root / "v.txt").exists())
+
+    def test_powershell_is_not_the_default_while_the_environment_is_hidden(self):
+        # PowerShell 5.1 cannot start without reading HKCU\Environment; cmd can (patched: hidden, setup done)
+        with patch.object(sandbox, "setup_done", return_value=True):
+            run = orchestrator.command_runner(self.folders, self.request)
+            self.assertEqual(run("echo %ComSpec%"), f"EXIT 0\n{os.environ['ComSpec']}")
+            self.assertIn("Use shell 'cmd'", run("dir", shell="powershell"))
 
     def test_commands_wait_for_the_environment_variables_to_be_hidden(self):
         with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "run") as run_:

@@ -3714,7 +3714,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
             sandbox.sync_grants(name, sid, grants, state)
             for folder in grants:
                 sandbox.list_ancestors(folder)  # for PowerShell; names only
-            synced.extend([sid, "powershell" if sandbox.setup_done() else "cmd"])  # PowerShell needs the setup's drive roots
+            # PowerShell needs the setup's drive roots, and reads HKCU\Environment as it starts
+            synced.extend([sid, "powershell" if sandbox.setup_done() and not sandbox.environment_protected() else "cmd"])
         return synced[0]
 
     def run_command(command: str, shell: str = "", timeout_seconds: Any = 120, request_network: bool = False,
@@ -3733,13 +3734,13 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
         extra = {grantable(raw, request): "write" for raw in wanted}
         with RUN_LOCK:
             try:
-                if not sandbox.environment_protected():
+                if not sandbox.environment_protected() and sandbox.environment_secrets():
                     return ("ERROR: commands are off until the user runs Settings > Command sandbox > Set up sandbox access: "
                             "Windows lets sandboxed programs read their environment variables (API keys) until then.")
                 container = setup()
                 if shell == "powershell" and synced[1] != "powershell":
-                    return ("ERROR: PowerShell cannot start in the sandbox until the user runs Settings > Command sandbox > Set "
-                            "up sandbox access (once, as administrator). Use shell 'cmd' meanwhile.")
+                    return ("ERROR: PowerShell cannot start in this sandbox (it needs the administrator part of the setup, and "
+                            "reads the user's environment variables, which are hidden from it). Use shell 'cmd'.")
                 shell = shell or synced[1]
                 network = settings.get("network") is True
                 if request_network and not network:
