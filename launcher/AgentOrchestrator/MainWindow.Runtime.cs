@@ -24,6 +24,7 @@ public partial class MainWindow
         RuntimeUnslothRadio.IsChecked = !LocalRuntime;
         ShowModelsFolder();
         RefreshLlamaStatus();
+        InitPi();
     }
 
     // Refused while a reply or run is using the models. Leaving the local runtime stops its server (frees the GPU for Unsloth).
@@ -61,8 +62,11 @@ public partial class MainWindow
         return false;
     }
 
-    private void ApplyRuntime(ProcessStartInfo info) =>
+    private void ApplyRuntime(ProcessStartInfo info)
+    {
         LauncherLogic.ApplyRuntimeEnv(info, _settings.Runtime, LauncherLogic.LlamaServerPath, _settings.ModelsFolder);
+        LauncherLogic.ApplyPiEnv(info, LauncherLogic.PiCli);
+    }
 
     // Kills the server the engine recorded (only if that pid is still a llama-server). The Unsloth runtime never has one.
     private void StopLocalServer()

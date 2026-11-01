@@ -2793,6 +2793,8 @@ public partial class MainWindow : Window
         _profilePopup.IsOpen = false;
         if (!await QueueSmoke(Snap))
             return false;
+        if (!PiSmoke())
+            return false;
         if (!await LocalRuntimeSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
@@ -2819,6 +2821,34 @@ public partial class MainWindow : Window
                     Snap("27-model-settings-" + theme);
                 }
             }
+        }
+        return true;
+    }
+
+    // --ui-smoke, Code engine: the radios persist, a Code request names the engine, its Pi home and the conversation, and
+    // with Pi chosen but not installed (the smoke data folder has none) a Code turn is refused; Built-in is always ready.
+    private bool PiSmoke()
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        var engine = _settings.CodeEngine;
+        try
+        {
+            EnginePiRadio.IsChecked = true;
+            if (AppSettings.Load().CodeEngine != "pi" || File.Exists(LauncherLogic.PiCli) || !PiStatus.Text.StartsWith("Pi not installed") ||
+                (string)PiInstallButton.Content != "Install Pi")
+                return Fail();
+            var request = JsonNode.Parse(CodeRequest("chat", "planner", "hi", @"Y:\app"))!;
+            if ((string)request["engine"]! != "pi" || (string)request["pi_home"]! != LauncherLogic.PiHome || (string)request["session"]! != (_codeConv?.Id ?? ""))
+                return Fail();
+            if (CodeEngineReady())
+                return Fail();
+            EngineBuiltinRadio.IsChecked = true;
+            if (AppSettings.Load().CodeEngine != "" || !CodeEngineReady() || (string)JsonNode.Parse(CodeRequest("chat", "planner", "hi", @"Y:\app"))!["engine"]! != "")
+                return Fail();
+        }
+        finally
+        {
+            (engine == "pi" ? EnginePiRadio : EngineBuiltinRadio).IsChecked = true;
         }
         return true;
     }

@@ -159,9 +159,37 @@ def path_is_allowed(raw: str, allowed: list[str], project_root: Path) -> Path:
 EVENTS = False  # set by --events: structured "@@AO {json}" lines for the launcher UI
 
 
+EMIT_LOCK = threading.RLock()  # the Pi engine prints from its reader, stderr and gateway threads: see LineAtomic
+
+
 def emit(event: str, **data: Any) -> None:
     if EVENTS:
-        print("@@AO " + json.dumps({"e": event, **data}, ensure_ascii=False), flush=True)
+        line = "@@AO " + json.dumps({"e": event, **data}, ensure_ascii=False)
+        with EMIT_LOCK:
+            print(line, flush=True)
+
+
+class LineAtomic:
+    """stdout for a Pi turn: each thread's text is held until its line ends, then the whole line is written under
+    EMIT_LOCK, so a print from one thread never splits another thread's @@AO line (print writes text and newline apart)."""
+
+    def __init__(self, stream: Any):
+        self.stream, self.local = stream, threading.local()
+
+    def write(self, text: str) -> int:
+        pending = getattr(self.local, "pending", "") + text
+        lines, found, self.local.pending = pending.rpartition("\n")
+        if found:
+            with EMIT_LOCK:
+                self.stream.write(lines + "\n")
+                self.stream.flush()
+        return len(text)
+
+    def flush(self) -> None:
+        pass  # whole lines are flushed as they are written
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.stream, name)
 
 
 def split_reasoning(message: dict[str, Any]) -> tuple[str, str]:
@@ -3666,23 +3694,30 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     the file tools, verifies with run_checks and may delegate to implementer/reviewer sub-agents (config max_delegations
     per turn, default 6). It always has the bundled init-project skill, so it writes PROJECT.md itself; it never starts
     the autonomous project run (the launcher's Start project does)."""
+    tools, handlers, note, _ = lead_setup(config, folders, request, role)
+    system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
+    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
+    messages = compact_conversation(config, (role,), system, messages, tools, request)
+    emit("chat_stage", role=role, stage="lead", title=display_name(config, role))
+    return code_loop(config, role, system, messages, tools, handlers)
+
+
+def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str
+               ) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[str]]:
+    """The lead's request extras (tools, system note) and every lead handler (file tools, todo, run_checks, delegate and
+    the extras), shared by both Code engines; plus the skill folders, the bundled init-project included."""
     skills = [str(s) for s in request.get("skills") or []]
     names = {skill_info(Path(s))["name"].lower() for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()}
     if (INIT_PROJECT_SKILL / "SKILL.md").is_file() and skill_info(INIT_PROJECT_SKILL)["name"].lower() not in names:
         skills.append(str(INIT_PROJECT_SKILL))  # a user skill of the same name replaces it
     tools, extra_handlers, note = request_extras({**request, "skills": skills})
     lead_extras, research = with_research(extra_handlers)  # workers get the plain ones: their searches are not the lead's
-    title = display_name(config, role)
     handlers = {**code_handlers(folders), **code_write_handlers(folders), **lead_extras}
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
     handlers["run_checks"] = lambda: run_checks(config, folders)
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
-                                     (role, "lead", title), research)
-    system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
-    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
-    messages = compact_conversation(config, (role,), system, messages, tools, request)
-    emit("chat_stage", role=role, stage="lead", title=title)
-    return code_loop(config, role, system, messages, tools, handlers)
+                                     (role, "lead", display_name(config, role)), research)
+    return tools, handlers, note, [s for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()]
 
 
 PROGRESS_TOOL = function_tool("record_progress", "Record one finished PROJECT.md item in STATE.md, after you verified it: a short "
@@ -3791,6 +3826,259 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
     return target
 
 
+# ---- the Pi engine (a Code request's "engine": "pi"): Pi (pi.dev, @earendil-works/pi-coding-agent 1.x) runs the lead's
+# agent loop as an RPC child process on the role's model. Pi brings its read/edit/write tools, sessions and compaction;
+# pi/agent_orchestrator.ts guards those tools through the gateway below (code_path's grants and protected files) and
+# proxies this engine's own tools (list/search, todo, run_checks, delegate, web, utilities) to it. Model loading stays here.
+
+PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
+PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
+PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "delegate", "web_search", "fetch_page", "calculator",
+                    "current_time")
+PI_TOOL_RESULT_LIMIT = 6000
+
+
+def pi_command() -> list[str]:
+    """How to start Pi: AGENT_ORCHESTRATOR_PI (its cli.js, which the launcher installs) else `pi` on PATH, whose npm shim
+    is resolved to the cli.js beside it (a .cmd cannot be started without a shell)."""
+    raw = os.environ.get("AGENT_ORCHESTRATOR_PI", "") or shutil.which("pi") or ""
+    path = Path(raw)
+    if raw and path.suffix.lower() in (".cmd", ".ps1", "") and (path.parent / PI_PACKAGE_CLI).is_file():
+        path = path.parent / PI_PACKAGE_CLI
+    if not raw or path.suffix.lower() not in (".js", ".mjs") or not path.is_file():
+        raise WorkflowError("Pi 1.x was not found: install it in Settings (Code engine), or set AGENT_ORCHESTRATOR_PI to its "
+                            f"dist/cli.js ({raw or 'not on PATH'})")
+    node = shutil.which("node")
+    if not node:
+        raise WorkflowError("Pi needs Node.js 22.19 or newer, and node is not on PATH")
+    return [node, str(path)]
+
+
+def pi_model_config(client: ApiClient, model: str, sampling: dict[str, Any], n_ctx: int) -> dict[str, Any]:
+    """models.json for Pi: one provider "ao" at the role's endpoint (the key comes from AO_PI_KEY), serving the loaded
+    model with the role's sampling, thinking switch and output limit sent on every request, as this engine sends them."""
+    params = {key: value for key, value in sampling.items() if key != "max_tokens"}
+    if client.remote and not client.send_extra_body:
+        params = {key: value for key, value in params.items() if key not in UNSLOTH_ONLY_FIELDS}
+    if client.thinking_off and not client.remote:
+        params = client._thinking(params, False)
+    elif client.llama_port and "enable_thinking" in params:
+        params = client._thinking(params, bool(params["enable_thinking"]))
+    if client.llama_port and "reasoning_effort" in params:
+        params["chat_template_kwargs"] = {**(params.get("chat_template_kwargs") or {}), "reasoning_effort": params.pop("reasoning_effort")}
+    entry = {"id": model, "name": client.title or model, "contextWindow": n_ctx, "maxTokens": int(sampling.get("max_tokens") or 8192),
+             "samplingParams": params, "input": ["text", "image"],
+             "compat": {"maxTokensField": "max_tokens", "supportsDeveloperRole": False, "supportsStore": False,
+                        "supportsReasoningEffort": False}}
+    return {"providers": {"ao": {"baseUrl": client.base_url, "api": "openai-completions", "apiKey": "$AO_PI_KEY",
+                                 "authHeader": True, "models": [entry]}}}
+
+
+PI_REWRITTEN = re.compile(r"^\s*(@|~|file:)|^/[A-Za-z]/|[   -​  　﻿]", re.I)
+
+
+def pi_guard(raw: str, folders: list[dict[str, str]], write: bool, existing: bool = False) -> Path:
+    """The absolute path a Pi file tool may use for `raw`, which the extension then puts in place of the model's: Pi
+    opens exactly what code_path checked. Path forms Pi itself rewrites (a leading @ or ~, file: URLs, /c/ drive paths,
+    Unicode spaces), in the request or in the resolved path (a granted folder's own name), are refused, so no spelling
+    means one thing here and another to Pi. `existing` (read, edit): the file must exist, or Pi's read would try other
+    spellings of the path (curly quotes, NFD, AM/PM) that may name a file outside the grants."""
+    path = code_path("" if PI_REWRITTEN.search(raw) else raw, folders, write) if raw else None
+    if path is None or PI_REWRITTEN.search(raw) or PI_REWRITTEN.search(str(path)):
+        raise WorkflowError(f"Use a plain relative or absolute path inside the granted folders: {raw}")
+    if existing and not path.is_file():
+        raise WorkflowError(f"file does not exist: {raw}")
+    return path
+
+
+class PiGateway:
+    """Localhost HTTP endpoint for the Pi extension: {"guard": path, "write": bool} checks a Pi file-tool path with
+    code_path; {"tool": name, "args": {...}} runs one of `handlers`. Replies {"result": text} or {"error": text}. Each
+    request must carry the turn's random token. Tool calls run one at a time (delegations swap models)."""
+
+    def __init__(self, handlers: dict[str, Any], folders: list[dict[str, str]]):
+        self.token, lock = uuid.uuid4().hex, threading.Lock()
+        gateway = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                try:
+                    if self.headers.get("x-ao-token") != gateway.token:
+                        raise PermissionError("bad token")
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                    if "guard" in body:
+                        reply = {"result": str(pi_guard(str(body.get("guard") or ""), folders, bool(body.get("write")),
+                                                        bool(body.get("existing"))))}
+                    else:
+                        name, args = str(body.get("tool")), body.get("args") or {}
+                        if name not in handlers or not isinstance(args, dict):
+                            raise WorkflowError(f"tool {name!r} is unavailable")
+                        with lock:
+                            reply = {"result": str(handlers[name](**args))}
+                except PermissionError:
+                    self.send_response(403)
+                    self.end_headers()
+                    return
+                except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
+                    reply = {"error": str(exc)}
+                data = json.dumps(reply, ensure_ascii=False).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args: Any) -> None:
+                pass  # stdout is the launcher's event stream
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def pi_text(content: Any) -> str:
+    """The text blocks of a Pi message or tool result, joined."""
+    if isinstance(content, str):
+        return content
+    return "".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
+
+
+def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
+                 role: str = "planner") -> str:
+    """A Code turn on the Pi engine; returns the lead's final answer. The request's "session" (the conversation id) keeps a
+    Pi session per conversation under the Pi home ("pi_home", default a temp folder), so later turns see earlier tool
+    results; a new session gets the earlier messages as text once. Pi's events become the usual @@AO events."""
+    client, sampling = role_settings(config, role)
+    model = client.ensure_model(role, False)
+    n_ctx = client.context_size() or int((client.auto_load or {}).get("max_seq_length") or 32768)
+    tools, handlers, note, skills = lead_setup(config, folders, request, role)
+    lead_delegate = handlers["delegate"]
+
+    def delegate(**args: Any) -> str:
+        try:
+            return lead_delegate(**args)
+        finally:
+            client.ensure_model(role, False)  # the worker may have swapped the model out; Pi's next request needs the lead's
+
+    handlers["delegate"] = delegate
+    specs = [{"name": t["function"]["name"], "description": t["function"]["description"], "parameters": t["function"]["parameters"]}
+             for t in CODE_TOOLS[:3] + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools if t["function"]["name"] in PI_GATEWAY_TOOLS]
+    home = Path(str(request.get("pi_home") or Path(tempfile.gettempdir()) / "agent-orchestrator-pi"))
+    home.mkdir(parents=True, exist_ok=True)
+    turn = Path(tempfile.mkdtemp(prefix="pi-turn-", dir=home))
+    max_tokens = int(sampling.get("max_tokens") or 8192)
+    save_text(turn / "models.json", json.dumps(pi_model_config(client, model, sampling, n_ctx), indent=1))
+    save_text(turn / "settings.json", json.dumps({"quietStartup": True, "compaction": {
+        "reserveTokens": min(n_ctx // 2, max_tokens + 4096), "keepRecentTokens": max(2048, n_ctx // 4)}}))
+    save_text(turn / "tools.json", json.dumps(specs))
+    note = re.sub(r"\n\nSKILLS\n.*?(?=\n\n|\Z)", "", note, flags=re.S)  # Pi lists the skills itself
+    save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}")
+
+    command = [*pi_command(), "--mode", "rpc", "--offline", "-na", "-ne", "-e", str(PI_EXTENSION), "--no-mcp", "-nc", "-ns",
+               *(arg for s in skills for arg in ("--skill", s)), "-np", "--no-themes", "--provider", "ao", "--model", model,
+               "--tools", ",".join(PI_OWN_TOOLS + [s["name"] for s in specs]), "--append-system-prompt", str(turn / "system.md")]
+    session = re.sub(r"[^A-Za-z0-9._-]", "", str(request.get("session") or "")).strip("._-")
+    seeded = home / "sessions" / f"{session}.seeded"
+    if session:
+        command += ["--session-dir", str(home / "sessions"), "--session-id", session]
+    else:
+        command += ["--no-session"]
+    prompt = messages[-1]["content"]
+    if len(messages) > 1 and not (session and seeded.is_file()):  # a new Pi session: the conversation so far, once
+        earlier = render_history(messages[:-1])[-n_ctx:]  # ponytail: ~n_ctx/4 tokens of the latest history; older text is cut
+        prompt = f"Earlier in this conversation:\n{earlier}\n\nCurrent message:\n{prompt}"
+    images = [{"type": "image", "mimeType": url[5:url.index(";")], "data": url.split(",", 1)[1]} for url in TURN_IMAGES[1]]
+
+    gateway = PiGateway(handlers, folders + [{"path": s, "access": "read"} for s in skills])  # Pi reads SKILL.md itself
+    env = {**os.environ, "PI_CODING_AGENT_DIR": str(turn), "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
+           "AO_GATEWAY": gateway.url, "AO_TOKEN": gateway.token, "AO_TOOLS": str(turn / "tools.json"), "AO_PI_KEY": client.api_key}
+    title = display_name(config, role)
+    emit("chat_stage", role=role, stage="lead", title=title)
+    process = subprocess.Popen(command, cwd=folders[0]["path"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    def relay_stderr() -> None:
+        for raw in process.stderr:
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if line:
+                print(f"[pi] {line}", flush=True)
+
+    threading.Thread(target=relay_stderr, daemon=True).start()
+    answer, error, started, args_by_call = "", "", time.time(), {}
+    stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
+    try:
+        process.stdin.write((json.dumps({"id": "turn", "type": "prompt", "message": prompt, **({"images": images} if images else {})})
+                             + "\n").encode("utf-8"))
+        process.stdin.flush()
+        for raw in process.stdout:  # JSONL split on LF only
+            try:
+                event = json.loads(raw.decode("utf-8").rstrip("\r\n"))
+            except ValueError:
+                continue
+            kind = event.get("type")
+            if kind == "response" and not event.get("success"):
+                raise WorkflowError(f"Pi refused the prompt: {event.get('error') or event}")
+            if kind == "response" and session:  # the seed is in the Pi session now, whatever happens to the turn
+                seeded.parent.mkdir(parents=True, exist_ok=True)
+                seeded.touch()
+            if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
+                started = time.time()
+            elif kind == "message_update":
+                update = event.get("assistantMessageEvent") or {}
+                if update.get("type") in ("text_delta", "thinking_delta"):
+                    emit("delta", role=role, kind="text" if update["type"] == "text_delta" else "thinking", text=update.get("delta", ""))
+            elif kind == "message_end" and (event.get("message") or {}).get("role") == "assistant":
+                message = event["message"]
+                calls = any(b.get("type") == "toolCall" for b in message.get("content") or [] if isinstance(b, dict))
+                usage = message.get("usage") or {}
+                # Pi counts a prompt's cached part apart from the rest: the whole prompt is their sum
+                prompt_tokens = sum(int(usage.get(k) or 0) for k in ("input", "cacheRead", "cacheWrite"))
+                completion = int(usage.get("output") or 0)
+                emit("done", role=role, final=not calls)
+                emit("usage", role=role, prompt=prompt_tokens, completion=completion,
+                     tps=round(completion / max(time.time() - started, 1e-3), 2), prompt_tps=None)
+                emit("context", role=role, n_ctx=n_ctx, prompt_tokens=prompt_tokens, completion_tokens=completion,
+                     parts={"messages": prompt_tokens})
+                if message.get("stopReason") in ("error", "aborted"):
+                    error = str(message.get("errorMessage") or message.get("stopReason"))
+                elif not calls:
+                    answer = pi_text(message.get("content")).strip() or answer
+            elif kind == "tool_execution_start":
+                args_by_call[event.get("toolCallId")] = event.get("args")
+            elif kind == "tool_execution_end":
+                result = pi_text((event.get("result") or {}).get("content"))
+                emit("tool", role=role, name=str(event.get("toolName")), args=json.dumps(args_by_call.pop(event.get("toolCallId"), {})),
+                     result=(("ERROR: " if event.get("isError") else "") + result)[:PI_TOOL_RESULT_LIMIT])
+            elif kind == "compaction_end" and event.get("result"):
+                result = event["result"]
+                emit("compacted", role=role, before=result.get("tokensBefore"), after=result.get("estimatedTokensAfter"))
+            elif kind == "auto_retry_start":
+                print(f"[{title}] retrying the model request ({event.get('attempt')}/{event.get('maxAttempts')}): {event.get('errorMessage')}")
+            elif kind == "extension_error":
+                print(f"[pi] extension error in {event.get('event')}: {event.get('error')}")
+            elif kind == "agent_settled":
+                break
+        else:
+            raise WorkflowError(f"Pi exited before the reply finished (exit code {process.poll()})")
+    finally:
+        try:
+            process.stdin.close()
+            process.wait(timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            process.kill()
+        gateway.close()
+        shutil.rmtree(turn, ignore_errors=True)
+        sys.stdout = stdout
+    if not answer and error:
+        raise WorkflowError(f"{title} (Pi): {error}")
+    return answer
+
+
 def run_code(config: dict[str, Any], request_path: Path) -> int:
     """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop) as the
     request's `worker` when that names a configured worker, else the planner (a legacy `mode` is ignored); "write_project"
@@ -3831,7 +4119,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
         return 0
     turn_images(request, messages[-1]["content"])
-    text = lead_loop(config, folders, messages, request, role)
+    text = (pi_lead_turn if request.get("engine") == "pi" else lead_loop)(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("code_reply", role=role, text=text)

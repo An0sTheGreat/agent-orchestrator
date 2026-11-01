@@ -328,10 +328,14 @@ internal static class LauncherLogic
 
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
-        Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0) =>
+        Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0,
+        string engine = "", string session = "", string piHome = "") =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
+            engine = engine == "pi" ? "pi" : "",
+            session, // the conversation id: the Pi engine keeps one Pi session per conversation
+            pi_home = piHome,
             worker,
             messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
             summary,
@@ -485,6 +489,36 @@ internal static class LauncherLogic
         info.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] = llamaServer;
         if (!string.IsNullOrWhiteSpace(modelsFolder))
             info.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] = modelsFolder;
+    }
+
+    // ---- Pi (pi.dev), the optional Code engine: installed with npm into <data>\pi, pinned to one tested version.
+    public const string PiPackage = "@earendil-works/pi-coding-agent";
+    public const string PiVersion = "1.4.0";
+    public static string PiFolder => Path.Combine(AppSettings.DataRoot, "pi");
+    public static string PiCli => Path.Combine(PiFolder, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
+    public static string PiHome => Path.Combine(PiFolder, "home"); // Pi's per-turn config and the conversations' sessions
+
+    // The installed Pi's version (its package.json), or null when Pi is not installed.
+    public static string? InstalledPiVersion()
+    {
+        try
+        {
+            var package = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(PiCli)!)!, "package.json");
+            return File.Exists(PiCli) ? JsonNode.Parse(File.ReadAllText(package))?["version"]?.ToString() : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
+    }
+
+    // "v22.19.0" or newer (Pi's minimum Node.js).
+    public static bool NodeVersionOk(string version) =>
+        Version.TryParse(version.TrimStart('v').Split('-')[0], out var v) && v >= new Version(22, 19);
+
+    // Points an orchestrator process at the installed Pi (the engine's AGENT_ORCHESTRATOR_PI); never an inherited value.
+    public static void ApplyPiEnv(ProcessStartInfo info, string piCli)
+    {
+        info.Environment.Remove("AGENT_ORCHESTRATOR_PI");
+        if (File.Exists(piCli))
+            info.Environment["AGENT_ORCHESTRATOR_PI"] = piCli;
     }
 
     public sealed record LlamaAssets(string Tag, string Flavour, List<string> Urls);
@@ -1718,6 +1752,13 @@ internal static class LauncherLogic
             (string)JsonNode.Parse(BuildCodeRequest("write_project", "planner", [], @"Y:\app", []))!["action"]! != "write_project" ||
             JsonNode.Parse(BuildCodeRequest("bogus", "planner", [], @"Y:\app", []))!["folders"]!.AsArray().Count != 1)
             throw new InvalidOperationException("Code request failed.");
+        var piRequest = JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], engine: "pi", session: "c1", piHome: @"Y:\data\pi\home"))!;
+        if ((string)code["engine"]! != "" || (string)piRequest["engine"]! != "pi" || (string)piRequest["session"]! != "c1" ||
+            (string)piRequest["pi_home"]! != @"Y:\data\pi\home" || (string)JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], engine: "x"))!["engine"]! != "")
+            throw new InvalidOperationException("Code engine request failed.");
+        if (!NodeVersionOk("v22.19.0") || !NodeVersionOk("v24.14.1") || !NodeVersionOk("v23.0.0-nightly") || NodeVersionOk("v22.18.9") ||
+            NodeVersionOk("v20.11.1") || NodeVersionOk("") || NodeVersionOk("node"))
+            throw new InvalidOperationException("The Node.js version check failed.");
         var withExtras = JsonNode.Parse(BuildChatRequest("implementer", chat, new(true, false, [@"Y:\skills\a"])))!;
         var codeExtras = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], new(false, true, [])))!;
         if ((bool)single["search"]! || (bool)single["tools"]! || single["skills"]!.AsArray().Count != 0 || !(bool)withExtras["search"]! ||

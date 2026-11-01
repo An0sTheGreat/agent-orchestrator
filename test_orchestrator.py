@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+import re
 import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -2996,6 +2998,193 @@ class CodeTests(unittest.TestCase):
                 patch.object(orchestrator.sys, "stderr", err), self.assertRaises(SystemExit):
             orchestrator._run()
         self.assertIn("not allowed with argument", err.getvalue())
+
+
+class FakeModelServer:
+    """An OpenAI-compatible /v1/chat/completions on localhost that streams scripted replies (text, or tool calls as
+    (name, arguments) pairs) and records each request body."""
+
+    def __init__(self, replies):
+        self.replies, self.requests = list(replies), []
+        server = self
+
+        class Handler(orchestrator.http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                server.requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+                reply = server.replies.pop(0) if server.replies else "(no more replies)"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                if isinstance(reply, str):
+                    delta, finish = {"role": "assistant", "content": reply}, "stop"
+                else:
+                    delta, finish = {"role": "assistant", "tool_calls": [
+                        {"index": i, "id": f"call_{len(server.requests)}_{i}", "type": "function",
+                         "function": {"name": name, "arguments": json.dumps(args)}} for i, (name, args) in enumerate(reply)]}, "tool_calls"
+                for chunk in ({"choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+                              {"choices": [{"index": 0, "delta": {}, "finish_reason": finish}], "usage": {"prompt_tokens": 100, "completion_tokens": 5}}):
+                    self.wfile.write(b"data: " + json.dumps({"id": "x", "object": "chat.completion.chunk", "model": "fake-model", **chunk}).encode() + b"\n\n")
+                self.wfile.write(b"data: [DONE]\n\n")
+
+            def log_message(self, *args):
+                pass
+
+        self.http = orchestrator.http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.http.server_address[1]}/v1"
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.http.shutdown()
+        self.http.server_close()
+
+
+class LineAtomicTests(unittest.TestCase):
+    def test_a_line_from_another_thread_never_lands_inside_one_being_printed(self):
+        # print writes its text and its newline apart; another thread's whole line arrives in between
+        out = io.StringIO()
+        atomic = orchestrator.LineAtomic(out)
+        half_written, other_done = threading.Event(), threading.Event()
+
+        def event_line():
+            atomic.write('@@AO {"e":"delta"}')
+            half_written.set()
+            other_done.wait(5)
+            atomic.write("\n")
+
+        def log_line():
+            half_written.wait(5)
+            atomic.write("[pi] warning\n")
+            other_done.set()
+
+        threads = [threading.Thread(target=event_line), threading.Thread(target=log_line)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        atomic.write("\n")  # an empty line is kept
+        self.assertEqual(out.getvalue(), '[pi] warning\n@@AO {"e":"delta"}\n\n')
+
+
+def pi_available():
+    try:
+        orchestrator.pi_command()
+        return True
+    except orchestrator.WorkflowError:
+        return False
+
+
+@unittest.skipUnless(pi_available(), "Pi 1.x is not installed (set AGENT_ORCHESTRATOR_PI to its dist/cli.js)")
+class PiEngineTests(unittest.TestCase):
+    """The Pi engine end to end: real Pi in RPC mode, the bridge extension and the gateway, against a scripted model."""
+
+    setUp = CodeTests.setUp
+
+    def turn(self, replies, messages, **request):
+        fake = FakeModelServer(replies)
+        self.addCleanup(fake.close)
+        config = {"roles": {"planner": {"base_url": fake.url, "api_key": "k", "model": "fake-model",
+                                        "sampling": {"temperature": 0.3, "max_tokens": 2000}}}}
+        (self.cfg / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        req = self.cfg / "request.json"
+        req.write_text(json.dumps({"action": "chat", "engine": "pi", "folders": self.folders, "messages": messages,
+                                   "pi_home": str(self.cfg / "pi"), **request}), encoding="utf-8")
+        events, out = [], io.StringIO()
+        out.reconfigure = lambda **kw: None
+        self.log = out
+        argv = ["o", "--project", str(self.cfg), "--code", str(req), "--events"]
+        with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), patch.object(orchestrator.sys, "argv", argv), \
+                patch.object(orchestrator.sys, "stdout", out), patch.object(orchestrator.sys, "stderr", out):
+            code = orchestrator.main()
+        return code, events, fake.requests
+
+    def test_pi_works_in_the_grants_and_reports(self):
+        (self.root / "notes.txt").write_text("hello\n", encoding="utf-8")
+        (self.shared / "lib.py").write_text("x = 1\n", encoding="utf-8")
+        replies = [[("list_files", {})], [("read", {"path": "notes.txt"})],
+                   [("write", {"path": "app.py", "content": "print('hi')\n"}), ("write", {"path": "api_key.txt", "content": "x"}),
+                    ("edit", {"path": str(self.shared / "lib.py"), "edits": [{"oldText": "x = 1", "newText": "x = 2"}]})],
+                   [("todo", {"items": ["[x] app.py"]})], "Added app.py."]
+        code, events, requests = self.turn(replies, [{"role": "user", "content": "add app.py"}], session="conv-1")
+        self.assertEqual(code, 0)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Added app.py."])
+        self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "print('hi')\n")
+        self.assertFalse((self.root / "api_key.txt").exists())
+        self.assertEqual((self.shared / "lib.py").read_text(encoding="utf-8"), "x = 1\n")  # read-only folder
+        tools = {d["name"]: d["result"] for e, d in events if e == "tool"}
+        self.assertIn("notes.txt", tools["list_files"])
+        self.assertIn("hello", tools["read"])
+        self.assertIn("CHECKLIST", tools["todo"])
+        results = [(d["name"], d["result"]) for e, d in events if e == "tool"]
+        self.assertTrue(any(n == "write" and r.startswith("ERROR") and "protected" in r for n, r in results), results)
+        self.assertTrue(any(n == "edit" and r.startswith("ERROR") and "read-only" in r for n, r in results), results)
+        first = requests[0]
+        names = {t["function"]["name"] for t in first["tools"]}
+        self.assertTrue({"read", "edit", "write", "list_files", "search_files", "todo", "run_checks", "delegate"} <= names, names)
+        self.assertFalse({"bash", "grep", "find", "ls"} & names)
+        self.assertEqual((first["temperature"], first["max_tokens"]), (0.3, 2000))
+        system = first["messages"][0]["content"]
+        self.assertIn("You are the primary coding agent", system)
+        self.assertIn(f"{self.root} (write, project root)", system)
+        self.assertIn("init-project", system)  # the bundled skill, listed by Pi
+        self.assertIn(("done", {"role": "planner", "final": True}), events)
+        # the next turn continues the same Pi session: earlier tool results are in the request, no text re-seeding
+        msgs = [{"role": "user", "content": "add app.py"}, {"role": "assistant", "content": "Added app.py."},
+                {"role": "user", "content": "thanks"}]
+        code, events, requests = self.turn(["You're welcome."], msgs, session="conv-1")
+        sent = json.dumps(requests[0]["messages"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("Earlier in this conversation", sent)
+        self.assertIn("print('hi')", sent)  # the write call from turn one
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["You're welcome."])
+
+    def test_path_spellings_pi_rewrites_cannot_leave_the_grants(self):
+        # Pi rewrites @x, ~/x, file: URLs, /c/ paths and Unicode spaces after the guard; each is refused before it can.
+        (self.root / "api_key.txt").write_text("SECRET-KEY\n", encoding="utf-8")
+        (self.root / "notes.txt").write_text("hello\n", encoding="utf-8")
+        base = self.root.parent
+        spellings = [("read", {"path": "@api_key.txt"}), ("read", {"path": "@.git/config"}),
+                     ("write", {"path": "@../escaped.txt", "content": "x"}), ("write", {"path": "~/ao-pi-escape-probe.txt", "content": "x"}),
+                     ("read", {"path": (self.root / "api_key.txt").as_uri()}), ("read", {"path": "notes .txt"}),
+                     ("read", {"path": "/" + str(base)[0].lower() + str(base)[2:].replace("\\", "/") + "/cfg/config.json"})]
+        replies = [[call] for call in spellings] + [[("read", {"path": str(self.root / "notes.txt")})], "done"]
+        code, events, _ = self.turn(replies, [{"role": "user", "content": "probe"}])
+        self.assertEqual(code, 0)
+        results = [d["result"] for e, d in events if e == "tool"]
+        self.assertEqual(len(results), len(spellings) + 1, results)
+        for (_, args), result in zip(spellings, results):
+            self.assertTrue(result.startswith("ERROR") and "plain relative or absolute path" in result, (args, result))
+        self.assertNotIn("SECRET", "".join(results))
+        self.assertIn("hello", results[-1])  # a plain absolute path still works
+        self.assertFalse((base / "escaped.txt").exists())
+        self.assertFalse((Path.home() / "ao-pi-escape-probe.txt").exists())
+
+    def test_look_alike_folders_outside_the_grants_stay_out_of_reach(self):
+        # Pi turns a Unicode space in a path into a plain one, and its read tries look-alike spellings (curly quote) of a
+        # missing file: a sibling folder with the look-alike name must stay unreachable.
+        base = self.root.parent
+        for granted, sibling in (("my docs", "my docs"), ("it's", "it’s")):
+            (base / granted).mkdir()
+            (base / sibling).mkdir()
+            (base / sibling / "secret.txt").write_text("OUTSIDE\n", encoding="utf-8")
+            self.folders = [{"path": str(base / granted), "access": "write"}]
+            replies = [[("read", {"path": "secret.txt"})], [("write", {"path": "secret.txt", "content": "x"})], "done"]
+            code, events, _ = self.turn(replies, [{"role": "user", "content": "probe"}])
+            results = [d["result"] for e, d in events if e == "tool"]
+            with self.subTest(granted=granted):
+                self.assertEqual(code, 0)
+                self.assertEqual(len(results), 2, results)
+                self.assertTrue(results[0].startswith("ERROR"), results)
+                self.assertNotIn("OUTSIDE", "".join(results))
+                self.assertEqual((base / sibling / "secret.txt").read_text(encoding="utf-8"), "OUTSIDE\n")
+
+    def test_a_new_session_gets_the_earlier_messages_once(self):
+        msgs = [{"role": "user", "content": "we use plain JS"}, {"role": "assistant", "content": "noted"},
+                {"role": "user", "content": "go"}]
+        code, events, requests = self.turn(["ok"], msgs)  # no session id: in memory
+        self.assertEqual(code, 0)
+        user = json.dumps(requests[0]["messages"][-1])
+        self.assertIn("Earlier in this conversation", user)
+        self.assertIn("we use plain JS", user)
 
 
 class LeadTests(unittest.TestCase):
