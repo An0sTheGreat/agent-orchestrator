@@ -49,10 +49,12 @@ public sealed class ContextSnapshot
     }
 
     // (name, colour, tokens) per popup row, in bar order: the prompt's parts, this turn's reply, then free space.
+    // Claude's context colours: system prompt amber, system tools orange, MCP tools teal (here: tool results), skills
+    // grey, messages blue, autocompact buffer dark grey (here: the reply's reserved share), free space darkest grey.
     public static readonly (string Key, string Name, string Color)[] Categories =
     {
-        ("system", "System prompt", "#8C7AE6"), ("tools", "Tools", "#3FA7D6"), ("skills", "Skills", "#E07BB5"),
-        ("messages", "Messages", "#D9A441"), ("tool_results", "Tool results", "#5DAE8B"), ("reply", "Reply", "#E07856"),
+        ("system", "System prompt", "#C88705"), ("tools", "Tools", "#DD6122"), ("skills", "Skills", "#8E8E8E"),
+        ("messages", "Messages", "#3085E2"), ("tool_results", "Tool results", "#00A082"), ("reply", "Reply", "#595959"),
     };
 
     public List<(string Name, string Color, long Tokens)> Rows()
@@ -60,7 +62,7 @@ public sealed class ContextSnapshot
         var rows = Categories.Select(c => (c.Name, c.Color, c.Key == "reply" ? Completion : Parts.GetValueOrDefault(c.Key)))
             .Where(r => r.Item3 > 0).ToList();
         if (NCtx is > 0)
-            rows.Add(("Free space", "#8A8A8A", Math.Max(0, NCtx.Value - Used)));
+            rows.Add(("Free space", "#2F2F2F",Math.Max(0, NCtx.Value - Used)));
         return rows;
     }
 
