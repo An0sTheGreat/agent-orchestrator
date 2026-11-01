@@ -409,6 +409,8 @@ def environment_key(undo: bool, state_dir: Path, key: str = ENVIRONMENT_KEY) -> 
     stays readable to AppContainers, as Windows ships it."""
     saved = state_dir / f"{re.sub(r'[^A-Za-z0-9]+', '-', key).strip('-').lower()}.sddl"
     quoted = str(saved).replace("'", "''")  # inside PowerShell single quotes
+    if not undo and key == ENVIRONMENT_KEY and not environment_secrets() and not saved.is_file():
+        return f"{key}: no secret-looking variables, left readable (PowerShell needs it)"
     if undo:
         if not saved.is_file():
             return f"{key}: nothing to restore"
@@ -542,9 +544,10 @@ def shell_command(command: str, shell: str) -> str:
         return f'"{root}\\System32\\cmd.exe" /d /s /c "{command}"'
     # Plain text out: no progress records, and every stream (errors included) as text instead of CLIXML; the exit code
     # is the last native command's, else 1 when the command failed, else 0.
-    script = ("$ProgressPreference = 'SilentlyContinue'\n$global:LASTEXITCODE = 0\n"
+    # A non-terminating error (a refused write, say) also fails the command, so the model and the sandbox note see it.
+    script = ("$ProgressPreference = 'SilentlyContinue'\n$global:LASTEXITCODE = 0\n$Error.Clear()\n"
               f"try {{ & {{\n{command}\n}} *>&1 | Out-String -Stream -Width 250; $ok = $? }} catch {{ $_ | Out-String; $ok = $false }}\n"
-              "if ($global:LASTEXITCODE) { exit $global:LASTEXITCODE } elseif (-not $ok) { exit 1 } else { exit 0 }")
+              "if ($global:LASTEXITCODE) { exit $global:LASTEXITCODE } elseif (-not $ok -or $Error.Count) { exit 1 } else { exit 0 }")
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     return (f'"{root}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive '
             f"-ExecutionPolicy Bypass -EncodedCommand {encoded}")

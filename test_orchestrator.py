@@ -3079,6 +3079,9 @@ class SandboxTests(unittest.TestCase):
         if not sandbox.environment_protected():  # PowerShell reads HKCU\Environment as it starts
             code, output = self.run_(f"Set-Content -Path '{self.granted / 'ps.txt'}' -Value hi; Get-Content '{self.granted / 'ps.txt'}'", "powershell")
             self.assertEqual((code, output.strip()), (0, "hi"))  # plain text, no CLIXML
+            code, output = self.run_(f"Set-Content -Path '{self.outside / 'ps.txt'}' -Value bad", "powershell")
+            self.assertEqual(code, 1, output)  # a refused write fails the command, not just prints
+            self.assertIn("denied", output.lower())
         sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)  # the folder is no longer granted
         self.assertNotEqual(self.run_(f'type "{self.readonly / "data.txt"}"')[0], 0)
 
@@ -3095,6 +3098,12 @@ class SandboxTests(unittest.TestCase):
         self.assertEqual(self.run_(f'echo ok>"{self.granted / "b.txt"}"')[0], 0)
         sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)
         self.assertEqual([acl(self.granted / ".git"), acl(self.granted / ".git" / "config")], before)
+
+    def test_the_setup_leaves_a_secret_free_environment_readable(self):
+        with patch.object(sandbox, "environment_secrets", return_value=[]), patch.object(sandbox.subprocess, "run") as run_:
+            report = sandbox.environment_key(False, self.state)
+        self.assertIn("left readable", report)
+        run_.assert_not_called()  # the registry is not touched
 
     def test_the_grant_record_is_written_before_a_grant(self):
         state = json.loads((self.state / f"{self.name}.json").read_text(encoding="utf-8"))
@@ -3223,10 +3232,13 @@ class RunCommandTests(unittest.TestCase):
             self.assertIn("Use shell 'cmd'", run("dir", shell="powershell"))
 
     def test_commands_wait_for_the_environment_variables_to_be_hidden(self):
-        with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "run") as run_:
+        with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "run") as run_, \
+                patch.object(sandbox, "environment_secrets", return_value=["UNSLOTH_API_KEY"]):
             result = orchestrator.command_runner(self.folders, self.request)("dir", shell="cmd")
         self.assertIn("Set up sandbox access", result)
         run_.assert_not_called()
+        with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "environment_secrets", return_value=[]):
+            self.assertTrue(orchestrator.command_runner(self.folders, self.request)("echo ok", shell="cmd").startswith("EXIT 0"))  # nothing to hide
 
     def test_profile_folders_where_programs_live_are_never_granted(self):
         run = orchestrator.command_runner(self.folders, self.request)
