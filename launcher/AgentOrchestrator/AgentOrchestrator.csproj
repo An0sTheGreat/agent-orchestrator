@@ -6,6 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Agent Orchestrator</AssemblyName>
+    <!-- Shown at the bottom of Settings, with the git commit the SDK appends (+sha) -->
+    <Version>1.1.0</Version>
     <RootNamespace>AgentOrchestrator</RootNamespace>
     <DebugType>none</DebugType>
     <DebugSymbols>false</DebugSymbols>

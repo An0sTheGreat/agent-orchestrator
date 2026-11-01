@@ -1554,6 +1554,8 @@
                                Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     </Grid>
+                    <!-- The build's version and commit (App.VersionText), bottom left -->
+                    <TextBlock x:Name="AppVersionText" HorizontalAlignment="Left" Margin="0,36,0,0" FontSize="11" Foreground="{DynamicResource Muted}" />
                 </StackPanel>
             </ScrollViewer>
             </Border>

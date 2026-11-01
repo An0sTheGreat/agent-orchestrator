@@ -511,6 +511,16 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
 
+    // "Version 1.1.0 (abc1234)": the csproj Version and the commit the SDK appends to the informational version.
+    public static string VersionText(string? informational = null)
+    {
+        informational ??= typeof(LauncherLogic).Assembly
+            .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion ?? "";
+        var parts = informational.Split('+', 2);
+        return $"Version {parts[0]}" + (parts.Length == 2 && parts[1].Length >= 7 ? $" ({parts[1][..7]})" : "");
+    }
+
     // "v22.19.0" or newer (Pi's minimum Node.js).
     public static bool NodeVersionOk(string version) =>
         Version.TryParse(version.TrimStart('v').Split('-')[0], out var v) && v >= new Version(22, 19);
@@ -1761,6 +1771,9 @@ internal static class LauncherLogic
         var sandboxed = JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], sandboxNetwork: true))!;
         if ((bool)code["sandbox"]!["network"]! || !(bool)sandboxed["sandbox"]!["network"]! || (string)sandboxed["sandbox"]!["home"]! != SandboxHome)
             throw new InvalidOperationException("Sandbox request failed.");
+        if (VersionText("1.1.0+0123456789abcdef") != "Version 1.1.0 (0123456)" || VersionText("1.1.0") != "Version 1.1.0" ||
+            !VersionText().StartsWith("Version 1.1.0"))
+            throw new InvalidOperationException("The version text failed.");
         if (!NodeVersionOk("v22.19.0") || !NodeVersionOk("v24.14.1") || !NodeVersionOk("v23.0.0-nightly") || NodeVersionOk("v22.18.9") ||
             NodeVersionOk("v20.11.1") || NodeVersionOk("") || NodeVersionOk("node"))
             throw new InvalidOperationException("The Node.js version check failed.");

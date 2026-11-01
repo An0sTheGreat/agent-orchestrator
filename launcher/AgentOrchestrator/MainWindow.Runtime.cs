@@ -26,6 +26,7 @@ public partial class MainWindow
         RefreshLlamaStatus();
         InitPi();
         InitSandbox();
+        AppVersionText.Text = LauncherLogic.VersionText();
     }
 
     // Refused while a reply or run is using the models. Leaving the local runtime stops its server (frees the GPU for Unsloth).
