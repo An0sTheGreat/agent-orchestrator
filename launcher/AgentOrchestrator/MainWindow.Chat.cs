@@ -189,15 +189,17 @@ public partial class MainWindow
         foreach (var c in new[] { _chat, _code })
         {
             var mine = _chatBusy && _turn == c;
-            c.Input.IsEnabled = c.Plus.IsEnabled = c.Chip.IsEnabled = !_chatBusy;
+            c.Chip.IsEnabled = !_chatBusy; // typing (and attaching) stays open: Send queues while the models work
             c.Stop.Visibility = _chatBusy || runActive ? Visibility.Visible : Visibility.Collapsed;
             var hasInput = c.Input.Text.Trim().Length > 0 || AttachmentsOf(c).Count > 0;
-            c.Send.IsEnabled = !_chatBusy && !runActive && !_unloading && _workflowRoot is not null && hasInput;
-            c.Send.Visibility = c.Stop.Visibility == Visibility.Collapsed && hasInput ? Visibility.Visible : Visibility.Collapsed;
+            c.Send.IsEnabled = !runActive && _workflowRoot is not null && hasInput;
+            c.Send.Visibility = hasInput ? Visibility.Visible : Visibility.Collapsed;
+            c.Send.ToolTip = Queues ? "Queue (Enter): sent when the current reply finishes" : "Send (Enter)";
             // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
+            var queued = QueueOf(c).Count > 0 ? $" {QueueOf(c).Count} queued." : " Enter queues a message.";
             var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
-                : mine ? "Replying…" : _chatBusy ? $"{(_turn.IsCode == c.IsCode ? (c.IsCode ? "Another conversation's" : "Another chat's") : c.IsCode ? "A chat" : "A Code")} reply is using the models; wait for it to finish."
-                : _unloading ? "Unloading models…" : "";
+                : mine ? "Replying…" + queued : _chatBusy ? $"{(_turn.IsCode == c.IsCode ? (c.IsCode ? "Another conversation's" : "Another chat's") : c.IsCode ? "A chat" : "A Code")} reply is using the models;" + queued
+                : _unloading ? "Unloading models…" + queued : "";
             c.Busy.Text = status;
             c.Busy.ToolTip = status;
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -330,6 +332,7 @@ public partial class MainWindow
         Log($"Unloaded {unloaded} chat model(s)");
         _unloadsPending--;
         RefreshChatInput();
+        SendQueued(); // a message queued behind the unload
     }
 
     // ---- input
@@ -341,8 +344,8 @@ public partial class MainWindow
         if (e.Key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Shift) != 0)
             return; // Shift+Enter inserts a new line
         e.Handled = true;
-        if (ConvOf(sender).Send.IsEnabled && !_chatBusy)
-            Send(ConvOf(sender));
+        if (ConvOf(sender).Send.IsEnabled)
+            SendOrQueue(ConvOf(sender));
     }
 
     private void Send(Conversation c)
@@ -353,11 +356,7 @@ public partial class MainWindow
             SendChat();
     }
 
-    private void ChatSend_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_chatBusy)
-            Send(ConvOf(sender));
-    }
+    private void ChatSend_Click(object sender, RoutedEventArgs e) => SendOrQueue(ConvOf(sender));
 
     // The stop icon (and Ctrl+Shift+X): stops the project run, else the reply.
     private void StopWork_Click(object sender, RoutedEventArgs e)
@@ -431,6 +430,7 @@ public partial class MainWindow
     {
         if (_parked is not null && _parkedConv?.Id == id)
         {
+            Unqueue(_chat); // queued for the chat being left: back to the input, not sent into this one
             UnparkChatTurn();
             ShowView(chat: true);
             return;
@@ -475,6 +475,7 @@ public partial class MainWindow
 
     private void ClearConversation(Conversation c)
     {
+        Unqueue(c); // queued for the conversation being closed: back to the input, not sent into the next one
         c.Panel.Children.Clear();
         c.History.Clear();
         c.Tokens = 0;
@@ -488,12 +489,13 @@ public partial class MainWindow
 
     // ---- sending
 
-    private void SendChat()
+    // queued: a message from the queue instead of the composer (which keeps what is being typed).
+    private void SendChat(QueuedMessage? queued = null)
     {
-        var text = ComposeMessage(_chat, ChatInput.Text.Trim());
+        var text = queued is null ? ComposeMessage(_chat, ChatInput.Text.Trim()) : ComposeMessage(_chat, queued.Text, queued.Attachments);
         if (text.Length > 0)
             Forget(RunTurn(_chat, text, ChatTarget()!.Role, role => ChatRequest(role, text),
-                LauncherLogic.BuildChatStartInfo, "Chat"));
+                LauncherLogic.BuildChatStartInfo, "Chat", queued is not null));
     }
 
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
@@ -505,7 +507,7 @@ public partial class MainWindow
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.
     // True when the turn completed with a reply.
     private async Task<bool> RunTurn(Conversation c, string? text, string role, Func<string, string> buildRequest,
-        Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label)
+        Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label, bool queued = false)
     {
         if (_chatBusy || _process is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
             return false;
@@ -537,9 +539,9 @@ public partial class MainWindow
         var requestFile = _chatRequestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
         var exitCode = -1;
         string? failure = null;
-        StartTurn(c, text, role);
+        StartTurn(c, text, role, queued);
         var turn = ++_turnId;
-        if (text is not null)
+        if (text is not null && !queued)
             c.Input.Clear();
         try
         {
@@ -582,12 +584,13 @@ public partial class MainWindow
             _chatProcess = null;
             CleanupChatTemp();
         }
+        var completed = false;
         try
         {
             DrainLines();
             if (FinishChatTurn(exitCode, _chatStopRequested, failure))
                 Toast(c.IsCode ? "Code stopped" : "Chat stopped", "#F7C873");
-            return _turnCompleted;
+            return completed = _turnCompleted;
         }
         finally
         {
@@ -595,6 +598,8 @@ public partial class MainWindow
             if (_chatBusy && _turnId == turn)
                 SetChatBusy(false);
             RefreshCodeFolder(); // a folder change during the turn takes effect now that its history is saved
+            if (_turnId == turn)
+                AfterTurn(completed); // the next queued message, or the queue back into the input
         }
     }
 
@@ -621,7 +626,8 @@ public partial class MainWindow
 
     private void StartChatTurn(string text) => StartTurn(_chat, text, ChatTarget()?.Role ?? "");
 
-    private void StartTurn(Conversation c, string? text, string role)
+    // queued: the message came from the queue, so the composer's attachments belong to the next message and stay.
+    private void StartTurn(Conversation c, string? text, string role, bool queued = false)
     {
         _turn = c;
         _turnWorker = _settings.ChatWorker;
@@ -634,8 +640,11 @@ public partial class MainWindow
         {
             AddUserBubble(text, _pendingUserTime);
             SavePendingTurn(c, text);
-            AttachmentsOf(c).Clear(); // they went with this message
-            RefreshAttachments(c);
+            if (!queued)
+            {
+                AttachmentsOf(c).Clear(); // they went with this message
+                RefreshAttachments(c);
+            }
         }
         _reply = AddReply(role);
         _chatError = null;

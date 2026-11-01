@@ -1133,9 +1133,13 @@
                         <Grid>
                             <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                             <!-- Attached files, photos and folders (MainWindow.Attachments.cs), sent with the next message -->
-                            <WrapPanel x:Name="CodeAttachList" Margin="2,0,2,6" Visibility="Collapsed" />
+                            <StackPanel>
+                                <!-- Messages typed while the models work (MainWindow.Queue.cs), sent in order when the reply finishes -->
+                                <StackPanel x:Name="CodeQueueList" Margin="2,0,2,6" Visibility="Collapsed" />
+                                <WrapPanel x:Name="CodeAttachList" Margin="2,0,2,6" Visibility="Collapsed" />
+                            </StackPanel>
                             <Grid Grid.Row="1">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                 <Button x:Name="CodePlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
                                         VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder" />
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
@@ -1147,8 +1151,8 @@
                                         VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                     <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
                                 </Button>
-                                <!-- Send: an enter arrow, shown once there is text; the stop square takes its place while the models work. -->
-                                <Button x:Name="CodeSend" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                                <!-- Send: an enter arrow, shown once there is text; while the models work it queues the message, beside the stop square. -->
+                                <Button x:Name="CodeSend" Grid.Column="4" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
                                         VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
                                     <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
                                 </Button>
@@ -1404,9 +1408,13 @@
                     <Grid>
                         <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <!-- Attached files, photos and folders (MainWindow.Attachments.cs), sent with the next message -->
-                        <WrapPanel x:Name="ChatAttachList" Margin="2,0,2,6" Visibility="Collapsed" />
+                        <StackPanel>
+                            <!-- Messages typed while the models work (MainWindow.Queue.cs), sent in order when the reply finishes -->
+                            <StackPanel x:Name="ChatQueueList" Margin="2,0,2,6" Visibility="Collapsed" />
+                            <WrapPanel x:Name="ChatAttachList" Margin="2,0,2,6" Visibility="Collapsed" />
+                        </StackPanel>
                         <Grid Grid.Row="1">
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                             <Button x:Name="ChatPlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
                                     VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder" />
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
@@ -1418,8 +1426,8 @@
                                     VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
                                 <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
                             </Button>
-                            <!-- Send: an enter arrow, shown once there is text; the stop square takes its place while the models work. -->
-                            <Button x:Name="ChatSend" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                            <!-- Send: an enter arrow, shown once there is text; while the models work it queues the message, beside the stop square. -->
+                            <Button x:Name="ChatSend" Grid.Column="4" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
                                     VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
                                 <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
                             </Button>

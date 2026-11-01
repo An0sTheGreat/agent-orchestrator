@@ -1797,7 +1797,7 @@ public partial class MainWindow : Window
             var keepOk = seenC.IsEmpty && _loadedByChat.Count == 2 && !_unloading;
             ChatKeepToggle.IsChecked = false;
             ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs());
-            var sentWhileBusy = _unloading && !ChatSend.IsEnabled; // Send waits for the unload
+            var sentWhileBusy = _unloading && !ChatSend.IsEnabled; // nothing typed: no Send (with text it queues behind the unload)
             await _chatUnload;
             var switchOk = keepOk && sentWhileBusy && !_settings.ChatKeepLoaded && Posted("k1", "k2") && _loadedByChat.Count == 0 && !_unloading;
             ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs()); // already Off: nothing more to unload
@@ -2791,6 +2791,8 @@ public partial class MainWindow : Window
             return Fail();
         Snap("28-profile-card", profileCard);
         _profilePopup.IsOpen = false;
+        if (!await QueueSmoke(Snap))
+            return false;
         if (!await LocalRuntimeSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
@@ -2817,6 +2819,79 @@ public partial class MainWindow : Window
                     Snap("27-model-settings-" + theme);
                 }
             }
+        }
+        return true;
+    }
+
+    // --ui-smoke, queued messages: while a reply runs Send queues (input cleared, a row each, "n queued"); nothing is sent
+    // while busy; Edit and × take one out; a stopped turn and closing the conversation put the queue back in the input.
+    private async Task<bool> QueueSmoke(Action<string, FrameworkElement?> snap)
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        void Queue(string text)
+        {
+            ChatInput.Text = text;
+            ChatSend.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        }
+        ShowView(chat: true);
+        _chatBusy = true;
+        try
+        {
+            ChatInput.Text = "first";
+            RefreshChatInput();
+            if (!ChatInput.IsEnabled || !ChatSend.IsEnabled || ChatSend.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible)
+                return Fail();
+            Queue("first");
+            Queue("second");
+            await Task.Delay(200);
+            if (_chatQueue.Select(q => q.Text).SequenceEqual(["first", "second"]) is false || ChatInput.Text.Length != 0 ||
+                ChatQueueList is not { Visibility: Visibility.Visible, Children.Count: 2 } || !ChatBusyText.Text.Contains("2 queued"))
+                return Fail();
+            snap("29-queued-messages", ChatComposer);
+            SendQueued(); // busy: nothing goes out
+            if (_chatQueue.Count != 2)
+                return Fail();
+            Unqueue(_chat, _chatQueue[1]); // Edit
+            if (ChatInput.Text != "second" || _chatQueue.Count != 1)
+                return Fail();
+            Queue("second");
+            var remove = ((DockPanel)((Border)ChatQueueList.Children[0]).Child).Children.OfType<Button>().Single(b => (string)b.Tag == "RemoveQueued");
+            remove.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            if (_chatQueue.Select(q => q.Text).SequenceEqual(["second"]) is false || ChatQueueList.Children.Count != 1)
+                return Fail();
+            ChatInput.Text = "typing";
+            AfterTurn(completed: false);
+            if (ChatInput.Text != "second\n\ntyping" || _chatQueue.Count != 0 || ChatQueueList.Visibility != Visibility.Collapsed)
+                return Fail();
+            Queue("third");
+            ClearConversation(_chat);
+            if (ChatInput.Text != "third" || _chatQueue.Count != 0)
+                return Fail();
+            // A completed turn sends the next queued message; here the send is refused (no llama-server yet), so the
+            // message goes back before what is being typed, and no turn starts.
+            ChatInput.Clear();
+            Queue("auto");
+            ChatInput.Text = "draft";
+            var runtime = _settings.Runtime;
+            _settings.Runtime = LauncherLogic.LlamaRuntime;
+            var bubbles = _chat.Panel.Children.Count;
+            _chatBusy = false;
+            Queue("late"); // a queued message waits for it: Enter does not jump ahead
+            ChatInput.Text = "draft";
+            if (_chatQueue.Select(q => q.Text).SequenceEqual(["auto", "late"]) is false)
+                return Fail();
+            AfterTurn(completed: true);
+            await Task.Delay(300);
+            _settings.Runtime = runtime;
+            if (ChatInput.Text != "auto\n\nlate\n\ndraft" || _chatQueue.Count != 0 || _chatBusy || _chat.Panel.Children.Count != bubbles)
+                return Fail();
+        }
+        finally
+        {
+            _chatBusy = false;
+            _chatQueue.Clear();
+            ChatInput.Clear();
+            RefreshQueue(_chat);
         }
         return true;
     }

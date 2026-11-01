@@ -18,7 +18,7 @@ public partial class MainWindow
     // action "chat" sends the typed message; "write_project" asks the worker (the Planner, say) to write PROJECT.md from
     // the conversation so far, with no user message.
     // True when the turn completed with a reply.
-    private Task<bool> SendCode(string action = "chat", string? worker = null)
+    private Task<bool> SendCode(string action = "chat", string? worker = null, QueuedMessage? queued = null)
     {
         var project = SelectedProjectPath();
         if (project.Length == 0)
@@ -30,11 +30,11 @@ public partial class MainWindow
         if (RefuseWorkflowRoot(project))
             return Task.FromResult(false);
         _turnImages = [];
-        var text = action == "chat" ? ComposeMessage(_code, CodeInput.Text.Trim()) : null;
+        var text = action != "chat" ? null : queued is null ? ComposeMessage(_code, CodeInput.Text.Trim()) : ComposeMessage(_code, queued.Text, queued.Attachments);
         if (text is { Length: 0 } || !EnsureCodeConversation(project))
             return Task.FromResult(false);
         return RunTurn(_code, text, worker ?? CodeTarget()!.Role, role => CodeRequest(action, role, text, project),
-            LauncherLogic.BuildCodeStartInfo, $"Code ({action})");
+            LauncherLogic.BuildCodeStartInfo, $"Code ({action})", queued is not null);
     }
 
     // The request of a Code turn; text null: no user message.

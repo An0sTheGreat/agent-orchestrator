@@ -1015,7 +1015,7 @@ public partial class MainWindow
             RefreshChatInput();
             await Task.Delay(400);
             var top = (Grid)CodeStop.Parent;
-            if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || CodeBusyText.Text != "Replying…" || CodeStop.Visibility != Visibility.Visible ||
+            if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || !CodeBusyText.Text.StartsWith("Replying…") || CodeStop.Visibility != Visibility.Visible ||
                 Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeStop) - 1 || Grid.GetRow(CodeBusyText) != 0 ||
                 CodeBusyText.TranslatePoint(new Point(CodeBusyText.ActualWidth, 0), top).X > CodeStop.TranslatePoint(new Point(0, 0), top).X ||
                 CodeHint.Visibility == Visibility.Visible || CodeHint.Text.Contains("Replying") ||

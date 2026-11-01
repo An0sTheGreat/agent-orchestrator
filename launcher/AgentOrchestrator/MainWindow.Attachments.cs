@@ -110,10 +110,10 @@ public partial class MainWindow
     }
 
     // The message to send: the typed text, then the attached text files and folders after AttachMarker. The photos go to
-    // _turnImages. StartTurn clears the attachments once the message is sent.
-    private string ComposeMessage(Conversation c, string typed)
+    // _turnImages. StartTurn clears the attachments once the message is sent. attachments: a queued message's own list.
+    private string ComposeMessage(Conversation c, string typed, List<string>? attachments = null)
     {
-        var list = AttachmentsOf(c);
+        var list = attachments ?? AttachmentsOf(c);
         _turnImages = list.Where(p => File.Exists(p) && ImageExtensions.Contains(Path.GetExtension(p))).ToList();
         var body = new StringBuilder();
         foreach (var path in list)
