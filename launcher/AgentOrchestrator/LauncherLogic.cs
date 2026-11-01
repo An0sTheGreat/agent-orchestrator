@@ -329,11 +329,12 @@ internal static class LauncherLogic
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
         Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0,
-        string engine = "", string session = "", string piHome = "") =>
+        string engine = "", string session = "", string piHome = "", bool sandboxNetwork = false) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
             engine = engine == "pi" ? "pi" : "",
+            sandbox = new { network = sandboxNetwork, home = SandboxHome }, // run_command's AppContainer (sandbox.py)
             session, // the conversation id: the Pi engine keeps one Pi session per conversation
             pi_home = piHome,
             worker,
@@ -497,6 +498,7 @@ internal static class LauncherLogic
     public static string PiFolder => Path.Combine(AppSettings.DataRoot, "pi");
     public static string PiCli => Path.Combine(PiFolder, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js");
     public static string PiHome => Path.Combine(PiFolder, "home"); // Pi's per-turn config and the conversations' sessions
+    public static string SandboxHome => Path.Combine(AppSettings.DataRoot, "sandbox"); // run_command's grant records and temp folders
 
     // The installed Pi's version (its package.json), or null when Pi is not installed.
     public static string? InstalledPiVersion()
@@ -1756,6 +1758,9 @@ internal static class LauncherLogic
         if ((string)code["engine"]! != "" || (string)piRequest["engine"]! != "pi" || (string)piRequest["session"]! != "c1" ||
             (string)piRequest["pi_home"]! != @"Y:\data\pi\home" || (string)JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], engine: "x"))!["engine"]! != "")
             throw new InvalidOperationException("Code engine request failed.");
+        var sandboxed = JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], sandboxNetwork: true))!;
+        if ((bool)code["sandbox"]!["network"]! || !(bool)sandboxed["sandbox"]!["network"]! || (string)sandboxed["sandbox"]!["home"]! != SandboxHome)
+            throw new InvalidOperationException("Sandbox request failed.");
         if (!NodeVersionOk("v22.19.0") || !NodeVersionOk("v24.14.1") || !NodeVersionOk("v23.0.0-nightly") || NodeVersionOk("v22.18.9") ||
             NodeVersionOk("v20.11.1") || NodeVersionOk("") || NodeVersionOk("node"))
             throw new InvalidOperationException("The Node.js version check failed.");

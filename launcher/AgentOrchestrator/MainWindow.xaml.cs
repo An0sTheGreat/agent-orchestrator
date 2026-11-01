@@ -2795,6 +2795,8 @@ public partial class MainWindow : Window
             return false;
         if (!PiSmoke())
             return false;
+        if (!await ApprovalSmoke())
+            return false;
         if (!await LocalRuntimeSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
@@ -2823,6 +2825,40 @@ public partial class MainWindow : Window
             }
         }
         return true;
+    }
+
+    // --ui-smoke, sandbox approvals: an "approval" event shows the dialog and writes the answer, with the request's id, to
+    // the turn process's stdin (a real child process stands in for orchestrator.py); the network setting persists.
+    private async Task<bool> ApprovalSmoke()
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        var (choice, turn) = (_codeChoice, _chatProcess);
+        var asked = new List<string>();
+        var info = new ProcessStartInfo(LauncherLogic.FindPython()) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, CreateNoWindow = true };
+        foreach (var arg in new[] { "-c", "import sys; print(sys.stdin.readline().strip()); print(sys.stdin.readline().strip())" })
+            info.ArgumentList.Add(arg);
+        try
+        {
+            using var child = _chatProcess = Process.Start(info)!;
+            _codeChoice = title => { asked.Add(title); return asked.Count == 1 ? "allow" : null; }; // allow, then close the dialog
+            AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a1","kind":"network","detail":"npm install","reason":"deps"}""").RootElement);
+            AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a2","kind":"write","detail":"C:\\other\n\necho","reason":""}""").RootElement);
+            var output = await child.StandardOutput.ReadToEndAsync();
+            if (output.Replace("\r", "") != "{\"id\":\"a1\",\"allow\":true}\n{\"id\":\"a2\",\"allow\":false}\n" ||
+                !asked.SequenceEqual(["Allow network access?", "Allow writing in other folders?"]))
+                return Fail();
+        }
+        finally
+        {
+            (_codeChoice, _chatProcess) = (choice, turn);
+        }
+        var network = _settings.SandboxNetwork;
+        SandboxNetworkToggle.IsChecked = !network;
+        SandboxNetwork_Click(SandboxNetworkToggle, new RoutedEventArgs());
+        var saved = AppSettings.Load().SandboxNetwork;
+        SandboxNetworkToggle.IsChecked = network;
+        SandboxNetwork_Click(SandboxNetworkToggle, new RoutedEventArgs());
+        return saved == !network ? true : Fail();
     }
 
     // --ui-smoke, Code engine: the radios persist, a Code request names the engine, its Pi home and the conversation, and

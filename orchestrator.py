@@ -30,6 +30,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+import sandbox
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
@@ -3591,6 +3593,191 @@ CHECKS_TOOL = function_tool("run_checks", "Run the project's available checks (s
                             "validation commands) on the project root; returns a short result.", {}, [])
 CHAT_DELEGATIONS, SUB_REPORT_LIMIT, CHECKS_LIMIT, RESEARCH_LIMIT = 3, 4000, 3000, 8000
 
+# ---- run_command: a model's shell commands, always inside the host-side sandbox (sandbox.py: a Windows AppContainer)
+
+RUN_COMMAND_TOOL = function_tool(
+    "run_command", "Run one cmd or PowerShell command in a sandbox, starting in the project root: build, test, "
+    "run scripts, use git. It can write the granted write folders and read the read-only ones; the rest of the disk is "
+    "read-only or hidden, API keys are absent and the network is off unless the user allowed it. Returns the exit code and "
+    "the output. If the sandbox blocks something the task really needs, call again with request_network, or request_write "
+    "listing the folders, and a reason: the user is asked, and an approval holds for that one command.",
+    {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["powershell", "cmd"],
+                                             "description": "Default: PowerShell when the sandbox is set up for it, else cmd."},
+     "timeout_seconds": {"type": "integer", "description": "Default 120, at most 1800."},
+     "request_network": {"type": "boolean"}, "request_write": {"type": "array", "items": {"type": "string"}},
+     "reason": {"type": "string", "description": "Why the request is needed (shown to the user)."}}, ["command"])
+APPROVAL_LOCK = threading.Lock()
+COMMAND_MAX_TIMEOUT = 1800
+
+
+def ask_user(kind: str, detail: str, reason: str) -> bool:
+    """Asks the user through the launcher: an "approval" event, answered by one JSON line on stdin {"id", "allow"}.
+    Without a launcher (no --events, or stdin closed) the answer is no."""
+    if not EVENTS:
+        return False
+    with APPROVAL_LOCK:
+        ask = uuid.uuid4().hex
+        emit("approval", id=ask, kind=kind, detail=detail, reason=str(reason or "").strip())
+        while line := sys.stdin.readline():
+            try:
+                answer = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(answer, dict) and answer.get("id") == ask:
+                return answer.get("allow") is True
+        return False
+
+
+def overlaps(path: Path, other: Path) -> bool:
+    """`path` is `other`, lies in it, or holds it (case-insensitive, both resolved)."""
+    a, b = Path(os.path.normcase(str(path))), Path(os.path.normcase(str(other)))
+    return a == b or b in a.parents or a in b.parents
+
+
+def overlaps_root(path: str) -> bool:
+    """A folder that is, holds or lies in the Agent Orchestrator folder (prompts, config, api_key.txt): never granted to
+    the sandbox, read-only included (AppContainer grants cover a whole tree and cannot except a file)."""
+    return overlaps(Path(path).resolve(), ROOT)
+
+
+def never_writable(request: dict[str, Any]) -> list[Path]:
+    """Folders a command may never be granted write access to, approved or not: whatever there runs or is read later
+    with the user's own rights. The Agent Orchestrator folder, the launcher's data (the sandbox's grant records, Pi),
+    Python's installs and site-packages, Windows and the program folders, the Startup and PowerShell profile folders,
+    and every folder on PATH."""
+    import site
+    env = os.environ
+    found = [ROOT, Path(sys.prefix), Path(sys.base_prefix), Path(sys.exec_prefix), *map(Path, site.getsitepackages()),
+             Path(site.getusersitepackages()), Path(env.get("SystemRoot", r"C:\Windows")), Path(env.get("ProgramFiles", r"C:\Program Files")),
+             Path(env.get("ProgramFiles(x86)", r"C:\Program Files (x86)")), Path(env.get("ProgramData", r"C:\ProgramData")),
+             Path(env.get("APPDATA", str(Path.home()))) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup",
+             Path.home() / "Documents" / "WindowsPowerShell", Path.home() / "Documents" / "PowerShell",
+             *(Path(p) for p in env.get("PATH", "").split(os.pathsep) if p.strip())]
+    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    for raw in (settings.get("home"), request.get("pi_home")):
+        if raw:
+            found.append(Path(str(raw)).parent)  # the launcher's data folder
+    return [p.resolve() for p in found if str(p).strip()]
+
+
+def grantable(raw: Any, request: dict[str, Any]) -> str:
+    """A folder a command may be given write access to (after the user approves): a plain drive-letter path to an
+    existing local folder, named by its real path (no link, junction, UNC or \\\\?\\ spelling can stand in for another),
+    not a drive root or the user profile (or above it), and clear of never_writable (neither inside one nor holding one)."""
+    text = str(raw or "").strip()
+    if not re.fullmatch(r"[A-Za-z]:\\[^\\].*", text.replace("/", "\\")) or not Path(text).is_dir():
+        raise WorkflowError(f"request_write takes existing folders as plain absolute paths (C:\\...): {raw}")
+    try:
+        real = Path(sandbox.final_path(text))
+    except sandbox.SandboxError as exc:
+        raise WorkflowError(f"request_write: {exc}") from exc
+    profile, normal = Path(os.path.normcase(str(Path.home().resolve()))), Path(os.path.normcase(str(real)))
+    if normal in (profile, *profile.parents):
+        raise WorkflowError(f"{raw} is your user profile or holds it; name a folder inside it")
+    if profile in normal.parents:
+        first = normal.relative_to(profile).parts[0]
+        if first in ("appdata", "desktop") or first.startswith("."):  # app installs, settings, extensions, shortcuts
+            raise WorkflowError(f"{raw} is in AppData, Desktop or a dot-folder of your profile, where programs and settings "
+                                "live that run as you; commands can never be given write access there")
+    if real.parent == real or os.path.normcase(str(real)) != os.path.normcase(str(Path(text).resolve())):
+        raise WorkflowError(f"{raw} is a drive root, or a link to another folder: name the real folder")
+    blocked = next((p for p in never_writable(request) if overlaps(real, p)), None)
+    if blocked is not None:
+        raise WorkflowError(f"{raw} can never be granted to commands: it is, holds or lies in {blocked}")
+    return str(real)
+
+
+RUN_LOCK = threading.Lock()  # one sandboxed command at a time: an approval widens the container for that command alone
+
+
+def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_only: bool = False):
+    """The run_command handler for one turn. Every command runs in the conversation's AppContainer (the request's
+    "session"; read_only roles get their own, granted every folder read-only, and cannot ask for more) whose grants are
+    synced to the turn's folders on first use, plus a private temp folder. The request's "sandbox" holds {"network":
+    bool, "home": folder}. A request for the network or for more write folders asks the user; an approval widens the
+    sandbox for that command only. Output that looks like a blocked network call asks the user once whether to retry
+    with the network. Known secrets are removed from the output before the model sees it."""
+    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    home = Path(str(settings.get("home") or Path(tempfile.gettempdir()) / "agent-orchestrator-sandbox"))
+    name = sandbox.container_name(f"{request.get('session') or 'default'}{'.ro' if read_only else ''}")
+    temp, state = home / "tmp" / name, home / "grants"
+    grants = {f["path"]: "read" if read_only else f["access"] for f in folders if not overlaps_root(f["path"])}
+    grants[str(temp)] = "write"
+    synced: list[str] = []  # the container's SID and the default shell, once its grants are synced this turn
+    key_file = ROOT / "api_key.txt"
+    secrets = sandbox.secret_values([load_text(key_file).strip()] if key_file.is_file() else [])
+
+    def setup() -> str:
+        if not synced:
+            temp.mkdir(parents=True, exist_ok=True)
+            sid = sandbox.container_sid(name)[1]
+            sandbox.sync_grants(name, sid, grants, state)
+            for folder in grants:
+                sandbox.list_ancestors(folder)  # for PowerShell; names only
+            synced.extend([sid, "powershell" if sandbox.setup_done() else "cmd"])  # PowerShell needs the setup's drive roots
+        return synced[0]
+
+    def run_command(command: str, shell: str = "", timeout_seconds: Any = 120, request_network: bool = False,
+                    request_write: Any = None, reason: str = "") -> str:
+        command = str(command or "").strip()
+        if not command:
+            raise WorkflowError("the command is empty")
+        if shell not in ("", "powershell", "cmd"):
+            raise WorkflowError("shell must be 'powershell' or 'cmd'")
+        timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
+        if folders[0]["path"] not in grants:
+            raise WorkflowError("the project folder overlaps the Agent Orchestrator folder, so commands cannot run in it")
+        wanted = request_write if isinstance(request_write, list) else [request_write] if request_write else []
+        if wanted and read_only:
+            raise WorkflowError("a reviewer's commands cannot write; ask the lead")
+        extra = {grantable(raw, request): "write" for raw in wanted}
+        with RUN_LOCK:
+            try:
+                if not sandbox.environment_protected():
+                    return ("ERROR: commands are off until the user runs Settings > Command sandbox > Set up sandbox access: "
+                            "Windows lets sandboxed programs read their environment variables (API keys) until then.")
+                container = setup()
+                if shell == "powershell" and synced[1] != "powershell":
+                    return ("ERROR: PowerShell cannot start in the sandbox until the user runs Settings > Command sandbox > Set "
+                            "up sandbox access (once, as administrator). Use shell 'cmd' meanwhile.")
+                shell = shell or synced[1]
+                network = settings.get("network") is True
+                if request_network and not network:
+                    if not ask_user("network", command, reason):
+                        return "DENIED: the user did not allow network access for this command."
+                    network = True
+                if extra and not ask_user("write", "\n".join(extra) + "\n\n" + command, reason):
+                    return "DENIED: the user did not allow writing in those folders."
+                if extra:
+                    sandbox.sync_grants(name, container, {**grants, **extra}, state)
+                try:
+                    code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=network, timeout=timeout)
+                    if (code != 0 and not network and sandbox.NETWORK_BLOCKED.search(output)
+                            and ask_user("network", command, "The command seems to have been stopped from using the network.")):
+                        network = True
+                        code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=True, timeout=timeout)
+                finally:
+                    if extra:
+                        sandbox.sync_grants(name, container, grants, state)
+                quarantined = []
+                for dotgit in sandbox.unprotected_git(name, grants, state):  # a repository the command made: check it
+                    why = sandbox.risky_git(dotgit)
+                    if why and not ask_user("git", f"{dotgit}\n\n{why}", "A command made this git repository; git may run "
+                                            "its hooks or programs as you when it is used."):
+                        quarantined.append(sandbox.quarantine_git(dotgit))
+                sandbox.sync_grants(name, container, grants, state)  # every .git read-only from now on
+            except sandbox.SandboxError as exc:
+                raise WorkflowError(f"sandbox: {exc}") from exc
+        output = sandbox.redact(output, secrets)
+        head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
+        note = ("\nNOTE: this looks blocked by the sandbox. If the task really needs it, call run_command again with "
+                "request_write (the folders) or request_network and a reason; the user will be asked."
+                if code != 0 and not read_only and sandbox.BLOCKED.search(output) else "")
+        moved = "".join(f"\nNOTE: the user did not accept the repository it made; it was renamed to {q}" for q in quarantined)
+        return f"{head}{' (network allowed)' if network else ''}\n{output.strip() or '(no output)'}{note}{moved}"
+
+    return run_command
+
 
 def with_research(handlers: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     """`handlers` with web_search/fetch_page recording each result, and that record: a delegation hands it to the worker,
@@ -3627,9 +3814,10 @@ def handoff(brief: str, context: Any = "", files: Any = None, acceptance: Any = 
     return "\n\n".join(parts)
 
 
-def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
+def run_checks(config: dict[str, Any], folders: list[dict[str, str]], runner: Any = None) -> str:
     """The project-run checks that apply to the project root, one block each with the error details (file, line,
-    message, command output), clipped to CHECKS_LIMIT characters; a note when none apply."""
+    message, command output), clipped to CHECKS_LIMIT characters; a note when none apply. With `runner` (a turn's
+    run_command) the validation commands, which run the model's code, run in its sandbox instead of as the user."""
     root = Path(folders[0]["path"])
     files = [p.relative_to(root).as_posix() for p, is_dir in code_walk(root, folders)
              if not is_dir and p.suffix.lower() in {".py", ".js", ".mjs", ".cjs", ".json"}]
@@ -3641,18 +3829,25 @@ def run_checks(config: dict[str, Any], folders: list[dict[str, str]]) -> str:
     lines.append(behaviour_gate(root, config)[1].split("\nVisible elements", 1)[0])  # no text sample
     validations = config.get("validation_commands") or {}
     for name in validations:
-        status, _, output = execute_tool("run_validation", {"name": name}, root, [], validations, False).partition("\n")
+        if runner is not None and isinstance(validations[name], list) and validations[name]:
+            result = runner(subprocess.list2cmdline([str(a) for a in validations[name]]), shell="cmd", timeout_seconds=600)
+            head, _, output = result.partition("\n")
+            status = "PASSED" if head.startswith("EXIT 0") else f"FAILED ({head})"
+        else:
+            status, _, output = execute_tool("run_validation", {"name": name}, root, [], validations, False).partition("\n")
         lines.append(f"VALIDATION {name}: {status}\n{output[-1500:]}".rstrip())
     lines = [line for line in lines if line and line != "CODE CHECK: skipped (no JavaScript)"]
     return clip("\n".join(lines), CHECKS_LIMIT) or "No checks apply here (no Python, JavaScript or JSON files, no index.html, no validation commands)."
 
 
 def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[str, Any], str],
-              folders: list[dict[str, str]] | None, cap: int, back: tuple[str, str, str], research: list[str] | None = None):
+              folders: list[dict[str, str]] | None, cap: int, back: tuple[str, str, str], research: list[str] | None = None,
+              runners: tuple[Any, Any] | None = None):
     """The delegate tool's handler for one turn: at most `cap` sub-agents, each a fresh code_loop on its role (Planner
     fallback) with its prompts/sub_<worker>.txt and the handoff (brief, the lead's context fields and `research`). Every
     worker inherits the request's extras (web search, utilities, skills); with folders (Code) the implementer also gets the
-    file tools and the reviewer the read tools + run_checks. Sub-agents cannot delegate.
+    file tools and the reviewer the read tools + run_checks, and with `runners` (the turn's sandboxed run_command: the
+    writing one, the read-only one) the implementer and the reviewer get theirs. Sub-agents cannot delegate.
     `back` = (role, stage, title) of the caller, announced again when a delegation ends."""
     used = 0
 
@@ -3671,7 +3866,10 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
             if worker == "implementer":
                 tools, handlers = CODE_TOOLS[:5] + tools, {**read, **code_write_handlers(folders), **handlers}
             else:
-                tools, handlers = CODE_TOOLS[:3] + [CHECKS_TOOL] + tools, {**read, "run_checks": lambda: run_checks(config, folders), **handlers}
+                tools, handlers = CODE_TOOLS[:3] + [CHECKS_TOOL] + tools, {
+                    **read, "run_checks": lambda: run_checks(config, folders, runners[1] if runners else None), **handlers}
+            if runners:
+                tools, handlers = tools + [RUN_COMMAND_TOOL], {**handlers, "run_command": runners[worker != "implementer"]}
             note += f"\n\n{folders_context(folders)}"
         system = load_text(ROOT / "prompts" / f"sub_{worker}.txt").strip() + note
         emit("chat_stage", role=worker, stage="delegate", title=display_name(config, worker))
@@ -3696,7 +3894,7 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     the autonomous project run (the launcher's Start project does)."""
     tools, handlers, note, _ = lead_setup(config, folders, request, role)
     system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
-    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools
+    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools
     messages = compact_conversation(config, (role,), system, messages, tools, request)
     emit("chat_stage", role=role, stage="lead", title=display_name(config, role))
     return code_loop(config, role, system, messages, tools, handlers)
@@ -3714,9 +3912,11 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     lead_extras, research = with_research(extra_handlers)  # workers get the plain ones: their searches are not the lead's
     handlers = {**code_handlers(folders), **code_write_handlers(folders), **lead_extras}
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
-    handlers["run_checks"] = lambda: run_checks(config, folders)
+    runners = (command_runner(folders, request), command_runner(folders, request, read_only=True))
+    handlers["run_checks"] = lambda: run_checks(config, folders, runners[0])
+    handlers["run_command"] = runners[0]
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
-                                     (role, "lead", display_name(config, role)), research)
+                                     (role, "lead", display_name(config, role)), research, runners)
     return tools, handlers, note, [s for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()]
 
 
@@ -3834,7 +4034,7 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
 PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
 PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
-PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "delegate", "web_search", "fetch_page", "calculator",
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "web_search", "fetch_page", "calculator",
                     "current_time")
 PI_TOOL_RESULT_LIMIT = 6000
 
@@ -3967,7 +4167,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
 
     handlers["delegate"] = delegate
     specs = [{"name": t["function"]["name"], "description": t["function"]["description"], "parameters": t["function"]["parameters"]}
-             for t in CODE_TOOLS[:3] + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL] + tools if t["function"]["name"] in PI_GATEWAY_TOOLS]
+             for t in CODE_TOOLS[:3] + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools if t["function"]["name"] in PI_GATEWAY_TOOLS]
     home = Path(str(request.get("pi_home") or Path(tempfile.gettempdir()) / "agent-orchestrator-pi"))
     home.mkdir(parents=True, exist_ok=True)
     turn = Path(tempfile.mkdtemp(prefix="pi-turn-", dir=home))

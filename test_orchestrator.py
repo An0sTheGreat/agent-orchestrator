@@ -5,13 +5,17 @@ import re
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import orchestrator
+import sandbox
 
 REAL_RUN_AGENT = orchestrator.run_agent
 REAL_LLAMA_ALIVE = orchestrator.llama_alive
@@ -2918,8 +2922,8 @@ class CodeTests(unittest.TestCase):
         self.assertIn("FOLDERS", log[0]["system"])
         self.assertIn(f"{self.shared} (read)", log[0]["system"])
         self.assertEqual({t["function"]["name"] for t in log[0]["tools"]},
-                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "todo", "run_checks", "delegate",
-                          "load_skill"})
+                         {"list_files", "read_file", "search_files", "write_file", "replace_text", "todo", "run_checks", "run_command",
+                          "delegate", "load_skill"})
 
     def test_begin_work_from_project_md_stays_with_the_lead(self):
         # Scenario B: with a PROJECT.md the lead reads it and implements itself; nothing can start the project run or a worker.
@@ -3038,6 +3042,246 @@ class FakeModelServer:
         self.http.server_close()
 
 
+@unittest.skipUnless(os.name == "nt", "the command sandbox is a Windows AppContainer")
+class SandboxTests(unittest.TestCase):
+    """sandbox.py against the real OS: what a command in the AppContainer can and cannot reach."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.base = Path(tmp.name).resolve()
+        self.granted, self.outside, self.readonly, self.temp = (self.base / n for n in ("granted", "outside", "readonly", "tmp"))
+        for folder in (self.granted, self.outside, self.readonly):
+            folder.mkdir()
+        (self.outside / "secret.txt").write_text("outside secret\n", encoding="utf-8")
+        (self.readonly / "data.txt").write_text("readonly data\n", encoding="utf-8")
+        self.name = sandbox.container_name(f"test-{uuid.uuid4().hex[:8]}")
+        self.state = self.base / "state"
+        self.addCleanup(sandbox.revoke_all, self.name, self.state)
+        _, self.sid = sandbox.container_sid(self.name)
+        sandbox.sync_grants(self.name, self.sid, {str(self.granted): "write", str(self.readonly): "read", str(self.temp): "write"}, self.state)
+
+    def run_(self, command, shell="cmd", **kw):
+        return sandbox.run(self.name, command, str(self.granted), self.temp, shell=shell, **kw)
+
+    def test_writes_stay_in_the_grants_and_children_inherit_the_sandbox(self):
+        self.assertEqual(self.run_(f'echo ok>"{self.granted / "a.txt"}"&& type "{self.granted / "a.txt"}"'), (0, "ok\r\n"))
+        self.assertEqual(self.run_(f'type "{self.readonly / "data.txt"}"'), (0, "readonly data\r\n"))
+        for command in (f'echo bad> "{self.outside / "b.txt"}"', f'echo bad> "{self.readonly / "c.txt"}"', f'type "{self.outside / "secret.txt"}"',
+                        f'echo bad> "{Path.home() / "ao-sandbox-test-probe.txt"}"'):
+            code, output = self.run_(command)
+            self.assertNotEqual(code, 0, command)
+            self.assertIn("denied", output.lower(), command)
+        child = f"powershell -NoProfile -Command \"Set-Content -Path '{self.outside / 'child.txt'}' -Value x\""
+        self.assertNotEqual(self.run_(child)[0], 0)
+        self.assertEqual(sorted(p.name for p in self.outside.iterdir()), ["secret.txt"])
+        self.assertFalse((self.readonly / "c.txt").exists() or (Path.home() / "ao-sandbox-test-probe.txt").exists())
+        code, output = self.run_(f"Set-Content -Path '{self.granted / 'ps.txt'}' -Value hi; Get-Content '{self.granted / 'ps.txt'}'", "powershell")
+        self.assertEqual((code, output.strip()), (0, "hi"))  # plain text, no CLIXML
+        sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)  # the folder is no longer granted
+        self.assertNotEqual(self.run_(f'type "{self.readonly / "data.txt"}"')[0], 0)
+
+    def test_git_stays_read_only_and_its_acl_comes_back_exactly(self):
+        (self.granted / ".git" / "hooks").mkdir(parents=True)
+        (self.granted / ".git" / "config").write_bytes(b"[core]\n")
+        acl = lambda p: subprocess.run(["icacls", str(p)], capture_output=True, text=True).stdout.replace(str(p), "")
+        sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)  # the folder ungranted, as it was
+        before = [acl(self.granted / ".git"), acl(self.granted / ".git" / "config")]
+        sandbox.sync_grants(self.name, self.sid, {str(self.granted): "write", str(self.temp): "write"}, self.state)
+        for command in (f'echo x> "{self.granted / ".git" / "hooks" / "pre-commit"}"', f'echo x>> "{self.granted / ".git" / "config"}"'):
+            self.assertNotEqual(self.run_(command)[0], 0, command)
+        self.assertEqual(self.run_(f'type "{self.granted / ".git" / "config"}"'), (0, "[core]\n"))
+        self.assertEqual(self.run_(f'echo ok>"{self.granted / "b.txt"}"')[0], 0)
+        sandbox.sync_grants(self.name, self.sid, {str(self.temp): "write"}, self.state)
+        self.assertEqual([acl(self.granted / ".git"), acl(self.granted / ".git" / "config")], before)
+
+    def test_the_grant_record_is_written_before_a_grant(self):
+        state = json.loads((self.state / f"{self.name}.json").read_text(encoding="utf-8"))
+        extra = self.base / "extra"
+        extra.mkdir()
+        with patch.object(sandbox, "_icacls", side_effect=sandbox.SandboxError("killed mid-grant")):
+            with self.assertRaises(sandbox.SandboxError):
+                sandbox.sync_grants(self.name, self.sid, {**state["grants"], str(extra): "write"}, self.state)
+        recorded = json.loads((self.state / f"{self.name}.json").read_text(encoding="utf-8"))["grants"]
+        self.assertEqual(recorded.get(os.path.normcase(str(extra))), "write")  # so the next sync can undo it
+
+    def test_network_is_off_unless_granted_and_loopback_stays_closed(self):
+        hits = []
+
+        class Handler(orchestrator.http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+
+        server = orchestrator.http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        url = f"http://127.0.0.1:{server.server_address[1]}/probe"
+        for network in (False, True):
+            code, output = self.run_(f"(Invoke-WebRequest -UseBasicParsing {url} -TimeoutSec 5).StatusCode", "powershell", network=network)
+            self.assertNotEqual(code, 0, output)
+        self.assertEqual(hits, [])  # the model's own server (Unsloth, llama-server) is out of reach either way
+
+    def test_secrets_stay_out_and_a_timeout_ends_the_whole_tree(self):
+        with patch.dict(os.environ, {"AO_TEST_API_KEY": "sekrit", "AO_TEST_PLAIN": "visible"}):
+            code, output = self.run_("echo [%AO_TEST_API_KEY%] [%AO_TEST_PLAIN%] [%TEMP%]")
+        self.assertEqual(code, 0)
+        self.assertIn("[%AO_TEST_API_KEY%] [visible]", output)
+        self.assertIn(f"\\packages\\{self.name.lower()}\\ac\\temp]", output.lower())  # Windows' own, per container
+        late = self.granted / "late.txt"
+        started = time.time()
+        nap = "powershell -NoProfile -Command Start-Sleep"
+        code, _ = self.run_(f'start /b cmd /c "{nap} 3 & echo x> "{late}"" & {nap} 30', timeout=2)  # a background child
+        self.assertIsNone(code)
+        self.assertLess(time.time() - started, 15)
+        time.sleep(5)
+        self.assertFalse(late.exists())  # the background child died with the job
+
+
+@unittest.skipUnless(os.name == "nt", "the command sandbox is a Windows AppContainer")
+class RunCommandTests(unittest.TestCase):
+    """The engine's run_command: grants follow the turn's folders, more access only after the user approves it."""
+
+    def setUp(self):
+        CodeTests.setUp(self)
+        self.outside = self.root.parent / "outside"
+        self.outside.mkdir()
+        self.request = {"session": f"t{uuid.uuid4().hex[:8]}", "sandbox": {"home": str(self.cfg / "sb")}}
+        self.enterContext(patch.object(sandbox, "environment_protected", return_value=True))  # tested on its own below
+        for suffix in ("", ".ro"):
+            self.addCleanup(sandbox.revoke_all, sandbox.container_name(self.request["session"] + suffix), self.cfg / "sb" / "grants")
+
+    def test_runs_in_the_grants_and_asks_before_writing_elsewhere(self):
+        self.outside = Path.home() / f"ao-sandbox-test-{uuid.uuid4().hex[:8]}"  # grantable: not in AppData (as %TEMP% is)
+        self.outside.mkdir()
+        self.addCleanup(shutil.rmtree, self.outside, True)
+        run = orchestrator.command_runner(self.folders, self.request)
+        self.assertEqual(run(f'echo ok>"{self.root / "a.txt"}"&& type a.txt', shell="cmd"), "EXIT 0\nok")
+        result = run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd")
+        self.assertTrue(result.startswith("EXIT 1") and "request_write" in result, result)
+        asked = []
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append((kind, reason)) or False):
+            self.assertIn("DENIED", run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd", request_write=[str(self.outside)], reason="logs"))
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append((kind, reason)) or True):
+            self.assertTrue(run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd", request_write=[str(self.outside)]).startswith("EXIT 0"))
+        self.assertEqual(asked, [("write", "logs"), ("write", "")])
+        self.assertTrue((self.outside / "b.txt").exists())
+        self.assertTrue(run(f'echo y>"{self.outside / "c.txt"}"', shell="cmd").startswith("EXIT 1"))  # that approval was one command
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "can never be granted"):
+            run("echo", shell="cmd", request_write=[str(orchestrator.ROOT)])
+        reviewer = orchestrator.command_runner(self.folders, self.request, read_only=True)
+        self.assertTrue(reviewer(f'echo z>"{self.root / "r.txt"}"', shell="cmd").startswith("EXIT 1"))
+        self.assertEqual(reviewer("type a.txt", shell="cmd"), "EXIT 0\nok")
+
+    def test_request_write_refuses_every_spelling_of_what_must_stay_out(self):
+        run = orchestrator.command_runner(self.folders, self.request)
+        junction = self.root.parent / "to-root"
+        if subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(orchestrator.ROOT)], capture_output=True).returncode != 0:
+            self.skipTest("junctions unavailable")
+        self.addCleanup(os.rmdir, junction)  # removes the junction, not its target
+        drive = str(orchestrator.ROOT)[:2]
+        spellings = [str(orchestrator.ROOT), "\\\\?\\" + str(orchestrator.ROOT), f"\\\\localhost\\{drive[0]}$" + str(orchestrator.ROOT)[2:],
+                     str(junction), str(orchestrator.ROOT.parent), drive + "\\", str(Path.home()), str(Path.home().parent),
+                     str(Path(sys.prefix)), str(self.cfg / "sb"), "relative\\folder"]
+        asked = []
+        with patch.object(orchestrator, "ask_user", lambda *a: asked.append(a) or True):
+            for raw in spellings:
+                with self.subTest(raw), self.assertRaises(orchestrator.WorkflowError):
+                    run("echo", shell="cmd", request_write=[raw])
+        self.assertEqual(asked, [])  # refused before the user is asked
+        reviewer = orchestrator.command_runner(self.folders, self.request, read_only=True)
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "cannot write"):
+            reviewer("echo", shell="cmd", request_write=[str(self.outside)])
+
+    def test_secrets_are_removed_from_the_output_and_validations_run_sandboxed(self):
+        with patch.dict(os.environ, {"AO_TEST_TOKEN": "s3cr3t-value-123"}):
+            run = orchestrator.command_runner(self.folders, self.request)
+        (self.root / "leak.txt").write_text("token=s3cr3t-value-123\n", encoding="utf-8")
+        self.assertEqual(run("type leak.txt", shell="cmd"), "EXIT 0\ntoken=[secret removed]")
+        config = {"validation_commands": {"escape": ["cmd", "/c", f"echo x> {self.outside / 'v.txt'}"],
+                                          "inside": ["cmd", "/c", "echo ok> v.txt"]}}
+        checks = orchestrator.run_checks(config, self.folders, run)
+        self.assertIn("VALIDATION escape: FAILED (EXIT 1)", checks)
+        self.assertIn("VALIDATION inside: PASSED", checks)
+        self.assertFalse((self.outside / "v.txt").exists())
+        self.assertTrue((self.root / "v.txt").exists())
+
+    def test_commands_wait_for_the_environment_variables_to_be_hidden(self):
+        with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "run") as run_:
+            result = orchestrator.command_runner(self.folders, self.request)("dir", shell="cmd")
+        self.assertIn("Set up sandbox access", result)
+        run_.assert_not_called()
+
+    def test_profile_folders_where_programs_live_are_never_granted(self):
+        run = orchestrator.command_runner(self.folders, self.request)
+        home = Path.home()
+        made = []
+        for folder in (home / "AppData" / "Local" / f"ao-probe-{uuid.uuid4().hex[:6]}", home / f".ao-probe-{uuid.uuid4().hex[:6]}",
+                       home / "Desktop" / f"ao-probe-{uuid.uuid4().hex[:6]}"):
+            if folder.parent.is_dir():
+                folder.mkdir()
+                made.append(folder)
+                self.addCleanup(folder.rmdir)
+        self.assertTrue(made)
+        for folder in made:
+            with self.subTest(folder.name), self.assertRaisesRegex(orchestrator.WorkflowError, "AppData, Desktop or a dot-folder"):
+                run("echo", shell="cmd", request_write=[str(folder)])
+
+    def test_every_git_stays_read_only_and_a_new_risky_one_is_asked_about(self):
+        (self.root / ".git").mkdir()
+        (self.root / "sub" / ".git").mkdir(parents=True)
+        (self.root / "wt").mkdir()
+        (self.root / "wt" / ".git").write_bytes(b"gitdir: C:/elsewhere/.git/worktrees/wt\n")
+        run = orchestrator.command_runner(self.folders, self.request)
+        for target in (".git\\config", "sub\\.git\\config", "wt\\.git"):
+            with self.subTest(target):
+                self.assertTrue(run(f"echo x>> {target}", shell="cmd").startswith("EXIT 1"))
+        self.assertEqual((self.root / "wt" / ".git").read_bytes(), b"gitdir: C:/elsewhere/.git/worktrees/wt\n")
+        asked = []
+        make = "mkdir new\\.git & (echo [core]& echo fsmonitor = evil.exe)> new\\.git\\config"
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append(kind) or False):
+            result = run(make, shell="cmd")
+        self.assertEqual(asked, ["git"])
+        self.assertIn("renamed to", result)
+        self.assertFalse((self.root / "new" / ".git").exists())
+        self.assertEqual(len(list((self.root / "new").glob(".git.quarantined-*"))), 1)
+        with patch.object(orchestrator, "ask_user", lambda *a: asked.append("again") or True):
+            run("mkdir plain\\.git & echo [core]> plain\\.git\\config", shell="cmd")  # nothing risky: no question
+            self.assertTrue(run("echo x>> plain\\.git\\config", shell="cmd").startswith("EXIT 1"))  # read-only from then on
+        self.assertEqual(asked, ["git"])
+
+    def test_the_network_needs_the_setting_or_an_approval(self):
+        calls = []
+        with patch.object(sandbox, "run", lambda *a, **kw: calls.append(kw["network"]) or (0, "fine")):
+            run = orchestrator.command_runner(self.folders, self.request)
+            with patch.object(orchestrator, "ask_user", lambda *a: False):
+                self.assertIn("DENIED", run("curl x", shell="cmd", request_network=True))
+            with patch.object(orchestrator, "ask_user", lambda *a: True):
+                self.assertEqual(run("curl x", shell="cmd", request_network=True), "EXIT 0 (network allowed)\nfine")
+            self.assertEqual(run("dir", shell="cmd"), "EXIT 0\nfine")
+            allowed = orchestrator.command_runner(self.folders, {**self.request, "sandbox": {**self.request["sandbox"], "network": True}})
+            self.assertTrue(allowed("curl x", shell="cmd").startswith("EXIT 0 (network allowed)"))
+        self.assertEqual(calls, [True, False, True])
+
+    def test_ask_user_waits_for_its_own_answer_and_defaults_to_no(self):
+        events = []
+        stdin = io.StringIO('garbage\n{"id": "other", "allow": true}\n')
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
+                patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator.uuid, "uuid4", lambda: type("U", (), {"hex": "abc"})()):
+            stdin.write('{"id": "abc", "allow": true}\n')
+            stdin.seek(0)
+            self.assertTrue(orchestrator.ask_user("network", "curl x", "docs"))
+            self.assertFalse(orchestrator.ask_user("network", "curl x", ""))  # stdin ended: no
+        self.assertEqual(events[0], ("approval", {"id": "abc", "kind": "network", "detail": "curl x", "reason": "docs"}))
+        with patch.object(orchestrator, "EVENTS", False):
+            self.assertFalse(orchestrator.ask_user("network", "x", ""))  # no launcher to ask
+
+
 class LineAtomicTests(unittest.TestCase):
     def test_a_line_from_another_thread_never_lands_inside_one_being_printed(self):
         # print writes its text and its newline apart; another thread's whole line arrives in between
@@ -3103,8 +3347,13 @@ class PiEngineTests(unittest.TestCase):
         replies = [[("list_files", {})], [("read", {"path": "notes.txt"})],
                    [("write", {"path": "app.py", "content": "print('hi')\n"}), ("write", {"path": "api_key.txt", "content": "x"}),
                     ("edit", {"path": str(self.shared / "lib.py"), "edits": [{"oldText": "x = 1", "newText": "x = 2"}]})],
-                   [("todo", {"items": ["[x] app.py"]})], "Added app.py."]
-        code, events, requests = self.turn(replies, [{"role": "user", "content": "add app.py"}], session="conv-1")
+                   [("todo", {"items": ["[x] app.py"]})], [("run_command", {"command": "type app.py", "shell": "cmd"})], "Added app.py."]
+        session = f"conv-{uuid.uuid4().hex[:8]}"
+        for suffix in ("", ".ro"):
+            self.addCleanup(sandbox.revoke_all, sandbox.container_name(session + suffix), self.cfg / "sb" / "grants")
+        with patch.object(sandbox, "environment_protected", return_value=True):
+            code, events, requests = self.turn(replies, [{"role": "user", "content": "add app.py"}], session=session,
+                                               sandbox={"home": str(self.cfg / "sb")})
         self.assertEqual(code, 0)
         self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Added app.py."])
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "print('hi')\n")
@@ -3114,12 +3363,13 @@ class PiEngineTests(unittest.TestCase):
         self.assertIn("notes.txt", tools["list_files"])
         self.assertIn("hello", tools["read"])
         self.assertIn("CHECKLIST", tools["todo"])
+        self.assertEqual(tools["run_command"], "EXIT 0\nprint('hi')")  # sandboxed, through the gateway
         results = [(d["name"], d["result"]) for e, d in events if e == "tool"]
         self.assertTrue(any(n == "write" and r.startswith("ERROR") and "protected" in r for n, r in results), results)
         self.assertTrue(any(n == "edit" and r.startswith("ERROR") and "read-only" in r for n, r in results), results)
         first = requests[0]
         names = {t["function"]["name"] for t in first["tools"]}
-        self.assertTrue({"read", "edit", "write", "list_files", "search_files", "todo", "run_checks", "delegate"} <= names, names)
+        self.assertTrue({"read", "edit", "write", "list_files", "search_files", "todo", "run_checks", "run_command", "delegate"} <= names, names)
         self.assertFalse({"bash", "grep", "find", "ls"} & names)
         self.assertEqual((first["temperature"], first["max_tokens"]), (0.3, 2000))
         system = first["messages"][0]["content"]
@@ -3130,7 +3380,7 @@ class PiEngineTests(unittest.TestCase):
         # the next turn continues the same Pi session: earlier tool results are in the request, no text re-seeding
         msgs = [{"role": "user", "content": "add app.py"}, {"role": "assistant", "content": "Added app.py."},
                 {"role": "user", "content": "thanks"}]
-        code, events, requests = self.turn(["You're welcome."], msgs, session="conv-1")
+        code, events, requests = self.turn(["You're welcome."], msgs, session=session)
         sent = json.dumps(requests[0]["messages"])
         self.assertEqual(code, 0)
         self.assertNotIn("Earlier in this conversation", sent)
@@ -3203,9 +3453,9 @@ class LeadTests(unittest.TestCase):
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 1\n")
         self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["planner"] + ["reviewer"] * 2 + ["planner"])
         code_tools = [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "delegate", "load_skill"])
-        self.assertEqual(self.names(log[2]), code_tools[:5] + ["load_skill"])  # implementer: file tools + the extras, no delegate
-        self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks", "load_skill"])  # reviewer: read tools + run_checks
+        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "run_command", "delegate", "load_skill"])
+        self.assertEqual(self.names(log[2]), code_tools[:5] + ["load_skill", "run_command"])  # implementer: file tools + extras, no delegate
+        self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks", "load_skill", "run_command"])  # reviewer: read-only sandbox
         for sub, brief in ((log[2], "Write app.py: x = 1"), (log[5], "Check app.py")):
             self.assertEqual(sub["messages"], [{"role": "user", "content": f"OBJECTIVE\n{brief}"}])  # fresh context: the handoff only
             self.assertIn("FOLDERS", sub["system"])
@@ -4090,7 +4340,7 @@ class ExtrasTests(unittest.TestCase):
             test.doCleanups()
         names = [t["function"]["name"] for t in log[0]["tools"]]
         self.assertEqual(names, [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-                         + ["todo", "run_checks", "delegate", "calculator", "current_time", "fetch_page", "load_skill"])
+                         + ["todo", "run_checks", "run_command", "delegate", "calculator", "current_time", "fetch_page", "load_skill"])
         self.assertIn("UTILITIES\n", log[0]["system"])
 
 

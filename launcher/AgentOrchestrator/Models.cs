@@ -224,6 +224,8 @@ internal sealed class AppSettings
     public string ModelsFolder { get; set; } = ""; // llamacpp only: searched for GGUF files besides the Hugging Face cache; "" = none
     // Who runs a Code turn's agent loop: "" (the built-in engine) or "pi" (Pi from <data>\pi, LauncherLogic.PiCli).
     public string CodeEngine { get; set; } = "";
+    // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
+    public bool SandboxNetwork { get; set; }
     // Window position and size in device-independent pixels; null until the window has been closed once.
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }

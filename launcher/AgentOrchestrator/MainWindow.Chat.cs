@@ -971,6 +971,10 @@ public partial class MainWindow
                     compactReply.Content.Children.Add(note);
                 }
                 break;
+            case "approval": // the sandboxed run_command asks for network or more folders: the user decides
+                SetChatStatus("Waiting for your approval…");
+                AnswerApproval(ev);
+                break;
             case "code_project":
                 Log($"[{name}] wrote {Str(ev, "path")}");
                 Toast("PROJECT.md written");

@@ -25,6 +25,7 @@ public partial class MainWindow
         ShowModelsFolder();
         RefreshLlamaStatus();
         InitPi();
+        InitSandbox();
     }
 
     // Refused while a reply or run is using the models. Leaving the local runtime stops its server (frees the GPU for Unsloth).
