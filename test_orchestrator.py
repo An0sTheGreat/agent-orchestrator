@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import uuid
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -339,6 +340,21 @@ class OrchestratorTests(unittest.TestCase):
             client.complete("m", [], {})
         self.assertNotIn("enable_thinking", bodies[0])
         self.assertIs(bodies[2]["enable_thinking"], False)
+
+    def test_older_tool_results_go_to_the_model_as_a_note(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")])
+        messages = [{"role": "user", "content": "task"}]
+        for i in range(3):
+            messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function",
+                          "function": {"name": "list_files", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": f"c{i}", "content": "f\n" * 400}]
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}), \
+                patch.object(client, "context_size", return_value=None):
+            client.complete("m", messages, {})
+        sent = [m["content"] for m in bodies[0]["messages"] if m["role"] == "tool"]
+        self.assertTrue(sent[0].startswith("[older result of list_files"), sent[0])
+        self.assertEqual(sent[1:], ["f\n" * 400] * 2)
+        self.assertEqual(messages[2]["content"], "f\n" * 400)  # the history keeps it
 
     def test_discarded_attempt_is_closed_before_retry(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
@@ -788,6 +804,7 @@ class OrchestratorTests(unittest.TestCase):
         """A client with context size n_ctx; summary calls get `summary` (raised if an exception), others call main(n)."""
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role, client.context_size = "implementer", lambda: n_ctx
+        self.enterContext(patch.object(orchestrator, "STUB_OVER", 10**9))  # compaction alone: no older results sent as notes
         sent = []
 
         def answer(via, body):
@@ -2790,6 +2807,9 @@ class CodeTests(unittest.TestCase):
             def window_before_load(self):
                 return n_ctx
 
+            def context_size(self):
+                return n_ctx
+
             def ensure_model(self, role, interactive):
                 return "m"
 
@@ -2808,6 +2828,80 @@ class CodeTests(unittest.TestCase):
         return code, log, events, unloaded
 
     MSGS = [{"role": "user", "content": "add a readme"}]
+
+    def test_read_file_reads_a_window_of_lines_and_says_where_to_read_on(self):
+        (self.root / "big.py").write_text("\n".join(f"line {n}" for n in range(1, 701)), encoding="utf-8", newline="\n")
+        read = orchestrator.code_handlers(self.folders)["read_file"]
+        first = read("big.py").splitlines()
+        self.assertEqual((first[0], first[299], first[300]), ("line 1", "line 300", "... lines 1-300 of 700; read on with offset=301"))
+        self.assertEqual(read("big.py", offset=601).splitlines(), [f"line {n}" for n in range(601, 701)])
+        self.assertEqual(read("big.py", offset=10, limit=2), "line 10\nline 11\n... lines 10-11 of 700; read on with offset=12")
+        self.assertEqual(read("big.py", offset=900), "(the file has 700 lines)")
+        (self.root / "ends.py").write_text("a\nb\n", encoding="utf-8", newline="\n")  # a final newline is no extra line
+        self.assertEqual((read("ends.py"), read("ends.py", limit=1)), ("a\nb", "a\n... lines 1-1 of 2; read on with offset=2"))
+        (self.root / "huge.txt").write_text("\n".join(f"{n:09}" + "x" * 90 for n in range(1, 5001)), encoding="utf-8", newline="\n")
+        tail = read("huge.txt", offset=4999)  # 500 KB: past the 200 KB read ceiling, every line is reachable and counted
+        self.assertEqual(tail.splitlines()[0][:9], "000004999")
+        self.assertEqual(len(tail.splitlines()), 2)
+        self.assertIn("of 5000", read("huge.txt"))
+        cut = orchestrator.cap_result("read_file", "y" * 20_000 + "\nnext", {"offset": 7}, 1000)
+        self.assertTrue(cut.endswith("line 7 alone is longer than this, so use search_files or run_command for parts of it"), cut)
+
+    def test_tool_results_are_cut_to_a_share_of_the_context_window(self):
+        cap = orchestrator.cap_result
+        output = "EXIT 1\n" + "noise\n" * 1000 + "Error: the real failure"
+        cut = cap("run_command", output, {}, 1000)  # 13% of 1000 tokens = 455 characters
+        self.assertTrue(cut.startswith("EXIT 1\n") and cut.endswith("Error: the real failure"), cut)
+        self.assertLess(len(cut), 520)
+        listing = "\n".join(f"src/file{n}.py" for n in range(200))
+        cut = cap("list_files", listing, {}, 1000)  # 8%: 280 characters, at a line end
+        self.assertTrue(cut.split("\n... cut at")[0].endswith(".py") and "(8% of the context window)" in cut, cut)
+        self.assertEqual(len(cap("list_files", listing, {}, 100_000)), len(listing))  # a larger window keeps it all
+        text = "\n".join(f"line {n}" for n in range(10, 400))
+        cut = cap("read_file", text, {"offset": 10}, 1000)
+        shown = cut.split("\n... cut at")[0].splitlines()
+        self.assertTrue(cut.endswith(f"read on with offset={10 + len(shown)}"), cut)
+        self.assertEqual(len(cap("fetch_page", "x\n" * 20_000, {}, None).split("\n... cut at")[0]), 11_467)  # unknown: 32,768 tokens
+        self.assertEqual(cap("todo", "y" * 50_000, {}, 1000), "y" * 50_000)  # tools without a share are left alone
+
+    def test_a_tool_result_is_cut_before_the_model_sees_it(self):
+        for n in range(300):
+            (self.root / f"file{n:03}.txt").write_text("x", encoding="utf-8")
+        call = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "list_files", "arguments": "{}"}}]}
+        code, log, *_ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": [call, "done"]}, n_ctx=2000)
+        self.assertEqual(code, 0)
+        result = log[1]["messages"][-1]["content"]
+        self.assertIn("(8% of the context window)", result)
+        self.assertLess(len(result), 0.08 * 2000 * 3.5 + 100)
+
+    def test_the_pi_gateway_cuts_tool_results_to_the_window(self):
+        gateway = orchestrator.PiGateway({"list_files": lambda: "src/a.py\n" * 5000}, self.folders, 1000)
+        self.addCleanup(gateway.close)
+        request = urllib.request.Request(gateway.url, json.dumps({"tool": "list_files", "args": {}}).encode(),
+                                         {"Content-Type": "application/json", "x-ao-token": gateway.token})
+        with urllib.request.urlopen(request) as response:
+            result = json.loads(response.read())["result"]
+        self.assertIn("(8% of the context window)", result)
+        self.assertLess(len(result), 400)
+
+    def test_older_tool_results_are_sent_as_a_note(self):
+        big = "x = 1\n" * 200
+        messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
+        for i in range(4):
+            messages += [{"role": "assistant", "content": "", "tool_calls": [
+                {"id": f"c{i}", "type": "function", "function": {"name": "read_file", "arguments": json.dumps({"path": f"f{i}.py"})}}]},
+                {"role": "tool", "tool_call_id": f"c{i}", "content": big if i != 1 else "OK"}]
+        messages.insert(4, {"role": "user", "content": "TOOL RESULTS\nread_file: " + big + "list_files: a.py"})  # text mode, old
+        before = json.dumps(messages)
+        sent = orchestrator.slim_tool_results(messages)
+        self.assertEqual(json.dumps(messages), before)  # the history keeps every result
+        tool = [m["content"] for m in sent if m["role"] == "tool"]
+        self.assertTrue(tool[0].startswith('[older result of read_file {"path": "f0.py"} (1,200 characters, 201 lines) left out'), tool[0])
+        self.assertEqual(tool[1:], ["OK", big, big])  # short results and the last two rounds stay whole
+        self.assertTrue(sent[4]["content"].startswith("[older tool results of read_file, list_files ("), sent[4]["content"])
+        short = messages[:5]  # one assistant message: nothing is old yet
+        self.assertIs(orchestrator.slim_tool_results(short), short)
 
     def test_builtin_roles_keep_the_fixed_lead_prompt(self):
         # chat_system_prompt is for the Chat view: a Code turn's lead keeps prompts/lead.txt.
@@ -3474,6 +3568,32 @@ class PiEngineTests(unittest.TestCase):
         self.assertIn(("steered", {"role": "planner", "key": "k1"}), events)
         self.assertIn("also list the docs", json.dumps(requests[-1]["messages"]))  # the model saw it before its last call
         self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+
+    def test_pi_sends_older_tool_results_as_a_note(self):
+        for n in range(60):
+            (self.root / f"module_{n:02}.py").write_text("x", encoding="utf-8")
+        replies = [[("list_files", {})], [("list_files", {})], [("list_files", {})], [("list_files", {})], "Done."]
+        code, events, requests = self.turn(replies, [{"role": "user", "content": "look around"}])
+        self.assertEqual(code, 0)
+        results = [str(m.get("content")) for m in requests[-1]["messages"] if m.get("role") == "tool"]
+        self.assertEqual(len(results), 4)
+        self.assertTrue(all(r.startswith("[older result of list_files {}") for r in results[:2]), results[:2])
+        self.assertTrue(all("module_59.py" in r for r in results[2:]), results[2:])
+        self.assertIn("module_59.py", [d["result"] for e, d in events if e == "tool"][0])  # the launcher still shows it whole
+
+    def test_pi_reads_a_window_cut_to_its_share_of_the_context(self):
+        (self.root / "big.txt").write_text("\n".join(f"{n:04} " + "z" * 95 for n in range(1, 401)), encoding="utf-8", newline="\n")
+        (self.root / "short.txt").write_text("\n".join(f"{n}" for n in range(1, 401)), encoding="utf-8", newline="\n")
+        code, events, requests = self.turn([[("read", {"path": "big.txt"}), ("read", {"path": "short.txt"})], "Done."],
+                                           [{"role": "user", "content": "read it"}])
+        self.assertEqual(code, 0)
+        result, short = [str(m.get("content")) for m in requests[-1]["messages"] if m.get("role") == "tool"]
+        self.assertTrue(short.endswith("Use offset=301 to continue.]"), short[-200:])  # 300 lines by default, as read_file
+        limit = int(0.13 * 32768 * 3.5)  # the fake server reports no window: 32,768 tokens
+        shown = result.split("\n... cut at")[0].splitlines()
+        self.assertLessEqual(len(result.split("\n... cut at")[0]), limit)
+        self.assertTrue(result.endswith(f"read on with offset={1 + len(shown)}"), result[-200:])
+        self.assertEqual(shown[-1][:4], f"{len(shown):04}")
 
     def test_pi_works_in_the_grants_and_reports(self):
         (self.root / "notes.txt").write_text("hello\n", encoding="utf-8")
@@ -4544,8 +4664,8 @@ class ExtrasTests(unittest.TestCase):
                 patch.object(orchestrator, "web_request", lambda url, data=None: (page, "text/html")):
             self.assertEqual(orchestrator.fetch_page("https://example.com/a"), "TITLE: T & C\n\nT & C Hello\nworld")
         with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
-                patch.object(orchestrator, "web_request", lambda url, data=None: ("x" * 30_000, "text/plain")):
-            self.assertTrue(orchestrator.fetch_page("http://example.com/").endswith("truncated at 20000 characters"))
+                patch.object(orchestrator, "web_request", lambda url, data=None: ("x" * 130_000, "text/plain")):
+            self.assertTrue(orchestrator.fetch_page("http://example.com/").endswith("truncated at 100000 characters"))
         with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
                 patch.object(orchestrator, "web_request", lambda url, data=None: ("%PDF", "application/pdf")), \
                 self.assertRaisesRegex(orchestrator.WorkflowError, "not a text page"):

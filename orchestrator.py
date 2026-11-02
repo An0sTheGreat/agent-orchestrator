@@ -434,10 +434,10 @@ class ApiClient:
     ) -> dict[str, Any]:
         n_ctx = self.context_size()
         if n_ctx:  # compact before the window fills
-            if estimate_tokens(messages, tools) > compact_limit(n_ctx, sampling):
+            if estimate_tokens(slim_tool_results(messages), tools) > compact_limit(n_ctx, sampling):
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
-        body: dict[str, Any] = {"model": model, "messages": with_images(messages), **sampling}
+        body: dict[str, Any] = {"model": model, "messages": with_images(slim_tool_results(messages)), **sampling}
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
             for key in UNSLOTH_ONLY_FIELDS:
                 body.pop(key, None)
@@ -464,7 +464,8 @@ class ApiClient:
                 text = str(exc).lower()
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     if not compacted_on_error and self._compact(model, messages, sampling, tools, force=True):
-                        compacted_on_error = True  # body["messages"] is the same list, now compacted: retry once
+                        compacted_on_error = True  # retry once with the compacted history
+                        body["messages"] = with_images(slim_tool_results(messages))
                         continue
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
@@ -789,6 +790,34 @@ def require_vision(config: dict[str, Any], role: str) -> None:
     if TURN_IMAGES[1] and vision_off(config, role):
         raise WorkflowError(f"{display_name(config, role)} can't read the attached images: Disable vision is on in its model settings "
                             "(Memory). Turn it off and save (the vision projector takes extra VRAM), or send the message without images.")
+
+
+KEEP_TOOL_ROUNDS, STUB_OVER = 2, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
+
+
+def slim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages to send: tool results older than the last KEEP_TOOL_ROUNDS assistant messages, when longer than
+    STUB_OVER characters, become a one-line note (the model acted on them already, and can call the tool again). Native
+    "tool" messages and text-mode "TOOL RESULTS" user messages both count. The history itself keeps every result."""
+    rounds = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
+    if len(rounds) <= KEEP_TOOL_ROUNDS:
+        return messages
+    keep_from = rounds[-KEEP_TOOL_ROUNDS]
+    calls = {c.get("id"): c.get("function") or {} for m in messages[:keep_from] for c in (m.get("tool_calls") or [])}
+    sent = []
+    for i, m in enumerate(messages):
+        text = m.get("content")
+        if i < keep_from and isinstance(text, str) and len(text) > STUB_OVER and (
+                m.get("role") == "tool" or (m.get("role") == "user" and text.startswith("TOOL RESULTS\n"))):
+            if m.get("role") == "tool":
+                function = calls.get(m.get("tool_call_id"), {})
+                what = f"result of {function.get('name') or 'a tool'} {clip(str(function.get('arguments') or ''), 200)}"
+            else:  # text mode: one message holds the batch's "name: result" lines
+                what = "tool results of " + ", ".join(list(dict.fromkeys(re.findall(r"^(\w+): ", text[len("TOOL RESULTS\n"):], re.M)))[:5])
+            m = {**m, "content": f"[older {what} ({len(text):,} characters, {text.count(chr(10)) + 1} lines) left out to save context; "
+                                 "call the tool again if you need it]"}
+        sent.append(m)
+    return sent
 
 
 def with_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -3150,7 +3179,7 @@ def reply_text(message: dict[str, Any]) -> str:
 
 # ---- extras for Chat and Code turns: web search, utilities and skills, each switched on by the request
 
-WEB_TIMEOUT, WEB_MAX_BYTES, WEB_MAX_TEXT, WEB_MAX_RESULTS = 20, 2_000_000, 20_000, 8
+WEB_TIMEOUT, WEB_MAX_BYTES, WEB_MAX_TEXT, WEB_MAX_RESULTS = 20, 2_000_000, 100_000, 8  # WEB_MAX_TEXT: a ceiling; see TOOL_SHARE
 WEB_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AgentOrchestrator/1.0"
 EXTRA_TOOLS = {
     "web_search": function_tool("web_search", "Search the web (DuckDuckGo); returns titles, URLs and snippets.",
@@ -3446,11 +3475,39 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
 
 CODE_SKIP_DIRS = {".git", "node_modules", "bin", "obj", "__pycache__", ".venv"}
 CODE_MAX_SEARCH = 2_000_000  # bytes; search_files skips larger files
-CODE_MAX_ENTRIES, CODE_MAX_READ, CODE_MAX_HITS = 500, 200_000, 200
+CODE_MAX_ENTRIES, CODE_MAX_READ, CODE_MAX_HITS, CODE_READ_LINES = 250, 200_000, 75, 300
+# Each tool result is cut to a share of the calling model's context window (cap_result); the handlers' own limits above,
+# WEB_MAX_TEXT and sandbox.OUTPUT_LIMIT are only ceilings for large windows.
+TOOL_SHARE = {"run_command": 0.13, "read_file": 0.13, "fetch_page": 0.10, "search_files": 0.08, "list_files": 0.08}
+DEFAULT_WINDOW = 32_768  # tokens, when the model's window is unknown (some remote APIs)
+
+
+def cap_result(tool: str, result: str, arguments: dict[str, Any], n_ctx: int | None) -> str:
+    """`result` cut to TOOL_SHARE[tool] of the window (characters at estimate_tokens' 3.5 per token), at a line end.
+    run_command keeps its first third and last two thirds (errors are usually at the end); a cut read_file says the
+    offset to read on from."""
+    share = TOOL_SHARE.get(tool)
+    limit = int((share or 0) * (n_ctx or DEFAULT_WINDOW) * 3.5)
+    if not share or len(result) <= limit:
+        return result
+    if tool == "run_command":
+        head = limit // 3
+        return result[:head] + f"\n... {len(result) - limit} characters cut ...\n" + result[-(limit - head):]
+    kept = result[:limit].rsplit("\n", 1)[0]
+    note = f"\n... cut at {len(kept)} of {len(result)} characters ({share:.0%} of the context window)"
+    if tool == "read_file":
+        start = max(int(arguments.get("offset") or 1), 1)
+        note += (f"; read on with offset={start + kept.count(chr(10)) + 1}" if "\n" in result[:limit]
+                 else f"; line {start} alone is longer than this, so use search_files or run_command for parts of it")
+    return kept + note
+
+
 CODE_TOOLS = [
     function_tool("list_files", "List files and folders under a folder, recursively (default: the project root).",
                   {"path": {"type": "string"}}, []),
-    function_tool("read_file", "Read one UTF-8 text file.", {"path": {"type": "string"}}, ["path"]),
+    function_tool("read_file", f"Read one UTF-8 text file: {CODE_READ_LINES} lines from `offset` by default; the reply says "
+                  "where to read on.", {"path": {"type": "string"}, "offset": {"type": "integer", "description": "First line, from 1"},
+                                       "limit": {"type": "integer", "description": f"Lines to read (default {CODE_READ_LINES})"}}, ["path"]),
     function_tool("search_files", "Search text files for a Python regular expression; returns file:line: text hits.",
                   {"pattern": {"type": "string"}, "path": {"type": "string"}}, ["pattern"]),
     function_tool("write_file", "Create or replace one UTF-8 text file with complete content.",
@@ -3522,13 +3579,21 @@ def code_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
                 return "\n".join(entries[:CODE_MAX_ENTRIES] + [f"... truncated at {CODE_MAX_ENTRIES} entries"])
         return "\n".join(entries) or "(empty folder)"
 
-    def read_file(path: str) -> str:
+    def read_file(path: str, offset: Any = 1, limit: Any = CODE_READ_LINES) -> str:
         target = code_path(path, folders)
         if not target.is_file():
             raise WorkflowError(f"file does not exist: {path}")
-        data = target.read_bytes()
-        text = data[:CODE_MAX_READ].decode("utf-8", errors="replace")
-        return text + (f"\n... truncated at {CODE_MAX_READ} bytes of {len(data)}" if len(data) > CODE_MAX_READ else "")
+        text = target.read_bytes().decode("utf-8", errors="replace")
+        lines = text.split("\n")[:-1] if text.endswith("\n") else text.split("\n")  # a final newline ends the last line
+        start, count = max(int(offset or 1), 1), max(int(limit or CODE_READ_LINES), 1)
+        end = min(start - 1 + count, len(lines))
+        window = "\n".join(lines[start - 1:end]) if start <= len(lines) else f"(the file has {len(lines)} lines)"
+        size = len(window.encode("utf-8"))
+        if size > CODE_MAX_READ:  # a ceiling for a window of very long lines; cap_result cuts it to the window's share first
+            window = window.encode("utf-8")[:CODE_MAX_READ].decode("utf-8", errors="ignore") + f"\n... truncated at {CODE_MAX_READ} bytes of {size}"
+        if end < len(lines):
+            window += f"\n... lines {start}-{end} of {len(lines)}; read on with offset={end + 1}"
+        return window
 
     def search_files(pattern: str, path: str = "") -> str:
         try:
@@ -3633,7 +3698,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 arguments = json.loads(function.get("arguments") or "{}")
                 if tool not in handlers or not isinstance(arguments, dict):
                     raise WorkflowError(f"tool {tool!r} is unavailable" if tool not in handlers else "arguments must be an object")
-                result = handlers[tool](**arguments)
+                result = cap_result(tool, handlers[tool](**arguments), arguments, getattr(client, "context_size", lambda: None)())
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
@@ -4324,7 +4389,7 @@ class PiGateway:
     code_path; {"tool": name, "args": {...}} runs one of `handlers`. Replies {"result": text} or {"error": text}. Each
     request must carry the turn's random token. Tool calls run one at a time (delegations swap models)."""
 
-    def __init__(self, handlers: dict[str, Any], folders: list[dict[str, str]]):
+    def __init__(self, handlers: dict[str, Any], folders: list[dict[str, str]], n_ctx: int | None = None):
         self.token, lock = uuid.uuid4().hex, threading.Lock()
         gateway = self
 
@@ -4342,7 +4407,7 @@ class PiGateway:
                         if name not in handlers or not isinstance(args, dict):
                             raise WorkflowError(f"tool {name!r} is unavailable")
                         with lock:
-                            reply = {"result": str(handlers[name](**args))}
+                            reply = {"result": cap_result(name, str(handlers[name](**args)), args, n_ctx)}
                 except PermissionError:
                     self.send_response(403)
                     self.end_headers()
@@ -4445,9 +4510,10 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
 
     images = pi_images(TURN_IMAGES[1])
 
-    gateway = PiGateway(handlers, folders + [{"path": s, "access": "read"} for s in skills])  # Pi reads SKILL.md itself
+    gateway = PiGateway(handlers, folders + [{"path": s, "access": "read"} for s in skills], n_ctx)  # Pi reads SKILL.md itself
     env = {**os.environ, "PI_CODING_AGENT_DIR": str(turn), "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
-           "AO_GATEWAY": gateway.url, "AO_TOKEN": gateway.token, "AO_TOOLS": str(turn / "tools.json"), "AO_PI_KEY": client.api_key}
+           "AO_GATEWAY": gateway.url, "AO_TOKEN": gateway.token, "AO_TOOLS": str(turn / "tools.json"), "AO_PI_KEY": client.api_key,
+           "AO_READ_LINES": str(CODE_READ_LINES), "AO_READ_CHARS": str(int(TOOL_SHARE["read_file"] * n_ctx * 3.5))}  # Pi's read, as read_file
     title = display_name(config, role)
     emit("chat_stage", role=role, stage="lead", title=title)
     process = subprocess.Popen(command, cwd=folders[0]["path"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

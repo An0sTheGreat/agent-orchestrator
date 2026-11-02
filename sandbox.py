@@ -25,7 +25,7 @@ PREFIX = "AgentOrchestrator."
 NETWORK_CAPABILITIES = ("S-1-15-3-1",)  # internetClient: outbound internet only (no LAN, no listening, never loopback)
 WRITE_RIGHTS, READ_RIGHTS = "(OI)(CI)M", "(OI)(CI)RX"
 SECRET_ENV = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH", re.I)
-OUTPUT_LIMIT = 30_000
+OUTPUT_LIMIT = 100_000  # a ceiling: orchestrator.cap_result cuts output to a share of the model's context window
 
 
 class SandboxError(RuntimeError):

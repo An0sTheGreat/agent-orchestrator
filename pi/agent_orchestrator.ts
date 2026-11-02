@@ -60,7 +60,46 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
+	// orchestrator.py's slim_tool_results for Pi: in each request, a tool result older than the last KEEP_TOOL_ROUNDS
+	// assistant messages and longer than STUB_OVER characters becomes a one-line note. Pi's session keeps the full result.
+	const KEEP_TOOL_ROUNDS = 2, STUB_OVER = 600;
+	pi.on("context", async (event) => {
+		const rounds = event.messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
+		if (rounds.length <= KEEP_TOOL_ROUNDS) return undefined;
+		const keepFrom = rounds[rounds.length - KEEP_TOOL_ROUNDS];
+		const calls = new Map<string, string>();
+		for (const m of event.messages.slice(0, keepFrom))
+			if (m.role === "assistant")
+				for (const c of m.content) if (c.type === "toolCall") calls.set(c.id, JSON.stringify(c.arguments ?? {}).slice(0, 200));
+		const messages = event.messages.map((m, i) => {
+			if (i >= keepFrom || m.role !== "toolResult") return m;
+			const text = m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+			if (text.length <= STUB_OVER) return m;
+			const note = `[older result of ${m.toolName} ${calls.get(m.toolCallId) ?? ""} (${text.length.toLocaleString("en-US")} characters, ` +
+				`${text.split("\n").length} lines) left out to save context; call the tool again if you need it]`;
+			return { ...m, content: [{ type: "text" as const, text: note }] };
+		});
+		return { messages };
+	});
+
+	// Pi's read gets read_file's limits (orchestrator.py sends them): AO_READ_LINES lines unless the model sets a limit,
+	// and a result cut at a line end to AO_READ_CHARS (read_file's share of the window), saying where to read on.
+	const readLines = Number(process.env.AO_READ_LINES) || 0, readChars = Number(process.env.AO_READ_CHARS) || 0;
+	pi.on("tool_result", async (event) => {
+		if (event.toolName !== "read" || !readChars) return undefined;
+		const text = event.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+		if (text.length <= readChars || event.content.some((c) => c.type !== "text")) return undefined;
+		const head = text.slice(0, readChars), cut = head.lastIndexOf("\n");
+		const start = Math.max(Number(event.input.offset) || 1, 1);
+		const kept = cut > 0 ? head.slice(0, cut) : head;
+		const next = cut > 0 ? `read on with offset=${start + kept.split("\n").length}`
+			: `line ${start} alone is longer than this, so read parts of it another way`;
+		return { content: [{ type: "text", text: `${kept}\n... cut at ${kept.length} of ${text.length} characters (the read limit for this context window); ${next}` }] };
+	});
+
 	pi.on("tool_call", async (event) => {
+		if (event.toolName === "read" && readLines && (event.input as { limit?: unknown }).limit === undefined)
+			(event.input as { limit?: number }).limit = readLines;
 		if (!(event.toolName in GUARDED)) return undefined;
 		const input = event.input as { path?: unknown };
 		const [write, existing] = GUARDED[event.toolName];
