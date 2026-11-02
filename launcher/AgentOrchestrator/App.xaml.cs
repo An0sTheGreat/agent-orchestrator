@@ -36,6 +36,7 @@ public partial class App : Application
                 ShowActivated = false, ShowInTaskbar = false,
             };
             window.Show();
+            KeepBehind();
             window.Dispatcher.InvokeAsync(async () =>
             {
                 var ok = false;
@@ -63,6 +64,31 @@ public partial class App : Application
         MainWindow = new MainWindow();
         MainWindow.Show();
     }
+
+    // --ui-smoke runs behind the user's windows: every 100 ms each of this app's windows goes to the bottom of the z-order
+    // (not activated), and the foreground goes back to the window the user had when a check (maximize, a dialog) took it.
+    private static void KeepBehind()
+    {
+        var user = GetForegroundWindow();
+        var pid = (uint)Environment.ProcessId;
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        timer.Tick += (_, _) =>
+        {
+            foreach (Window w in Current.Windows)
+                if (new System.Windows.Interop.WindowInteropHelper(w).Handle is var hwnd && hwnd != IntPtr.Zero)
+                    SetWindowPos(hwnd, new IntPtr(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // HWND_BOTTOM; NOSIZE, NOMOVE, NOACTIVATE
+            var front = GetForegroundWindow();
+            if (user != IntPtr.Zero && front != user && GetWindowThreadProcessId(front, out var owner) != 0 && owner == pid)
+                SetForegroundWindow(user);
+        };
+        timer.Start();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
 
     // Appends to crash.log in the data folder; returns its path. Never throws: it runs while the app is failing.
     internal static string LogCrash(Exception? exception)
