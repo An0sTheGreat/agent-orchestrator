@@ -359,6 +359,33 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(sent[1:], ["f\n" * 400] * 2)
         self.assertEqual(messages[2]["content"], "f\n" * 400)  # the history keeps it
 
+    def test_ponytail_prompt_follows_the_system_prompt_when_on(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")] * 5)
+        with_system = [{"role": "system", "content": "You are the Planner."}, {"role": "user", "content": "task"}]
+        bare = [{"role": "user", "content": "task"}]
+        with patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}), \
+                patch.object(client, "context_size", return_value=None):
+            with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_PONYTAIL": "Ultra"}):
+                with patch.object(orchestrator, "EVENTS", True):
+                    client.complete("m", with_system, {})
+                    client.complete("m", bare, {})
+                with patch.object(client, "_request", lambda _m, _r, body: (bodies.append(body), self._reply("stop", content="ok"))[1]):
+                    client.complete("m", with_system, {})  # a quiet call (a title, a summary): EVENTS off
+            with patch.object(orchestrator, "EVENTS", True):
+                for level in ("", "off"):
+                    with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_PONYTAIL": level}):
+                        client.complete("m", with_system, {})
+        system = bodies[0]["messages"][0]["content"]
+        self.assertTrue(system.startswith("You are the Planner.\n\n=== PONYTAIL (ultra) ===\nYou are a lazy senior developer."), system[:120])
+        self.assertIn("The active level is ultra.", system)
+        self.assertEqual(len(bodies[0]["messages"]), 2)
+        self.assertEqual(bodies[1]["messages"][0]["role"], "system")  # none before: one of its own, first
+        self.assertTrue(bodies[1]["messages"][0]["content"].startswith("=== PONYTAIL (ultra) ==="))
+        for body in bodies[2:]:
+            self.assertEqual(body["messages"], with_system)
+        self.assertEqual(with_system[0]["content"], "You are the Planner.")  # the history keeps its own prompt
+
     def test_discarded_attempt_is_closed_before_retry(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role = "planner"
@@ -3635,6 +3662,14 @@ class PiEngineTests(unittest.TestCase):
         self.assertTrue(all(r.startswith("[older result of list_files {}") for r in results[:2]), results[:2])
         self.assertTrue(all("module_59.py" in r for r in results[2:]), results[2:])
         self.assertIn("module_59.py", [d["result"] for e, d in events if e == "tool"][0])  # the launcher still shows it whole
+
+    def test_pi_gets_the_ponytail_prompt_when_on(self):
+        with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_PONYTAIL": "lite"}):
+            code, _, requests = self.turn(["Done."], [{"role": "user", "content": "hi"}])
+        self.assertEqual(code, 0)
+        self.assertIn("=== PONYTAIL (lite) ===", str(requests[-1]["messages"][0].get("content")))
+        code, _, requests = self.turn(["Done."], [{"role": "user", "content": "hi"}])
+        self.assertNotIn("PONYTAIL", json.dumps(requests[-1]["messages"]))
 
     def test_pi_reads_a_window_cut_to_its_share_of_the_context(self):
         (self.root / "big.txt").write_text("\n".join(f"{n:04} " + "z" * 95 for n in range(1, 401)), encoding="utf-8", newline="\n")

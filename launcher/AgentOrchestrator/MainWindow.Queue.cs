@@ -26,6 +26,8 @@ public partial class MainWindow
     // A view with messages still queued queues the next one too (between a turn's end and SendQueued), so none jumps ahead.
     private void SendOrQueue(Conversation c)
     {
+        if (RunLocalCommand(c))
+            return;
         var behind = QueueOf(c).Count > 0;
         if (!Queues && !behind)
         {

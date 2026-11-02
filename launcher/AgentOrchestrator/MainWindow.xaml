@@ -1476,6 +1476,16 @@
                     </DockPanel>
                     <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
                                TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
+                    <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                    <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
+                        <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
+                    </WrapPanel>
+                    <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
+                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                     <DockPanel Margin="0,14,0,0">
                         <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />

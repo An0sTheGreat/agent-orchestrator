@@ -163,6 +163,7 @@ internal sealed class ConversationStore
 
     // To the top of the group's list, or of the ungrouped list when groupId is null.
     public bool MoveToGroup(string id, string? groupId) => MoveTo(id, groupId, null);
+    public string? GroupOf(string id) => _index.Groups.FirstOrDefault(g => g.Items.Contains(id))?.Id;
 
     // Into the group's list (the ungrouped one when groupId is null): at the top when at is null, else taking at's place
     // (a drop on a row: in the same list it lands after at when it came from above, so both directions move it).

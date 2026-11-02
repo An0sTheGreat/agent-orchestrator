@@ -130,6 +130,7 @@ public partial class MainWindow
         RefreshPermissions();
         InitAttachments();
         InitNotify();
+        RefreshPonytailSetting();
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;

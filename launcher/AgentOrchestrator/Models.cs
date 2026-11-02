@@ -226,6 +226,8 @@ internal sealed class AppSettings
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
+    // Ponytail (prompts/ponytail.txt) added after every model's system prompt: "" (off), lite, full or ultra (/ponytail).
+    public string Ponytail { get; set; } = "";
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)
     public string CommandPermissions { get; set; } = "safe"; // run_command: "ask", "safe" or "all" (the Code composer's permissions dropup)
     // Window position and size in device-independent pixels; null until the window has been closed once.

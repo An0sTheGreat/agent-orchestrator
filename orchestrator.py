@@ -437,7 +437,7 @@ class ApiClient:
             if estimate_tokens(slim_tool_results(messages, n_ctx), tools) > compact_limit(n_ctx, sampling):
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
-        body: dict[str, Any] = {"model": model, "messages": with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW)), **sampling}
+        body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))), **sampling}
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
             for key in UNSLOTH_ONLY_FIELDS:
                 body.pop(key, None)
@@ -465,7 +465,7 @@ class ApiClient:
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     if not compacted_on_error and self._compact(model, messages, sampling, tools, force=True):
                         compacted_on_error = True  # retry once with the compacted history
-                        body["messages"] = with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))
+                        body["messages"] = with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW)))
                         continue
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
@@ -841,6 +841,28 @@ class ToolResult(str):
         result = super().__new__(cls, text)
         result.images = images
         return result
+
+
+PONYTAIL_LEVELS = ("lite", "full", "ultra")
+
+
+def ponytail_block() -> str:
+    """The launcher's global Ponytail prompt (prompts/ponytail.txt, MIT, github.com/DietrichGebert/ponytail) at the level
+    AGENT_ORCHESTRATOR_PONYTAIL names (lite, full or ultra); "" when it is off."""
+    level = os.environ.get("AGENT_ORCHESTRATOR_PONYTAIL", "").strip().lower()
+    if level not in PONYTAIL_LEVELS:
+        return ""
+    return f"\n\n=== PONYTAIL ({level}) ===\n" + load_text(ROOT / "prompts" / "ponytail.txt").replace("{level}", level).strip() + "\n"
+
+
+def with_ponytail(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The messages with the Ponytail prompt after the system prompt (a system message of its own when there is none).
+    Only for the turn's own calls: a quiet call (a title, a summary) has EVENTS off and goes unchanged."""
+    if not EVENTS or not (block := ponytail_block()):
+        return messages
+    if messages and messages[0].get("role") == "system" and isinstance(messages[0].get("content"), str):
+        return [{**messages[0], "content": messages[0]["content"].rstrip() + block}, *messages[1:]]
+    return [{"role": "system", "content": block.strip()}, *messages]
 
 
 def with_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -4553,7 +4575,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
         "reserveTokens": n_ctx - compact_limit(n_ctx, sampling), "keepRecentTokens": 2048 if focus is not None else max(2048, n_ctx // 4)}}))
     save_text(turn / "tools.json", json.dumps(specs))
     note = re.sub(r"\n\nSKILLS\n.*?(?=\n\n|\Z)", "", note, flags=re.S)  # Pi lists the skills itself
-    save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}")
+    save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}{ponytail_block()}")
 
     command = [*pi_command(), "--mode", "rpc", "--offline", "-na", "-ne", "-e", str(PI_EXTENSION), "--no-mcp", "-nc", "-ns",
                *(arg for s in skills for arg in ("--skill", s)), "-np", "--no-themes", "--provider", "ao", "--model", model,

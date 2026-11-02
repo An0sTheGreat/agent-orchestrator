@@ -2908,6 +2908,8 @@ public partial class MainWindow : Window
         }
         if (!SkillCompletionSmoke(Snap))
             return false;
+        if (!LocalCommandSmoke())
+            return false;
         if (!await ApprovalSmoke())
             return false;
         if (!await LocalRuntimeSmoke())

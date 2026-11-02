@@ -68,6 +68,10 @@ public partial class MainWindow
     {
         LauncherLogic.ApplyRuntimeEnv(info, _settings.Runtime, LauncherLogic.LlamaServerPath, _settings.ModelsFolder);
         LauncherLogic.ApplyPiEnv(info, LauncherLogic.PiCli);
+        if (_settings.Ponytail is "lite" or "full" or "ultra") // orchestrator.ponytail_block
+            info.Environment["AGENT_ORCHESTRATOR_PONYTAIL"] = _settings.Ponytail;
+        else
+            info.Environment.Remove("AGENT_ORCHESTRATOR_PONYTAIL");
     }
 
     // Kills the server the engine recorded (only if that pid is still a llama-server). The Unsloth runtime never has one.
