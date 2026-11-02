@@ -127,6 +127,7 @@ public partial class MainWindow
         _code = new Conversation { IsCode = true, Panel = CodePanel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
             Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint, Busy = CodeBusyText };
         RefreshExtras();
+        RefreshPermissions();
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;

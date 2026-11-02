@@ -3610,14 +3610,23 @@ APPROVAL_LOCK = threading.Lock()
 COMMAND_MAX_TIMEOUT = 1800
 
 
-def ask_user(kind: str, detail: str, reason: str) -> bool:
+def command_key(command: str) -> str:
+    """What makes commands "similar" for the launcher's Allow similar: the program a command starts with, lowercase,
+    without its folder or extension ("npm test" and "npm install" -> "npm"; "& 'C:\\x\\tool.exe' -v" -> "tool")."""
+    words = re.findall(r"""'[^']*'|"[^"]*"|\S+""", str(command or "").strip().lstrip("&").strip())
+    first = words[0].strip("'\"") if words else ""
+    return Path(first.replace("\\", "/").split("/")[-1]).stem.lower()
+
+
+def ask_user(kind: str, detail: str, reason: str, key: str = "") -> bool:
     """Asks the user through the launcher: an "approval" event, answered by one JSON line on stdin {"id", "allow"}.
+    `key` lets the launcher answer later requests of the same kind and key itself (Allow similar for the chat).
     Without a launcher (no --events, or stdin closed) the answer is no."""
     if not EVENTS:
         return False
     with APPROVAL_LOCK:
         ask = uuid.uuid4().hex
-        emit("approval", id=ask, kind=kind, detail=detail, reason=str(reason or "").strip())
+        emit("approval", id=ask, kind=kind, detail=detail, reason=str(reason or "").strip(), key=key)
         while line := sys.stdin.readline():
             try:
                 answer = json.loads(line)
@@ -3694,10 +3703,13 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     """The run_command handler for one turn. Every command runs in the conversation's AppContainer (the request's
     "session"; read_only roles get their own, granted every folder read-only, and cannot ask for more) whose grants are
     synced to the turn's folders on first use, plus a private temp folder. The request's "sandbox" holds {"network":
-    bool, "home": folder}. A request for the network or for more write folders asks the user; an approval widens the
-    sandbox for that command only. Output that looks like a blocked network call asks the user once whether to retry
-    with the network. Known secrets are removed from the output before the model sees it."""
+    bool, "home": folder}. The request's "permissions" (the launcher's command permissions): "safe" (default) runs
+    commands without asking and asks before the network or more write folders; "ask" also asks before every command;
+    "all" grants network and write-folder requests without asking (grantable still refuses what it always refuses, and a
+    risky git repository still asks). An approval widens the sandbox for that command only. Output that looks like a
+    blocked network call asks once whether to retry with the network. Known secrets are removed from the output."""
     settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    mode = request.get("permissions") if request.get("permissions") in ("ask", "safe", "all") else "safe"
     home = Path(str(settings.get("home") or Path(tempfile.gettempdir()) / "agent-orchestrator-sandbox"))
     name = sandbox.container_name(f"{request.get('session') or 'default'}{'.ro' if read_only else ''}")
     temp, state = home / "tmp" / name, home / "grants"
@@ -3743,18 +3755,21 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                             "reads the user's environment variables, which are hidden from it). Use shell 'cmd'.")
                 shell = shell or synced[1]
                 network = settings.get("network") is True
+                key = command_key(command)
+                if mode == "ask" and not ask_user("command", command, reason, key):
+                    return "DENIED: the user did not allow this command."
                 if request_network and not network:
-                    if not ask_user("network", command, reason):
+                    if mode != "all" and not ask_user("network", command, reason, key):
                         return "DENIED: the user did not allow network access for this command."
                     network = True
-                if extra and not ask_user("write", "\n".join(extra) + "\n\n" + command, reason):
+                if extra and mode != "all" and not ask_user("write", "\n".join(extra) + "\n\n" + command, reason, "\n".join(sorted(extra))):
                     return "DENIED: the user did not allow writing in those folders."
                 if extra:
                     sandbox.sync_grants(name, container, {**grants, **extra}, state)
                 try:
                     code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=network, timeout=timeout)
-                    if (code != 0 and not network and sandbox.NETWORK_BLOCKED.search(output)
-                            and ask_user("network", command, "The command seems to have been stopped from using the network.")):
+                    if (code != 0 and not network and sandbox.NETWORK_BLOCKED.search(output) and (mode == "all" or ask_user(
+                            "network", command, "The command seems to have been stopped from using the network.", key))):
                         network = True
                         code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=True, timeout=timeout)
                 finally:

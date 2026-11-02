@@ -226,6 +226,7 @@ internal sealed class AppSettings
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
+    public string CommandPermissions { get; set; } = "safe"; // run_command: "ask", "safe" or "all" (the Code composer's permissions dropup)
     // Window position and size in device-independent pixels; null until the window has been closed once.
     public double? WindowLeft { get; set; }
     public double? WindowTop { get; set; }

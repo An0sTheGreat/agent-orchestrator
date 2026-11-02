@@ -13,21 +13,49 @@ public partial class MainWindow
 {
     // An "approval" event: the model asked for more than the sandbox gives (network, writing in other folders), or a
     // command made a git repository whose hooks or config could run programs. No answer (closing the dialog) is a no.
+    // Allow similar: per conversation (its id), the (kind, key) pairs the user allowed for the rest of this app session;
+    // a matching request in that conversation is answered yes without asking. The engine's key is the command's program
+    // (command, network) or the folders (write); a risky git repository is always asked about.
+    private readonly Dictionary<string, HashSet<(string Kind, string Key)>> _similarAllowed = new();
+
     private void AnswerApproval(JsonElement ev)
     {
-        var (kind, detail, reason) = (Str(ev, "kind"), Str(ev, "detail"), Str(ev, "reason"));
-        var (title, what, yes, no) = kind switch
+        var (kind, detail, reason, key) = (Str(ev, "kind"), Str(ev, "detail"), Str(ev, "reason"), Str(ev, "key"));
+        var conversation = RunningId ?? "";
+        var similar = kind != "git" && key.Length > 0;
+        bool allow;
+        if (similar && _similarAllowed.TryGetValue(conversation, out var rules) && rules.Contains((kind, key)))
         {
-            "network" => ("Allow network access?", "The model wants to use the network (internet) for this command:", "Allow once", "Deny"),
-            "git" => ("Keep this git repository?", "A command made a git repository that git could run programs from, as you:", "Keep it", "Quarantine it"),
-            _ => ("Allow writing in other folders?", "The model wants to write in these folders for this command " +
-                "(programs or settings kept there could later run with your rights):", "Allow once", "Deny"),
-        };
-        var after = kind == "git" ? "Quarantine renames its .git, so git ignores it; you can inspect it."
-            : "Allow it once? The command still runs in the sandbox; only this access is added, for this command only.";
-        var message = $"{what}\n\n{detail}" + (reason.Length > 0 ? $"\n\nReason given: {reason}" : "") + $"\n\n{after}";
-        var allow = Choose(title, message, (yes, "allow"), (no, "deny")) == "allow";
-        Log($"Sandbox: {(allow ? "allowed" : "denied")} {kind} for: {detail.Split('\n').LastOrDefault()}");
+            allow = true;
+            Log($"Sandbox: allowed {kind} for {key} (similar allowed earlier in this chat): {detail.Split('\n').LastOrDefault()}");
+        }
+        else
+        {
+            var (title, what, yes, no) = kind switch
+            {
+                "command" => ("Allow this command?", "The model wants to run this command (in the sandbox):", "Allow once", "Deny"),
+                "network" => ("Allow network access?", "The model wants to use the network (internet) for this command:", "Allow once", "Deny"),
+                "git" => ("Keep this git repository?", "A command made a git repository that git could run programs from, as you:", "Keep it", "Quarantine it"),
+                _ => ("Allow writing in other folders?", "The model wants to write in these folders for this command " +
+                    "(programs or settings kept there could later run with your rights):", "Allow once", "Deny"),
+            };
+            var after = kind == "git" ? "Quarantine renames its .git, so git ignores it; you can inspect it."
+                : "Allow it once? The command still runs in the sandbox; only this access is added, for this command only.";
+            if (similar)
+                after += "\n\nAllow similar commands for this session: " + (kind == "write" ? "writing in these folders" : $"{kind switch
+                    { "network" => "network access for", _ => "running" }} \"{key}\" commands") + " is allowed in this chat without asking again, until the app closes.";
+            var message = $"{what}\n\n{detail}" + (reason.Length > 0 ? $"\n\nReason given: {reason}" : "") + $"\n\n{after}";
+            var answer = similar ? Choose(title, message, (yes, "allow"), ("Allow similar commands for this session", "similar"), (no, "deny"))
+                : Choose(title, message, (yes, "allow"), (no, "deny"));
+            if (answer == "similar")
+            {
+                if (!_similarAllowed.TryGetValue(conversation, out var set))
+                    _similarAllowed[conversation] = set = new();
+                set.Add((kind, key));
+            }
+            allow = answer is "allow" or "similar";
+            Log($"Sandbox: {(allow ? "allowed" : "denied")} {kind}{(answer == "similar" ? $" (and similar: {key})" : "")} for: {detail.Split('\n').LastOrDefault()}");
+        }
         try
         {
             // the process that asked: a chat/Code turn's, else a project run's (one of the two runs at a time)

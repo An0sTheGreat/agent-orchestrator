@@ -128,7 +128,10 @@ public partial class MainWindow
         if (role == CodeLead)
             ShowContext(true, s);
         else
+        {
             RefreshContextSection();
+            RefreshCodeContextStack();
+        }
     }
 
     // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card drops to 0
@@ -140,6 +143,7 @@ public partial class MainWindow
             if (role != CodeLead && s.Used > 0)
                 _codeContexts[role] = new ContextSnapshot { NCtx = s.NCtx, Role = role };
         RefreshContextSection();
+        RefreshCodeContextStack();
     }
 
     // The view's latest snapshot: stored, and shown on its Context card (null: the empty ring; in Code, a new conversation).
@@ -200,10 +204,83 @@ public partial class MainWindow
         return _overlays[code] = new ContextOverlay { Card = card, Header = header, Body = body, Arrow = arrow };
     }
 
+    // Code: the context cards stack under the header, their right edges flush with Start project's: the lead's ("Main
+    // Context") first, then each other worker that worked in the chat. A card's header opens its breakdown below it (the
+    // lead's stays as last left, saved; the others for this app session).
+    private readonly HashSet<string> _openWorkerContexts = new();
+
+    private void RefreshCodeContextStack()
+    {
+        CodeContextRing.Visibility = Visibility.Collapsed; // the stack replaces the header button in Code
+        var entries = _codeContexts.OrderBy(p => p.Key != CodeLead).Select(p => (Role: p.Key, Snapshot: (ContextSnapshot?)p.Value)).ToList();
+        if (entries.All(e => e.Role != CodeLead))
+            entries.Insert(0, (CodeLead, null));
+        var stack = new StackPanel { Tag = "ContextStack" };
+        foreach (var (role, s) in entries)
+        {
+            var open = role == CodeLead ? _settings.ContextPinned : _openWorkerContexts.Contains(role);
+            var arrow = new TextBlock { Text = "▸", FontSize = 10, Margin = new Thickness(6, 1, 12, 0), VerticalAlignment = VerticalAlignment.Center,
+                RenderTransformOrigin = new Point(0.5, 0.55), RenderTransform = new RotateTransform(open ? 90 : 0) }.WithForeground("Muted");
+            var header = new Button { Padding = new Thickness(12, 5, 8, 5), Tag = role, ToolTip = "Show or hide the context breakdown",
+                Content = ContextFace(s, arrow, double.NaN, bordered: false, ContextTitle(role)) };
+            header.SetResourceReference(StyleProperty, "BareButton");
+            header.Click += (_, _) =>
+            {
+                if (role == CodeLead)
+                {
+                    _settings.ContextPinned = !_settings.ContextPinned;
+                    _settings.Save();
+                }
+                else if (!_openWorkerContexts.Remove(role))
+                    _openWorkerContexts.Add(role);
+                RefreshCodeContextStack();
+            };
+            var body = new Border { Padding = new Thickness(14, 2, 14, 12), Visibility = open ? Visibility.Visible : Visibility.Collapsed,
+                Child = s is null ? new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 }.WithForeground("Muted") : ContextBody(s, title: false) };
+            var card = new Border { Width = PinWidth, BorderThickness = new Thickness(1), Margin = new Thickness(0, 0, 0, 6), Tag = "ContextCard",
+                Child = new StackPanel { Children = { header, body } } };
+            card.SetResourceReference(Border.BackgroundProperty, "Card");
+            card.SetResourceReference(Border.BorderBrushProperty, "Border");
+            card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+            card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "AccentLight");
+            card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "Border");
+            stack.Children.Add(card);
+        }
+        CodeContextPin.Content = stack;
+        CodeContextPin.Visibility = Visibility.Visible;
+        if (CodeContextPin.Parent is FrameworkElement area && CodeStartButton.IsVisible)
+        {
+            area.UpdateLayout();
+            var right = CodeStartButton.TranslatePoint(new Point(CodeStartButton.ActualWidth, 0), area).X;
+            CodeContextPin.Margin = new Thickness(0, 6, Math.Max(0, area.ActualWidth - right), 0);
+        }
+    }
+
+    // While a collapsed-rail worker card is open, the context stack slides left out of its way, and back when it closes.
+    private void DodgeRailCard(bool open)
+    {
+        if (CodeContextPin.RenderTransform is not TranslateTransform shift)
+            CodeContextPin.RenderTransform = shift = new TranslateTransform();
+        var by = 0.0;
+        if (open && CodeContextPin.IsVisible && RailPopup.Child is FrameworkElement railCard && railCard.IsVisible)
+        {
+            var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+            var cardLeft = railCard.PointToScreen(new Point()).X;
+            var stackRight = CodeContextPin.PointToScreen(new Point(CodeContextPin.ActualWidth, 0)).X - shift.X * scale; // where it rests
+            by = Math.Min(0, (cardLeft - stackRight) / scale - 12);
+        }
+        shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(by, TimeSpan.FromMilliseconds(200)) { EasingFunction = Decelerate });
+    }
+
     private void RefreshContextPins()
     {
         foreach (var code in new[] { false, true })
         {
+            if (code)
+            {
+                RefreshCodeContextStack();
+                continue;
+            }
             var pin = code ? CodeContextPin : ChatContextPin;
             var ring = code ? CodeContextRing : ChatContextRing;
             var s = ContextOf(code);

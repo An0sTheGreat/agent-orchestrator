@@ -3200,9 +3200,9 @@ class RunCommandTests(unittest.TestCase):
         result = run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd")
         self.assertTrue(result.startswith("EXIT 1") and "request_write" in result, result)
         asked = []
-        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append((kind, reason)) or False):
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, reason)) or False):
             self.assertIn("DENIED", run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd", request_write=[str(self.outside)], reason="logs"))
-        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append((kind, reason)) or True):
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, reason)) or True):
             self.assertTrue(run(f'echo x>"{self.outside / "b.txt"}"', shell="cmd", request_write=[str(self.outside)]).startswith("EXIT 0"))
         self.assertEqual(asked, [("write", "logs"), ("write", "")])
         self.assertTrue((self.outside / "b.txt").exists())
@@ -3289,7 +3289,7 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual((self.root / "wt" / ".git").read_bytes(), b"gitdir: C:/elsewhere/.git/worktrees/wt\n")
         asked = []
         make = "mkdir new\\.git & (echo [core]& echo fsmonitor = evil.exe)> new\\.git\\config"
-        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason: asked.append(kind) or False):
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append(kind) or False):
             result = run(make, shell="cmd")
         self.assertEqual(asked, ["git"])
         self.assertIn("renamed to", result)
@@ -3313,6 +3313,27 @@ class RunCommandTests(unittest.TestCase):
             self.assertTrue(allowed("curl x", shell="cmd").startswith("EXIT 0 (network allowed)"))
         self.assertEqual(calls, [True, False, True])
 
+    def test_permission_modes_and_similar_command_keys(self):
+        # safe (default): commands run unasked, the network asks; ask: every command asks first (with its program as
+        # the key for Allow similar); all: network and write folders granted unasked. The sandbox runs in every mode.
+        self.outside = Path.home() / f"ao-sandbox-test-{uuid.uuid4().hex[:8]}"
+        self.outside.mkdir()
+        self.addCleanup(shutil.rmtree, self.outside, True)
+        calls, asked = [], []
+        with patch.object(sandbox, "run", lambda *a, **kw: calls.append(kw["network"]) or (0, "fine")), \
+                patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or False):
+            for mode in ("safe", "ask", "all", "bogus"):
+                run = orchestrator.command_runner(self.folders, {**self.request, "permissions": mode})
+                run("npm test", shell="cmd")
+                run("& 'C:\\tools\\Fetch.EXE' -v", shell="cmd", request_network=True)
+                run("echo", shell="cmd", request_write=[str(self.outside)])
+        self.assertEqual(asked, [("network", "fetch"), ("write", str(self.outside)),  # safe
+                                 ("command", "npm"), ("command", "fetch"), ("command", "echo"),  # ask: each command, denied
+                                 ("network", "fetch"), ("write", str(self.outside))])  # bogus: safe
+        self.assertEqual(calls, [False, False, True, False, False])  # safe npm; all: npm, fetch (network), echo; bogus npm
+        self.assertEqual([orchestrator.command_key(c) for c in ("python -m pytest", '"C:\\Program Files\\x\\tool.exe" a', ".\\build.ps1", "")],
+                         ["python", "tool", "build", ""])
+
     def test_ask_user_waits_for_its_own_answer_and_defaults_to_no(self):
         events = []
         stdin = io.StringIO('garbage\n{"id": "other", "allow": true}\n')
@@ -3322,7 +3343,7 @@ class RunCommandTests(unittest.TestCase):
             stdin.seek(0)
             self.assertTrue(orchestrator.ask_user("network", "curl x", "docs"))
             self.assertFalse(orchestrator.ask_user("network", "curl x", ""))  # stdin ended: no
-        self.assertEqual(events[0], ("approval", {"id": "abc", "kind": "network", "detail": "curl x", "reason": "docs"}))
+        self.assertEqual(events[0], ("approval", {"id": "abc", "kind": "network", "detail": "curl x", "reason": "docs", "key": ""}))
         with patch.object(orchestrator, "EVENTS", False):
             self.assertFalse(orchestrator.ask_user("network", "x", ""))  # no launcher to ask
 

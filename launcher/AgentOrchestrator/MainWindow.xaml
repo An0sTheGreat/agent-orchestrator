@@ -1141,8 +1141,10 @@
                             </StackPanel>
                             <Grid Grid.Row="1">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <Button x:Name="CodePlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
-                                        VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder" />
+                                <Button x:Name="CodePlus" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
+                                        VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder">
+                                    <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="14" Foreground="{DynamicResource TextPrimary}" /><!-- the icon font centres it, as New chat's + -->
+                                </Button>
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
@@ -1164,6 +1166,10 @@
                                 <Button x:Name="CodeEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
                                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
+                                    <!-- Command permissions (MainWindow.Permissions.cs): when run_command asks first; a dropup -->
+                                    <ToggleButton x:Name="CodePermissionsButton" Style="{StaticResource ChipToggle}" Click="Permissions_Click" AutomationProperties.Name="Command permissions">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72E;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock x:Name="CodePermissionsText" Text="Allow Safe  ▴" /></StackPanel>
+                                    </ToggleButton>
                                     <ToggleButton x:Name="CodeSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                                   ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Search" /></StackPanel>
@@ -1345,8 +1351,10 @@
                         </StackPanel>
                         <Grid Grid.Row="1">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                            <Button x:Name="ChatPlus" Style="{StaticResource GhostButton}" Content="+" FontSize="20" Width="34" Height="34" Padding="0,0,0,2"
-                                    VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder" />
+                            <Button x:Name="ChatPlus" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
+                                    VerticalAlignment="Bottom" Click="Plus_Click" ToolTip="Add files, photos or a folder" AutomationProperties.Name="Add files or a folder">
+                                    <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="14" Foreground="{DynamicResource TextPrimary}" /><!-- the icon font centres it, as New chat's + -->
+                                </Button>
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                      VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />

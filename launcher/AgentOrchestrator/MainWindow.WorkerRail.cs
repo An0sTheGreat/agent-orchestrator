@@ -24,6 +24,9 @@ public partial class MainWindow
             if (!RailPopup.Child.IsMouseOver && RailPopup.PlacementTarget is not { IsMouseOver: true })
                 RailPopup.IsOpen = false;
         };
+        // the Code context stack steps aside while a worker card is open (after layout: the card's place is known then)
+        RailPopup.Opened += (_, _) => Dispatcher.InvokeAsync(() => DodgeRailCard(true), System.Windows.Threading.DispatcherPriority.Loaded);
+        RailPopup.Closed += (_, _) => DodgeRailCard(false);
         SetWorkerRail(_settings.DetailsCollapsed);
     }
 

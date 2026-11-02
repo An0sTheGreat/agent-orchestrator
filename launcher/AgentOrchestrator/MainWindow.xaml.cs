@@ -151,7 +151,7 @@ public partial class MainWindow : Window
         try
         {
             File.WriteAllText(requestFile, LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
-                effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork));
+                effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions));
             var python = LauncherLogic.FindPython();
             var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once, requestFile);
             ApplyRuntime(startInfo);
@@ -2290,6 +2290,15 @@ public partial class MainWindow : Window
                     if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
                         string.Join("|", titles() ?? []) != "Main Context|Implementer Context")
                         return Fail();
+                    // The cards stack under the header, the lead's first, right edges flush with Start project's.
+                    await Settle();
+                    Snap("38-code-context-stack");
+                    var stacked = (CodeContextPin.Content as StackPanel)?.Children.OfType<Border>().ToList() ?? [];
+                    var stackArea = (FrameworkElement)CodeContextPin.Parent;
+                    double RightOf(FrameworkElement e) => e.TranslatePoint(new Point(e.ActualWidth, 0), stackArea).X;
+                    if (stacked.Count != 2 || ((stacked[0].Child as StackPanel)?.Children[0] as Button)?.Tag as string != "planner" ||
+                        Math.Abs(RightOf(stacked[0]) - RightOf(CodeStartButton)) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
+                        return Fail();
                     DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
                     if (_codeContexts["implementer"].Used != 0 || _codeContexts["implementer"].NCtx != 16000 || _codeContexts["planner"].Used != 8000)
                         return Fail();
@@ -2871,6 +2880,34 @@ public partial class MainWindow : Window
             {
                 (_codeChoice, _chatProcess, _process) = (choice, turn, run);
             }
+        // Allow similar: the next request of that kind and key in the same chat is answered yes unasked; another key asks.
+        {
+            var asked = new List<string>();
+            var lines = new ProcessStartInfo(LauncherLogic.FindPython()) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, CreateNoWindow = true };
+            foreach (var arg in new[] { "-c", "import sys\nfor _ in range(3): print(sys.stdin.readline().strip())" })
+                lines.ArgumentList.Add(arg);
+            try
+            {
+                using var child = _chatProcess = Process.Start(lines)!;
+                _codeChoice = title => { asked.Add(title); return asked.Count == 1 ? "similar" : null; };
+                foreach (var (id, key) in new[] { ("s1", "npm"), ("s2", "npm"), ("s3", "git") })
+                    AnswerApproval(JsonDocument.Parse($$"""{"e":"approval","id":"{{id}}","kind":"command","detail":"{{key}} x","reason":"","key":"{{key}}"}""").RootElement);
+                var read = child.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(read, Task.Delay(10000)) != read)
+                {
+                    child.Kill();
+                    return Fail();
+                }
+                if ((await read).Replace("\r", "") != "{\"id\":\"s1\",\"allow\":true}\n{\"id\":\"s2\",\"allow\":true}\n{\"id\":\"s3\",\"allow\":false}\n" ||
+                    !asked.SequenceEqual(["Allow this command?", "Allow this command?"]))
+                    return Fail();
+            }
+            finally
+            {
+                (_codeChoice, _chatProcess) = (choice, turn);
+                _similarAllowed.Clear();
+            }
+        }
         var network = _settings.SandboxNetwork;
         SandboxNetworkToggle.IsChecked = !network;
         SandboxNetwork_Click(SandboxNetworkToggle, new RoutedEventArgs());

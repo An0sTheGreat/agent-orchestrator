@@ -335,12 +335,13 @@ internal static class LauncherLogic
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
         Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0,
-        string engine = "", string session = "", string piHome = "", bool sandboxNetwork = false) =>
+        string engine = "", string session = "", string piHome = "", bool sandboxNetwork = false, string permissions = "safe") =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
             engine = engine == "pi" ? "pi" : "",
             sandbox = new { network = sandboxNetwork, home = SandboxHome }, // run_command's AppContainer (sandbox.py)
+            permissions = permissions is "ask" or "all" ? permissions : "safe", // when run_command asks first (orchestrator.command_runner)
             session, // the conversation id: the Pi engine keeps one Pi session per conversation
             pi_home = piHome,
             worker,
