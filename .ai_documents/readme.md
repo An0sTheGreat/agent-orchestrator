@@ -114,7 +114,7 @@ $p = Start-Process '.\launcher\AgentOrchestrator\bin\Release\net8.0-windows\win-
 $p.ExitCode
 ```
 
-Publish the single-file launcher to `dist\` and upload it to the `launcher` GitHub Release (the exe is not in git; close the app first):
+Publish the single-file launcher to `dist\` (close the app first), then commit and push `dist\Agent Orchestrator.exe`; it is stored with Git LFS, so other machines get it with `git pull`:
 
 ```powershell
 .\publish.ps1
