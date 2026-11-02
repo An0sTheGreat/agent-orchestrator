@@ -3439,7 +3439,7 @@ class PiEngineTests(unittest.TestCase):
 
     setUp = CodeTests.setUp
 
-    def turn(self, replies, messages, **request):
+    def turn(self, replies, messages, hook=None, **request):
         fake = FakeModelServer(replies)
         self.addCleanup(fake.close)
         config = {"roles": {"planner": {"base_url": fake.url, "api_key": "k", "model": "fake-model",
@@ -3452,10 +3452,28 @@ class PiEngineTests(unittest.TestCase):
         out.reconfigure = lambda **kw: None
         self.log = out
         argv = ["o", "--project", str(self.cfg), "--code", str(req), "--events"]
-        with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), patch.object(orchestrator.sys, "argv", argv), \
-                patch.object(orchestrator.sys, "stdout", out), patch.object(orchestrator.sys, "stderr", out):
+        with patch.object(orchestrator, "emit", lambda e, **d: (events.append((e, d)), hook and hook(e, d))), \
+                patch.object(orchestrator.sys, "argv", argv), patch.object(orchestrator.sys, "stdout", out), patch.object(orchestrator.sys, "stderr", out):
             code = orchestrator.main()
         return code, events, fake.requests
+
+    def test_a_steer_from_the_launcher_joins_the_running_turn(self):
+        read, write = os.pipe()
+        stdin, launcher = os.fdopen(read, encoding="utf-8"), os.fdopen(write, "w", encoding="utf-8")
+        self.addCleanup(stdin.close)
+
+        def send_now(event, data):  # the user's Send now while the first tool call runs
+            if event == "tool" and not launcher.closed:
+                launcher.write(json.dumps({"steer": "also list the docs", "key": "k1"}) + "\n")
+                launcher.close()
+
+        replies = [[("list_files", {})], [("list_files", {})], [("list_files", {})], "Done."]
+        with patch.object(orchestrator.sys, "stdin", stdin):
+            code, events, requests = self.turn(replies, [{"role": "user", "content": "look around"}], hook=send_now)
+        self.assertEqual(code, 0)
+        self.assertIn(("steered", {"role": "planner", "key": "k1"}), events)
+        self.assertIn("also list the docs", json.dumps(requests[-1]["messages"]))  # the model saw it before its last call
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
 
     def test_pi_works_in_the_grants_and_reports(self):
         (self.root / "notes.txt").write_text("hello\n", encoding="utf-8")
