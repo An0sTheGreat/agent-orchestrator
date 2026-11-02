@@ -532,6 +532,15 @@ internal static class LauncherLogic
     public static bool NodeVersionOk(string version) =>
         Version.TryParse(version.TrimStart('v').Split('-')[0], out var v) && v >= new Version(22, 19);
 
+    // PATH after an install: the machine then user registry entries (expanded), then this process's other entries, without
+    // duplicates (case-insensitive, a trailing \ ignored).
+    public static string MergePath(string? current, string? machine, string? user)
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        return string.Join(';', $"{machine};{user};{current}".Split(';').Select(p => Environment.ExpandEnvironmentVariables(p.Trim()))
+            .Where(p => p.Length > 0 && seen.Add(p.TrimEnd('\\'))));
+    }
+
     // Points an orchestrator process at the installed Pi (the engine's AGENT_ORCHESTRATOR_PI); never an inherited value.
     public static void ApplyPiEnv(ProcessStartInfo info, string piCli)
     {
@@ -1787,6 +1796,9 @@ internal static class LauncherLogic
         if (!NodeVersionOk("v22.19.0") || !NodeVersionOk("v24.14.1") || !NodeVersionOk("v23.0.0-nightly") || NodeVersionOk("v22.18.9") ||
             NodeVersionOk("v20.11.1") || NodeVersionOk("") || NodeVersionOk("node"))
             throw new InvalidOperationException("The Node.js version check failed.");
+        if (MergePath(@"C:\app;C:\Windows\", @"C:\Windows;C:\Program Files\nodejs\", @"%SystemRoot%\x;;") !=
+            @"C:\Windows;C:\Program Files\nodejs\;" + Environment.ExpandEnvironmentVariables(@"%SystemRoot%\x") + @";C:\app")
+            throw new InvalidOperationException("The PATH merge failed.");
         var withExtras = JsonNode.Parse(BuildChatRequest("implementer", chat, new(true, false, [@"Y:\skills\a"])))!;
         var codeExtras = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], new(false, true, [])))!;
         if ((bool)single["search"]! || (bool)single["tools"]! || single["skills"]!.AsArray().Count != 0 || !(bool)withExtras["search"]! ||

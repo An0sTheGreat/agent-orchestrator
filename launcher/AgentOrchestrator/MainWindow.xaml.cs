@@ -2864,7 +2864,7 @@ public partial class MainWindow : Window
             return false;
         if (!await SteerSmoke())
             return false;
-        if (!PiSmoke())
+        if (!PiSmoke() || !await NodeSmoke())
             return false;
         if (!await LlamaPollSmoke())
             return false;
@@ -3016,6 +3016,29 @@ public partial class MainWindow : Window
         finally
         {
             (engine == "pi" ? EnginePiRadio : EngineBuiltinRadio).IsChecked = true;
+        }
+        return true;
+    }
+
+    // --ui-smoke, Install Pi without Node.js (PATH emptied): a popup offers to install Node.js; declining installs nothing
+    // and logs why, and the install button is usable again.
+    private async Task<bool> NodeSmoke()
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        var (path, choice, asked) = (Environment.GetEnvironmentVariable("PATH"), _codeChoice, new List<string>());
+        try
+        {
+            Environment.SetEnvironmentVariable("PATH", Path.Combine(AppSettings.DataRoot, "no-node"));
+            _codeChoice = title => { asked.Add(title); return null; };
+            await PiInstallAsync();
+            if (!asked.SequenceEqual(["Install Node.js"]) || !_log.ToString().Contains("Pi install failed: Node.js is not installed") ||
+                File.Exists(LauncherLogic.PiCli) || !PiStatus.Text.StartsWith("Pi not installed") || !PiInstallButton.IsEnabled)
+                return Fail();
+        }
+        finally
+        {
+            _codeChoice = choice;
+            Environment.SetEnvironmentVariable("PATH", path);
         }
         return true;
     }

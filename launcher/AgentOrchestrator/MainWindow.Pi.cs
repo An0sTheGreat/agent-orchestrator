@@ -58,8 +58,11 @@ public partial class MainWindow
         return false;
     }
 
-    // npm install of the pinned version into <data>\pi, without lifecycle scripts. Node.js 22.19+ must be on PATH.
-    private async void PiInstall_Click(object sender, RoutedEventArgs e)
+    // npm install of the pinned version into <data>\pi, without lifecycle scripts. Node.js 22.19+ must be on PATH: when it
+    // is missing or too old, a popup offers to install Node.js LTS with winget first.
+    private async void PiInstall_Click(object sender, RoutedEventArgs e) => await PiInstallAsync();
+
+    internal async Task PiInstallAsync()
     {
         if (_piInstalling)
             return;
@@ -72,10 +75,7 @@ public partial class MainWindow
         RefreshPiStatus();
         try
         {
-            var node = await Task.Run(() => Run("node", "--version"));
-            if (node.Code != 0 || !LauncherLogic.NodeVersionOk(node.Output.Trim()))
-                throw new InvalidOperationException(node.Code != 0 ? "Node.js was not found on PATH; install Node.js 22.19 or newer"
-                    : $"Node.js {node.Output.Trim()} is too old; Pi needs 22.19 or newer");
+            await EnsureNodeAsync();
             Directory.CreateDirectory(LauncherLogic.PiFolder);
             var npm = await Task.Run(() => Run("cmd.exe", "/d", "/c", "npm", "install", "--prefix", LauncherLogic.PiFolder, "--ignore-scripts",
                 "--no-audit", "--no-fund", $"{LauncherLogic.PiPackage}@{LauncherLogic.PiVersion}"));
@@ -84,7 +84,7 @@ public partial class MainWindow
             Log($"Pi {LauncherLogic.PiVersion} installed in {LauncherLogic.PiFolder}");
             Toast($"Pi {LauncherLogic.PiVersion} installed");
         }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception or IOException or UnauthorizedAccessException)
+        catch (Exception exception) when (exception is InvalidOperationException or IOException or UnauthorizedAccessException)
         {
             Log($"Pi install failed: {exception.Message}");
             Toast("Pi install failed; see the log", "#FF667A");
@@ -94,17 +94,54 @@ public partial class MainWindow
             _piInstalling = false;
             RefreshPiStatus();
         }
+    }
 
-        static (int Code, string Output) Run(string file, params string[] args)
+    // Throws unless node on PATH is 22.19+. If it is not, asks to install Node.js LTS with winget (Windows asks for admin
+    // rights), then re-reads PATH from the registry so this process and the engines it starts find the new node.
+    private async Task EnsureNodeAsync()
+    {
+        var version = await Task.Run(NodeVersion);
+        if (LauncherLogic.NodeVersionOk(version))
+            return;
+        var problem = version == "" ? "Node.js is not installed (node was not found on PATH)" : $"Node.js {version} is too old";
+        if (SidebarAsk("Install Node.js", $"{problem}. Pi needs Node.js 22.19 or newer.\n\nInstall Node.js LTS now with winget? " +
+                "This accepts the Node.js license, and Windows may ask for permission.", "Install") is null)
+            throw new InvalidOperationException($"{problem}; install Node.js 22.19 or newer");
+        PiStatus.Text = "Installing Node.js…";
+        Log("Installing Node.js LTS with winget");
+        var winget = await Task.Run(() => Run("winget", "install", "--id", "OpenJS.NodeJS.LTS", "--exact", "--silent",
+            "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"));
+        if (winget.Code == -1)
+            throw new InvalidOperationException("winget is not available; install Node.js 22.19 or newer from https://nodejs.org");
+        Environment.SetEnvironmentVariable("PATH", LauncherLogic.MergePath(Environment.GetEnvironmentVariable("PATH"),
+            Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine), Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User)));
+        version = await Task.Run(NodeVersion);
+        if (!LauncherLogic.NodeVersionOk(version))
+            throw new InvalidOperationException($"Node.js install failed (winget exit code {winget.Code}: " +
+                $"{winget.Output.Trim().Split('\n').LastOrDefault()?.Trim()}); node reports \"{version}\"");
+        Log($"Node.js {version} installed");
+        PiStatus.Text = "Installing Pi…";
+
+        static string NodeVersion() => Run("node", "--version") is (0, var output) ? output.Trim() : "";
+    }
+
+    // Exit code -1 when the program is not found.
+    private static (int Code, string Output) Run(string file, params string[] args)
+    {
+        var info = new ProcessStartInfo(file) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var arg in args)
+            info.ArgumentList.Add(arg);
+        try
         {
-            var info = new ProcessStartInfo(file) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
-            foreach (var arg in args)
-                info.ArgumentList.Add(arg);
             using var process = Process.Start(info)!;
             var error = process.StandardError.ReadToEndAsync();
             var output = process.StandardOutput.ReadToEnd();
             process.WaitForExit();
             return (process.ExitCode, output + error.Result);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            return (-1, $"{file} was not found");
         }
     }
 }
