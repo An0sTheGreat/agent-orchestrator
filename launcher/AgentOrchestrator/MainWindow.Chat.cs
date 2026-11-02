@@ -341,10 +341,19 @@ public partial class MainWindow
 
     // ---- input
 
-    private void ChatInput_TextChanged(object sender, TextChangedEventArgs e) => RefreshChatInput();
+    private void ChatInput_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        RefreshChatInput();
+        RefreshSkillCompletion((TextBox)sender);
+    }
 
     private void ChatInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (SkillCompletionKey((TextBox)sender, e.Key))
+        {
+            e.Handled = true;
+            return;
+        }
         if (e.Key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Shift) != 0)
             return; // Shift+Enter inserts a new line
         e.Handled = true;
@@ -517,7 +526,7 @@ public partial class MainWindow
 
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
     private string ChatRequest(string role, string text) =>
-        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras() with { Images = _turnImages }, title: _chatHistory.Count == 0,
+        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(message: text) with { Images = _turnImages }, title: _chatHistory.Count == 0,
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.

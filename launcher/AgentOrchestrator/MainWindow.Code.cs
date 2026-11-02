@@ -39,7 +39,7 @@ public partial class MainWindow
     // The request of a Code turn; text null: no user message.
     private string CodeRequest(string action, string role, string? text, string project) =>
         LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage) with { Images = _turnImages }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
+            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage, message: text) with { Images = _turnImages }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0, // write_project reads it all
             engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork);
 

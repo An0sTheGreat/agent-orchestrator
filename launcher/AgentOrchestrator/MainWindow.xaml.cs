@@ -2804,6 +2804,8 @@ public partial class MainWindow : Window
             return false;
         if (!PiSmoke())
             return false;
+        if (!SkillCompletionSmoke(Snap))
+            return false;
         if (!await ApprovalSmoke())
             return false;
         if (!await LocalRuntimeSmoke())

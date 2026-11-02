@@ -13,9 +13,10 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     // initProject: also the init-projMD skill, for a Code conversation "Create PROJECT.md with a model…" started.
-    private LauncherLogic.Extras CurrentExtras(bool initProject = false) =>
+    // message: also every skill it names as "/name" or "$name" (skill completion), switched on or not.
+    private LauncherLogic.Extras CurrentExtras(bool initProject = false, string? message = null) =>
         new(_settings.UseSearch, _settings.UseTools,
-            AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) ||
+            AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) || InvokesSkill(message, s.Name) ||
                 initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
                 .Select(s => s.Folder).ToList());
 
