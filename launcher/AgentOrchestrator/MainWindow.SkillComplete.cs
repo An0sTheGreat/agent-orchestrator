@@ -7,8 +7,8 @@ using System.Windows.Input;
 
 namespace AgentOrchestrator;
 
-// Skill completion in the Chat and Code message boxes: a message that is just "/" or "$" and part of a skill name lists the
-// matching skills above the box. Up/Down move the highlight, Tab or Enter completes ("/name "), a click completes, Escape
+// Skill and command completion in the Chat and Code message boxes: a message that is just "/" or "$" and part of a name
+// lists the matching skills (and, after "/", the app's commands such as /compact) above the box, each with what it does. Up/Down move the highlight, Tab or Enter completes ("/name "), a click completes, Escape
 // closes. A message that names a skill this way sends it with the turn (CurrentExtras), switched on or not.
 public partial class MainWindow
 {
@@ -20,15 +20,24 @@ public partial class MainWindow
     private int _skillIndex;
     private readonly HashSet<TextBox> _skillWatched = new();
 
-    // The matching skill names for the box's text; empty when it is not a lone "/name" or "$name" in progress.
-    private List<string> SkillMatches(string text)
+    // The app's own commands ("/" only), handled by the engine rather than a skill.
+    private static readonly (string Name, string Help)[] Commands =
+    {
+        ("compact", "Summarize the conversation now (add what to keep: /compact keep the API decisions)"),
+    };
+
+    // The matching commands and skills for the box's text, with what each does; empty when it is not a lone "/name" or
+    // "$name" in progress.
+    private List<(string Name, string Help)> SkillMatches(string text)
     {
         if (SkillToken.Match(text) is not { Success: true } m)
             return [];
         var typed = m.Groups[2].Value;
-        return AllSkills().Select(s => s.Name).Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(n => n.StartsWith(typed, StringComparison.OrdinalIgnoreCase) && !n.Equals(typed, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+        bool Fits(string n) => n.StartsWith(typed, StringComparison.OrdinalIgnoreCase) && !n.Equals(typed, StringComparison.OrdinalIgnoreCase);
+        var commands = m.Groups[1].Value == "/" ? Commands.Where(c => Fits(c.Name)).ToList() : [];
+        var skills = AllSkills().DistinctBy(s => s.Name, StringComparer.OrdinalIgnoreCase).Where(s => Fits(s.Name))
+            .OrderBy(s => s.Name, StringComparer.OrdinalIgnoreCase).Select(s => (s.Name, s.Description));
+        return [.. commands, .. skills];
     }
 
     private void RefreshSkillCompletion(TextBox input)
@@ -50,11 +59,17 @@ public partial class MainWindow
         }
         var typed = SkillToken.Match(input.Text).Groups[2].Value.Length;
         _skillRows!.Children.Clear();
-        foreach (var name in names)
+        foreach (var (name, help) in names)
         {
-            var text = new TextBlock { FontSize = 13 };
+            var text = new TextBlock { FontSize = 13, MaxWidth = 520, TextTrimming = TextTrimming.CharacterEllipsis };
             text.Inlines.Add(new Run(name[..typed]) { FontWeight = FontWeights.SemiBold });
             text.Inlines.Add(new Run(name[typed..]));
+            if (help.Length > 0)
+            {
+                var hint = new Run("   " + help) { FontSize = 12 };
+                hint.SetResourceReference(TextElement.ForegroundProperty, "Muted");
+                text.Inlines.Add(hint);
+            }
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
             var row = new Border { Child = text, Padding = new Thickness(10, 5, 10, 5), Tag = name, Cursor = Cursors.Hand };
             row.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
@@ -158,6 +173,12 @@ public partial class MainWindow
             CodeInput.Text = "$init";
             if (!_skillPopup.IsOpen || !SkillCompletionKey(CodeInput, Key.Escape) || _skillPopup.IsOpen)
                 return Fail("Escape does not close");
+            CodeInput.Text = "/comp";
+            if (!_skillPopup.IsOpen || !SkillCompletionKey(CodeInput, Key.Tab) || CodeInput.Text != "/compact ")
+                return Fail($"'/comp' completed to '{CodeInput.Text}'");
+            CodeInput.Text = "$comp";
+            if (_skillPopup.IsOpen)
+                return Fail("commands listed after $");
             CodeInput.Text = "hello /st";
             if (_skillPopup.IsOpen)
                 return Fail("lists mid-message");
