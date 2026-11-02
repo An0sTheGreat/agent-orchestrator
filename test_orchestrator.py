@@ -803,6 +803,13 @@ class OrchestratorTests(unittest.TestCase):
         client._stream_chat = lambda body: answer("stream", body)
         return client, sent
 
+    def test_compaction_starts_at_90_percent_leaving_the_reply_a_floor(self):
+        # A max_tokens as large as the window no longer halves the threshold (that compacted Pi on every step)
+        self.assertEqual(orchestrator.compact_limit(65536, {"max_tokens": 32768}), int(0.9 * 65536))
+        self.assertEqual(orchestrator.compact_limit(32768, {"max_tokens": 32768}), 32768 - 4096)  # 10% would leave the reply < 4096
+        self.assertEqual(orchestrator.compact_limit(32768, {"max_tokens": 1000}), int(0.9 * 32768))
+        self.assertEqual(orchestrator.compact_limit(32768, {}), 32768 - 4096)
+
     def test_complete_compacts_a_history_over_the_threshold(self):
         messages = self._long_history()
         tail = messages[-5:]  # the f4 step and the last one: what half the room leaves after system, task and summary

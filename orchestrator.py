@@ -432,9 +432,8 @@ class ApiClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         n_ctx = self.context_size()
-        if n_ctx:  # compact before the window fills: COMPACT_AT of what the reply's max_tokens leaves (at least half of n_ctx)
-            room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
-            if estimate_tokens(messages, tools) > COMPACT_AT * room:
+        if n_ctx:  # compact before the window fills
+            if estimate_tokens(messages, tools) > compact_limit(n_ctx, sampling):
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": with_images(messages), **sampling}
@@ -514,7 +513,7 @@ class ApiClient:
         room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2) if n_ctx else before  # unknown: the failed size
         task, _, earlier = str(messages[first].get("content") or "").partition(COMPACT_MARK)
         allowance = min(summary_tokens(room), room // 10)  # the summary's share of the room
-        # the tail gets what system + task + tools + summary leave of half the room: well under the 80% trigger
+        # the tail gets what system + task + tools + summary leave of half the room: well under the trigger
         budget = room // 2 - estimate_tokens(messages[:first] + [{"content": task}], tools) - allowance
         cut = next((i for i in starts if estimate_tokens(messages[i:]) <= budget), starts[-1])
         middle = messages[first + 1:cut]
@@ -738,9 +737,15 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
 
 
 COMPACT_MARK = "\n\nSummary of the earlier steps:\n"
-# Compaction starts when the prompt passes this share of the room: the context window less the reply's max_tokens (at
-# least half the window). Shared by the pre-turn conversation summary and the in-request compactor.
+# Compaction starts when the prompt passes this share of the context window, leaving the reply at least REPLY_FLOOR
+# tokens (its max_tokens if smaller). Shared by the pre-turn conversation summary, the in-request compactor and Pi.
 COMPACT_AT = 0.9
+REPLY_FLOOR = 4096
+
+
+def compact_limit(n_ctx: int, sampling: dict[str, Any]) -> int:
+    """The prompt size above which a history is compacted."""
+    return int(min(COMPACT_AT * n_ctx, n_ctx - min(int(sampling.get("max_tokens") or REPLY_FLOOR), REPLY_FLOOR)))
 
 # Images attached to the turn's message (the request's "images": absolute file paths): (the message's text, data URLs).
 # They join that message only in the request body (with_images), so history, compaction and token estimates stay text.
@@ -820,8 +825,8 @@ def with_summary(messages: list[dict[str, Any]], summary: str) -> list[dict[str,
 
 def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system: str, messages: list[dict[str, Any]],
                          tools: list[dict[str, Any]] | None, request: dict[str, Any], force: bool = False, focus: str = "") -> list[dict[str, Any]]:
-    """A Chat/Code turn's history, ready to send: the request's stored summary applied, and when it fills over 60% of the
-    room of the smallest known window among `roles`, everything but the latest user message (and the last reply, if
+    """A Chat/Code turn's history, ready to send: the request's stored summary applied, and when it passes compact_limit
+    of the smallest known window among `roles`, everything but the latest user message (and the last reply, if
     short) summarized first, with a history_compacted event for the launcher to store. Unchanged when no window is known
     or the summary call fails. `force` (the user's /compact): everything but the latest message, whatever its size, with
     `focus` (the command's text) added to the summary prompt; an unknown window counts as 32k."""
@@ -841,7 +846,7 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
     size = lambda history: estimate_tokens([{"content": system}, *history], tools)
     before = size(full)
-    if before <= COMPACT_AT * room and not force:
+    if before <= compact_limit(n_ctx, sampling) and not force:
         return full
     keep = 1 if force else 2 if len(messages) >= 3 and messages[-2]["role"] == "assistant" and estimate_tokens(messages[-2:]) <= 0.2 * room else 1
     earlier, kept = messages[:-keep], messages[-keep:]
@@ -4352,7 +4357,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     # Pi keeps the newest keepRecentTokens unsummarized; a manual /compact keeps only the last ~2k, or right after an
     # automatic compaction there is nothing older left to summarize ("session too small")
     save_text(turn / "settings.json", json.dumps({"quietStartup": True, "compaction": {
-        "reserveTokens": min(n_ctx // 2, max_tokens + 4096), "keepRecentTokens": 2048 if focus is not None else max(2048, n_ctx // 4)}}))
+        "reserveTokens": n_ctx - compact_limit(n_ctx, sampling), "keepRecentTokens": 2048 if focus is not None else max(2048, n_ctx // 4)}}))
     save_text(turn / "tools.json", json.dumps(specs))
     note = re.sub(r"\n\nSKILLS\n.*?(?=\n\n|\Z)", "", note, flags=re.S)  # Pi lists the skills itself
     save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}")
