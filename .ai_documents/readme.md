@@ -114,10 +114,10 @@ $p = Start-Process '.\launcher\AgentOrchestrator\bin\Release\net8.0-windows\win-
 $p.ExitCode
 ```
 
-Publish the single-file launcher:
+Publish the single-file launcher to `dist\` and upload it to the `launcher` GitHub Release (the exe is not in git; close the app first):
 
 ```powershell
-dotnet publish .\launcher\AgentOrchestrator\AgentOrchestrator.csproj -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o .\dist
+.\publish.ps1
 ```
 
 ## Operational cautions

@@ -5,3 +5,4 @@ launcher/**/obj/
 api_key.txt
 dist/api_key.txt
 .claude/
+dist/*.exe

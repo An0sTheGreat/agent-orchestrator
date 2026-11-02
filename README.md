@@ -27,7 +27,7 @@ The engine uses only Python's standard library and Unsloth's OpenAI-compatible A
 
 ## Windows application
 
-Double-click `dist\Agent Orchestrator.exe` for the graphical launcher. Enter the Unsloth API key under **Options**, then start a chat in the **Code** view (see Code mode below): pick a folder, optionally add a `PROJECT.md` from the **Project** menu, and press **Start project**, which adds the workflow files automatically. **Project > Run one reviewed task, then stop** gives `--once` behavior. The key is passed only to the child process and is not saved.
+Double-click `dist\Agent Orchestrator.exe` for the graphical launcher (`publish.ps1` builds it; it is not in git, and the repository's `launcher` release has the latest). Enter the Unsloth API key under **Options**, then start a chat in the **Code** view (see Code mode below): pick a folder, optionally add a `PROJECT.md` from the **Project** menu, and press **Start project**, which adds the workflow files automatically. **Project > Run one reviewed task, then stop** gives `--once` behavior. The key is passed only to the child process and is not saved.
 
 The window follows the Image Parser design language: selectable themes (Dark Parchment is the default; Parchment is a light theme; Flat, Track Gold, Liquid Glass, OLED and Graphite are dark) with per-theme accent colours, a left navigation panel, and a two-column workspace with a draggable divider.
 
