@@ -106,7 +106,8 @@ public partial class MainWindow
     private Button SidebarHeader(string name, bool collapsed, int count, Action toggle)
     {
         var chevron = new TextBlock { Text = collapsed ? "▸" : "▾", Width = 14 };
-        var number = new TextBlock { Text = count.ToString(), Opacity = 0.7, Margin = new Thickness(6, 0, 0, 0) };
+        var number = new TextBlock { Text = count.ToString(), Opacity = 0.7, Margin = new Thickness(6, 0, 0, 0),
+            Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed }; // expanded, the rows below show it
         DockPanel.SetDock(number, Dock.Right);
         var button = new Button
         {
@@ -274,9 +275,11 @@ public partial class MainWindow
         more.SetBinding(VisibilityProperty, new Binding(nameof(IsMouseOver)) { Source = grid, Converter = new BooleanToVisibilityConverter() });
         if (add is not null)
         {
+            var addGlyph = new TextBlock { Text = "", FontSize = 11 }; // Add, in the icon font "…" uses, so it sits centred like it
+            addGlyph.SetResourceReference(StyleProperty, "RailGlyph");
             var plus = new Button
             {
-                Content = "+", FontSize = 14, Width = 24, Height = 22, Padding = new Thickness(0, 0, 0, 2), Tag = "+in:" + id,
+                Content = addGlyph, Width = 24, Height = 22, Padding = new Thickness(0), Tag = "+in:" + id,
                 Margin = new Thickness(0, row.Margin.Top, 28, row.Margin.Bottom), HorizontalAlignment = HorizontalAlignment.Right,
                 VerticalAlignment = VerticalAlignment.Center, ToolTip = "New chat in this project",
             };
