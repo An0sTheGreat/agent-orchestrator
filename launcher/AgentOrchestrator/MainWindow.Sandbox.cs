@@ -30,8 +30,10 @@ public partial class MainWindow
         Log($"Sandbox: {(allow ? "allowed" : "denied")} {kind} for: {detail.Split('\n').LastOrDefault()}");
         try
         {
-            _chatProcess?.StandardInput.WriteLine(JsonSerializer.Serialize(new { id = Str(ev, "id"), allow }));
-            _chatProcess?.StandardInput.Flush();
+            // the process that asked: a chat/Code turn's, else a project run's (one of the two runs at a time)
+            var asker = _chatProcess ?? _process;
+            asker?.StandardInput.WriteLine(JsonSerializer.Serialize(new { id = Str(ev, "id"), allow }));
+            asker?.StandardInput.Flush();
         }
         catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
     }

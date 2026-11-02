@@ -2841,26 +2841,34 @@ public partial class MainWindow : Window
     private async Task<bool> ApprovalSmoke()
     {
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
-        var (choice, turn) = (_codeChoice, _chatProcess);
-        var asked = new List<string>();
+        var (choice, turn, run) = (_codeChoice, _chatProcess, _process);
         var info = new ProcessStartInfo(LauncherLogic.FindPython()) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, CreateNoWindow = true };
         foreach (var arg in new[] { "-c", "import sys; print(sys.stdin.readline().strip()); print(sys.stdin.readline().strip())" })
             info.ArgumentList.Add(arg);
-        try
-        {
-            using var child = _chatProcess = Process.Start(info)!;
-            _codeChoice = title => { asked.Add(title); return asked.Count == 1 ? "allow" : null; }; // allow, then close the dialog
-            AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a1","kind":"network","detail":"npm install","reason":"deps"}""").RootElement);
-            AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a2","kind":"write","detail":"C:\\other\n\necho","reason":""}""").RootElement);
-            var output = await child.StandardOutput.ReadToEndAsync();
-            if (output.Replace("\r", "") != "{\"id\":\"a1\",\"allow\":true}\n{\"id\":\"a2\",\"allow\":false}\n" ||
-                !asked.SequenceEqual(["Allow network access?", "Allow writing in other folders?"]))
-                return Fail();
-        }
-        finally
-        {
-            (_codeChoice, _chatProcess) = (choice, turn);
-        }
+        foreach (var asRun in new[] { false, true }) // a chat/Code turn, then a project run (its answer goes to the run's stdin)
+            try
+            {
+                var asked = new List<string>();
+                using var child = Process.Start(info)!;
+                _chatProcess = asRun ? null : child;
+                _process = asRun ? child : null;
+                _codeChoice = title => { asked.Add(title); return asked.Count == 1 ? "allow" : null; }; // allow, then close the dialog
+                AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a1","kind":"network","detail":"npm install","reason":"deps"}""").RootElement);
+                AnswerApproval(JsonDocument.Parse("""{"e":"approval","id":"a2","kind":"write","detail":"C:\\other\n\necho","reason":""}""").RootElement);
+                var read = child.StandardOutput.ReadToEndAsync();
+                if (await Task.WhenAny(read, Task.Delay(10000)) != read) // no answer reached it: the engine would wait forever
+                {
+                    child.Kill();
+                    return Fail();
+                }
+                if ((await read).Replace("\r", "") != "{\"id\":\"a1\",\"allow\":true}\n{\"id\":\"a2\",\"allow\":false}\n" ||
+                    !asked.SequenceEqual(["Allow network access?", "Allow writing in other folders?"]))
+                    return Fail();
+            }
+            finally
+            {
+                (_codeChoice, _chatProcess, _process) = (choice, turn, run);
+            }
         var network = _settings.SandboxNetwork;
         SandboxNetworkToggle.IsChecked = !network;
         SandboxNetwork_Click(SandboxNetworkToggle, new RoutedEventArgs());
