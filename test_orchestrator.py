@@ -343,15 +343,18 @@ class OrchestratorTests(unittest.TestCase):
 
     def test_older_tool_results_go_to_the_model_as_a_note(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
-        client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")])
+        client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")] * 2)
         messages = [{"role": "user", "content": "task"}]
         for i in range(3):
             messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function",
                           "function": {"name": "list_files", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": f"c{i}", "content": "f\n" * 400}]
         with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}), \
                 patch.object(client, "context_size", return_value=None):
-            client.complete("m", messages, {})
-        sent = [m["content"] for m in bodies[0]["messages"] if m["role"] == "tool"]
+            client.complete("m", messages, {})  # far under half of the assumed 32,768 tokens: sent as it is, for the prompt cache
+            with patch.object(orchestrator, "SLIM_AT", 0.0):
+                client.complete("m", messages, {})
+        self.assertEqual([m["content"] for m in bodies[0]["messages"] if m["role"] == "tool"], ["f\n" * 400] * 3)
+        sent = [m["content"] for m in bodies[1]["messages"] if m["role"] == "tool"]
         self.assertTrue(sent[0].startswith("[older result of list_files"), sent[0])
         self.assertEqual(sent[1:], ["f\n" * 400] * 2)
         self.assertEqual(messages[2]["content"], "f\n" * 400)  # the history keeps it
@@ -3621,7 +3624,11 @@ class PiEngineTests(unittest.TestCase):
         for n in range(60):
             (self.root / f"module_{n:02}.py").write_text("x", encoding="utf-8")
         replies = [[("list_files", {})], [("list_files", {})], [("list_files", {})], [("list_files", {})], "Done."]
-        code, events, requests = self.turn(replies, [{"role": "user", "content": "look around"}])
+        code, _, requests = self.turn(replies, [{"role": "user", "content": "look around"}])  # far under half the window
+        self.assertEqual(code, 0)
+        self.assertFalse(any(str(m.get("content")).startswith("[older") for m in requests[-1]["messages"]))
+        with patch.object(orchestrator, "SLIM_AT", 0.0):
+            code, events, requests = self.turn(replies, [{"role": "user", "content": "look around"}])
         self.assertEqual(code, 0)
         results = [str(m.get("content")) for m in requests[-1]["messages"] if m.get("role") == "tool"]
         self.assertEqual(len(results), 4)
@@ -3646,7 +3653,7 @@ class PiEngineTests(unittest.TestCase):
     def test_pi_sends_a_browser_screenshot_to_the_model(self):
         image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPj/HwADAgH/eL9GtQAAAABJRU5ErkJggg=="
         answer = lambda event, **d: {"result": "TAB: 1 of 1\nSCREENSHOT: the part of the page the tab shows", "image": image}
-        with patch.object(orchestrator, "launcher_call", answer):
+        with patch.object(orchestrator, "launcher_call", answer), patch.object(orchestrator, "SLIM_AT", 0.0):
             code, events, requests = self.turn([[("browser", {"action": "screenshot"})], [("list_files", {})], [("list_files", {})], "I see it."],
                                                [{"role": "user", "content": "look"}])
         self.assertEqual(code, 0)

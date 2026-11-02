@@ -64,12 +64,19 @@ export default function (pi: ExtensionAPI) {
 		});
 	}
 
-	// orchestrator.py's slim_tool_results for Pi: in each request, a tool result older than the last KEEP_TOOL_ROUNDS
-	// assistant messages and longer than STUB_OVER characters becomes a one-line note. Pi's session keeps the full result.
-	const KEEP_TOOL_ROUNDS = 2, STUB_OVER = 600;
+	// orchestrator.py's slim_tool_results for Pi: once the conversation passes AO_SLIM_CHARS (estimated as the engine does:
+	// its text, and 2,500 tokens an image), a tool result older than the last KEEP_TOOL_ROUNDS assistant messages and
+	// longer than STUB_OVER characters becomes a one-line note in each request. Pi's session keeps the full result.
+	const KEEP_TOOL_ROUNDS = 2, STUB_OVER = 600, slimChars = Number(process.env.AO_SLIM_CHARS) || 0;
+	const size = (content: unknown): number =>
+		typeof content === "string" ? content.length : Array.isArray(content)
+			? content.reduce((n: number, c: { type?: string; text?: string; thinking?: string; arguments?: unknown }) =>
+				n + (c.type === "image" ? 2500 * 3.5 : (c.text ?? c.thinking ?? "").length + (c.arguments ? JSON.stringify(c.arguments).length : 0)), 0)
+			: 0;
 	pi.on("context", async (event) => {
 		const rounds = event.messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
 		if (rounds.length <= KEEP_TOOL_ROUNDS) return undefined;
+		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return undefined;
 		const keepFrom = rounds[rounds.length - KEEP_TOOL_ROUNDS];
 		const calls = new Map<string, string>();
 		for (const m of event.messages.slice(0, keepFrom))

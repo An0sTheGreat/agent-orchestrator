@@ -434,10 +434,10 @@ class ApiClient:
     ) -> dict[str, Any]:
         n_ctx = self.context_size()
         if n_ctx:  # compact before the window fills
-            if estimate_tokens(slim_tool_results(messages), tools) > compact_limit(n_ctx, sampling):
+            if estimate_tokens(slim_tool_results(messages, n_ctx), tools) > compact_limit(n_ctx, sampling):
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
-        body: dict[str, Any] = {"model": model, "messages": with_images(slim_tool_results(messages)), **sampling}
+        body: dict[str, Any] = {"model": model, "messages": with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW)), **sampling}
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
             for key in UNSLOTH_ONLY_FIELDS:
                 body.pop(key, None)
@@ -465,7 +465,7 @@ class ApiClient:
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     if not compacted_on_error and self._compact(model, messages, sampling, tools, force=True):
                         compacted_on_error = True  # retry once with the compacted history
-                        body["messages"] = with_images(slim_tool_results(messages))
+                        body["messages"] = with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))
                         continue
                     raise WorkflowError(
                         f"{self.title or self.role}: the conversation exceeded the model's context length. "
@@ -797,14 +797,17 @@ def require_vision(config: dict[str, Any], role: str) -> None:
 
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 2, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
+SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
 
-def slim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def slim_tool_results(messages: list[dict[str, Any]], n_ctx: int | None = None) -> list[dict[str, Any]]:
     """The messages to send: tool results older than the last KEEP_TOOL_ROUNDS assistant messages, when longer than
     STUB_OVER characters, become a one-line note (the model acted on them already, and can call the tool again). Native
-    "tool" messages and text-mode "TOOL RESULTS" user messages both count. The history itself keeps every result."""
+    "tool" messages and text-mode "TOOL RESULTS" user messages both count. The history itself keeps every result.
+    With `n_ctx`, only once the history passes SLIM_AT of it: until then each request starts like the one before, so
+    llama-server's prompt cache reads only the new part (a note changes the history where it replaces a result)."""
     rounds = [i for i, m in enumerate(messages) if m.get("role") == "assistant"]
-    if len(rounds) <= KEEP_TOOL_ROUNDS:
+    if len(rounds) <= KEEP_TOOL_ROUNDS or (n_ctx and estimate_tokens(messages) <= SLIM_AT * n_ctx):
         return messages
     keep_from = rounds[-KEEP_TOOL_ROUNDS]
     calls = {c.get("id"): c.get("function") or {} for m in messages[:keep_from] for c in (m.get("tool_calls") or [])}
@@ -4573,7 +4576,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     gateway = PiGateway(handlers, folders + [{"path": s, "access": "read"} for s in skills], n_ctx)  # Pi reads SKILL.md itself
     env = {**os.environ, "PI_CODING_AGENT_DIR": str(turn), "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
            "AO_GATEWAY": gateway.url, "AO_TOKEN": gateway.token, "AO_TOOLS": str(turn / "tools.json"), "AO_PI_KEY": client.api_key,
-           "AO_READ_LINES": str(CODE_READ_LINES), "AO_READ_CHARS": str(int(TOOL_SHARE["read_file"] * n_ctx * 3.5))}  # Pi's read, as read_file
+           "AO_READ_LINES": str(CODE_READ_LINES), "AO_READ_CHARS": str(int(TOOL_SHARE["read_file"] * n_ctx * 3.5)),  # Pi's read, as read_file
+           "AO_SLIM_CHARS": str(int(SLIM_AT * n_ctx * 3.5))}  # as slim_tool_results: older results become notes past this
     title = display_name(config, role)
     emit("chat_stage", role=role, stage="lead", title=title)
     process = subprocess.Popen(command, cwd=folders[0]["path"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
