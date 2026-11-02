@@ -763,6 +763,14 @@ def turn_images(request: dict[str, Any], text: str) -> None:
     TURN_IMAGES = (text if urls else "", urls)
 
 
+def require_vision(config: dict[str, Any], role: str) -> None:
+    """Refuses a turn whose images the role's model will not see because its settings switch vision off (the server would
+    answer with an opaque "image input is not supported")."""
+    if TURN_IMAGES[1] and str((getattr(role_settings(config, role)[0], "auto_load", None) or {}).get("disable_vision") or "").lower() in ("on", "true", "1"):
+        raise WorkflowError(f"{display_name(config, role)} can't read the attached images: Disable vision is on in its model settings "
+                            "(Memory). Turn it off and save (the vision projector takes extra VRAM), or send the message without images.")
+
+
 def with_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The messages to send: the last user message holding the turn's text (compaction may frame it) gets its images as
     OpenAI-style content parts. Unchanged when the turn has none."""
@@ -3397,6 +3405,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0
     turn_images(request, messages[-1]["content"])
+    require_vision(turn, role)
     messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
     text = chat_call(turn, role, "answer", system, messages, extras)
     if not text:
@@ -4519,6 +4528,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         emit("code_reply", role=role, text=compact_now(config, role, messages, request, focus))  # /compact: no model turn
         return 0  # (a Pi session compacts itself: pi_lead_turn sends Pi's own compact)
     turn_images(request, messages[-1]["content"])
+    require_vision(config, role)
     text = (pi_lead_turn if request.get("engine") == "pi" else lead_loop)(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")

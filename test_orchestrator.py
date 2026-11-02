@@ -4600,6 +4600,16 @@ class LlamaCppTests(unittest.TestCase):
         for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Unsloth", "Options"):
             self.assertIn(part, text)
 
+    def test_images_with_vision_switched_off_are_refused_plainly(self):
+        config = {"roles": {"planner": {"base_url": "http://x", "auto_load": {"model_path": self.PATH, "disable_vision": True}}}}
+        with patch.object(orchestrator, "TURN_IMAGES", ("look", ["data:image/png;base64,AA=="])):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "Disable vision is on"):
+                orchestrator.require_vision(config, "planner")
+            config["roles"]["planner"]["auto_load"]["disable_vision"] = False
+            orchestrator.require_vision(config, "planner")  # vision on: fine
+        config["roles"]["planner"]["auto_load"]["disable_vision"] = True
+        orchestrator.require_vision(config, "planner")  # no images: fine
+
     def test_a_vision_projector_beside_the_model_is_loaded_unless_vision_is_off(self):
         folder = self.tmp / "vision"
         folder.mkdir()

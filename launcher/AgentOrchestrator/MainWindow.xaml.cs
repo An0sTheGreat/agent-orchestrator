@@ -1565,7 +1565,8 @@ public partial class MainWindow : Window
             if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
                 return Fail();
 
-            // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop still discards the turn.
+            // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop keeps the message with what
+            // arrived of the reply and a note, and so does a failed turn (with its error).
             StartChatTurn("Race");
             _lines.Enqueue(Ev("""{"e":"chat_reply","role":"reviewer","text":"Raced reply"}"""));
             DrainLines();
@@ -1573,7 +1574,13 @@ public partial class MainWindow : Window
                 _reply!.Final != "Raced reply" || _reply.Answer?.Text != "Raced reply")
                 return Fail();
             StartChatTurn("Really stopped");
-            if (!FinishChatTurn(-1, true, null) || _chatBusy || _chatHistory.Count != 2)
+            AppendChatDelta("reviewer", "text", "Half an ans");
+            if (!FinishChatTurn(-1, true, null) || _chatBusy || _chatHistory.Count != 4 || _chatHistory[2] is not { Role: "user", Content: "Really stopped" } ||
+                _chatHistory[3].Content != "Half an ans\n\n(Stopped before the reply finished.)")
+                return Fail();
+            StartChatTurn("Will fail");
+            if (FinishChatTurn(1, false, "boom") || _chatHistory.Count != 6 || _chatHistory[5].Content != "(The reply failed: boom)" ||
+                _store.Get(_chatConv!.Id)?.Messages.Count != 6) // saved, not only shown
                 return Fail();
             NewChat_Click(ChatSend, new RoutedEventArgs());
 
@@ -4510,6 +4517,8 @@ public partial class MainWindow : Window
         }
         if (_chatProcess is { HasExited: false } chat)
         {
+            DrainLines(); // the reply's last output first
+            SaveInterruptedTurn();
             chat.Kill(entireProcessTree: true);
             chat.WaitForExit(2000);
         }

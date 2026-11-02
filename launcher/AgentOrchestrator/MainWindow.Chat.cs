@@ -787,6 +787,7 @@ public partial class MainWindow
     {
         var c = _turn;
         var completed = false;
+        var kept = false; // a stopped or failed turn kept in the history: the message and what of the reply arrived
         FlushMarkdown(); // a stopped or failed turn shows all it received
         if (_reply is { } reply)
         {
@@ -794,13 +795,20 @@ public partial class MainWindow
             reply.Status.Visibility = Visibility.Collapsed;
             var answer = reply.Final ?? (reply.AnswerText.Length > 0 ? reply.AnswerText.ToString() : null);
             stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
+            string? problem = stopped ? null : failure is not null || exitCode != 0 ? failure ?? _chatError ?? $"The chat failed (exit code {exitCode})."
+                : answer is null ? "The worker returned no reply." : null;
             if (stopped)
                 AddChatNote(reply, "Stopped.");
-            else if (failure is not null || exitCode != 0)
-                AddChatNote(reply, failure ?? _chatError ?? $"The chat failed (exit code {exitCode}).", error: true);
-            else if (answer is null)
-                AddChatNote(reply, "The worker returned no reply.", error: true);
-            else
+            else if (problem is not null)
+                AddChatNote(reply, problem, error: true);
+            if ((stopped || problem is not null) && _pendingUser is { } lost)
+            {
+                var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
+                c.History.Add(new LauncherLogic.ChatMessage("user", lost, _pendingUserTime));
+                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now()));
+                kept = true;
+            }
+            if (!stopped && problem is null)
             {
                 if (reply.Final is null)
                     SetChatFinal(answer);
@@ -841,35 +849,38 @@ public partial class MainWindow
         _turnCompleted = completed;
         if (c.IsCode && completed)
             CodeTurnFinished();
-        else if (completed)
-            SaveChatConversation();
-        else if (_pendingUser is not null) // drop the pending exchange SavePendingTurn wrote
+        else if (completed || kept) // a failed or stopped turn too: the message and what arrived, with a note (roles alternate)
         {
             if (c.IsCode)
                 SaveCodeConversation();
-            else if (c.History.Count > 0)
+            else
                 SaveChatConversation();
-            else if ((_turn == _parked ? _parkedConv : _chatConv) is not null) // the chat's first message failed: kept, with a note in place of the reply (roles alternate)
-            {
-                c.History.Add(new("user", _pendingUser, _pendingUserTime));
-                c.History.Add(new("assistant", FailedReply, _pendingUserTime));
-                SaveChatConversation();
-            }
         }
         if (_turn == _parked) // its chat is saved; the parked view goes (opening the chat loads it from the store)
             (_parked, _parkedConv, _parkedContext) = (null, null, null);
         return stopped;
     }
 
+    private long _pendingSaved; // when SavePendingTurn last wrote the turn in progress (Environment.TickCount64)
+
+    // Closing mid-reply: the message and the reply so far stay saved, with the interrupted note.
+    private void SaveInterruptedTurn()
+    {
+        if (_chatBusy && _pendingUser is { } user && _turn != _parked)
+            SavePendingTurn(_turn, user, _reply?.AnswerText.ToString() ?? "");
+    }
+
     internal const string InterruptedReply = "(No reply: the app closed before this reply finished.)";
-    internal const string FailedReply = "(No reply: the reply failed; the error is in the log.)";
 
     // Saved before the reply streams, so a crash or a killed app keeps the message, with a note in place of the reply. The
     // turn's end saves over it: the real exchange, or the history without it when the turn failed.
-    private void SavePendingTurn(Conversation c, string text)
+    // partial: the reply's text so far (saved again while it streams, and when the app closes), kept before the note.
+    private void SavePendingTurn(Conversation c, string text, string partial = "")
     {
+        _pendingSaved = Environment.TickCount64;
+        var reply = partial.Trim().Length > 0 ? $"{partial.TrimEnd()}\n\n{InterruptedReply}" : InterruptedReply;
         var pending = new List<LauncherLogic.ChatMessage>(c.History)
-            { new("user", text, _pendingUserTime), new("assistant", InterruptedReply, _pendingUserTime) };
+            { new("user", text, _pendingUserTime), new("assistant", reply, _pendingUserTime) };
         if (c.IsCode)
         {
             if (_codeConv is { } code)
@@ -1081,6 +1092,8 @@ public partial class MainWindow
         var block = r.Block;
         block.Text.Append(text);
         block.Body.AppendText(text);
+        if (kind == "text" && _pendingUser is { } user && _turn != _parked && Environment.TickCount64 - _pendingSaved > 10_000)
+            SavePendingTurn(_turn, user, r.AnswerText.ToString() + (block.Expander is null ? "" : text)); // a crash keeps most of it
         if (block.View is { } view)
             RenderSoon(view);
         if (block.Expander is null)
