@@ -129,6 +129,7 @@ public partial class MainWindow
         RefreshExtras();
         RefreshPermissions();
         InitAttachments();
+        InitNotify();
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;

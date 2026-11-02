@@ -183,6 +183,7 @@ public partial class MainWindow : Window
             var outcome = exitCode == 0 ? "Run finished" : _stopRequested ? "Run stopped" : $"Run failed (exit code {exitCode})";
             AddNote(outcome.ToUpperInvariant(), _runError ?? (exitCode == 0 ? "The run ended." : "Open run logs (Project menu) has the details."));
             Toast(outcome, exitCode == 0 ? null : _stopRequested ? "#F7C873" : "#FF667A");
+            NotifyDone($"Project run: {outcome}", _runError ?? Path.GetFileName(project.TrimEnd('\\', '/')));
         }
         catch (Exception exception)
         {
@@ -2823,6 +2824,24 @@ public partial class MainWindow : Window
             return false;
         if (!AttachSmoke())
             return false;
+        // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
+        {
+            var (was, sent) = (_settings.NotifyWhenDone, new List<string>());
+            _notifyHook = (title, text) => sent.Add($"{title}|{text}");
+            _settings.NotifyWhenDone = false;
+            AfterTurn(completed: true);
+            _settings.NotifyWhenDone = true;
+            _codeQueue.Add(new QueuedMessage("later", []));
+            AfterTurn(completed: true); // a queued message goes next: not finished yet
+            _codeQueue.Clear();
+            AfterTurn(completed: true);
+            (_settings.NotifyWhenDone, _notifyHook) = (was, null);
+            if (sent.Count != 1 || !sent[0].Contains("reply finished|"))
+            {
+                Console.Error.WriteLine($"ui-smoke: notifications: {string.Join(" / ", sent)}");
+                return false;
+            }
+        }
         if (!SkillCompletionSmoke(Snap))
             return false;
         if (!await ApprovalSmoke())

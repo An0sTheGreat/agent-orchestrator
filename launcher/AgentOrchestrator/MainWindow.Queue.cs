@@ -102,6 +102,9 @@ public partial class MainWindow
     {
         if (completed)
         {
+            if (_chatQueue.Count == 0 && _codeQueue.Count == 0) // fully finished: nothing queued goes next
+                NotifyDone($"{(_turn.IsCode ? "Code" : "Chat")} reply finished",
+                    Preview(TypedText(_turn.History.LastOrDefault(m => m.Role == "assistant")?.Content ?? "")));
             Dispatcher.InvokeAsync(SendQueued, DispatcherPriority.Background);
             return;
         }
