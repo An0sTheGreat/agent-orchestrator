@@ -652,12 +652,15 @@ public partial class MainWindow
     // The user's message (none for a Code action) and an empty reply appear, and the GPU-sharing lock goes on.
     private string? _pendingUser;
     private DateTimeOffset _pendingUserTime;
+    private readonly List<(string Said, string Text, DateTimeOffset Time)> _steered = new(); // this turn's delivered steers, and the reply before each
 
     private void StartChatTurn(string text) => StartTurn(_chat, text, ChatTarget()?.Role ?? "");
 
     // queued: the message came from the queue, so the composer's attachments belong to the next message and stay.
     private void StartTurn(Conversation c, string? text, string role, bool queued = false)
     {
+        _steered.Clear();
+        _turnSteers = c.IsCode && text is not null && PiEngine;
         _turn = c;
         _turnWorker = _settings.ChatWorker;
         _pendingUser = text;
@@ -803,7 +806,7 @@ public partial class MainWindow
             if ((stopped || problem is not null) && _pendingUser is { } lost)
             {
                 var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
-                c.History.Add(new LauncherLogic.ChatMessage("user", lost, _pendingUserTime));
+                c.History.AddRange(TurnMessages(lost));
                 c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now()));
                 kept = true;
             }
@@ -813,7 +816,7 @@ public partial class MainWindow
                     SetChatFinal(answer);
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
-                    c.History.Add(new LauncherLogic.ChatMessage("user", user, _pendingUserTime));
+                    c.History.AddRange(TurnMessages(user));
                     c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now()));
                 }
                 completed = true;
@@ -878,8 +881,9 @@ public partial class MainWindow
     {
         _pendingSaved = Environment.TickCount64;
         var reply = partial.Trim().Length > 0 ? $"{partial.TrimEnd()}\n\n{InterruptedReply}" : InterruptedReply;
-        var pending = new List<LauncherLogic.ChatMessage>(c.History)
-            { new("user", text, _pendingUserTime), new("assistant", reply, _pendingUserTime) };
+        var pending = new List<LauncherLogic.ChatMessage>(c.History);
+        pending.AddRange(TurnMessages(text));
+        pending.Add(new("assistant", reply, _pendingUserTime));
         if (c.IsCode)
         {
             if (_codeConv is { } code)
@@ -901,9 +905,26 @@ public partial class MainWindow
         RefreshSidebarList();
     }
 
+    internal const string SteeredReply = "(Still working when the next message arrived.)";
+
+    // The turn's messages before its final reply, for the history: the user's, then per delivered steer the reply so far
+    // (a placeholder when a tool call cleared it: empty messages are dropped and roles must alternate) and the steered message.
+    private IEnumerable<LauncherLogic.ChatMessage> TurnMessages(string user)
+    {
+        yield return new("user", user, _pendingUserTime);
+        foreach (var (said, text, time) in _steered)
+        {
+            yield return new("assistant", said.Trim().Length > 0 ? said.TrimEnd() : SteeredReply, time);
+            yield return new("user", text, time);
+        }
+    }
+
     private void SetChatBusy(bool busy)
     {
         _chatBusy = busy;
+        if (!busy)
+            _steering.Clear(); // never delivered: queued rows again, sent as the next turn (or back in the input) as usual
+        RefreshQueue(_code); // Send now while a Pi Code turn runs
         AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
         foreach (var card in _cards)
             card.Editable = !busy;
@@ -977,6 +998,25 @@ public partial class MainWindow
                 break;
             case "chat_title":
                 _turnTitle = Str(ev, "text");
+                break;
+            // A Send now message reached the model: the reply so far closes, the message shows as the user's and the reply
+            // goes on below it, as a reopened conversation shows it.
+            case "steered":
+                if (!_steering.Remove(Str(ev, "key"), out var steered))
+                    break;
+                _codeQueue.Remove(steered.Item);
+                RefreshQueue(_code);
+                FlushMarkdown();
+                EndChatBlock();
+                var before = _reply;
+                if (before is not null)
+                    before.Status.Visibility = Visibility.Collapsed;
+                _steered.Add((before?.Final ?? before?.AnswerText.ToString() ?? "", steered.Text, Now()));
+                AddUserBubble(steered.Text, Now());
+                _reply = AddReply(role);
+                _reply.TurnTokens = before?.TurnTokens ?? 0;
+                if (_pendingUser is { } steeredUser && _turn != _parked)
+                    SavePendingTurn(_turn, steeredUser); // a crash keeps the steered message
                 break;
             case "context":
                 TurnContext(ContextSnapshot.From(ev));

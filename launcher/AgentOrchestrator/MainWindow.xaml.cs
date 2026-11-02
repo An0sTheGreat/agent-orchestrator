@@ -2862,6 +2862,8 @@ public partial class MainWindow : Window
         _profilePopup.IsOpen = false;
         if (!await QueueSmoke(Snap))
             return false;
+        if (!await SteerSmoke())
+            return false;
         if (!PiSmoke())
             return false;
         if (!await LlamaPollSmoke())
@@ -3087,6 +3089,73 @@ public partial class MainWindow : Window
             _chatQueue.Clear();
             ChatInput.Clear();
             RefreshQueue(_chat);
+        }
+        return true;
+    }
+
+    // --ui-smoke, steering: while a Pi Code turn runs, a queued Code message's Send now writes it to the turn's stdin (a real
+    // child process stands in for orchestrator.py) and its row shows Steering…; the "steered" event takes it out of the queue
+    // into the conversation (user, assistant, user, assistant in the history); one never delivered is queued again at the end.
+    private async Task<bool> SteerSmoke()
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
+        DockPanel Row(int i) => (DockPanel)((Border)CodeQueueList.Children[i]).Child;
+        Button? SendNow(int i) => Row(i).Children.OfType<Button>().SingleOrDefault(b => (string)b.Tag == "SteerQueued");
+        string Label(int i) => Row(i).Children.OfType<TextBlock>().First().Text;
+        var info = new ProcessStartInfo(LauncherLogic.FindPython()) { UseShellExecute = false, RedirectStandardInput = true, RedirectStandardOutput = true, CreateNoWindow = true };
+        foreach (var arg in new[] { "-c", "import sys\nwhile line := sys.stdin.readline(): print(line.strip(), flush=True)" })
+            info.ArgumentList.Add(arg);
+        var (engine, conv, history, turn) = (_settings.CodeEngine, _codeConv, _code.History.ToList(), _chatProcess);
+        _settings.CodeEngine = "pi";
+        _codeConv = null; // nothing goes to the store
+        _code.History.Clear();
+        var child = Process.Start(info)!;
+        try
+        {
+            _chatProcess = child;
+            StartTurn(_code, "Fix it", "planner");
+            _codeQueue.AddRange([new("Also this", []), new("And that", [])]);
+            RefreshQueue(_code);
+            if (SendNow(0) is not { IsEnabled: true } now || SendNow(1) is null)
+                return Fail();
+            async Task<string?> Written()
+            {
+                var read = child.StandardOutput.ReadLineAsync();
+                return await Task.WhenAny(read, Task.Delay(10000)) == read ? await read : null;
+            }
+            now.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var line = await Written();
+            var key = line is null ? "" : JsonNode.Parse(line)!["key"]?.GetValue<string>() ?? "";
+            if (line is null || (string)JsonNode.Parse(line)!["steer"]! != "Also this" || key.Length == 0 || Label(0) != "Steering…" || SendNow(0)!.IsEnabled)
+                return Fail();
+            string Ev(string json) => LauncherLogic.EventPrefix + json;
+            _lines.Enqueue(Ev($$"""{"e":"steered","role":"planner","key":"{{key}}"}"""));
+            _lines.Enqueue(Ev("""{"e":"code_reply","role":"planner","text":"Both done"}"""));
+            DrainLines();
+            if (_codeQueue.Select(q => q.Text).SequenceEqual(["And that"]) is false || CodeQueueList.Children.Count != 1 || Label(0) != "Queued")
+                return Fail();
+            SendNow(0)!.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); // the engine never delivers this one
+            if (await Written() is null || Label(0) != "Steering…")
+                return Fail();
+            FinishChatTurn(0, false, null);
+            if (_code.History.Select(m => (m.Role, m.Content)).SequenceEqual([("user", "Fix it"), ("assistant", SteeredReply), ("user", "Also this"),
+                    ("assistant", "Both done")]) is false || _codeQueue.Count != 1 || Label(0) != "Queued" || SendNow(0) is not null)
+                return Fail();
+        }
+        finally
+        {
+            _chatProcess = turn;
+            if (_chatBusy)
+                SetChatBusy(false);
+            child.StandardInput.Close();
+            if (!child.WaitForExit(5000))
+                child.Kill();
+            child.Dispose();
+            (_settings.CodeEngine, _codeConv) = (engine, conv);
+            _code.History.Clear();
+            _code.History.AddRange(history);
+            _codeQueue.Clear();
+            RefreshQueue(_code);
         }
         return true;
     }
