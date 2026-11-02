@@ -594,7 +594,7 @@ public partial class MainWindow
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            if (unsloth)
+            if (unsloth || LocalRuntime) // live speed: Unsloth's monitor, or llama-server's /slots
                 _poll.Start();
             _pump.Start();
             await process.WaitForExitAsync();

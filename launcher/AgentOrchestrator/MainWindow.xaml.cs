@@ -170,7 +170,7 @@ public partial class MainWindow : Window
             AddNote("PROJECT RUN", $"Working through PROJECT.md in {project}" + (_settings.Once ? ", stopping after the first finished item" : ""));
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
-            if (unsloth)
+            if (unsloth || LocalRuntime) // live speed: Unsloth's monitor, or llama-server's /slots
                 _poll.Start();
             _pump.Start();
             await _process.WaitForExitAsync();
@@ -2842,6 +2842,8 @@ public partial class MainWindow : Window
             return false;
         if (!PiSmoke())
             return false;
+        if (!await LlamaPollSmoke())
+            return false;
         if (!AttachSmoke())
             return false;
         // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
@@ -3210,7 +3212,7 @@ public partial class MainWindow : Window
         }
     }
 
-    // ---------------------------------------------------------------- live speed (Unsloth's own monitor endpoint)
+    // ---------------------------------------------------------------- live speed (Unsloth's monitor, or llama-server's /slots)
 
     private async void Poll_Tick(object? sender, EventArgs e)
     {
@@ -3219,6 +3221,11 @@ public partial class MainWindow : Window
         _polling = true;
         try
         {
+            if (LocalRuntime)
+            {
+                await PollLlamaAsync(card);
+                return;
+            }
             using var request = new HttpRequestMessage(HttpMethod.Get, _apiBase + "/api/inference/monitor");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
             using var response = await _http.SendAsync(request);
