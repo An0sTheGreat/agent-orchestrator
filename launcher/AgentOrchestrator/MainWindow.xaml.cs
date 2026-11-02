@@ -2833,6 +2833,24 @@ public partial class MainWindow : Window
             SelectTab(_tabs[^1]);
             CloseTab(_tab!);
             tabbed = tabbed && switched && _tabs.Count == before && _tab == _tabs[^1] && _tab.Web.Visibility == Visibility.Visible;
+            // The model's browser tool on a real page: its main content (the <article>) comes before the menus around it, and a
+            // screenshot scrolled to a word comes back as a JPEG data URL.
+            var pageFile = Path.Combine(AppSettings.DataRoot, "smoke-page.html");
+            File.WriteAllText(pageFile, "<p>top</p><script type='application/json'>{\"note\": \"Screens here\"}</script>" + // data in the body, as GitHub's
+                "<nav>" + string.Concat(Enumerable.Repeat("<p>menu item</p>", 40)) + "</nav><main><article><h1>README</h1>" +
+                string.Concat(Enumerable.Repeat("<p>The readme text.</p>", 20)) + "<p style='margin-top:3000px'>Screens here</p></article></main>");
+            var (pageText, _) = await BrowserAnswerAsync("open", new Uri(pageFile).AbsoluteUri, true, 0, "");
+            var (shotText, shot) = await BrowserAnswerAsync("screenshot", "", false, 0, "Screens");
+            var scrolled = await _tab!.Web.CoreWebView2.ExecuteScriptAsync("window.scrollY") is var y && double.TryParse(y, out var dy) && dy > 1000;
+            var pageOk = pageText.Contains("VISIBLE TEXT:\nMAIN CONTENT:\nREADME") && pageText.IndexOf("REST OF THE PAGE:\ntop") > pageText.IndexOf("The readme text.") && pageText.Contains("menu item") &&
+                         shot?.StartsWith("data:image/jpeg;base64,/9j/") == true && shotText.Contains("scrolled to the first \"Screens\"") && scrolled;
+            CloseTab(_tab!);
+            File.Delete(pageFile);
+            if (!pageOk)
+            {
+                Console.Error.WriteLine($"browser page {pageText[..Math.Min(300, pageText.Length)]} | {shotText} | {shot?[..Math.Min(40, shot.Length)]} | {scrolled}");
+                return Fail();
+            }
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);

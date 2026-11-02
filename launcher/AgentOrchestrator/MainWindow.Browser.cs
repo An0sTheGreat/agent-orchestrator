@@ -318,14 +318,20 @@ public partial class MainWindow
 
     // open: the browser opens (expanding the column) on the page the engine checked (a file in the chat's folders, or a web
     // address), in the shown tab or (new_tab) a new one; then, or for read (of tab N, which it shows), the page's address,
-    // title, script errors and visible text go back to the model. tabs: the open tabs, numbered.
+    // title, script errors and visible text go back to the model (the engine pages through the text). screenshot: tab N
+    // shown, scrolled to the first `find` match, as a JPEG data URL in "image". tabs: the open tabs, numbered.
     private async Task AnswerBrowserAsync(JsonElement ev)
     {
-        var (id, action, url) = (Str(ev, "id"), Str(ev, "action"), Str(ev, "url"));
-        var newTab = ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True;
-        var number = (int)Num(ev, "tab");
         var asker = _chatProcess ?? _process;
+        var (result, image) = await BrowserAnswerAsync(Str(ev, "action"), Str(ev, "url"),
+            ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True, (int)Num(ev, "tab"), Str(ev, "find"));
+        ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
+    }
+
+    private async Task<(string Result, string? Image)> BrowserAnswerAsync(string action, string url, bool newTab, int number, string find)
+    {
         string result;
+        string? image = null;
         try
         {
             if (action == "tabs")
@@ -360,28 +366,69 @@ public partial class MainWindow
                 {
                     if (number > 0)
                         SelectTab(_tabs[number - 1]);
-                    result = await Report();
+                    if (action != "screenshot")
+                        result = await Report();
+                    else if (_tab?.Web.CoreWebView2 is not { } core)
+                        result = await Report(); // the error
+                    else
+                    {
+                        await Task.Delay(320); // a column that just opened lays the page out first
+                        var found = find == "" || await core.ExecuteScriptAsync(FindScript(find)) == "true";
+                        await Task.Delay(150);
+                        using var shot = new MemoryStream();
+                        var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
+                        if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
+                            return ("ERROR: the screenshot did not finish within 15 s; use read", null);
+                        await capture;
+                        image = "data:image/jpeg;base64," + Convert.ToBase64String(shot.ToArray());
+                        result = $"TAB: {_tabs.IndexOf(_tab) + 1} of {_tabs.Count}\nURL: {core.Source}\nTITLE: {core.DocumentTitle}\n" +
+                                 (found ? find == "" ? "SCREENSHOT: the part of the page the tab shows" : $"SCREENSHOT: scrolled to the first \"{find}\""
+                                     : $"SCREENSHOT: \"{find}\" is not on the page, so this is the part the tab shows");
+                    }
                 }
             }
         }
-        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
+        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException or IOException)
         {
-            result = $"ERROR: the browser failed: {e.Message}";
+            (result, image) = ($"ERROR: the browser failed: {e.Message}", null);
         }
-        ToTurn(asker, JsonSerializer.Serialize(new { id, result }));
+        return (result, image);
         Task<string> Report() =>
             _tab?.Web.CoreWebView2 is { } core ? PageReport(_tab, core) : Task.FromResult(BrowserMessage.IsVisible ? $"ERROR: {BrowserMessage.Text}" : "ERROR: the browser has no page yet");
     }
+
+    // Scrolls the first shown element whose text contains `find` (any case) to the top; "true" when there is one.
+    private static string FindScript(string find) =>
+        $$"""
+        (() => { const q = {{JsonSerializer.Serialize(find.ToLowerInvariant())}}; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                 while (w.nextNode()) {
+                     const p = w.currentNode.parentElement; // only shown text: not a script's data (GitHub's README is in one too)
+                     if (!p || p.closest("script, style, noscript, template") || !p.getClientRects().length) continue;
+                     if (w.currentNode.nodeValue.toLowerCase().includes(q)) { p.scrollIntoView({ block: "start" }); return true; }
+                 }
+                 return false; })()
+        """;
+
+    // The page's text, main content first: the first <article> (a README, a post), else <main>, then the rest of the page.
+    private const string PageTextScript = """
+        (() => { const all = document.body ? document.body.innerText : '';
+                 const m = document.querySelector('article') || document.querySelector('main, [role=main]');
+                 const main = m ? m.innerText.trim() : '';
+                 if (main.length < 200 || main.length > all.length * 0.95) return all;
+                 const at = all.indexOf(main);
+                 return 'MAIN CONTENT:\n' + main + '\n\nREST OF THE PAGE:\n' + (at < 0 ? all : all.slice(0, at) + all.slice(at + main.length)); })()
+        """;
 
     private string TabList() => string.Join("\n", _tabs.Select((t, i) => $"{i + 1}. {TabTitle(t)} - {t.Url}{(t == _tab ? " (shown)" : "")}"));
 
     private async Task<string> PageReport(BrowserTab tab, CoreWebView2 core)
     {
-        var json = await core.ExecuteScriptAsync("(document.body ? document.body.innerText : '')");
+        var json = await core.ExecuteScriptAsync(PageTextScript);
         var text = JsonSerializer.Deserialize<string>(json) ?? "";
         var errors = tab.Errors.Count == 0 ? "none" : string.Join("\n", tab.Errors.Distinct().Take(20).Select(e => "- " + e));
         return $"TAB: {_tabs.IndexOf(tab) + 1} of {_tabs.Count}\nURL: {core.Source}\nTITLE: {core.DocumentTitle}\nSCRIPT ERRORS: {errors}\n\n" +
-               $"VISIBLE TEXT:\n{(text.Length > 12000 ? text[..12000] + "\n(cut)" : text)}";
+               $"VISIBLE TEXT:\n{(text.Length > 400_000 ? text[..400_000] : text)}"; // the engine cuts it to the model's window
+
     }
 
     // Runtime.exceptionThrown: "message (url:line)".

@@ -3092,6 +3092,54 @@ class CodeTests(unittest.TestCase):
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("read"))
 
+    def test_browser_text_pages_by_offset_and_find_within_its_share(self):
+        page = "nav menu\n" * 300 + "README\nThe simulator's readme text.\n" + "footer\n" * 300
+        answer = lambda event, **d: {"result": f"TAB: 1 of 1\nURL: u\nTITLE: t\nSCRIPT ERRORS: none\n\nVISIBLE TEXT:\n{page}"}
+        cap = lambda result, args: orchestrator.cap_result("browser", result, args, 1000)  # 10%: 350 characters
+        with patch.object(orchestrator, "launcher_call", answer):
+            browse = orchestrator.browser_handler(self.folders, {})
+            first = cap(browse("read"), {})
+            self.assertIn(f"TEXT FROM CHARACTER 0 OF {len(page)}:\nnav menu", first)
+            self.assertLessEqual(len(first.split("\n... cut")[0]), 350)
+            offset = int(re.search(r"read on with offset=(\d+)", first).group(1))
+            shown = first.split(f"OF {len(page)}:\n")[1].split("\n... cut")[0]
+            self.assertEqual(page[:offset], shown)  # the next read starts right after what was shown
+            self.assertTrue(browse("read", offset=offset).split(f"OF {len(page)}:\n")[1].startswith(page[offset:offset + 50]))
+            found = browse("read", find="readme")
+            self.assertIn(f"TEXT FROM CHARACTER {page.index('README')} OF", found)
+            self.assertTrue(found.endswith(page[page.index("README"):]))
+            self.assertIn("NOT FOUND: 'license' is not in the page's text", browse("read", find="license"))
+            noisy = browse("read").replace("SCRIPT ERRORS: none", "SCRIPT ERRORS:\n" + "- TypeError: x is undefined\n" * 40)
+            cut = cap(noisy, {})  # many script errors: they get a third of the room, and the page text still comes with an offset
+            self.assertIn(f"TEXT FROM CHARACTER 0 OF {len(page)}:\nnav menu", cut)
+            self.assertRegex(cut, r"read on with offset=\d+ \(without find\)")
+
+    def test_a_browser_screenshot_goes_to_the_model_as_an_image(self):
+        asked, image = [], "data:image/jpeg;base64,/9j/AAAA"
+        answer = lambda event, **d: asked.append(d) or {"result": "TAB: 1 of 1\nSCREENSHOT: scrolled to the first \"Screens\"", "image": image}
+        call = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "browser", "arguments": json.dumps({"action": "screenshot", "find": "Screens"})}}]}
+        with patch.object(orchestrator, "launcher_call", answer):
+            code, log, *_ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": [call, "done"]})
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [{"action": "screenshot", "url": "", "find": "Screens"}])
+            tool, shot = log[1]["messages"][-2:]
+            self.assertEqual((tool["role"], shot["role"], shot["images"]), ("tool", "user", [image]))
+            sent = orchestrator.with_images([*log[1]["messages"]])[-1]
+            self.assertEqual(sent["content"][1], {"type": "image_url", "image_url": {"url": image}})
+            self.assertNotIn("images", sent)
+            with patch.object(orchestrator, "vision_off", lambda config, role: role == "planner"):  # the role's setting reaches its browser
+                code, blind, *_ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": [call, "done"]})
+            self.assertIn("vision off", blind[1]["messages"][-1]["content"])
+            self.assertEqual(len(asked), 1)  # the launcher was not asked again
+        later = [*log[1]["messages"], {"role": "assistant", "content": "a"}, {"role": "assistant", "content": "b"}]
+        old = orchestrator.slim_tool_results(later)[-3]  # two rounds on, the image is left out and its text stays
+        self.assertTrue("images" not in old and old["content"].startswith("The screenshot the browser tool took: (the image is left out"), old)
+        self.assertEqual(orchestrator.estimate_tokens([shot]) - orchestrator.estimate_tokens([{"content": shot["content"]}]), orchestrator.IMAGE_TOKENS)
+        big = {**shot, "images": ["data:image/jpeg;base64," + "A" * 200_000]}  # a real screenshot's data URL is this long
+        parts = orchestrator.context_parts(orchestrator.with_images([{"role": "system", "content": "s" * 8750}, big]), None, 1000)
+        self.assertLess(parts["messages"], 600)  # the image counts as IMAGE_TOKENS, not as its 200,000 characters of text
+
     def test_compact_command_summarizes_now_without_a_model_turn(self):
         # /compact <focus>: one quiet summary call with the focus in its prompt, a history_compacted event covering the
         # earlier messages, and a reply that says so; with nothing earlier, nothing is called.
@@ -3594,6 +3642,17 @@ class PiEngineTests(unittest.TestCase):
         self.assertLessEqual(len(result.split("\n... cut at")[0]), limit)
         self.assertTrue(result.endswith(f"read on with offset={1 + len(shown)}"), result[-200:])
         self.assertEqual(shown[-1][:4], f"{len(shown):04}")
+
+    def test_pi_sends_a_browser_screenshot_to_the_model(self):
+        image = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYPj/HwADAgH/eL9GtQAAAABJRU5ErkJggg=="
+        answer = lambda event, **d: {"result": "TAB: 1 of 1\nSCREENSHOT: the part of the page the tab shows", "image": image}
+        with patch.object(orchestrator, "launcher_call", answer):
+            code, events, requests = self.turn([[("browser", {"action": "screenshot"})], [("list_files", {})], [("list_files", {})], "I see it."],
+                                               [{"role": "user", "content": "look"}])
+        self.assertEqual(code, 0)
+        self.assertIn(image.split(",")[1], json.dumps(requests[1]["messages"]))
+        self.assertNotIn(image.split(",")[1], json.dumps(requests[-1]["messages"]))  # two rounds on, the image is left out
+        self.assertIn("(the image is left out to save context", json.dumps(requests[-1]["messages"]))
 
     def test_pi_works_in_the_grants_and_reports(self):
         (self.root / "notes.txt").write_text("hello\n", encoding="utf-8")

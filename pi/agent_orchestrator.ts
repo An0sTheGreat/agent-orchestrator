@@ -9,7 +9,7 @@ import { Type } from "typebox";
 import { readFileSync } from "node:fs";
 import { request } from "node:http";
 
-type Reply = { result?: string; error?: string };
+type Reply = { result?: string; error?: string; images?: string[] }; // images: data URLs (a browser screenshot)
 type Spec = { name: string; description: string; parameters: Record<string, unknown> };
 
 // tool -> [writes, the file must exist (Pi's read tries other spellings of a missing path)]
@@ -55,7 +55,11 @@ export default function (pi: ExtensionAPI) {
 			async execute(_toolCallId, params, signal) {
 				const reply = await call({ tool: spec.name, args: params }, signal);
 				if (reply.error !== undefined) throw new Error(reply.error);
-				return { content: [{ type: "text", text: reply.result ?? "" }], details: undefined };
+				const images = (reply.images ?? []).flatMap((url) => {
+					const m = /^data:(image\/[\w.+-]+);base64,(.*)$/s.exec(url);
+					return m ? [{ type: "image" as const, mimeType: m[1], data: m[2] }] : [];
+				});
+				return { content: [{ type: "text" as const, text: reply.result ?? "" }, ...images], details: undefined };
 			},
 		});
 	}
@@ -74,6 +78,8 @@ export default function (pi: ExtensionAPI) {
 		const messages = event.messages.map((m, i) => {
 			if (i >= keepFrom || m.role !== "toolResult") return m;
 			const text = m.content.map((c) => (c.type === "text" ? c.text : "")).join("");
+			if (text.length <= STUB_OVER && m.content.some((c) => c.type !== "text")) // an older screenshot: the text stays, the image goes
+				return { ...m, content: [{ type: "text" as const, text: `${text} (the image is left out to save context; take it again if you need it)` }] };
 			if (text.length <= STUB_OVER) return m;
 			const note = `[older result of ${m.toolName} ${calls.get(m.toolCallId) ?? ""} (${text.length.toLocaleString("en-US")} characters, ` +
 				`${text.split("\n").length} lines) left out to save context; call the tool again if you need it]`;

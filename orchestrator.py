@@ -723,7 +723,11 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
     chars = dict.fromkeys(("system", "tools", "skills", "messages", "tool_results"), 0)
     chars["tools"] = len(json.dumps(tools)) if tools else 0
     for m in messages:
-        content = str(m.get("content") or "")
+        content = m.get("content") or ""
+        if isinstance(content, list):  # with_images' parts: the text, and an image's estimated size (not its data URL)
+            content = "".join(str(p.get("text") or "") for p in content if isinstance(p, dict)) + " " * int(
+                IMAGE_TOKENS * 3.5 * sum(isinstance(p, dict) and p.get("type") == "image_url" for p in content))
+        content = str(content)
         if m.get("role") == "system":
             for note in CONTEXT_NOTE.finditer(content):
                 chars["skills" if note.group(1) == "SKILLS" else "tools"] += len(note.group(0))
@@ -807,7 +811,9 @@ def slim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sent = []
     for i, m in enumerate(messages):
         text = m.get("content")
-        if i < keep_from and isinstance(text, str) and len(text) > STUB_OVER and (
+        if i < keep_from and m.get("images"):  # an older screenshot: its text stays, the image goes
+            m = {k: v for k, v in m.items() if k != "images"} | {"content": f"{text} (the image is left out to save context; take it again if you need it)"}
+        elif i < keep_from and isinstance(text, str) and len(text) > STUB_OVER and (
                 m.get("role") == "tool" or (m.get("role") == "user" and text.startswith("TOOL RESULTS\n"))):
             if m.get("role") == "tool":
                 function = calls.get(m.get("tool_call_id"), {})
@@ -820,9 +826,26 @@ def slim_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sent
 
 
+IMAGE_TOKENS = 2500  # ponytail: one screenshot's estimated prompt size; vision models differ (fixed 256 to ~4,500 by resolution)
+
+
+class ToolResult(str):
+    """A tool's text plus images for the model (a browser screenshot, as data URLs): code_loop sends them in a user message
+    after the batch's results (its "images", which with_images turns into content parts), PiGateway as Pi image content."""
+    images: list[str]
+
+    def __new__(cls, text: str, images: list[str]) -> "ToolResult":
+        result = super().__new__(cls, text)
+        result.images = images
+        return result
+
+
 def with_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The messages to send: the last user message holding the turn's text (compaction may frame it) gets its images as
-    OpenAI-style content parts. Unchanged when the turn has none."""
+    """The messages to send: a message's "images" (a tool's screenshot) become OpenAI-style content parts, and the last user
+    message holding the turn's text (compaction may frame it) gets the turn's images. Unchanged when there are none."""
+    if any(m.get("images") for m in messages):
+        messages = [{k: v for k, v in m.items() if k != "images"} | {"content": [{"type": "text", "text": str(m.get("content") or "")},
+                    *({"type": "image_url", "image_url": {"url": u}} for u in m["images"])]} if m.get("images") else m for m in messages]
     text, urls = TURN_IMAGES
     if not urls:
         return messages
@@ -942,11 +965,12 @@ def compact_now(config: dict[str, Any], role: str, messages: list[dict[str, Any]
 
 
 def estimate_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
-    """A prompt's size in tokens, estimated as characters / 3.5."""
+    """A prompt's size in tokens, estimated as characters / 3.5, and IMAGE_TOKENS for each image a message carries."""
     # ponytail: fixed ratio; calibrate against the last usage.prompt_tokens if compaction fires too early or late
     chars = len(json.dumps(tools)) if tools else 0
     for m in messages:
         chars += len(str(m.get("content") or "")) + (len(json.dumps(m["tool_calls"])) if m.get("tool_calls") else 0)
+        chars += int(IMAGE_TOKENS * 3.5) * len(m.get("images") or [])
     return int(chars / 3.5)
 
 
@@ -3478,7 +3502,8 @@ CODE_MAX_SEARCH = 2_000_000  # bytes; search_files skips larger files
 CODE_MAX_ENTRIES, CODE_MAX_READ, CODE_MAX_HITS, CODE_READ_LINES = 250, 200_000, 75, 300
 # Each tool result is cut to a share of the calling model's context window (cap_result); the handlers' own limits above,
 # WEB_MAX_TEXT and sandbox.OUTPUT_LIMIT are only ceilings for large windows.
-TOOL_SHARE = {"run_command": 0.13, "read_file": 0.13, "fetch_page": 0.10, "search_files": 0.08, "list_files": 0.08}
+TOOL_SHARE = {"run_command": 0.13, "read_file": 0.13, "fetch_page": 0.10, "browser": 0.10, "search_files": 0.08, "list_files": 0.08}
+PAGE_TEXT = re.compile(r"^TEXT FROM CHARACTER (\d+) OF \d+:\n", re.M)  # browser_handler's page text header
 DEFAULT_WINDOW = 32_768  # tokens, when the model's window is unknown (some remote APIs)
 
 
@@ -3490,6 +3515,14 @@ def cap_result(tool: str, result: str, arguments: dict[str, Any], n_ctx: int | N
     limit = int((share or 0) * (n_ctx or DEFAULT_WINDOW) * 3.5)
     if not share or len(result) <= limit:
         return result
+    if tool == "browser" and (page := PAGE_TEXT.search(result)):
+        if page.start() > limit // 3:  # long script errors: they get a third of the room, the page text the rest
+            result = result[:limit // 3] + "\n... (cut)\n" + result[page.start():]
+            page = PAGE_TEXT.search(result)
+        kept = result[:limit]
+        kept = kept[:kept.rfind("\n")] if kept.rfind("\n") > page.end() else kept
+        return kept + (f"\n... cut ({share:.0%} of the context window); read on with offset="
+                       f"{int(page.group(1)) + max(len(kept) - page.end(), 1)} (without find), or jump with find")
     if tool == "run_command":
         head = limit // 3
         return result[:head] + f"\n... {len(result) - limit} characters cut ...\n" + result[-(limit - head):]
@@ -3690,7 +3723,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             nudges += 1
             messages.append({"role": "user", "content": nudge() if callable(nudge) else nudge})
             continue
-        nudges, results = 0, []
+        nudges, results, images = 0, [], []
         for call in calls:
             function = call.get("function") or {}
             tool = str(function.get("name") or "?")
@@ -3702,12 +3735,15 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
+            images += getattr(result, "images", [])
             if native:
-                messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": result})
+                messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": str(result)})
             else:
                 results.append(f"{tool}: {result}")
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
+        if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
+            messages.append({"role": "user", "content": "The screenshot the browser tool took:", "images": images})
         if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():
@@ -3838,20 +3874,29 @@ BROWSER_TOOL = function_tool(
     "browser", "Look at a page in the app's own browser, which the user sees beside the chat (it opens there): use it "
     "before anything else to view a local HTML file or a web page, never Chrome, Edge or another browser through "
     "run_command. action 'open' loads `url` (a file in the granted folders, e.g. index.html, or an http(s) address when "
-    "web search or utilities are on) and returns its title, visible text and any script errors, in the shown tab or, with "
-    "new_tab, a new one; 'read' returns the shown page again (after it changed), or tab N's, which it then shows; 'tabs' "
-    "lists the open tabs.", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": {"type": "string"},
-                             "new_tab": {"type": "boolean"}, "tab": {"type": "integer", "description": "a tab number from 'tabs'"}}, ["action"])
+    "web search or utilities are on) and returns its title, script errors and text (main content first), in the shown tab "
+    "or, with new_tab, a new one; 'read' returns the shown page again (after it changed), or tab N's, which it then shows. "
+    "Long text is cut: read on with `offset` as the reply says, or jump to a part with `find` (e.g. find 'README'). "
+    "'screenshot' returns an image of what the shown tab (or tab N) shows, scrolled to `find` when given: use it to see "
+    "a page's look or its pictures. 'tabs' lists the open tabs.",
+    {"action": {"type": "string", "enum": ["open", "read", "screenshot", "tabs"]}, "url": {"type": "string"},
+     "new_tab": {"type": "boolean"}, "tab": {"type": "integer", "description": "a tab number from 'tabs'"},
+     "offset": {"type": "integer", "description": "read the text from this character (the reply says where to read on)"},
+     "find": {"type": "string", "description": "read from, or screenshot at, the first place with this text"}}, ["action"])
 
 
-def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
+def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], vision: bool = True):
     """The lead's browser tool: the launcher's in-app browser (a "browser" request it answers with the page). Local files
-    must be in the granted folders; web addresses only when the request has web search or utilities on, as fetch_page."""
+    must be in the granted folders; web addresses only when the request has web search or utilities on, as fetch_page.
+    open/read return the page's text from `offset` (characters) or from the line of the first `find` match; screenshot
+    returns an image of what the tab shows (a ToolResult), only when the model sees images (`vision`)."""
     web = bool(request.get("search") or request.get("tools"))
 
-    def browser(action: str = "open", url: str = "", new_tab: bool = False, tab: int = 0) -> str:
-        if action not in ("open", "read", "tabs"):
-            raise WorkflowError("action must be 'open', 'read' or 'tabs'")
+    def browser(action: str = "open", url: str = "", new_tab: bool = False, tab: int = 0, offset: Any = 0, find: str = "") -> str:
+        if action not in ("open", "read", "tabs", "screenshot"):
+            raise WorkflowError("action must be 'open', 'read', 'screenshot' or 'tabs'")
+        if action == "screenshot" and not vision:
+            raise WorkflowError("this model's settings switch vision off, so it cannot see a screenshot; use read")
         target = ""
         if action == "open":
             raw = str(url or "").strip()
@@ -3866,11 +3911,25 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
                 if not path.is_file():
                     raise WorkflowError(f"No such file: {raw}")
                 target = path.as_uri()
-        extra = {"new_tab": True} if action == "open" and new_tab else {"tab": int(tab)} if action == "read" and tab else {}
-        answer = launcher_call("browser", action=action, url=target, **extra)
+        find = str(find or "").strip()
+        extra = {"new_tab": True} if action == "open" and new_tab else {"tab": int(tab)} if action in ("read", "screenshot") and tab else {}
+        answer = launcher_call("browser", action=action, url=target, **extra, **({"find": find} if action == "screenshot" and find else {}))
         if answer is None:
             return "ERROR: the in-app browser is only there when the app runs this turn"
-        return clip(str(answer.get("result") or ""), CHECKS_LIMIT * 3)
+        result = str(answer.get("result") or "")
+        if action == "screenshot":
+            image = str(answer.get("image") or "")
+            return ToolResult(result, [image]) if image.startswith("data:image/") else result
+        head, marker, text = result.partition("VISIBLE TEXT:\n")
+        if not marker:
+            return clip(result, CHECKS_LIMIT * 3)  # an error or the tab list
+        start = max(int(offset or 0), 0)
+        if find:  # from the start of the line with the first match at or after `offset`
+            at = text.lower().find(find.lower(), start)
+            if at < 0:
+                return head + f"NOT FOUND: {find!r} is not in the page's text" + (f" after character {start}" if start else "")
+            start = text.rfind("\n", 0, at) + 1
+        return head + f"TEXT FROM CHARACTER {start} OF {len(text)}:\n{text[start:]}"  # cap_result cuts it to the window's share
 
     return browser
 
@@ -4187,7 +4246,7 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     cap = int(config.get("max_delegations", 6)) if delegations is None else delegations
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
-    tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request)  # the lead's: workers' runs have no browser
+    tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request, not vision_off(config, role))  # the lead's only
     if asked_to_start(request):
         def start_project() -> str:
             if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():
@@ -4407,7 +4466,8 @@ class PiGateway:
                         if name not in handlers or not isinstance(args, dict):
                             raise WorkflowError(f"tool {name!r} is unavailable")
                         with lock:
-                            reply = {"result": cap_result(name, str(handlers[name](**args)), args, n_ctx)}
+                            result = handlers[name](**args)
+                            reply = {"result": cap_result(name, str(result), args, n_ctx), "images": getattr(result, "images", [])}
                 except PermissionError:
                     self.send_response(403)
                     self.end_headers()
