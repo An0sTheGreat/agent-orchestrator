@@ -2923,7 +2923,7 @@ class CodeTests(unittest.TestCase):
         self.assertIn(f"{self.shared} (read)", log[0]["system"])
         self.assertEqual({t["function"]["name"] for t in log[0]["tools"]},
                          {"list_files", "read_file", "search_files", "write_file", "replace_text", "todo", "run_checks", "run_command",
-                          "delegate", "load_skill"})
+                          "delegate", "load_skill", "browser"})
 
     def test_begin_work_from_project_md_stays_with_the_lead(self):
         # Scenario B: with a PROJECT.md the lead reads it and implements itself; nothing can start the project run or a worker.
@@ -2964,6 +2964,43 @@ class CodeTests(unittest.TestCase):
                                        [*self.MSGS, {"role": "user", "content": "start-project"}, {"role": "assistant", "content": "ok"},
                                         {"role": "user", "content": "What now?"}]}, {"planner": ["ok"]})
             self.assertNotIn("start_project", {t["function"]["name"] for t in log[0]["tools"]}, later)
+
+    def test_browser_tool_opens_granted_files_and_web_only_with_search(self):
+        # The lead's browser: a "browser" request to the launcher with the checked file:// URI; web addresses need Search or
+        # Tools; files outside the grants and missing files are refused before the launcher is asked.
+        (self.root / "index.html").write_text("<h1>Hi</h1>", encoding="utf-8")
+        asked = []
+        answer = lambda event, **d: asked.append((event, d)) or {"id": "x", "result": "TITLE Hi"}
+        with patch.object(orchestrator, "launcher_call", answer):
+            browse = orchestrator.browser_handler(self.folders, {})
+            self.assertEqual(browse("open", "index.html"), "TITLE Hi")
+            self.assertEqual(browse("read"), "TITLE Hi")
+            for bad, why in (("https://example.org", "web search or utilities"), (str(self.root.parent / "x.html"), "outside"),
+                             ("missing.html", "No such file"), ("", "needs a url")):
+                with self.subTest(bad), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    browse("open", bad)
+            self.assertEqual(orchestrator.browser_handler(self.folders, {"search": True})("open", "https://example.org"), "TITLE Hi")
+        self.assertEqual(asked, [("browser", {"action": "open", "url": (self.root / "index.html").as_uri()}),
+                                 ("browser", {"action": "read", "url": ""}), ("browser", {"action": "open", "url": "https://example.org"})])
+        with patch.object(orchestrator, "EVENTS", False):
+            self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("read"))
+
+    def test_compact_command_summarizes_now_without_a_model_turn(self):
+        # /compact <focus>: one quiet summary call with the focus in its prompt, a history_compacted event covering the
+        # earlier messages, and a reply that says so; with nothing earlier, nothing is called.
+        msgs = [{"role": "user", "content": "Build a todo app in plain JS."}, {"role": "assistant", "content": "Done: index.html."},
+                {"role": "user", "content": "/compact keep the colour choices"}]
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, {"planner": ["The user wants a plain-JS todo app; index.html exists."]})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(log), 1)  # the summary call only
+        self.assertIn("Focus especially on: keep the colour choices", log[0]["system"])
+        compacted = [d for e, d in events if e == "history_compacted"]
+        self.assertEqual([(d["summary"], d["covers"]) for d in compacted], [("The user wants a plain-JS todo app; index.html exists.", 2)])
+        self.assertTrue([d["text"] for e, d in events if e == "code_reply"][0].startswith("Conversation compacted: about "))
+        code, log, events, _ = self.code({"action": "chat", "messages": [{"role": "user", "content": "/compact"}]}, {"planner": []})
+        self.assertEqual((code, log), (0, []))
+        self.assertIn("Nothing to compact yet", [d["text"] for e, d in events if e == "code_reply"][0])
+        self.assertIsNone(orchestrator.compact_command([{"role": "user", "content": "please /compact later"}]))
 
     PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
 
@@ -3443,6 +3480,10 @@ class PiEngineTests(unittest.TestCase):
         self.assertIn(f"{self.root} (write, project root)", system)
         self.assertIn("init-projMD", system)  # the bundled skill, listed by Pi
         self.assertIn(("done", {"role": "planner", "final": True}), events)
+        # a tool call's arguments stream as tool deltas (the launcher shows "Writing app.py… N characters"); Pi's RPC
+        # updates carry no partial message, so the name is unknown until the call ends
+        streamed = "".join(d["text"] for e, d in events if e == "delta" and d["kind"] == "tool")
+        self.assertIn("app.py", streamed)
         # the next turn continues the same Pi session: earlier tool results are in the request, no text re-seeding
         msgs = [{"role": "user", "content": "add app.py"}, {"role": "assistant", "content": "Added app.py."},
                 {"role": "user", "content": "thanks"}]
@@ -3452,6 +3493,13 @@ class PiEngineTests(unittest.TestCase):
         self.assertNotIn("Earlier in this conversation", sent)
         self.assertIn("print('hi')", sent)  # the write call from turn one
         self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["You're welcome."])
+        # /compact in that session: Pi's own compact command (its summary call), no prompt turn
+        msgs += [{"role": "assistant", "content": "You're welcome."}, {"role": "user", "content": "/compact keep app.py"}]
+        code, events, requests = self.turn(["## Goal\nAdd app.py.\n## Done\napp.py prints hi."], msgs, session=session)
+        self.assertEqual(code, 0)
+        reply = [d["text"] for e, d in events if e == "code_reply"]
+        self.assertTrue(reply and reply[0].startswith(("Conversation compacted", "The conversation could not be compacted")), reply)
+        self.assertNotIn("/compact", json.dumps([m for r in requests for m in r["messages"]]))  # never sent as a prompt
 
     def test_path_spellings_pi_rewrites_cannot_leave_the_grants(self):
         # Pi rewrites @x, ~/x, file: URLs, /c/ paths and Unicode spaces after the guard; each is refused before it can.
@@ -3519,7 +3567,7 @@ class LeadTests(unittest.TestCase):
         self.assertEqual((self.root / "app.py").read_text(encoding="utf-8"), "x = 1\n")
         self.assertEqual([l["role"] for l in log], ["planner"] * 2 + ["implementer"] * 2 + ["planner"] + ["reviewer"] * 2 + ["planner"])
         code_tools = [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "run_command", "delegate", "load_skill"])
+        self.assertEqual(self.names(log[0]), code_tools + ["todo", "run_checks", "run_command", "delegate", "load_skill", "browser"])
         self.assertEqual(self.names(log[2]), code_tools[:5] + ["load_skill", "run_command"])  # implementer: file tools + extras, no delegate
         self.assertEqual(self.names(log[5]), code_tools[:3] + ["run_checks", "load_skill", "run_command"])  # reviewer: read-only sandbox
         for sub, brief in ((log[2], "Write app.py: x = 1"), (log[5], "Check app.py")):
@@ -4446,7 +4494,7 @@ class ExtrasTests(unittest.TestCase):
             test.doCleanups()
         names = [t["function"]["name"] for t in log[0]["tools"]]
         self.assertEqual(names, [t["function"]["name"] for t in orchestrator.CODE_TOOLS]
-                         + ["todo", "run_checks", "run_command", "delegate", "calculator", "current_time", "fetch_page", "load_skill"])
+                         + ["todo", "run_checks", "run_command", "delegate", "calculator", "current_time", "fetch_page", "load_skill", "browser"])
         self.assertIn("UTILITIES\n", log[0]["system"])
 
 
@@ -4545,6 +4593,16 @@ class LlamaCppTests(unittest.TestCase):
         text = str(ctx.exception)
         for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Unsloth", "Options"):
             self.assertIn(part, text)
+
+    def test_a_vision_projector_beside_the_model_is_loaded_unless_vision_is_off(self):
+        folder = self.tmp / "vision"
+        folder.mkdir()
+        model = folder / "model-Q4_K_M.gguf"
+        for name, size in ((model.name, 10), ("mmproj-F16.gguf", 6), ("mmproj-F32.gguf", 9)):
+            (folder / name).write_bytes(b"x" * size)
+        args = orchestrator.llama_args(model, {"model_path": self.PATH}, 8899)
+        self.assertEqual(args[args.index("--mmproj") + 1], str(folder / "mmproj-F16.gguf"))  # the smaller one
+        self.assertNotIn("--mmproj", orchestrator.llama_args(model, {"model_path": self.PATH, "disable_vision": "on"}, 8899))
 
     def test_server_args(self):
         self.assertEqual(orchestrator.llama_args(Path("m.gguf"), self.AUTO, 8899), [

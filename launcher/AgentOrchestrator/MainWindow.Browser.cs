@@ -26,8 +26,8 @@ public partial class MainWindow
 
     private void BrowserClose_Click(object sender, RoutedEventArgs e) => CloseBrowser();
 
-    // url null: the last page, else the home page.
-    private void OpenBrowser(string? url)
+    // url null: the last page, else the home page. trusted: a file:// page the engine already checked (the model's browser tool).
+    private void OpenBrowser(string? url, bool trusted = false)
     {
         StopColumnTween(); // a slide still running finishes first
         if (!BrowserPanel.IsVisible)
@@ -42,7 +42,7 @@ public partial class MainWindow
             _settings.Save();
         }
         if (url is not null || _web is null)
-            Navigate(url ?? (_settings.BrowserUrl.Length > 0 ? _settings.BrowserUrl : BrowserHome));
+            Navigate(url ?? (_settings.BrowserUrl.Length > 0 ? _settings.BrowserUrl : BrowserHome), trusted);
     }
 
     // Back to the worker details (or their rail), as they were.
@@ -53,10 +53,11 @@ public partial class MainWindow
         SetWorkerRail(_settings.DetailsCollapsed); // hides the browser
     }
 
-    private void Navigate(string text)
+    private void Navigate(string text, bool trusted = false)
     {
-        if (BrowserUrl(text) is not { } url)
+        if ((trusted ? text : BrowserUrl(text)) is not { } url)
             return;
+        _pageErrors.Clear();
         BrowserAddress.Text = url;
         if (EnsureWeb() is not { } web)
             return;
@@ -80,6 +81,15 @@ public partial class MainWindow
                     BrowserFailed(e.InitializationException);
                     return;
                 }
+                // the page's script errors, for the model's browser tool
+                Forget(web.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}"));
+                web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown").DevToolsProtocolEventReceived += (_, a) =>
+                    _pageErrors.Add(ExceptionText(a.ParameterObjectAsJson));
+                web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.consoleAPICalled").DevToolsProtocolEventReceived += (_, a) =>
+                {
+                    if (ConsoleError(a.ParameterObjectAsJson) is { } line)
+                        _pageErrors.Add(line);
+                };
                 // pop-ups and target=_blank links open here, not in a separate window
                 web.CoreWebView2.NewWindowRequested += (_, a) =>
                 {
@@ -87,8 +97,9 @@ public partial class MainWindow
                     web.CoreWebView2.Navigate(a.Uri);
                 };
             };
-            web.NavigationCompleted += (_, _) =>
+            web.NavigationCompleted += (_, done) =>
             {
+                _pageLoaded?.TrySetResult(done.IsSuccess);
                 if (web.Source?.AbsoluteUri is { } shown)
                 {
                     BrowserAddress.Text = shown;
@@ -179,8 +190,85 @@ public partial class MainWindow
         return !text.Contains(' ') && text.Contains('.') && Uri.TryCreate("https://" + text, UriKind.Absolute, out var site) ? site.AbsoluteUri : SearchUrl(text);
     }
 
+    // ---- the model's browser tool (orchestrator.browser_handler): a "browser" request answered on the asking process's stdin
+
+    private readonly List<string> _pageErrors = new(); // the shown page's script errors since it started loading
+    private TaskCompletionSource<bool>? _pageLoaded;
+
+    // open: the browser opens (expanding the column) on the page the engine checked (a file in the chat's folders, or a web
+    // address); then, or for read, the page's address, title, script errors and visible text go back to the model.
+    private async Task AnswerBrowserAsync(string id, string action, string url)
+    {
+        var asker = _chatProcess ?? _process;
+        string result;
+        try
+        {
+            if (action == "open")
+            {
+                var loaded = _pageLoaded = new TaskCompletionSource<bool>();
+                OpenBrowser(url, trusted: url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
+                if (await Task.WhenAny(loaded.Task, Task.Delay(20000)) != loaded.Task)
+                    Log($"Browser: {url} was still loading after 20 s; reading it as it is");
+                await Task.Delay(400); // scripts that run just after load
+            }
+            else if (!BrowserPanel.IsVisible)
+                OpenBrowser(null);
+            result = _web?.CoreWebView2 is { } core ? await PageReport(core) : BrowserMessage.IsVisible ? $"ERROR: {BrowserMessage.Text}" : "ERROR: the browser has no page yet";
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
+        {
+            result = $"ERROR: the browser failed: {e.Message}";
+        }
+        try
+        {
+            asker?.StandardInput.WriteLine(JsonSerializer.Serialize(new { id, result }));
+            asker?.StandardInput.Flush();
+        }
+        catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+    }
+
+    private async Task<string> PageReport(CoreWebView2 core)
+    {
+        var json = await core.ExecuteScriptAsync("(document.body ? document.body.innerText : '')");
+        var text = JsonSerializer.Deserialize<string>(json) ?? "";
+        var errors = _pageErrors.Count == 0 ? "none" : string.Join("\n", _pageErrors.Distinct().Take(20).Select(e => "- " + e));
+        return $"URL: {core.Source}\nTITLE: {core.DocumentTitle}\nSCRIPT ERRORS: {errors}\n\nVISIBLE TEXT:\n{(text.Length > 12000 ? text[..12000] + "\n(cut)" : text)}";
+    }
+
+    // Runtime.exceptionThrown: "message (url:line)".
+    internal static string ExceptionText(string json)
+    {
+        try
+        {
+            var d = JsonDocument.Parse(json).RootElement.GetProperty("exceptionDetails");
+            var message = d.TryGetProperty("exception", out var ex) && ex.TryGetProperty("description", out var desc) ? desc.GetString() : d.GetProperty("text").GetString();
+            var at = d.TryGetProperty("url", out var u) ? $" ({u.GetString()}:{(d.TryGetProperty("lineNumber", out var l) ? l.GetInt32() + 1 : 0)})" : "";
+            return (message ?? "error").Split('\n')[0] + at;
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException) { return "a script error"; }
+    }
+
+    // Runtime.consoleAPICalled of type "error": its arguments as text; null for other types.
+    internal static string? ConsoleError(string json)
+    {
+        try
+        {
+            var root = JsonDocument.Parse(json).RootElement;
+            if (root.GetProperty("type").GetString() != "error")
+                return null;
+            return "console.error: " + string.Join(" ", root.GetProperty("args").EnumerateArray()
+                .Select(a => a.TryGetProperty("value", out var v) ? v.ToString() : a.TryGetProperty("description", out var d) ? d.GetString() : ""));
+        }
+        catch (Exception e) when (e is JsonException or KeyNotFoundException or InvalidOperationException) { return null; }
+    }
+
     internal static void BrowserSelfTest()
     {
+        if (ExceptionText("""{"exceptionDetails":{"text":"Uncaught","url":"file:///C:/p/index.html","lineNumber":4,"exception":{"description":"ReferenceError: x is not defined\n    at y"}}}""")
+                != "ReferenceError: x is not defined (file:///C:/p/index.html:5)" ||
+            ConsoleError("""{"type":"error","args":[{"type":"string","value":"boom"},{"type":"number","value":2}]}""") != "console.error: boom 2" ||
+            ConsoleError("""{"type":"log","args":[]}""") is not null)
+            throw new InvalidOperationException("Browser error parsing");
         if (BrowserUrl("https://example.org/a?b=1") != "https://example.org/a?b=1" || BrowserUrl("example.org") != "https://example.org/" ||
             BrowserUrl("what is wpf") != BrowserHome + "?q=what%20is%20wpf" || BrowserUrl("javascript:alert(1)") is not null ||
             BrowserUrl(@"file:///C:/x") is not null || BrowserUrl("  ") is not null || BrowserUrl("localhost") != BrowserHome + "?q=localhost")

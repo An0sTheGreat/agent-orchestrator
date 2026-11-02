@@ -128,6 +128,7 @@ public partial class MainWindow
             Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint, Busy = CodeBusyText };
         RefreshExtras();
         RefreshPermissions();
+        InitAttachments();
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
@@ -970,6 +971,7 @@ public partial class MainWindow
                 break;
             case "tool":
                 EndChatBlock();
+                _toolArgs.Clear();
                 if (_reply is { Pending: { } step } stepReply) // text before a tool call: its call's stats under it
                 {
                     stepReply.Pending = null;
@@ -999,11 +1001,16 @@ public partial class MainWindow
                     var note = new TextBlock { Text = CompactedLine(ev), FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "stats" };
                     note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
                     compactReply.Content.Children.Add(note);
+                    compactReply.Content.Children.Add(CompactionRule());
                 }
                 break;
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 SetChatStatus("Waiting for your approval…");
                 AnswerApproval(ev);
+                break;
+            case "browser": // the model's browser tool: the in-app browser opens on the page
+                SetChatStatus("Looking at the page in the browser…");
+                Forget(AnswerBrowserAsync(Str(ev, "id"), Str(ev, "action"), Str(ev, "url")));
                 break;
             case "code_project":
                 Log($"[{name}] wrote {Str(ev, "path")}");
@@ -1046,11 +1053,24 @@ public partial class MainWindow
         r.Status.Visibility = Visibility.Visible;
     }
 
-    private void AppendChatDelta(string role, string kind, string text)
+    // A Code turn's tool call as its arguments stream (a whole-file write can take minutes): its name, file and size so far
+    // in the reply's status, so a long call is visibly alive. Reset when other output or the call's result arrives.
+    private readonly StringBuilder _toolArgs = new();
+    private static readonly System.Text.RegularExpressions.Regex ToolPath = new("\"(?:path|file_path)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
+
+    private void AppendChatDelta(string role, string kind, string text, string name = "")
     {
-        Activate(role, kind == "thinking" ? "Thinking" : "Working");
-        if (_reply is not { } r || kind == "tool")
-            return; // a chat has no tool calls
+        Activate(role, kind == "thinking" ? "Thinking" : kind == "tool" ? "Using tools" : "Working");
+        if (_reply is not { } r)
+            return;
+        if (kind == "tool")
+        {
+            _toolArgs.Append(text);
+            var path = ToolPath.Match(_toolArgs.ToString()) is { Success: true } m ? " " + System.IO.Path.GetFileName(m.Groups[1].Value.Replace("\\\\", "\\")) : "";
+            SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters");
+            return; // the call itself shows once it has run (AddCodeTool)
+        }
+        _toolArgs.Clear();
         SetChatStatus(kind == "thinking" ? "Thinking…" : "Writing…");
         if (r.Block is null || r.Block.Kind != kind)
         {

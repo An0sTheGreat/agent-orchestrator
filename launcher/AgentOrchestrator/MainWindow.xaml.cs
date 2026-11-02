@@ -358,7 +358,7 @@ public partial class MainWindow : Window
             if (key is { } k && pending.Length > 0)
             {
                 if (_chatBusy)
-                    AppendChatDelta(k.Role, k.Kind, pending.ToString());
+                    AppendChatDelta(k.Role, k.Kind, pending.ToString(), name);
                 else
                     AppendDelta(k.Role, k.Kind, k.Index, name, pending.ToString());
                 CardForActivity(k.Role)?.AddDeltas(chunks, Environment.TickCount64);
@@ -463,6 +463,7 @@ public partial class MainWindow : Window
             case "compacted": // its print line is already in the log
                 EndStream(false);
                 AddNote("CONTEXT", $"{card?.Title ?? role}: {CompactedLine(ev)}");
+                AddBlock(CompactionRule(), "\n----\n");
                 if (_codeContexts.GetValueOrDefault(role) is { } full)
                     SetCodeContext(full.Compacted((long)Num(ev, "after")));
                 break;
@@ -500,6 +501,9 @@ public partial class MainWindow : Window
                 break;
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 AnswerApproval(ev);
+                break;
+            case "browser": // the model's browser tool: the in-app browser opens on the page
+                Forget(AnswerBrowserAsync(Str(ev, "id"), Str(ev, "action"), Str(ev, "url")));
                 break;
             case "verdict":
                 EndStream(false);
@@ -797,6 +801,14 @@ public partial class MainWindow : Window
         panel.Children.Add(BodyText(text, mono: false, muted: true));
         _blockRole = null;
         AddBlock(panel, $"\n[{title}] {text}\n");
+    }
+
+    // A thin rule under a context-compacted note, as Claude and ChatGPT mark it: what is above it was summarized.
+    private static Border CompactionRule()
+    {
+        var rule = new Border { Height = 1, Margin = new Thickness(0, 6, 0, 12), Tag = "compaction-rule" };
+        rule.SetResourceReference(Border.BackgroundProperty, "Border");
+        return rule;
     }
 
     private void AddBlock(UIElement block, string transcript)
@@ -2667,11 +2679,7 @@ public partial class MainWindow : Window
             File.WriteAllBytes(Path.Combine(area, "photo.png"), [0x89, 0x50, 0x4E, 0x47, 0]);
             File.WriteAllBytes(Path.Combine(area, "blob.bin"), [1, 0, 2]);
             ShowView(chat: true);
-            ChatPlus.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            var plusMenu = ChatPlus.ContextMenu;
-            var plusItems = plusMenu?.Items.OfType<MenuItem>().Select(i => (string)i.Header).ToList();
-            if (plusMenu is not null)
-                plusMenu.IsOpen = false;
+            var plusItems = PlusMenu(ChatPlus, _chat).Items.OfType<MenuItem>().Select(i => (string)i.Header).ToList();
             foreach (var path in new[] { "notes.txt", "photo.png", "src", "blob.bin" })
                 Attach(_chat, Path.Combine(area, path));
             var composed = ComposeMessage(_chat, "Look");
@@ -2812,6 +2820,8 @@ public partial class MainWindow : Window
         if (!await QueueSmoke(Snap))
             return false;
         if (!PiSmoke())
+            return false;
+        if (!AttachSmoke())
             return false;
         if (!SkillCompletionSmoke(Snap))
             return false;

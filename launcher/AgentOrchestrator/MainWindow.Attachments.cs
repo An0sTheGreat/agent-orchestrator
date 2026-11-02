@@ -3,6 +3,7 @@ using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using Microsoft.Win32;
 
 namespace AgentOrchestrator;
@@ -23,22 +24,90 @@ public partial class MainWindow
 
     private List<string> AttachmentsOf(Conversation c) => c.IsCode ? _codeAttachments : _chatAttachments;
 
-    private void Plus_Click(object sender, RoutedEventArgs e)
+    private const int MaxImages = 20; // per message
+    internal Func<string[]?>? _attachPick; // --ui-smoke: the files "Add files or photos" picks, without the dialog
+
+    // The app's compact menu (as Effort's), above the "+".
+    private void Plus_Click(object sender, RoutedEventArgs e) => PlusMenu((Button)sender, ConvOf(sender)).IsOpen = true;
+
+    private ContextMenu PlusMenu(Button plus, Conversation c)
     {
-        var plus = (Button)sender;
-        var c = ConvOf(sender);
-        var menu = new ContextMenu { PlacementTarget = plus, Placement = PlacementMode.Top };
-        var files = new MenuItem { Header = "Add files or photos", InputGestureText = "Ctrl+U", Icon = Glyph("") };
-        files.Click += (_, _) => AddFiles(c);
-        var folder = new MenuItem { Header = "Add folder", Icon = Glyph(""),
-            ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder" : "Its text files go with your message" };
-        folder.Click += (_, _) => AddFolder(c);
+        var menu = NewPresetMenu(plus);
+        menu.Placement = PlacementMode.Top;
+        var files = PresetItem("Add files or photos", () => AddFiles(c));
+        files.ToolTip = $"Or paste (Ctrl+V) or drop them on the message box; up to {MaxImages} photos per message";
+        var folder = PresetItem("Add folder", () => AddFolder(c));
+        folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder" : "Its text files go with your message";
         menu.Items.Add(files);
         menu.Items.Add(folder);
-        plus.ContextMenu = menu;
-        menu.IsOpen = true;
+        return menu;
     }
 
+    // Ctrl+V in a message box: copied files, or a copied picture (saved as a PNG in <data>\pasted), are attached; plain
+    // text pastes as usual. Files dropped on the message box are attached too.
+    private void InitAttachments()
+    {
+        foreach (var c in new[] { _chat, _code })
+        {
+            var conv = c;
+            CommandManager.AddPreviewExecutedHandler(c.Input, (_, e) =>
+            {
+                if (e.Command == ApplicationCommands.Paste && PasteAttachments(conv))
+                    e.Handled = true;
+            });
+            var box = c.IsCode ? CodeComposer : ChatComposer;
+            box.AllowDrop = true;
+            box.PreviewDragOver += (_, e) =>
+            {
+                if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+                    return;
+                e.Effects = DragDropEffects.Copy;
+                e.Handled = true; // the text box would refuse files
+            };
+            box.PreviewDrop += (_, e) =>
+            {
+                if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths)
+                    return;
+                e.Handled = true;
+                foreach (var path in paths)
+                    Attach(conv, path);
+            };
+        }
+    }
+
+    private bool PasteAttachments(Conversation c)
+    {
+        try
+        {
+            if (Clipboard.ContainsFileDropList())
+            {
+                foreach (var path in Clipboard.GetFileDropList().Cast<string>())
+                    Attach(c, path);
+                return true;
+            }
+            if (!Clipboard.ContainsImage() || Clipboard.GetImage() is not { } image)
+                return false;
+            Attach(c, SavePastedImage(image));
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Runtime.InteropServices.COMException or NotSupportedException)
+        {
+            Toast($"Could not paste: {e.Message}", "#F7C873");
+            return true;
+        }
+    }
+
+    internal static string SavePastedImage(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        var folder = Path.Combine(AppSettings.DataRoot, "pasted");
+        Directory.CreateDirectory(folder);
+        var file = Path.Combine(folder, $"pasted-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..6]}.png");
+        using var stream = File.Create(file);
+        var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));
+        png.Save(stream);
+        return file;
+    }
     private TextBlock Glyph(string glyph)
     {
         var icon = new TextBlock { Text = glyph, FontSize = 13 };
@@ -46,15 +115,19 @@ public partial class MainWindow
         return icon;
     }
 
+    // While a reply runs too: what is attached then goes with the queued (or next) message.
     private void AddFiles(Conversation c)
     {
-        if (_chatBusy)
-            return;
-        var dialog = new OpenFileDialog { Title = "Add files or photos", Multiselect = true,
-            Filter = "All files|*.*|Photos|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp" };
-        if (dialog.ShowDialog(this) != true)
-            return;
-        foreach (var file in dialog.FileNames)
+        string[]? picked;
+        if (_attachPick is { } pick)
+            picked = pick();
+        else
+        {
+            var dialog = new OpenFileDialog { Title = "Add files or photos", Multiselect = true,
+                Filter = "All files|*.*|Photos|*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp" };
+            picked = dialog.ShowDialog(this) == true ? dialog.FileNames : null;
+        }
+        foreach (var file in picked ?? [])
             Attach(c, file);
     }
 
@@ -62,16 +135,22 @@ public partial class MainWindow
     {
         if (c.IsCode)
             AddCodeFolder_Click(AddCodeFolderButton, new RoutedEventArgs());
-        else if (!_chatBusy && PickFolder("Add a folder to the message") is { } folder)
+        else if (PickFolder("Add a folder to the message") is { } folder)
             Attach(c, Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)));
     }
 
-    // Adds a file or folder (not twice); a file that is neither a photo nor readable text is refused here, not at send.
+    // Adds a file or folder (not twice); a file that is neither a photo nor readable text is refused here, not at send,
+    // and so is a photo past MaxImages.
     private void Attach(Conversation c, string path)
     {
         var list = AttachmentsOf(c);
         if (list.Contains(path, StringComparer.OrdinalIgnoreCase))
             return;
+        if (File.Exists(path) && ImageExtensions.Contains(Path.GetExtension(path)) && list.Count(p => ImageExtensions.Contains(Path.GetExtension(p))) >= MaxImages)
+        {
+            Toast($"Up to {MaxImages} photos per message; {Path.GetFileName(path)} was not added", "#F7C873");
+            return;
+        }
         if (File.Exists(path) && !ImageExtensions.Contains(Path.GetExtension(path)) && ReadText(path, FileMaxBytes) is null)
         {
             Toast($"{Path.GetFileName(path)} isn't a text file or photo, so it can't be added", "#F7C873");
@@ -196,5 +275,37 @@ public partial class MainWindow
             .Where(m => m.Groups[1].Value != "file" || !m.Groups[2].Value.Contains('/')) // a folder's files are listed under it
             .Select(m => m.Groups[2].Value + (m.Groups[1].Value == "folder" ? "/" : ""));
         return message[..at] + "\n\n📎 " + string.Join(", ", names);
+    }
+
+    // --ui-smoke: "Add files or photos" attaches while a reply runs (it goes with the queued message), a 21st photo is
+    // refused, and the "+" opens the app's compact two-item menu.
+    private bool AttachSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: attachments: {what}"); return false; }
+        var folder = Path.Combine(AppSettings.DataRoot, "smoke-attach");
+        Directory.CreateDirectory(folder);
+        var photos = Enumerable.Range(1, MaxImages + 1).Select(i => Path.Combine(folder, $"p{i}.png")).ToArray();
+        foreach (var photo in photos)
+            File.WriteAllBytes(photo, [137, 80, 78, 71]);
+        var (busy, pick) = (_chatBusy, _attachPick);
+        try
+        {
+            _chatBusy = true;
+            _attachPick = () => photos;
+            AddFiles(_code);
+            if (_codeAttachments.Count != MaxImages || _codeAttachments.Contains(photos[^1]))
+                return Fail($"{_codeAttachments.Count} attached");
+            var menu = PlusMenu(CodePlus, _code);
+            if (menu.Style != (Style)FindResource(typeof(ContextMenu)) || menu.Placement != PlacementMode.Top ||
+                menu.Items.OfType<MenuItem>().Select(i => (string)i.Header).SequenceEqual(["Add files or photos", "Add folder"]) is false)
+                return Fail("the + menu");
+            return true;
+        }
+        finally
+        {
+            (_chatBusy, _attachPick) = (busy, pick);
+            _codeAttachments.Clear();
+            RefreshAttachments(_code);
+        }
     }
 }

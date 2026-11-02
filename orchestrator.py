@@ -811,11 +811,12 @@ def with_summary(messages: list[dict[str, Any]], summary: str) -> list[dict[str,
 
 
 def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system: str, messages: list[dict[str, Any]],
-                         tools: list[dict[str, Any]] | None, request: dict[str, Any]) -> list[dict[str, Any]]:
+                         tools: list[dict[str, Any]] | None, request: dict[str, Any], force: bool = False, focus: str = "") -> list[dict[str, Any]]:
     """A Chat/Code turn's history, ready to send: the request's stored summary applied, and when it fills over 60% of the
     room of the smallest known window among `roles`, everything but the latest user message (and the last reply, if
     short) summarized first, with a history_compacted event for the launcher to store. Unchanged when no window is known
-    or the summary call fails."""
+    or the summary call fails. `force` (the user's /compact): everything but the latest message, whatever its size, with
+    `focus` (the command's text) added to the summary prompt; an unknown window counts as 32k."""
     global EVENTS
     summary, covered = str(request.get("summary") or ""), int(request.get("summary_covers") or 0)
     full = with_summary(messages, summary)
@@ -824,15 +825,17 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
         client, sampling = role_settings(config, role)
         if n := getattr(client, "window_before_load", lambda: None)():  # fakes in tests may lack it
             sizes.append((n, role, client, sampling))
+    if not sizes and force:
+        sizes.append((32768, roles[0], *role_settings(config, roles[0])))
     if not sizes:
         return full
     n_ctx, role, client, sampling = min(sizes, key=lambda s: s[0])
     room = max(n_ctx - int(sampling.get("max_tokens") or 0), n_ctx // 2)
     size = lambda history: estimate_tokens([{"content": system}, *history], tools)
     before = size(full)
-    if before <= COMPACT_AT * room:
+    if before <= COMPACT_AT * room and not force:
         return full
-    keep = 2 if len(messages) >= 3 and messages[-2]["role"] == "assistant" and estimate_tokens(messages[-2:]) <= 0.2 * room else 1
+    keep = 1 if force else 2 if len(messages) >= 3 and messages[-2]["role"] == "assistant" and estimate_tokens(messages[-2:]) <= 0.2 * room else 1
     earlier, kept = messages[:-keep], messages[-keep:]
     if not earlier:
         return full
@@ -843,7 +846,8 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
         model = client.ensure_model(role, False)  # with events: the launcher records a load, to unload it later
         events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
         try:
-            text = answer_text(client.complete(model, [{"role": "system", "content": CONVERSATION_PROMPT}, {"role": "user", "content": head + render}],
+            prompt = CONVERSATION_PROMPT + (f" Focus especially on: {focus.strip()}" if focus.strip() else "")
+            text = answer_text(client.complete(model, [{"role": "system", "content": prompt}, {"role": "user", "content": head + render}],
                                                {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
         finally:
             EVENTS = events
@@ -857,6 +861,27 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     print(f"[{client.title or role}] conversation summarized: {before} → {after} tokens")
     emit("history_compacted", role=role, summary=text, covers=covered + len(earlier), before=before, after=after)
     return compacted
+
+
+COMPACT_COMMAND = re.compile(r"\A\s*/compact(?:\s+(.*))?\Z", re.S | re.I)
+
+
+def compact_command(messages: list[dict[str, Any]]) -> str | None:
+    """The focus of a /compact the user sent as the latest message ("" without one); None when it is not one."""
+    match = COMPACT_COMMAND.match(str(messages[-1].get("content") or "")) if messages and messages[-1].get("role") == "user" else None
+    return None if match is None else (match.group(1) or "").strip()
+
+
+def compact_now(config: dict[str, Any], role: str, messages: list[dict[str, Any]], request: dict[str, Any], focus: str) -> str:
+    """The user's /compact: summarizes the conversation before it now (no model turn) and returns the reply to show."""
+    if len(messages) < 2:
+        return "Nothing to compact yet: the conversation has no earlier messages."
+    full = with_summary(messages, str(request.get("summary") or ""))
+    result = compact_conversation(config, (role,), "", messages, None, request, force=True, focus=focus)
+    if result == full:  # the summary call failed: the history is sent as it was
+        return "The conversation could not be compacted (the summary call failed); it was left as it was."
+    before, after = estimate_tokens(full), estimate_tokens(result)
+    return f"Conversation compacted: about {before:,} → {after:,} tokens. The summary replaces the earlier messages from here on."
 
 
 def estimate_tokens(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
@@ -1001,7 +1026,18 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
         args += ["-ub", str(auto_load["n_ubatch"])]
     if auto_load.get("reasoning_budget") == 0:
         args += ["--reasoning-budget", "0"]
+    if (projector := vision_projector(model_file)) and str(auto_load.get("disable_vision") or "").lower() not in ("on", "true", "1"):
+        args += ["--mmproj", str(projector)]  # the model can see the turn's images
     return args + [str(arg) for arg in auto_load.get("llama_extra_args") or []]
+
+
+def vision_projector(model_file: Path) -> Path | None:
+    """The vision projector (an *mmproj*.gguf) in the model's folder, the smallest when there are several; None without."""
+    try:
+        found = [p for p in model_file.parent.glob("*.gguf") if "mmproj" in p.name.lower()]
+    except OSError:
+        return None
+    return min(found, key=lambda p: p.stat().st_size) if found else None
 
 
 def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]:
@@ -3357,6 +3393,9 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
     extras = ([*tools, DELEGATE_TOOL], handlers, note)
     system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
+    if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
+        emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
+        return 0
     turn_images(request, messages[-1]["content"])
     messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
     text = chat_call(turn, role, "answer", system, messages, extras)
@@ -3622,19 +3661,64 @@ def ask_user(kind: str, detail: str, reason: str, key: str = "") -> bool:
     """Asks the user through the launcher: an "approval" event, answered by one JSON line on stdin {"id", "allow"}.
     `key` lets the launcher answer later requests of the same kind and key itself (Allow similar for the chat).
     Without a launcher (no --events, or stdin closed) the answer is no."""
+    answer = launcher_call("approval", kind=kind, detail=detail, reason=str(reason or "").strip(), key=key)
+    return answer is not None and answer.get("allow") is True
+
+
+def launcher_call(event: str, **data: Any) -> dict[str, Any] | None:
+    """One request to the launcher: an `event` with a fresh id, answered by one JSON line on stdin carrying that id (other
+    lines are skipped). None without a launcher (no --events) or when stdin ends first. One at a time."""
     if not EVENTS:
-        return False
+        return None
     with APPROVAL_LOCK:
         ask = uuid.uuid4().hex
-        emit("approval", id=ask, kind=kind, detail=detail, reason=str(reason or "").strip(), key=key)
+        emit(event, id=ask, **data)
         while line := sys.stdin.readline():
             try:
                 answer = json.loads(line)
             except ValueError:
                 continue
             if isinstance(answer, dict) and answer.get("id") == ask:
-                return answer.get("allow") is True
-        return False
+                return answer
+        return None
+
+
+BROWSER_TOOL = function_tool(
+    "browser", "Look at a page in the app's own browser, which the user sees beside the chat (it opens there): use it "
+    "before anything else to view a local HTML file or a web page, never Chrome, Edge or another browser through "
+    "run_command. action 'open' loads `url` (a file in the granted folders, e.g. index.html, or an http(s) address when "
+    "web search or utilities are on) and returns its title, visible text and any script errors; 'read' returns the current "
+    "page again (after it changed).", {"action": {"type": "string", "enum": ["open", "read"]}, "url": {"type": "string"}}, ["action"])
+
+
+def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
+    """The lead's browser tool: the launcher's in-app browser (a "browser" request it answers with the page). Local files
+    must be in the granted folders; web addresses only when the request has web search or utilities on, as fetch_page."""
+    web = bool(request.get("search") or request.get("tools"))
+
+    def browser(action: str = "open", url: str = "") -> str:
+        if action not in ("open", "read"):
+            raise WorkflowError("action must be 'open' or 'read'")
+        target = ""
+        if action == "open":
+            raw = str(url or "").strip()
+            if not raw:
+                raise WorkflowError("open needs a url: a file in the granted folders or an http(s) address")
+            if re.match(r"(?i)https?://", raw):
+                if not web:
+                    raise WorkflowError("web addresses need web search or utilities switched on; local files work without")
+                target = raw
+            else:
+                path = code_path(re.sub(r"(?i)^file:/{0,3}", "", raw), folders)
+                if not path.is_file():
+                    raise WorkflowError(f"No such file: {raw}")
+                target = path.as_uri()
+        answer = launcher_call("browser", action=action, url=target)
+        if answer is None:
+            return "ERROR: the in-app browser is only there when the app runs this turn"
+        return clip(str(answer.get("result") or ""), CHECKS_LIMIT * 3)
+
+    return browser
 
 
 def overlaps(path: Path, other: Path) -> bool:
@@ -3949,6 +4033,7 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     cap = int(config.get("max_delegations", 6)) if delegations is None else delegations
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
+    tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request)  # the lead's: workers' runs have no browser
     if asked_to_start(request):
         def start_project() -> str:
             if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():
@@ -4076,9 +4161,20 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
 PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
 PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
-PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "web_search", "fetch_page", "calculator",
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "browser", "web_search", "fetch_page", "calculator",
                     "current_time")
 PI_TOOL_RESULT_LIMIT = 6000
+
+
+def pi_session(request: dict[str, Any]) -> str:
+    """The request's conversation id as a Pi session id (safe characters only); "" without one."""
+    return re.sub(r"[^A-Za-z0-9._-]", "", str(request.get("session") or "")).strip("._-")
+
+
+def pi_seeded(request: dict[str, Any]) -> Path:
+    """The marker of a Pi session that already holds this conversation (written once its first prompt is accepted)."""
+    home = Path(str(request.get("pi_home") or Path(tempfile.gettempdir()) / "agent-orchestrator-pi"))
+    return home / "sessions" / f"{pi_session(request) or '-'}.seeded"
 
 
 def pi_command() -> list[str]:
@@ -4224,8 +4320,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     command = [*pi_command(), "--mode", "rpc", "--offline", "-na", "-ne", "-e", str(PI_EXTENSION), "--no-mcp", "-nc", "-ns",
                *(arg for s in skills for arg in ("--skill", s)), "-np", "--no-themes", "--provider", "ao", "--model", model,
                "--tools", ",".join(PI_OWN_TOOLS + [s["name"] for s in specs]), "--append-system-prompt", str(turn / "system.md")]
-    session = re.sub(r"[^A-Za-z0-9._-]", "", str(request.get("session") or "")).strip("._-")
-    seeded = home / "sessions" / f"{session}.seeded"
+    session = pi_session(request)
+    seeded = pi_seeded(request)
     if session:
         command += ["--session-dir", str(home / "sessions"), "--session-id", session]
     else:
@@ -4253,9 +4349,12 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     threading.Thread(target=relay_stderr, daemon=True).start()
     answer, error, started, args_by_call = "", "", time.time(), {}
     stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
+    focus = compact_command(messages) if session and seeded.is_file() else None  # /compact in a Pi session: Pi's own
+    compacted = False
     try:
-        process.stdin.write((json.dumps({"id": "turn", "type": "prompt", "message": prompt, **({"images": images} if images else {})})
-                             + "\n").encode("utf-8"))
+        command_line = ({"id": "turn", "type": "compact", **({"customInstructions": focus} if focus else {})} if focus is not None else
+                        {"id": "turn", "type": "prompt", "message": prompt, **({"images": images} if images else {})})
+        process.stdin.write((json.dumps(command_line) + "\n").encode("utf-8"))
         process.stdin.flush()
         for raw in process.stdout:  # JSONL split on LF only
             try:
@@ -4263,6 +4362,16 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             except ValueError:
                 continue
             kind = event.get("type")
+            if kind == "response" and event.get("command") == "compact":  # the /compact's answer ends the turn
+                if not event.get("success"):
+                    answer = f"The conversation could not be compacted: {event.get('error') or 'Pi refused'}."
+                    break
+                data = event.get("data") or {}
+                before, after = int(data.get("tokensBefore") or 0), int(data.get("estimatedTokensAfter") or 0)
+                if not compacted:
+                    emit("compacted", role=role, before=before, after=after)
+                answer = f"Conversation compacted: about {before:,} → {after:,} tokens. The summary replaces the earlier messages from here on."
+                break
             if kind == "response" and not event.get("success"):
                 raise WorkflowError(f"Pi refused the prompt: {event.get('error') or event}")
             if kind == "response" and session:  # the seed is in the Pi session now, whatever happens to the turn
@@ -4274,6 +4383,12 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 update = event.get("assistantMessageEvent") or {}
                 if update.get("type") in ("text_delta", "thinking_delta"):
                     emit("delta", role=role, kind="text" if update["type"] == "text_delta" else "thinking", text=update.get("delta", ""))
+                elif update.get("type") == "toolcall_delta":  # a tool call's arguments as they stream (a long write takes minutes);
+                    # RPC updates usually carry no partial message, so the name is often unknown here
+                    index = int(update.get("contentIndex") or 0)
+                    blocks = (update.get("partial") or {}).get("content") or []
+                    name = blocks[index].get("name", "") if index < len(blocks) and isinstance(blocks[index], dict) else ""
+                    emit("delta", role=role, kind="tool", index=index, name=str(name), text=update.get("delta", ""))
             elif kind == "message_end" and (event.get("message") or {}).get("role") == "assistant":
                 message = event["message"]
                 calls = any(b.get("type") == "toolCall" for b in message.get("content") or [] if isinstance(b, dict))
@@ -4299,6 +4414,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             elif kind == "compaction_end" and event.get("result"):
                 result = event["result"]
                 emit("compacted", role=role, before=result.get("tokensBefore"), after=result.get("estimatedTokensAfter"))
+                compacted = True
             elif kind == "auto_retry_start":
                 print(f"[{title}] retrying the model request ({event.get('attempt')}/{event.get('maxAttempts')}): {event.get('errorMessage')}")
             elif kind == "extension_error":
@@ -4366,6 +4482,9 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         goal = next((line for line in lines if not line.startswith("#")), lines[0].lstrip("# "))  # the goal sentence, else the title
         emit("code_reply", role=role, text=f"PROJECT.md written: {goal}")
         return 0
+    if (focus := compact_command(messages)) is not None and not (request.get("engine") == "pi" and pi_seeded(request).is_file()):
+        emit("code_reply", role=role, text=compact_now(config, role, messages, request, focus))  # /compact: no model turn
+        return 0  # (a Pi session compacts itself: pi_lead_turn sends Pi's own compact)
     turn_images(request, messages[-1]["content"])
     text = (pi_lead_turn if request.get("engine") == "pi" else lead_loop)(config, folders, messages, request, role)
     if not text:
