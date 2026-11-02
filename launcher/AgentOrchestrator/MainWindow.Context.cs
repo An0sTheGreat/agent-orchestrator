@@ -254,7 +254,14 @@ public partial class MainWindow
             var right = CodeStartButton.TranslatePoint(new Point(CodeStartButton.ActualWidth, 0), area).X;
             CodeContextPin.Margin = new Thickness(0, 6, Math.Max(0, area.ActualWidth - right), 0);
         }
+        ReserveCodeContextStack();
     }
+
+    // Without room beside the conversation, the conversation starts below the stack instead of under it.
+    private void ReserveCodeContextStack() =>
+        CodeScroll.Margin = new Thickness(0, CanPin(true) || CodeContextPin.Visibility != Visibility.Visible ? 0 : CodeContextPin.Margin.Top + CodeContextPin.ActualHeight + 4, 0, 0);
+
+    private void CodeContextPin_SizeChanged(object sender, SizeChangedEventArgs e) => ReserveCodeContextStack();
 
     // While a collapsed-rail worker card is open, the context stack slides left out of its way, and back when it closes.
     private void DodgeRailCard(bool open)

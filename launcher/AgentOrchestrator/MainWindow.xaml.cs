@@ -504,7 +504,7 @@ public partial class MainWindow : Window
                 AnswerApproval(ev);
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
-                Forget(AnswerBrowserAsync(Str(ev, "id"), Str(ev, "action"), Str(ev, "url")));
+                Forget(AnswerBrowserAsync(ev));
                 break;
             case "verdict":
                 EndStream(false);
@@ -2332,6 +2332,17 @@ public partial class MainWindow : Window
                     if (stacked.Count != 2 || ((stacked[0].Child as StackPanel)?.Children[0] as Button)?.Tag as string != "planner" ||
                         Math.Abs(RightOf(stacked[0]) - RightOf(CodeStartButton)) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
                         return Fail();
+                    // Without room beside the conversation (centering off), the conversation starts below the stack.
+                    var centered = _settings.CenterChat;
+                    _settings.CenterChat = false;
+                    RefreshContextPins();
+                    await Settle();
+                    var stackBottom = CodeContextPin.TranslatePoint(new Point(0, CodeContextPin.ActualHeight), stackArea).Y;
+                    var below = CodeScroll.TranslatePoint(new Point(), stackArea).Y >= stackBottom;
+                    _settings.CenterChat = centered;
+                    RefreshContextPins();
+                    if (!below)
+                        return Fail();
                     DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
                     if (_codeContexts["implementer"].Used != 0 || _codeContexts["implementer"].NCtx != 16000 || _codeContexts["planner"].Used != 8000)
                         return Fail();
@@ -2812,6 +2823,16 @@ public partial class MainWindow : Window
             var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
             BrowserFollowTool("calculator", """{"expression":"1+1"}""");
             var ignored = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
+            // Tabs: a new one shows (its chip checked), a chip switches back, closing the shown one shows its neighbour.
+            var before = _tabs.Count;
+            OpenTab(BrowserHome + "?q=two");
+            var tabbed = _tabs.Count == before + 1 && _tab == _tabs[^1] && BrowserTabStrip.Children.Count == _tabs.Count &&
+                         _tabs[^1].Chip.IsChecked == true && BrowserAddress.Text == BrowserHome + "?q=two";
+            _tabs[0].Chip.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            var switched = _tab == _tabs[0] && BrowserAddress.Text == _tabs[0].Url && _tabs[^1].Web.Visibility == Visibility.Collapsed && _tabs[^1].Chip.IsChecked == false;
+            SelectTab(_tabs[^1]);
+            CloseTab(_tab!);
+            tabbed = tabbed && switched && _tabs.Count == before && _tab == _tabs[^1] && _tab.Web.Visibility == Visibility.Visible;
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);
@@ -2821,9 +2842,10 @@ public partial class MainWindow : Window
             await Settle();
             var handedBack = !BrowserPanel.IsVisible && DetailsPanel.IsVisible && !_settings.BrowserOpen;
             SetWorkerRail(collapsed);
-            if (!opened || !followed || !ignored || !closed || !handedBack)
+            tabbed = tabbed && BrowserMessage.Visibility != Visibility.Visible; // a closed tab's engine start failing is not the browser's
+            if (!opened || !followed || !ignored || !tabbed || !closed || !handedBack)
             {
-                Console.Error.WriteLine($"browser {opened} {followed} {ignored} {closed} {handedBack}");
+                Console.Error.WriteLine($"browser {opened} {followed} {ignored} {tabbed} {closed} {handedBack}");
                 return Fail();
             }
         }

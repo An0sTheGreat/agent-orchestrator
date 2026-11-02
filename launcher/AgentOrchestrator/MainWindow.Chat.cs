@@ -1022,7 +1022,7 @@ public partial class MainWindow
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 SetChatStatus("Looking at the page in the browser…");
-                Forget(AnswerBrowserAsync(Str(ev, "id"), Str(ev, "action"), Str(ev, "url")));
+                Forget(AnswerBrowserAsync(ev));
                 break;
             case "code_project":
                 Log($"[{name}] wrote {Str(ev, "path")}");

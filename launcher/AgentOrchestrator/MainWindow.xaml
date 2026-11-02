@@ -1133,7 +1133,8 @@
                             <StackPanel x:Name="CodePanel" Margin="20,0,12,12" />
                         </ScrollViewer>
                         <!-- The context card pinned open by the ring (centered conversations with room beside them; MainWindow.Context.cs) -->
-                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed" />
+                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed"
+                                        SizeChanged="CodeContextPin_SizeChanged" />
                         <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
                             <!-- MainWindow.Code.cs RefreshCodeFolder sets the text and buttons: no folder, a folder without PROJECT.md, or one with it -->
@@ -1233,7 +1234,7 @@
                     </StackPanel>
                 </Border>
                 <DockPanel DockPanel.Dock="Top" Margin="17,17,17,10">
-                    <Button x:Name="RailCollapseButton" DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
+                    <Button x:Name="RailCollapseButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="4,0,-6,0"
                             Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse worker details">
                         <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
@@ -1283,6 +1284,14 @@
                         </ToggleButton>
                         <Border />
                     </DockPanel>
+                    <!-- Tabs (MainWindow.Browser.cs): one chip per page, the shown one checked; + opens a new tab -->
+                    <ScrollViewer DockPanel.Dock="Top" Margin="10,0,10,6" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                        <StackPanel Orientation="Horizontal">
+                            <StackPanel x:Name="BrowserTabStrip" Orientation="Horizontal" />
+                            <Button Style="{StaticResource GhostButton}" Content="+" FontSize="14" Width="26" Height="24" Padding="0,0,0,2" Click="BrowserNewTab_Click"
+                                    ToolTip="New tab" AutomationProperties.Name="New tab" />
+                        </StackPanel>
+                    </ScrollViewer>
                     <DockPanel DockPanel.Dock="Top" Margin="10,0,10,8">
                         <Button x:Name="BrowserBack" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="BrowserBack_Click" ToolTip="Back" AutomationProperties.Name="Back">
                             <TextBlock Text="&#xE72B;" Style="{StaticResource RailGlyph}" FontSize="12" />
@@ -1301,7 +1310,7 @@
                                  AutomationProperties.Name="Address" ToolTip="A web address, or words to search for" />
                     </DockPanel>
                     <Grid>
-                        <ContentControl x:Name="BrowserHost" />
+                        <Grid x:Name="BrowserHost" />
                         <TextBlock x:Name="BrowserMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Visibility="Collapsed" />
                     </Grid>
                 </DockPanel>

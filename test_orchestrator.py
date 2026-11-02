@@ -2980,8 +2980,14 @@ class CodeTests(unittest.TestCase):
                 with self.subTest(bad), self.assertRaisesRegex(orchestrator.WorkflowError, why):
                     browse("open", bad)
             self.assertEqual(orchestrator.browser_handler(self.folders, {"search": True})("open", "https://example.org"), "TITLE Hi")
-        self.assertEqual(asked, [("browser", {"action": "open", "url": (self.root / "index.html").as_uri()}),
-                                 ("browser", {"action": "read", "url": ""}), ("browser", {"action": "open", "url": "https://example.org"})])
+            browse("open", "index.html", new_tab=True)
+            browse("read", tab=2)
+            browse("tabs")
+        page = (self.root / "index.html").as_uri()
+        self.assertEqual(asked, [("browser", {"action": "open", "url": page}),
+                                 ("browser", {"action": "read", "url": ""}), ("browser", {"action": "open", "url": "https://example.org"}),
+                                 ("browser", {"action": "open", "url": page, "new_tab": True}), ("browser", {"action": "read", "url": "", "tab": 2}),
+                                 ("browser", {"action": "tabs", "url": ""})])
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("read"))
 

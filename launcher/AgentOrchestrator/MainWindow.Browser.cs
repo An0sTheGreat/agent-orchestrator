@@ -2,6 +2,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -9,11 +11,23 @@ using Microsoft.Web.WebView2.Wpf;
 namespace AgentOrchestrator;
 
 // The in-app browser: a page in the right column, in place of the worker details, opened by the globe beside the context
-// ring. Links in replies open in it, and with "Follow the model" on it shows each search and page the model reads. Its
-// WebView2 (the Edge engine Windows ships) is made the first time it opens; its data stays in <data>\browser.
+// ring. Links in replies open in it, and with "Follow the model" on it shows each search and page the model reads. It has
+// tabs, one WebView2 (the Edge engine Windows ships) each, made as they open; their data stays in <data>\browser.
 public partial class MainWindow
 {
-    private WebView2? _web;
+    private sealed class BrowserTab
+    {
+        public required WebView2 Web;
+        public required ToggleButton Chip;
+        public required TextBlock Title;
+        public string Url = "";
+        public readonly List<string> Errors = new(); // its page's script errors since it started loading
+        public TaskCompletionSource<bool>? Loaded;
+    }
+
+    private readonly List<BrowserTab> _tabs = new();
+    private BrowserTab? _tab; // the shown one
+    private WebView2? _web => _tab?.Web;
     private const string BrowserHome = "https://duckduckgo.com/";
 
     private void Browser_Click(object sender, RoutedEventArgs e)
@@ -54,73 +68,164 @@ public partial class MainWindow
         SetWorkerRail(_settings.DetailsCollapsed); // hides the browser
     }
 
+    // In the shown tab (the first one if none is open).
     private void Navigate(string text, bool trusted = false)
     {
-        if ((trusted ? text : BrowserUrl(text)) is not { } url)
+        if ((trusted ? text : BrowserUrl(text)) is not { } url || (_tab ?? NewTab()) is not { } tab)
             return;
-        _pageErrors.Clear();
-        BrowserAddress.Text = url;
-        if (EnsureWeb() is not { } web)
-            return;
-        if (web.CoreWebView2 is { } core)
+        tab.Errors.Clear();
+        tab.Url = BrowserAddress.Text = url;
+        if (tab.Web.CoreWebView2 is { } core)
             core.Navigate(url);
         else
-            web.Source = new Uri(url); // the first page: this starts the engine
+            tab.Web.Source = new Uri(url); // the first page: this starts the engine
     }
 
-    private WebView2? EnsureWeb()
+    private void OpenTab(string url, bool trusted = false)
     {
-        if (_web is not null || BrowserMessage.IsVisible)
-            return _web;
+        if (NewTab() is not null)
+            Navigate(url, trusted);
+    }
+
+    private void BrowserNewTab_Click(object sender, RoutedEventArgs e) => OpenTab(BrowserHome);
+
+    // A new, blank tab, shown. Null when the browser can't start.
+    private BrowserTab? NewTab()
+    {
+        if (BrowserMessage.IsVisible)
+            return null;
+        WebView2 web;
         try
         {
-            var web = new WebView2 { CreationProperties = new CoreWebView2CreationProperties { UserDataFolder = Path.Combine(AppSettings.DataRoot, "browser") } };
-            web.CoreWebView2InitializationCompleted += (_, e) =>
+            web = new WebView2 { CreationProperties = new CoreWebView2CreationProperties { UserDataFolder = Path.Combine(AppSettings.DataRoot, "browser") } };
+        }
+        catch (Exception e) when (e is WebView2RuntimeNotFoundException or InvalidOperationException or System.Runtime.InteropServices.COMException or IOException)
+        {
+            BrowserFailed(e);
+            return null;
+        }
+        var title = new TextBlock { Text = "New tab", MaxWidth = 130, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
+        var close = new Button { Content = "\u00D7", FontSize = 12, Padding = new Thickness(4, 0, 2, 0), Margin = new Thickness(4, 0, 0, 0), ToolTip = "Close tab",
+            VerticalAlignment = VerticalAlignment.Center };
+        close.SetResourceReference(StyleProperty, "BareButton");
+        var chip = new ToggleButton { Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { title, close } } };
+        chip.SetResourceReference(StyleProperty, "ChipToggle");
+        var tab = new BrowserTab { Web = web, Chip = chip, Title = title };
+        chip.Click += (_, _) => SelectTab(tab);
+        chip.MouseUp += (_, e) =>
+        {
+            if (e.ChangedButton == MouseButton.Middle)
+                CloseTab(tab);
+        };
+        close.Click += (_, e) =>
+        {
+            e.Handled = true; // not the chip's click
+            CloseTab(tab);
+        };
+        web.CoreWebView2InitializationCompleted += (_, e) =>
+        {
+            if (!_tabs.Contains(tab)) // closed while the engine started (its start then fails)
+                return;
+            if (!e.IsSuccess)
             {
-                if (!e.IsSuccess)
-                {
-                    BrowserFailed(e.InitializationException);
-                    return;
-                }
-                // the page's script errors, for the model's browser tool
-                Forget(web.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}"));
-                web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown").DevToolsProtocolEventReceived += (_, a) =>
-                    _pageErrors.Add(ExceptionText(a.ParameterObjectAsJson));
-                web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.consoleAPICalled").DevToolsProtocolEventReceived += (_, a) =>
-                {
-                    if (ConsoleError(a.ParameterObjectAsJson) is { } line)
-                        _pageErrors.Add(line);
-                };
-                // pop-ups and target=_blank links open here, not in a separate window
-                web.CoreWebView2.NewWindowRequested += (_, a) =>
-                {
-                    a.Handled = true;
-                    web.CoreWebView2.Navigate(a.Uri);
-                };
+                BrowserFailed(e.InitializationException);
+                return;
+            }
+            // the page's script errors, for the model's browser tool
+            Forget(web.CoreWebView2.CallDevToolsProtocolMethodAsync("Runtime.enable", "{}"));
+            web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.exceptionThrown").DevToolsProtocolEventReceived += (_, a) =>
+                tab.Errors.Add(ExceptionText(a.ParameterObjectAsJson));
+            web.CoreWebView2.GetDevToolsProtocolEventReceiver("Runtime.consoleAPICalled").DevToolsProtocolEventReceived += (_, a) =>
+            {
+                if (ConsoleError(a.ParameterObjectAsJson) is { } line)
+                    tab.Errors.Add(line);
             };
-            web.NavigationCompleted += (_, done) =>
+            // pop-ups and target=_blank links open in a new tab, not in a separate window
+            web.CoreWebView2.NewWindowRequested += (_, a) =>
             {
-                _pageLoaded?.TrySetResult(done.IsSuccess);
-                if (web.Source?.AbsoluteUri is { } shown)
+                a.Handled = true;
+                OpenTab(a.Uri, trusted: true);
+            };
+            web.CoreWebView2.DocumentTitleChanged += (_, _) => RefreshTab(tab);
+        };
+        web.NavigationCompleted += (_, done) =>
+        {
+            tab.Loaded?.TrySetResult(done.IsSuccess);
+            if (web.Source?.AbsoluteUri is { } shown)
+            {
+                tab.Url = shown;
+                if (tab == _tab)
                 {
                     BrowserAddress.Text = shown;
                     _settings.BrowserUrl = shown;
                     _settings.Save();
                 }
-                RefreshBrowserButtons();
-            };
-            BrowserHost.Content = _web = web;
-        }
-        catch (Exception e) when (e is WebView2RuntimeNotFoundException or InvalidOperationException or System.Runtime.InteropServices.COMException or IOException)
+            }
+            RefreshTab(tab);
+            RefreshBrowserButtons();
+        };
+        BrowserHost.Children.Add(web);
+        BrowserTabStrip.Children.Add(chip);
+        _tabs.Add(tab);
+        SelectTab(tab);
+        return tab;
+    }
+
+    private void SelectTab(BrowserTab tab)
+    {
+        _tab = tab;
+        foreach (var t in _tabs)
         {
-            BrowserFailed(e);
+            t.Web.Visibility = t == tab ? Visibility.Visible : Visibility.Collapsed;
+            t.Chip.IsChecked = t == tab;
         }
-        return _web;
+        BrowserAddress.Text = tab.Url;
+        if (tab.Url.Length > 0)
+        {
+            _settings.BrowserUrl = tab.Url;
+            _settings.Save();
+        }
+        RefreshBrowserButtons();
+        tab.Chip.BringIntoView();
+    }
+
+    // The last tab closing closes the browser; it opens again on the home page.
+    private void CloseTab(BrowserTab tab)
+    {
+        var at = _tabs.IndexOf(tab);
+        _tabs.Remove(tab);
+        BrowserHost.Children.Remove(tab.Web);
+        BrowserTabStrip.Children.Remove(tab.Chip);
+        tab.Loaded?.TrySetResult(false);
+        tab.Web.Dispose();
+        if (_tab != tab)
+            return;
+        _tab = null;
+        if (_tabs.Count > 0)
+        {
+            SelectTab(_tabs[Math.Min(at, _tabs.Count - 1)]);
+            return;
+        }
+        BrowserAddress.Text = _settings.BrowserUrl = "";
+        CloseBrowser();
+    }
+
+    private static string TabTitle(BrowserTab tab) =>
+        tab.Web.CoreWebView2?.DocumentTitle is { Length: > 0 } title ? title
+        : Uri.TryCreate(tab.Url, UriKind.Absolute, out var uri) ? (uri.IsFile ? Path.GetFileName(uri.LocalPath) : uri.Host) : "New tab";
+
+    private void RefreshTab(BrowserTab tab)
+    {
+        tab.Title.Text = TabTitle(tab);
+        tab.Chip.ToolTip = tab.Url.Length > 0 ? tab.Url : null;
     }
 
     private void BrowserFailed(Exception? e)
     {
-        BrowserHost.Content = _web = null;
+        BrowserHost.Children.Clear();
+        BrowserTabStrip.Children.Clear();
+        _tabs.Clear();
+        _tab = null;
         BrowserMessage.Text = e is WebView2RuntimeNotFoundException
             ? "The browser needs the Microsoft Edge WebView2 Runtime, which this PC doesn't have. Install it from Microsoft (search \"WebView2 Runtime\"), then reopen the browser."
             : $"The browser could not start: {e?.Message}";
@@ -163,20 +268,24 @@ public partial class MainWindow
     private void OpenLink(string url) => OpenBrowser(url);
 
     // A model's web_search or fetch_page: shown in the open browser when it follows the model. A file the model wrote or
-    // edited (result: not an error) reloads the local page the browser shows when it is that page or sits in its folder
-    // (its CSS, scripts, images), so the changes show live.
+    // edited (result: not an error) reloads each tab's local page that is that file or sits in its folder (its CSS,
+    // scripts, images), so the changes show live.
     private void BrowserFollowTool(string tool, string args, string result = "")
     {
-        if (tool is "write" or "edit" or "write_file" or "replace_text" && !result.StartsWith("ERROR") && ShownPageFolder() is { } folder &&
-            ToolTarget(args) is { Length: > 0 } raw && SelectedProjectPath() is var project)
+        if (tool is "write" or "edit" or "write_file" or "replace_text")
         {
-            try
+            if (!result.StartsWith("ERROR") && BrowserPanel.IsVisible && ToolTarget(args) is { Length: > 0 } raw && SelectedProjectPath() is var project)
             {
-                var full = Path.GetFullPath(Path.IsPathRooted(raw) || project.Length == 0 ? raw : Path.Combine(project, raw));
-                if (full.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
-                    _web?.Reload();
+                try
+                {
+                    var full = Path.GetFullPath(Path.IsPathRooted(raw) || project.Length == 0 ? raw : Path.Combine(project, raw));
+                    foreach (var t in _tabs)
+                        if (t.Web.Source is { IsFile: true } page &&
+                            full.StartsWith(Path.GetDirectoryName(Path.GetFullPath(page.LocalPath)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                            t.Web.Reload();
+                }
+                catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { }
             }
-            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { }
             return;
         }
         if (!BrowserPanel.IsVisible || !_settings.BrowserFollow || tool is not ("web_search" or "fetch_page"))
@@ -190,9 +299,6 @@ public partial class MainWindow
         }
         catch (JsonException) { }
     }
-
-    private string? ShownPageFolder() =>
-        BrowserPanel.IsVisible && _web?.Source is { IsFile: true } page ? Path.GetDirectoryName(Path.GetFullPath(page.LocalPath)) : null;
 
     private static string SearchUrl(string words) => BrowserHome + "?q=" + Uri.EscapeDataString(words);
 
@@ -210,33 +316,53 @@ public partial class MainWindow
 
     // ---- the model's browser tool (orchestrator.browser_handler): a "browser" request answered on the asking process's stdin
 
-    private readonly List<string> _pageErrors = new(); // the shown page's script errors since it started loading
-    private TaskCompletionSource<bool>? _pageLoaded;
-
     // open: the browser opens (expanding the column) on the page the engine checked (a file in the chat's folders, or a web
-    // address); then, or for read, the page's address, title, script errors and visible text go back to the model.
-    private async Task AnswerBrowserAsync(string id, string action, string url)
+    // address), in the shown tab or (new_tab) a new one; then, or for read (of tab N, which it shows), the page's address,
+    // title, script errors and visible text go back to the model. tabs: the open tabs, numbered.
+    private async Task AnswerBrowserAsync(JsonElement ev)
     {
+        var (id, action, url) = (Str(ev, "id"), Str(ev, "action"), Str(ev, "url"));
+        var newTab = ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True;
+        var number = (int)Num(ev, "tab");
         var asker = _chatProcess ?? _process;
         string result;
         try
         {
-            if (action == "open")
+            if (action == "tabs")
+                result = _tabs.Count == 0 ? "No tabs are open." : TabList();
+            else if (action == "open")
             {
-                var loaded = _pageLoaded = new TaskCompletionSource<bool>();
                 if (!BrowserPanel.IsVisible)
                 {
                     OpenBrowser(null, navigate: false); // the same slide as the globe button, before the engine starts loading
                     await Task.Delay(320);
                 }
-                Navigate(url, trusted: url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
-                if (await Task.WhenAny(loaded.Task, Task.Delay(20000)) != loaded.Task)
-                    Log($"Browser: {url} was still loading after 20 s; reading it as it is");
-                await Task.Delay(400); // scripts that run just after load
+                var tab = newTab && _tabs.Count > 0 ? NewTab() : _tab ?? NewTab();
+                if (tab is null)
+                    result = $"ERROR: {BrowserMessage.Text}";
+                else
+                {
+                    var loaded = tab.Loaded = new TaskCompletionSource<bool>();
+                    Navigate(url, trusted: url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
+                    if (await Task.WhenAny(loaded.Task, Task.Delay(20000)) != loaded.Task)
+                        Log($"Browser: {url} was still loading after 20 s; reading it as it is");
+                    await Task.Delay(400); // scripts that run just after load
+                    result = await Report();
+                }
             }
-            else if (!BrowserPanel.IsVisible)
-                OpenBrowser(null);
-            result = _web?.CoreWebView2 is { } core ? await PageReport(core) : BrowserMessage.IsVisible ? $"ERROR: {BrowserMessage.Text}" : "ERROR: the browser has no page yet";
+            else
+            {
+                if (!BrowserPanel.IsVisible)
+                    OpenBrowser(null);
+                if (number > _tabs.Count || number < 0)
+                    result = $"ERROR: there is no tab {number}; the open tabs:\n{TabList()}";
+                else
+                {
+                    if (number > 0)
+                        SelectTab(_tabs[number - 1]);
+                    result = await Report();
+                }
+            }
         }
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException)
         {
@@ -248,14 +374,19 @@ public partial class MainWindow
             asker?.StandardInput.Flush();
         }
         catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+        Task<string> Report() =>
+            _tab?.Web.CoreWebView2 is { } core ? PageReport(_tab, core) : Task.FromResult(BrowserMessage.IsVisible ? $"ERROR: {BrowserMessage.Text}" : "ERROR: the browser has no page yet");
     }
 
-    private async Task<string> PageReport(CoreWebView2 core)
+    private string TabList() => string.Join("\n", _tabs.Select((t, i) => $"{i + 1}. {TabTitle(t)} - {t.Url}{(t == _tab ? " (shown)" : "")}"));
+
+    private async Task<string> PageReport(BrowserTab tab, CoreWebView2 core)
     {
         var json = await core.ExecuteScriptAsync("(document.body ? document.body.innerText : '')");
         var text = JsonSerializer.Deserialize<string>(json) ?? "";
-        var errors = _pageErrors.Count == 0 ? "none" : string.Join("\n", _pageErrors.Distinct().Take(20).Select(e => "- " + e));
-        return $"URL: {core.Source}\nTITLE: {core.DocumentTitle}\nSCRIPT ERRORS: {errors}\n\nVISIBLE TEXT:\n{(text.Length > 12000 ? text[..12000] + "\n(cut)" : text)}";
+        var errors = tab.Errors.Count == 0 ? "none" : string.Join("\n", tab.Errors.Distinct().Take(20).Select(e => "- " + e));
+        return $"TAB: {_tabs.IndexOf(tab) + 1} of {_tabs.Count}\nURL: {core.Source}\nTITLE: {core.DocumentTitle}\nSCRIPT ERRORS: {errors}\n\n" +
+               $"VISIBLE TEXT:\n{(text.Length > 12000 ? text[..12000] + "\n(cut)" : text)}";
     }
 
     // Runtime.exceptionThrown: "message (url:line)".

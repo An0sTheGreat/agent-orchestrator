@@ -3704,8 +3704,10 @@ BROWSER_TOOL = function_tool(
     "browser", "Look at a page in the app's own browser, which the user sees beside the chat (it opens there): use it "
     "before anything else to view a local HTML file or a web page, never Chrome, Edge or another browser through "
     "run_command. action 'open' loads `url` (a file in the granted folders, e.g. index.html, or an http(s) address when "
-    "web search or utilities are on) and returns its title, visible text and any script errors; 'read' returns the current "
-    "page again (after it changed).", {"action": {"type": "string", "enum": ["open", "read"]}, "url": {"type": "string"}}, ["action"])
+    "web search or utilities are on) and returns its title, visible text and any script errors, in the shown tab or, with "
+    "new_tab, a new one; 'read' returns the shown page again (after it changed), or tab N's, which it then shows; 'tabs' "
+    "lists the open tabs.", {"action": {"type": "string", "enum": ["open", "read", "tabs"]}, "url": {"type": "string"},
+                             "new_tab": {"type": "boolean"}, "tab": {"type": "integer", "description": "a tab number from 'tabs'"}}, ["action"])
 
 
 def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
@@ -3713,9 +3715,9 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
     must be in the granted folders; web addresses only when the request has web search or utilities on, as fetch_page."""
     web = bool(request.get("search") or request.get("tools"))
 
-    def browser(action: str = "open", url: str = "") -> str:
-        if action not in ("open", "read"):
-            raise WorkflowError("action must be 'open' or 'read'")
+    def browser(action: str = "open", url: str = "", new_tab: bool = False, tab: int = 0) -> str:
+        if action not in ("open", "read", "tabs"):
+            raise WorkflowError("action must be 'open', 'read' or 'tabs'")
         target = ""
         if action == "open":
             raw = str(url or "").strip()
@@ -3730,7 +3732,8 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any]):
                 if not path.is_file():
                     raise WorkflowError(f"No such file: {raw}")
                 target = path.as_uri()
-        answer = launcher_call("browser", action=action, url=target)
+        extra = {"new_tab": True} if action == "open" and new_tab else {"tab": int(tab)} if action == "read" and tab else {}
+        answer = launcher_call("browser", action=action, url=target, **extra)
         if answer is None:
             return "ERROR: the in-app browser is only there when the app runs this turn"
         return clip(str(answer.get("result") or ""), CHECKS_LIMIT * 3)
