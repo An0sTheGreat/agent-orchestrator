@@ -2136,6 +2136,19 @@ public partial class MainWindow : Window
                     ClickRow(chatA.Id);
                     if (_codeConv != chatA)
                         return Fail();
+                    // A project of Code chats stays out of the Chat view; an empty project shows only in the view it was made in.
+                    var chatOnly = _store.CreateGroup("Chat only", "chat")!;
+                    ShowView(chat: true);
+                    var inChat = Rows();
+                    ShowView();
+                    var inCode = Rows();
+                    _store.DeleteGroup(chatOnly);
+                    RefreshSidebarList();
+                    if (inChat.Contains("Smoke project") || !inChat.Contains("Chat only") || !inCode.Contains("Smoke project") || inCode.Contains("Chat only"))
+                    {
+                        Console.Error.WriteLine($"ui-smoke: projects by view: chat [{inChat}] code [{inCode}]");
+                        return Fail();
+                    }
                 }
 
                 // Drag and drop, through the drop handlers the rows register: a chat dropped on a project header goes to its

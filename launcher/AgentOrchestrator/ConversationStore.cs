@@ -35,6 +35,7 @@ internal sealed class ConversationStore
         public string Name { get; set; } = "";
         public bool Collapsed { get; set; }
         public List<string> Items { get; set; } = new();
+        public string Kind { get; set; } = ""; // the view it was made in ("chat" or "code"); "" in older files
     }
 
     private sealed class Index
@@ -45,7 +46,7 @@ internal sealed class ConversationStore
     }
 
     public sealed record Entry(string Id, string Title, string Folder, DateTime Updated, string Kind);
-    public sealed record GroupView(string Id, string Name, bool Collapsed, IReadOnlyList<Entry> Items);
+    public sealed record GroupView(string Id, string Name, bool Collapsed, IReadOnlyList<Entry> Items, string Kind = "");
     public sealed record SidebarView(IReadOnlyList<GroupView> Groups, IReadOnlyList<Entry> Ungrouped, IReadOnlyList<Entry> Archived, bool ArchivedCollapsed);
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
@@ -178,11 +179,12 @@ internal sealed class ConversationStore
     }
 
     // Null when the store is read-only.
-    public string? CreateGroup(string name)
+    // kind: the view it is made in ("chat" or "code"); an empty project shows only there.
+    public string? CreateGroup(string name, string kind = "")
     {
         if (ReadOnly)
             return null;
-        var g = new Group { Id = NewId(), Name = name.Trim() };
+        var g = new Group { Id = NewId(), Name = name.Trim(), Kind = kind };
         _index.Groups.Insert(0, g);
         SaveIndex();
         return g.Id;
@@ -234,7 +236,7 @@ internal sealed class ConversationStore
         Entry ToEntry(string id) => new(id, TitleOf(_conversations[id]), _conversations[id].Folder, _conversations[id].Updated, _conversations[id].Kind);
         List<Entry> Pick(IEnumerable<string> ids, bool archived) => ids.Where(id => _conversations[id].Archived == archived).Select(ToEntry).ToList();
         return new(
-            _index.Groups.Select(g => new GroupView(g.Id, g.Name, g.Collapsed, Pick(g.Items, false))).ToList(),
+            _index.Groups.Select(g => new GroupView(g.Id, g.Name, g.Collapsed, Pick(g.Items, false), g.Kind)).ToList(),
             Pick(_index.Items, false),
             Pick(_index.Groups.SelectMany(g => g.Items).Concat(_index.Items), true),
             _index.ArchivedCollapsed);

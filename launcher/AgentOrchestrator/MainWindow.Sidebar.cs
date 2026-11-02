@@ -34,32 +34,35 @@ public partial class MainWindow
         _sidebarMenus.Clear();
         _sidebarDrops.Clear();
         var view = _store.View();
-        // Each view lists its own kind: Chat-view chats in Chat, folder conversations in Code (projects show in both).
+        // Each view lists its own kind: Chat-view chats in Chat, folder conversations in Code, and projects with them.
         // ponytail: Move up/down swaps with the store neighbour, which may be the other kind's (no visible move then).
         var chat = NavChat.IsChecked == true;
         List<Entry> Mine(IEnumerable<Entry> entries) => entries.Where(e => (e.Kind == "chat") == chat).ToList();
         SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
         SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
-        foreach (var group in view.Groups)
+        // A project shows in the view of its chats: one with chats of the other kind only stays out, an empty one shows where
+        // it was made (an older one, with no kind, in both). Moves and drops offer only these.
+        var shown = view.Groups.Where(g => Mine(g.Items).Count > 0 || g.Items.Count == 0 && (g.Kind.Length == 0 || g.Kind == (chat ? "chat" : "code"))).ToList();
+        foreach (var group in shown)
         {
             var items = Mine(group.Items);
             var header = SidebarHeader(ProjectName(group), group.Collapsed, items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
             Draggable(header, "project:" + group.Id);
             header.Padding = new Thickness(8, 5, 56, 5); // room for + and …
-            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups), () => NewChatInProject(group)), group.Id,
+            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, shown), () => NewChatInProject(group)), group.Id,
                 (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, group.Id) : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
             if (!group.Collapsed)
                 for (var i = 0; i < items.Count; i++)
-                    SidebarList.Children.Add(ChatRow(items[i], group.Id, i, items.Count, view.Groups, archived: false));
+                    SidebarList.Children.Add(ChatRow(items[i], group.Id, i, items.Count, shown, archived: false));
         }
         var ungrouped = Mine(view.Ungrouped);
-        if (ungrouped.Count > 0 || view.Groups.Count > 0) // with projects, RECENTS is where a chat is dragged out to
+        if (ungrouped.Count > 0 || shown.Count > 0) // with projects, RECENTS is where a chat is dragged out to
         {
             var recents = new TextBlock { Text = "RECENTS", Tag = "RECENTS", Margin = new Thickness(8, 14, 0, 6) };
             recents.SetResourceReference(StyleProperty, "SectionHeader");
             SidebarList.Children.Add(DropTarget(new Grid { Children = { recents } }, "RECENTS", (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, null) : null));
             for (var i = 0; i < ungrouped.Count; i++)
-                SidebarList.Children.Add(ChatRow(ungrouped[i], null, i, ungrouped.Count, view.Groups, archived: false));
+                SidebarList.Children.Add(ChatRow(ungrouped[i], null, i, ungrouped.Count, shown, archived: false));
         }
         var archivedRows = Mine(view.Archived);
         if (archivedRows.Count > 0)
@@ -67,7 +70,7 @@ public partial class MainWindow
             SidebarList.Children.Add(SidebarHeader("ARCHIVED", view.ArchivedCollapsed, archivedRows.Count, () => _store.SetArchivedCollapsed(!view.ArchivedCollapsed)));
             if (!view.ArchivedCollapsed)
                 foreach (var entry in archivedRows)
-                    SidebarList.Children.Add(ChatRow(entry, null, 0, 1, view.Groups, archived: true));
+                    SidebarList.Children.Add(ChatRow(entry, null, 0, 1, shown, archived: true));
         }
         RefreshTitleChat(view);
     }
@@ -344,7 +347,7 @@ public partial class MainWindow
     private void NewSidebarProject()
     {
         if (SidebarAsk("New project", "Name the project; drag chats into it, or use a chat's menu.", "Create", "") is { } name)
-            StoreChange(() => _store.CreateGroup(name));
+            StoreChange(() => _store.CreateGroup(name, NavChat.IsChecked == true ? "chat" : "code"));
     }
 
     private void RenameChat(Entry entry)
