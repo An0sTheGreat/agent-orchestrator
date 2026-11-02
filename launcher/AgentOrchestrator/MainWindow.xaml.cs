@@ -37,15 +37,17 @@ public partial class MainWindow : Window
     private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
     private readonly HashSet<(string Url, string Path)> _loadedByRun = new(); // only these are unloaded on Stop/close, each on the server it loaded on
-    private bool _followTail = true, _stopRequested;
+    private bool _stopRequested;
+    private string? _runError; // the run's last ERROR line, shown in the conversation when it ends
+    // The project run's output: a panel appended to the Code conversation (AddBlock) after the messages shown when it started.
+    private StackPanel OutputPanel = new();
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private string? _activeRole, _blockRole;
-    // TASK TIME / TURN TIME in the Model Output header; _clock ticks only while one of them runs.
+    // TASK TIME / TURN TIME in the Code header; _clock ticks only while one of them runs.
     private readonly Stopwatch _taskWatch = new(), _turnWatch = new();
     private readonly DispatcherTimer _clock = new(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(250) }; // Background starves while output streams
-    private int _logLines;
     private bool _initializing = true, _polling;
     private double _runStart;
     private string _apiBase = "http://127.0.0.1:8888", _runKey = "";
@@ -83,11 +85,7 @@ public partial class MainWindow : Window
         Closing += OnClosing;
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(LimitMaximizeToWorkArea);
-        StateChanged += (_, _) =>
-        {
-            MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
-            EmptyState_IsVisibleChanged(EmptyState, default); // pause or resume the idle emblem
-        };
+        StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
         _poll.Tick += Poll_Tick;
 
         if (_workflowRoot is null)
@@ -148,10 +146,14 @@ public partial class MainWindow : Window
             return;
         if (!PrepareRun())
             return;
+        // The run gets a Code turn's tools: the conversation's extra folders, search, utilities, skills, sandbox and effort.
+        var requestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-run-{Guid.NewGuid():N}.json");
         try
         {
+            File.WriteAllText(requestFile, LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
+                effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork));
             var python = LauncherLogic.FindPython();
-            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once);
+            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once, requestFile);
             ApplyRuntime(startInfo);
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -164,7 +166,8 @@ public partial class MainWindow : Window
             Log($"Starting workflow for {project}");
             SetRunning(true);
             _process.Start();
-            ShowCodeRun(true); // the Code view follows a run that actually started
+            RunClocks.Visibility = Visibility.Visible;
+            AddNote("PROJECT RUN", $"Working through PROJECT.md in {project}" + (_settings.Once ? ", stopping after the first finished item" : ""));
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
             if (unsloth)
@@ -177,21 +180,20 @@ public partial class MainWindow : Window
             EndStream(false);
             Log($"Process exited with code {exitCode}.");
             SetStatus(exitCode == 0 ? "Completed" : "Stopped with an error", exitCode == 0 ? "#5BD6A2" : "#FF667A");
-            if (exitCode == 0)
-                Toast("Run finished");
-            else if (_stopRequested)
-                Toast("Run stopped", "#F7C873");
-            else
-                Toast($"Run failed (exit code {exitCode})", "#FF667A");
+            var outcome = exitCode == 0 ? "Run finished" : _stopRequested ? "Run stopped" : $"Run failed (exit code {exitCode})";
+            AddNote(outcome.ToUpperInvariant(), _runError ?? (exitCode == 0 ? "The run ended." : "Open run logs (Project menu) has the details."));
+            Toast(outcome, exitCode == 0 ? null : _stopRequested ? "#F7C873" : "#FF667A");
         }
         catch (Exception exception)
         {
             Log($"ERROR: {exception.Message}");
+            AddNote("RUN COULD NOT START", exception.Message);
             SetStatus("Could not start", "#FF667A");
             Toast("Run could not start", "#FF667A");
         }
         finally
         {
+            try { File.Delete(requestFile); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
             _poll.Stop();
             _pump.Stop();
             DrainLines();
@@ -271,22 +273,18 @@ public partial class MainWindow : Window
 
     private void ResetRunView()
     {
-        OutputPanel.Children.Clear();
-        EmptyState.Visibility = Visibility.Visible;
+        OutputPanel = new StackPanel(); // the last run's output stays in the conversation above
         if (_stream is { } live)
             SetPulse(live, false);
         _stream = null;
         _pendingTools.Clear();
         _lines.Clear();
         _loadedByRun.Clear();
-        _followTail = true;
         _stopRequested = false;
-        Reveal(JumpPill, false, slide: 10);
+        _runError = null;
+        Jump(_code);
         _transcript.Clear();
         _log.Clear();
-        LogBox.Clear();
-        _logLines = 0;
-        LogCount.Text = "0";
         _activeRole = _blockRole = null;
         foreach (var card in _cards)
         {
@@ -324,23 +322,6 @@ public partial class MainWindow : Window
         StatusRingScale.BeginAnimation(ScaleTransform.ScaleYProperty, on ? Loop(1, 2.2, 1.6, Decelerate) : null);
         ShimmerShift.BeginAnimation(TranslateTransform.XProperty, on ? Loop(-34, 100, 1.8, new SineEase { EasingMode = EasingMode.EaseInOut }) : null);
         Shimmer.BeginAnimation(OpacityProperty, new DoubleAnimation(on ? 1 : 0, TimeSpan.FromMilliseconds(250)));
-    }
-
-    // The empty-state emblem breathes slowly, at a reduced frame rate, and only while it is on screen.
-    private void EmptyState_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
-    {
-        DoubleAnimation? Breath(double from, double to)
-        {
-            if (!EmptyState.IsVisible || WindowState == WindowState.Minimized)
-                return null;
-            var breath = new DoubleAnimation(from, to, TimeSpan.FromSeconds(4))
-                { AutoReverse = true, RepeatBehavior = RepeatBehavior.Forever, EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut } };
-            Timeline.SetDesiredFrameRate(breath, 30);
-            return breath;
-        }
-        EmblemGlow.BeginAnimation(OpacityProperty, Breath(0.45, 0.9));
-        EmblemScale.BeginAnimation(ScaleTransform.ScaleXProperty, Breath(0.92, 1.06));
-        EmblemScale.BeginAnimation(ScaleTransform.ScaleYProperty, Breath(0.92, 1.06));
     }
 
     // Code's start button: "Start project" until the folder has the workflow files, then "Start Task" for a project with
@@ -411,6 +392,8 @@ public partial class MainWindow : Window
                 {
                     if (_chatBusy)
                         NoteChatLine(line);
+                    else if (line.TrimStart().StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+                        _runError = line.Trim();
                     Log(line);
                 }
             }
@@ -508,6 +491,9 @@ public partial class MainWindow : Window
                 Log($"Resuming task {Str(ev, "id")} at review round {Num(ev, "round") + 1}");
                 AddNote($"RESUMED  {Str(ev, "id")}", $"Continuing at review round {Num(ev, "round") + 1}");
                 RefreshPrimary();
+                break;
+            case "approval": // the sandboxed run_command asks for network or more folders: the user decides
+                AnswerApproval(ev);
                 break;
             case "verdict":
                 EndStream(false);
@@ -612,8 +598,8 @@ public partial class MainWindow : Window
             _stream.Name = name;
         _stream.Text.Append(text);
         _stream.Body.AppendText(text);
-        if (!_followTail)
-            Reveal(JumpPill, true, slide: 10); // returns at once while the pill is already showing
+        if (!_code.Follow)
+            Reveal(CodeJumpPill, true, slide: 10); // returns at once while the pill is already showing
         _transcript.Append(text);
         if (_stream.Preview is not null && _stream.Text.Length <= 300)
             _stream.Preview.Text = PreviewFor(_stream);
@@ -809,11 +795,13 @@ public partial class MainWindow : Window
 
     private void AddBlock(UIElement block, string transcript)
     {
-        EmptyState.Visibility = Visibility.Collapsed;
+        if (OutputPanel.Parent is null) // first output of this run, or the conversation was cleared since
+            CodePanel.Children.Add(OutputPanel);
+        CodeEmpty.Visibility = Visibility.Collapsed;
         OutputPanel.Children.Add(block);
         _transcript.Append(transcript);
-        if (!_followTail)
-            Reveal(JumpPill, true, slide: 10);
+        if (!_code.Follow)
+            Reveal(CodeJumpPill, true, slide: 10);
         FadeIn(block);
     }
 
@@ -902,32 +890,17 @@ public partial class MainWindow : Window
         return box;
     }
 
-    // Selectable text boxes would swallow the mouse wheel; pass it on to the conversation's (or the output's) scroller.
+    // Selectable text boxes would swallow the mouse wheel; pass it on to the conversation's scroller (a run's: Code).
     private void ForwardWheel(UIElement element, Conversation? conv)
     {
-        var scroller = conv?.Scroll ?? OutputScroll;
         element.PreviewMouseWheel += (_, e) =>
         {
+            var c = conv ?? _code;
             e.Handled = true;
             if (e.Delta > 0)
-            {
-                if (conv is not null) conv.Follow = false; else _followTail = false;
-            }
-            scroller.ScrollToVerticalOffset(scroller.VerticalOffset - e.Delta);
+                c.Follow = false;
+            c.Scroll.ScrollToVerticalOffset(c.Scroll.VerticalOffset - e.Delta);
         };
-    }
-
-    // Follow new output unless the user has scrolled up; scrolling back to the bottom resumes following.
-    private void OutputScroll_ScrollChanged(object sender, ScrollChangedEventArgs e)
-    {
-        if (e.VerticalChange != 0 && e.ExtentHeightChange == 0 && e.ViewportHeightChange == 0)
-        {
-            _followTail = OutputScroll.VerticalOffset >= OutputScroll.ScrollableHeight - 8;
-            if (_followTail)
-                Reveal(JumpPill, false, slide: 10);
-        }
-        else if (_followTail && (e.ExtentHeightChange != 0 || e.ViewportHeightChange != 0))
-            OutputScroll.ScrollToEnd();
     }
 
     private static string Preview(string text)
@@ -976,10 +949,6 @@ public partial class MainWindow : Window
         var line = $"{DateTime.Now:HH:mm:ss}  {text}";
         _log.AppendLine(line);
         WriteLogFile(line);
-        LogBox.AppendText(line + Environment.NewLine);
-        LogCount.Text = (++_logLines).ToString();
-        if (LogToggle.IsChecked == true)
-            LogBox.ScrollToEnd();
     }
 
     // --ui-smoke: stream a fake turn and flip every animated state, so a broken template or storyboard fails a
@@ -992,7 +961,6 @@ public partial class MainWindow : Window
         _settingsShow = window => { window.ShowActivated = false; window.Show(); }; // ShowDialog would block the run
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
-        ShowCodeRun(true); // the run checks below need Model Output on screen
         void Snap(string name, FrameworkElement? target = null) // target: a popup such as a menu, which the window picture leaves out
         {
             if (string.IsNullOrEmpty(snapshots))
@@ -1097,35 +1065,29 @@ public partial class MainWindow : Window
         var tool = SectionText(expanders.First(x => ((TextBlock)((StackPanel)x.Header).Children[0]).Text == "TOOL"));
         if (!(tool.StartsWith("TOOL") && tool.Contains("ARGUMENTS") && tool.Contains("a.js") && tool.Contains("RESULT") && tool.EndsWith("OK")))
             return Fail();
-        foreach (var open in new[] { true, false })
-        {
-            LogToggle.IsChecked = open;
-            LogToggle_Click(LogToggle, new RoutedEventArgs());
-            await Settle();
-            ShowView();
-            await Settle();
-            PlayHoverStoryboards(this);
-        }
+        // The run's output is part of the Code conversation, not a separate view.
+        ShowView();
+        await Settle();
+        PlayHoverStoryboards(this);
+        if (OutputPanel.Parent != CodePanel || CodeEmpty.IsVisible || !CodeChat.IsVisible)
+            return Fail();
         // Scrolled away from the end: new output brings in the jump pill, which returns to following.
-        _followTail = false;
+        _code.Follow = false;
         _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"verdict","role":"reviewer","id":"T1","verdict":"PASS","round":1}""");
         DrainLines(); // the verdict also raises a toast
         Toast("Something failed", "#FF667A");
         await Settle();
-        if (!JumpPill.IsVisible || !JumpPill.IsHitTestVisible || ToastStack.Children.Count != 2)
+        if (!CodeJumpPill.IsVisible || !CodeJumpPill.IsHitTestVisible || ToastStack.Children.Count != 2)
             return Fail();
         Snap("2b-toast-and-jump");
-        JumpToLatest_Click(JumpPill, new RoutedEventArgs());
+        ChatJump_Click(CodeJumpPill, new RoutedEventArgs());
         await Settle();
-        if (!_followTail || JumpPill.IsVisible)
+        if (!_code.Follow || CodeJumpPill.IsVisible)
             return Fail();
         // toasts leave on their own: 3 s on screen + a 180 ms fade, with margin for a busy dispatcher
         for (var waited = 0; waited < 5000 && ToastStack.Children.Count != 0; waited += 100)
             await Task.Delay(100);
         if (ToastStack.Children.Count != 0)
-            return Fail();
-        // The log was opened, then closed; it must end up collapsed, not stuck open.
-        if (LogBox.Visibility != Visibility.Collapsed)
             return Fail();
         // Live token stats: deltas alone drive the count and rate until the call's usage event gives the exact numbers.
         var live = CardFor("implementer");
@@ -1330,7 +1292,7 @@ public partial class MainWindow : Window
                 _restartRecycle = path => { if (Path.GetFileName(path) == "app.js") throw new IOException("locked"); Delete(path); };
                 if (RestartProject(restartProject) || Directory.Exists(Path.Combine(restartProject, ".ao_old.txt")) || File.Exists(Path.Combine(restartProject, ".ao_old.txt")) ||
                     !File.Exists(Path.Combine(restartProject, "app.js")) || File.ReadAllText(Path.Combine(restartProject, "STATE.md")) == File.ReadAllText(Path.Combine(_workflowRoot!, "STATE.md")) ||
-                    !LogBox.Text.Contains("app.js could not be moved to the Recycle Bin"))
+                    !_log.ToString().Contains("app.js could not be moved to the Recycle Bin"))
                     return Fail();
                 // Confirmed: only PROJECT.md and .git survive, then init adds the template files; PROJECT.md is unchanged.
                 var recycled = new List<string>();
@@ -1347,7 +1309,7 @@ public partial class MainWindow : Window
                 var asked = false;
                 _restartRecycle = _ => throw new IOException("smoke must not recycle the template");
                 _restartConfirm = _ => { asked = true; return false; };
-                if (RestartProject(_workflowRoot!) || asked || !LogBox.Text.Contains("holds the Agent Orchestrator template"))
+                if (RestartProject(_workflowRoot!) || asked || !_log.ToString().Contains("holds the Agent Orchestrator template"))
                     return Fail();
             }
             finally
@@ -1420,7 +1382,7 @@ public partial class MainWindow : Window
             // Start's pre-run step: the skipped worker's line survives the view reset, and a toast is raised.
             Log("stale line");
             if (!PrepareRun() || first.HasSetupProblem || !second.HasSetupProblem || !second.SetupTip.Contains("already used") ||
-                LogBox.Text.Contains("stale line") || !LogBox.Text.Contains("DUP: title 'DUP' is already used") || ToastStack.Children.Count == 0 ||
+                _log.ToString().Contains("stale line") || !_log.ToString().Contains("DUP: title 'DUP' is already used") || ToastStack.Children.Count == 0 ||
                 JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 1)
                 return Fail();
             // config.json cannot be written: the start is aborted before anything is cleared or launched.
@@ -1429,8 +1391,8 @@ public partial class MainWindow : Window
             bool started;
             try { started = PrepareRun(); }
             finally { File.SetAttributes(presetConfig, FileAttributes.Normal); }
-            if (started || _process is not null || StatusText.Text != "Could not update config.json" || !LogBox.Text.Contains("kept line") ||
-                !LogBox.Text.Contains("Could not write custom workers") || ToastStack.Children.OfType<Border>().All(t => !((TextBlock)((StackPanel)t.Child).Children[1]).Text.StartsWith("Run not started")))
+            if (started || _process is not null || StatusText.Text != "Could not update config.json" || !_log.ToString().Contains("kept line") ||
+                !_log.ToString().Contains("Could not write custom workers") || ToastStack.Children.OfType<Border>().All(t => !((TextBlock)((StackPanel)t.Child).Children[1]).Text.StartsWith("Run not started")))
                 return Fail();
             RemoveWorker(first);
             RemoveWorker(second);
@@ -1539,7 +1501,7 @@ public partial class MainWindow : Window
                 return Fail();
             ShowView();
             await Settle();
-            if (!_codeRun || !AllShown())
+            if (!CodeChat.IsVisible || !AllShown())
                 return Fail();
             ShowView(chat: true);
             await Settle();
@@ -1817,9 +1779,8 @@ public partial class MainWindow : Window
             }
             // Code view: a turn with a tool call lands in the Code conversation (not Chat); code_reply is the answer; both sub-views toggle.
             ShowView();
-            ShowCodeRun(false);
             await Settle();
-            if (!CodeChat.IsVisible || WorkArea.IsVisible || NavCode.IsChecked != true)
+            if (!CodeChat.IsVisible || NavCode.IsChecked != true)
                 return Fail();
             var chatCount = ChatPanel.Children.Count;
             // The enter arrow shows only once the box has text (and nothing is running).
@@ -1886,10 +1847,6 @@ public partial class MainWindow : Window
             if (CodeTarget()?.Role != "planner" || (string)CodeTargetChip.Content != $"Lead: {(leadName == "Not loaded" ? "no model" : leadName)}  ▾" ||
                 !NoMode("chat") || !NoMode("write_project") || ListedWorkers(_code).Count != 0 || CodePlus.Visibility != Visibility.Visible)
                 return Fail();
-            ShowCodeRun(true);
-            await Settle();
-            if (!WorkArea.IsVisible || CodeChat.IsVisible)
-                return Fail();
             // New conversation (the "Main" preset applies), extra folders through the Add / × buttons, save, resume, Start new.
             var codeProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
             var codeExtra = Path.Combine(codeProject, "extra");
@@ -1905,7 +1862,7 @@ public partial class MainWindow : Window
                 var first = _codeConv;
                 if (first is null || _store.Get(first.Id) != first || _settings.LastConversation != first.Id || SelectedProjectPath() != codeProject ||
                     _code.History.Count != 0 || CodeExtraFolders.Count != 0 || CodeChat.Visibility != Visibility.Visible ||
-                    AddCodeFolderButton.Visibility != Visibility.Visible || !LogBox.Text.Contains("Preset applied: main"))
+                    AddCodeFolderButton.Visibility != Visibility.Visible || !_log.ToString().Contains("Preset applied: main"))
                     return Fail();
                 void AddFolder() => AddCodeFolderButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 (pick, answer) = (codeExtra, "write");
@@ -1997,7 +1954,7 @@ public partial class MainWindow : Window
                     return Fail();
                 // Project menu: its items; Use a PROJECT.md… copies a file in, then backs up the one it replaces.
                 string MenuItems() => string.Join("|", BuildProjectMenu().Items.OfType<MenuItem>().Select(i => i.Header + (i.IsEnabled ? "" : " (off)") + (i.IsChecked ? " (on)" : "")));
-                const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Folders…|Stop after the first finished item{1}";
+                const string items = "Use a PROJECT.md…|Edit PROJECT.md{0}|Folders…|Stop after the first finished item{1}|Open run logs|Copy run log";
                 var onceMark = _settings.Once ? " (on)" : "";
                 if (!CodeProjectButton.IsEnabled || MenuItems() != string.Format(items, " (off)", onceMark))
                     return Fail();
@@ -2063,8 +2020,8 @@ public partial class MainWindow : Window
                 if (WriteConfigs(["project", "worker"], path => path == "worker" ? throw new IOException("mirror locked") : null) is not null ||
                     WriteConfigs(["project", "worker"], path => path == "worker" ? "mirror refused" : null) is not null ||
                     WriteConfigs(["project", "worker"], path => { mirrored.Add(path); return path == "project" ? "project refused" : null; }) != "project refused" ||
-                    mirrored is not ["project"] || !LogBox.Text.Contains("the launcher's worker config could not be updated: mirror locked") ||
-                    !LogBox.Text.Contains("the launcher's worker config could not be updated: mirror refused") ||
+                    mirrored is not ["project"] || !_log.ToString().Contains("the launcher's worker config could not be updated: mirror locked") ||
+                    !_log.ToString().Contains("the launcher's worker config could not be updated: mirror refused") ||
                     ToastStack.Children.OfType<UIElement>().LastOrDefault() == beforeMirror)
                     return Fail();
 
@@ -3052,42 +3009,9 @@ public partial class MainWindow : Window
             PlayHoverStoryboards(VisualTreeHelper.GetChild(node, i));
     }
 
-    private void LogToggle_Click(object sender, RoutedEventArgs e)
-    {
-        Reveal(LogBox, LogToggle.IsChecked == true, slide: 12);
-        if (LogToggle.IsChecked == true)
-            LogBox.ScrollToEnd();
-    }
+    private void CopyLog_Click(object sender, RoutedEventArgs e) => CopyToClipboard(_log.ToString(), "Run log copied", "Log is empty");
 
-    private void CopyLog_Click(object sender, RoutedEventArgs e) => CopyToClipboard(_log.ToString(), "Full log copied", "Log is empty");
-
-    private void CopyOutput_Click(object sender, RoutedEventArgs e) => CopyToClipboard(_transcript.ToString(), "Output copied", "No output yet");
-
-    private void ClearOutput_Click(object sender, RoutedEventArgs e)
-    {
-        OutputPanel.Children.Clear();
-        if (_stream is { } live)
-            SetPulse(live, false);
-        _stream = null;
-        _pendingTools.Clear();
-        _transcript.Clear();
-        _blockRole = null;
-        EmptyState.Visibility = Visibility.Visible;
-        JumpToLatest_Click(JumpPill, e);
-    }
-
-    // ---- output navigation: jump-to-latest pill, expand / collapse all, per-section copy
-
-    private void JumpToLatest_Click(object sender, RoutedEventArgs e)
-    {
-        _followTail = true;
-        OutputScroll.ScrollToEnd();
-        Reveal(JumpPill, false, slide: 10);
-    }
-
-    private void ExpandAll_Click(object sender, RoutedEventArgs e) => SetAllExpanded(true);
-
-    private void CollapseAll_Click(object sender, RoutedEventArgs e) => SetAllExpanded(false);
+    // ---- output navigation: expand / collapse all (Ctrl+E / Ctrl+Shift+E), per-section copy
 
     // Counts as the user's choice (StreamBlock.Touched), so a finishing section is not folded back afterwards.
     private void SetAllExpanded(bool open)
@@ -3591,15 +3515,11 @@ public partial class MainWindow : Window
         var shift = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         switch (e.Key)
         {
-            case Key.Enter when !shift && CodeStartButton.IsEnabled && !ChatView.IsVisible && !CodeChat.IsVisible:
+            case Key.Enter when !shift && CodeStartButton.IsEnabled && !ChatView.IsVisible:
                 StartCodeProject();
                 break;
             case Key.X when shift && (_process is not null || _chatBusy) && Keyboard.FocusedElement is not (TextBox or PasswordBox):
                 StopWork_Click(CodeStop, e);
-                break;
-            case Key.L when !shift:
-                LogToggle.IsChecked = LogToggle.IsChecked != true;
-                LogToggle_Click(LogToggle, e);
                 break;
             case Key.D1 or Key.NumPad1 when !shift:
                 ShowView(chat: true);
@@ -4172,7 +4092,7 @@ public partial class MainWindow : Window
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown
         RefreshContextSection();
         ApplyPromptView();
-        if (chat || (code && !_codeRun))
+        if (chat || code)
         {
             RefreshChatTarget();
             (chat ? ChatInput : CodeInput).Focus();

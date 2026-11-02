@@ -3901,10 +3901,11 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     return code_loop(config, role, system, messages, tools, handlers)
 
 
-def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str
+def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None
                ) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[str]]:
     """The lead's request extras (tools, system note) and every lead handler (file tools, todo, run_checks, delegate and
-    the extras), shared by both Code engines; plus the skill folders, the bundled init-project included."""
+    the extras), shared by both Code engines and the project run; plus the skill folders, the bundled init-project included.
+    `delegations` caps delegate (default: config max_delegations, 6)."""
     skills = [str(s) for s in request.get("skills") or []]
     names = {skill_info(Path(s))["name"].lower() for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()}
     if (INIT_PROJECT_SKILL / "SKILL.md").is_file() and skill_info(INIT_PROJECT_SKILL)["name"].lower() not in names:
@@ -3916,7 +3917,8 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     runners = (command_runner(folders, request), command_runner(folders, request, read_only=True))
     handlers["run_checks"] = lambda: run_checks(config, folders, runners[0])
     handlers["run_command"] = runners[0]
-    handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, int(config.get("max_delegations", 6)),
+    cap = int(config.get("max_delegations", 6)) if delegations is None else delegations
+    handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
     return tools, handlers, note, [s for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()]
 
@@ -3956,14 +3958,19 @@ def done_items(project_root: Path) -> str:
     return "DONE SO FAR (STATE.md): " + ("; ".join(i.strip() for i in items) or "(none yet)")
 
 
-def run_lead_project(config: dict[str, Any], project_root: Path, once: bool) -> int:
-    """Start project: the lead (planner role) works through PROJECT.md with the Code tools, delegating, running checks,
-    recording each finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with
-    `once`, the first recorded item. The input carries STATE.md, so a new run resumes after the recorded items."""
+def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, request: dict[str, Any] | None = None) -> int:
+    """Start project: the lead (planner role) works through PROJECT.md with a Code turn's tools (lead_setup: file tools,
+    sandboxed run_command and run_checks, delegate, and the request's search, utilities and skills), recording each
+    finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with `once`, the first
+    recorded item. `request` is a Code request (--request): its extra folders, extras, sandbox, session and effort; the
+    project root is always folders[0]. The input carries STATE.md, so a new run resumes after the recorded items."""
     if project_root == ROOT or ROOT in project_root.parents or project_root in ROOT.parents:
         raise WorkflowError(f"The project overlaps the Agent Orchestrator folder ({ROOT}); the lead project run needs "
                             "another --project (the legacy --pipeline can run here)")
-    folders = [{"path": str(project_root), "access": "write"}]
+    request = request or {}
+    extra = request.get("folders") if isinstance(request.get("folders"), list) else []
+    folders = request_folders([{"path": str(project_root), "access": "write"}, *extra[1:]])
+    config = with_effort(config, request)
     title, state = display_name(config, "planner"), project_root / "STATE.md"
     done = {"finished": False, "progress": 0}
 
@@ -3981,12 +3988,10 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool) -> 
         return "OK: the run ends now."
 
     steps = int(config.get("max_lead_steps", 200))
-    handlers = {**code_handlers(folders), **code_write_handlers(folders), "run_checks": lambda: run_checks(config, folders),
-                "todo": lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items])),
-                "delegate": delegator(config, ([], {}, ""), folders, steps, ("planner", "lead", title)),
-                "record_progress": progress, "finish": finish}
-    tools = CODE_TOOLS[:5] + [TODO_TOOL, CHECKS_TOOL, DELEGATE_TOOL, PROGRESS_TOOL, FINISH_TOOL]
-    system = f"{load_text(ROOT / 'prompts' / 'lead_project.txt').strip()}\n\n{folders_context(folders)}"
+    extras, handlers, note, _ = lead_setup(config, folders, request, "planner", delegations=steps)
+    handlers.update(record_progress=progress, finish=finish)
+    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + extras + [PROGRESS_TOOL, FINISH_TOOL]
+    system = f"{load_text(ROOT / 'prompts' / 'lead_project.txt').strip()}{note}\n\n{folders_context(folders)}"
     user = (f"PROJECT.md\n{load_text(project_root / 'PROJECT.md').strip()}\n\n"
             f"PROGRESS (STATE.md; every '## Done:' item is finished: do not redo it)\n"
             f"{load_text(state).strip() if state.is_file() else '(none yet)'}\n\n"
@@ -4280,6 +4285,26 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     return answer
 
 
+def request_folders(raw: Any) -> list[dict[str, str]]:
+    """A Code request's "folders": existing absolute directories, the first (the project) always write, the rest "read"
+    or "write"; none may be granted write over the Agent Orchestrator folder."""
+    if not isinstance(raw, list) or not raw:
+        raise WorkflowError("Code request needs at least one folder")
+    folders = []
+    for index, item in enumerate(raw):
+        path = Path(str(item.get("path") or "")) if isinstance(item, dict) else Path()
+        if not path.is_absolute() or not path.is_dir():
+            raise WorkflowError(f"Folder {index + 1} is not an existing absolute directory: {path}")
+        access = "write" if index == 0 else item.get("access")
+        if access not in ("read", "write"):
+            raise WorkflowError(f"Folder {index + 1} access must be 'read' or 'write', not {access!r}")
+        path = path.resolve()
+        if access == "write" and (path == ROOT or ROOT in path.parents or path in ROOT.parents):
+            raise WorkflowError(f"Folder {index + 1} overlaps the Agent Orchestrator folder ({ROOT}); it can only be granted read only")
+        folders.append({"path": str(path), "access": access})
+    return folders
+
+
 def run_code(config: dict[str, Any], request_path: Path) -> int:
     """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop) as the
     request's `worker` when that names a configured worker, else the planner (a legacy `mode` is ignored); "write_project"
@@ -4297,21 +4322,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     if action == "chat" and role not in BUILTIN_ROLES and all(w["id"] != role for w in custom_workers(config)):
         role = "planner"
     chat_worker(config, role)
-    raw = request.get("folders")
-    if not isinstance(raw, list) or not raw:
-        raise WorkflowError("Code request needs at least one folder")
-    folders = []
-    for index, item in enumerate(raw):
-        path = Path(str(item.get("path") or "")) if isinstance(item, dict) else Path()
-        if not path.is_absolute() or not path.is_dir():
-            raise WorkflowError(f"Folder {index + 1} is not an existing absolute directory: {path}")
-        access = "write" if index == 0 else item.get("access")
-        if access not in ("read", "write"):
-            raise WorkflowError(f"Folder {index + 1} access must be 'read' or 'write', not {access!r}")
-        path = path.resolve()
-        if access == "write" and (path == ROOT or ROOT in path.parents or path in ROOT.parents):
-            raise WorkflowError(f"Folder {index + 1} overlaps the Agent Orchestrator folder ({ROOT}); it can only be granted read only")
-        folders.append({"path": str(path), "access": access})
+    folders = request_folders(request.get("folders"))
     config, plain = with_effort(config, request), config  # the turn's model calls; the quiet title call keeps `plain`
     if action == "write_project":
         target = write_project(config, role, folders, messages, "")
@@ -4343,6 +4354,8 @@ def _run() -> int:
     turn = parser.add_mutually_exclusive_group()
     turn.add_argument("--chat", type=Path, help="Answer the chat request in this JSON file instead of running the workflow")
     turn.add_argument("--code", type=Path, help="Run one Code turn (file tools confined to the request's folders) for this JSON request")
+    parser.add_argument("--request", type=Path, help="Lead project run: a Code request JSON (folders, search, tools, skills, sandbox, "
+                        "session, effort) for the run's tools")
     parser.add_argument("--unload-local", action="store_true", help="Stop the llama-server this app started, then exit")
     args = parser.parse_args()
     if args.unload_local:
@@ -4372,7 +4385,10 @@ def _run() -> int:
     if not project or "REPLACE THIS" in project or "[Describe the project" in project:
         raise WorkflowError("Describe the real goal in PROJECT.md before running")
     if not args.pipeline:
-        return run_lead_project(config, project_root, args.once)
+        request = json.loads(load_text(args.request)) if args.request else {}
+        if not isinstance(request, dict):
+            raise WorkflowError("--request must hold a JSON object")
+        return run_lead_project(config, project_root, args.once, request)
     prompts = {role: load_text(ROOT / "prompts" / f"{role}.txt") for role in ("planner", "implementer", "reviewer")}
     interactive = not args.non_interactive
     max_tasks = int(config.get("max_tasks", 20))

@@ -5,6 +5,7 @@ How to work:
 - Keep a short checklist of the remaining PROJECT.md items with todo, and update it as items finish.
 - Look before you act: use list_files and search_files to find your way around, and read_file before editing a file.
 - Do the work yourself with write_file (whole new content) or replace_text (one exact, unique snippet), whatever its size.
+- run_command runs PowerShell or cmd commands (build, tests, scripts, git) in a sandbox that can write only the granted write folders, with no network unless the user allows it. If it is blocked from something the task needs, ask for it with request_write or request_network and a reason.
 - delegate is optional: "reviewer" for an independent check, "implementer" for a self-contained piece. Never delegate just because an item is large. A worker knows only what you send it, so fill in the objective, context, files and acceptance criteria. Read its report critically; it is not proof.
 - Verify each item before you record it: run_checks runs the project's checks and returns the errors; read_file shows what is really on disk. Fix what fails.
 - When an item is finished and verified, call record_progress with a short item name and its outcome (what now works and how you checked it).

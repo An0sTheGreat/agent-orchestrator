@@ -3626,7 +3626,7 @@ class LeadRunTests(unittest.TestCase):
         (self.root / "STATE.md").write_text(self.STATE, encoding="utf-8")
         self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES}}
 
-    def run_project(self, replies, once=False):
+    def run_project(self, replies, once=False, request=None):
         replies = {k: list(v) for k, v in replies.items()}
         log, events = [], []
 
@@ -3644,6 +3644,9 @@ class LeadRunTests(unittest.TestCase):
 
         (self.root / "config.json").write_text(json.dumps(self.config), encoding="utf-8")
         argv = ["o", "--project", str(self.root), "--non-interactive", "--events", *(["--once"] if once else [])]
+        if request is not None:
+            (self.root / "request.json").write_text(json.dumps(request), encoding="utf-8")
+            argv += ["--request", str(self.root / "request.json")]
         with patch.object(orchestrator, "ApiClient", Fake), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
                 patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv):
             code = orchestrator.main()
@@ -3659,8 +3662,9 @@ class LeadRunTests(unittest.TestCase):
         code, log, events = self.run_project(replies)
         self.assertEqual((code, len(log)), (0, 5))
         self.assertTrue(log[0]["system"].startswith((Path(orchestrator.ROOT) / "prompts" / "lead_project.txt").read_text(encoding="utf-8").strip()))
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]],
-                         [t["function"]["name"] for t in orchestrator.CODE_TOOLS[:5]] + ["todo", "run_checks", "delegate", "record_progress", "finish"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]][:len(orchestrator.CODE_TOOLS) + 4],
+                         [t["function"]["name"] for t in orchestrator.CODE_TOOLS] + ["todo", "run_checks", "run_command", "delegate"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]][-2:], ["record_progress", "finish"])
         state = self.text("STATE.md")
         self.assertRegex(state, r"\n## Done: Greeting script\n- Time: .+\n- Outcome: hello.py prints hi\n")
         self.assertRegex(state, r"\n## Project complete\n- Time: .+\n- Summary: Greeting script done\n$")
@@ -3704,6 +3708,42 @@ class LeadRunTests(unittest.TestCase):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "exceeded max_lead_steps=2"):
             self.run_project({"planner": ["thinking", "still thinking"]})  # __main__ prints it as an ERROR line, exit code 1
         self.assertNotIn("## Done", self.text("STATE.md"))
+
+    def test_the_request_gives_the_run_a_code_turns_tools(self):
+        """Start project's request: the chat's search, utilities and skills, its extra folders, and the sandboxed run_command
+        (in the conversation's container) for the lead, the workers and run_checks' validation commands."""
+        skill = self.root / "skills" / "demo"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("---\nname: demo\ndescription: A demo skill.\n---\nDo it.\n", encoding="utf-8")
+        extra = self.root / "lib"
+        extra.mkdir()
+        self.config["validation_commands"] = {"unit": ["python", "-c", "pass"]}
+        runs = []
+
+        def runner(folders, request, read_only=False):
+            runs.append(([f["path"] for f in folders], request.get("session"), read_only))
+            return lambda command, shell="powershell", timeout_seconds=120: f"EXIT 0\nran {command}"
+
+        request = {"search": True, "tools": True, "skills": [str(skill)], "session": "c1",
+                   "folders": [{"path": "ignored", "access": "write"}, {"path": str(extra), "access": "read"}]}
+        replies = {"planner": [tool_call("run_command", command="git status"), tool_call("run_checks"),
+                               tool_call("delegate", worker="reviewer", brief="Review"), tool_call("finish", summary="done")],
+                   "reviewer": ["Looks fine."]}
+        with patch.object(orchestrator, "command_runner", runner):
+            code, log, events = self.run_project(replies, request=request)
+        self.assertEqual(code, 0)
+        names = [t["function"]["name"] for t in log[0]["tools"]]
+        for name in ("run_command", "web_search", "fetch_page", "calculator", "current_time", "load_skill"):
+            self.assertIn(name, names)
+        self.assertIn("- demo: A demo skill.", log[0]["system"])
+        self.assertIn(f"- {extra} (read)", log[0]["system"])
+        reviewer = [l for l in log if l["role"] == "reviewer"][0]
+        self.assertIn("web_search", [t["function"]["name"] for t in reviewer["tools"]])
+        self.assertIn("run_command", [t["function"]["name"] for t in reviewer["tools"]])
+        self.assertEqual(runs, [([str(self.root), str(extra)], "c1", False), ([str(self.root), str(extra)], "c1", True)])
+        results = {d["name"]: d["result"] for e, d in events if e == "tool"}
+        self.assertEqual(results["run_command"], "EXIT 0\nran git status")
+        self.assertIn("VALIDATION unit: PASSED", results["run_checks"])
 
     def test_refuses_to_write_the_orchestrator_folder(self):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "overlaps the Agent Orchestrator folder"):

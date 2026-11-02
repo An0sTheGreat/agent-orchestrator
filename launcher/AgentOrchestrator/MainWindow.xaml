@@ -1087,15 +1087,16 @@
                             Click="CodeStart_Click" ToolTip="Start or resume the project run in this folder (Ctrl+Enter)" ToolTipService.ShowOnDisabled="True" />
                     <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
                             Click="CodeNew_Click" ToolTip="Start a new conversation" />
-                    <Border DockPanel.Dock="Right" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}"
-                            BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
-                        <StackPanel Orientation="Horizontal">
-                            <ToggleButton x:Name="CodeConversationToggle" Style="{StaticResource SegToggle}" Content="Conversation" IsChecked="True" Click="CodeSubView_Click"
-                                          ToolTip="The conversation with the worker" AutomationProperties.Name="Conversation" />
-                            <ToggleButton x:Name="CodeRunToggle" Style="{StaticResource SegToggle}" Content="Run output" Tag="run" Click="CodeSubView_Click"
-                                          ToolTip="Model output and the execution log of the project run" AutomationProperties.Name="Run output" />
-                        </StackPanel>
-                    </Border>
+                    <!-- Run clocks (MainWindow.ShowClocks), shown once a project run starts: the current/last item and worker turn. -->
+                    <StackPanel x:Name="RunClocks" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0" TextBlock.FontSize="11"
+                                Visibility="Collapsed">
+                        <TextBlock Text="TASK TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TaskTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,14,0" VerticalAlignment="Center" />
+                        <TextBlock Text="TURN TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
@@ -1181,77 +1182,6 @@
                         </Grid>
                     </Border>
                 </Grid>
-
-            <!-- Run output: model output + execution log -->
-            <Grid x:Name="WorkArea" Grid.Row="1" Visibility="Collapsed">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
-                </Grid.RowDefinitions>
-                <DockPanel Margin="20,16,20,8" LastChildFill="False">
-                    <TextBlock Text="MODEL OUTPUT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                    <!-- Run clocks (MainWindow.ShowClocks): the current/last task and the current/last worker turn. -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="18,0,0,0" TextBlock.FontSize="11">
-                        <TextBlock Text="TASK TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
-                        <TextBlock x:Name="TaskTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
-                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,14,0" VerticalAlignment="Center" />
-                        <TextBlock Text="TURN TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
-                        <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
-                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Copy output" Padding="10,4" FontSize="11" Click="CopyOutput_Click" />
-                    <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Clear" Padding="10,4" FontSize="11" Click="ClearOutput_Click" />
-                    <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Collapse all" Padding="10,4" FontSize="11" Click="CollapseAll_Click"
-                            ToolTip="Collapse every output section (Ctrl+Shift+E)" />
-                    <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="Expand all" Padding="10,4" FontSize="11" Click="ExpandAll_Click"
-                            ToolTip="Expand every output section (Ctrl+E)" />
-                </DockPanel>
-                <Grid Grid.Row="1">
-                    <ScrollViewer x:Name="OutputScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="OutputScroll_ScrollChanged">
-                        <StackPanel x:Name="OutputPanel" Margin="20,0,12,12" />
-                    </ScrollViewer>
-                    <!-- Emblem: an accent halo that breathes slowly (EmptyState_IsVisibleChanged) behind a lit disc. -->
-                    <StackPanel x:Name="EmptyState" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"
-                                IsVisibleChanged="EmptyState_IsVisibleChanged">
-                        <Grid Width="160" Height="160" HorizontalAlignment="Center">
-                            <Ellipse x:Name="EmblemGlow" Fill="{DynamicResource AccentGlow}" Opacity="0.6" RenderTransformOrigin="0.5,0.5">
-                                <Ellipse.RenderTransform><ScaleTransform x:Name="EmblemScale" /></Ellipse.RenderTransform>
-                            </Ellipse>
-                            <Ellipse Width="116" Height="116" Stroke="{DynamicResource Border}" StrokeThickness="1" />
-                            <Ellipse Width="84" Height="84" Fill="{DynamicResource Card}" Stroke="{DynamicResource AccentEdge}" StrokeThickness="1.5" />
-                            <TextBlock Text="◈" FontSize="38" Foreground="{DynamicResource AccentLight}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,0,0,3" />
-                        </Grid>
-                        <TextBlock Text="No output yet" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,6,0,6" />
-                        <TextBlock Text="Thinking, tool calls and responses appear here as the agents work." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
-                    </StackPanel>
-                    <!-- Shown (Reveal) when output arrives while the user has scrolled up; returns to following. -->
-                    <Button x:Name="JumpPill" Style="{StaticResource PrimaryButton}" Content="Jump to latest  ↓" FontSize="12" Padding="16,7"
-                            HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,16" Visibility="Collapsed" Opacity="0"
-                            ToolTip="Scroll to the newest output and keep following it" Click="JumpToLatest_Click" />
-                </Grid>
-
-                <!-- Execution log: anchored to the bottom of this column, expands upward -->
-                <Border Grid.Row="2" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Background="{DynamicResource Panel}">
-                    <DockPanel>
-                        <Grid DockPanel.Dock="Top">
-                            <ToggleButton x:Name="LogToggle" Style="{StaticResource BlockHeaderToggle}" Click="LogToggle_Click" Margin="8,0,0,0" HorizontalAlignment="Left"
-                                          ToolTip="Show or hide the execution log (Ctrl+L)">
-                                <StackPanel Orientation="Horizontal">
-                                    <TextBlock Text="EXECUTION LOG" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                                    <TextBlock x:Name="LogCount" Text="0" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" Margin="8,0,0,0" VerticalAlignment="Center" />
-                                </StackPanel>
-                            </ToggleButton>
-                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,0,14,0">
-                                <Button Style="{StaticResource GhostButton}" Content="Open logs" Padding="10,4" FontSize="11" Click="OpenLogs_Click"
-                                        ToolTip="The saved execution logs, one file per day (kept 14 days)" />
-                                <Button x:Name="CopyLogButton" Style="{StaticResource GhostButton}" Content="Copy full log" Padding="10,4" FontSize="11" Click="CopyLog_Click" />
-                            </StackPanel>
-                        </Grid>
-                        <TextBox x:Name="LogBox" Height="230" IsReadOnly="True" TextWrapping="NoWrap" FontFamily="Consolas" FontSize="12" Visibility="Collapsed"
-                                 Margin="14,0,14,12" Background="{DynamicResource AppBackground}"
-                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" />
-                    </DockPanel>
-                </Border>
-            </Grid>
             </Grid>
 
             <GridSplitter x:Name="SplitterBar" Grid.Column="2" Width="6" HorizontalAlignment="Stretch" ResizeDirection="Columns"

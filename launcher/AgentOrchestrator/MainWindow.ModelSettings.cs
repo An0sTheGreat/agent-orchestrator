@@ -1003,12 +1003,9 @@ public partial class MainWindow
         try
         {
             ShowView(chat: false);
-            ShowCodeRun(false);
             await Task.Delay(400);
-            var toggleBox = (Border)((StackPanel)CodeConversationToggle.Parent).Parent;
-            var header = (DockPanel)toggleBox.Parent;
-            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(toggleBox) + 1 ||
-                CodeContextRing.TranslatePoint(new Point(CodeContextRing.ActualWidth, 0), header).X > toggleBox.TranslatePoint(new Point(0, 0), header).X)
+            var header = (DockPanel)RunClocks.Parent; // no Conversation / Run output toggle: a run's output is in the conversation
+            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(RunClocks) + 1)
                 return false;
             _chatBusy = true;
             _turn = _code;
@@ -1030,7 +1027,6 @@ public partial class MainWindow
         {
             (_chatBusy, _turn) = (false, turn);
             RefreshChatInput();
-            ShowCodeRun(true);
             ShowView(chat: wasChat);
         }
     }

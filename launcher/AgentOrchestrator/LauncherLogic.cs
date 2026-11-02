@@ -30,7 +30,8 @@ internal static class LauncherLogic
         return null;
     }
 
-    public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, string apiKey, bool once)
+    // requestFile: a Code request (BuildCodeRequest) giving the run a Code turn's tools; the project stays folders[0].
+    public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, string apiKey, bool once, string requestFile = "")
     {
         var info = NewStartInfo(python, workflowRoot, apiKey);
         info.ArgumentList.Add("--project");
@@ -39,6 +40,11 @@ internal static class LauncherLogic
         info.ArgumentList.Add("--events");
         if (once)
             info.ArgumentList.Add("--once");
+        if (requestFile.Length > 0)
+        {
+            info.ArgumentList.Add("--request");
+            info.ArgumentList.Add(requestFile);
+        }
         return info;
     }
 
@@ -1713,8 +1719,11 @@ internal static class LauncherLogic
             throw new InvalidOperationException("Elapsed time formatting failed.");
         var root = FindWorkflowRoot() ?? throw new InvalidOperationException("Workflow root discovery failed.");
         var info = BuildStartInfo("python.exe", root, @"Y:\Example Project", "test-key", true);
-        if (!info.ArgumentList.Contains("--once") || !info.ArgumentList.Contains("--non-interactive"))
+        if (!info.ArgumentList.Contains("--once") || !info.ArgumentList.Contains("--non-interactive") || info.ArgumentList.Contains("--request"))
             throw new InvalidOperationException("Argument construction failed.");
+        var runArgs = BuildStartInfo("python.exe", root, @"Y:\Example Project", "k", false, @"Y:\run.json").ArgumentList;
+        if (runArgs.IndexOf("--request") < 0 || runArgs[runArgs.IndexOf("--request") + 1] != @"Y:\run.json")
+            throw new InvalidOperationException("A project run must pass its Code request.");
         if (info.Environment["UNSLOTH_API_KEY"] != "test-key")
             throw new InvalidOperationException("API key environment handling failed.");
 

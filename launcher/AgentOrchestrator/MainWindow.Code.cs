@@ -6,12 +6,11 @@ using System.Windows.Controls;
 namespace AgentOrchestrator;
 
 // Code view: a conversation with the lead (the Planner, the primary agent; it may delegate to the other workers) about a folder (`orchestrator.py --code`), whose tool calls read and edit
-// its files, beside the project run's output. Turns share the Chat plumbing (RunTurn); one turn of either kind at a time.
+// its files; a project run's output lands in the same conversation. Turns share the Chat plumbing (RunTurn); one turn of either kind at a time.
 public partial class MainWindow
 {
     private readonly List<LauncherLogic.CodeFolder> CodeExtraFolders = new(); // folders beyond the project the worker may use
     private bool _codeStartRequested; // the worker called start_project: the run starts once the turn succeeds
-    private bool _codeRun; // the Code view shows Run output rather than the conversation
 
     private RoleCard? CodeTarget() => CardFor("planner"); // the lead: it does the work and may delegate to the other workers
 
@@ -99,19 +98,6 @@ public partial class MainWindow
 
     // ---- view
 
-    private void ShowCodeRun(bool run)
-    {
-        _codeRun = run;
-        CodeConversationToggle.IsChecked = !run;
-        CodeRunToggle.IsChecked = run;
-        Reveal(WorkArea, run);
-        Reveal(CodeChat, !run);
-        if (!run && NavCode.IsChecked == true)
-            CodeInput.Focus();
-    }
-
-    private void CodeSubView_Click(object sender, RoutedEventArgs e) => ShowCodeRun(((FrameworkElement)sender).Tag as string == "run");
-
     // The header and empty state follow the project folder. The open conversation belongs to its folder: another folder
     // closes it (the next message there starts a new one). While a turn runs nothing changes; RunTurn calls this again
     // when the turn ends. Also called when the window is activated (PROJECT.md may have been added or removed outside).
@@ -194,7 +180,6 @@ public partial class MainWindow
         }
         if (ChooseWorker("Create PROJECT.md with a model", "Who should interview you about the project and write PROJECT.md?") is not { } role)
             return Task.FromResult(false);
-        ShowCodeRun(false);
         CodeInput.Text = InitProjectMessage;
         return SendCode(worker: role); // the chosen worker takes this first turn; later turns go to the lead
     }
@@ -292,7 +277,6 @@ public partial class MainWindow
         CloseCodeConversation();
         ProjectPath = folder;
         ShowView();
-        ShowCodeRun(false);
         if (!EnsureCodeConversation(SelectedProjectPath()))
             return;
         if (_settings.Presets.FirstOrDefault(p => p.Name.Equals("Main", StringComparison.OrdinalIgnoreCase)) is { } main)
@@ -345,7 +329,6 @@ public partial class MainWindow
             _settings.Save();
         }
         ShowView();
-        ShowCodeRun(false);
         RefreshSidebarList();
     }
 
@@ -499,6 +482,9 @@ public partial class MainWindow
         once.IsChecked = _settings.Once;
         once.Click += (_, _) => { _settings.Once = once.IsChecked; _settings.Save(); };
         menu.Items.Add(once);
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        menu.Items.Add(PresetItem("Open run logs", () => OpenLogs_Click(this, new RoutedEventArgs())));
+        menu.Items.Add(PresetItem("Copy run log", () => CopyLog_Click(this, new RoutedEventArgs())));
         return menu;
     }
 
@@ -630,7 +616,7 @@ public partial class MainWindow
             Toast("Project not started: initialization failed", "#FF667A");
             return;
         }
-        Start_Click(this, new RoutedEventArgs()); // switches the Code view to Run output once the run starts
+        Start_Click(this, new RoutedEventArgs()); // its output streams into this conversation
         if (_process is null) // refused (a declined restart, say) or failed to start: Start_Click set the run before its first await
             Toast("PROJECT.md and the workflow files are ready, but the run was not started", "#F7C873");
     }
