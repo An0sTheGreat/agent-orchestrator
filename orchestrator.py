@@ -763,15 +763,18 @@ def turn_images(request: dict[str, Any], text: str) -> None:
 
 
 def image_urls(paths: Any) -> list[str]:
-    """Data URLs of image files (absolute paths); a missing, unknown or oversized file is skipped."""
+    """Data URLs of image files (absolute paths); a missing, unknown, oversized or unreadable (locked) file is skipped."""
     urls = []
     for raw in paths or []:
         path = Path(str(raw))
         mime = IMAGE_TYPES.get(path.suffix.lower())
-        if not (path.is_absolute() and mime and path.is_file() and path.stat().st_size <= IMAGE_MAX_BYTES):
-            print(f"[images] skipped {raw}")
-            continue
-        urls.append(f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}")
+        try:
+            if path.is_absolute() and mime and path.is_file() and path.stat().st_size <= IMAGE_MAX_BYTES:
+                urls.append(f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}")
+                continue
+        except OSError:  # a steer's image read on the stdin reader thread: raising would end it
+            pass
+        print(f"[images] skipped {raw}")
     return urls
 
 

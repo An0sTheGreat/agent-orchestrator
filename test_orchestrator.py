@@ -3679,6 +3679,17 @@ class PiSteerTests(unittest.TestCase):
             keys = self.steered(steps, {"steer": "look", "images": [str(shot)], "key": "k1"}, {"steer": "plain", "key": "k2"})
         self.assertEqual(keys, ["k2"])
 
+    def test_a_steer_with_an_unreadable_image_goes_without_it(self):
+        # a locked file must not end the stdin reader (later answers would never be read) or fail the turn
+        shot = self.root / "shot.png"
+        shot.write_bytes(b"png")
+        steps = [["take", "prompt"], ["take", "steer"], ["take", "steer"], ["user", None], ["user", None], ["user", None],
+                 ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
+        locked = lambda path: (_ for _ in ()).throw(PermissionError("locked"))
+        with patch.object(orchestrator.Path, "read_bytes", locked), contextlib.redirect_stdout(io.StringIO()):
+            keys = self.steered(steps, {"steer": "look", "images": [str(shot)], "key": "k1"}, {"steer": "plain", "key": "k2"})
+        self.assertEqual(keys, ["k1", "k2"])
+
     def test_the_turn_reads_pi_while_a_big_steer_is_still_being_written(self):
         # Pi writes a lot before it reads its stdin again: the engine must go on reading it (its get_messages waits its turn)
         steps = [["take", "prompt"], ["user", None], ["say", {"text": "Done."}], ["pad", 1_000_000], ["ctx", None], ["settle", None]]

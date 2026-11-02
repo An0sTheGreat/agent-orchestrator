@@ -653,7 +653,7 @@ public partial class MainWindow
             {
                 await Task.Run(() => { asker.StandardInput.WriteLine(line); asker.StandardInput.Flush(); });
             }
-            catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+            catch (Exception) { } // the turn already ended (or any failure): a faulted write would stop every later one
         }
     }
 
