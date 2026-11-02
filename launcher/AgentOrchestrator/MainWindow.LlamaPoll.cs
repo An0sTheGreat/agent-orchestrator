@@ -40,18 +40,17 @@ public partial class MainWindow
             _llamaLast = (id, processed, decoded, now);
             card.SetLive(prompt, decoded, decodeTps, promptTps);
             if (decoded == 0 && prompt > 0)
-            {
                 card.Status = $"Reading prompt {processed:N0} / {prompt:N0}";
-                if (_chatBusy && _reply?.Status.IsVisible == true)
-                    SetChatStatus($"{ChatName(card, card.Role)} is reading the conversation: {processed:N0} / {prompt:N0} tokens…");
-            }
+            if (prompt > 0 && _chatBusy && _reply?.Status.Visibility == System.Windows.Visibility.Visible)
+                SetChatStatus(LauncherLogic.LlamaProgressLine(ChatName(card, card.Role), prompt, processed, decoded));
             return;
         }
 
         static long Number(JsonElement el, string name) => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt64() : 0;
     }
 
-    // --ui-smoke: a fake llama-server's /slots, read twice: the card shows the prompt progress and the reading speed.
+    // --ui-smoke: a fake llama-server's /slots, read three times: the card shows the prompt progress and the reading speed,
+    // and an empty reply's status line follows the reading, then the writing (a quiet call such as /compact's summary).
     private async Task<bool> LlamaPollSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: llama poll: {what}"); return false; }
@@ -72,14 +71,15 @@ public partial class MainWindow
             while (listener.IsListening)
             {
                 var context = await listener.GetContextAsync();
-                processed += 500;
+                processed = Math.Min(processed + 500, 2000);
+                var decoded = processed < 2000 ? 0 : 300;
                 var body = System.Text.Encoding.UTF8.GetBytes(
-                    $$"""[{"id":0,"is_processing":true,"n_prompt_tokens":2000,"n_prompt_tokens_processed":{{processed}},"next_token":[{"n_decoded":0}]}]""");
+                    $$"""[{"id":0,"is_processing":true,"n_prompt_tokens":2000,"n_prompt_tokens_processed":{{processed}},"next_token":[{"n_decoded":{{decoded}}}]}]""");
                 await context.Response.OutputStream.WriteAsync(body);
                 context.Response.Close();
             }
         });
-        var (state, chat, runtime, last) = (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast);
+        var (state, chat, runtime, last, reply, busy) = (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, _reply, _chatBusy);
         var card = CardFor("planner")!;
         var status = card.Status;
         try
@@ -88,17 +88,23 @@ public partial class MainWindow
             File.WriteAllText(_llamaStateFile, $$"""{"pid": 1, "port": {{port}}}""");
             _chatProcess = System.Diagnostics.Process.GetCurrentProcess();
             _llamaLast = null;
+            (_reply, _chatBusy) = (new ChatReply { Status = new System.Windows.Controls.TextBlock() }, true);
             await PollLlamaAsync(card);
             await Task.Delay(200);
             await PollLlamaAsync(card);
-            if (card.Status != "Reading prompt 1,000 / 2,000" || !card.TokensPerSec.StartsWith("Prompt:"))
-                return Fail($"{card.Status} | {card.TokensPerSec}");
+            if (card.Status != "Reading prompt 1,000 / 2,000" || !card.TokensPerSec.StartsWith("Prompt:") ||
+                !_reply.Status.Text.EndsWith("is reading the conversation: 1,000 / 2,000 tokens…"))
+                return Fail($"{card.Status} | {card.TokensPerSec} | {_reply.Status.Text}");
+            await PollLlamaAsync(card);
+            await PollLlamaAsync(card);
+            if (!_reply.Status.Text.EndsWith("is writing: 300 tokens so far…"))
+                return Fail(_reply.Status.Text);
             return true;
         }
         finally
         {
             listener.Stop();
-            (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, card.Status) = (state, chat, runtime, last, status);
+            (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, card.Status, _reply, _chatBusy) = (state, chat, runtime, last, status, reply, busy);
         }
     }
 

@@ -53,6 +53,12 @@ internal static class LauncherLogic
     public sealed record ChatMessage(string Role, string Content, DateTimeOffset? Time = null); // Time: when it was sent / completed (null in old saved chats); never sent to the engine
 
     // The stats under a model call's output: "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" (no tok/s when unknown).
+    // The chat status line while llama-server works and nothing is on screen yet: reading the prompt, then writing (a quiet
+    // call such as /compact's summary shows nothing until it is done).
+    public static string LlamaProgressLine(string name, long prompt, long processed, long decoded) => decoded == 0
+        ? $"{name} is reading the conversation: {processed:N0} / {prompt:N0} tokens…"
+        : $"{name} is writing: {decoded:N0} tokens so far…";
+
     public static string StatsLine(string name, double tps, long generated, long prompt)
     {
         var parts = new List<string>();
@@ -1748,7 +1754,10 @@ internal static class LauncherLogic
         if (BuildChatRequest("implementer", timed).Contains("time", StringComparison.OrdinalIgnoreCase) ||
             BuildCodeRequest("chat", "implementer", timed, @"Y:\P", []).Contains("time", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("A message time reached the engine request.");
-        if (StatsLine("Planner", 42.14, 1234, 5678) != "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" || StatsLine("", 0, 5, 7) != "5 generated · 7 prompt" ||
+        if (LlamaProgressLine("Main", 4415, 0, 0) != "Main is reading the conversation: 0 / 4,415 tokens…" ||
+            LlamaProgressLine("Main", 4415, 4415, 1234) != "Main is writing: 1,234 tokens so far…")
+            throw new InvalidOperationException("The llama progress line failed.");
+        if (StatsLine("Planner", 42.14, 1234, 5678) !="Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" || StatsLine("", 0, 5, 7) != "5 generated · 7 prompt" ||
             TotalsLine(12345, 45600) != "Turn: 12.3k tokens · Task: 45.6k tokens" || TotalsLine(950, 1_200_000) != "Turn: 950 tokens · Task: 1.2M tokens" ||
             LiveLine("Planner", 37.5, 1204) != "Planner · 37.5 tok/s · 1,204 tokens" || LiveLine("Planner", 0, 1) != "Planner · 1 tokens")
             throw new InvalidOperationException("Stats formatting failed.");
