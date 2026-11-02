@@ -826,7 +826,7 @@ public partial class MainWindow
     {
         ["Model"] = ["gguf_variant", "max_seq_length"],
         ["Sampling"] = ["temperature", "top_p", "top_k", "min_p", "repetition_penalty", "presence_penalty", "frequency_penalty", "seed", "enable_thinking", "reasoning_effort"],
-        ["Memory"] = ["cache_type_kv", "gpu_memory_mode", "gpu_layers", "n_cpu_moe", "disable_vision", "ctx_checkpoints", "cache_ram", "cpu_fallback"],
+        ["Memory"] = ["cache_type_kv", "gpu_memory_mode", "gpu_layers", "n_cpu_moe", "disable_vision", "mmproj_offload", "ctx_checkpoints", "cache_ram", "cpu_fallback"],
         ["Speed"] = ["speculative_type", "spec_draft_n_max", "spec_draft_cache_type", "n_parallel", "n_batch", "n_ubatch", "tensor_parallel", "tensor_split", "gpu_ids"],
         ["Output"] = ["max_tokens", "stop", "reasoning_budget", "reasoning_budget_message", "chat_template_override"],
         ["Server"] = ["load_mode", "llama_extra_args"],

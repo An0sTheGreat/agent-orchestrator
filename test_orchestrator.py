@@ -4618,6 +4618,8 @@ class LlamaCppTests(unittest.TestCase):
             (folder / name).write_bytes(b"x" * size)
         args = orchestrator.llama_args(model, {"model_path": self.PATH}, 8899)
         self.assertEqual(args[args.index("--mmproj") + 1], str(folder / "mmproj-F16.gguf"))  # the smaller one
+        self.assertIn("--no-mmproj-offload", args)  # on the CPU unless Vision on GPU
+        self.assertNotIn("--no-mmproj-offload", orchestrator.llama_args(model, {"model_path": self.PATH, "mmproj_offload": True}, 8899))
         self.assertNotIn("--mmproj", orchestrator.llama_args(model, {"model_path": self.PATH, "disable_vision": "on"}, 8899))
 
     def test_server_args(self):

@@ -1036,6 +1036,10 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
         args += ["--reasoning-budget", "0"]
     if (projector := vision_projector(model_file)) and str(auto_load.get("disable_vision") or "").lower() not in ("on", "true", "1"):
         args += ["--mmproj", str(projector)]  # the model can see the turn's images
+        if str(auto_load.get("mmproj_offload") or "").lower() not in ("on", "true", "1"):
+            # the projector stays on the CPU: ~1 GB of VRAM left to the model (a full GPU spills into shared memory and
+            # crawls); only an image's encoding is slower, once per image. "Vision on GPU" (mmproj_offload) moves it back.
+            args.append("--no-mmproj-offload")
     return args + [str(arg) for arg in auto_load.get("llama_extra_args") or []]
 
 

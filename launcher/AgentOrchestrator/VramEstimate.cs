@@ -71,7 +71,7 @@ internal static class VramEstimate
         var vocab = Num(meta, "tokenizer.ggml.tokens.count") ?? 32000;
         var compute = ubatch * (vocab + embd * 8) * 4 + Overhead;
 
-        var vision = options.GetValueOrDefault("disable_vision") == "on" ? 0 : visionBytes;
+        var vision = options.GetValueOrDefault("disable_vision") == "on" || options.GetValueOrDefault("mmproj_offload") != "on" ? 0 : visionBytes; // on the CPU unless Vision on GPU
         return new Result((long)Math.Max(0, weights), (long)kv, (long)compute, vision);
     }
 
@@ -119,7 +119,8 @@ internal static class VramEstimate
         o["gpu_layers"] = "16";
         o["disable_vision"] = "on";
         var half = Estimate(meta, 5L << 30, 1L << 30, o)!;
-        if (half.Weights != 5L << 29 || half.Kv != (long)(r.Kv / 2 * (34 / 32.0) / 2) || half.Vision != 0 || Estimate(meta, 1, 1L << 30, new Dictionary<string, string>())!.Vision != 1L << 30)
+        if (half.Weights != 5L << 29 || half.Kv != (long)(r.Kv / 2 * (34 / 32.0) / 2) || half.Vision != 0 || Estimate(meta, 1, 1L << 30, new Dictionary<string, string> { ["mmproj_offload"] = "on" })!.Vision != 1L << 30 ||
+            Estimate(meta, 1, 1L << 30, new Dictionary<string, string>())!.Vision != 0) // on the CPU by default
             throw new InvalidOperationException("VramEstimate options");
         // Empty context: the model's own, capped at ContextCap.
         if (Estimate(meta, 0, 0, new Dictionary<string, string>())!.Kv != 32768L * 32 * 8 * 256 * 2)
