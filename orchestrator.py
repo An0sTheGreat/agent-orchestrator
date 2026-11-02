@@ -775,10 +775,15 @@ def image_urls(paths: Any) -> list[str]:
     return urls
 
 
+def vision_off(config: dict[str, Any], role: str) -> bool:
+    """Whether the role's model settings switch vision off."""
+    return str((getattr(role_settings(config, role)[0], "auto_load", None) or {}).get("disable_vision") or "").lower() in ("on", "true", "1")
+
+
 def require_vision(config: dict[str, Any], role: str) -> None:
     """Refuses a turn whose images the role's model will not see because its settings switch vision off (the server would
     answer with an opaque "image input is not supported")."""
-    if TURN_IMAGES[1] and str((getattr(role_settings(config, role)[0], "auto_load", None) or {}).get("disable_vision") or "").lower() in ("on", "true", "1"):
+    if TURN_IMAGES[1] and vision_off(config, role):
         raise WorkflowError(f"{display_name(config, role)} can't read the attached images: Disable vision is on in its model settings "
                             "(Memory). Turn it off and save (the vision projector takes extra VRAM), or send the message without images.")
 
@@ -3716,7 +3721,8 @@ def launcher_call(event: str, **data: Any) -> dict[str, Any] | None:
 
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
-STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn); None: a steer is dropped
+STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
+STEERS_HELD: list[dict[str, Any]] = []
 
 
 def stdin_lines() -> queue.Queue:
@@ -3736,13 +3742,28 @@ def stdin_lines() -> queue.Queue:
                         message = None
                     if not (isinstance(message, dict) and "steer" in message):
                         lines.put(line)
-                    elif handler := STEER_HANDLER:
-                        handler(message)
+                        continue
+                    with STDIN_LOCK:  # steer_to hands the held ones over under it: the launcher's order is kept
+                        if STEER_HANDLER:
+                            STEER_HANDLER(message)
+                        else:
+                            STEERS_HELD.append(message)
                 lines.put(None)
 
             threading.Thread(target=read, daemon=True).start()
             STDIN_READER = (stream, lines)
         return STDIN_READER[1]
+
+
+def steer_to(handler: Any) -> None:
+    """Where the launcher's steers go from now on, those that came before first; None: nowhere, and the held ones are
+    dropped (the launcher sends an undelivered steer as the next turn)."""
+    global STEER_HANDLER
+    with STDIN_LOCK:
+        STEER_HANDLER, held = handler, STEERS_HELD[:] if handler else []
+        STEERS_HELD.clear()
+        for message in held:
+            handler(message)
 
 
 BROWSER_TOOL = function_tool(
@@ -4374,7 +4395,6 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     Pi session per conversation under the Pi home ("pi_home", default a temp folder), so later turns see earlier tool
     results; a new session gets the earlier messages as text once. Pi's events become the usual @@AO events. A steer from
     the launcher (stdin_lines) goes to Pi while the prompt runs; "steered" reports its delivery (Pi's next user message)."""
-    global STEER_HANDLER
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     n_ctx = client.context_size() or int((client.auto_load or {}).get("max_seq_length") or 32768)
@@ -4440,32 +4460,37 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     answer, error, started, first_out, args_by_call = "", "", time.time(), None, {}
     stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
     compacted, settled, measured = False, False, []  # measured: (prompt, completion) of calls whose context is still to come
-    write_lock, steers, prompted = threading.Lock(), [], False  # steers: the launcher's keys of those Pi has not delivered yet
+    outbox, steers, prompted, blind = queue.Queue(), [], False, vision_off(config, role)  # steers: the launcher's keys Pi has not delivered yet
 
-    def send(command: dict[str, Any], key: str | None = None) -> None:
-        with write_lock:  # the stdin reader's thread sends steers
-            if key is not None:
-                steers.append(key)
-            process.stdin.write((json.dumps(command) + "\n").encode("utf-8"))
-            process.stdin.flush()
+    def write_out() -> None:
+        """Pi's stdin has this one writer, so the main thread (the only reader of Pi's stdout) never waits on a write: a big
+        steer Pi has not read yet would hold it while Pi blocks writing its stdout. None closes Pi's stdin."""
+        try:
+            while (command := outbox.get()) is not None:
+                process.stdin.write((json.dumps(command) + "\n").encode("utf-8"))
+                process.stdin.flush()
+            process.stdin.close()
+        except (OSError, ValueError):
+            pass  # Pi has exited: the launcher sends an undelivered steer as the next turn
+
+    threading.Thread(target=write_out, daemon=True).start()
 
     def steer(line: dict[str, Any]) -> None:
-        """The launcher's Send now: Pi delivers it after the current tool calls, before the next model call."""
-        if settled or not str(line.get("steer") or "").strip():
+        """The launcher's Send now: Pi delivers it after the current tool calls, before the next model call. One with images
+        the role does not see is dropped: the launcher sends it as the next turn, which require_vision refuses."""
+        if settled or not str(line.get("steer") or "").strip() or (line.get("images") and blind):
             return
         shown = pi_images(image_urls(line.get("images")))
-        try:
-            send({"type": "steer", "message": str(line["steer"]), **({"images": shown} if shown else {})}, str(line.get("key") or ""))
-        except (OSError, ValueError):
-            pass  # Pi has exited: the launcher sends it as the next turn
+        steers.append(str(line.get("key") or ""))  # (under STDIN_LOCK: the keys keep the order Pi gets them in)
+        outbox.put({"type": "steer", "message": str(line["steer"]), **({"images": shown} if shown else {})})
 
     try:
         command_line = ({"id": "turn", "type": "compact", **({"customInstructions": focus} if focus else {})} if focus is not None else
                         {"id": "turn", "type": "prompt", "message": prompt, **({"images": images} if images else {})})
-        send(command_line)
+        outbox.put(command_line)
         if EVENTS and focus is None:
             stdin_lines()
-            STEER_HANDLER = steer
+            steer_to(steer)
         for raw in process.stdout:  # JSONL split on LF only
             try:
                 event = json.loads(raw.decode("utf-8").rstrip("\r\n"))
@@ -4503,10 +4528,10 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
                 started, first_out = time.time(), None
             elif kind == "message_end" and (event.get("message") or {}).get("role") == "user":  # the prompt, then each steer
-                with write_lock:
-                    if prompted and steers:
-                        emit("steered", role=role, key=steers.pop(0))
-                    prompted = True
+                if prompted and steers:
+                    emit("steered", role=role, key=steers.pop(0))
+                    answer = ""  # a reply before the steer does not answer it: the model's next one does, or fails
+                prompted = True
             elif kind == "message_update":
                 update = event.get("assistantMessageEvent") or {}
                 if first_out is None and update.get("type") in ("text_delta", "thinking_delta", "toolcall_delta"):
@@ -4532,7 +4557,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 emit("usage", role=role, prompt=prompt_tokens, completion=completion, tps=round(completion / max(generating, 1e-3), 2),
                      prompt_tps=round(prompt_tokens / reading, 1) if first_out and reading > 0.05 else None)
                 measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
-                send({"id": "ctx", "type": "get_messages"})
+                outbox.put({"id": "ctx", "type": "get_messages"})
                 if message.get("stopReason") in ("error", "aborted"):
                     error = str(message.get("errorMessage") or message.get("stopReason"))
                 elif not calls:
@@ -4558,10 +4583,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
         else:
             raise WorkflowError(f"Pi exited before the reply finished (exit code {process.poll()})")
     finally:
-        STEER_HANDLER = None
+        steer_to(None)
+        outbox.put(None)  # Pi's stdin closes after what is queued
         try:
-            with write_lock:
-                process.stdin.close()
             process.wait(timeout=10)
         except (OSError, subprocess.TimeoutExpired):
             process.kill()
@@ -4657,6 +4681,8 @@ def _run() -> int:
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
     CHAT_MODE = args.chat is not None or args.code is not None
+    if EVENTS and args.code:
+        stdin_lines()  # read from the start: a steer sent while the model loads never holds the launcher's write
 
     project_root = args.project.resolve()
     if not project_root.is_dir():

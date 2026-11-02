@@ -26,6 +26,9 @@ public partial class MainWindow
         ("compact", "Summarize the conversation now (add what to keep: /compact keep the API decisions)"),
     };
 
+    // A message that is one of those commands (as the engine reads it: "/name", then anything after a space).
+    private static bool IsCommand(string text) => Commands.Any(c => Regex.IsMatch(text, $@"\A\s*/{c.Name}(\s|\z)", RegexOptions.IgnoreCase));
+
     // The matching commands and skills for the box's text, with what each does; empty when it is not a lone "/name" or
     // "$name" in progress.
     private List<(string Name, string Help)> SkillMatches(string text)

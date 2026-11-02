@@ -637,6 +637,26 @@ public partial class MainWindow
     // Runs a turn without awaiting it; a fault reaches the dispatcher (and fails --ui-smoke) instead of vanishing in the Task.
     private static async void Forget(Task task) => await task;
 
+    private Task _toTurn = Task.CompletedTask; // the lines written to a turn's stdin, one after another
+
+    // One line to the stdin of the process that asked (a turn's or a run's), off the UI thread: a long steer waits until the
+    // engine reads it, which must not freeze the window. Every writer comes through here, so lines never interleave.
+    private void ToTurn(Process? asker, string line)
+    {
+        if (asker is null)
+            return;
+        _toTurn = Write(_toTurn);
+        async Task Write(Task before)
+        {
+            await before;
+            try
+            {
+                await Task.Run(() => { asker.StandardInput.WriteLine(line); asker.StandardInput.Flush(); });
+            }
+            catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+        }
+    }
+
     // Deletes the turn's request file and the temp folder (never a real project). Idempotent: the app closing mid-reply
     // and the turn's own cleanup may both run it.
     private void CleanupChatTemp()

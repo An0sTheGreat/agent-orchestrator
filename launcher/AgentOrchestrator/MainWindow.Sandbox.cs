@@ -56,14 +56,8 @@ public partial class MainWindow
             allow = answer is "allow" or "similar";
             Log($"Sandbox: {(allow ? "allowed" : "denied")} {kind}{(answer == "similar" ? $" (and similar: {key})" : "")} for: {detail.Split('\n').LastOrDefault()}");
         }
-        try
-        {
-            // the process that asked: a chat/Code turn's, else a project run's (one of the two runs at a time)
-            var asker = _chatProcess ?? _process;
-            asker?.StandardInput.WriteLine(JsonSerializer.Serialize(new { id = Str(ev, "id"), allow }));
-            asker?.StandardInput.Flush();
-        }
-        catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+        // the process that asked: a chat/Code turn's, else a project run's (one of the two runs at a time)
+        ToTurn(_chatProcess ?? _process, JsonSerializer.Serialize(new { id = Str(ev, "id"), allow }));
     }
 
     private void InitSandbox()

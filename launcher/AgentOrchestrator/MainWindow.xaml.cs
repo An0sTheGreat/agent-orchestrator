@@ -3096,6 +3096,7 @@ public partial class MainWindow : Window
     // --ui-smoke, steering: while a Pi Code turn runs, a queued Code message's Send now writes it to the turn's stdin (a real
     // child process stands in for orchestrator.py) and its row shows Steering…; the "steered" event takes it out of the queue
     // into the conversation (user, assistant, user, assistant in the history); one never delivered is queued again at the end.
+    // A command (/compact) has no Send now.
     private async Task<bool> SteerSmoke()
     {
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
@@ -3114,9 +3115,9 @@ public partial class MainWindow : Window
         {
             _chatProcess = child;
             StartTurn(_code, "Fix it", "planner");
-            _codeQueue.AddRange([new("Also this", []), new("And that", [])]);
+            _codeQueue.AddRange([new("Also this", []), new("And that", []), new("/compact keep it", [])]);
             RefreshQueue(_code);
-            if (SendNow(0) is not { IsEnabled: true } now || SendNow(1) is null)
+            if (SendNow(0) is not { IsEnabled: true } now || SendNow(1) is null || SendNow(2) is not null) // a command is no message
                 return Fail();
             async Task<string?> Written()
             {
@@ -3132,14 +3133,14 @@ public partial class MainWindow : Window
             _lines.Enqueue(Ev($$"""{"e":"steered","role":"planner","key":"{{key}}"}"""));
             _lines.Enqueue(Ev("""{"e":"code_reply","role":"planner","text":"Both done"}"""));
             DrainLines();
-            if (_codeQueue.Select(q => q.Text).SequenceEqual(["And that"]) is false || CodeQueueList.Children.Count != 1 || Label(0) != "Queued")
+            if (_codeQueue.Select(q => q.Text).SequenceEqual(["And that", "/compact keep it"]) is false || CodeQueueList.Children.Count != 2 || Label(0) != "Queued")
                 return Fail();
             SendNow(0)!.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); // the engine never delivers this one
             if (await Written() is null || Label(0) != "Steering…")
                 return Fail();
             FinishChatTurn(0, false, null);
             if (_code.History.Select(m => (m.Role, m.Content)).SequenceEqual([("user", "Fix it"), ("assistant", SteeredReply), ("user", "Also this"),
-                    ("assistant", "Both done")]) is false || _codeQueue.Count != 1 || Label(0) != "Queued" || SendNow(0) is not null)
+                    ("assistant", "Both done")]) is false || _codeQueue.Count != 2 || Label(0) != "Queued" || SendNow(0) is not null)
                 return Fail();
         }
         finally

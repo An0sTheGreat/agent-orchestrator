@@ -368,12 +368,7 @@ public partial class MainWindow
         {
             result = $"ERROR: the browser failed: {e.Message}";
         }
-        try
-        {
-            asker?.StandardInput.WriteLine(JsonSerializer.Serialize(new { id, result }));
-            asker?.StandardInput.Flush();
-        }
-        catch (Exception e) when (e is IOException or InvalidOperationException) { } // the turn already ended
+        ToTurn(asker, JsonSerializer.Serialize(new { id, result }));
         Task<string> Report() =>
             _tab?.Web.CoreWebView2 is { } core ? PageReport(_tab, core) : Task.FromResult(BrowserMessage.IsVisible ? $"ERROR: {BrowserMessage.Text}" : "ERROR: the browser has no page yet");
     }

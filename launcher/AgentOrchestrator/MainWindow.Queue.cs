@@ -1,4 +1,3 @@
-using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -75,7 +74,7 @@ public partial class MainWindow
             DockPanel.SetDock(edit, Dock.Right);
             DockPanel.SetDock(label, Dock.Left);
             var dock = new DockPanel { Children = { remove, edit } };
-            if (c.IsCode && _chatBusy && _turnSteers)
+            if (c.IsCode && _chatBusy && _turnSteers && !IsCommand(item.Text)) // a command is a turn of its own, not a message
             {
                 var now = new Button { Content = "Send now", Padding = new Thickness(6, 0, 6, 0), FontSize = 11, IsEnabled = !steering,
                     ToolTip = "Send into the running reply: the model reads it after its current step", Tag = "SteerQueued" };
@@ -103,12 +102,7 @@ public partial class MainWindow
             return;
         var key = Guid.NewGuid().ToString("N");
         var text = ComposeMessage(_code, item.Text, item.Attachments);
-        try
-        {
-            process.StandardInput.WriteLine(JsonSerializer.Serialize(new { steer = text, images = _turnImages, key }));
-            process.StandardInput.Flush();
-        }
-        catch (Exception e) when (e is IOException or InvalidOperationException) { return; } // the turn already ended
+        ToTurn(process, JsonSerializer.Serialize(new { steer = text, images = _turnImages, key })); // a failed write: the turn ended, which reverts the row
         _steering[key] = (item, text);
         RefreshQueue(_code);
     }

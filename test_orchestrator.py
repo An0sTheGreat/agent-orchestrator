@@ -3588,6 +3588,102 @@ class PiEngineTests(unittest.TestCase):
         self.assertIn("we use plain JS", user)
 
 
+# A stand-in for Pi in RPC mode that plays FAKE_PI_STEPS (JSON [step, arg] pairs): "take" waits for the engine's next
+# command of a type (others wait their turn), "user" ends a user message (the prompt, then each delivered steer), "say"
+# ends an assistant message (text, or an error), "ctx" answers get_messages, "pad" writes that many bytes of other events,
+# "settle" ends the run. It exits after 10 s, so a hang fails the test instead.
+FAKE_PI = r"""
+import json, os, sys, threading
+timer = threading.Timer(10, os._exit, [3])
+timer.daemon = True
+timer.start()
+held = []
+def out(event):
+    sys.stdout.buffer.write((json.dumps(event) + "\n").encode())
+    sys.stdout.buffer.flush()
+def take(kind):
+    for command in held:
+        if command["type"] == kind:
+            return held.remove(command)
+    while line := sys.stdin.buffer.readline():
+        command = json.loads(line)
+        if command["type"] == kind:
+            return
+        held.append(command)
+    os._exit(4)
+for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
+    if step == "take":
+        take(arg)
+    elif step == "user":
+        out({"type": "message_end", "message": {"role": "user", "content": []}})
+    elif step == "say":
+        out({"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": arg.get("text", "")}],
+                                                "stopReason": "error" if arg.get("error") else "stop", "errorMessage": arg.get("error"), "usage": {}}})
+    elif step == "ctx":
+        take("get_messages")
+        out({"type": "response", "command": "get_messages", "success": True, "data": {"messages": []}})
+    elif step == "pad":
+        for _ in range(arg // 1000):
+            out({"type": "padding", "text": "x" * 1000})
+    elif step == "settle":
+        out({"type": "agent_settled"})
+"""
+
+
+class PiSteerTests(unittest.TestCase):
+    """Steering a Pi Code turn, against the scripted stand-in for Pi (FAKE_PI): the launcher's steers reach Pi in order, and
+    only those Pi delivered count."""
+
+    setUp = CodeTests.setUp
+    turn = PiEngineTests.turn
+
+    def steered(self, steps, *steers):
+        """Runs a turn whose launcher sends `steers` at once (before the engine is ready for them); returns its steered keys."""
+        script = self.cfg / "fake_pi.py"
+        script.write_text(FAKE_PI, encoding="utf-8")
+        read, write = os.pipe()
+        stdin, launcher = os.fdopen(read, encoding="utf-8"), os.fdopen(write, "w", encoding="utf-8")
+        self.addCleanup(stdin.close)
+
+        def send_now():
+            with launcher:
+                for steer in steers:
+                    launcher.write(json.dumps(steer) + "\n")
+
+        threading.Thread(target=send_now, daemon=True).start()  # (a big steer waits for the engine's reader)
+        with patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator, "pi_command", lambda: [sys.executable, str(script)]), \
+                patch.dict(os.environ, {"FAKE_PI_STEPS": json.dumps(steps)}):
+            code, events, _ = self.turn([], [{"role": "user", "content": "look around"}])
+        self.assertEqual(code, 0)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+        return [d["key"] for e, d in events if e == "steered"]
+
+    def test_steers_go_to_pi_in_order_and_count_once_pi_delivers_them(self):
+        # all three reach Pi before its prompt's user message ends; Pi delivers two, so the third stays the launcher's
+        steps = [["take", "prompt"], ["take", "steer"], ["take", "steer"], ["take", "steer"], ["user", None], ["user", None],
+                 ["user", None], ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
+        self.assertEqual(self.steered(steps, *({"steer": f"note {k}", "key": k} for k in ("k1", "k2", "k3"))), ["k1", "k2"])
+
+    def test_a_reply_before_a_delivered_steer_is_not_the_answer(self):
+        steps = [["take", "prompt"], ["user", None], ["say", {"text": "Done."}], ["ctx", None], ["take", "steer"], ["user", None],
+                 ["say", {"error": "the model failed"}], ["ctx", None], ["settle", None]]
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "the model failed"):
+            self.steered(steps, {"steer": "and the docs", "key": "k1"})
+
+    def test_a_steer_with_images_the_role_cannot_see_is_not_sent(self):
+        shot = self.root / "shot.png"
+        shot.write_bytes(b"png")
+        steps = [["take", "prompt"], ["take", "steer"], ["user", None], ["user", None], ["say", {"text": "Done."}], ["ctx", None],
+                 ["settle", None]]
+        with patch.object(orchestrator, "vision_off", lambda config, role: True):
+            keys = self.steered(steps, {"steer": "look", "images": [str(shot)], "key": "k1"}, {"steer": "plain", "key": "k2"})
+        self.assertEqual(keys, ["k2"])
+
+    def test_the_turn_reads_pi_while_a_big_steer_is_still_being_written(self):
+        # Pi writes a lot before it reads its stdin again: the engine must go on reading it (its get_messages waits its turn)
+        steps = [["take", "prompt"], ["user", None], ["say", {"text": "Done."}], ["pad", 1_000_000], ["ctx", None], ["settle", None]]
+        self.assertEqual(self.steered(steps, {"steer": "x" * 1_000_000, "key": "k1"}), [])
+
 class LeadTests(unittest.TestCase):
     """A Code chat turn's lead agent (planner): todo, run_checks and delegate to fresh implementer/reviewer sub-agents."""
 
