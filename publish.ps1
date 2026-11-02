@@ -4,7 +4,7 @@ if (Get-Process 'Agent Orchestrator' -ErrorAction SilentlyContinue) {
     Write-Error 'Close Agent Orchestrator first: a running exe cannot be overwritten.'
     exit 1
 }
-dotnet publish "$PSScriptRoot\launcher\AgentOrchestrator\AgentOrchestrator.csproj" -c Release -r win-x64 --self-contained true --no-restore `
+dotnet publish "$PSScriptRoot\launcher\AgentOrchestrator\AgentOrchestrator.csproj" -c Release -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o "$PSScriptRoot\dist"
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $exe = "$PSScriptRoot\dist\Agent Orchestrator.exe"
