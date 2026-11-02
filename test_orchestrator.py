@@ -2943,6 +2943,28 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(results[3], ("start_project", "ERROR: tool 'start_project' is unavailable"))
         self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_reply"])  # no code_start: no run
 
+    def test_start_project_skill_starts_the_run_only_when_the_user_invokes_it(self):
+        # The bundled start-project skill is always listed; start_project is the lead's only on a turn whose latest user
+        # message invokes it, needs PROJECT.md, and emits code_start (the launcher starts the run after the turn).
+        msgs = [*self.MSGS, {"role": "assistant", "content": "Ready."}, {"role": "user", "content": "/start-project"}]
+        replies = {"planner": [tool_call("start_project"), "PROJECT.md is missing."]}
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, replies)
+        self.assertIn("- start-project: ", log[0]["system"])
+        self.assertIn("start_project", {t["function"]["name"] for t in log[0]["tools"]})
+        self.assertIn("PROJECT.md is missing", [d["result"] for e, d in events if e == "tool"][0])
+        self.assertNotIn("code_start", [e for e, _ in events])
+        (self.root / "PROJECT.md").write_text(self.PROJECT, encoding="utf-8")
+        replies = {"planner": [tool_call("start_project"), "The run starts now."]}
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, replies)
+        self.assertEqual(code, 0)
+        self.assertEqual([e for e, _ in events if e.startswith("code_")], ["code_start", "code_reply"])
+        for later in ("start-project is next, but not yet", "Run the restart-projects script"):  # earlier invocation or another word
+            later_msgs = [*msgs, {"role": "assistant", "content": "Started."}, {"role": "user", "content": later}]
+            code, log, *_ = self.code({"action": "chat", "messages": later_msgs if "restart" in later else
+                                       [*self.MSGS, {"role": "user", "content": "start-project"}, {"role": "assistant", "content": "ok"},
+                                        {"role": "user", "content": "What now?"}]}, {"planner": ["ok"]})
+            self.assertNotIn("start_project", {t["function"]["name"] for t in log[0]["tools"]}, later)
+
     PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
 
     def test_write_project_writes_backs_up_and_rejects_empty(self):
@@ -2966,22 +2988,22 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(len(list(self.root.glob("PROJECT.backup-*.md"))), 1)
 
     def test_init_project_is_done_by_the_lead_itself(self):
-        # Scenario A/F: mid-conversation "init-project" with no skill switched on; the bundled skill is there, the lead
+        # Scenario A/F: mid-conversation "init-projMD" with no skill switched on; the bundled skill is there, the lead
         # loads it (and its template) and writes PROJECT.md itself; no worker, no run, nothing else written.
         msgs = [{"role": "user", "content": "I want a todo app in plain JS, saved in localStorage."},
-                {"role": "assistant", "content": "Noted: plain JS, localStorage."}, {"role": "user", "content": "init-project"}]
+                {"role": "assistant", "content": "Noted: plain JS, localStorage."}, {"role": "user", "content": "init-projMD"}]
         skill = lambda **a: {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "load_skill", "arguments": json.dumps(a)}}]}
-        replies = {"planner": [skill(name="init-project"), skill(name="init-project", file="assets/PROJECT.md"),
+        replies = {"planner": [skill(name="init-projMD"), skill(name="init-projMD", file="assets/PROJECT.md"),
                                tool_call("list_files"), tool_call("write_file", path="PROJECT.md", content=self.PROJECT),
                                "PROJECT.md is ready. Say when to begin work."]}
         code, log, events, _ = self.code({"action": "chat", "messages": msgs}, replies)
         self.assertEqual(code, 0)
         self.assertEqual({l["role"] for l in log}, {"planner"})
-        self.assertIn("- init-project: ", log[0]["system"])
+        self.assertIn("- init-projMD: ", log[0]["system"])
         self.assertNotIn("write_project_md", {t["function"]["name"] for t in log[0]["tools"]})
         self.assertIn("localStorage", log[0]["messages"][0]["content"])  # the lead has the discussion
         results = [d["result"] for e, d in events if e == "tool"]
-        self.assertIn("name: init-project", results[0])
+        self.assertIn("name: init-projMD", results[0])
         self.assertIn("## Project Goal", results[1])
         self.assertEqual(results[3], "OK")
         self.assertEqual((self.root / "PROJECT.md").read_text(encoding="utf-8"), self.PROJECT)
@@ -2990,10 +3012,10 @@ class CodeTests(unittest.TestCase):
         # a user skill folder of the same name replaces the bundled one instead of adding a second
         own = self.cfg / "my-init"  # matched by its SKILL.md name, not the folder
         own.mkdir()
-        (own / "SKILL.md").write_text("---\nname: init-project\ndescription: mine\n---\n", encoding="utf-8")
+        (own / "SKILL.md").write_text("---\nname: init-projMD\ndescription: mine\n---\n", encoding="utf-8")
         code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "skills": [str(own)]}, {"planner": ["ok"]})
-        self.assertIn("- init-project: mine", log[0]["system"])
-        self.assertEqual(log[0]["system"].count("- init-project:"), 1)
+        self.assertIn("- init-projMD: mine", log[0]["system"])
+        self.assertEqual(log[0]["system"].count("- init-projMD:"), 1)
 
     def test_chat_and_code_are_mutually_exclusive(self):
         err = io.StringIO()
@@ -3398,7 +3420,7 @@ class PiEngineTests(unittest.TestCase):
         system = first["messages"][0]["content"]
         self.assertIn("You are the primary coding agent", system)
         self.assertIn(f"{self.root} (write, project root)", system)
-        self.assertIn("init-project", system)  # the bundled skill, listed by Pi
+        self.assertIn("init-projMD", system)  # the bundled skill, listed by Pi
         self.assertIn(("done", {"role": "planner", "final": True}), events)
         # the next turn continues the same Pi session: earlier tool results are in the request, no text re-seeding
         msgs = [{"role": "user", "content": "add app.py"}, {"role": "assistant", "content": "Added app.py."},

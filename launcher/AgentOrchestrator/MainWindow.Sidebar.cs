@@ -45,7 +45,8 @@ public partial class MainWindow
             var items = Mine(group.Items);
             var header = SidebarHeader(ProjectName(group), group.Collapsed, items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
             Draggable(header, "project:" + group.Id);
-            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups)), group.Id,
+            header.Padding = new Thickness(8, 5, 56, 5); // room for + and …
+            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, view.Groups), () => NewChatInProject(group)), group.Id,
                 (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, group.Id) : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
             if (!group.Collapsed)
                 for (var i = 0; i < items.Count; i++)
@@ -168,6 +169,28 @@ public partial class MainWindow
             NewCodeConversation();
     }
 
+    // A project header's "+": a new chat already in that project. In Code it works in the folder of the project's latest
+    // Code chat, without asking; only a project with no Code chat in an existing folder asks for one.
+    private void NewChatInProject(GroupView group)
+    {
+        if (CodeBusy && NavChat.IsChecked != true)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (group.Collapsed)
+            _store.SetGroupCollapsed(group.Id, false);
+        if (NavChat.IsChecked == true)
+        {
+            NewChat_Click(this, new RoutedEventArgs());
+            _newChatGroup = group.Id; // the chat is saved at its first reply (NewStoredChat)
+            return;
+        }
+        var folder = group.Items.Where(e => e.Kind != "chat" && e.Folder.Length > 0 && System.IO.Directory.Exists(e.Folder))
+            .OrderByDescending(e => e.Updated).FirstOrDefault()?.Folder;
+        NewCodeConversation(folder, group.Id);
+    }
+
     // ---- drag and drop
 
     // A press, then a move past the system's drag distance, drags the payload. The row lets go of the mouse first, so it
@@ -226,7 +249,8 @@ public partial class MainWindow
     }
 
     // The row with a "…" button over its right end (shown on hover) and the same menu on right-click.
-    private Grid WithMenu(Control row, string id, string name, Func<ContextMenu> build)
+    // add: a "+" left of "…" (a project header's New chat in this project).
+    private Grid WithMenu(Control row, string id, string name, Func<ContextMenu> build, Action? add = null)
     {
         _sidebarMenus[id] = build;
         row.ContextMenu = new ContextMenu(); // never shown: ContextMenuOpening opens a freshly built menu instead
@@ -248,6 +272,20 @@ public partial class MainWindow
         more.Click += (_, _) => OpenSidebarMenu(build(), more, PlacementMode.Bottom);
         var grid = new Grid { Children = { row, more } };
         more.SetBinding(VisibilityProperty, new Binding(nameof(IsMouseOver)) { Source = grid, Converter = new BooleanToVisibilityConverter() });
+        if (add is not null)
+        {
+            var plus = new Button
+            {
+                Content = "+", FontSize = 14, Width = 24, Height = 22, Padding = new Thickness(0, 0, 0, 2), Tag = "+in:" + id,
+                Margin = new Thickness(0, row.Margin.Top, 28, row.Margin.Bottom), HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Center, ToolTip = "New chat in this project",
+            };
+            plus.SetResourceReference(StyleProperty, "SidebarRow");
+            plus.SetResourceReference(ForegroundProperty, "Muted");
+            AutomationProperties.SetName(plus, $"New chat in {name}");
+            plus.Click += (_, _) => add();
+            grid.Children.Add(plus); // always shown: the way to start a chat inside the project
+        }
         return grid;
     }
 

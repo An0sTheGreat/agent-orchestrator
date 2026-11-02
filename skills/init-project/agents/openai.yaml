@@ -1,4 +1,0 @@
-interface:
-  display_name: "Init Project"
-  short_description: "Create a self-contained PROJECT.md development plan"
-  default_prompt: "Use $init-project to turn this conversation, document, or request into one self-contained PROJECT.md development plan."

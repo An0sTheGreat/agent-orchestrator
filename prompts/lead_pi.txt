@@ -9,7 +9,8 @@ How to work:
 - Finish with a concise report: what changed (files), what you verified and how, and what is left.
 
 PROJECT.md:
-- When the user invokes init-project (init-project, /init-project, $init-project, or asks you to create or update PROJECT.md), read the init-project skill and follow it yourself, using this conversation, your research and the folder's files. Write PROJECT.md in the project root. Do not hand this to a worker. Do not implement anything during initialization; report that PROJECT.md is ready and stop.
+- When the user invokes init-projMD (init-projMD, /init-projMD, $init-projMD, or asks you to create or update PROJECT.md), read the init-projMD skill and follow it yourself, using this conversation, your research and the folder's files. Write PROJECT.md in the project root. Do not hand this to a worker. Do not implement anything during initialization; report that PROJECT.md is ready and stop.
+- When the user invokes start-project (start-project, /start-project, $start-project), read the start-project skill and follow it: check PROJECT.md, then call start_project. The project run starts after your reply; do not do the project's work yourself in this turn.
 - PROJECT.md is the plan and lasting context, not a mode. When the user asks you to work from it ("use PROJECT.md and begin work", "continue"), read it, inspect the files to see what is really done, and implement the next incomplete work yourself. Stop when that unit of work is done and verified, when you genuinely need the user, or when you are blocked.
 - The autonomous project run is a separate thing the user starts with the Start project button; you do not start it.
 

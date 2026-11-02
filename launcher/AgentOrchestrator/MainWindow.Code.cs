@@ -115,7 +115,7 @@ public partial class MainWindow
         (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
             ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
             : hasMd ? ("Start a conversation", "Message the lead below: it can work through PROJECT.md with you. Or press Start project for an autonomous run.")
-            : ("Add a PROJECT.md to start the project", "Discuss the project with the lead, then say init-project: it writes PROJECT.md and you can " +
+            : ("Add a PROJECT.md to start the project", "Discuss the project with the lead, then say init-projMD: it writes PROJECT.md and you can " +
                 "ask it to begin work. Start project runs it autonomously instead.");
         CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
@@ -158,10 +158,10 @@ public partial class MainWindow
         EditProject_Click(this, new RoutedEventArgs());
     }
 
-    private const string InitProjectSkill = "init-project"; // bundled in <workflow root>\skills
+    private const string InitProjectSkill = "init-projMD"; // bundled in <workflow root>\skills
     // The first message of a "Create PROJECT.md with a model…" conversation; every turn of a conversation that starts with
-    // it carries the init-project skill (CodeRequest). The worker writes the file itself, from the skill's template.
-    private const string InitProjectMessage = "Use the init-project skill to create PROJECT.md for this folder. Inspect the folder first, then ask me what you need. " +
+    // it carries the init-projMD skill (CodeRequest). The worker writes the file itself, from the skill's template.
+    private const string InitProjectMessage = "Use the init-projMD skill to create PROJECT.md for this folder. Inspect the folder first, then ask me what you need. " +
         "When we agree, save it with write_file as PROJECT.md in the project root.";
 
     private void CodeEmptyInit_Click(object sender, RoutedEventArgs e) => Forget(CreateProjectMdWithModel());
@@ -175,7 +175,7 @@ public partial class MainWindow
             return Task.FromResult(false);
         if (!AllSkills().Any(s => Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase)))
         {
-            Toast("The init-project skill is missing from the app's skills folder", "#FF667A");
+            Toast("The init-projMD skill is missing from the app's skills folder", "#FF667A");
             return Task.FromResult(false);
         }
         if (ChooseWorker("Create PROJECT.md with a model", "Who should interview you about the project and write PROJECT.md?") is not { } role)
@@ -263,22 +263,24 @@ public partial class MainWindow
         return result;
     }
 
-    // Pick the folder and start a new conversation there (with the "Main" preset, when there is one). Earlier ones stay in
-    // the sidebar; a folder may have several.
-    private void NewCodeConversation()
+    // Pick the folder (unless given: a project's "+") and start a new conversation there (with the "Main" preset, when there
+    // is one), in sidebar project `groupId` when given. Earlier ones stay in the sidebar; a folder may have several.
+    private void NewCodeConversation(string? folder = null, string? groupId = null)
     {
         if (_chatBusy || _process is not null)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
         }
-        if (PickFolder("Choose the folder to work in") is not { } folder || !DiscardWorkerEdits()) // the switch below rebuilds the tab
+        if ((folder ?? PickFolder("Choose the folder to work in")) is not { } chosen || !DiscardWorkerEdits()) // the switch below rebuilds the tab
             return;
         CloseCodeConversation();
-        ProjectPath = folder;
+        ProjectPath = chosen;
         ShowView();
         if (!EnsureCodeConversation(SelectedProjectPath()))
             return;
+        if (groupId is not null)
+            StoreChange(() => _store.MoveToGroup(_codeConv!.Id, groupId));
         if (_settings.Presets.FirstOrDefault(p => p.Name.Equals("Main", StringComparison.OrdinalIgnoreCase)) is { } main)
             ApplyPreset(main);
         RefreshCodeFolders();
@@ -391,7 +393,12 @@ public partial class MainWindow
                 CodeExtraFolders.Add(folder);
         }
         Replay(_code, saved.Messages, CodeTarget()?.Role ?? "planner");
-        ShowContext(true, saved.Context);
+        ShowContext(true, null); // clears every worker's card
+        foreach (var (role, s) in saved.Contexts ?? [])
+            _codeContexts[role] = s;
+        if (saved.Context is { } lead && !_codeContexts.ContainsKey(lead.Role ?? CodeLead)) // saved before per-worker contexts
+            _codeContexts[lead.Role ?? CodeLead] = lead;
+        ShowContext(true, _codeContexts.GetValueOrDefault(CodeLead) ?? saved.Context);
         _code.Tokens = saved.Tokens ?? 0;
         (_code.Summary, _code.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
         RefreshCodeFolders();
@@ -407,6 +414,7 @@ public partial class MainWindow
         c.Worker = "planner"; // the lead
         c.Messages = _code.History.ToList();
         c.Context = _codeContext;
+        c.Contexts = new(_codeContexts);
         c.Tokens = _code.Tokens;
         (c.Summary, c.SummaryCovers) = (_code.Summary, _code.SummaryCovers);
         c.Title ??= TakeTurnTitle();

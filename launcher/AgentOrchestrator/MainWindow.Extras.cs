@@ -12,7 +12,7 @@ namespace AgentOrchestrator;
 // request (LauncherLogic.Extras); orchestrator.py turns them into tools.
 public partial class MainWindow
 {
-    // initProject: also the init-project skill, for a Code conversation "Create PROJECT.md with a model…" started.
+    // initProject: also the init-projMD skill, for a Code conversation "Create PROJECT.md with a model…" started.
     private LauncherLogic.Extras CurrentExtras(bool initProject = false) =>
         new(_settings.UseSearch, _settings.UseTools,
             AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) ||

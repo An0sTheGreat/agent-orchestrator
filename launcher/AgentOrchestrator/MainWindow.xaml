@@ -1119,7 +1119,7 @@
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0">
                                 <Button x:Name="CodeEmptyChoose" Content="Choose a folder…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeNew_Click" />
                                 <Button x:Name="CodeEmptyInit" Content="Create PROJECT.md with a model…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeEmptyInit_Click"
-                                        Visibility="Collapsed" ToolTip="Pick a worker (the Planner by default); it interviews you with the init-project skill and writes PROJECT.md" />
+                                        Visibility="Collapsed" ToolTip="Pick a worker (the Planner by default); it interviews you with the init-projMD skill and writes PROJECT.md" />
                                 <Button x:Name="CodeEmptyAddMd" Content="Add PROJECT.md…" Style="{StaticResource GhostButton}" Padding="16,7" Margin="8,0,0,0" Click="CodeEmptyAddMd_Click"
                                         Visibility="Collapsed" ToolTip="Copy a PROJECT.md you already have into this folder" />
                                 <Button x:Name="CodeEmptyTemplate" Content="Start from template" Style="{StaticResource GhostButton}" Padding="16,7" Margin="8,0,0,0"

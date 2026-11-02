@@ -110,13 +110,44 @@ internal static class TextBlockExtensions
 public partial class MainWindow
 {
     private ContextSnapshot? _chatContext, _codeContext;
+    // Code: every worker's context in this conversation by the event's role ("<worker> Context" cards in the details
+    // column); the lead's is also _codeContext, which the header ring shows.
+    private readonly Dictionary<string, ContextSnapshot> _codeContexts = new();
 
     private ContextSnapshot? ContextOf(bool code) => code ? _codeContext : _chatContext;
 
-    // The view's latest snapshot: stored, and shown on its Context card (null: the empty ring).
+    private string CodeLead => CodeTarget()?.Role ?? "planner";
+
+    private string ContextTitle(string role) => $"{ChatName(CardFor(role), role)} Context";
+
+    // A Code turn's or run's measured call, filed under its worker; the lead's also moves the header ring.
+    private void SetCodeContext(ContextSnapshot s)
+    {
+        var role = s.Role ?? CodeLead;
+        _codeContexts[role] = s;
+        if (role == CodeLead)
+            ShowContext(true, s);
+        else
+            RefreshContextSection();
+    }
+
+    // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card drops to 0
+    // until its next call. The lead's keeps its last value: its next call sends the whole conversation again.
+    // ponytail: assumes one local model at a time (Unsloth, llama-server); per-server tracking if several ever run at once.
+    private void WorkerContextsCleared()
+    {
+        foreach (var (role, s) in _codeContexts.ToList())
+            if (role != CodeLead && s.Used > 0)
+                _codeContexts[role] = new ContextSnapshot { NCtx = s.NCtx, Role = role };
+        RefreshContextSection();
+    }
+
+    // The view's latest snapshot: stored, and shown on its Context card (null: the empty ring; in Code, a new conversation).
     private void ShowContext(bool code, ContextSnapshot? s)
     {
         if (code) _codeContext = s; else _chatContext = s;
+        if (code && s is null)
+            _codeContexts.Clear();
         var ring = code ? CodeContextRing : ChatContextRing;
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
@@ -177,14 +208,15 @@ public partial class MainWindow
             var ring = code ? CodeContextRing : ChatContextRing;
             var s = ContextOf(code);
             var room = CanPin(code);
-            ring.Content = ContextFace(s, null, room ? PinWidth : double.NaN, bordered: true);
+            var label = code ? ContextTitle(CodeLead) : "Context";
+            ring.Content = ContextFace(s, null, room ? PinWidth : double.NaN, bordered: true, label);
             ring.Opacity = room ? 0 : 1; // the card over it is the one shown
             pin.Visibility = room ? Visibility.Visible : Visibility.Collapsed;
             if (!room)
                 continue;
             var overlay = OverlayFor(code);
             var open = _settings.ContextPinned || overlay.Closing;
-            overlay.Header.Content = ContextFace(s, overlay.Arrow, double.NaN, bordered: false);
+            overlay.Header.Content = ContextFace(s, overlay.Arrow, double.NaN, bordered: false, label);
             ((RotateTransform)overlay.Arrow.RenderTransform).Angle = open ? 90 : 0;
             overlay.Body.Child = s is null ? new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 }.WithForeground("Muted") : ContextBody(s, title: false);
             if (overlay.Body.HasAnimatedProperties == false)
@@ -232,7 +264,7 @@ public partial class MainWindow
 
     // The header row's content; bordered: as its own card (the header button, sizing the overlay's place or shown without
     // room). arrow: the overlay's turning arrow, else a fixed one.
-    private FrameworkElement ContextFace(ContextSnapshot? s, TextBlock? arrow, double width, bool bordered)
+    private FrameworkElement ContextFace(ContextSnapshot? s, TextBlock? arrow, double width, bool bordered, string title = "Context")
     {
         TextBlock Text(string text, string brush, double size = 12) =>
             new TextBlock { Text = text, FontSize = size, VerticalAlignment = VerticalAlignment.Center }.WithForeground(brush);
@@ -253,8 +285,9 @@ public partial class MainWindow
             DockPanel.SetDock(percent, Dock.Right);
             face.Children.Add(percent);
         }
-        var label = Text("Context", "TextPrimary");
+        var label = Text(title, "TextPrimary");
         label.FontWeight = FontWeights.SemiBold;
+        label.TextTrimming = TextTrimming.CharacterEllipsis;
         face.Children.Add(label);
         if (arrow is not null)
             (arrow.Parent as Panel)?.Children.Remove(arrow);
@@ -300,24 +333,42 @@ public partial class MainWindow
     {
         if (!long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n) || n <= 0)
             return;
+        foreach (var s in _codeContexts.Values.Where(s => s.Role == role))
+            s.NCtx = n;
         foreach (var code in new[] { false, true })
             if (ContextOf(code) is { } s && (s.Role ?? TargetOf(code ? _code : _chat)?.Role) == role)
             {
                 s.NCtx = n;
                 ShowContext(code, s);
             }
+        RefreshContextSection();
     }
 
-    // The worker details column's Context section: the shown view's snapshot; open or closed as last left (saved).
+    // The worker details column's Context section, open or closed as last left (saved). Chat: the conversation's snapshot.
+    // Code: one "<worker> Context" card per worker that worked in it, the lead's first (the summary line is the lead's).
     private void RefreshContextSection()
     {
-        var s = ContextOf(NavCode.IsChecked == true);
+        var code = NavCode.IsChecked == true;
+        var s = ContextOf(code);
         var open = _settings.ContextExpanded;
         ContextSectionToggle.IsChecked = open;
         ContextSummary.Text = s is null ? "—" : s.NCtx is > 0 ? $"{s.Fraction:0%}  ·  {Tokens(s.Used)} / {Tokens(s.NCtx.Value)}" : $"{Tokens(s.Used)} / ?";
         var empty = new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 };
         empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        ContextSectionBody.Content = !open ? null : s is null ? empty : ContextBody(s, title: false);
+        FrameworkElement? body = s is null ? empty : ContextBody(s, title: false);
+        if (code && _codeContexts.Count > 0)
+        {
+            var cards = new StackPanel();
+            foreach (var (role, worker) in _codeContexts.OrderBy(p => p.Key != CodeLead))
+            {
+                var heading = new TextBlock { Text = ContextTitle(role), FontSize = 12, FontWeight = FontWeights.SemiBold, Tag = "ContextTitle",
+                    Margin = new Thickness(0, cards.Children.Count == 0 ? 0 : 14, 0, 6) }.WithForeground("TextPrimary");
+                cards.Children.Add(heading);
+                cards.Children.Add(ContextBody(worker, title: false));
+            }
+            body = cards;
+        }
+        ContextSectionBody.Content = !open ? null : body;
         ContextSectionBody.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
         ContextSummary.Visibility = open ? Visibility.Collapsed : Visibility.Visible; // the open body repeats it
     }

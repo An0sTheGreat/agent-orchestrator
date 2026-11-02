@@ -699,7 +699,7 @@ class ApiClient:
             tps=row.get("tok_per_sec") or round(completion / elapsed, 2),
             prompt_tps=row.get("prompt_tok_per_sec"),
         )
-        if CHAT_MODE and body is not None:  # the launcher's context ring for this conversation
+        if EVENTS and body is not None:  # the launcher's per-worker context cards (chat, Code turns and project runs)
             emit("context", role=self.role, n_ctx=self.context_size(), prompt_tokens=prompt, completion_tokens=completion,
                  parts=context_parts(body.get("messages") or [], body.get("tools"), prompt))
 
@@ -3381,7 +3381,7 @@ CODE_TOOLS = [
                   {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]),
     function_tool("replace_text", "Replace one exact, unique string in a UTF-8 text file.",
                   {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, ["path", "old", "new"]),
-]  # the lead writes PROJECT.md itself (init-project skill); the autonomous run starts only from the launcher's Start project
+]  # the lead writes PROJECT.md itself (init-projMD skill); the autonomous run starts only from the launcher's Start project
 
 
 def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> Path:
@@ -3405,7 +3405,7 @@ def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> P
 
 
 # An orchestrator project root's workflow records and settings: written by the engine (record_progress, the run) or the
-# launcher, never by a model's file tools. PROJECT.md stays editable (init-project writes it). Any other root (a user's own
+# launcher, never by a model's file tools. PROJECT.md stays editable (init-projMD writes it). Any other root (a user's own
 # repo) keeps its config.json/ISSUES.md editable; run_checks only runs the config loaded at turn start.
 TOOL_PROTECTED_FILES = {"config.json", "state.md", "handoff.md", "task.md", "result.md", "review.md", "issues.md", "contract.md", ".ao_checkpoint.json"}
 ORCHESTRATOR_MARKERS = ("PROJECT.md", "STATE.md", CHECKPOINT_FILE)
@@ -3884,15 +3884,26 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
     return delegate
 
 
-INIT_PROJECT_SKILL = ROOT / "skills" / "init-project"  # bundled; offered on every Code turn
+INIT_PROJECT_SKILL = ROOT / "skills" / "init-projMD"  # bundled; offered on every Code turn
+START_PROJECT_SKILL = ROOT / "skills" / "start-project"  # bundled; its start_project tool only on a turn the user invoked it
+START_PROJECT_TOOL = function_tool("start_project", "Start the autonomous project run on PROJECT.md once this reply ends (the "
+                                   "start-project skill). Only available when the user asked to start the project.", {}, [])
+START_WORDS = re.compile(r"(?<![\w-])[/$]?start-project(?![\w-])", re.I)
+
+
+def asked_to_start(request: dict[str, Any]) -> bool:
+    """The request's latest message is the user's and invokes start-project (start-project, /start-project, $start-project)."""
+    messages = request.get("messages") if isinstance(request.get("messages"), list) else []
+    last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    return last.get("role") == "user" and bool(START_WORDS.search(str(last.get("content") or "")))
 
 
 def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
               role: str = "planner") -> str:
     """A Code turn's lead agent (`role`, by default the planner), the primary agent: plans with todo, does the work with
     the file tools, verifies with run_checks and may delegate to implementer/reviewer sub-agents (config max_delegations
-    per turn, default 6). It always has the bundled init-project skill, so it writes PROJECT.md itself; it never starts
-    the autonomous project run (the launcher's Start project does)."""
+    per turn, default 6). It always has the bundled init-projMD skill, so it writes PROJECT.md itself; it starts the
+    autonomous project run (start_project) only on a turn where the user invoked the start-project skill."""
     tools, handlers, note, _ = lead_setup(config, folders, request, role)
     system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools
@@ -3904,12 +3915,15 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
 def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None
                ) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[str]]:
     """The lead's request extras (tools, system note) and every lead handler (file tools, todo, run_checks, delegate and
-    the extras), shared by both Code engines and the project run; plus the skill folders, the bundled init-project included.
-    `delegations` caps delegate (default: config max_delegations, 6)."""
+    the extras), shared by both Code engines and the project run; plus the skill folders, the bundled init-projMD and
+    start-project included. `delegations` caps delegate (default: config max_delegations, 6). The lead alone gets
+    start_project, and only when the user's latest message invokes start-project: it emits code_start, and the launcher
+    starts the run once the turn ends."""
     skills = [str(s) for s in request.get("skills") or []]
     names = {skill_info(Path(s))["name"].lower() for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()}
-    if (INIT_PROJECT_SKILL / "SKILL.md").is_file() and skill_info(INIT_PROJECT_SKILL)["name"].lower() not in names:
-        skills.append(str(INIT_PROJECT_SKILL))  # a user skill of the same name replaces it
+    for bundled in (INIT_PROJECT_SKILL, START_PROJECT_SKILL):
+        if (bundled / "SKILL.md").is_file() and skill_info(bundled)["name"].lower() not in names:
+            skills.append(str(bundled))  # a user skill of the same name replaces it
     tools, extra_handlers, note = request_extras({**request, "skills": skills})
     lead_extras, research = with_research(extra_handlers)  # workers get the plain ones: their searches are not the lead's
     handlers = {**code_handlers(folders), **code_write_handlers(folders), **lead_extras}
@@ -3920,6 +3934,13 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     cap = int(config.get("max_delegations", 6)) if delegations is None else delegations
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
+    if asked_to_start(request):
+        def start_project() -> str:
+            if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():
+                raise WorkflowError("PROJECT.md is missing in the project root; write it first (init-projMD)")
+            emit("code_start")
+            return "OK: the project run starts when this reply ends. Tell the user in a sentence or two and stop."
+        tools, handlers["start_project"] = tools + [START_PROJECT_TOOL], start_project
     return tools, handlers, note, [s for s in skills if Path(s).is_absolute() and (Path(s) / "SKILL.md").is_file()]
 
 
@@ -4040,7 +4061,7 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
 PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
 PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
-PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "web_search", "fetch_page", "calculator",
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "web_search", "fetch_page", "calculator",
                     "current_time")
 PI_TOOL_RESULT_LIMIT = 6000
 

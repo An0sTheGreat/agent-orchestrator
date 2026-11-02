@@ -24,6 +24,7 @@ internal sealed class ConversationStore
         public bool Archived { get; set; }
         public long? Tokens { get; set; } // tokens used by all turns of this conversation (the footer's Task total); absent in older files
         public ContextSnapshot? Context { get; set; } // the last turn's context usage; absent in older files
+        public Dictionary<string, ContextSnapshot>? Contexts { get; set; } // Code: each worker's (by role, the lead's too); absent in older files
         public string? Summary { get; set; } // the engine's summary of Messages[..SummaryCovers] (history_compacted); null: none yet
         public int SummaryCovers { get; set; }
     }

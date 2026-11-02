@@ -1,9 +1,9 @@
 ---
-name: init-project
-description: "Use when the user calls init-project, /init-project, or $init-project to turn a project conversation, document, or request into one self-contained PROJECT.md development plan."
+name: init-projMD
+description: "Use when the user calls init-projMD, /init-projMD, or $init-projMD to turn a project conversation, document, or request into one self-contained PROJECT.md development plan."
 ---
 
-# Init Project
+# Init PROJECT.md
 
 Convert project intent into one self-contained, implementable PROJECT.md. Perform initialization and planning; do not implement the product unless separately requested. Do not require, request, create, or modify config.json. Do not require or create a separate development-plan file. PROJECT.md is the only planning deliverable.
 
@@ -41,7 +41,7 @@ Do not generate configuration patches, validation_commands JSON objects, orchest
 
 ## Invocation examples
 
-- init-project after a discussion: use the relevant conversation and produce PROJECT.md.
-- init-project with a document: extract requirements and produce PROJECT.md without asking for configuration.
-- init-project: Build a local CSV cleanup tool in this repository: inspect the repository and produce a complete PROJECT.md with relevant validation guidance.
-- init-project with no project information: ask for the project goal or source; do not invent a project or plan this plugin itself.
+- init-projMD after a discussion: use the relevant conversation and produce PROJECT.md.
+- init-projMD with a document: extract requirements and produce PROJECT.md without asking for configuration.
+- init-projMD: Build a local CSV cleanup tool in this repository: inspect the repository and produce a complete PROJECT.md with relevant validation guidance.
+- init-projMD with no project information: ask for the project goal or source; do not invent a project or plan this plugin itself.

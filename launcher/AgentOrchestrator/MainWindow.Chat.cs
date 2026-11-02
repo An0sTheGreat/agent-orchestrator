@@ -92,6 +92,8 @@ public partial class MainWindow
     {
         if (_turn == _parked)
             _parkedContext = s;
+        else if (_turn.IsCode && s is not null)
+            SetCodeContext(s);
         else
             ShowContext(_turn.IsCode, s);
     }
@@ -330,6 +332,8 @@ public partial class MainWindow
             return count;
         });
         Log($"Unloaded {unloaded} chat model(s)");
+        if (unloaded > 0)
+            WorkerContextsCleared();
         _unloadsPending--;
         RefreshChatInput();
         SendQueued(); // a message queued behind the unload
@@ -388,10 +392,23 @@ public partial class MainWindow
 
     private ConversationStore.Conversation? _chatConv; // the open saved one; null until a chat's first reply saves it
 
+    // A project's "+" chat, saved into that project at its first reply.
+    private string? _newChatGroup;
+
+    private ConversationStore.Conversation? NewStoredChat()
+    {
+        var c = _store.Create("", "chat");
+        if (c is not null && _newChatGroup is { } group)
+            _store.MoveToGroup(c.Id, group);
+        _newChatGroup = null;
+        return c;
+    }
+
     private void ClearChatConversation()
     {
         ClearConversation(_chat);
         _chatConv = null;
+        _newChatGroup = null;
         RefreshSidebarList();
     }
 
@@ -404,7 +421,7 @@ public partial class MainWindow
         var parked = _parked is not null && _turn == _parked; // a turn's end while the user is in another chat
         var ui = parked ? _parked! : _chat;
         if (!parked && _chatConv is null)
-            StoreDo(() => _chatConv = _store.Create("", "chat"));
+            StoreDo(() => _chatConv = NewStoredChat());
         if ((parked ? _parkedConv : _chatConv) is { } c)
         {
             (c.Worker, c.Messages) = (parked ? _turnWorker : _settings.ChatWorker, ui.History.ToList());
@@ -852,7 +869,7 @@ public partial class MainWindow
         else
         {
             if (_chatConv is null)
-                StoreDo(() => _chatConv = _store.Create("", "chat"));
+                StoreDo(() => _chatConv = NewStoredChat());
             if (_chatConv is { } chat)
             {
                 (chat.Worker, chat.Messages, chat.Summary, chat.SummaryCovers) = (_settings.ChatWorker, pending, c.Summary, c.SummaryCovers);
@@ -899,6 +916,8 @@ public partial class MainWindow
                     _loadedByChat.Add(loaded);
                     _turnLoaded.Add(loaded);
                 }
+                if (_turn.IsCode)
+                    WorkerContextsCleared();
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
                 break;
@@ -960,7 +979,8 @@ public partial class MainWindow
             case "compacted" or "history_compacted":
                 if (Str(ev, "e") == "history_compacted" && Str(ev, "summary") is { Length: > 0 } summary)
                     (_turn.Summary, _turn.SummaryCovers) = (summary, (int)Num(ev, "covers"));
-                if ((_turn == _parked ? _parkedContext : ContextOf(_turn.IsCode)) is { } full) // the ring drops now, not at the next call's context event
+                // the ring drops now, not at the next call's context event; in Code, the compacted worker's card
+                if ((_turn == _parked ? _parkedContext : _turn.IsCode ? _codeContexts.GetValueOrDefault(role.Length > 0 ? role : CodeLead) : ContextOf(false)) is { } full)
                     TurnContext(full.Compacted((long)Num(ev, "after")));
                 EndChatBlock();
                 if (_reply is { } compactReply)

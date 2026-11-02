@@ -419,6 +419,7 @@ public partial class MainWindow : Window
             case "loading":
                 EndStream(false);
                 Activate(role, "Loading model");
+                WorkerContextsCleared();
                 if (LoadedOn(ev) is { } loaded)
                     _loadedByRun.Add(loaded);
                 Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
@@ -462,6 +463,11 @@ public partial class MainWindow : Window
             case "compacted": // its print line is already in the log
                 EndStream(false);
                 AddNote("CONTEXT", $"{card?.Title ?? role}: {CompactedLine(ev)}");
+                if (_codeContexts.GetValueOrDefault(role) is { } full)
+                    SetCodeContext(full.Compacted((long)Num(ev, "after")));
+                break;
+            case "context": // the run's calls fill the same per-worker cards as Code turns
+                SetCodeContext(ContextSnapshot.From(ev));
                 break;
             case "task":
                 EndStream(false);
@@ -1928,7 +1934,7 @@ public partial class MainWindow : Window
                     return Fail();
                 // A folder without PROJECT.md: the empty state offers Create with a model / Add / template, Start project is off
                 // (and says why), and neither Start nor the worker's start_project starts anything or asks a model to write the file.
-                // A conversation that starts with the Create message carries the bundled init-project skill on every turn.
+                // A conversation that starts with the Create message carries the bundled init-projMD skill on every turn.
                 string EmptyState() => $"{CodeEmptyTitle.Text}|{CodeEmptyChoose.Visibility}|{CodeEmptyInit.Visibility}|{CodeEmptyAddMd.Visibility}|{CodeEmptyTemplate.Visibility}|{CodeStartButton.IsEnabled}";
                 string? SkillsOf(string? text) => JsonNode.Parse(CodeRequest("chat", "planner", text, codeProject))!["skills"]!.AsArray().FirstOrDefault()?.ToString();
                 var latestOnly = SkillsOf(InitProjectMessage); // this conversation starts with "Hi": the first message decides
@@ -2100,6 +2106,24 @@ public partial class MainWindow : Window
                 if (_codeConv != chatA || _code.History.Count != 2 || CodePanel.Children.Count != 2 || Rows() != "+New chat,+New project,▾Smoke project,A,RECENTS" ||
                     SidebarList.Children.Cast<UIElement>().Select(Main).Single(m => m is ToggleButton { IsChecked: true }).Tag as string != chatA.Id)
                     return Fail();
+                // A project's "+" opens a new Code chat in that project, in its chats' folder, without asking for one.
+                {
+                    var smokeGroup = _store.View().Groups[0].Id;
+                    var (asked, keptPick) = (false, _codeFolderPick);
+                    _codeFolderPick = () => { asked = true; return null; };
+                    SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == "+in:" + smokeGroup)
+                        .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                    _codeFolderPick = keptPick;
+                    var added = _codeConv;
+                    if (asked || added is null || added == chatA || !SameFolder(added.Folder, codeProject) ||
+                        _store.View().Groups[0].Items.FirstOrDefault()?.Id != added.Id)
+                        return Fail();
+                    CloseCodeConversation();
+                    _store.Delete(added.Id);
+                    ClickRow(chatA.Id);
+                    if (_codeConv != chatA)
+                        return Fail();
+                }
 
                 // Drag and drop, through the drop handlers the rows register: a chat dropped on a project header goes to its
                 // top, on a chat takes its place (from either direction), on RECENTS leaves its project; a project dropped on
@@ -2253,6 +2277,34 @@ public partial class MainWindow : Window
                 await Settle();
                 Snap("30-context-section");
                 SetWorkerRail(railWas);
+                // Code: one "<worker> Context" card per worker that worked (a run's events here), the lead's on the header ring;
+                // a model loading drops the workers' cards to 0 but keeps the lead's (its next call resends the conversation).
+                {
+                    ShowView();
+                    ShowContext(true, null);
+                    DrainContext("""{"e":"context","role":"planner","n_ctx":32000,"prompt_tokens":8000,"completion_tokens":0,"parts":{"messages":8000}}""",
+                        """{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":4000,"completion_tokens":0,"parts":{"messages":4000}}""");
+                    var titles = () => (ContextSectionBody.Content as StackPanel)?.Children.OfType<TextBlock>().Where(t => (string?)t.Tag == "ContextTitle").Select(t => t.Text);
+                    ContextSectionToggle.IsChecked = true;
+                    ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
+                    if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
+                        string.Join("|", titles() ?? []) != "Main Context|Implementer Context")
+                        return Fail();
+                    DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
+                    if (_codeContexts["implementer"].Used != 0 || _codeContexts["implementer"].NCtx != 16000 || _codeContexts["planner"].Used != 8000)
+                        return Fail();
+                    ContextSectionToggle.IsChecked = false;
+                    ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
+                    ShowContext(true, null);
+                    _activeRole = null;
+                    ShowView(chat: true);
+                    void DrainContext(params string[] events)
+                    {
+                        foreach (var json in events)
+                            _lines.Enqueue(Ev(json));
+                        DrainLines();
+                    }
+                }
                 ContextSectionToggle.IsChecked = false;
                 ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
@@ -2470,7 +2522,7 @@ public partial class MainWindow : Window
                 var skillItem = skillsMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "Smoke skill");
                 skillsMenu.IsOpen = false;
                 if (skillItem is not { Header: "Smoke skill", IsChecked: true, ToolTip: "When to use this skill, in one sentence." } ||
-                    !skillsMenu.Items.OfType<MenuItem>().Any(i => i is { Header: "init-project (built-in)", IsChecked: false })) // bundled with the app
+                    !skillsMenu.Items.OfType<MenuItem>().Any(i => i is { Header: "init-projMD (built-in)", IsChecked: false })) // bundled with the app
                     return Fail();
                 SetSkill("SMOKE skill", true); // a key in another case is the same folder: no duplicate, still sent
                 if (_settings.Skills.Count != 1 || CurrentExtras().Skills.Count != 1)
@@ -3207,6 +3259,8 @@ public partial class MainWindow : Window
         foreach (var (url, path) in paths)
             if (await PostUnloadAsync(url, path, _runKey))
                 Log($"Unloaded {path}");
+        if (paths.Count > 0)
+            WorkerContextsCleared();
     }
 
     // One unload POST; false when the server is unreachable or refuses. Touches no UI, so it is safe off the UI thread.
