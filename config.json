@@ -23,7 +23,6 @@
         "gpu_layers": -1,
         "speculative_type": "auto",
         "reasoning_budget": 8192,
-        "disable_vision": true,
         "llama_extra_args": [
           "--flash-attn",
           "on"
@@ -56,7 +55,6 @@
         "gpu_layers": -1,
         "speculative_type": "off",
         "reasoning_budget": 0,
-        "disable_vision": true,
         "llama_extra_args": [
           "--flash-attn",
           "on"
@@ -91,7 +89,6 @@
         "gpu_layers": -1,
         "speculative_type": "off",
         "reasoning_budget": 4096,
-        "disable_vision": true,
         "llama_extra_args": [
           "--flash-attn",
           "on"
