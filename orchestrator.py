@@ -4384,7 +4384,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 print(f"[pi] {line}", flush=True)
 
     threading.Thread(target=relay_stderr, daemon=True).start()
-    answer, error, started, args_by_call = "", "", time.time(), {}
+    answer, error, started, first_out, args_by_call = "", "", time.time(), None, {}
     stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
     compacted, settled, measured = False, False, []  # measured: (prompt, completion) of calls whose context is still to come
     try:
@@ -4425,9 +4425,11 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 seeded.parent.mkdir(parents=True, exist_ok=True)
                 seeded.touch()
             if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
-                started = time.time()
+                started, first_out = time.time(), None
             elif kind == "message_update":
                 update = event.get("assistantMessageEvent") or {}
+                if first_out is None and update.get("type") in ("text_delta", "thinking_delta", "toolcall_delta"):
+                    first_out = time.time()  # the prompt (and any image) is read: generation starts
                 if update.get("type") in ("text_delta", "thinking_delta"):
                     emit("delta", role=role, kind="text" if update["type"] == "text_delta" else "thinking", text=update.get("delta", ""))
                 elif update.get("type") == "toolcall_delta":  # a tool call's arguments as they stream (a long write takes minutes);
@@ -4444,8 +4446,10 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 prompt_tokens = sum(int(usage.get(k) or 0) for k in ("input", "cacheRead", "cacheWrite"))
                 completion = int(usage.get("output") or 0)
                 emit("done", role=role, final=not calls)
-                emit("usage", role=role, prompt=prompt_tokens, completion=completion,
-                     tps=round(completion / max(time.time() - started, 1e-3), 2), prompt_tps=None)
+                # tok/s over the generation alone; reading the prompt (and encoding an image) is prompt_tps's time
+                generating, reading = time.time() - (first_out or started), (first_out or time.time()) - started
+                emit("usage", role=role, prompt=prompt_tokens, completion=completion, tps=round(completion / max(generating, 1e-3), 2),
+                     prompt_tps=round(prompt_tokens / reading, 1) if first_out and reading > 0.05 else None)
                 measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
                 process.stdin.write((json.dumps({"id": "ctx", "type": "get_messages"}) + "\n").encode("utf-8"))
                 process.stdin.flush()
