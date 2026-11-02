@@ -4286,6 +4286,23 @@ def pi_text(content: Any) -> str:
     return "".join(b.get("text", "") for b in content or [] if isinstance(b, dict) and b.get("type") == "text")
 
 
+def pi_context_messages(messages: list[dict[str, Any]], system: str) -> list[dict[str, Any]]:
+    """Pi's session messages (get_messages) as context_parts reads them: the system prompt, tool results (browser included)
+    as tool messages, an assistant's tool calls with its text, everything else as messages."""
+    sent = [{"role": "system", "content": system}]
+    for m in messages:
+        role, content = m.get("role"), m.get("content")
+        if role == "toolResult":
+            sent.append({"role": "tool", "content": pi_text(content)})
+        elif role == "assistant":
+            blocks = [b for b in content or [] if isinstance(b, dict)]
+            sent.append({"role": "assistant", "content": "".join(str(b.get("text") or b.get("thinking") or "") for b in blocks),
+                         "tool_calls": [b for b in blocks if b.get("type") == "toolCall"] or None})
+        else:
+            sent.append({"role": "user", "content": pi_text(content) or str(m.get("summary") or "")})
+    return sent
+
+
 def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
                  role: str = "planner") -> str:
     """A Code turn on the Pi engine; returns the lead's final answer. The request's "session" (the conversation id) keeps a
@@ -4311,8 +4328,11 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     turn = Path(tempfile.mkdtemp(prefix="pi-turn-", dir=home))
     max_tokens = int(sampling.get("max_tokens") or 8192)
     save_text(turn / "models.json", json.dumps(pi_model_config(client, model, sampling, n_ctx), indent=1))
+    focus = compact_command(messages) if pi_session(request) and pi_seeded(request).is_file() else None  # /compact in a Pi session
+    # Pi keeps the newest keepRecentTokens unsummarized; a manual /compact keeps only the last ~2k, or right after an
+    # automatic compaction there is nothing older left to summarize ("session too small")
     save_text(turn / "settings.json", json.dumps({"quietStartup": True, "compaction": {
-        "reserveTokens": min(n_ctx // 2, max_tokens + 4096), "keepRecentTokens": max(2048, n_ctx // 4)}}))
+        "reserveTokens": min(n_ctx // 2, max_tokens + 4096), "keepRecentTokens": 2048 if focus is not None else max(2048, n_ctx // 4)}}))
     save_text(turn / "tools.json", json.dumps(specs))
     note = re.sub(r"\n\nSKILLS\n.*?(?=\n\n|\Z)", "", note, flags=re.S)  # Pi lists the skills itself
     save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}")
@@ -4349,8 +4369,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     threading.Thread(target=relay_stderr, daemon=True).start()
     answer, error, started, args_by_call = "", "", time.time(), {}
     stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
-    focus = compact_command(messages) if session and seeded.is_file() else None  # /compact in a Pi session: Pi's own
-    compacted = False
+    compacted, settled, measured = False, False, []  # measured: (prompt, completion) of calls whose context is still to come
     try:
         command_line = ({"id": "turn", "type": "compact", **({"customInstructions": focus} if focus else {})} if focus is not None else
                         {"id": "turn", "type": "prompt", "message": prompt, **({"images": images} if images else {})})
@@ -4364,7 +4383,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             kind = event.get("type")
             if kind == "response" and event.get("command") == "compact":  # the /compact's answer ends the turn
                 if not event.get("success"):
-                    answer = f"The conversation could not be compacted: {event.get('error') or 'Pi refused'}."
+                    why = str(event.get("error") or "Pi refused")
+                    answer = ("Nothing to compact yet: only the latest messages are left since the last compaction."
+                              if "Nothing to compact" in why or "Already compacted" in why else f"The conversation could not be compacted: {why}.")
                     break
                 data = event.get("data") or {}
                 before, after = int(data.get("tokensBefore") or 0), int(data.get("estimatedTokensAfter") or 0)
@@ -4372,6 +4393,15 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                     emit("compacted", role=role, before=before, after=after)
                 answer = f"Conversation compacted: about {before:,} → {after:,} tokens. The summary replaces the earlier messages from here on."
                 break
+            if kind == "response" and event.get("command") == "get_messages":  # the last call's context, by category
+                if measured and event.get("success"):
+                    prompt_tokens, completion = measured.pop(0)
+                    sent = pi_context_messages((event.get("data") or {}).get("messages") or [], load_text(turn / "system.md"))
+                    emit("context", role=role, n_ctx=n_ctx, prompt_tokens=prompt_tokens, completion_tokens=completion,
+                         parts=context_parts(sent, specs, prompt_tokens))
+                if settled and not measured:
+                    break
+                continue
             if kind == "response" and not event.get("success"):
                 raise WorkflowError(f"Pi refused the prompt: {event.get('error') or event}")
             if kind == "response" and session:  # the seed is in the Pi session now, whatever happens to the turn
@@ -4399,8 +4429,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 emit("done", role=role, final=not calls)
                 emit("usage", role=role, prompt=prompt_tokens, completion=completion,
                      tps=round(completion / max(time.time() - started, 1e-3), 2), prompt_tps=None)
-                emit("context", role=role, n_ctx=n_ctx, prompt_tokens=prompt_tokens, completion_tokens=completion,
-                     parts={"messages": prompt_tokens})
+                measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
+                process.stdin.write((json.dumps({"id": "ctx", "type": "get_messages"}) + "\n").encode("utf-8"))
+                process.stdin.flush()
                 if message.get("stopReason") in ("error", "aborted"):
                     error = str(message.get("errorMessage") or message.get("stopReason"))
                 elif not calls:
@@ -4420,7 +4451,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             elif kind == "extension_error":
                 print(f"[pi] extension error in {event.get('event')}: {event.get('error')}")
             elif kind == "agent_settled":
-                break
+                settled = True
+                if not measured:
+                    break
         else:
             raise WorkflowError(f"Pi exited before the reply finished (exit code {process.poll()})")
     finally:

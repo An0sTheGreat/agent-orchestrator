@@ -27,7 +27,8 @@ public partial class MainWindow
     private void BrowserClose_Click(object sender, RoutedEventArgs e) => CloseBrowser();
 
     // url null: the last page, else the home page. trusted: a file:// page the engine already checked (the model's browser tool).
-    private void OpenBrowser(string? url, bool trusted = false)
+    // navigate false: only open (the model's browser tool loads its page once the column has slid open).
+    private void OpenBrowser(string? url, bool trusted = false, bool navigate = true)
     {
         StopColumnTween(); // a slide still running finishes first
         if (!BrowserPanel.IsVisible)
@@ -41,7 +42,7 @@ public partial class MainWindow
             _settings.BrowserOpen = true;
             _settings.Save();
         }
-        if (url is not null || _web is null)
+        if (navigate && (url is not null || _web is null))
             Navigate(url ?? (_settings.BrowserUrl.Length > 0 ? _settings.BrowserUrl : BrowserHome), trusted);
     }
 
@@ -161,9 +162,23 @@ public partial class MainWindow
     // A link in a reply: opens in the browser.
     private void OpenLink(string url) => OpenBrowser(url);
 
-    // A model's web_search or fetch_page: shown in the open browser when it follows the model.
-    private void BrowserFollowTool(string tool, string args)
+    // A model's web_search or fetch_page: shown in the open browser when it follows the model. A file the model wrote or
+    // edited (result: not an error) reloads the local page the browser shows when it is that page or sits in its folder
+    // (its CSS, scripts, images), so the changes show live.
+    private void BrowserFollowTool(string tool, string args, string result = "")
     {
+        if (tool is "write" or "edit" or "write_file" or "replace_text" && !result.StartsWith("ERROR") && ShownPageFolder() is { } folder &&
+            ToolTarget(args) is { Length: > 0 } raw && SelectedProjectPath() is var project)
+        {
+            try
+            {
+                var full = Path.GetFullPath(Path.IsPathRooted(raw) || project.Length == 0 ? raw : Path.Combine(project, raw));
+                if (full.StartsWith(folder + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    _web?.Reload();
+            }
+            catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { }
+            return;
+        }
         if (!BrowserPanel.IsVisible || !_settings.BrowserFollow || tool is not ("web_search" or "fetch_page"))
             return;
         try
@@ -175,6 +190,9 @@ public partial class MainWindow
         }
         catch (JsonException) { }
     }
+
+    private string? ShownPageFolder() =>
+        BrowserPanel.IsVisible && _web?.Source is { IsFile: true } page ? Path.GetDirectoryName(Path.GetFullPath(page.LocalPath)) : null;
 
     private static string SearchUrl(string words) => BrowserHome + "?q=" + Uri.EscapeDataString(words);
 
@@ -206,7 +224,12 @@ public partial class MainWindow
             if (action == "open")
             {
                 var loaded = _pageLoaded = new TaskCompletionSource<bool>();
-                OpenBrowser(url, trusted: url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
+                if (!BrowserPanel.IsVisible)
+                {
+                    OpenBrowser(null, navigate: false); // the same slide as the globe button, before the engine starts loading
+                    await Task.Delay(320);
+                }
+                Navigate(url, trusted: url.StartsWith("file:", StringComparison.OrdinalIgnoreCase));
                 if (await Task.WhenAny(loaded.Task, Task.Delay(20000)) != loaded.Task)
                     Log($"Browser: {url} was still loading after 20 s; reading it as it is");
                 await Task.Delay(400); // scripts that run just after load

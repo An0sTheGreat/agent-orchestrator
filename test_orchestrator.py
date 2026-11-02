@@ -3480,6 +3480,12 @@ class PiEngineTests(unittest.TestCase):
         self.assertIn(f"{self.root} (write, project root)", system)
         self.assertIn("init-projMD", system)  # the bundled skill, listed by Pi
         self.assertIn(("done", {"role": "planner", "final": True}), events)
+        # each call's context comes split by category from Pi's own messages: tool results and the system prompt apart
+        contexts = [d for e, d in events if e == "context"]
+        self.assertEqual(len(contexts), len(requests))
+        last = contexts[-1]
+        self.assertEqual(sum(last["parts"].values()), last["prompt_tokens"])
+        self.assertTrue(last["parts"]["tool_results"] > 0 and last["parts"]["system"] > 0 and last["parts"]["tools"] > 0, last["parts"])
         # a tool call's arguments stream as tool deltas (the launcher shows "Writing app.py… N characters"); Pi's RPC
         # updates carry no partial message, so the name is unknown until the call ends
         streamed = "".join(d["text"] for e, d in events if e == "delta" and d["kind"] == "tool")
@@ -3498,7 +3504,7 @@ class PiEngineTests(unittest.TestCase):
         code, events, requests = self.turn(["## Goal\nAdd app.py.\n## Done\napp.py prints hi."], msgs, session=session)
         self.assertEqual(code, 0)
         reply = [d["text"] for e, d in events if e == "code_reply"]
-        self.assertTrue(reply and reply[0].startswith(("Conversation compacted", "The conversation could not be compacted")), reply)
+        self.assertTrue(reply and reply[0].startswith(("Conversation compacted", "Nothing to compact yet")), reply)  # tiny session
         self.assertNotIn("/compact", json.dumps([m for r in requests for m in r["messages"]]))  # never sent as a prompt
 
     def test_path_spellings_pi_rewrites_cannot_leave_the_grants(self):

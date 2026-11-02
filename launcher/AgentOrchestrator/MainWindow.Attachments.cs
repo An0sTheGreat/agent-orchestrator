@@ -50,6 +50,15 @@ public partial class MainWindow
         foreach (var c in new[] { _chat, _code })
         {
             var conv = c;
+            // With only a picture or files on the clipboard a text box says Paste cannot run, so Ctrl+V would never arrive
+            CommandManager.AddPreviewCanExecuteHandler(c.Input, (_, e) =>
+            {
+                if (e.Command == ApplicationCommands.Paste && ClipboardHasAttachment())
+                {
+                    e.CanExecute = true;
+                    e.Handled = true;
+                }
+            });
             CommandManager.AddPreviewExecutedHandler(c.Input, (_, e) =>
             {
                 if (e.Command == ApplicationCommands.Paste && PasteAttachments(conv))
@@ -85,6 +94,11 @@ public partial class MainWindow
                     Attach(c, path);
                 return true;
             }
+            if (Clipboard.GetData("PNG") is MemoryStream png) // Snipping Tool and browsers put the picture as PNG too: kept as is
+            {
+                Attach(c, SavePastedImage(png.ToArray()));
+                return true;
+            }
             if (!Clipboard.ContainsImage() || Clipboard.GetImage() is not { } image)
                 return false;
             Attach(c, SavePastedImage(image));
@@ -97,11 +111,29 @@ public partial class MainWindow
         }
     }
 
-    internal static string SavePastedImage(System.Windows.Media.Imaging.BitmapSource image)
+    private static bool ClipboardHasAttachment()
+    {
+        try { return Clipboard.ContainsFileDropList() || Clipboard.ContainsImage() || Clipboard.ContainsData("PNG"); }
+        catch (System.Runtime.InteropServices.COMException) { return false; } // another app holds the clipboard
+    }
+
+    internal static string SavePastedImage(byte[] png)
+    {
+        var file = PastedFile();
+        File.WriteAllBytes(file, png);
+        return file;
+    }
+
+    private static string PastedFile()
     {
         var folder = Path.Combine(AppSettings.DataRoot, "pasted");
         Directory.CreateDirectory(folder);
-        var file = Path.Combine(folder, $"pasted-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..6]}.png");
+        return Path.Combine(folder, $"pasted-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid().ToString("N")[..6]}.png");
+    }
+
+    internal static string SavePastedImage(System.Windows.Media.Imaging.BitmapSource image)
+    {
+        var file = PastedFile();
         using var stream = File.Create(file);
         var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
         png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(image));

@@ -983,8 +983,8 @@ public partial class MainWindow
                 if (_reply is { } toolReply)
                     DetachAnswer(toolReply);
                 Activate(role, "Using tools");
-                SetChatStatus($"{name} is using {Str(ev, "name")}…");
-                BrowserFollowTool(Str(ev, "name"), ev.TryGetProperty("args", out var shown) && shown.ValueKind != JsonValueKind.String ? shown.GetRawText() : Str(ev, "args"));
+                SetChatStatus($"{name} is working…"); // the tool has run (its result is shown); the model reads it next
+                BrowserFollowTool(Str(ev, "name"), ev.TryGetProperty("args", out var shown) && shown.ValueKind != JsonValueKind.String ? shown.GetRawText() : Str(ev, "args"), Str(ev, "result"));
                 AddCodeTool(Str(ev, "name"), ev.TryGetProperty("args", out var args) && args.ValueKind != JsonValueKind.String ? args.GetRawText() : Str(ev, "args"), Str(ev, "result"));
                 break;
             // compacted: the engine summarized earlier steps to fit the context window; history_compacted: earlier messages,
@@ -1072,7 +1072,7 @@ public partial class MainWindow
             return; // the call itself shows once it has run (AddCodeTool)
         }
         _toolArgs.Clear();
-        SetChatStatus(kind == "thinking" ? "Thinking…" : "Writing…");
+        r.Status.Visibility = Visibility.Collapsed; // the thinking or text itself shows what is happening
         if (r.Block is null || r.Block.Kind != kind)
         {
             EndChatBlock();

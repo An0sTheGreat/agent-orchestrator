@@ -357,6 +357,29 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Every tooltip follows the theme: the popup card's colours, the theme's corners; long text wraps -->
+        <Style TargetType="ToolTip">
+            <Setter Property="Background" Value="{DynamicResource Card}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+            <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="MaxWidth" Value="440" />
+            <Setter Property="HasDropShadow" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToolTip">
+                        <Border Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="1"
+                                CornerRadius="{DynamicResource ControlRadius}" Padding="10,6">
+                            <ContentPresenter>
+                                <ContentPresenter.Resources>
+                                    <Style TargetType="TextBlock"><Setter Property="TextWrapping" Value="Wrap" /></Style>
+                                </ContentPresenter.Resources>
+                            </ContentPresenter>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style TargetType="ContextMenu">
             <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             <Setter Property="HasDropShadow" Value="False" />

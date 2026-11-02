@@ -444,7 +444,7 @@ public partial class MainWindow : Window
                 break;
             case "tool":
                 Activate(role, "Using tools");
-                BrowserFollowTool(Str(ev, "name"), Str(ev, "args"));
+                BrowserFollowTool(Str(ev, "name"), Str(ev, "args"), Str(ev, "result"));
                 if (_pendingTools.Count > 0)
                     CompleteTool(_pendingTools.Dequeue(), Str(ev, "name"), Str(ev, "args"), Str(ev, "result"));
                 else
