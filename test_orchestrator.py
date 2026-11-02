@@ -4619,6 +4619,9 @@ class LlamaCppTests(unittest.TestCase):
         args = orchestrator.llama_args(model, {"model_path": self.PATH}, 8899)
         self.assertEqual(args[args.index("--mmproj") + 1], str(folder / "mmproj-F16.gguf"))  # the smaller one
         self.assertIn("--no-mmproj-offload", args)  # on the CPU unless Vision on GPU
+        self.assertEqual(args[args.index("--image-max-tokens") + 1], "1024")
+        own = orchestrator.llama_args(model, {"model_path": self.PATH, "llama_extra_args": ["--image-max-tokens", "512"]}, 8899)
+        self.assertEqual(own.count("--image-max-tokens"), 1)  # the user's own value wins
         self.assertNotIn("--no-mmproj-offload", orchestrator.llama_args(model, {"model_path": self.PATH, "mmproj_offload": True}, 8899))
         self.assertNotIn("--mmproj", orchestrator.llama_args(model, {"model_path": self.PATH, "disable_vision": "on"}, 8899))
 
