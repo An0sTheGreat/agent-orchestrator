@@ -690,10 +690,9 @@ public partial class MainWindow
         var bubble = new Border
         {
             Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,
-            HorizontalAlignment = HorizontalAlignment.Right, BorderThickness = new Thickness(1),
+            HorizontalAlignment = HorizontalAlignment.Right, // no outline: a quiet fill, as Claude's
         };
         bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
-        bubble.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
         bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
         var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => TypedText(text)); // Copy: what the user wrote, not the attached files
         SetStamp(stamp, time);
@@ -970,7 +969,8 @@ public partial class MainWindow
                         "delegate" => ("delegate", name),
                         var s => (s, Str(ev, "title")),
                     };
-                SetChatStatus($"{(Str(ev, "title") is { Length: > 0 } t ? t : name)}…");
+                // Before its first output the model reads the whole prompt (conversation, files, images): nothing to show yet
+                SetChatStatus($"{name} is reading the conversation (no output yet)…");
                 break;
             case "chat_reply" or "code_reply":
                 SetChatFinal(Str(ev, "text"));

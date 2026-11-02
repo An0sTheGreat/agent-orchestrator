@@ -4363,10 +4363,10 @@ public partial class MainWindow : Window
         Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#171716" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
         // The left sidebar: the Panel shade, except Graphite's, which is lighter than its chat area.
         Surface("NavBackground", clay ? "#232120" : parchment ? "#EDEBE4" : graphite ? "#1D1D1B" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", 0.045);
-        Surface("Card", clay ? "#2A2726" : parchment ? "#FFFFFF" : graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", 0.06);
-        Surface("Hover", clay ? "#33302E" : parchment ? "#E6E3DA" : graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", 0.09);
-        Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
-        Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", 0.08);
+        Surface("Card", clay ? "#2A2726" : parchment ? "#FFFFFF" : graphite ? "#242423" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", clay ? 0.015 : 0.06); // Dark Parchment: near-neutral greys, as Claude's
+        Surface("Hover", clay ? "#33302E" : parchment ? "#E6E3DA" : graphite ? "#2B2A29" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", clay ? 0.02 : 0.09);
+        Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#2C2B29" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
+        Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
         SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9C9A93" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
         var rim = (byte)(parchment ? 0 : glass ? 0x50 : oled || graphite ? 0x18 : flat ? 0x22 : 0x1A);
