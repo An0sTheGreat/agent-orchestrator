@@ -60,7 +60,7 @@ public partial class MainWindow
     // uncovered or clipped as the column grows or shrinks; a collapsing page stays under the rail until the slide ends.
     private void SlideColumn(FrameworkElement page, bool collapsed, bool slide)
     {
-        var target = Math.Clamp(_settings.DetailsWidth, 260, 1400);
+        var target = Math.Max(DetailsMin(), Math.Min(_settings.DetailsWidth, 1400));
         var from = DetailsColumn.ActualWidth;
         SplitterBar.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
         SplitterColumn.Width = new GridLength(collapsed ? 0 : 6);
@@ -69,7 +69,7 @@ public partial class MainWindow
             page.ClearValue(WidthProperty);
             page.HorizontalAlignment = HorizontalAlignment.Stretch;
             page.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible; // (an interrupted slide's cleanup may have hidden it)
-            DetailsColumn.MinWidth = collapsed ? 0 : 260;
+            DetailsColumn.MinWidth = collapsed ? 0 : DetailsMin();
             DetailsColumn.Width = collapsed ? GridLength.Auto : new GridLength(target);
             FitDetailsColumn();
         }

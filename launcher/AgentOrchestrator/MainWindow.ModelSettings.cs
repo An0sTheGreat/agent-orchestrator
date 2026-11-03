@@ -16,18 +16,6 @@ namespace AgentOrchestrator;
 // launcher's settings and inherit what they leave empty from the Implementer.
 public partial class MainWindow
 {
-    // A built-in role's fixed prompts from the workflow folder: the project run's, then the Code conversation's.
-    private string WorkflowPrompt(string role)
-    {
-        string Read(string file)
-        {
-            try { return _workflowRoot is null ? "" : File.ReadAllText(Path.Combine(_workflowRoot, "prompts", file)).Trim(); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return ""; }
-        }
-        var code = role == "implementer" ? "code.txt" : $"code_{role}.txt";
-        return $"PROJECT RUN (prompts/{role}.txt)\n\n{Read(role + ".txt")}\n\n\nCODE CONVERSATION (prompts/{code})\n\n{Read(code)}";
-    }
-
     // Shows the Chat prompt section in the Chat view and the fixed workflow prompt section in the Code view.
     private void ApplyPromptView(Panel? sections = null)
     {
@@ -37,6 +25,110 @@ public partial class MainWindow
                 section.Visibility = (section.Tag as string == "ChatPromptSection") == chat ? Visibility.Visible : Visibility.Collapsed;
         static IEnumerable<FrameworkElement> Flatten(FrameworkElement e) =>
             LogicalTreeHelper.GetChildren(e).OfType<FrameworkElement>().SelectMany(Flatten).Prepend(e);
+    }
+
+    // A built-in worker's editable prompts (prompts/<file>, overridden in <data>\prompts\<file>; orchestrator.prompt_text).
+    private static (string Label, string File)[] RolePromptFiles(string role) => role switch
+    {
+        "planner" => [("Code", "lead.txt"), ("Code with Pi", "lead_pi.txt"), ("Start project", "lead_project.txt"), ("Step-by-step pipeline", "planner.txt")],
+        "implementer" => [("Delegated tasks", "sub_implementer.txt"), ("Step-by-step pipeline", "implementer.txt")],
+        "reviewer" => [("Delegated reviews", "sub_reviewer.txt"), ("Step-by-step pipeline", "reviewer.txt")],
+        "compactor" => [("Summaries", "compactor.txt")],
+        _ => [],
+    };
+
+    private static string PromptOverridePath(string file) => Path.Combine(AppSettings.DataRoot, "prompts", file);
+
+    private string DefaultPromptText(string file)
+    {
+        try { return _workflowRoot is null ? "" : File.ReadAllText(Path.Combine(_workflowRoot, "prompts", file)).Trim(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return ""; }
+    }
+
+    private static string? OverrideText(string file)
+    {
+        try { return File.Exists(PromptOverridePath(file)) && File.ReadAllText(PromptOverridePath(file)).Trim() is { Length: > 0 } text ? text : null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    // One prompt: its label (", edited" while it differs from the default) with the edit and reset buttons at the right, over
+    // the box's top-right corner; the text is read-only until edit unlocks it.
+    private FrameworkElement PromptEditor(string label, string file, List<(string File, TextBox Box)> edits)
+    {
+        var fallback = DefaultPromptText(file);
+        var box = new TextBox
+        {
+            Text = OverrideText(file) ?? fallback, Tag = "Prompt:" + file, Height = 180, Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(8, 6, 8, 6),
+            AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, IsReadOnly = true,
+            VerticalContentAlignment = VerticalAlignment.Top, FontFamily = new FontFamily("Consolas"),
+        };
+        box.SetResourceReference(ForegroundProperty, "Muted");
+        var title = new TextBlock { FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom, ToolTip = $"prompts/{file}" };
+        void Title() => title.Text = label + (box.Text.Trim() == fallback ? "" : "  ·  edited");
+        Button Icon(string glyph, string tag, string tip)
+        {
+            var b = new Button
+            {
+                Content = new TextBlock { Text = glyph, Style = (Style)FindResource("RailGlyph"), FontSize = 13 }, Tag = tag, ToolTip = tip,
+                Style = (Style)FindResource("GhostButton"), Width = 28, Height = 28, Padding = new Thickness(0), Margin = new Thickness(2, 0, 0, 0),
+            };
+            System.Windows.Automation.AutomationProperties.SetName(b, tip);
+            return b;
+        }
+        var editButton = Icon("\uE70F", "EditPrompt", "Edit this prompt");
+        var reset = Icon("\uE72C", "ResetPrompt", "Restore the default prompt");
+        void Lock(bool locked)
+        {
+            box.IsReadOnly = locked;
+            box.SetResourceReference(ForegroundProperty, locked ? "Muted" : "TextPrimary");
+        }
+        editButton.Click += (_, _) =>
+        {
+            Lock(!box.IsReadOnly);
+            if (!box.IsReadOnly)
+                box.Focus();
+        };
+        reset.Click += (_, _) =>
+        {
+            box.Text = fallback;
+            Lock(true);
+        };
+        box.TextChanged += (_, _) => Title();
+        Title();
+        edits.Add((file, box));
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, Children = { editButton, reset } };
+        DockPanel.SetDock(buttons, Dock.Right);
+        // the buttons sit over the box's top-right corner, on the title's line, so they never cover its text
+        return new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { new DockPanel { Children = { buttons, title } }, box } };
+    }
+
+    // Writes each edited prompt to <data>\prompts (one back at its default removes its file); false when a write failed.
+    private bool SavePromptOverrides(IEnumerable<(string File, TextBox Box)> edits)
+    {
+        try
+        {
+            foreach (var (file, box) in edits)
+            {
+                var target = PromptOverridePath(file);
+                if (box.Text.Trim() == DefaultPromptText(file))
+                {
+                    if (File.Exists(target))
+                        File.Delete(target);
+                }
+                else if (box.Text.Trim() != OverrideText(file))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.WriteAllText(target, box.Text.Trim() + "\n");
+                    Log($"Prompt saved: {target}");
+                }
+            }
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Log($"Could not save a prompt: {e.Message}");
+            return false;
+        }
     }
 
     private static void WriteJson(string path, JsonNode root) => File.WriteAllText(path, root.ToJsonString(new JsonSerializerOptions
@@ -53,14 +145,17 @@ public partial class MainWindow
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
         LauncherLogic.RemoteRole? remoteNow = null;
+        var followsMain = false; // COMPACTOR on MAIN's model: MAIN's settings show, and Save gives it its own only when they change
         if (!card.IsCustom)
         {
             if (!File.Exists(path))
                 return null;
             try
             {
-                role = JsonNode.Parse(File.ReadAllText(path))!["roles"]![card.Role]!.AsObject();
-                remoteNow = LauncherLogic.ReadRemoteRole(path, card.Role);
+                var roles = JsonNode.Parse(File.ReadAllText(path))!["roles"]!.AsObject();
+                followsMain = card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(roles);
+                role = roles[followsMain ? "planner" : card.Role]!.AsObject();
+                remoteNow = LauncherLogic.ReadRemoteRole(path, followsMain ? "planner" : card.Role);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
             {
@@ -106,9 +201,14 @@ public partial class MainWindow
             TextWrapping = height > 30 ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        // The groups of related settings, one column or two (SettingsColumns), added in SettingsGroups' order once built.
-        var sections = new SettingsColumns { Margin = new Thickness(0, 0, 14, 0) };
-        var scroll = new ScrollViewer { Content = sections, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        // The groups of related settings, one column or two (SettingsColumns), added in SettingsGroups' order once built: the
+        // Model group beside the worker's own (HeadGroups) on top, then a line, then the option groups.
+        var head = new SettingsColumns();
+        var sections = new SettingsColumns();
+        var divider = new Border { Height = 1, Margin = new Thickness(0, 16, 0, 18) };
+        divider.SetResourceReference(Border.BackgroundProperty, "Border");
+        var body = new StackPanel { Margin = new Thickness(0, 0, 14, 0), Children = { head, divider, sections } };
+        var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var blocks = new Dictionary<string, StackPanel>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
         StackPanel Section(string name, string help, bool showHelp = true)
@@ -219,14 +319,22 @@ public partial class MainWindow
                     editor = box;
                 }
                 editors[o.Key] = editor;
-                var tip = o.Default is null ? o.Key : $"{o.Key}; default {o.Default}";
+                // The hover tip: what the option does, the default the field shows when empty (it follows the model), its range
+                // or format, and the config key. Built when it opens, so the default is the current one.
+                string Tip()
+                {
+                    var shown = Base().GetValueOrDefault(o.Key, "") is { Length: > 0 } d ? d : o.Default ?? "";
+                    return $"{ModelOptions.Descriptions.GetValueOrDefault(o.Key, o.Help)}\n\nDefault: {(shown.Length > 0 ? shown : "none (the server or model decides)")}\n{o.Help}  ·  {o.Key}";
+                }
+                TextBlock TipBlock() => new() { Text = Tip(), MaxWidth = 340, TextWrapping = TextWrapping.Wrap };
                 hints[o.Key] = Muted(o.Help);
                 if (wide)
                 {
                     fields.Children.Add(rows[o.Key] = new StackPanel
                     {
-                        Margin = new Thickness(0, 12, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = tip,
+                        Margin = new Thickness(0, 12, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
                     });
+                    rows[o.Key].ToolTipOpening += (_, _) => rows[o.Key].ToolTip = TipBlock();
                     continue;
                 }
                 // Label left, a compact control right (as Unsloth Studio's run settings); the help shows on hover.
@@ -239,7 +347,8 @@ public partial class MainWindow
                 line.Children.Add(editor);
                 line.Children.Add(name);
                 hints[o.Key].Visibility = Visibility.Collapsed;
-                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { line }, ToolTip = $"{o.Help}\n{tip}" };
+                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { line }, ToolTip = TipBlock() };
+                row.ToolTipOpening += (_, _) => row.ToolTip = TipBlock();
                 if (o.Key is "max_seq_length" or "gpu_layers" && editor is TextBox sliderBox)
                     row.Children.Add(SliderFor(o.Key, sliderBox));
                 row.Children.Add(hints[o.Key]);
@@ -307,22 +416,27 @@ public partial class MainWindow
         // Built-in roles: Local (Unsloth / llama.cpp) or a remote OpenAI-compatible API.
         TextBox[]? remoteBoxes = null;
         TextBox? chatPrompt = null;
+        var promptEdits = new List<(string File, TextBox Box)>(); // the editable workflow prompts (PromptEditor)
         StackPanel? remotePanel = null, source = null;
         if (!card.IsCustom)
         {
             // The Chat view: an optional prompt of the user's. The Code view: the role's fixed workflow prompts, read only
             // (the multi-agent workflow depends on them). ApplyPromptView shows the one for the view on screen.
-            var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
-            chat.Tag = "ChatPromptSection";
-            chat.Children.Add(chatPrompt = Box((string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120));
+            chatPrompt = Box(followsMain ? "" : (string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120);
             chatPrompt.FontFamily = new FontFamily("Consolas");
-            var workflow = Section("System prompt (workflow)", "Fixed: the instructions this role follows in project runs and Code conversations. Not editable.");
-            workflow.Tag = "WorkflowPromptSection";
-            var fixedPrompt = Box(WorkflowPrompt(card.Role), "WorkflowPrompt", 220);
-            (fixedPrompt.FontFamily, fixedPrompt.IsReadOnly, fixedPrompt.TextWrapping, fixedPrompt.VerticalScrollBarVisibility) =
-                (new FontFamily("Consolas"), true, TextWrapping.Wrap, ScrollBarVisibility.Auto);
-            fixedPrompt.SetResourceReference(ForegroundProperty, "Muted");
-            workflow.Children.Add(fixedPrompt);
+            if (card.Role != LauncherLogic.Compactor) // COMPACTOR never chats
+            {
+                var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
+                chat.Tag = "ChatPromptSection";
+                chat.Children.Add(chatPrompt);
+            }
+            var workflow = Section("System prompt (workflow)", card.Role == LauncherLogic.Compactor
+                ? "The instructions COMPACTOR follows when it summarizes a conversation or an agent's steps."
+                : "The instructions this worker follows in Code conversations and project runs.");
+            workflow.Tag = card.Role == LauncherLogic.Compactor ? "PromptSection" : "WorkflowPromptSection"; // COMPACTOR's shows in both views
+            workflow.Children.Add(Muted("The edit button unlocks a prompt and the reset button restores the default; Save keeps the change, for every project."));
+            foreach (var (label, file) in RolePromptFiles(card.Role))
+                workflow.Children.Add(PromptEditor(label, file, promptEdits));
             var panel = source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), Muted("Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.") } };
             modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
             {
@@ -344,7 +458,7 @@ public partial class MainWindow
             note.Margin = new Thickness(0, 8, 0, 0);
             remotePanel.Children.Add(note);
             panel.Children.Add(remotePanel);
-            if (card.Role != "planner") // an added Implementer / Reviewer: removing it hands its work back to MAIN
+            if (card.Role is not ("planner" or LauncherLogic.Compactor)) // an added Implementer / Reviewer: removing it hands its work back to MAIN
             {
                 var name = ChatName(card, card.Role);
                 var removeRole = new Button { Content = "Remove", Tag = "RemoveRole", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0),
@@ -492,6 +606,22 @@ public partial class MainWindow
         // Top: the picker, quantization, source, memory, context length with its slider, then the Advanced switch.
         var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
         var modelFields = Fields("Model");
+        // The quantization comes with the model (a pick sets it), so it is shown, not edited: "Quantization - Q4_K_M".
+        if (editors["gguf_variant"] is TextBox variantBox)
+        {
+            var quantLine = new TextBlock { FontSize = 12, Tag = "QuantizationText" };
+            void ShowQuant()
+            {
+                quantLine.Inlines.Clear();
+                quantLine.Inlines.Add(new System.Windows.Documents.Run("Quantization - ") { FontWeight = FontWeights.SemiBold });
+                quantLine.Inlines.Add(new System.Windows.Documents.Run(variantBox.Text.Trim() is { Length: > 0 } q ? q : "—"));
+            }
+            variantBox.TextChanged += (_, _) => ShowQuant();
+            ShowQuant();
+            rows["gguf_variant"].Children.Clear();
+            rows["gguf_variant"].Children.Add(quantLine);
+            rows["gguf_variant"].Children.Add(fieldErrors["gguf_variant"]);
+        }
         modelFields.Children.Remove(rows["max_seq_length"]);
         ContextHint(null);
         var advanced = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), IsChecked = _settings.ModelAdvanced, Tag = "AdvancedSettings", VerticalAlignment = VerticalAlignment.Center };
@@ -500,60 +630,115 @@ public partial class MainWindow
         advancedLabel.VerticalAlignment = VerticalAlignment.Center;
         var advancedRow = new DockPanel { Margin = new Thickness(0, 16, 0, 0), Children = { advanced, advancedLabel },
             ToolTip = "Memory, speed, output and server options" };
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, modelFields, source, vramBlock,
+        // COMPACTOR: whether it follows MAIN's model, and the way back to it.
+        StackPanel? follow = null;
+        if (card.Role == LauncherLogic.Compactor)
+        {
+            follow = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Tag = "CompactorSource" };
+            if (followsMain)
+                follow.Children.Add(Muted("Same as MAIN: compaction runs on MAIN's model and follows its changes. Pick a model (or change a setting) and Save to give COMPACTOR its own."));
+            else
+            {
+                follow.Children.Add(Muted("COMPACTOR has its own model: summaries load it, then MAIN's model loads again."));
+                var back = new Button { Content = "Use MAIN's model", Tag = "UseMainModel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4),
+                    HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
+                back.Click += (_, _) =>
+                {
+                    if (WriteConfigs(WorkerConfigTargets(), target =>
+                        {
+                            var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+                            ((root["roles"] ??= new JsonObject()).AsObject())[LauncherLogic.Compactor] = new JsonObject { ["same_as"] = "planner" };
+                            WriteJson(target, root);
+                            return null;
+                        }) is { } failed)
+                    {
+                        Toast($"{card.Title}: not changed ({failed})", "#FF667A");
+                        return;
+                    }
+                    Toast($"{card.Title}: same as MAIN");
+                    HoldWorkerTab(() =>
+                    {
+                        PrefillCards();
+                        RefreshWorkerTab(force: true);
+                    });
+                };
+                follow.Children.Add(back);
+            }
+        }
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, follow, modelFields, source, vramBlock,
                      rows["max_seq_length"], advancedRow })
             if (part is not null)
                 top.Children.Add(part);
         foreach (var (name, _) in SettingsGroups)
             if (blocks.TryGetValue(name, out var block))
-                sections.Children.Add(block);
-        ApplyPromptView(sections);
+                (HeadGroups.Contains(name) ? head : sections).Children.Add(block);
+        ApplyPromptView(body);
+        // The picker (MainWindow.ModelPicker.cs) opens instead of the box's own list; the box shows the current model or the
+        // pick. The list loads the first time it opens (never at startup); the body stays usable meanwhile.
         ModelChoice? initial = null;
         var requested = false;
-        modelBox.DropDownOpened += (_, _) =>
+        var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, choice =>
         {
+            var old = modelBox.SelectedItem;
+            var item = choice is null ? new ComboBoxItem { Content = card.ModelName } : new ComboBoxItem { Content = choice.Label, Tag = choice };
+            modelBox.Items.Add(item);
+            modelBox.SelectedItem = item;
+            modelBox.Items.Remove(old);
+        });
+        void OpenPicker()
+        {
+            if (!modelBox.IsEnabled)
+                return;
+            picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
             if (!requested)
                 LoadModels();
             requested = true;
+        }
+        modelBox.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            OpenPicker();
+        };
+        modelBox.PreviewKeyDown += (_, e) =>
+        {
+            if ((e.Key == Key.System ? e.SystemKey : e.Key) is Key.F4 or Key.Down or Key.Up or Key.Enter or Key.Space)
+            {
+                e.Handled = true;
+                OpenPicker();
+            }
+        };
+        // A model brings its own quantization: the Load section's gguf_variant follows the pick; the current model (or no
+        // pick) restores what it showed.
+        modelBox.SelectionChanged += (_, _) =>
+        {
+            var picked = Picked();
+            if (editors["gguf_variant"] is TextBox variant)
+                variant.Text = picked is null ? shownAtStart["gguf_variant"] : picked.Variant ?? "";
+            hasModel = picked is not null || startLoad?["model_path"] is not null;
+            Derive(LoadOf(picked));
         };
         async void LoadModels()
         {
             modelStatus.Text = "Loading models…";
+            picker.SetEntries(null, "Loading models…");
             try
             {
                 var choices = await FetchModelChoicesAsync();
-                modelBox.Items.Clear();
-                ComboBoxItem? selected = null;
-                foreach (var choice in choices)
-                {
-                    var described = LauncherLogic.DescribeModel(choice.Display, choice.Variant);
-                    var item = new ComboBoxItem { Content = choice.Label, Tag = choice };
-                    modelBox.Items.Add(item);
-                    if (selected is null && card.ModelName == described.Name && (card.Quant == described.Quant || described.Quant == "—"))
-                        (selected, initial) = (item, choice);
-                }
-                if (selected is null)
-                    modelBox.Items.Insert(0, selected = new ComboBoxItem { Content = $"{card.ModelName}  (current)" });
-                modelBox.SelectedItem = selected;
+                var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
+                var entries = await Task.Run(() => DescribeChoices(choices, folder, hub));
+                initial = choices.FirstOrDefault(choice => LauncherLogic.DescribeModel(choice.Display, choice.Variant) is var d
+                    && card.ModelName == d.Name && (card.Quant == d.Quant || d.Quant == "—"));
                 modelStatus.Text = choices.Count == 0 ? "No installed text models found." : LocalRuntime ? "GGUF files on this computer (llama.cpp runtime)." : "Models installed in Unsloth.";
-                // A model brings its own quantization: the Load section's gguf_variant follows the pick. "(current)" (no
-                // ModelChoice) restores what the current model showed.
-                modelBox.SelectionChanged += (_, _) =>
-                {
-                    var picked = (modelBox.SelectedItem as ComboBoxItem)?.Tag as ModelChoice;
-                    if (editors["gguf_variant"] is TextBox variant)
-                        variant.Text = picked is null ? shownAtStart["gguf_variant"] : picked.Variant ?? "";
-                    hasModel = picked is not null || startLoad?["model_path"] is not null;
-                    Derive(LoadOf(picked));
-                };
+                picker.SetEntries(entries, choices.Count == 0 ? modelStatus.Text : "");
+                if (picker.IsOpen)
+                    picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
             }
             catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException)
             {
-                modelBox.Items.Clear();
-                modelBox.Items.Add(new ComboBoxItem { Content = card.ModelName });
-                modelBox.SelectedIndex = 0;
                 modelStatus.Text = $"Could not list models ({exception.Message}); the current model is kept.";
                 modelStatus.Foreground = red;
+                picker.SetEntries([], modelStatus.Text);
+                requested = false; // the next open tries again
             }
         }
 
@@ -662,7 +847,7 @@ public partial class MainWindow
         };
         DockPanel.SetDock(footer, Dock.Bottom);
         footer.Margin = new Thickness(0, 14, 14, 14);
-        foreach (var part in new FrameworkElement[] { sections, footer }) // read-only while a run uses the models
+        foreach (var part in new FrameworkElement[] { body, footer }) // read-only while a run uses the models
             part.SetBinding(IsEnabledProperty, new System.Windows.Data.Binding(nameof(RoleCard.Editable)) { Source = card });
         cancel.Click += (_, _) => close();
 
@@ -725,6 +910,19 @@ public partial class MainWindow
                 return true;
             }
 
+            if (!SavePromptOverrides(promptEdits))
+            {
+                ShowErrors(new() { [""] = "A prompt could not be saved: see the log." });
+                return false;
+            }
+            // COMPACTOR on MAIN's model keeps following it until a model or option of its own is saved.
+            if (followsMain && choice is null && editors.Values.Concat<Control?>(remoteBoxes ?? []).Concat(modes ?? []).Select(StateOf)
+                    .SequenceEqual(clean.Take(editors.Count).Concat(clean.Skip(editors.Count + 4).Take((remoteBoxes?.Length ?? 0) + (modes?.Length ?? 0)))))
+            {
+                Toast($"{card.Title}: settings saved");
+                HoldWorkerTab(saved);
+                return true;
+            }
             var remote = remoteMode() ? new LauncherLogic.RemoteRole(remoteBoxes![0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, "") : null;
             var check = (JsonObject)role!.DeepClone(); // validate everything before any file is touched
             if (choice is not null && remote is null)
@@ -744,6 +942,12 @@ public partial class MainWindow
                         LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
                         return failed;
                     var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+                    if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject)) // its own from here on: MAIN's settings to start
+                    {
+                        var copy = (JsonObject)root["roles"]!["planner"]!.DeepClone();
+                        copy.Remove("chat_system_prompt");
+                        root["roles"]![LauncherLogic.Compactor] = copy;
+                    }
                     var settings = root["roles"]![card.Role]!.AsObject();
                     if (choice is not null && remote is null)
                         SetRoleModel(settings, choice);
@@ -793,6 +997,7 @@ public partial class MainWindow
         ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
         static string? StateOf(Control? c) => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" };
         List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
+            .Concat(promptEdits.Select(p => p.Box))
             .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
         clean = State();
         foreach (var editor in editors.Values)
@@ -821,6 +1026,7 @@ public partial class MainWindow
         ("Server", "Load options: apply at the next model load."), ("Request", "How long the orchestrator waits for this worker."), ("Other", "Other options."),
         ("System prompt (Chat)", null), ("System prompt (workflow)", null), ("Worker", null),
     ];
+    private static readonly string[] HeadGroups = ["Model", "Worker", "System prompt (Chat)", "System prompt (workflow)"];
     private static readonly string[] AdvancedGroups = ["Memory", "Speed", "Output", "Server", "Request", "Other"];
     private static readonly Dictionary<string, string[]> SettingsGroupKeys = new()
     {
@@ -877,7 +1083,7 @@ public partial class MainWindow
             // Options… opens the target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
             _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
-            if (Dropdown(ChatTargetChip) is not ["Options…", "Main", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden) ||
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Main", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && k.Role != LauncherLogic.Compactor) ||
                 ChatTargetChip.ToolTip as string != chipTip)
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
@@ -1051,6 +1257,96 @@ public partial class MainWindow
     // Planner's tab: its model list loads on the first open (the GGUFs on disk, llama.cpp runtime), a model's defaults never
     // replace an edit, Save writes the role and keeps the tab, Revert and an invalid value write nothing, and the chat system
     // prompt is saved and removed when blank. config: the active config.json, holding roles.planner.
+    // --ui-smoke: COMPACTOR's tab (always shown, Same as MAIN, never a chat target), the Model group beside the prompts in a
+    // wide column, a prompt edited, saved and reset (<data>\prompts), and "+ New preset" applying the default workers.
+    private async Task<bool> CompactorSmoke(string config, Action<string, FrameworkElement?> snap)
+    {
+        static Task Idle() => Task.Delay(400);
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: compactor: {what}"); return false; }
+        var (planner, compactor) = (CardFor("planner")!, CardFor(LauncherLogic.Compactor));
+        var (chatWorker, ask, width) = (_settings.ChatWorker, _codeChoice, DetailsColumn.Width);
+        _codeChoice = _ => null;
+        var overridden = PromptOverridePath("compactor.txt");
+        try
+        {
+            if (compactor is null || compactor.Hidden || !compactor.FollowsMain || compactor.ModelName != planner.ModelName || compactor.Title != "COMPACTOR")
+                return Fail("the card");
+            _settings.ChatWorker = LauncherLogic.Compactor;
+            if (ListedWorkers(_chat).Contains(compactor) || ChatTarget() != planner ||
+                BuildAddWorkerMenu(PresetsButton).Items.OfType<MenuItem>().Any(i => i.Tag as string == LauncherLogic.Compactor))
+                return Fail("COMPACTOR is listed to chat with or to add");
+            _settings.ChatWorker = chatWorker;
+
+            if (Math.Abs(DetailsColumn.MinWidth - DetailsMin()) > 0.5 || DetailsMin() < Math.Min(260, 1) || DetailsColumn.ActualWidth < DetailsMin() - 0.5)
+                return Fail($"the column's least width: {DetailsColumn.MinWidth} / {DetailsMin()}");
+            DetailsColumn.Width = new GridLength(820); // two columns: Model beside the prompts, the options below the line
+            SmokeClickTab(compactor);
+            await Idle();
+            if ((double)Resources["WorkerTabWidth"] != WorkerTabMax || WorkerTabsScroll.ScrollableWidth > 1) // capped: all four fit
+                return Fail($"the cards' width: {Resources["WorkerTabWidth"]}");
+            TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == text && t.IsVisible);
+            if (Header("MODEL") is not { } model || Header("SYSTEM PROMPT (WORKFLOW)") is not { } prompts || Header("SAMPLING") is not { } sampling)
+                return Fail("the groups");
+            var (m, p, s) = (model.TranslatePoint(new Point(), WorkerSettingsHost), prompts.TranslatePoint(new Point(), WorkerSettingsHost),
+                sampling.TranslatePoint(new Point(), WorkerSettingsHost));
+            if (Math.Abs(m.Y - p.Y) > 2 || p.X <= m.X + 100 || s.Y <= m.Y + 100)
+                return Fail($"the layout: model {m}, prompts {p}, sampling {s}");
+            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as MAIN:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
+                SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
+                return Fail("Same as MAIN, no chat prompt");
+            TextBox Box() => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "Prompt:compactor.txt")!;
+            Button Icon(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag)!;
+            var original = DefaultPromptText("compactor.txt");
+            if (original.Length == 0 || Box().Text != original || !Box().IsReadOnly)
+                return Fail("the compactor prompt");
+            // the buttons sit above the box: they never cover its text
+            if (Icon("EditPrompt").TranslatePoint(new Point(0, Icon("EditPrompt").ActualHeight), WorkerSettingsHost).Y > Box().TranslatePoint(new Point(), WorkerSettingsHost).Y + 1)
+                return Fail("the buttons cover the prompt");
+            snap("worker-settings-wide", null);
+
+            SmokeClick(Icon("EditPrompt"));
+            if (Box().IsReadOnly)
+                return Fail("edit unlocks");
+            Box().Text = "Summarize in haiku.";
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            var configNow = JsonNode.Parse(File.ReadAllText(config))!["roles"] as JsonObject;
+            if (!File.Exists(overridden) || File.ReadAllText(overridden).Trim() != "Summarize in haiku." || LauncherLogic.CompactorHasOwn(configNow) ||
+                Box().Text != "Summarize in haiku." || !Box().IsReadOnly)
+                return Fail("a saved prompt");
+            SmokeClick(Icon("ResetPrompt"));
+            if (Box().Text != original)
+                return Fail("reset");
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            if (File.Exists(overridden))
+                return Fail("a reset prompt keeps its file");
+
+            // "+ New preset": the default workers (none added, no custom ones), the template's settings, COMPACTOR on MAIN.
+            if (BuildPresetsMenu().Items.OfType<MenuItem>().FirstOrDefault()?.Header as string != "+ New preset…")
+                return Fail("the menu item");
+            SavePreset("smoke-before");
+            NewPreset("smoke-fresh");
+            await Idle();
+            var template = JsonNode.Parse(File.ReadAllText(Path.Combine(_workflowRoot!, "config.json")))!["roles"]!;
+            var now = JsonNode.Parse(File.ReadAllText(config))!["roles"]!;
+            if (_settings.Presets.FirstOrDefault(x => x.Name == "smoke-fresh") is not { } fresh || fresh.Workers.Any(w => w.Custom) || _settings.AddedRoles.Count != 0 ||
+                _cards.Any(c => c.IsCustom) || !JsonNode.DeepEquals(now["planner"]?["auto_load"], template["planner"]?["auto_load"]) ||
+                (string?)now[LauncherLogic.Compactor]?["same_as"] != "planner")
+                return Fail("the fresh preset");
+            ApplyPreset(_settings.Presets.First(x => x.Name == "smoke-before"));
+            _settings.Presets.RemoveAll(x => x.Name.StartsWith("smoke-", StringComparison.Ordinal));
+            _settings.Save();
+            return true;
+        }
+        finally
+        {
+            (_settings.ChatWorker, _codeChoice, DetailsColumn.Width) = (chatWorker, ask, width);
+            if (File.Exists(overridden))
+                File.Delete(overridden);
+        }
+    }
+
     private async Task<bool> ModelSettingsSmoke(RoleCard planner, string config, Action<string, FrameworkElement?> snap)
     {
         static Task Idle() => Task.Delay(400);
@@ -1090,7 +1386,7 @@ public partial class MainWindow
 
             // One tab per shown worker; three fit the default column.
             var width = (double)Resources["WorkerTabWidth"];
-            if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)) || Math.Abs(width - Math.Max(88, WorkerTabsScroll.ActualWidth / 3 - 6)) > 0.5 ||
+            if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)) || Math.Abs(width - Math.Clamp(WorkerTabsScroll.ActualWidth / 3 - 6, 88, WorkerTabMax)) > 0.5 ||
                 3 * (width + 6) > WorkerTabsScroll.ActualWidth + 1 || (_cards.Count(c => !c.Hidden) <= 3 && WorkerTabsScroll.ScrollableWidth > 1) ||
                 Math.Abs(SmokeTab(planner)!.ActualWidth - width - 6) > 0.5)
                 return Fail("tabs at the default width");
@@ -1101,6 +1397,7 @@ public partial class MainWindow
             snap("tabs-default", null);
 
             // A narrow column: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
+            DetailsColumn.MinWidth = 260; // the tab strip at the narrowest column (a small window's)
             DetailsColumn.Width = new GridLength(260);
             await Idle();
             if (WorkerTabsScroll.ScrollableWidth <= 0 || (double)Resources["WorkerTabWidth"] != 88)
@@ -1120,13 +1417,15 @@ public partial class MainWindow
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is null ||
                 Model().Items.Count != 1 || Model().Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null))
                 return Fail("the Planner's tab");
-            async Task<ComboBoxItem?> FakeItem()
+            // A click on the box opens the picker (not the box's own list), which lists the models once loaded.
+            async Task<PickerEntry?> FakeItem()
             {
                 var box = Model();
-                box.IsDropDownOpen = true;
-                box.IsDropDownOpen = false;
-                await Until(() => box.Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null));
-                return box.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (i.Tag as ModelChoice)?.File == fake);
+                box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonDownEvent });
+                await Until(() => _modelPickerTest is { IsOpen: true } p && p.Rows.Any(r => r.Tag is PickerEntry));
+                var entry = _modelPickerTest?.Rows.Select(r => r.Tag as PickerEntry).FirstOrDefault(e => e?.Choice.File == fake);
+                _modelPickerTest?.Close();
+                return entry;
             }
 
             // The model's defaults arrive off the UI thread and never replace an edit; re-selecting "(current)" restores the
@@ -1135,12 +1434,11 @@ public partial class MainWindow
                 return Fail("the model list");
             snap("tabs-settings", null);
             SmokeField("top_k").Text = "33";
-            Model().SelectedItem = fakeItem; // an unreadable GGUF: the static defaults
+            _modelPickerTest!.Choose(fakeItem); // an unreadable GGUF: the static defaults
             if (!await Until(() => SmokeField("max_seq_length").Text == "32768") || SmokeField("n_batch").Text != "2048" || SmokeField("seed").Text != "" ||
-                SmokeField("max_tokens").Text != "" || SmokeField("top_k").Text != "33" ||
-                Model().Items.OfType<ComboBoxItem>().FirstOrDefault(i => i.Tag is null) is not { } currentItem)
+                SmokeField("max_tokens").Text != "" || SmokeField("top_k").Text != "33" || Model().SelectedItem is not ComboBoxItem { Tag: ModelChoice })
                 return Fail("a model's defaults");
-            Model().SelectedItem = currentItem;
+            _modelPickerTest.Choose(null); // "(current)": the model the worker had
             if (!await Until(() => SmokeField("max_seq_length").Text == "") || SmokeField("n_batch").Text != "")
                 return Fail("the current model");
             var body = WorkerSettingsHost.Child;
@@ -1152,7 +1450,7 @@ public partial class MainWindow
             // Save: a model from the list and a temperature.
             if (await FakeItem() is not { } fakeAgain)
                 return Fail("the model list after Save");
-            Model().SelectedItem = fakeAgain;
+            _modelPickerTest!.Choose(fakeAgain);
             if (!await Until(() => SmokeField("max_seq_length").Text == "32768"))
                 return Fail("a model's defaults after Save");
             SmokeField("temperature").Text = "0.45";
@@ -1163,6 +1461,40 @@ public partial class MainWindow
                 (int?)load["auto_load"]?["max_seq_length"] != 32768 || (double?)load["sampling"]?["top_p"] != 0.95 ||
                 (string?)load["auto_load"]?["gguf_variant"] != "Q4_K_M" || (string?)load["auto_load"]?["gguf_file"] != fake || planner.ModelName != LauncherLogic.DescribeModel("Fake-Model-Q4_K_M", "Q4_K_M").Name)
                 return Fail("Save a model");
+            // The quantization shows as text, not a box; the picker searches fuzzily, groups (Text only, then Vision capable;
+            // image generation listed but not pickable), sorts each group by name, quant or size, and Enter picks.
+            string? QuantText() => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Tag as string == "QuantizationText") is { } q
+                ? string.Concat(q.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text)) : null;
+            if (QuantText() != "Quantization - Q4_K_M" ||
+                SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "gguf_variant") is not null)
+                return Fail($"the quantization line: '{QuantText()}'");
+            if (!FuzzyMatch("Qwen3.5-4B Q4_K_M Text only", "qw 4b q4") || FuzzyMatch("Gemma", "qx") || QuantKey("Q4_K_M").Bits != 4 ||
+                QuantKey("UD-IQ3_XXS").Bits != 3 || QuantKey("BF16").Bits != 16 || QuantKey("—").Bits != double.MaxValue)
+                return Fail("fuzzy search and quant order");
+            {
+                var picks = new List<ModelChoice?>();
+                var test = new ModelPicker(Model(), "Current one", picks.Add);
+                static ModelChoice C(string n) => new(n, n, n, null, n);
+                var vision = C("v");
+                test.SetEntries([new(C("b"), "Beta", "Q4_K_M", 9L << 30, PickerGroups[0]), new(C("a"), "Alpha", "Q8_0", 3L << 30, PickerGroups[0]),
+                    new(vision, "Avis", "Q6_K", 5L << 30, PickerGroups[1]), new(C("i"), "Flux", "Q4_0", 1L << 30, PickerGroups[2])], "");
+                test.Open(null, null);
+                await Idle();
+                snap("model-picker", test.Card);
+                string Names() => string.Join(",", test.Rows.Select(r => (r.Tag as PickerEntry)?.Name ?? "current"));
+                var byName = Names();
+                test.SortBy("Quant");
+                var byQuant = Names();
+                test.SortBy("Size");
+                test.SortBy("Size"); // again: largest first
+                var bySizeDown = Names();
+                test.Search.Text = "avs";
+                var searched = Names();
+                test.Key(Key.Enter);
+                if (byName != "current,Alpha,Beta,Avis" || byQuant != "current,Beta,Alpha,Avis" || bySizeDown != "current,Beta,Alpha,Avis" ||
+                    searched != "Avis" || picks is not [{ } picked] || picked != vision || test.IsOpen)
+                    return Fail($"the picker: {byName} / {byQuant} / {bySizeDown} / {searched}");
+            }
 
             // Revert drops an edit; an invalid value shows the error under the field; neither writes anything.
             var bytes = File.ReadAllBytes(config);

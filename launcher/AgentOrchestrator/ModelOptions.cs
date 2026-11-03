@@ -35,6 +35,49 @@ internal static class ModelOptions
         ["enable_thinking"] = "Thinking", ["reasoning_effort"] = "Reasoning effort", ["timeout_seconds"] = "Timeout (seconds)",
     };
 
+    // What each option does, for its hover tip in the worker settings (about 20 words; the tip adds the default shown).
+    public static readonly Dictionary<string, string> Descriptions = new()
+    {
+        ["gguf_variant"] = "The quantization of the model file. Lower bit counts use less memory and run faster, at some loss in quality.",
+        ["max_seq_length"] = "How many tokens the model can hold at once: the conversation, files and tool results. Larger needs more VRAM.",
+        ["cache_type_kv"] = "Precision of the memory that holds the conversation. q8_0 halves its size with little loss; q4 saves more, costs quality.",
+        ["n_parallel"] = "How many requests the server answers at the same time. Each slot shares the context, so keep 1 for one chat.",
+        ["n_batch"] = "How many prompt tokens are read per step. Larger reads long prompts faster but needs more memory while reading.",
+        ["n_ubatch"] = "The batch actually sent to the GPU at once. Raising it speeds prompt reading on big GPUs, using more VRAM.",
+        ["ctx_checkpoints"] = "Saved points in the context that let the server reuse earlier work when a conversation branches or is edited.",
+        ["cache_ram"] = "System memory, in MiB, for cached prompts, so a repeated beginning of a conversation is not read again.",
+        ["load_mode"] = "How the model file is loaded into memory: mapped from disk, locked in RAM, or read directly. Auto usually suits.",
+        ["gpu_memory_mode"] = "Auto lets the server decide how much of the model goes on the GPU; manual uses the GPU layer count below.",
+        ["gpu_layers"] = "How many of the model's layers run on the GPU; the rest run on the CPU, much slower. -1 fits as many as possible.",
+        ["n_cpu_moe"] = "For mixture-of-experts models: expert layers kept on the CPU, freeing VRAM for context at some cost in speed.",
+        ["tensor_split"] = "With several GPUs: how much of the model each one holds, as shares, for example 3,1 for a three-to-one split.",
+        ["gpu_ids"] = "Which GPUs the model may use, by number. Empty uses every GPU the server can see.",
+        ["tensor_parallel"] = "With several GPUs: splits every layer across them instead of giving each GPU whole layers. Can be faster on fast links.",
+        ["speculative_type"] = "Drafts several tokens ahead and checks them in one step, so replies come out faster with the same result.",
+        ["spec_draft_n_max"] = "How many tokens speculative decoding drafts each step. More can be faster when drafts are often right.",
+        ["spec_draft_cache_type"] = "Precision of the draft model's conversation memory. Lower precision saves VRAM with little effect on the drafts.",
+        ["reasoning_budget"] = "The most tokens a thinking model may spend reasoning before it must answer. -1 is unlimited, 0 turns thinking off.",
+        ["reasoning_budget_message"] = "Text inserted when the thinking budget runs out, to tell the model to stop reasoning and answer now.",
+        ["disable_vision"] = "Skips loading the vision projector, saving VRAM. The model can then no longer see images or screenshots.",
+        ["mmproj_offload"] = "Runs the vision projector on the GPU: images are read faster, at about 1 GB more VRAM.",
+        ["cpu_fallback"] = "Loads the model on the CPU when the GPU lacks memory, instead of failing. Works, but replies are much slower.",
+        ["chat_template_override"] = "A Jinja chat template used instead of the one in the model file. For models whose own template is broken.",
+        ["llama_extra_args"] = "Extra command-line arguments for llama-server, for options this page does not list. One per line or space separated.",
+        ["temperature"] = "Randomness of the reply. Lower is focused and repeatable, higher is more varied and creative; coding suits low values.",
+        ["top_p"] = "Samples only from the most likely tokens whose chances add up to this share. Lower values make replies more focused.",
+        ["top_k"] = "Samples only from this many of the most likely next tokens. Lower is more focused; -1 or 0 turns it off.",
+        ["min_p"] = "Drops tokens less likely than this share of the top token's chance, trimming unlikely words while keeping variety.",
+        ["repetition_penalty"] = "Makes tokens already used less likely, against loops and repeated phrases. 1.0 is off; small raises help most.",
+        ["presence_penalty"] = "Discourages any token that has already appeared, nudging the model toward new topics and words. 0 is off.",
+        ["frequency_penalty"] = "Discourages tokens in proportion to how often they appeared, against repeating the same words. 0 is off.",
+        ["max_tokens"] = "The longest reply allowed, in tokens, thinking included. Empty leaves it to the server and the context left.",
+        ["seed"] = "A fixed random seed makes the same prompt give the same reply. -1 picks a new seed each time.",
+        ["stop"] = "Text that ends the reply as soon as the model writes it. Usually empty; the model's template already sets these.",
+        ["enable_thinking"] = "Lets a thinking model reason before answering. Better answers, slower replies; empty uses the model's own default.",
+        ["reasoning_effort"] = "How hard a model that takes an effort level thinks: low is quick, high is thorough and slower.",
+        ["timeout_seconds"] = "How long the orchestrator waits for this worker's reply before it gives up, in seconds.",
+    };
+
     private static readonly string[] CacheTypes = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"];
     private const double Big = int.MaxValue;
 

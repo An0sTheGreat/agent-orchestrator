@@ -68,6 +68,7 @@ public partial class MainWindow
     {
         LauncherLogic.ApplyRuntimeEnv(info, _settings.Runtime, LauncherLogic.LlamaServerPath, _settings.ModelsFolder);
         LauncherLogic.ApplyPiEnv(info, LauncherLogic.PiCli);
+        info.Environment["AGENT_ORCHESTRATOR_PROMPTS"] = Path.Combine(AppSettings.DataRoot, "prompts"); // the edited prompts (orchestrator.prompt_text)
         if (_settings.Ponytail is "lite" or "full" or "ultra") // orchestrator.ponytail_block
             info.Environment["AGENT_ORCHESTRATOR_PONYTAIL"] = _settings.Ponytail;
         else

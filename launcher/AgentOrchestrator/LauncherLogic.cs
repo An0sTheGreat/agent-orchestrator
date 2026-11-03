@@ -1127,6 +1127,10 @@ internal static class LauncherLogic
     private static readonly Regex SplitPart = new(@"-(\d{5})-of-\d{5}\.gguf$", RegexOptions.IgnoreCase);
     private static readonly Regex QuantTail = new(@"[-_.]((?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*))$", RegexOptions.IgnoreCase);
 
+    // The quantization a GGUF's file name ends with ("model-Q4_K_M.gguf": Q4_K_M), or "".
+    public static string QuantOf(string file) =>
+        QuantTail.Match(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5]) is { Success: true } m ? m.Groups[1].Value : "";
+
     // Every loadable GGUF the engine's lookup would find: the models folder (empty = none) and each cached repo's snapshots.
     // Vision projectors (mmproj) and later parts of a split model are skipped, as the engine does.
     public static List<LocalGguf> FindLocalGgufs(string modelsFolder, string hubCache)
@@ -1138,7 +1142,7 @@ internal static class LauncherLogic
                 .Order(StringComparer.OrdinalIgnoreCase)
             : [];
         static bool FirstPart(string name) => SplitPart.Match(name) is not { Success: true } part || part.Groups[1].Value == "00001";
-        static string Variant(string file) => QuantTail.Match(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5]) is { Success: true } m ? m.Groups[1].Value : "";
+        static string Variant(string file) => QuantOf(file);
         if (modelsFolder.Length > 0)
             found.AddRange(Files(modelsFolder).Select(f => new LocalGguf("", Variant(f), f)));
         if (Directory.Exists(hubCache))
@@ -1157,6 +1161,12 @@ internal static class LauncherLogic
 
     public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
 
+    // roles.compactor (orchestrator.py's compactor role): absent or {"same_as": "planner"} summarizes on MAIN's model.
+    public const string Compactor = "compactor";
+    public static bool CompactorHasOwn(JsonElement roles) =>
+        roles.TryGetProperty(Compactor, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _);
+    public static bool CompactorHasOwn(JsonObject? roles) => roles?[Compactor] is JsonObject c && c["same_as"] is null;
+
     // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
     public static WorkerPreset CapturePreset(string name, string configPath, IEnumerable<WorkerSetting> workers)
     {
@@ -1168,7 +1178,7 @@ internal static class LauncherLogic
         if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath)) is JsonObject root)
         {
             if (root["roles"] is JsonObject roles)
-                foreach (var role in BuiltInRoles)
+                foreach (var role in BuiltInRoles.Append(Compactor))
                     if (roles[role] is JsonObject stored)
                         preset.Roles[role] = stored.ToJsonString();
             preset.TaskLimits = root["task_limits"] is JsonObject limits ? limits.ToJsonString() : "{}";
@@ -1189,8 +1199,10 @@ internal static class LauncherLogic
         if (preset.Roles.Count > 0)
         {
             var roles = (root["roles"] ??= new JsonObject()).AsObject();
-            foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key)))
+            foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key) || r.Key == Compactor))
                 roles[role] = JsonNode.Parse(json);
+            if (!preset.Roles.ContainsKey(Compactor)) // a preset from before COMPACTOR: compaction on MAIN's model
+                roles[Compactor] = new JsonObject { ["same_as"] = "planner" };
         }
         if (preset.TaskLimits is { } stored)
         {
@@ -1324,7 +1336,7 @@ internal static class LauncherLogic
         return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
-    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN"];
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "COMPACTOR"];
 
     // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
     public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)

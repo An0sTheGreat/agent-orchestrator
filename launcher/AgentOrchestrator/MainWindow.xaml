@@ -861,6 +861,8 @@
                                Visibility="{Binding HasCovers, Converter={StaticResource BoolVis}}">
                         <Run Text="Covers " /><Run Text="{Binding Covers, Mode=OneWay}" />
                     </TextBlock>
+                    <TextBlock Tag="FollowsMain" Text="Same as MAIN" FontSize="9.5" Foreground="{DynamicResource Muted}" ToolTip="Compaction runs on MAIN's model until COMPACTOR gets its own"
+                               Visibility="{Binding FollowsMain, Converter={StaticResource BoolVis}}" />
                     <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
                     <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SetupTip}"
                                Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
@@ -1495,9 +1497,9 @@
                         <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                         <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
                         <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                        <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents (default)" Margin="0,0,0,8" Checked="Theme_Checked" />
                         <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                        <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents (default)" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents" Checked="Theme_Checked" />
                         <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
                         <TextBlock Text="Accent" VerticalAlignment="Center" Margin="0,0,12,0" />
                         <Button x:Name="AccentButton" Padding="11,6" HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">

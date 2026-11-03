@@ -143,7 +143,7 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
-    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) is { Hidden: false } target ? target : CardFor("planner");
+    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) is { Hidden: false, Role: not "compactor" } target ? target : CardFor("planner");
 
     private static string ChatName(RoleCard? card, string role) =>
         card is { IsCustom: true } ? card.Title : role == "planner" ? "Main" : RoleName(role);
@@ -171,10 +171,10 @@ public partial class MainWindow
     private void RefreshCardVisibility()
     {
         foreach (var card in _cards)
-            card.Hidden = card.IsBuiltIn && card.Role != "planner" && !_settings.AddedRoles.Contains(card.Role);
+            card.Hidden = card.IsBuiltIn && card.Role is not ("planner" or "compactor") && !_settings.AddedRoles.Contains(card.Role);
         if (CardFor("planner") is { } main)
         {
-            var covered = Roles.Where(r => r == "planner" || CardFor(r) is not { Hidden: false }).Select(RoleName).ToList();
+            var covered = Roles.Where(r => r == "planner" || r != "compactor" && CardFor(r) is not { Hidden: false }).Select(RoleName).ToList();
             main.Covers = covered.Count > 1 ? string.Join(" · ", covered) : ""; // no Covers line for the planner alone
         }
         if (_shownWorker is { Hidden: true })
@@ -183,7 +183,7 @@ public partial class MainWindow
 
     // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat MAIN, the added roles and
     // the custom workers.
-    private List<RoleCard> ListedWorkers(Conversation c) => c.IsCode ? [] : _cards.Where(k => !k.Hidden).ToList();
+    private List<RoleCard> ListedWorkers(Conversation c) => c.IsCode ? [] : _cards.Where(k => !k.Hidden && k.Role != "compactor").ToList(); // COMPACTOR only summarizes
 
     // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
     // and why sending is unavailable. A turn of either kind locks both.

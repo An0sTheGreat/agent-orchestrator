@@ -27,6 +27,10 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public string Covers { get => _covers; set { if (_covers != value) { _covers = value; Raise(nameof(Covers)); Raise(nameof(HasCovers)); } } }
     public bool HasCovers => _covers.Length > 0;
 
+    // COMPACTOR's tab while compaction runs on MAIN's model (roles.compactor absent or "same_as": "planner").
+    private bool _followsMain;
+    public bool FollowsMain { get => _followsMain; set { if (_followsMain != value) { _followsMain = value; Raise(nameof(FollowsMain)); } } }
+
     public string Role { get; }
     public bool IsCustom { get; }
     public bool IsBuiltIn => !IsCustom;
@@ -190,7 +194,7 @@ internal sealed class AppSettings
     public List<WorkerPreset> Presets { get; set; } = new();
     // Named sets of Model settings option fields (ModelOptions keys), global across workers.
     public List<ModelPreset> ModelPresets { get; set; } = new();
-    public string Theme { get; set; } = "ParchmentDark";
+    public string Theme { get; set; } = "Graphite"; // its default accent is light gray (Silver)
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
     public bool DetailsCollapsed { get; set; } = true; // the worker details column shows as the dot rail

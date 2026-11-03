@@ -58,6 +58,13 @@ def load_text(path: Path) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
+def prompt_text(name: str) -> str:
+    """prompts/<name>, unless the launcher's AGENT_ORCHESTRATOR_PROMPTS folder holds a non-blank file of that name."""
+    folder = os.environ.get("AGENT_ORCHESTRATOR_PROMPTS", "")
+    own = load_text(Path(folder) / name) if folder else ""
+    return own if own.strip() else load_text(ROOT / "prompts" / name)
+
+
 def save_text(path: Path, text: str) -> None:
     path.write_text(text.rstrip() + "\n", encoding="utf-8")
 
@@ -289,6 +296,7 @@ class ApiClient:
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
         self.cut_off = False  # the last reply stopped at max_tokens
         self.llama_port = 0  # set by role_settings when this role runs on the llama.cpp backend
+        self.compactor = None  # set by role_settings: () -> (client, sampling) of a separate Compactor role
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -502,8 +510,8 @@ class ApiClient:
                  tools: list[dict[str, Any]] | None, force: bool = False) -> bool:
         """Shrink a history that no longer fits, in place (the caller's loop keeps appending to it): keep the system
         message, the first user message (the task) and a recent tail that starts at an assistant message (so tool calls
-        keep their results); summarize the middle with one quiet call on this model and merge the summary into the first
-        user message. False (nothing changed) when there is no middle to drop or, unless forced by a context error,
+        keep their results); summarize the middle with one quiet call (on this model, or on a separate Compactor's, after
+        which this model is loaded again) and merge the summary into the first user message. False (nothing changed) when there is no middle to drop or, unless forced by a context error,
         when dropping it would free under 20% of the room (so a large task does not compact on every step)."""
         global EVENTS
         first = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
@@ -522,17 +530,28 @@ class ApiClient:
         if not middle or (not force and estimate_tokens(middle) - allowance < 0.2 * room):
             return False
         head = f"TASK\n{clip(task)}\n\n" + (f"EARLIER SUMMARY\n{earlier.strip()}\n\n" if earlier else "") + "STEPS SO FAR\n"
-        # the earlier summary goes in whole: its own call capped it; the call must fit this model too
-        render = fit_render(render_history(middle), room, len(COMPACT_PROMPT) + len(head))
-        prompt = [{"role": "system", "content": COMPACT_PROMPT}, {"role": "user", "content": head + render}]
-        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}  # effort would spend the summary on thinking
-        events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
+        system = summary_system(COMPACT_PROMPT)
+        helper = None
         try:
-            summary = answer_text(self.complete(model, prompt, {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False}))
+            summarizer, summary_model, summary_sampling, fit = self, model, sampling, room
+            if self.compactor:  # a separate Compactor model: loading it unloads this one (one model at a time locally)
+                helper, summary_sampling = self.compactor()
+                summary_model = helper.ensure_model("compactor", False)  # with events: the launcher records the load
+                summarizer, fit = helper, min(room, helper.context_size() or room)
+            # the earlier summary goes in whole: its own call capped it; the call must fit the summarizing model too
+            render = fit_render(render_history(middle), fit, len(system) + len(head))
+            prompt = [{"role": "system", "content": system}, {"role": "user", "content": head + render}]
+            quiet = {key: value for key, value in summary_sampling.items() if key != "reasoning_effort"}  # effort would spend the summary on thinking
+            events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
+            try:
+                summary = answer_text(summarizer.complete(summary_model, prompt, {**quiet, "max_tokens": summary_tokens(fit), "enable_thinking": False}))
+            finally:
+                EVENTS = events
         except (WorkflowError, OSError, ValueError):
             summary = ""
         finally:
-            EVENTS = events
+            if helper is not None:
+                self.ensure_model(self.role, False)  # this role's model back before the agent loop goes on
         if not summary:  # mechanical fallback; an earlier summary is kept
             summary = (earlier.strip() + "\n\n" if earlier else "") + tool_call_note(middle)
         messages[:] = messages[:first] + [{**messages[first], "content": task + COMPACT_MARK + summary}] + messages[cut:]
@@ -852,7 +871,7 @@ def ponytail_block() -> str:
     level = os.environ.get("AGENT_ORCHESTRATOR_PONYTAIL", "").strip().lower()
     if level not in PONYTAIL_LEVELS:
         return ""
-    return f"\n\n=== PONYTAIL ({level}) ===\n" + load_text(ROOT / "prompts" / "ponytail.txt").replace("{level}", level).strip() + "\n"
+    return f"\n\n=== PONYTAIL ({level}) ===\n" + prompt_text("ponytail.txt").replace("{level}", level).strip() + "\n"
 
 
 def with_ponytail(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -889,6 +908,12 @@ CONVERSATION_PROMPT = ("Summarize the earlier part of a conversation between a u
                        "such as essays or code, only what they covered); User preferences and constraints; Open questions. "
                        "Reply with the summary only.")
 SUMMARY_PREFIX = "Earlier in this conversation (summary):\n"
+
+
+def summary_system(task: str) -> str:
+    """A summary call's system prompt: the Compactor's standing instructions, then the task's format (COMPACT_PROMPT or
+    CONVERSATION_PROMPT)."""
+    return prompt_text("compactor.txt").strip() + "\n\n" + task
 
 
 def summary_tokens(room: int) -> int:
@@ -945,19 +970,27 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     if not earlier:
         return full
     head = (f"EARLIER SUMMARY\n{summary.strip()}\n\n" if summary else "") + "CONVERSATION\n"
-    render = fit_render(render_history(earlier), room, len(CONVERSATION_PROMPT) + len(head))
-    quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}
+    prompt = summary_system(CONVERSATION_PROMPT + (f" Focus especially on: {focus.strip()}" if focus.strip() else ""))
+    summarizer, summarizer_role, summary_sampling, fit = client, role, sampling, room
     try:
-        model = client.ensure_model(role, False)  # with events: the launcher records a load, to unload it later
+        if separate_compactor(config):  # the Compactor's model summarizes; the call must fit its window too
+            summarizer, summary_sampling = role_settings(config, "compactor")
+            summarizer_role = "compactor"
+            fit = min(room, getattr(summarizer, "window_before_load", lambda: None)() or room)
+        render = fit_render(render_history(earlier), fit, len(prompt) + len(head))
+        quiet = {key: value for key, value in summary_sampling.items() if key != "reasoning_effort"}
+        model = summarizer.ensure_model(summarizer_role, False)  # with events: the launcher records a load, to unload it later
         events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
         try:
-            prompt = CONVERSATION_PROMPT + (f" Focus especially on: {focus.strip()}" if focus.strip() else "")
-            text = answer_text(client.complete(model, [{"role": "system", "content": prompt}, {"role": "user", "content": head + render}],
-                                               {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
+            text = answer_text(summarizer.complete(model, [{"role": "system", "content": prompt}, {"role": "user", "content": head + render}],
+                                                   {**quiet, "max_tokens": summary_tokens(fit), "enable_thinking": False})).strip()
         finally:
             EVENTS = events
     except (WorkflowError, OSError, ValueError):
         text = ""
+    finally:
+        if summarizer is not client:
+            client.ensure_model(role, False)  # the turn goes on on its own model
     if not text:  # the full history goes as it is; the in-request compactor or a context error follows
         print(f"[{client.title or role}] the conversation summary failed; sending the full history")
         return full
@@ -1315,17 +1348,23 @@ def display_name(config: dict[str, Any], role: str) -> str:
 
 
 def role_config(config: dict[str, Any], role: str) -> dict[str, Any] | None:
-    """A built-in role's settings: the Implementer/Reviewer fall back to the Planner (the base model) when missing from
-    config roles or marked "same_as": "planner"; None when neither is configured."""
+    """A built-in role's settings: the Implementer/Reviewer (and the Compactor) fall back to the Planner (the base model)
+    when missing from config roles or marked "same_as": "planner"; None when neither is configured."""
     roles = config.get("roles") or {}
-    if role in ("implementer", "reviewer") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
+    if role in ("implementer", "reviewer", "compactor") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
         role = "planner"
     return roles.get(role)
 
 
+def separate_compactor(config: dict[str, Any]) -> bool:
+    """Whether config roles has its own Compactor (not absent or "same_as": "planner"): it does every summary then."""
+    compactor = (config.get("roles") or {}).get("compactor")
+    return isinstance(compactor, dict) and compactor.get("same_as") != "planner"
+
+
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
     """Client + sampling for a built-in role (with the Planner fallback), or for a custom worker when `role` is its id."""
-    settings = role_config(config, role) if role in BUILTIN_ROLES else (config.get("roles") or {}).get(role)
+    settings = role_config(config, role) if role in (*BUILTIN_ROLES, "compactor") else (config.get("roles") or {}).get(role)
     if settings is None:
         settings = next((w for w in custom_workers(config) if w["id"] == role), None)
     if settings is None:
@@ -1347,6 +1386,8 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
     client.llama_port = port
     client.role = role
     client.title = display_name(config, role)
+    if role != "compactor" and separate_compactor(config):
+        client.compactor = lambda: role_settings(config, "compactor")
     return client, sampling
 
 
@@ -2130,7 +2171,7 @@ def ensure_contract(config: dict[str, Any], project_root: Path, context: str, in
         budget -= len(text)
         files.append(f"CURRENT FILE: {name}\n{text}")
     user = prompt = "\n\n".join([context, *files])
-    system = load_text(ROOT / "prompts" / "contract.txt")
+    system = prompt_text("contract.txt")
     response = ask_once(config, "planner", system, prompt, interactive)
     for repair in range(max_repairs + 1):
         data, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=prompt)
@@ -2870,7 +2911,7 @@ def configure_project(config: dict[str, Any], project_root: Path, project: str, 
         return config
     print("[configurator] reading PROJECT.md and build manifests ...")
     user = f"PROJECT\n{project}\n\n{context}"
-    system = load_text(ROOT / "prompts" / "configurator.txt")
+    system = prompt_text("configurator.txt")
     response = ask_once(config, "planner", system, user, interactive)
     _, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=user)
     configured = apply_project_configuration(config, response)
@@ -3085,7 +3126,7 @@ def widen_scope(
         return f"SCOPE REQUEST REFUSED\nThis task already has the most files a task may have. Work within the allowed files."
     contents = "\n\n".join(f"--- {n} ---\n{c[:20_000]}" if c is not None else f"--- {n} --- (does not exist)"
                            for n, c in snapshot(project_root, names).items())
-    system = load_text(ROOT / "prompts" / "scope.txt")
+    system = prompt_text("scope.txt")
     user = (f"TASK\n{task_markdown(task)}\n\nREQUESTED FILES\n{', '.join(names)}\n\nREASON\n{reason}\n\n"
             f"At most {room} file(s) can be added.\n\nCURRENT CONTENTS OF THE REQUESTED FILES\n{contents}")
     response = ask_once(config, "planner", system, user, interactive)  # a server failure stops the run, it is no decision
@@ -3497,7 +3538,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     messages = chat_messages(request)
     if not messages or messages[-1]["role"] != "user":
         raise WorkflowError("Chat request needs messages ending with a user message")
-    chat = load_text(ROOT / "prompts" / "chat.txt").strip()
+    chat = prompt_text("chat.txt").strip()
     tools, handlers, note = request_extras(request)
     turn = with_effort(config, request)  # the model calls of the turn; the quiet title call keeps `config`
     role = str(request.get("worker") or "planner")
@@ -4209,7 +4250,7 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
             if runners:
                 tools, handlers = tools + [RUN_COMMAND_TOOL], {**handlers, "run_command": runners[worker != "implementer"]}
             note += f"\n\n{folders_context(folders)}"
-        system = load_text(ROOT / "prompts" / f"sub_{worker}.txt").strip() + note
+        system = prompt_text(f"sub_{worker}.txt").strip() + note
         emit("chat_stage", role=worker, stage="delegate", title=display_name(config, worker))
         try:
             first = {"role": "user", "content": handoff(brief, context, files, acceptance, research)}
@@ -4242,7 +4283,7 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     per turn, default 6). It always has the bundled init-projMD skill, so it writes PROJECT.md itself; it starts the
     autonomous project run (start_project) only on a turn where the user invoked the start-project skill."""
     tools, handlers, note, _ = lead_setup(config, folders, request, role)
-    system = f"{load_text(ROOT / 'prompts' / 'lead.txt').strip()}{note}\n\n{folders_context(folders)}"
+    system = f"{prompt_text('lead.txt').strip()}{note}\n\n{folders_context(folders)}"
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools
     messages = compact_conversation(config, (role,), system, messages, tools, request)
     emit("chat_stage", role=role, stage="lead", title=display_name(config, role))
@@ -4350,7 +4391,7 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     extras, handlers, note, _ = lead_setup(config, folders, request, "planner", delegations=steps)
     handlers.update(record_progress=progress, finish=finish)
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + extras + [PROGRESS_TOOL, FINISH_TOOL]
-    system = f"{load_text(ROOT / 'prompts' / 'lead_project.txt').strip()}{note}\n\n{folders_context(folders)}"
+    system = f"{prompt_text('lead_project.txt').strip()}{note}\n\n{folders_context(folders)}"
     user = (f"PROJECT.md\n{load_text(project_root / 'PROJECT.md').strip()}\n\n"
             f"PROGRESS (STATE.md; every '## Done:' item is finished: do not redo it)\n"
             f"{load_text(state).strip() if state.is_file() else '(none yet)'}\n\n"
@@ -4375,7 +4416,7 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
     convo = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
     user = (f"TEMPLATE\n{load_text(ROOT / 'PROJECT.md').strip()}\n\n" + (f"CONVERSATION\n{convo}\n\n" if convo else "")
             + f"NOTES\n{str(notes or '').strip() or '(none)'}" + (f"\n\nCURRENT PROJECT.md\n{current}" if current else ""))
-    system = f"{load_text(ROOT / 'prompts' / 'project_writer.txt').strip()}\n\n{folders_context(folders)}"
+    system = f"{prompt_text('project_writer.txt').strip()}\n\n{folders_context(folders)}"
     text = code_loop(config, role, system, [{"role": "user", "content": user}], CODE_TOOLS[:3], code_handlers(folders))
     fenced = re.fullmatch(r"```[\w-]*\n(.*?)\n?```", text.strip(), re.S)
     text = fenced.group(1).strip() if fenced else text.strip()
@@ -4575,7 +4616,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
         "reserveTokens": n_ctx - compact_limit(n_ctx, sampling), "keepRecentTokens": 2048 if focus is not None else max(2048, n_ctx // 4)}}))
     save_text(turn / "tools.json", json.dumps(specs))
     note = re.sub(r"\n\nSKILLS\n.*?(?=\n\n|\Z)", "", note, flags=re.S)  # Pi lists the skills itself
-    save_text(turn / "system.md", f"{load_text(ROOT / 'prompts' / 'lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}{ponytail_block()}")
+    save_text(turn / "system.md", f"{prompt_text('lead_pi.txt').strip()}{note}\n\n{folders_context(folders)}{ponytail_block()}")
 
     command = [*pi_command(), "--mode", "rpc", "--offline", "-na", "-ne", "-e", str(PI_EXTENSION), "--no-mcp", "-nc", "-ns",
                *(arg for s in skills for arg in ("--skill", s)), "-np", "--no-themes", "--provider", "ao", "--model", model,
@@ -4862,7 +4903,7 @@ def _run() -> int:
         if not isinstance(request, dict):
             raise WorkflowError("--request must hold a JSON object")
         return run_lead_project(config, project_root, args.once, request)
-    prompts = {role: load_text(ROOT / "prompts" / f"{role}.txt") for role in ("planner", "implementer", "reviewer")}
+    prompts = {role: prompt_text(f"{role}.txt") for role in ("planner", "implementer", "reviewer")}
     interactive = not args.non_interactive
     max_tasks = int(config.get("max_tasks", 20))
     max_review_rounds = int(config.get("max_review_rounds", 2))

@@ -24,7 +24,8 @@ namespace AgentOrchestrator;
 
 public partial class MainWindow : Window
 {
-    private static readonly string[] Roles = ["planner", "implementer", "reviewer"];
+    // COMPACTOR (the compactor role) is always shown and summarizes on MAIN's model until it has its own (FollowsMain).
+    private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor"];
 
     private Process? _process;
     private readonly string? _workflowRoot;
@@ -67,7 +68,7 @@ public partial class MainWindow : Window
         InitWorkerRail();
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
-        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" ? _settings.Theme : "ParchmentDark";
+        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" or "ParchmentDark" ? _settings.Theme : "Graphite";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
         ThemeGlassRadio.IsChecked = _settings.Theme == "Glass";
@@ -1248,6 +1249,8 @@ public partial class MainWindow : Window
             if (!await ModelConfigSmoke(presetConfig, Snap))
                 return Fail();
             if (!await UiTweaksSmoke(Snap))
+                return Fail();
+            if (!await CompactorSmoke(presetConfig, Snap))
                 return Fail();
 
             // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
@@ -2741,8 +2744,9 @@ public partial class MainWindow : Window
         // Centered and wide: the ring pins its card beside the chat (saved) and the card follows the context; clicked again it
         // closes. A reply that came only as thinking shows once, as the answer.
         {
-            var (width, pinned) = (Width, _settings.ContextPinned);
+            var (width, pinned, details) = (Width, _settings.ContextPinned, (DetailsColumn.MinWidth, DetailsColumn.Width));
             Width = 2400;
+            (DetailsColumn.MinWidth, DetailsColumn.Width) = (260, new GridLength(340)); // room for the pinned card beside the chat
             _settings.ContextPinned = false;
             ShowView(chat: true);
             await Settle();
@@ -2774,7 +2778,7 @@ public partial class MainWindow : Window
             DrainLines();
             var once = _reply!.Content.Children.OfType<Expander>().Count() == 0 && _reply.Answer?.Text == "Hi there";
             FinishChatTurn(0, false, null);
-            (Width, _settings.ContextPinned) = (width, pinned);
+            (Width, _settings.ContextPinned, (DetailsColumn.MinWidth, DetailsColumn.Width)) = (width, pinned, details);
             ShowContext(false, null);
             await Settle();
             if (!once)
@@ -3483,12 +3487,15 @@ public partial class MainWindow : Window
             return;
         foreach (var card in _cards)
         {
-            if (!card.IsCustom && RemoteModel(card.Role) is { } remote)
+            if (!card.IsCustom && RemoteModel(card.Role == "compactor" && !LauncherLogic.CompactorHasOwn(roles) ? "planner" : card.Role) is { } remote)
             {
                 card.SetModel(LauncherLogic.RemoteModelInfo(remote));
                 continue;
             }
-            if (!roles.TryGetProperty(ConfigRole(card.Role), out var r) || !r.TryGetProperty("auto_load", out var load) ||
+            if (card.Role == "compactor")
+                card.FollowsMain = !LauncherLogic.CompactorHasOwn(roles);
+            var source = card.Role == "compactor" && card.FollowsMain ? "planner" : ConfigRole(card.Role);
+            if (!roles.TryGetProperty(source, out var r) || !r.TryGetProperty("auto_load", out var load) ||
                 !load.TryGetProperty("model_path", out var path) || path.GetString() is not { } id)
                 continue;
             if (r.TryGetProperty("display_name", out var label) && label.GetString() is { Length: > 0 } shown)
@@ -4025,6 +4032,8 @@ public partial class MainWindow : Window
     private ContextMenu BuildPresetsMenu()
     {
         var menu = NewPresetMenu();
+        menu.Items.Add(PresetItem("+ New preset…", NewPresetPrompt));
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
         foreach (var preset in _settings.Presets)
             menu.Items.Add(PresetItem(preset.Name, () => ApplyPreset(preset)));
         if (_settings.Presets.Count == 0)
@@ -4110,6 +4119,44 @@ public partial class MainWindow : Window
         SavePreset(name);
     }
 
+    // "+ New preset…": a fresh template to edit: the built-in workers with the app's default settings (the template
+    // config.json), no custom workers and none added, saved under its name and applied. The current workers are kept only
+    // in a preset they were saved to.
+    private void NewPresetPrompt()
+    {
+        if (_process is not null || _workflowRoot is null || AskDialog("New preset",
+                "Name the new preset. It starts from the default workers and settings; edit them, then Save current as preset to keep your changes.",
+                "Create", "") is not { } name)
+            return;
+        if (_settings.Presets.Any(p => SamePreset(p, name)) &&
+            AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
+            return;
+        NewPreset(name);
+    }
+
+    private void NewPreset(string name)
+    {
+        WorkerPreset preset;
+        try
+        {
+            preset = LauncherLogic.CapturePreset(name, Path.Combine(_workflowRoot ?? "", "config.json"), Roles.Select(r => new WorkerSetting { Id = r }));
+            preset.AddedRoles = [];
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
+        {
+            Log($"Could not read the default config.json: {exception.Message}");
+            SetStatus("Could not read the default config.json", "#FF667A");
+            return;
+        }
+        var index = _settings.Presets.FindIndex(p => SamePreset(p, name));
+        if (index >= 0)
+            _settings.Presets[index] = preset;
+        else
+            _settings.Presets.Add(preset);
+        _settings.Save();
+        ApplyPreset(preset);
+    }
+
     private void SavePreset(string name)
     {
         WorkerPreset preset;
@@ -4191,7 +4238,7 @@ public partial class MainWindow : Window
     private ContextMenu BuildAddWorkerMenu(FrameworkElement target)
     {
         var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Bottom };
-        foreach (var role in Roles.Skip(1))
+        foreach (var role in Roles.Skip(1).Where(r => r != "compactor")) // COMPACTOR is always there
         {
             var name = ChatName(null, role);
             var added = _settings.AddedRoles.Contains(role);
@@ -4486,8 +4533,14 @@ public partial class MainWindow : Window
     }
 
     // The details pane may grow, but never past what leaves the sidebar and a usable output column on screen.
+    // The details column's least width: a third of this monitor's work area, at least 260, and less when the window is too
+    // narrow to leave the work area its 380 beside it.
+    private double DetailsMin() => Math.Max(260, Math.Min(WorkAreaOf(this).Width / 3, ActualWidth - SidePane.ActualWidth - 380 - 6));
+
     private void FitDetailsColumn()
     {
+        if (DetailsColumn.MinWidth > 0) // open (0: the rail, or a slide under way)
+            DetailsColumn.MinWidth = DetailsMin();
         DetailsColumn.MaxWidth = Math.Max(DetailsColumn.MinWidth, ActualWidth - SidePane.ActualWidth - 380 - 6);
     }
 

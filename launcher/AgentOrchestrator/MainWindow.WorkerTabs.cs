@@ -42,9 +42,11 @@ public partial class MainWindow
             OpenWorkerTab(card);
     }
 
-    // Three tabs across the column, each at least 88 wide; a narrower column scrolls the strip.
+    // Three tabs across the column, each 88 to WorkerTabMax wide: a narrower column scrolls the strip, a wider one shows more.
+    internal const double WorkerTabMax = 150;
+
     private void WorkerTabs_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        Resources["WorkerTabWidth"] = Math.Max(88, WorkerTabsScroll.ActualWidth / 3 - 6);
+        Resources["WorkerTabWidth"] = Math.Clamp(WorkerTabsScroll.ActualWidth / 3 - 6, 88, WorkerTabMax);
 
     private void WorkerTabs_MouseWheel(object sender, MouseWheelEventArgs e)
     {
