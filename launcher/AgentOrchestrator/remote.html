@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Orchestrator</title>
+<style>
+:root { --bg: #1b1c1f; --panel: #24262a; --hover: #2e3035; --border: #3a3d43; --text: #e6e7ea; --muted: #9a9ea6; --accent: #c9ccd2; --danger: #ff667a; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 "Segoe UI", system-ui, sans-serif; overflow-x: hidden; }
+header { position: sticky; top: 0; display: flex; gap: 8px; align-items: center; padding: 10px 12px; background: var(--panel); border-bottom: 1px solid var(--border); }
+header h1 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+main { max-width: 760px; margin: 0 auto; padding: 12px; }
+button { font: inherit; color: var(--bg); background: var(--accent); border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+button.ghost { color: var(--text); background: var(--hover); }
+button:disabled { opacity: .5; }
+input, textarea { width: 100%; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px; }
+textarea { resize: vertical; min-height: 60px; }
+.row { display: block; width: 100%; text-align: left; color: var(--text); background: var(--panel); margin: 0 0 8px; border: 1px solid var(--border); }
+.row small { display: block; color: var(--muted); }
+.msg { margin: 10px 0; overflow-wrap: anywhere; }
+.msg.user { margin-left: 15%; padding: 8px 12px; background: var(--hover); border-radius: 10px; white-space: pre-wrap; }
+.msg pre { overflow-x: auto; background: #111214; padding: 10px; border-radius: 8px; }
+.msg code { font-family: Consolas, monospace; font-size: 13px; background: #111214; padding: 1px 4px; border-radius: 4px; }
+.msg pre code { padding: 0; }
+.status, .muted { color: var(--muted); font-style: italic; font-size: 13px; }
+.prompt { border: 1px solid var(--accent); border-radius: 10px; padding: 12px; margin: 12px 0; background: var(--panel); white-space: pre-wrap; }
+.prompt button { margin: 8px 8px 0 0; }
+.composer { display: flex; gap: 8px; align-items: flex-end; margin-top: 12px; }
+.error { color: var(--danger); }
+[hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><button class="ghost" id="back" hidden>&lsaquo;</button><h1 id="title">Agent Orchestrator</h1><button id="new" hidden>New chat</button></header>
+<main>
+  <form id="login" hidden>
+    <p>Sign in with the remote access password set in the app.</p>
+    <input type="password" id="password" autocomplete="current-password" placeholder="Password">
+    <p><button>Sign in</button> <span class="error" id="loginError"></span></p>
+  </form>
+  <div id="list" hidden></div>
+  <div id="conv" hidden>
+    <div id="messages"></div>
+    <div id="prompt" class="prompt" hidden></div>
+    <div class="muted" id="queued"></div>
+    <div class="composer"><textarea id="text" placeholder="Message"></textarea><div><button id="send">Send</button><br><button class="ghost" id="stop" hidden>Stop</button></div></div>
+    <p class="error" id="convError"></p>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let current = null, timer = null, lastRender = "";
+
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin" });
+  const data = await r.json().catch(() => ({}));
+  if (r.status === 401 && path !== "/api/login") { show("login"); throw new Error("signed out"); }
+  return { status: r.status, data };
+}
+
+function show(view) {
+  for (const v of ["login", "list", "conv"]) $(v).hidden = v !== view;
+  $("back").hidden = view !== "conv";
+  $("new").hidden = view !== "list";
+  if (view !== "conv") current = null;
+  if (view === "login") $("title").textContent = "Agent Orchestrator";
+  clearTimeout(timer);
+}
+
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+
+// Plain markdown on escaped text: fenced code, inline code, bold, lists, paragraphs.
+function md(src) {
+  const out = [], parts = src.split(/^```[^\n]*\n?/m);
+  parts.forEach((part, i) => {
+    if (i % 2) { out.push("<pre><code>" + esc(part.replace(/\n$/, "")) + "</code></pre>"); return; }
+    for (const block of part.split(/\n{2,}/)) {
+      if (!block.trim()) continue;
+      const lines = block.split("\n"), inline = t => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+      if (lines.every(l => /^\s*([-*]|\d+\.)\s/.test(l))) {
+        const tag = /^\s*\d/.test(lines[0]) ? "ol" : "ul";
+        out.push(`<${tag}>` + lines.map(l => "<li>" + inline(l.replace(/^\s*([-*]|\d+\.)\s/, "")) + "</li>").join("") + `</${tag}>`);
+      } else out.push("<p>" + lines.map(inline).join("<br>") + "</p>");
+    }
+  });
+  return out.join("");
+}
+
+async function loadList() {
+  show("list");
+  $("title").textContent = "Conversations";
+  const { data } = await api("GET", "/api/conversations");
+  $("list").innerHTML = "";
+  for (const c of data.conversations || []) {
+    const b = document.createElement("button");
+    b.className = "row";
+    b.innerHTML = `${esc(c.title || "Untitled")}<small>${c.kind === "chat" ? "Chat" : "Code"} · ${new Date(c.updated).toLocaleString()}${c.busy ? " · replying…" : ""}</small>`;
+    b.onclick = () => openConv(c.id);
+    $("list").append(b);
+  }
+  if (!(data.conversations || []).length) $("list").innerHTML = '<p class="muted">No conversations yet.</p>';
+  timer = setTimeout(() => !$("list").hidden && loadList().catch(() => {}), 10000);
+}
+
+function openConv(id) {
+  current = id; lastRender = "";
+  show("conv");
+  current = id;
+  $("messages").innerHTML = ""; $("convError").textContent = "";
+  poll();
+}
+
+async function poll() {
+  if (current === null) return;
+  clearTimeout(timer);
+  try {
+    if (current) {
+      const { status, data } = await api("GET", "/api/conversation/" + current);
+      if (status === 200) render(data); else $("convError").textContent = data.error || "Not found";
+    } else $("title").textContent = "New chat";
+  } catch (e) { }
+  if (current !== null) timer = setTimeout(poll, 1000);
+}
+
+function render(c) {
+  $("title").textContent = c.title || "Untitled";
+  const key = JSON.stringify([c.messages, c.reply, c.prompt, c.busy, c.queued]);
+  if (key === lastRender) return;
+  lastRender = key;
+  const atEnd = innerHeight + scrollY >= document.body.scrollHeight - 40;
+  let html = c.messages.map(m => m.role === "user" ? `<div class="msg user">${esc(m.text)}</div>` : `<div class="msg">${md(m.text)}</div>`).join("");
+  if (c.reply) html += `<div class="msg">${md(c.reply.text)}</div><div class="status">${esc(c.reply.status || "Replying…")}</div>`;
+  $("messages").innerHTML = html;
+  $("queued").textContent = c.queued ? `${c.queued} queued` : "";
+  $("stop").hidden = !c.busy;
+  const p = $("prompt");
+  p.hidden = !c.prompt;
+  if (c.prompt) {
+    p.innerHTML = `<b>${esc(c.prompt.title)}</b>\n${esc(c.prompt.message)}\n`;
+    for (const ch of c.prompt.choices) {
+      const b = document.createElement("button");
+      b.textContent = ch.label;
+      b.onclick = async () => { await api("POST", "/api/answer", { id: current, choice: ch.value }); poll(); };
+      p.append(b);
+    }
+  }
+  if (atEnd) scrollTo(0, document.body.scrollHeight);
+}
+
+$("login").onsubmit = async e => {
+  e.preventDefault();
+  const { status, data } = await api("POST", "/api/login", { password: $("password").value });
+  $("password").value = "";
+  if (status === 200) { $("loginError").textContent = ""; loadList(); } else $("loginError").textContent = data.error || "Sign-in failed";
+};
+$("back").onclick = () => loadList();
+$("new").onclick = () => openConv("");
+$("send").onclick = async () => {
+  const text = $("text").value.trim();
+  if (!text) return;
+  $("send").disabled = true;
+  try {
+    const { status, data } = await api("POST", "/api/send", current ? { id: current, text } : { text });
+    if (status === 200) { $("text").value = ""; $("convError").textContent = ""; if (!current && data.id) openConv(data.id); else if (!current) loadList(); else poll(); }
+    else $("convError").textContent = data.error || "Not sent";
+  } finally { $("send").disabled = false; }
+};
+$("stop").onclick = async () => { await api("POST", "/api/stop", { id: current }); poll(); };
+$("text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer: fine)").matches) { e.preventDefault(); $("send").click(); } };
+loadList().catch(() => {});
+</script>
+</body>
+</html>

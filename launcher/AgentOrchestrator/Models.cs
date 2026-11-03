@@ -231,6 +231,11 @@ internal sealed class AppSettings
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
+    // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port
+    // when taken), signed in with the password whose RemoteAuth.HashPassword string is kept here (never the password).
+    public bool RemoteAccess { get; set; }
+    public int RemotePort { get; set; } = 8765;
+    public string? RemotePasswordHash { get; set; }
     // Ponytail (prompts/ponytail.txt) added after every model's system prompt: "" (off), lite, full or ultra (/ponytail).
     public string Ponytail { get; set; } = "";
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)

@@ -28,7 +28,7 @@ public partial class MainWindow : Window
     private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor"];
 
     private Process? _process;
-    private readonly string? _workflowRoot;
+    private string? _workflowRoot; // not readonly: --ui-smoke (RemoteSmoke) points it at a stand-in engine
 
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly ObservableCollection<RoleCard> _cards = new();
@@ -82,6 +82,8 @@ public partial class MainWindow : Window
         InitChat();
         StoreDo(_store.Load);
         RestoreWindowBounds();
+        if (_settings.RemoteAccess)
+            StartRemoteServer(); // needs a password hash; the tunnel (later) follows the same switch
 
         Closing += OnClosing;
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
@@ -979,6 +981,7 @@ public partial class MainWindow : Window
         static Task Settle() => Task.Delay(400);
         _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-state.json"); // never the real server's record
         _settingsShow = window => { window.ShowActivated = false; window.Show(); }; // ShowDialog would block the run
+        _dialogsQuiet = true;
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
         var snapshots = Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS");
         void Snap(string name, FrameworkElement? target = null) // target: a popup such as a menu, which the window picture leaves out
@@ -2931,6 +2934,8 @@ public partial class MainWindow : Window
             return false;
         if (!await LocalRuntimeSmoke())
             return false;
+        if (!await RemoteSmoke())
+            return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Flat" })
@@ -4733,6 +4738,7 @@ public partial class MainWindow : Window
             e.Cancel = true; // the user kept the worker tab's unsaved edits
             return;
         }
+        StopRemoteServer();
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))
             (_settings.WindowLeft, _settings.WindowTop, _settings.WindowWidth, _settings.WindowHeight) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);

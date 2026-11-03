@@ -258,8 +258,12 @@ public partial class MainWindow
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 });
         panel.Children.Add(buttons);
-        dialog = new DialogShell(this, title, panel);
-        dialog.ShowDialog();
+        dialog = new DialogShell(this, title, panel) { ShowActivated = !_dialogsQuiet };
+        // While it is open the remote page shows it with its choices; an answer from there resolves it as a click would.
+        var outer = _remotePrompt;
+        _remotePrompt = new RemotePrompt(RunningId, title, message, options, value => { result = value; dialog.Close(); });
+        try { dialog.ShowDialog(); }
+        finally { _remotePrompt = outer; }
         return result;
     }
 
