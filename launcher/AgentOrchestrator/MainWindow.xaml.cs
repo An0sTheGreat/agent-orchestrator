@@ -2691,6 +2691,19 @@ public partial class MainWindow : Window
                 await Settle();
                 if (((SolidColorBrush)settings.Frame.Background).Color != background)
                     return Fail();
+                // Each tab shows its own page only; the key box's tab (Models) is left for way 2 to open by focus.
+                foreach (var tab in SettingsTabs.Children.OfType<RadioButton>().Reverse())
+                {
+                    tab.IsChecked = true;
+                    await Settle();
+                    if (SettingsPages.Children.OfType<FrameworkElement>().Count(p => p.IsVisible) != 1
+                        || SettingsPages.Children.OfType<FrameworkElement>().Single(p => p.IsVisible).Tag as string != tab.Tag as string
+                        || SettingsTabs.Children.OfType<RadioButton>().Count(t => t.IsChecked == true) != 1)
+                        return Fail();
+                    Snap($"26-settings-{tab.Tag}", settings);
+                }
+                if (ApiKeyBox.IsVisible)
+                    return Fail();
             }
             if (way == 1) // Esc
                 settings.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(settings)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
@@ -4407,6 +4420,8 @@ public partial class MainWindow : Window
             focus?.Focus();
             return;
         }
+        if (focus is Visual target && SettingsPages.Children.OfType<FrameworkElement>().FirstOrDefault(p => target.IsDescendantOf(p)) is { Tag: string tab })
+            ShowSettingsTab(tab);
         SettingsHolder.Child = null;
         var window = _settingsWindow = new DialogShell(this, null, SettingsContent, large: true);
         window.Loaded += (_, _) => focus?.Focus();
@@ -4420,6 +4435,24 @@ public partial class MainWindow : Window
             show(window);
         else
             window.ShowDialog();
+    }
+
+    // A tab on the Settings window's left shows the page with its Tag; the others collapse.
+    private void SettingsTab_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is RadioButton { Tag: string tab })
+            ShowSettingsTab(tab);
+    }
+
+    private void ShowSettingsTab(string tab)
+    {
+        if (SettingsPages is null) // the first tab's IsChecked, while the window is still being built
+            return;
+        foreach (var page in SettingsPages.Children.OfType<FrameworkElement>())
+            page.Visibility = (string)page.Tag == tab ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var button in SettingsTabs.Children.OfType<RadioButton>())
+            button.IsChecked = (string)button.Tag == tab;
+        SettingsScroll.ScrollToTop();
     }
 
     // ---- collapsible sidebar

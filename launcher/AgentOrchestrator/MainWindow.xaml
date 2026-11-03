@@ -1428,120 +1428,171 @@
             </Grid>
             <!-- Settings: shown in their own window (OpenSettings), which borrows SettingsContent from this hidden holder while open. -->
             <Border x:Name="SettingsHolder" Grid.Column="1" Visibility="Collapsed">
-            <ScrollViewer x:Name="SettingsContent" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                <StackPanel>
-                    <TextBlock Text="SETTINGS" Style="{StaticResource SectionHeader}" />
-                    <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="48" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                    <StackPanel>
-                    <TextBlock Text="Theme" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
-                    <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme" Margin="0,14,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                    <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents (default)" Checked="Theme_Checked" />
-                    <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
-                        <TextBlock Text="Accent" VerticalAlignment="Center" Margin="0,0,12,0" />
-                    <Button x:Name="AccentButton" Padding="11,6" HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
+            <!-- Settings: a tab list on the left (SettingsTab_Checked shows its page) and the page on the right. -->
+            <Grid x:Name="SettingsContent">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="200" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                <DockPanel Margin="0,0,16,0">
+                    <TextBlock DockPanel.Dock="Top" Text="SETTINGS" Style="{StaticResource SectionHeader}" Margin="14,0,0,12" />
+                    <!-- The build's version and commit (App.VersionText), bottom left -->
+                    <TextBlock x:Name="AppVersionText" HorizontalAlignment="Left" DockPanel.Dock="Bottom" Margin="14,12,0,0" FontSize="11" Foreground="{DynamicResource Muted}" />
+                    <StackPanel x:Name="SettingsTabs">
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="General" Height="38" Checked="SettingsTab_Checked" IsChecked="True"
+                                 AutomationProperties.Name="General">
                         <StackPanel Orientation="Horizontal">
-                            <Ellipse Width="10" Height="10" Fill="{DynamicResource Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
-                            <TextBlock x:Name="AccentLabel" Text="Accent" />
+                            <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="General" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Appearance" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Appearance">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE790;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Appearance" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Models" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Models">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE81E;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Models" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Agents" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Agents">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Agents" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    </StackPanel>
+                </DockPanel>
+                <Border Grid.Column="1" Width="1" Background="{DynamicResource Border}" />
+                <ScrollViewer x:Name="SettingsScroll" Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="28,0,8,0">
+                <Grid x:Name="SettingsPages">
+                    <StackPanel Tag="General">
+                        <TextBlock Text="General" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Notifications (MainWindow.Notify.cs) -->
+                        <TextBlock Text="Notifications" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="NotifyToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="Notify_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Notify when done" />
+                            <TextBlock Text="Notify when done" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="A desktop notification when a reply or project run finishes, only while Agent Orchestrator is not the window in front. Click it to come back."
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />
+                        <TextBlock x:Name="StatsSummary" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Muted}" />
+                        </DockPanel>
+                        <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <StackPanel Tag="Appearance" Visibility="Collapsed">
+                        <TextBlock Text="Appearance" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <TextBlock Text="Theme" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <RadioButton x:Name="ThemeFlatRadio" GroupName="Theme" Content="Flat — modern, rounded, borderless dark theme" Margin="0,14,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeGoldRadio" GroupName="Theme" Content="Track Gold — the original dark gold theme" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeGlassRadio" GroupName="Theme" Content="Liquid Glass — translucent blue modern theme" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents (default)" Checked="Theme_Checked" />
+                        <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
+                        <TextBlock Text="Accent" VerticalAlignment="Center" Margin="0,0,12,0" />
+                        <Button x:Name="AccentButton" Padding="11,6" HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
+                        <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="10" Height="10" Fill="{DynamicResource Accent}" Margin="0,0,7,0" VerticalAlignment="Center" />
+                        <TextBlock x:Name="AccentLabel" Text="Accent" />
                         </StackPanel>
                         <Button.ContextMenu><ContextMenu x:Name="AccentMenu" Opened="AccentMenu_Opened" /></Button.ContextMenu>
-                    </Button>
-                    </StackPanel>
-                    <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <TextBlock Text="Conversation" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <DockPanel Margin="0,14,0,0">
+                        </Button>
+                        </StackPanel>
+                        <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Conversation" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="CenterChatToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="CenterChat_Click" VerticalAlignment="Center"
-                                      AutomationProperties.Name="Center the conversation" />
+                        AutomationProperties.Name="Center the conversation" />
                         <TextBlock Text="Center the conversation" VerticalAlignment="Center" />
-                    </DockPanel>
-                    <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <DockPanel Margin="0,14,0,0">
+                        </DockPanel>
+                        <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ContextPercentToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ContextPercent_Click" VerticalAlignment="Center"
-                                      AutomationProperties.Name="Show the context percentage" />
+                        AutomationProperties.Name="Show the context percentage" />
                         <TextBlock Text="Show the context percentage" VerticalAlignment="Center" />
-                    </DockPanel>
-                    <TextBlock Text="The Context card shows how full the context is as a number (e.g. 34%) beside its ring."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <DockPanel Margin="0,14,0,0">
+                        </DockPanel>
+                        <TextBlock Text="The Context card shows how full the context is as a number (e.g. 34%) beside its ring."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <StackPanel Tag="Models" Visibility="Collapsed">
+                        <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <RadioButton x:Name="RuntimeUnslothRadio" GroupName="Runtime" Content="Unsloth Studio (API)" Margin="0,14,0,8" Checked="Runtime_Checked" />
+                        <RadioButton x:Name="RuntimeLlamaRadio" GroupName="Runtime" Content="Local — llama.cpp (llama-server)" Checked="Runtime_Checked" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
+                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <DockPanel Margin="0,10,0,0">
+                        <Button Content="Models folder…" Padding="11,6" VerticalAlignment="Center" Click="ModelsFolder_Click" />
+                        <Button x:Name="ModelsFolderClear" DockPanel.Dock="Right" Content="Clear" Padding="11,6" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModelsFolderClear_Click" />
+                        <TextBlock x:Name="ModelsFolderText" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
+                        </DockPanel>
+                        <TextBlock Text="GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in this folder." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <PasswordBox x:Name="ApiKeyBox" Margin="0,14,0,0" />
+                        <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center"
-                                      AutomationProperties.Name="Keep models loaded" />
+                        AutomationProperties.Name="Keep models loaded" />
                         <TextBlock Text="Keep models loaded" VerticalAlignment="Center" />
-                    </DockPanel>
-                    <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
-                    <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
+                        </DockPanel>
+                        <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <StackPanel Tag="Agents" Visibility="Collapsed">
+                        <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
+                        <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <RadioButton x:Name="EngineBuiltinRadio" GroupName="CodeEngine" Content="Built-in" Margin="0,14,0,8" Checked="CodeEngine_Checked" />
+                        <RadioButton x:Name="EnginePiRadio" GroupName="CodeEngine" Content="Pi (pi.dev agent harness)" Checked="CodeEngine_Checked" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="PiInstallButton" Content="Install Pi" Padding="11,6" VerticalAlignment="Center" Click="PiInstall_Click" />
+                        <TextBlock x:Name="PiStatus" Text="Pi not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
+                        <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
                         <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
                         <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
                         <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
                         <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
-                    </WrapPanel>
-                    <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />
-                        <TextBlock x:Name="StatsSummary" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Muted}" />
-                    </DockPanel>
-                    <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="2">
-                    <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,16,0,0" />
-                    <RadioButton x:Name="RuntimeUnslothRadio" GroupName="Runtime" Content="Unsloth Studio (API)" Margin="0,14,0,8" Checked="Runtime_Checked" />
-                    <RadioButton x:Name="RuntimeLlamaRadio" GroupName="Runtime" Content="Local — llama.cpp (llama-server)" Checked="Runtime_Checked" />
-                    <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
-                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                    </DockPanel>
-                    <DockPanel Margin="0,10,0,0">
-                        <Button Content="Models folder…" Padding="11,6" VerticalAlignment="Center" Click="ModelsFolder_Click" />
-                        <Button x:Name="ModelsFolderClear" DockPanel.Dock="Right" Content="Clear" Padding="11,6" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModelsFolderClear_Click" />
-                        <TextBlock x:Name="ModelsFolderText" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
-                    </DockPanel>
-                    <TextBlock Text="GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in this folder." TextWrapping="Wrap"
-                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <!-- Notifications (MainWindow.Notify.cs) -->
-                    <TextBlock Text="Notifications" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <CheckBox x:Name="NotifyToggle" Content="Show a desktop notification when a reply or project run finishes" Margin="0,14,0,0" Click="Notify_Click"
-                              ToolTip="Only while Agent Orchestrator is not the window in front; click the notification to come back" />
-                    <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
-                    <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <CheckBox x:Name="SandboxNetworkToggle" Content="Commands may use the network without asking" Margin="0,14,0,0" Click="SandboxNetwork_Click" />
-                    <DockPanel Margin="0,12,0,0">
+                        </WrapPanel>
+                        <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
+                        <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Commands may use the network without asking" />
+                            <TextBlock Text="Commands may use the network without asking" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <DockPanel Margin="0,12,0,0">
                         <Button x:Name="SandboxSetupButton" Content="Set up sandbox access…" Padding="11,6" VerticalAlignment="Top" Click="SandboxSetup_Click" />
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                    </DockPanel>
-                    <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
-                    <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <RadioButton x:Name="EngineBuiltinRadio" GroupName="CodeEngine" Content="Built-in" Margin="0,14,0,8" Checked="CodeEngine_Checked" />
-                    <RadioButton x:Name="EnginePiRadio" GroupName="CodeEngine" Content="Pi (pi.dev agent harness)" Checked="CodeEngine_Checked" />
-                    <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="PiInstallButton" Content="Install Pi" Padding="11,6" VerticalAlignment="Center" Click="PiInstall_Click" />
-                        <TextBlock x:Name="PiStatus" Text="Pi not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                    </DockPanel>
-                    <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
-                               TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                    <PasswordBox x:Name="ApiKeyBox" Margin="0,14,0,0" />
-                    <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"
-                               Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        </DockPanel>
+                        <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
-                    </Grid>
-                    <!-- The build's version and commit (App.VersionText), bottom left -->
-                    <TextBlock x:Name="AppVersionText" HorizontalAlignment="Left" Margin="0,36,0,0" FontSize="11" Foreground="{DynamicResource Muted}" />
-                </StackPanel>
-            </ScrollViewer>
+                </Grid>
+                </ScrollViewer>
+            </Grid>
             </Border>
         </Grid>
 
