@@ -987,16 +987,7 @@ public partial class MainWindow : Window
         {
             if (string.IsNullOrEmpty(snapshots))
                 return;
-            target ??= this;
-            var dpi = VisualTreeHelper.GetDpi(this);
-            var bitmap = new RenderTargetBitmap((int)(target.ActualWidth * dpi.DpiScaleX), (int)(target.ActualHeight * dpi.DpiScaleY),
-                dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
-            bitmap.Render(target);
-            var encoder = new PngBitmapEncoder();
-            encoder.Frames.Add(BitmapFrame.Create(bitmap));
-            Directory.CreateDirectory(snapshots);
-            using var file = File.Create(Path.Combine(snapshots, name + ".png"));
-            encoder.Save(file);
+            SavePicture(target ?? this, Path.Combine(snapshots, name + ".png"));
         }
 
         await Settle();

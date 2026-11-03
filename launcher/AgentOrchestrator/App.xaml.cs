@@ -52,6 +52,27 @@ public partial class App : Application
             return;
         }
 
+        // --screenshots <folder>: the README's pictures (MainWindow.Screenshots.cs), off-screen and behind the user's windows.
+        if (Array.FindIndex(e.Args, a => a.Equals("--screenshots", StringComparison.OrdinalIgnoreCase)) is var at and >= 0 && at + 1 < e.Args.Length)
+        {
+            var window = new MainWindow
+            {
+                WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, Width = 1400, Height = 860,
+                ShowActivated = false, ShowInTaskbar = false,
+            };
+            window.Show();
+            KeepBehind();
+            window.Dispatcher.InvokeAsync(async () =>
+            {
+                var ok = false;
+                try { await window.RunScreenshotsAsync(e.Args[at + 1]); ok = true; }
+                catch (Exception exception) { Console.Error.WriteLine(exception); }
+                window.Close();
+                Environment.Exit(ok ? 0 : 1);
+            });
+            return;
+        }
+
         base.OnStartup(e);
         // A UI exception is logged and shown, and the app keeps running; one that ends the process is logged first.
         DispatcherUnhandledException += (_, args) =>

@@ -1,0 +1,38 @@
+name: Bug report
+description: Something in Agent Orchestrator doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Shown at the bottom of Settings, for example "Version 1.1.0 (ee6b072)".
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Model runtime
+      options:
+        - Unsloth Studio
+        - llama.cpp
+        - Remote API
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU and models
+      description: For example "RTX 4070, Qwen3.5-4B for every worker".
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log or screenshot
+      description: Project > Copy run log, or crash.log from %APPDATA%\Agent Orchestrator. Remove anything private first.
