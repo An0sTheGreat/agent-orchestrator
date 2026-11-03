@@ -273,8 +273,8 @@ public partial class MainWindow
         return result;
     }
 
-    // Pick the folder (unless given: a project's "+") and start a new conversation there (with the "Main" preset, when there
-    // is one), in sidebar project `groupId` when given. Earlier ones stay in the sidebar; a folder may have several.
+    // Pick the folder (unless given: a project's "+") and start a new conversation there (with the "Lead" preset, or an older
+    // "Main" one, when there is one), in sidebar project `groupId` when given. Earlier ones stay in the sidebar; a folder may have several.
     private void NewCodeConversation(string? folder = null, string? groupId = null)
     {
         if (_chatBusy || _process is not null)
@@ -291,8 +291,9 @@ public partial class MainWindow
             return;
         if (groupId is not null)
             StoreChange(() => _store.MoveToGroup(_codeConv!.Id, groupId));
-        if (_settings.Presets.FirstOrDefault(p => p.Name.Equals("Main", StringComparison.OrdinalIgnoreCase)) is { } main)
-            ApplyPreset(main);
+        WorkerPreset? Named(string name) => _settings.Presets.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if ((Named("Lead") ?? Named("Main")) is { } lead)
+            ApplyPreset(lead);
         RefreshCodeFolders();
         RefreshChatTarget();
     }

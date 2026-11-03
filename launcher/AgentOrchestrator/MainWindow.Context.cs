@@ -17,6 +17,7 @@ public sealed class ContextSnapshot
     public long Prompt { get; set; }
     public long Completion { get; set; }
     public Dictionary<string, long> Parts { get; set; } = new();
+    public bool Unloaded { get; set; } // a worker's model unloaded since this call: its last measured call, not what is loaded now
 
     public long Used => Prompt + Completion;
     public double Fraction => NCtx is > 0 ? Math.Min(1, (double)Used / NCtx.Value) : 0;
@@ -134,14 +135,15 @@ public partial class MainWindow
         }
     }
 
-    // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card drops to 0
-    // until its next call. The lead's keeps its last value: its next call sends the whole conversation again.
+    // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card keeps its last
+    // measured call, marked unloaded, until its next call replaces it. The lead's stays as it is: its next call sends the
+    // whole conversation again.
     // ponytail: assumes one local model at a time (Unsloth, llama-server); per-server tracking if several ever run at once.
     private void WorkerContextsCleared()
     {
-        foreach (var (role, s) in _codeContexts.ToList())
-            if (role != CodeLead && s.Used > 0)
-                _codeContexts[role] = new ContextSnapshot { NCtx = s.NCtx, Role = role };
+        foreach (var (role, s) in _codeContexts)
+            if (role != CodeLead)
+                s.Unloaded = true;
         RefreshContextSection();
         RefreshCodeContextStack();
     }
@@ -204,7 +206,7 @@ public partial class MainWindow
         return _overlays[code] = new ContextOverlay { Card = card, Header = header, Body = body, Arrow = arrow };
     }
 
-    // Code: the context cards stack under the header, their right edges flush with Start project's: the lead's ("Main
+    // Code: the context cards stack under the header, their right edges flush with Start project's: the lead's ("Lead
     // Context") first, then each other worker that worked in the chat. A card's header opens its breakdown below it (the
     // lead's stays as last left, saved; the others for this app session).
     private readonly HashSet<string> _openWorkerContexts = new();
@@ -368,6 +370,15 @@ public partial class MainWindow
             percent.Tag = "ContextPercent";
             DockPanel.SetDock(percent, Dock.Right);
             face.Children.Add(percent);
+        }
+        if (s is { Unloaded: true })
+        {
+            var unloaded = Text("unloaded", "Muted", 10.5);
+            unloaded.Margin = new Thickness(0, 0, 8, 0);
+            unloaded.Tag = "ContextUnloaded";
+            unloaded.ToolTip = "The last call's context; this worker's model has unloaded since";
+            DockPanel.SetDock(unloaded, Dock.Right);
+            face.Children.Add(unloaded);
         }
         var label = Text(title, "TextPrimary");
         label.FontWeight = FontWeights.SemiBold;
@@ -539,6 +550,13 @@ public partial class MainWindow
         head.Children.Add(total);
         head.Children.Add(Text(s.NCtx is > 0 ? $"{s.Fraction:0%} used" : "Context size unknown"));
         panel.Children.Add(head);
+        if (s.Unloaded)
+        {
+            var unloaded = Text("Last call · unloaded", "Muted", 11);
+            unloaded.Margin = new Thickness(0, -4, 0, 8);
+            unloaded.Tag = "ContextUnloaded";
+            panel.Children.Add(unloaded);
+        }
         var rows = s.Rows();
         var bar = new Grid { Height = 8, Margin = new Thickness(0, 0, 0, 10) };
         foreach (var row in rows)

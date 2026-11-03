@@ -148,12 +148,10 @@ public partial class MainWindow : Window
             return;
         if (!PrepareRun())
             return;
-        // The run gets a Code turn's tools: the conversation's extra folders, search, utilities, skills, sandbox and effort.
         var requestFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-run-{Guid.NewGuid():N}.json");
         try
         {
-            File.WriteAllText(requestFile, LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
-                effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions));
+            File.WriteAllText(requestFile, RunRequest(project));
             var python = LauncherLogic.FindPython();
             var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once, requestFile);
             ApplyRuntime(startInfo);
@@ -214,6 +212,16 @@ public partial class MainWindow : Window
             StopClocks(); // a stopped or failed run freezes both; TASK TOKENS only change on task_end
             SetRunning(false, preserveStatus: true);
         }
+    }
+
+    // The run's request: a Code turn's tools (the conversation's extra folders, search, utilities, skills, sandbox and
+    // effort) and the workflow mode ("workflow": "dual" or "tri", Settings > Agents).
+    private string RunRequest(string project)
+    {
+        var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
+            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions))!;
+        request["workflow"] = _settings.WorkflowMode == "tri" ? "tri" : "dual";
+        return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
 
     private async void Stop_Click(object sender, RoutedEventArgs e)
@@ -1005,43 +1013,58 @@ public partial class MainWindow : Window
         await Settle();
         if (Math.Abs(SidePane.ActualWidth - SidebarWidth) > 2 || !SidebarFull.IsVisible || SidebarRail.IsVisible)
             return Fail();
-        // One worker by default: MAIN covers every role, a delegation to a role not added lights MAIN, "+" adds a role (its
-        // own tab and config entry) and removing it runs it as MAIN again.
+        // Dual by default (Lead + Reviewer): IMPLEMENTER is hidden and runs as LEAD (its activity lights LEAD), "+" adds only
+        // custom workers; tri (Settings > Agents) shows it with its own config entry. The run's request carries the mode, and the
+        // cards go LEAD, IMPLEMENTER, REVIEWER, COMPACTOR, then the custom workers in the order added.
         {
             var main = CardFor("planner")!;
             var (implementer, reviewer) = (CardFor("implementer")!, CardFor("reviewer")!);
             List<string> Plus() => BuildAddWorkerMenu(this).Items.OfType<MenuItem>().Select(i => (string)i.Header + (i.IsEnabled ? "" : " (off)")).ToList();
             bool TabShown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
+            // Its tab, its rail dot and its line in the Chat target dropdown.
+            bool Shown(RoleCard card) => TabShown(card) && RailDots.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible } &&
+                                         ListedWorkers(_chat).Contains(card);
             var workerConfig = ActiveConfigPath();
-            JsonNode? ReviewerConfig() => JsonNode.Parse(File.ReadAllText(workerConfig))!["roles"]?["reviewer"];
-            if (!implementer.Hidden || !reviewer.Hidden || main.Hidden || TabShown(implementer) || TabShown(reviewer) || !TabShown(main) ||
-                main.Covers != "Planner · Implementer · Reviewer" || Plus() is not ["Implementer", "Reviewer", "Custom worker…"])
+            JsonNode? RoleConfig(string role) => JsonNode.Parse(File.ReadAllText(workerConfig))!["roles"]?[role];
+            string Order() => string.Join(",", _cards.Where(c => !c.Hidden).Select(c => c.Title));
+            string? RunMode() => (string?)JsonNode.Parse(RunRequest(@"Y:\smoke"))!["workflow"];
+            if (_settings.WorkflowMode != "dual" || WorkflowDualRadio.IsChecked != true || !implementer.Hidden || reviewer.Hidden || main.Hidden || TabShown(implementer) ||
+                Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
+                Order() != "LEAD,REVIEWER,COMPACTOR" || RunMode() != "dual")
                 return Fail();
             foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
                 _lines.Enqueue(LauncherLogic.EventPrefix + json);
             DrainLines();
             if (!main.IsActive || implementer.IsActive || _activeRole != "planner" || main.TokensPerSec != "21.0 tok/s" || !main.TurnDetail.Contains("↑ 7 prompt") ||
-                implementer.TokensPerSec != "—" || main.Covers != "Planner · Implementer · Reviewer")
+                implementer.TokensPerSec != "—" || main.Covers != "Planner · Implementer")
                 return Fail();
             main.ClearLive();
             (main.IsActive, main.Status, _activeRole) = (false, "Idle", null);
-            AddBuiltInRole("reviewer");
+            WorkflowTriRadio.IsChecked = true;
             await Settle();
-            if (reviewer.Hidden || !TabShown(reviewer) || _shownWorker != reviewer || main.Covers != "Planner · Implementer" ||
-                Plus() is not ["Implementer", "Reviewer (off)", "Custom worker…"] || ReviewerConfig()?["same_as"] is not null)
+            if (_settings.WorkflowMode != "tri" || AppSettings.Load().WorkflowMode != "tri" || implementer.Hidden || !Shown(implementer) || main.HasCovers ||
+                RoleConfig("implementer")?["same_as"] is not null || RoleConfig("reviewer")?["same_as"] is not null ||
+                Order() != "LEAD,IMPLEMENTER,REVIEWER,COMPACTOR" || RunMode() != "tri")
                 return Fail();
-            RemoveBuiltInRole("reviewer");
+            SelectWorker(implementer);
+            WorkflowDualRadio.IsChecked = true;
             await Settle();
-            if (!reviewer.Hidden || TabShown(reviewer) || _shownWorker != main || !main.IsSelected || main.Covers != "Planner · Implementer · Reviewer" ||
-                (string?)ReviewerConfig()?["same_as"] != "planner")
+            if (_settings.WorkflowMode != "dual" || !implementer.Hidden || TabShown(implementer) || ListedWorkers(_chat).Contains(implementer) || _shownWorker != main ||
+                (string?)RoleConfig("implementer")?["same_as"] != "planner" || RoleConfig("reviewer")?["same_as"] is not null ||
+                Order() != "LEAD,REVIEWER,COMPACTOR" || RunMode() != "dual")
                 return Fail();
-            Snap("0-one-worker");
-            // The checks below use all three built-ins.
-            AddBuiltInRole("implementer");
-            AddBuiltInRole("reviewer");
-            SelectWorker(main);
+            Snap("0-dual");
+            // The checks below use all three built-ins. Saved workers with a custom one before COMPACTOR load in the fixed order.
+            SetWorkflow("tri");
+            var savedWorkers = _settings.Workers;
+            void Reload(List<WorkerSetting> workers) => HoldWorkerTab(() =>
+                { _settings.Workers = workers; _cards.Clear(); LoadWorkers(); PrefillCards(); SelectWorker(CardFor("planner")); });
+            Reload([new() { Id = "planner" }, new() { Id = "smoke-order", Title = "ORDER W", Custom = true }, new() { Id = "reviewer" }]);
+            var ordered = Order();
+            Reload(savedWorkers);
             await Settle();
-            if (_cards.Any(c => c.Hidden) || !TabShown(implementer) || !TabShown(reviewer) || main.HasCovers)
+            if (ordered != "LEAD,IMPLEMENTER,REVIEWER,COMPACTOR,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
+                !TabShown(CardFor("reviewer")!) || CardFor("planner")!.HasCovers || _shownWorker != CardFor("planner"))
                 return Fail();
         }
         foreach (var json in new[]
@@ -1178,7 +1201,7 @@ public partial class MainWindow : Window
             SaveWorkers();
             var saved = Cards();
             SavePreset("Smoke");
-            RemoveBuiltInRole("reviewer"); // the preset brings it back
+            SetWorkflow("dual"); // applying the preset keeps the mode
             presetWorker.Config.ModelOptions["top_k"] = "9"; // an edit saved after the preset
             SaveWorkers();
             AddCustomWorker();
@@ -1204,8 +1227,9 @@ public partial class MainWindow : Window
             var templateBytes = File.ReadAllBytes(Path.Combine(_workflowRoot!, "config.json"));
             double Temperature(string path) => (double)JsonNode.Parse(File.ReadAllText(path))!["roles"]!["planner"]!["sampling"]!["temperature"]!;
             if (Cards() != saved || Temperature(presetConfig) != 0.3 || Temperature(workerConfig) != 0.3 ||
-                string.Join(",", _settings.AddedRoles) != "implementer,reviewer" || CardFor("reviewer")!.Hidden)
+                _settings.WorkflowMode != "dual" || !CardFor("implementer")!.Hidden || CardFor("reviewer")!.Hidden)
                 return Fail();
+            SetWorkflow("tri");
             // Both parts of the parent preset come back (a built-in's chat prompt, a custom worker's option), the tab stays and shows them.
             if ((string)JsonNode.Parse(File.ReadAllText(presetConfig))!["roles"]!["planner"]!["chat_system_prompt"]! != "Planner: saved" ||
                 CardFor("smoke-preset")!.Config.ModelOptions["top_k"] != "7" || _shownWorker?.Role != "planner" || !CardFor("planner")!.IsSelected ||
@@ -1432,7 +1456,7 @@ public partial class MainWindow : Window
             var headers = workerMenu.Items.OfType<MenuItem>().ToList();
             var names = headers.Select(i => (string)i.Header).ToList();
             var broken = headers.FirstOrDefault(i => ((string)i.Header).StartsWith("Smoke chat"));
-            if (new[] { "Main", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
+            if (new[] { "Lead", "Implementer", "Reviewer" }.Any(n => !names.Contains(n)) || broken is null || broken.IsEnabled || workerMenu.Placement != PlacementMode.Top)
                 return Fail();
             workerMenu.IsOpen = true;
             await Settle();
@@ -2307,7 +2331,8 @@ public partial class MainWindow : Window
                 Snap("30-context-section");
                 SetWorkerRail(railWas);
                 // Code: one "<worker> Context" card per worker that worked (a run's events here), the lead's on the header ring;
-                // a model loading drops the workers' cards to 0 but keeps the lead's (its next call resends the conversation).
+                // a model loading keeps each worker's last call, marked unloaded, until its next call replaces it, and leaves the lead's
+                // as it was (its next call resends the conversation).
                 {
                     ShowView();
                     ShowContext(true, null);
@@ -2317,7 +2342,7 @@ public partial class MainWindow : Window
                     ContextSectionToggle.IsChecked = true;
                     ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                     if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
-                        string.Join("|", titles() ?? []) != "Main Context|Implementer Context")
+                        string.Join("|", titles() ?? []) != "Lead Context|Implementer Context")
                         return Fail();
                     // The cards stack under the header, the lead's first, right edges flush with Start project's.
                     await Settle();
@@ -2340,7 +2365,13 @@ public partial class MainWindow : Window
                     if (!below)
                         return Fail();
                     DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
-                    if (_codeContexts["implementer"].Used != 0 || _codeContexts["implementer"].NCtx != 16000 || _codeContexts["planner"].Used != 8000)
+                    bool UnloadedShown() => SmokeFind<TextBlock>(ContextSectionBody, t => t.Tag as string == "ContextUnloaded") is not null &&
+                        SmokeFind<TextBlock>(CodeContextPin, t => t.Tag as string == "ContextUnloaded") is not null;
+                    if (_codeContexts["implementer"] is not { Used: 4000, NCtx: 16000, Unloaded: true } || _codeContexts["planner"] is not { Used: 8000, Unloaded: false } ||
+                        !UnloadedShown())
+                        return Fail();
+                    DrainContext("""{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":5000,"completion_tokens":0,"parts":{"messages":5000}}""");
+                    if (_codeContexts["implementer"] is not { Used: 5000, Unloaded: false } || UnloadedShown())
                         return Fail();
                     ContextSectionToggle.IsChecked = false;
                     ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
@@ -3870,10 +3901,9 @@ public partial class MainWindow : Window
     // Saved order and user-created workers; the three built-in workers are always present.
     private void LoadWorkers()
     {
+        // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR), then the custom workers in the order added.
         var saved = _settings.Workers.Where(w => w.Id.Length > 0 && (w.Custom || Roles.Contains(w.Id))).ToList();
-        foreach (var role in Roles.Where(r => saved.All(w => w.Id != r)))
-            saved.Add(new WorkerSetting { Id = role });
-        foreach (var w in saved)
+        foreach (var w in Roles.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
             if (w.Custom && w.ModelId is not null)
@@ -3884,13 +3914,14 @@ public partial class MainWindow : Window
         RefreshCardVisibility();
     }
 
-    // Once: an implementer or reviewer with a model of its own (LauncherLogic.HasOwnModel) stays added (others now run as
-    // the planner), and the saved presets are cleared for a fresh start. An unreadable config: nothing changes, next start retries.
+    // Once: an implementer with a model of its own (LauncherLogic.HasOwnModel) picks the tri workflow (else dual), and the
+    // saved presets are cleared for a fresh start. An unreadable config: nothing changes, next start retries.
     private void MigrateRoles()
     {
         if (_settings.RolesMigrated || LauncherLogic.RolesWithOwnModel(ActiveConfigPath()) is not { } added)
             return;
-        _settings.AddedRoles = added;
+        _settings.WorkflowMode = added.Contains("implementer") ? "tri" : "dual";
+        ShowWorkflowMode();
         _settings.Presets.Clear();
         _settings.ModelPresets.Clear();
         _settings.RolesMigrated = true;
@@ -3944,7 +3975,7 @@ public partial class MainWindow : Window
                 foreach (var role in LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles, keepOwn))
                     if (_ownModelNotices.Add($"{path}|{role}"))
                     {
-                        var notice = $"{Path.GetFileName(Path.GetDirectoryName(path))}: its {RoleName(role)} has its own model; add the {RoleName(role)} to use it";
+                        var notice = $"{Path.GetFileName(Path.GetDirectoryName(path))}: its {RoleName(role)} has its own model; choose Lead + Implementer + Reviewer in Settings > Agents to use it";
                         Log(notice);
                         Toast(notice, "#F7C873");
                     }
@@ -4116,7 +4147,7 @@ public partial class MainWindow : Window
     }
 
     // "+ New preset…": a fresh template to edit: the built-in workers with the app's default settings (the template
-    // config.json), no custom workers and none added, saved under its name and applied. The current workers are kept only
+    // config.json), no custom workers (the workflow mode stays), saved under its name and applied. The current workers are kept only
     // in a preset they were saved to.
     private void NewPresetPrompt()
     {
@@ -4136,7 +4167,6 @@ public partial class MainWindow : Window
         try
         {
             preset = LauncherLogic.CapturePreset(name, Path.Combine(_workflowRoot ?? "", "config.json"), Roles.Select(r => new WorkerSetting { Id = r }));
-            preset.AddedRoles = [];
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -4159,7 +4189,6 @@ public partial class MainWindow : Window
         try
         {
             preset = LauncherLogic.CapturePreset(name, ActiveConfigPath(), CurrentWorkers());
-            preset.AddedRoles = [.. _settings.AddedRoles];
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -4198,8 +4227,6 @@ public partial class MainWindow : Window
             return;
         }
         _settings.Workers = preset.Workers;
-        if (preset.AddedRoles is { } added)
-            _settings.AddedRoles = [.. added];
         HoldWorkerTab(() => // one build of the tab, not one per step
         {
             _cards.Clear();
@@ -4228,21 +4255,12 @@ public partial class MainWindow : Window
         Toast($"Preset deleted: {preset.Name}");
     }
 
-    // "+": add the Implementer or the Reviewer (until then MAIN, the planner, covers it), or a custom worker.
+    // "+": a custom worker (the built-in Implementer and Reviewer follow the workflow mode, Settings > Agents).
     private void AddWorker_Click(object sender, RoutedEventArgs e) => BuildAddWorkerMenu((FrameworkElement)sender).IsOpen = true;
 
     private ContextMenu BuildAddWorkerMenu(FrameworkElement target)
     {
         var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Bottom };
-        foreach (var role in Roles.Skip(1).Where(r => r != "compactor")) // COMPACTOR is always there
-        {
-            var name = ChatName(null, role);
-            var added = _settings.AddedRoles.Contains(role);
-            var item = new MenuItem { Header = name, IsEnabled = !added, Tag = role, ToolTip = added ? $"{name} is already added" : $"A separate {name}; until added, MAIN covers it" };
-            ToolTipService.SetShowOnDisabled(item, true);
-            item.Click += (_, _) => AddBuiltInRole(role);
-            menu.Items.Add(item);
-        }
         var custom = new MenuItem { Header = "Custom worker…", ToolTip = "Add a worker with a custom title and model", Tag = "custom" };
         custom.Click += (_, _) => AddCustomWorker();
         menu.Items.Add(custom);
@@ -4261,31 +4279,36 @@ public partial class MainWindow : Window
         SelectWorker(card);
     }
 
-    // An added role gets its own roles.<role> entry back (or a copy of the planner's) and its tab; removing it runs it as
-    // the planner again ("same_as") and shows MAIN.
-    private void AddBuiltInRole(string role)
+    // Settings > Agents > Workflow. Refused while a reply or run is using the models (that turn already chose its workers).
+    private void Workflow_Checked(object sender, RoutedEventArgs e)
     {
-        if (!_settings.AddedRoles.Contains(role))
-            _settings.AddedRoles.Add(role);
-        _settings.Save();
-        HoldWorkerTab(() =>
+        if (_initializing)
+            return;
+        var mode = WorkflowTriRadio.IsChecked == true ? "tri" : "dual";
+        if (mode == _settings.WorkflowMode)
+            return;
+        if (_process is not null || _chatBusy)
         {
-            SyncCustomWorkers();
-            RefreshCardVisibility();
-            PrefillCards();
-            SelectWorker(CardFor(role));
-        });
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            ShowWorkflowMode(); // re-enters here with nothing to change
+            return;
+        }
+        SetWorkflow(mode);
     }
 
-    private void RemoveBuiltInRole(string role)
+    private void ShowWorkflowMode() => (_settings.WorkflowMode == "tri" ? WorkflowTriRadio : WorkflowDualRadio).IsChecked = true;
+
+    // tri gives the Implementer its own roles.implementer entry back (or a copy of the planner's) and its tab; dual runs it
+    // as the planner again ("same_as") and hides it. The Reviewer is in both.
+    private void SetWorkflow(string mode)
     {
-        _settings.AddedRoles.Remove(role);
+        _settings.WorkflowMode = mode;
         _settings.Save();
+        ShowWorkflowMode();
         HoldWorkerTab(() =>
         {
-            SyncCustomWorkers(removedRole: role);
-            SelectWorker(CardFor("planner"));
-            RefreshCardVisibility();
+            SyncCustomWorkers(removedRole: mode == "tri" ? null : "implementer");
+            RefreshCardVisibility(); // a hidden tab that was shown hands over to LEAD
             PrefillCards();
         });
     }
