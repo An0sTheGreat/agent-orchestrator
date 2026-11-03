@@ -4,6 +4,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Windows;
+using System.Windows.Media.Imaging;
+using QRCoder;
 
 namespace AgentOrchestrator;
 
@@ -228,6 +230,244 @@ public partial class MainWindow
             StopRemoteServer();
             (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, ApiKeyBox.Password, _settings.Runtime, _codeChoice, _notifyHook) =
                 (hash, port, root, project, key, runtime, choice, notify);
+        }
+    }
+
+    // Settings > General > Remote access: on starts the server, then the tunnel on its port (asking to download cloudflared
+    // first when it is missing); off stops the tunnel, then the server. At startup a missing cloudflared shows Failed instead.
+    private RemoteTunnel _tunnel = null!; // InitRemote; --ui-smoke swaps in tunnels on a fake cloudflared
+    private int? _remoteDownload; // cloudflared's download, in percent
+    private string? _remoteFailure; // why the switch did not turn on, until it is clicked again
+    private const string CloudflaredUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe";
+
+    private void InitRemote()
+    {
+        UseTunnel(new RemoteTunnel(RemoteTunnel.DefaultExe));
+        RemoteStateChanged += RefreshRemote;
+        if (_settings.RemoteAccess)
+        {
+            if (StartRemoteServer())
+                _tunnel.Start(RemotePort!.Value);
+            else
+                _remoteFailure = "the server did not start (no password, or no free port)";
+        }
+        RefreshRemote();
+    }
+
+    private void UseTunnel(RemoteTunnel tunnel)
+    {
+        _tunnel = tunnel;
+        tunnel.Changed += () => Dispatcher.InvokeAsync(RefreshRemote);
+    }
+
+    private async void RemoteToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _remoteFailure = null;
+        if (RemoteToggle.IsChecked != true)
+        {
+            _tunnel.Stop();
+            StopRemoteServer();
+            SaveRemoteAccess(false);
+            return;
+        }
+        if (string.IsNullOrEmpty(_settings.RemotePasswordHash) || (!File.Exists(_tunnel.Exe) && !await DownloadCloudflared()))
+        {
+            SaveRemoteAccess(false); // the password line says why; a failed download, the state line
+            return;
+        }
+        if (!StartRemoteServer())
+        {
+            _remoteFailure = $"no free port from {_settings.RemotePort}";
+            SaveRemoteAccess(false);
+            return;
+        }
+        _tunnel.Start(RemotePort!.Value);
+        SaveRemoteAccess(true);
+    }
+
+    private void SaveRemoteAccess(bool on)
+    {
+        _settings.RemoteAccess = on;
+        _settings.Save();
+        RefreshRemote();
+    }
+
+    // Asks, then downloads to a temporary name beside it (progress in the state line) and moves it into place when complete.
+    private async Task<bool> DownloadCloudflared()
+    {
+        if (Choose("Download cloudflared?", "Download cloudflared (about 60 MB) from github.com/cloudflare/cloudflared?", ("Download", "download")) != "download")
+            return false;
+        var temp = _tunnel.Exe + ".download";
+        (_remoteDownload, RemoteToggle.IsEnabled) = (0, false);
+        RefreshRemote();
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(temp)!);
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            using var response = await http.GetAsync(CloudflaredUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            var total = response.Content.Headers.ContentLength ?? 0;
+            await using (var source = await response.Content.ReadAsStreamAsync())
+            await using (var file = File.Create(temp))
+            {
+                var buffer = new byte[81920];
+                long done = 0;
+                for (int read; (read = await source.ReadAsync(buffer)) > 0;)
+                {
+                    await file.WriteAsync(buffer.AsMemory(0, read));
+                    done += read;
+                    if (total > 0 && (int)(done * 100 / total) != _remoteDownload)
+                    {
+                        _remoteDownload = (int)(done * 100 / total);
+                        RefreshRemote();
+                    }
+                }
+            }
+            File.Move(temp, _tunnel.Exe, overwrite: true);
+            Log($"Remote access: downloaded cloudflared to {_tunnel.Exe}");
+            return true;
+        }
+        catch (Exception x) when (x is HttpRequestException or IOException or TaskCanceledException or UnauthorizedAccessException)
+        {
+            _remoteFailure = "could not download cloudflared: " + x.Message;
+            Log($"Remote access: {_remoteFailure}");
+            try { File.Delete(temp); } catch (Exception y) when (y is IOException or UnauthorizedAccessException) { }
+            return false;
+        }
+        finally
+        {
+            (_remoteDownload, RemoteToggle.IsEnabled) = (null, true);
+        }
+    }
+
+    // A new hash signs every device out (RemoteServer reads it on each request).
+    private void RemotePassword_Click(object sender, RoutedEventArgs e)
+    {
+        if (RemotePasswordBox.Password.Length == 0)
+        {
+            Toast("Type a password first", "#F7C873");
+            return;
+        }
+        _settings.RemotePasswordHash = RemoteAuth.HashPassword(RemotePasswordBox.Password);
+        _settings.Save();
+        RemotePasswordBox.Clear();
+        Toast("Password set");
+        RefreshRemote();
+    }
+
+    private void RemoteCopy_Click(object sender, RoutedEventArgs e) => CopyToClipboard(RemoteAddressBox.Text, "Address copied", "No address yet");
+
+    private void RefreshRemote()
+    {
+        RemoteToggle.IsChecked = _settings.RemoteAccess || _remoteDownload is not null;
+        RemotePasswordState.Text = string.IsNullOrEmpty(_settings.RemotePasswordHash)
+            ? "No password yet: remote access cannot turn on without one." : "Password set. Setting a new one signs every device out.";
+        RemoteStateText.Text = _remoteDownload is { } percent ? $"Downloading {percent}%" : _remoteFailure is { } failure ? "Failed: " + failure : _tunnel.State switch
+        {
+            RemoteTunnel.Status.Starting => "Starting…",
+            RemoteTunnel.Status.Online => "Online",
+            RemoteTunnel.Status.Failed => "Failed: " + _tunnel.Reason,
+            _ => "Off",
+        };
+        var address = _tunnel.State == RemoteTunnel.Status.Online ? _tunnel.Url : null;
+        RemoteOnlinePanel.Visibility = address is null ? Visibility.Collapsed : Visibility.Visible;
+        if (address is not null && RemoteAddressBox.Text != address)
+        {
+            RemoteAddressBox.Text = address;
+            RemoteQrImage.Source = QrCode(address);
+        }
+    }
+
+    // ~8 px a module, black on the white quiet zone; the Image scales it to 180 px with NearestNeighbor, so it stays crisp.
+    private static BitmapImage QrCode(string text)
+    {
+        var image = new BitmapImage();
+        image.BeginInit();
+        image.CacheOption = BitmapCacheOption.OnLoad;
+        image.StreamSource = new MemoryStream(PngByteQRCodeHelper.GetQRCode(text, QRCodeGenerator.ECCLevel.M, 8));
+        image.EndInit();
+        image.Freeze();
+        return image;
+    }
+
+    // --ui-smoke: no password refuses the switch; a declined download turns it back off; a fake cloudflared (a .cmd that
+    // prints an address, then waits) goes Starting, Online with the address and its QR code, and off kills it by pid; one
+    // that exits at once ends Failed with its last line. The clipboard is not checked: it is the user's, in use meanwhile.
+    private async Task<bool> RemoteTunnelSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote tunnel: {what}"); return false; }
+        static async Task<bool> Until(Func<bool> done)
+        {
+            for (var waited = 0; waited < 10000 && !done(); waited += 50)
+                await Task.Delay(50);
+            return done();
+        }
+        void Click(bool on)
+        {
+            RemoteToggle.IsChecked = on;
+            RemoteToggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+        }
+        var (hash, port, access, choice, tunnel) = (_settings.RemotePasswordHash, _settings.RemotePort, _settings.RemoteAccess, _codeChoice, _tunnel);
+        var fakes = Path.Combine(AppSettings.DataRoot, "fake-cloudflared");
+        Directory.CreateDirectory(fakes);
+        const string address = "https://smoke-test-tunnel.trycloudflare.com";
+        var online = Path.Combine(fakes, "online.cmd");
+        File.WriteAllText(online, "@echo off\r\necho INF Requesting new quick Tunnel on trycloudflare.com...\r\n" +
+            "echo INF See https://developers.cloudflare.com/cloudflare-one/ 1>&2\r\n" +
+            $"echo INF ^|  {address}  ^| 1>&2\r\nping -n 120 127.0.0.1 >nul\r\n");
+        var exits = Path.Combine(fakes, "exits.cmd");
+        File.WriteAllText(exits, "@echo off\r\necho ERR failed to reach the edge 1>&2\r\nexit /b 3\r\n");
+        try
+        {
+            _settings.RemotePort = Random.Shared.Next(20000, 60000);
+            _settings.RemotePasswordHash = null;
+            Click(true);
+            if (RemoteToggle.IsChecked == true || _settings.RemoteAccess || RemotePort is not null || !RemotePasswordState.Text.Contains("cannot turn on"))
+                return Fail("it turned on without a password");
+
+            _settings.RemotePasswordHash = RemoteAuth.HashPassword("smoke password");
+            UseTunnel(new RemoteTunnel(Path.Combine(fakes, "missing.exe")));
+            string? asked = null;
+            _codeChoice = title => { asked = title; return null; };
+            Click(true);
+            if (asked != "Download cloudflared?" || RemoteToggle.IsChecked == true || _settings.RemoteAccess || RemotePort is not null)
+                return Fail($"declining the download: asked {asked}, on {RemoteToggle.IsChecked}");
+
+            var fake = new RemoteTunnel(online);
+            var states = new List<RemoteTunnel.Status>();
+            fake.Changed += () => { lock (states) states.Add(fake.State); };
+            UseTunnel(fake);
+            Click(true);
+            if (!await Until(() => RemoteAddressBox.Text == address && RemoteStateText.Text == "Online"))
+                return Fail($"not online: {fake.State} {fake.Reason} / {RemoteStateText.Text}");
+            lock (states)
+                if (states.FirstOrDefault() != RemoteTunnel.Status.Starting || fake.Url != address)
+                    return Fail($"states {string.Join(",", states)}, url {fake.Url}");
+            if (RemoteQrImage.Source is not BitmapSource { PixelWidth: > 100 } || RemoteOnlinePanel.Visibility != Visibility.Visible ||
+                !_settings.RemoteAccess || RemotePort is null || fake.Pid is not { } pid)
+                return Fail("the address, its QR code or the server");
+            Click(false);
+            if (fake.State != RemoteTunnel.Status.Off || RemotePort is not null || _settings.RemoteAccess ||
+                !await Until(() => { try { using var p = System.Diagnostics.Process.GetProcessById(pid); return p.HasExited; } catch (ArgumentException) { return true; } }) ||
+                !await Until(() => RemoteStateText.Text == "Off" && RemoteOnlinePanel.Visibility != Visibility.Visible))
+                return Fail($"off: {fake.State}, pid {pid}, {RemoteStateText.Text}");
+
+            var failing = new RemoteTunnel(exits);
+            UseTunnel(failing);
+            Click(true);
+            if (!await Until(() => failing.State == RemoteTunnel.Status.Failed && RemoteStateText.Text.StartsWith("Failed: ERR failed to reach the edge")))
+                return Fail($"an exiting cloudflared: {failing.State} {failing.Reason} / {RemoteStateText.Text}");
+            Click(false);
+            if (failing.State != RemoteTunnel.Status.Off)
+                return Fail("an exiting cloudflared did not stop");
+            return true;
+        }
+        finally
+        {
+            _tunnel.Stop();
+            StopRemoteServer();
+            (_settings.RemotePasswordHash, _settings.RemotePort, _settings.RemoteAccess, _codeChoice, _tunnel) = (hash, port, access, choice, tunnel);
+            RefreshRemote();
         }
     }
 }

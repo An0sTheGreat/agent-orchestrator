@@ -12,7 +12,7 @@ Use the app from a phone or another computer through a browser, from anywhere.
 
 - **Server** (`RemoteServer.cs`): `HttpListener` on `http://127.0.0.1:<port>/` only (port 8765 by default, a free one if
   taken). Loopback needs no admin rights or URL ACL, and only the tunnel can reach it from outside.
-- **Tunnel** (`RemoteTunnel.cs`): runs `cloudflared tunnel --url http://127.0.0.1:<port> --no-autoupdate`, reads the
+- **Tunnel** (`RemoteTunnel.cs`): runs `cloudflared tunnel --url http://127.0.0.1:<port> --no-autoupdate --http-host-header 127.0.0.1:<port>`, reads the
   `https://*.trycloudflare.com` address from its output, restarts it if it exits while remote access is on, and kills it
   (by pid) when access is turned off or the app closes. `cloudflared.exe` lives in `<DataRoot>\tools`; when missing, the
   app asks before downloading it from Cloudflare's GitHub releases (`cloudflared-windows-amd64.exe`).

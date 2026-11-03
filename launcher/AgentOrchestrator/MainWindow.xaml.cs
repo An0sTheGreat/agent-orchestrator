@@ -82,8 +82,7 @@ public partial class MainWindow : Window
         InitChat();
         StoreDo(_store.Load);
         RestoreWindowBounds();
-        if (_settings.RemoteAccess)
-            StartRemoteServer(); // needs a password hash; the tunnel (later) follows the same switch
+        InitRemote();
 
         Closing += OnClosing;
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
@@ -2934,7 +2933,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LocalRuntimeSmoke())
             return false;
-        if (!await RemoteSmoke())
+        if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
@@ -4738,6 +4737,7 @@ public partial class MainWindow : Window
             e.Cancel = true; // the user kept the worker tab's unsaved edits
             return;
         }
+        _tunnel.Stop();
         StopRemoteServer();
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))

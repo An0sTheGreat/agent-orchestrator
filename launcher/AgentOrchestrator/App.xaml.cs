@@ -15,6 +15,7 @@ public partial class App : Application
             VramEstimate.SelfTest();
             AgentOrchestrator.MainWindow.BrowserSelfTest();
             RemoteServer.SelfTest();
+            RemoteTunnel.SelfTest();
             Shutdown(0);
             return;
         }

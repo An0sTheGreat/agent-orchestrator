@@ -30,5 +30,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
+    <!-- the remote access address as a QR code (PngByteQRCode: no System.Drawing) -->
+    <PackageReference Include="QRCoder" Version="1.6.0" />
   </ItemGroup>
 </Project>

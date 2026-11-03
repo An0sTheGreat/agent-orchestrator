@@ -1497,6 +1497,30 @@
                         </DockPanel>
                         <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Remote access (MainWindow.Remote.cs, RemoteTunnel.cs): the server and the Cloudflare quick tunnel -->
+                        <TextBlock Text="Remote access" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="RemoteToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="RemoteToggle_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Remote access" />
+                            <TextBlock Text="Use the app from a phone or another computer, in a browser" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <DockPanel Margin="0,12,0,0">
+                        <Button x:Name="RemotePasswordButton" DockPanel.Dock="Right" Content="Set password" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="RemotePassword_Click" />
+                        <PasswordBox x:Name="RemotePasswordBox" AutomationProperties.Name="Remote access password" />
+                        </DockPanel>
+                        <TextBlock x:Name="RemotePasswordState" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock x:Name="RemoteStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <StackPanel x:Name="RemoteOnlinePanel" Visibility="Collapsed" Margin="0,12,0,0">
+                        <DockPanel>
+                        <Button x:Name="RemoteCopyButton" DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="RemoteCopy_Click" />
+                        <TextBox x:Name="RemoteAddressBox" IsReadOnly="True" AutomationProperties.Name="Remote access address" />
+                        </DockPanel>
+                        <!-- dark modules on the PNG's own white quiet zone, so phones read it in dark themes too -->
+                        <Image x:Name="RemoteQrImage" Width="180" Height="180" HorizontalAlignment="Left" Margin="0,12,0,0" RenderOptions.BitmapScalingMode="NearestNeighbor"
+                               AutomationProperties.Name="QR code of the address" />
+                        </StackPanel>
+                        <TextBlock Text="Anyone with the address reaches the sign-in page; the address changes each time remote access starts."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Appearance" Visibility="Collapsed">
                         <TextBlock Text="Appearance" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
