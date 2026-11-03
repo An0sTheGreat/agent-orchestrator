@@ -18,7 +18,7 @@ public partial class MainWindow
         new(_settings.UseSearch, _settings.UseTools,
             AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) || InvokesSkill(message, s.Name) ||
                 initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
-                .Select(s => s.Folder).ToList());
+                .Select(s => s.Folder).ToList(), Vision: _settings.UseVision);
 
     // The user's skills (AppSettings.SkillsRoot) and the ones bundled with the app (<workflow root>\skills).
     private List<LauncherLogic.Skill> AllSkills() =>
@@ -30,21 +30,67 @@ public partial class MainWindow
         foreach (var (search, tools, skill) in new[] { (ChatSearchToggle, ChatToolsToggle, ChatSkillsButton), (CodeSearchToggle, CodeToolsToggle, CodeSkillsButton) })
         {
             search.IsChecked = _settings.UseSearch;
+            (search == ChatSearchToggle ? ChatVisionToggle : CodeVisionToggle).IsChecked = _settings.UseVision;
             tools.IsChecked = _settings.UseTools;
             skill.IsChecked = skills > 0;
             ((TextBlock)((StackPanel)skill.Content).Children[1]).Text = skills > 0 ? $"Skills · {skills}  ▾" : "Skills  ▾";
         }
+        RefreshVision();
     }
 
     private void ExtraToggle_Click(object sender, RoutedEventArgs e)
     {
         var on = ((ToggleButton)sender).IsChecked == true;
-        if (((FrameworkElement)sender).Tag as string == "search")
-            _settings.UseSearch = on;
-        else
-            _settings.UseTools = on;
+        switch (((FrameworkElement)sender).Tag as string)
+        {
+            case "search":
+                _settings.UseSearch = on;
+                break;
+            case "vision":
+                _settings.UseVision = on;
+                break;
+            default:
+                _settings.UseTools = on;
+                break;
+        }
         _settings.Save();
         RefreshExtras();
+    }
+
+    // The Vision switches turn grey, with a tip saying why, while the model a message goes to cannot see: Chat's target, or
+    // Code's lead (MAIN). Read off the UI thread (the Hugging Face cache may be large); only the latest read applies.
+    private int _visionRead;
+
+    private async void RefreshVision()
+    {
+        if (_chat is null || _workflowRoot is null)
+            return;
+        var mine = ++_visionRead;
+        var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
+        var loads = new[] { ChatTarget(), CardFor("planner") }.Select(card => card is null ? null : VisionLoad(card)).ToArray();
+        var local = LocalRuntime;
+        var seeing = await Task.Run(() => loads.Select(load => LauncherLogic.CanSee(load, local, folder, hub)).ToArray());
+        if (mine != _visionRead)
+            return;
+        foreach (var (toggle, sees) in new[] { (ChatVisionToggle, seeing[0]), (CodeVisionToggle, seeing[1]) })
+        {
+            toggle.IsEnabled = sees;
+            toggle.ToolTip = sees ? "Send attached images and browser screenshots to the model" : "Vision is not supported for the selected model(s).";
+        }
+    }
+
+    // The auto_load a card's model loads with (a custom worker's from its settings), or null for a remote role or none.
+    private JsonObject? VisionLoad(RoleCard card)
+    {
+        if (card.IsCustom)
+            return card.Config.ModelPath is { } path ? new JsonObject { ["model_path"] = path, ["gguf_variant"] = card.Config.ModelVariant, ["gguf_file"] = card.Config.GgufFile } : null;
+        try
+        {
+            var roles = JsonNode.Parse(File.ReadAllText(ActiveConfigPath()))?["roles"] as JsonObject;
+            var role = card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(roles) ? "planner" : ConfigRole(card.Role);
+            return roles?[role]?["auto_load"]?.DeepClone() as JsonObject;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or ArgumentException) { return null; }
     }
 
     private void Skills_Click(object sender, RoutedEventArgs e)

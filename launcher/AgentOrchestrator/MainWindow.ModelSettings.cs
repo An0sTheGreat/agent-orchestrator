@@ -434,9 +434,25 @@ public partial class MainWindow
                 ? "The instructions COMPACTOR follows when it summarizes a conversation or an agent's steps."
                 : "The instructions this worker follows in Code conversations and project runs.");
             workflow.Tag = card.Role == LauncherLogic.Compactor ? "PromptSection" : "WorkflowPromptSection"; // COMPACTOR's shows in both views
-            workflow.Children.Add(Muted("The edit button unlocks a prompt and the reset button restores the default; Save keeps the change, for every project."));
+            // Collapsed until its header is clicked (the prompts are long); the choice is kept (PromptsExpanded).
+            var promptBody = new StackPanel { Tag = "PromptBody", Visibility = _settings.PromptsExpanded ? Visibility.Visible : Visibility.Collapsed };
+            promptBody.Children.Add(Muted("The edit button unlocks a prompt and the reset button restores the default; Save keeps the change, for every project."));
             foreach (var (label, file) in RolePromptFiles(card.Role))
-                workflow.Children.Add(PromptEditor(label, file, promptEdits));
+                promptBody.Children.Add(PromptEditor(label, file, promptEdits));
+            var promptHeader = (TextBlock)workflow.Children[0];
+            var promptTitle = promptHeader.Text;
+            void ShowPrompts() => promptHeader.Text = (promptBody.Visibility == Visibility.Visible ? "▾  " : "▸  ") + promptTitle;
+            (promptHeader.Cursor, promptHeader.Tag) = (Cursors.Hand, "PromptToggle");
+            promptHeader.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                promptBody.Visibility = promptBody.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+                _settings.PromptsExpanded = promptBody.Visibility == Visibility.Visible;
+                _settings.Save();
+                ShowPrompts();
+            };
+            ShowPrompts();
+            workflow.Children.Add(promptBody);
             var panel = source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), Muted("Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.") } };
             modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
             {
@@ -694,10 +710,14 @@ public partial class MainWindow
                 LoadModels();
             requested = true;
         }
-        modelBox.PreviewMouseLeftButtonDown += (_, e) =>
+        // Opened on the release: opened on the press, the release would count as a click outside and close it. A click
+        // while it is open closes it (the press already did, StaysOpen being false).
+        modelBox.PreviewMouseLeftButtonDown += (_, e) => e.Handled = true; // not the box's own list
+        modelBox.PreviewMouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            OpenPicker();
+            if (!picker.JustClosed)
+                OpenPicker();
         };
         modelBox.PreviewKeyDown += (_, e) =>
         {
@@ -1264,7 +1284,8 @@ public partial class MainWindow
         static Task Idle() => Task.Delay(400);
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: compactor: {what}"); return false; }
         var (planner, compactor) = (CardFor("planner")!, CardFor(LauncherLogic.Compactor));
-        var (chatWorker, ask, width) = (_settings.ChatWorker, _codeChoice, DetailsColumn.Width);
+        var (chatWorker, ask, width, expanded) = (_settings.ChatWorker, _codeChoice, DetailsColumn.Width, _settings.PromptsExpanded);
+        _settings.PromptsExpanded = false;
         _codeChoice = _ => null;
         var overridden = PromptOverridePath("compactor.txt");
         try
@@ -1284,9 +1305,100 @@ public partial class MainWindow
             await Idle();
             if ((double)Resources["WorkerTabWidth"] != WorkerTabMax || WorkerTabsScroll.ScrollableWidth > 1) // capped: all four fit
                 return Fail($"the cards' width: {Resources["WorkerTabWidth"]}");
-            TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == text && t.IsVisible);
+            TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.EndsWith(text) && t.IsVisible);
             if (Header("MODEL") is not { } model || Header("SYSTEM PROMPT (WORKFLOW)") is not { } prompts || Header("SAMPLING") is not { } sampling)
                 return Fail("the groups");
+            // The prompts start collapsed; their header opens them, and the choice is kept.
+            if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: false } || !prompts.Text.StartsWith("▸"))
+                return Fail("the prompts start collapsed");
+            prompts.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = MouseLeftButtonUpEvent });
+            await Idle();
+            if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: true } || !prompts.Text.StartsWith("▾") || !_settings.PromptsExpanded)
+                return Fail("the prompts open");
+
+            // Vision: the switch goes in the request; a model that cannot see (Disable vision, or on llama.cpp no mmproj beside
+            // its GGUF) greys it with the reason as its tip.
+            var sight = Path.Combine(AppSettings.DataRoot, "smoke-vision");
+            Directory.CreateDirectory(sight);
+            var blind = Path.Combine(sight, "Blind-Q4_K_M.gguf");
+            File.WriteAllText(blind, "x");
+            JsonObject Load() => new() { ["model_path"] = "Blind", ["gguf_file"] = blind };
+            if (LauncherLogic.CanSee(new JsonObject { ["disable_vision"] = "on" }, false, "", "") || !LauncherLogic.CanSee(Load(), false, "", "") ||
+                LauncherLogic.CanSee(Load(), true, "", "") || !LauncherLogic.CanSee(null, true, "", ""))
+                return Fail("CanSee");
+            File.WriteAllText(Path.Combine(sight, "mmproj-F16.gguf"), "x");
+            if (!LauncherLogic.CanSee(Load(), true, "", ""))
+                return Fail("CanSee with a projector");
+            // a flat models folder: only a projector named for the model counts
+            var flat = Path.Combine(AppSettings.DataRoot, "smoke-flat");
+            Directory.CreateDirectory(flat);
+            foreach (var name in new[] { "Qwen3.5-9B-Q8_0.gguf", "gemma-4-E4B-it-Q4_K_M.gguf", "mmproj-gemma-4-E4B-it-F16.gguf" })
+                File.WriteAllText(Path.Combine(flat, name), "x");
+            if (LauncherLogic.VisionProjector(Path.Combine(flat, "Qwen3.5-9B-Q8_0.gguf")) is not null ||
+                LauncherLogic.VisionProjector(Path.Combine(flat, "gemma-4-E4B-it-Q4_K_M.gguf")) != Path.Combine(flat, "mmproj-gemma-4-E4B-it-F16.gguf"))
+                return Fail("another model's projector");
+            // Quantization from the name (a space before it too), else from general.file_type; a GGUF with no tokenizer (a
+            // diffusion model) is Image generation.
+            void Gguf(string file, params (string Key, object Value)[] kv)
+            {
+                using var w = new BinaryWriter(File.Create(file));
+                void Str(string s) { var b = System.Text.Encoding.UTF8.GetBytes(s); w.Write((ulong)b.Length); w.Write(b); }
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write((ulong)kv.Length);
+                foreach (var (key, value) in kv)
+                {
+                    Str(key);
+                    if (value is string text) { w.Write(8u); Str(text); }
+                    else { w.Write(4u); w.Write((uint)(int)value); }
+                }
+            }
+            var kinds = Path.Combine(AppSettings.DataRoot, "smoke-kinds");
+            Directory.CreateDirectory(kinds);
+            var (talker, painter) = (Path.Combine(kinds, "Talker Uncnr NEO.gguf"), Path.Combine(kinds, "MOSS-Image-SFT-Q8_0.gguf"));
+            Gguf(talker, ("general.architecture", "qwen3"), ("general.file_type", 15), ("tokenizer.ggml.model", "gpt2"));
+            Gguf(painter, ("general.architecture", "moss_image"));
+            var described = DescribeChoices([new("t", "t", "t", null, "t", talker), new("p", "p", "p", null, "p", painter)], "", "");
+            if (LauncherLogic.QuantOf("Qwen3 Coder 30B IQ2_M.gguf") != "IQ2_M" || LauncherLogic.QuantOfFileType("32") != "BF16" ||
+                described is not [{ Quant: "Q4_K_M", Group: "Text only" }, { Quant: "Q8_0", Group: "Image generation" }])
+                return Fail($"quant and kind: {string.Join(", ", described.Select(d => $"{d.Quant} {d.Group}"))}");
+            CodeVisionToggle.IsChecked = false;
+            ExtraToggle_Click(CodeVisionToggle, new RoutedEventArgs());
+            if (_settings.UseVision || ChatVisionToggle.IsChecked != false || JsonNode.Parse(LauncherLogic.BuildChatRequest("planner", [], CurrentExtras()))?["vision"]?.GetValue<bool>() != false)
+                return Fail("the Vision switch");
+            CodeVisionToggle.IsChecked = true;
+            ExtraToggle_Click(CodeVisionToggle, new RoutedEventArgs());
+            if (!_settings.UseVision || ChatVisionToggle.IsChecked != true)
+                return Fail("the Vision switch back on");
+            // MAIN on a model with no projector, on the llama.cpp runtime: Code's switch greys with the tip
+            var runtime = _settings.Runtime;
+            var mainLoad = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!["auto_load"]?.ToJsonString();
+            File.Delete(Path.Combine(sight, "mmproj-F16.gguf"));
+            WriteConfigs(WorkerConfigTargets(), target =>
+            {
+                var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+                root["roles"]!["planner"]!["auto_load"] = Load();
+                WriteJson(target, root);
+                return null;
+            });
+            _settings.Runtime = LauncherLogic.LlamaRuntime;
+            RefreshVision();
+            for (var i = 0; i < 50 && CodeVisionToggle.IsEnabled; i++)
+                await Task.Delay(100);
+            var greyed = !CodeVisionToggle.IsEnabled && CodeVisionToggle.ToolTip as string == "Vision is not supported for the selected model(s).";
+            snap("vision-greyed", null);
+            _settings.Runtime = runtime;
+            WriteConfigs(WorkerConfigTargets(), target =>
+            {
+                var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+                if (mainLoad is null)
+                    root["roles"]!["planner"]!.AsObject().Remove("auto_load");
+                else
+                    root["roles"]!["planner"]!["auto_load"] = JsonNode.Parse(mainLoad);
+                WriteJson(target, root);
+                return null;
+            });
+            RefreshVision();
+            if (!greyed)
+                return Fail("a model that cannot see greys the switch");
             var (m, p, s) = (model.TranslatePoint(new Point(), WorkerSettingsHost), prompts.TranslatePoint(new Point(), WorkerSettingsHost),
                 sampling.TranslatePoint(new Point(), WorkerSettingsHost));
             if (Math.Abs(m.Y - p.Y) > 2 || p.X <= m.X + 100 || s.Y <= m.Y + 100)
@@ -1341,7 +1453,7 @@ public partial class MainWindow
         }
         finally
         {
-            (_settings.ChatWorker, _codeChoice, DetailsColumn.Width) = (chatWorker, ask, width);
+            (_settings.ChatWorker, _codeChoice, DetailsColumn.Width, _settings.PromptsExpanded) = (chatWorker, ask, width, expanded);
             if (File.Exists(overridden))
                 File.Delete(overridden);
         }
@@ -1422,6 +1534,9 @@ public partial class MainWindow
             {
                 var box = Model();
                 box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonDownEvent });
+                if (_modelPickerTest is { IsOpen: true } || box.IsDropDownOpen)
+                    return null; // the press opens nothing: its release would close what it opened
+                box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonUpEvent });
                 await Until(() => _modelPickerTest is { IsOpen: true } p && p.Rows.Any(r => r.Tag is PickerEntry));
                 var entry = _modelPickerTest?.Rows.Select(r => r.Tag as PickerEntry).FirstOrDefault(e => e?.Choice.File == fake);
                 _modelPickerTest?.Close();

@@ -198,6 +198,7 @@ internal sealed class AppSettings
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
     public bool DetailsCollapsed { get; set; } = true; // the worker details column shows as the dot rail
+    public bool PromptsExpanded { get; set; } // the worker settings' system prompts show (collapsed by default)
     public bool ModelAdvanced { get; set; } // the worker settings' Advanced switch: the Memory, Speed, Output and Server groups
     public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
     public string LastProject { get; set; } = "";
@@ -245,6 +246,7 @@ internal sealed class AppSettings
 
     // The composer's extras (Chat and Code): web search, utilities, and the skills turned on (folder names under SkillsRoot).
     public bool UseSearch { get; set; }
+    public bool UseVision { get; set; } = true; // off: no image or screenshot reaches a model (the request's "vision")
     public bool UseTools { get; set; }
     public List<string> Skills { get; set; } = new();
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");

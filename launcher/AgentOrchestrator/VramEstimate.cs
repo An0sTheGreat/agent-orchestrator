@@ -95,7 +95,7 @@ internal static class VramEstimate
             var model = SplitPart.Match(name) is { Success: true } m
                 ? Directory.EnumerateFiles(dir, SplitPart.Replace(name, "") + "-*-of-" + m.Groups[1].Value + ".gguf").Sum(f => new FileInfo(f).Length)
                 : new FileInfo(path).Length;
-            var vision = Directory.EnumerateFiles(dir, "*mmproj*.gguf").Select(f => new FileInfo(f).Length).DefaultIfEmpty(0).Min();
+            var vision = LauncherLogic.VisionProjector(path) is { } projector ? new FileInfo(projector).Length : 0;
             return (model, vision);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return (0, 0); }

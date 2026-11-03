@@ -1191,10 +1191,14 @@
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="The lead (the Planner) answers and hands parts to your other workers; Options opens its model settings" />
                                 <Button x:Name="CodeEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                         Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
-                                <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
+                                <WrapPanel DockPanel.Dock="Left" Margin="-4,0,8,0"> <!-- wraps when the column is narrow -->
                                     <!-- Command permissions (MainWindow.Permissions.cs): when run_command asks first; a dropup -->
                                     <ToggleButton x:Name="CodePermissionsButton" Style="{StaticResource ChipToggle}" Click="Permissions_Click" AutomationProperties.Name="Command permissions">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE72E;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock x:Name="CodePermissionsText" Text="Allow Safe  ▴" /></StackPanel>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="CodeVisionToggle" Style="{StaticResource ChipToggle}" Tag="vision" Click="ExtraToggle_Click" AutomationProperties.Name="Vision"
+                                                  ToolTipService.ShowOnDisabled="True" ToolTip="Send attached images and browser screenshots to the model">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B9;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
                                     </ToggleButton>
                                     <ToggleButton x:Name="CodeSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                                   ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
@@ -1208,7 +1212,7 @@
                                                   ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
                                     </ToggleButton>
-                                </StackPanel>
+                                </WrapPanel>
                                 <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                             </DockPanel>
                         </Grid>
@@ -1409,8 +1413,12 @@
                                     Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Cursor="Hand" Click="ChatTarget_Click" ToolTip="Choose the worker to message, or open model Options" />
                             <Button x:Name="ChatEffortChip" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Background="{DynamicResource Hover}" Margin="0,0,6,0"
                                     Foreground="{DynamicResource TextPrimary}" FontSize="11" Padding="11,3" Click="Effort_Click" ToolTipService.ShowOnDisabled="True" />
-                            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Margin="-4,0,8,0">
-                                <ToggleButton x:Name="ChatSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
+                            <WrapPanel DockPanel.Dock="Left" Margin="-4,0,8,0"> <!-- wraps when the column is narrow -->
+                                <ToggleButton x:Name="ChatVisionToggle" Style="{StaticResource ChipToggle}" Tag="vision" Click="ExtraToggle_Click" AutomationProperties.Name="Vision"
+                                                  ToolTipService.ShowOnDisabled="True" ToolTip="Send attached images and browser screenshots to the model">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B9;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
+                                    </ToggleButton>
+                                    <ToggleButton x:Name="ChatSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                               ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
                                     <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Search" /></StackPanel>
                                 </ToggleButton>
@@ -1422,7 +1430,7 @@
                                               ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
                                     <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
                                 </ToggleButton>
-                            </StackPanel>
+                            </WrapPanel>
                             <TextBlock x:Name="ChatHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </DockPanel>
                     </Grid>

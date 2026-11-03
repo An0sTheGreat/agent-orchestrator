@@ -3503,6 +3503,7 @@ public partial class MainWindow : Window
             card.SetModel(LauncherLogic.DescribeModel(id, load.TryGetProperty("gguf_variant", out var v) ? v.GetString() : null));
         }
         RefreshLeadChip(); // the Code chip names the Planner's model
+        RefreshVision();
     }
 
     // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.

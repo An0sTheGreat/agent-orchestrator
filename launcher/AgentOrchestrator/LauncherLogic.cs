@@ -104,7 +104,8 @@ internal static class LauncherLogic
 
     // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
     // Images: photo paths attached to this message (the engine sends them with it only).
-    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null);
+    // Vision: the message box's switch; off, the engine shows no image to the model (orchestrator.vision_problem).
+    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true);
 
     public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
@@ -258,7 +259,7 @@ internal static class LauncherLogic
             {
                 var name = Str(true)!;
                 var type = r.ReadUInt32();
-                var wanted = name is "general.architecture" or "tokenizer.chat_template" || name.EndsWith(".context_length", StringComparison.Ordinal) ||
+                var wanted = name is "general.architecture" or "tokenizer.chat_template" or "general.file_type" or "tokenizer.ggml.model" || name.EndsWith(".context_length", StringComparison.Ordinal) ||
                     name.StartsWith("general.sampling.", StringComparison.Ordinal) || VramKeys.Any(k => name.EndsWith(k, StringComparison.Ordinal));
                 // Arrays: the vocabulary's size as "<name>.count"; a per-layer integer or bool list (hybrid models'
                 // KV heads, a sliding-window pattern) as "a,b,c", bools as 1 and 0.
@@ -316,6 +317,7 @@ internal static class LauncherLogic
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
             images = extras?.Images ?? [],
+            vision = extras?.Vision ?? true,
             title,
             effort,
             summary,
@@ -360,6 +362,7 @@ internal static class LauncherLogic
             tools = extras?.Tools ?? false,
             skills = extras?.Skills ?? [],
             images = extras?.Images ?? [],
+            vision = extras?.Vision ?? true,
             title,
             effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
@@ -1125,7 +1128,46 @@ internal static class LauncherLogic
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "huggingface", "hub");
 
     private static readonly Regex SplitPart = new(@"-(\d{5})-of-\d{5}\.gguf$", RegexOptions.IgnoreCase);
-    private static readonly Regex QuantTail = new(@"[-_.]((?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*))$", RegexOptions.IgnoreCase);
+    private static readonly Regex QuantTail = new(@"[-_. ]((?:UD-)?(?:I?Q\d\w*|TQ\d\w*|BF16|F16|F32|MXFP4\w*))$", RegexOptions.IgnoreCase);
+
+    // llama.cpp's general.file_type values (llama_ftype) as quantization names; "" for one it does not name.
+    private static readonly string[] FileTypes = ["F32", "F16", "Q4_0", "Q4_1", "", "", "", "Q8_0", "Q5_0", "Q5_1", "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
+        "Q4_K_S", "Q4_K_M", "Q5_K_S", "Q5_K_M", "Q6_K", "IQ2_XXS", "IQ2_XS", "Q2_K_S", "IQ3_XS", "IQ3_XXS", "IQ1_S", "IQ4_NL", "IQ3_S", "IQ3_M",
+        "IQ2_S", "IQ2_M", "IQ4_XS", "IQ1_M", "BF16", "", "", "", "TQ1_0", "TQ2_0", "MXFP4"];
+
+    public static string QuantOfFileType(string? fileType) =>
+        int.TryParse(fileType, out var t) && t >= 0 && t < FileTypes.Length ? FileTypes[t] : "";
+
+    // Whether a model can see images, as orchestrator.vision_problem decides: not with Disable vision on, nor (llama.cpp
+    // runtime) when its GGUF has no vision projector beside it. A remote role, an unknown model or a file not found: yes.
+    public static bool CanSee(JsonObject? autoLoad, bool llamaRuntime, string modelsFolder, string hubCache)
+    {
+        if (autoLoad is null)
+            return true;
+        if ((autoLoad["disable_vision"]?.ToString() ?? "").ToLowerInvariant() is "on" or "true" or "1")
+            return false;
+        return !llamaRuntime || ResolveGguf(autoLoad, modelsFolder, hubCache) is not { } file || VramEstimate.FileSizes(file).Vision > 0;
+    }
+
+    // orchestrator.vision_projector: the smallest *mmproj*.gguf beside the model; in a folder holding other models too, only
+    // one whose name carries this model's name (another model's projector makes llama-server exit). Null without.
+    public static string? VisionProjector(string modelFile)
+    {
+        static string Squash(string s) => Regex.Replace(s.ToLowerInvariant(), "[^a-z0-9]", "");
+        static string Stem(string file) => Squash(Regex.Replace(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5], @"[-_. ]+(?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*)$", "", RegexOptions.IgnoreCase));
+        try
+        {
+            var files = Directory.EnumerateFiles(Path.GetDirectoryName(modelFile)!, "*.gguf").ToList();
+            var found = files.Where(f => Path.GetFileName(f).Contains("mmproj", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (files.Except(found).Select(Stem).Distinct().Count() > 1)
+            {
+                var own = Stem(modelFile);
+                found = found.Where(f => own.Length > 0 && Squash(Path.GetFileName(f)).Contains(own)).ToList();
+            }
+            return found.OrderBy(f => new FileInfo(f).Length).FirstOrDefault();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+    }
 
     // The quantization a GGUF's file name ends with ("model-Q4_K_M.gguf": Q4_K_M), or "".
     public static string QuantOf(string file) =>

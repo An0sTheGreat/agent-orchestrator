@@ -18,7 +18,8 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     // A listed model: its choice, name, quantization ("—": unknown), file size (0: unknown) and group (PickerGroups).
-    private sealed record PickerEntry(ModelChoice Choice, string Name, string Quant, long Bytes, string Group);
+    // File: the GGUF found on this computer (its tip, so two entries of one model tell their places apart).
+    private sealed record PickerEntry(ModelChoice Choice, string Name, string Quant, long Bytes, string Group, string? File = null);
 
     private static readonly string[] PickerGroups = ["Text only", "Vision capable", "Image generation"];
 
@@ -40,10 +41,14 @@ public partial class MainWindow
         {
             var file = FileOf(c);
             var (model, vision) = file is null ? (0L, 0L) : VramEstimate.FileSizes(file);
-            var image = ImageArchitectures.Contains(LauncherLogic.ReadGgufMetadata(file)?.GetValueOrDefault("general.architecture") ?? "");
-            var quant = c.Variant is { Length: > 0 } v ? v : file is null ? "" : LauncherLogic.QuantOf(file);
+            var meta = LauncherLogic.ReadGgufMetadata(file);
+            // A language model's GGUF carries its tokenizer; a diffusion model's (Flux, Qwen-Image, MOSS-Image) has none.
+            var image = meta is not null && (!meta.ContainsKey("tokenizer.ggml.model") || ImageArchitectures.Contains(meta.GetValueOrDefault("general.architecture") ?? ""));
+            // the pick's variant, else the file name's ending, else the file's own general.file_type
+            var quant = c.Variant is { Length: > 0 } v ? v : file is null ? "" : LauncherLogic.QuantOf(file) is { Length: > 0 } named ? named
+                : LauncherLogic.QuantOfFileType(meta?.GetValueOrDefault("general.file_type"));
             return new PickerEntry(c, c.Label.Split("  ·  ")[0], quant.Length > 0 ? quant : "—", model,
-                image ? PickerGroups[2] : vision > 0 ? PickerGroups[1] : PickerGroups[0]);
+                image ? PickerGroups[2] : vision > 0 ? PickerGroups[1] : PickerGroups[0], file);
         }).ToList();
     }
 
@@ -85,6 +90,9 @@ public partial class MainWindow
         private readonly List<Border> _pickable = new();
 
         public bool IsOpen => _popup.IsOpen;
+        private DateTime _closedAt;
+        // Closed by this same click's press (a click on the box while open): its release must not open it again.
+        public bool JustClosed => DateTime.UtcNow - _closedAt < TimeSpan.FromMilliseconds(400);
         internal IReadOnlyList<Border> Rows => _pickable; // --ui-smoke
         internal TextBox Search => _search;
         internal FrameworkElement Card => (FrameworkElement)_popup.Child;
@@ -138,6 +146,7 @@ public partial class MainWindow
                 Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, VerticalOffset = 4, AllowsTransparency = true, StaysOpen = false,
             };
             _popup.Opened += (_, _) => _search.Focus();
+            _popup.Closed += (_, _) => _closedAt = DateTime.UtcNow;
             SortTitles();
         }
 
@@ -248,7 +257,7 @@ public partial class MainWindow
             grid.Children.Add(name);
             grid.Children.Add(quant);
             grid.Children.Add(size);
-            var row = new Border { Child = grid, Padding = new Thickness(10, 6, 10, 6), Tag = entry, ToolTip = entry.Choice.Label };
+            var row = new Border { Child = grid, Padding = new Thickness(10, 6, 10, 6), Tag = entry, ToolTip = entry.File ?? entry.Choice.Label };
             row.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
             if (!pickable)
             {

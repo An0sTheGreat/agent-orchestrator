@@ -157,6 +157,7 @@ public partial class MainWindow
         RefreshLeadChip();
         RefreshCardVisibility();
         RefreshEffort();
+        RefreshVision();
     }
 
     // The Code view always talks to the lead (the Planner): its chip names the lead's model.

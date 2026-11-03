@@ -5053,15 +5053,35 @@ class LlamaCppTests(unittest.TestCase):
         for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Unsloth", "Options"):
             self.assertIn(part, text)
 
-    def test_images_with_vision_switched_off_are_refused_plainly(self):
+    def test_images_a_model_will_not_see_are_left_out_with_a_note(self):
+        # Disable vision, the message box's Vision switch, or (llama-server) no mmproj beside the GGUF: the images are not
+        # sent (the server would fail the whole turn) and the message says so; a model that sees them gets them.
         config = {"roles": {"planner": {"base_url": "http://x", "auto_load": {"model_path": self.PATH, "disable_vision": True}}}}
-        with patch.object(orchestrator, "TURN_IMAGES", ("look", ["data:image/png;base64,AA=="])):
-            with self.assertRaisesRegex(orchestrator.WorkflowError, "Disable vision is on"):
-                orchestrator.require_vision(config, "planner")
-            config["roles"]["planner"]["auto_load"]["disable_vision"] = False
-            orchestrator.require_vision(config, "planner")  # vision on: fine
-        config["roles"]["planner"]["auto_load"]["disable_vision"] = True
-        orchestrator.require_vision(config, "planner")  # no images: fine
+        messages = [{"role": "user", "content": "look"}]
+        image = ("look", ["data:image/png;base64,AA=="])
+        def sent(request=None):
+            with patch.object(orchestrator, "TURN_IMAGES", image), patch.object(orchestrator, "TURN_VISION", (request or {}).get("vision") is not False):
+                out = orchestrator.blind_images(config, "planner", messages)
+                return out[-1]["content"], orchestrator.TURN_IMAGES[1]
+        text, images = sent()
+        self.assertEqual(images, [])
+        self.assertTrue(text.startswith("look\n\n[1 attached image not shown to you: Disable vision is on"), text)
+        config["roles"]["planner"]["auto_load"]["disable_vision"] = False
+        self.assertEqual(sent(), ("look", image[1]))  # Unsloth's runtime: nothing to check, sent
+        text, images = sent({"vision": False})
+        self.assertIn("Vision is off in the message box", text)
+        self.assertEqual(images, [])
+        # our llama-server: the GGUF's folder decides
+        model = self.tmp / "models1" / "Qwen3.5-4B-Q4_K_M.gguf"
+        model.parent.mkdir(parents=True, exist_ok=True)
+        model.write_bytes(b"x")
+        os.environ["AGENT_ORCHESTRATOR_GGUF_DIRS"] = str(model.parent)
+        with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_BACKEND": "llamacpp"}):
+            text, images = sent()
+            self.assertIn("no vision projector (mmproj) file", text)
+            (model.parent / "mmproj-F16.gguf").write_bytes(b"x")
+            self.assertEqual(sent(), ("look", image[1]))
+        self.assertEqual(messages, [{"role": "user", "content": "look"}])  # the history keeps its text
 
     def test_a_vision_projector_beside_the_model_is_loaded_unless_vision_is_off(self):
         folder = self.tmp / "vision"
@@ -5077,6 +5097,15 @@ class LlamaCppTests(unittest.TestCase):
         self.assertEqual(own.count("--image-max-tokens"), 1)  # the user's own value wins
         self.assertNotIn("--no-mmproj-offload", orchestrator.llama_args(model, {"model_path": self.PATH, "mmproj_offload": True}, 8899))
         self.assertNotIn("--mmproj", orchestrator.llama_args(model, {"model_path": self.PATH, "disable_vision": "on"}, 8899))
+        # A flat models folder with several models: only a projector named for this model (another's makes the server exit).
+        flat = self.tmp / "flat"
+        flat.mkdir()
+        for name in ("Qwen3.5-9B-Q8_0.gguf", "Qwen3.5-9B-Q4_K_M.gguf", "gemma-4-E4B-it-Q4_K_M.gguf", "mmproj-gemma-4-E4B-it-F16.gguf"):
+            (flat / name).write_bytes(b"x")
+        self.assertIsNone(orchestrator.vision_projector(flat / "Qwen3.5-9B-Q8_0.gguf"))
+        self.assertEqual(orchestrator.vision_projector(flat / "gemma-4-E4B-it-Q4_K_M.gguf"), flat / "mmproj-gemma-4-E4B-it-F16.gguf")
+        (flat / "Qwen3.5-9B-mmproj-F16.gguf").write_bytes(b"x")
+        self.assertEqual(orchestrator.vision_projector(flat / "Qwen3.5-9B-Q4_K_M.gguf"), flat / "Qwen3.5-9B-mmproj-F16.gguf")
 
     def test_server_args(self):
         self.assertEqual(orchestrator.llama_args(Path("m.gguf"), self.AUTO, 8899), [

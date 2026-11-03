@@ -779,11 +779,15 @@ IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 IMAGE_MAX_BYTES = 20_000_000
 
 
+TURN_VISION = True  # the message box's Vision switch (the request's "vision"); off: no image reaches a model this turn
+
+
 def turn_images(request: dict[str, Any], text: str) -> None:
-    """Reads the request's images for the message `text`."""
-    global TURN_IMAGES
+    """Reads the request's images for the message `text`, and its Vision switch."""
+    global TURN_IMAGES, TURN_VISION
     urls = image_urls(request.get("images"))
     TURN_IMAGES = (text if urls else "", urls)
+    TURN_VISION = request.get("vision") is not False
 
 
 def image_urls(paths: Any) -> list[str]:
@@ -802,17 +806,41 @@ def image_urls(paths: Any) -> list[str]:
     return urls
 
 
+def vision_problem(config: dict[str, Any], role: str) -> str:
+    """Why the role's model will not see images this turn ("" when it will): the message box's Vision switch is off, its
+    model settings switch vision off, or (our llama-server) its GGUF has no vision projector beside it, so the server runs
+    without one and answers an image with "image input is not supported"."""
+    if not TURN_VISION:
+        return "Vision is off in the message box"
+    client = role_settings(config, role)[0]
+    load = getattr(client, "auto_load", None) or {}
+    if str(load.get("disable_vision") or "").lower() in ("on", "true", "1"):
+        return "Disable vision is on in the model's settings"
+    if getattr(client, "llama_port", 0) and load.get("model_path"):
+        try:
+            if vision_projector(gguf_file(load)) is None:
+                return "the model has no vision projector (mmproj) file"
+        except WorkflowError:  # no model file: its load reports that
+            pass
+    return ""
+
+
 def vision_off(config: dict[str, Any], role: str) -> bool:
-    """Whether the role's model settings switch vision off."""
-    return str((getattr(role_settings(config, role)[0], "auto_load", None) or {}).get("disable_vision") or "").lower() in ("on", "true", "1")
+    return bool(vision_problem(config, role))
 
 
-def require_vision(config: dict[str, Any], role: str) -> None:
-    """Refuses a turn whose images the role's model will not see because its settings switch vision off (the server would
-    answer with an opaque "image input is not supported")."""
-    if TURN_IMAGES[1] and vision_off(config, role):
-        raise WorkflowError(f"{display_name(config, role)} can't read the attached images: Disable vision is on in its model settings "
-                            "(Memory). Turn it off and save (the vision projector takes extra VRAM), or send the message without images.")
+def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The turn's messages. When the role's model will not see the turn's images (vision_problem), they are left out and
+    the latest message says so, instead of a server error for the whole turn."""
+    global TURN_IMAGES
+    if not TURN_IMAGES[1] or not (reason := vision_problem(config, role)):
+        return messages
+    count = len(TURN_IMAGES[1])
+    TURN_IMAGES = ("", [])
+    print(f"[images] {count} not sent to {display_name(config, role)}: {reason}")
+    note = (f"\n\n[{count} attached image{'s' if count != 1 else ''} not shown to you: {reason}. "
+            "If the request depends on seeing them, say so.]")
+    return [*messages[:-1], {**messages[-1], "content": str(messages[-1].get("content") or "") + note}]
 
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 2, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
@@ -1178,13 +1206,28 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
     return args + [str(arg) for arg in auto_load.get("llama_extra_args") or []]
 
 
+QUANT_TAIL = re.compile(r"[-_. ]+(?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*)$", re.I)
+
+
+def model_stem(name: str) -> str:
+    """A GGUF's model name without its quantization, split part and separators: Qwen3.5-9B-Q8_0.gguf -> qwen359b."""
+    base = re.sub(r"-\d{5}-of-\d{5}$", "", re.sub(r"\.gguf$", "", name, flags=re.I))
+    return re.sub(r"[^a-z0-9]", "", QUANT_TAIL.sub("", base).lower())
+
+
 def vision_projector(model_file: Path) -> Path | None:
-    """The vision projector (an *mmproj*.gguf) in the model's folder, the smallest when there are several; None without."""
+    """The vision projector (an *mmproj*.gguf) in the model's folder, the smallest when there are several; None without.
+    In a folder that holds other models too (a flat models folder), only one whose name carries this model's name:
+    another model's projector makes llama-server exit while loading."""
     try:
-        found = [p for p in model_file.parent.glob("*.gguf") if "mmproj" in p.name.lower()]
+        files = list(model_file.parent.glob("*.gguf"))
+        found = [p for p in files if "mmproj" in p.name.lower()]
+        if len({model_stem(p.name) for p in files if p not in found}) > 1:
+            own = model_stem(model_file.name)
+            found = [p for p in found if own and own in re.sub(r"[^a-z0-9]", "", p.name.lower())]
+        return min(found, key=lambda p: p.stat().st_size) if found else None
     except OSError:
         return None
-    return min(found, key=lambda p: p.stat().st_size) if found else None
 
 
 def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]:
@@ -3552,7 +3595,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0
     turn_images(request, messages[-1]["content"])
-    require_vision(turn, role)
+    messages = blind_images(turn, role, messages)
     messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
     text = chat_call(turn, role, "answer", system, messages, extras)
     if not text:
@@ -4842,7 +4885,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         emit("code_reply", role=role, text=compact_now(config, role, messages, request, focus))  # /compact: no model turn
         return 0  # (a Pi session compacts itself: pi_lead_turn sends Pi's own compact)
     turn_images(request, messages[-1]["content"])
-    require_vision(config, role)
+    messages = blind_images(config, role, messages)
     text = (pi_lead_turn if request.get("engine") == "pi" else lead_loop)(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")
