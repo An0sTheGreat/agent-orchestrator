@@ -4394,6 +4394,26 @@ def record_progress(project_root: Path, item: str, outcome: str) -> str:
     return f"OK: recorded '{item}' in STATE.md\n{done_items(project_root)}"
 
 
+REVIEW_BRIEF = ("Check one PROJECT.md item the lead says is finished, before it is recorded as done. CONTEXT holds the item, "
+                "the lead's outcome, PROJECT.md and the file changes since the last recorded item. Read the files involved and "
+                "run the checks; judge the item against PROJECT.md and the outcome, not style. Begin your final report with the "
+                "line VERDICT: PASS or VERDICT: FAIL, then the defects (file and evidence for each) or, on PASS, what you checked.")
+REVIEW_VERDICT = re.compile(r"\bVERDICT\b[\s:*`_-]*(PASS|FAIL)\b", re.I)
+REVIEW_DIFF_LIMIT, REVIEW_FILE_LIMIT = 12_000, 200_000
+
+
+def project_texts(folders: list[dict[str, str]]) -> dict[str, str | None]:
+    """The project root's text files as code_walk lists them, for the reviewer gate's make_diff."""
+    root, texts = Path(folders[0]["path"]), {}
+    for path, is_dir in code_walk(root, folders):
+        try:  # ponytail: rereads every file per review; keep mtimes if large projects make it slow
+            if not is_dir and path.stat().st_size <= REVIEW_FILE_LIMIT:
+                texts[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            pass  # binary or unreadable: left out of the diff
+    return texts
+
+
 def done_items(project_root: Path) -> str:
     """STATE.md's finished items on one line, so the lead sees them even after its context was compacted."""
     path = project_root / "STATE.md"
@@ -4406,7 +4426,11 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     sandboxed run_command and run_checks, delegate, and the request's search, utilities and skills), recording each
     finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with `once`, the first
     recorded item. `request` is a Code request (--request): its extra folders, extras, sandbox, session and effort; the
-    project root is always folders[0]. The input carries STATE.md, so a new run resumes after the recorded items."""
+    project root is always folders[0]. The input carries STATE.md, so a new run resumes after the recorded items.
+    The request's "workflow": "dual" (the default) gates record_progress on a reviewer delegation (the item, the outcome,
+    PROJECT.md, the file diff since the last recorded item) whose report must give VERDICT: PASS, else nothing is recorded
+    and the lead gets the report back; "tri" also takes write_file/replace_text from the lead, so the implementer
+    (delegate) makes every change."""
     if project_root == ROOT or ROOT in project_root.parents or project_root in ROOT.parents:
         raise WorkflowError(f"The project overlaps the Agent Orchestrator folder ({ROOT}); the lead project run needs "
                             "another --project (the legacy --pipeline can run here)")
@@ -4415,11 +4439,29 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     folders = request_folders([{"path": str(project_root), "access": "write"}, *extra[1:]])
     config = with_effort(config, request)
     title, state = display_name(config, "planner"), project_root / "STATE.md"
-    done = {"finished": False, "progress": 0}
+    workflow = request.get("workflow") if request.get("workflow") in ("dual", "tri") else "dual"
+    done = {"finished": False, "progress": 0, "files": project_texts(folders), "rounds": {}}
 
     def progress(item: str, outcome: str) -> str:
-        result = record_progress(project_root, item, outcome)
+        name = " ".join(str(item).split())
+        if not name:
+            raise WorkflowError("item is empty")
+        rounds = done["rounds"][name] = done["rounds"].get(name, 0) + 1
+        diff = make_diff(done["files"], project_texts(folders))
+        report = handlers["delegate"](worker="reviewer", brief=REVIEW_BRIEF, context=(
+            f"ITEM\n{name}\n\nLEAD'S OUTCOME\n{outcome}\n\nPROJECT.md\n{clip(load_text(project_root / 'PROJECT.md').strip(), 6000)}"
+            f"\n\nCHANGES SINCE THE LAST RECORDED ITEM\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
+        verdicts = {v.upper() for v in REVIEW_VERDICT.findall(report)}
+        verdict = verdicts.pop() if len(verdicts) == 1 else ""  # none, or both: unreadable, which counts as FAIL
+        emit("verdict", role="reviewer", id=name, verdict=verdict or "FAIL", round=rounds)
+        if verdict != "PASS":
+            why = "failed the item" if verdict else "gave no readable verdict (VERDICT: PASS or FAIL), which counts as FAIL"
+            return (f"NOT RECORDED: the reviewer {why}. Fix the problems it reports, verify, and call record_progress "
+                    f"again.\n\nREVIEW\n{report}")
+        summary = " ".join(REVIEW_VERDICT.sub("", report, count=1).split()).lstrip(" *:.-")
+        result = record_progress(project_root, name, f"{outcome} Review: {clip(summary, 600) or 'PASS'}")
         done["progress"] += 1
+        done["files"] = project_texts(folders)
         return result
 
     def finish(summary: str) -> str:
@@ -4433,8 +4475,11 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     steps = int(config.get("max_lead_steps", 200))
     extras, handlers, note, _ = lead_setup(config, folders, request, "planner", delegations=steps)
     handlers.update(record_progress=progress, finish=finish)
-    tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + extras + [PROGRESS_TOOL, FINISH_TOOL]
-    system = f"{prompt_text('lead_project.txt').strip()}{note}\n\n{folders_context(folders)}"
+    if workflow == "tri":  # the implementer (delegate) makes every change
+        del handlers["write_file"], handlers["replace_text"]
+    tools = (CODE_TOOLS if workflow == "dual" else CODE_TOOLS[:3]) +[TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + extras + [PROGRESS_TOOL, FINISH_TOOL]
+    system = (f"{prompt_text('lead_project.txt').strip()}\n\n{prompt_text(f'lead_project_{workflow}.txt').strip()}"
+              f"{note}\n\n{folders_context(folders)}")
     user = (f"PROJECT.md\n{load_text(project_root / 'PROJECT.md').strip()}\n\n"
             f"PROGRESS (STATE.md; every '## Done:' item is finished: do not redo it)\n"
             f"{load_text(state).strip() if state.is_file() else '(none yet)'}\n\n"

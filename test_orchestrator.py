@@ -4225,15 +4225,16 @@ class LeadRunTests(unittest.TestCase):
     def test_runs_to_finish_and_records_progress(self):
         replies = {"planner": [tool_call("todo", items=["[ ] greeting"]), tool_call("write_file", path="hello.py", content="print('hi')"),
                                tool_call("run_checks"), tool_call("record_progress", item="Greeting script", outcome="hello.py prints hi"),
-                               tool_call("finish", summary="Greeting script done")]}
+                               tool_call("finish", summary="Greeting script done")],
+                   "reviewer": ["VERDICT: PASS\nhello.py prints hi."]}
         code, log, events = self.run_project(replies)
-        self.assertEqual((code, len(log)), (0, 5))
+        self.assertEqual((code, len(log)), (0, 6))
         self.assertTrue(log[0]["system"].startswith((Path(orchestrator.ROOT) / "prompts" / "lead_project.txt").read_text(encoding="utf-8").strip()))
         self.assertEqual([t["function"]["name"] for t in log[0]["tools"]][:len(orchestrator.CODE_TOOLS) + 4],
                          [t["function"]["name"] for t in orchestrator.CODE_TOOLS] + ["todo", "run_checks", "run_command", "delegate"])
         self.assertEqual([t["function"]["name"] for t in log[0]["tools"]][-2:], ["record_progress", "finish"])
         state = self.text("STATE.md")
-        self.assertRegex(state, r"\n## Done: Greeting script\n- Time: .+\n- Outcome: hello.py prints hi\n")
+        self.assertRegex(state, r"\n## Done: Greeting script\n- Time: .+\n- Outcome: hello.py prints hi Review: hello.py prints hi\.\n")
         self.assertRegex(state, r"\n## Project complete\n- Time: .+\n- Summary: Greeting script done\n$")
         tools = [(d["name"], d["result"]) for e, d in events if e == "tool"]
         self.assertIn(("run_checks", "SYNTAX CHECK: passed (hello.py)"), tools)
@@ -4256,16 +4257,17 @@ class LeadRunTests(unittest.TestCase):
 
     def test_record_progress_returns_the_done_list(self):
         replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok"),
-                               tool_call("finish", summary="done")]}
+                               tool_call("finish", summary="done")], "reviewer": ["VERDICT: PASS", "VERDICT: PASS"]}
         _, _, events = self.run_project(replies)
         results = [d["result"] for e, d in events if e == "tool" and d["name"] == "record_progress"]
         self.assertEqual(results, ["OK: recorded 'First' in STATE.md\nDONE SO FAR (STATE.md): First",
                                    "OK: recorded 'Second' in STATE.md\nDONE SO FAR (STATE.md): First; Second"])
 
     def test_once_stops_after_the_first_recorded_item(self):
-        replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok")]}
+        replies = {"planner": [tool_call("record_progress", item="First", outcome="ok"), tool_call("record_progress", item="Second", outcome="ok")],
+                   "reviewer": ["VERDICT: PASS"]}
         code, log, _ = self.run_project(replies, once=True)
-        self.assertEqual((code, len(log)), (0, 1))
+        self.assertEqual((code, len(log)), (0, 2))
         self.assertIn("## Done: First", self.text("STATE.md"))
         self.assertNotIn("Second", self.text("STATE.md"))
         self.assertIn("Last done: First", self.text("HANDOFF.md"))
@@ -4312,6 +4314,84 @@ class LeadRunTests(unittest.TestCase):
         self.assertEqual(results["run_command"], "EXIT 0\nran git status")
         self.assertIn("VALIDATION unit: PASSED", results["run_checks"])
 
+    def results(self, events, tool):
+        return [d["result"] for e, d in events if e == "tool" and d["name"] == tool and d["role"] == "planner"]
+
+    def test_dual_records_an_item_only_after_the_reviewer_passes_it(self):
+        """The default workflow: record_progress first runs the reviewer (fresh context, read-only tools) on the item, the
+        outcome, PROJECT.md and the diff since the last recorded item; FAIL records nothing and returns the defects."""
+        (self.root / "hello.py").write_text("print('bye')\n", encoding="utf-8")
+        replies = {"planner": [tool_call("replace_text", path="hello.py", old="bye", new="hey"),
+                               tool_call("record_progress", item="Greeting", outcome="hello.py greets"),
+                               tool_call("replace_text", path="hello.py", old="hey", new="hi"),
+                               tool_call("record_progress", item="Greeting", outcome="hello.py prints hi"),
+                               tool_call("finish", summary="done")],
+                   "reviewer": ["VERDICT: FAIL\nhello.py: prints hey, PROJECT.md wants a greeting of hi", "**Verdict: PASS**\nhello.py prints hi."]}
+        code, log, events = self.run_project(replies)
+        self.assertEqual(code, 0)
+        self.assertIn(orchestrator.prompt_text("lead_project_dual.txt").strip(), log[0]["system"])
+        first, second = self.results(events, "record_progress")
+        self.assertTrue(first.startswith("NOT RECORDED: the reviewer failed the item."), first)
+        self.assertIn("hello.py: prints hey, PROJECT.md wants a greeting of hi", first)
+        self.assertTrue(second.startswith("OK: recorded 'Greeting' in STATE.md"), second)
+        state = self.text("STATE.md")
+        self.assertEqual(state.count("## Done:"), 1)
+        self.assertRegex(state, r"\n## Done: Greeting\n- Time: .+\n- Outcome: hello.py prints hi Review: hello.py prints hi\.\n")
+        reviews = [l for l in log if l["role"] == "reviewer"]
+        self.assertEqual(len(reviews), 2)
+        self.assertEqual([t["function"]["name"] for t in reviews[0]["tools"]][:4], ["list_files", "read_file", "search_files", "run_checks"])
+        self.assertNotIn("write_file", [t["function"]["name"] for t in reviews[0]["tools"]])
+        handoff = reviews[0]["messages"][0]["content"]
+        for part in ("ITEM\nGreeting", "LEAD'S OUTCOME\nhello.py greets", "PROJECT.md\n# Project", "A greeting script",
+                     "CHANGES SINCE THE LAST RECORDED ITEM\n", "-print('bye')", "+print('hey')"):
+            self.assertIn(part, handoff)
+        self.assertIn("-print('bye')\n+print('hi')", reviews[1]["messages"][0]["content"])  # a FAIL keeps the baseline
+        self.assertEqual([(d["id"], d["verdict"], d["round"]) for e, d in events if e == "verdict"], [("Greeting", "FAIL", 1), ("Greeting", "PASS", 2)])
+        stages = [(d["role"], d["stage"]) for e, d in events if e == "chat_stage"]
+        self.assertEqual(stages, [("planner", "lead")] + [("reviewer", "delegate"), ("planner", "lead")] * 2)
+        self.assertEqual([d["id"] for e, d in events if e == "task"], ["Greeting"])
+
+    def test_an_unreadable_verdict_records_nothing(self):
+        replies = {"planner": [tool_call("record_progress", item="A", outcome="ok"), tool_call("record_progress", item="A", outcome="ok"),
+                               tool_call("finish", summary="done")],
+                   "reviewer": ["Looks fine to me.", "VERDICT: PASS, or maybe VERDICT: FAIL"]}
+        code, _, events = self.run_project(replies)
+        self.assertEqual(code, 0)
+        for result in self.results(events, "record_progress"):
+            self.assertTrue(result.startswith("NOT RECORDED: the reviewer gave no readable verdict"), result)
+        self.assertNotIn("## Done", self.text("STATE.md"))
+        self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["FAIL", "FAIL"])
+
+    def test_tri_takes_the_leads_write_tools_and_the_implementer_makes_the_change(self):
+        replies = {"planner": [tool_call("write_file", path="hello.py", content="print('lead')"),
+                               tool_call("delegate", worker="implementer", brief="Write hello.py printing hi"),
+                               tool_call("record_progress", item="Greeting", outcome="hello.py prints hi"), tool_call("finish", summary="done")],
+                   "implementer": [tool_call("write_file", path="hello.py", content="print('hi')"), "Wrote hello.py."],
+                   "reviewer": ["VERDICT: PASS\nchecked hello.py"]}
+        code, log, events = self.run_project(replies, request={"workflow": "tri"})
+        self.assertEqual(code, 0)
+        lead = [t["function"]["name"] for t in log[0]["tools"]]
+        self.assertEqual(lead[:7], ["list_files", "read_file", "search_files", "todo", "run_checks", "run_command", "delegate"])
+        self.assertFalse({"write_file", "replace_text"} & set(lead))
+        self.assertIn(orchestrator.prompt_text("lead_project_tri.txt").strip(), log[0]["system"])
+        self.assertNotIn("Do the work yourself", log[0]["system"])
+        self.assertTrue(self.results(events, "write_file")[0].startswith("ERROR: tool 'write_file' is unavailable"))
+        self.assertIn("write_file", [t["function"]["name"] for t in [l for l in log if l["role"] == "implementer"][0]["tools"]])
+        self.assertEqual(self.text("hello.py"), "print('hi')\n")
+        self.assertIn("+print('hi')", [l for l in log if l["role"] == "reviewer"][0]["messages"][0]["content"])
+        self.assertIn("## Done: Greeting", self.text("STATE.md"))
+
+    def test_an_absent_or_unknown_workflow_is_dual(self):
+        for request in (None, {"workflow": "quad"}):
+            replies = {"planner": [tool_call("record_progress", item="A", outcome="ok"), tool_call("finish", summary="done")],
+                       "reviewer": ["VERDICT: FAIL\nnothing works"]}
+            code, log, _ = self.run_project(replies, request=request)
+            self.assertEqual(code, 0)
+            self.assertIn("write_file", [t["function"]["name"] for t in log[0]["tools"]])
+            self.assertIn(orchestrator.prompt_text("lead_project_dual.txt").strip(), log[0]["system"])
+            self.assertEqual([l["role"] for l in log], ["planner", "reviewer", "planner"])
+            self.assertNotIn("## Done", self.text("STATE.md"))
+
     def test_refuses_to_write_the_orchestrator_folder(self):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "overlaps the Agent Orchestrator folder"):
             orchestrator.run_lead_project(self.config, orchestrator.ROOT, False)
@@ -4319,11 +4399,12 @@ class LeadRunTests(unittest.TestCase):
     def test_delegation_inside_the_run(self):
         replies = {"planner": [tool_call("delegate", worker="implementer", brief="Write hello.py"),
                                tool_call("record_progress", item="Greeting", outcome="delegated"), tool_call("finish", summary="done")],
-                   "implementer": [tool_call("write_file", path="hello.py", content="print('hi')"), "Wrote hello.py."]}
+                   "implementer": [tool_call("write_file", path="hello.py", content="print('hi')"), "Wrote hello.py."],
+                   "reviewer": ["VERDICT: PASS"]}
         code, log, events = self.run_project(replies)
         self.assertEqual(code, 0)
         self.assertEqual(self.text("hello.py"), "print('hi')\n")
-        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "implementer", "planner", "planner"])
+        self.assertEqual([l["role"] for l in log], ["planner", "implementer", "implementer", "planner", "reviewer", "planner"])
         self.assertEqual(log[1]["messages"], [{"role": "user", "content": "OBJECTIVE\nWrite hello.py"}])
         self.assertIn(("planner", "delegate", "Wrote hello.py."), [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"])
 
