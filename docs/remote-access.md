@@ -11,30 +11,37 @@ Use the app from a phone or another computer through a browser, from anywhere.
 ## Shape
 
 - **Server** (`RemoteServer.cs`): `HttpListener` on `http://127.0.0.1:<port>/` only (port 8765 by default, a free one if
-  taken). Loopback needs no admin rights or URL ACL, and only the tunnel can reach it from outside.
+  taken). Loopback needs no admin rights or URL ACL, and only the tunnel can reach it from outside. A connection from
+  any non-loopback address gets 403 (http.sys routes on the Host header).
 - **Tunnel** (`RemoteTunnel.cs`): runs `cloudflared tunnel --url http://127.0.0.1:<port> --no-autoupdate --http-host-header 127.0.0.1:<port>`, reads the
   `https://*.trycloudflare.com` address from its output, restarts it if it exits while remote access is on, and kills it
   (by pid) when access is turned off or the app closes. `cloudflared.exe` lives in `<DataRoot>\tools`; when missing, the
-  app asks before downloading it from Cloudflare's GitHub releases (`cloudflared-windows-amd64.exe`).
+  app asks before downloading it from Cloudflare's GitHub releases (`cloudflared-windows-amd64.exe`) and installs it
+  only with a valid Authenticode signature whose signer names Cloudflare.
 - **Settings → General → Remote access**: a switch, the password, the current address with Copy, a QR code of it
   (QRCoder package), and the state (starting, online, failed with the reason). The address changes on every start.
 - **Login**: a password the user sets (stored as a PBKDF2 hash, never plain). Remote access cannot be turned on without one.
   A correct login sets a random session cookie (HttpOnly, Secure, SameSite=Strict) kept in memory; changing the password
-  or turning access off signs every device out. Wrong passwords: after 5 failures, each further try waits longer
-  (doubling, up to 5 minutes), counted globally because every request arrives from 127.0.0.1. Every `/api` call except
+  or turning access off signs every device out. Wrong passwords, counted per client (Cloudflare's `CF-Connecting-IP`,
+  else the connection's address): after 5 failures, each further try waits longer (doubling, up to 5 minutes); a
+  client's count is forgotten 15 minutes after its last failure; over 100 failures in 10 minutes from all clients
+  together pause every login for a minute. Every `/api` call except
   login needs the cookie; the page and its assets are served without it.
 - **Page** (`remote.html`, an embedded resource, vanilla JS, no CDN): login; the conversation list with New chat; a
   conversation with its messages (plain markdown: paragraphs, code blocks, inline code, bold, lists), the reply in
   progress with its status, a composer with Send (queues when busy, as the desktop does) and Stop; and any pending
-  request popup (a command or folder permission) with the same choices the desktop shows. Follows the app's theme
+  request popup (a sandbox approval: command, network, writing in other folders, a git repository) with the same
+  choices the desktop shows, in the conversation that asked only. Every other popup stays at the PC, and while one is
+  open Send and Stop are refused (409). Slash commands are refused (400): they change settings. Follows the app's theme
   colours. Works at phone width. Polls about once a second while a conversation is open.
 - **API** (JSON):
   - `POST /api/login {password}`
   - `GET /api/conversations`: id, title, kind (chat or code), updated, busy
   - `GET /api/conversation/{id}`: title, kind, messages (role, text), reply in progress (text, status), busy, queued,
-    pending prompt (title, message, choices)
+    pending prompt (title, message, choices, nonce)
   - `POST /api/send {id?, text}`: no id starts a new chat
-  - `POST /api/stop {id}`, `POST /api/answer {id, choice}`
+  - `POST /api/stop {id}`, `POST /api/answer {id, choice, nonce}`: a nonce other than the open prompt's gets 409, so a
+    stale answer never resolves a later popup
 - **Driving the app**: every remote action runs on the UI thread through the desktop's own paths: open the conversation,
   put the text in its composer, `SendOrQueue`; Stop is `StopWork`; an answer resolves the open request popup as if
   clicked. So queueing, Code turns, permissions and history behave exactly as at the PC.

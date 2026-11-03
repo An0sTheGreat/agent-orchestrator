@@ -20,9 +20,23 @@ public partial class MainWindow
     internal event Action? RemoteStateChanged;
     private bool _dialogsQuiet; // --ui-smoke: popups open without taking the focus
 
-    // The open Choose popup (null: none) and the conversation that was replying when it opened (null: none).
-    private sealed record RemotePrompt(string? Conversation, string Title, string Message, (string Label, string Value)[] Options, Action<string> Resolve);
+    // The open remote-answerable Choose popup (null: none), the conversation it is shown in, and a nonce an answer must
+    // carry, so an answer meant for an earlier popup never resolves this one.
+    private sealed record RemotePrompt(string Conversation, string Nonce, string Title, string Message, (string Label, string Value)[] Options, Window Dialog, Action<string> Resolve);
     private RemotePrompt? _remotePrompt;
+
+    // The remote prompt for conversation `id`, while nothing is open on top of it.
+    private RemotePrompt? PromptFor(string id) => _remotePrompt is { } p && p.Conversation == id && !Disabled(p.Dialog) ? p : null;
+
+    // A popup the remote page cannot answer is open at the PC: a remote action now would run inside its dialog loop.
+    private bool DesktopDialogOpen() => _remotePrompt is { } p ? Disabled(p.Dialog)
+        : System.Windows.Interop.ComponentDispatcher.IsThreadModal || Disabled(this);
+
+    // A modal on top disables its owner (WPF's ShowDialog every other window of the thread).
+    private static bool Disabled(Window window) => new System.Windows.Interop.WindowInteropHelper(window).Handle is var h && h != 0 && !IsWindowEnabled(h);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool IsWindowEnabled(IntPtr hwnd);
 
     // Idempotent. False without a password or a free port.
     internal bool StartRemoteServer()
@@ -62,10 +76,10 @@ public partial class MainWindow
             ("GET", "/api/conversations") => (200, new { conversations = RemoteList() }),
             ("GET", _) when path.StartsWith(one) => RemoteConversation(path[one.Length..]),
             ("POST", "/api/send") => RemoteSend(Field("id"), Field("text")),
-            ("POST", "/api/stop") => Field("id") == RunningId && RunningId is not null
-                ? Ok(() => StopWork_Click(this, new RoutedEventArgs())) : (409, new { error = "Nothing is running there." }),
-            ("POST", "/api/answer") => _remotePrompt is { } p && (p.Conversation is null || p.Conversation == Field("id")) && p.Options.Any(o => o.Value == Field("choice"))
-                ? Ok(() => p.Resolve(Field("choice"))) : (409, new { error = "That question is no longer open." }),
+            ("POST", "/api/stop") => Field("id") != RunningId || RunningId is null ? (409, new { error = "Nothing is running there." })
+                : DesktopDialogOpen() ? DialogOpen : Ok(() => StopWork_Click(this, new RoutedEventArgs())),
+            ("POST", "/api/answer") => PromptFor(Field("id")) is { } p && p.Nonce == Field("nonce") && p.Options.Any(o => o.Value == Field("choice"))
+                ? Ok(() => p.Resolve(Field("choice"))) : (409, new { error = "That request was already answered." }),
             _ => (404, new { error = "Not found" }),
         };
 
@@ -75,6 +89,8 @@ public partial class MainWindow
             return (200, new { ok = true });
         }
     }
+
+    private static readonly (int, object) DialogOpen = (409, new { error = "The app is showing a dialog on the PC." });
 
     private IEnumerable<object> RemoteList()
     {
@@ -93,8 +109,8 @@ public partial class MainWindow
         var live = busy && _chatBusy; // a reply streams in it: the turn's own view (the store holds a placeholder reply)
         var messages = live ? _turn.History.Concat(_pendingUser is { } user ? TurnMessages(user) : Enumerable.Empty<LauncherLogic.ChatMessage>()).ToList() : saved.Messages;
         var queued = id == _chatConv?.Id ? _chatQueue.Count : id == _codeConv?.Id ? _codeQueue.Count : 0;
-        var prompt = _remotePrompt is { } p && (p.Conversation is null || p.Conversation == id)
-            ? new { title = p.Title, message = p.Message, choices = p.Options.Select(o => new { label = o.Label, value = o.Value }).ToList() } : null;
+        var prompt = PromptFor(id) is { } p
+            ? new { title = p.Title, message = p.Message, nonce = p.Nonce, choices = p.Options.Select(o => new { label = o.Label, value = o.Value }).ToList() } : null;
         var reply = live && _reply is { } r
             ? new { text = r.Final ?? r.AnswerText.ToString(), status = r.Status.Visibility == Visibility.Visible ? r.Status.Text : "" } : null;
         return (200, new
@@ -110,6 +126,10 @@ public partial class MainWindow
     {
         if (text.Trim().Length == 0)
             return (400, new { error = "Empty message" });
+        if (text.TrimStart().StartsWith('/')) // a slash command changes settings (RunLocalCommand): those stay at the PC
+            return (400, new { error = "Slash commands only work at the PC." });
+        if (DesktopDialogOpen())
+            return DialogOpen;
         Conversation c;
         if (id.Length == 0)
         {
@@ -142,16 +162,24 @@ public partial class MainWindow
     }
 
     // --ui-smoke: the server on a free port with a known password; without the cookie 401, login, the list, a message to a
-    // new chat answered by a fake engine (a stand-in orchestrator.py) and read back, and a request popup answered remotely.
+    // new chat answered by a fake engine (a stand-in orchestrator.py) and read back, a PC-only popup that stays hidden and
+    // blocks send and stop, a slash command refused, a LAN client refused, and a request popup bound to one conversation
+    // answered remotely with its nonce (not from another conversation, nor with a stale nonce).
     private async Task<bool> RemoteSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote: {what}"); return false; }
+        static async Task<bool> Until(Func<bool> done)
+        {
+            for (var waited = 0; waited < 5000 && !done(); waited += 50)
+                await Task.Delay(50);
+            return done();
+        }
         var (hash, port, root, project, key, runtime, choice, notify) = (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, ApiKeyBox.Password, _settings.Runtime, _codeChoice, _notifyHook);
         var engine = Path.Combine(AppSettings.DataRoot, "remote-engine");
         Directory.CreateDirectory(engine);
         File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, time\n" +
             "def ev(**e): print('@@AO ' + json.dumps(e), flush=True)\n" +
-            "ev(e='delta', role='planner', kind='text', text='Remote ')\ntime.sleep(1.5)\nev(e='chat_reply', role='planner', text='Remote reply')\n");
+            "ev(e='delta', role='planner', kind='text', text='Remote ')\ntime.sleep(3)\nev(e='chat_reply', role='planner', text='Remote reply')\n");
         File.WriteAllText(Path.Combine(engine, "config.json"), """{"roles": {}}""");
         using var http = new HttpClient(new HttpClientHandler { UseCookies = false }) { Timeout = TimeSpan.FromSeconds(20) };
         string? cookie = null, setCookie = null;
@@ -195,29 +223,82 @@ public partial class MainWindow
             var first = (await Call(HttpMethod.Get, "/api/conversation/" + id)).Json;
             if (first?["busy"]?.GetValue<bool>() != true || first["reply"] is null || first["messages"]?.AsArray().LastOrDefault()?["text"]?.GetValue<string>() != "Hello from the phone")
                 return Fail($"in progress: {first}");
-            JsonNode? done = null;
-            for (var i = 0; i < 100 && done?["busy"]?.GetValue<bool>() != false; i++)
+            // A PC-only popup (Folder access) while that conversation replies: not shown nor answerable there, and send and
+            // stop wait for it (they would run inside its dialog loop).
+            var folder = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
+            DialogShell? FolderDialog() => Application.Current.Windows.OfType<DialogShell>().FirstOrDefault(d => d.Title == "Folder access");
+            if (!await Until(() => FolderDialog() is not null) || RunningId != id)
+                return Fail("the PC-only popup did not open while the reply ran");
+            for (var i = 0; i < 3; i++)
             {
-                await Task.Delay(200);
-                done = (await Call(HttpMethod.Get, "/api/conversation/" + id)).Json;
+                if ((await Call(HttpMethod.Get, "/api/conversation/" + id)).Json?["prompt"] is { } exposed)
+                    return Fail($"non-remote dialog exposed: {exposed}");
+                await Task.Delay(100);
             }
+            if ((await Call(HttpMethod.Post, "/api/answer", new { id, choice = "write", nonce = "" })).Status != 409)
+                return Fail("non-remote dialog answered");
+            var blockedSend = await Call(HttpMethod.Post, "/api/send", new { id, text = "during the dialog" });
+            var blockedStop = await Call(HttpMethod.Post, "/api/stop", new { id });
+            if (blockedSend.Status != 409 || blockedStop.Status != 409 || blockedStop.Json?["error"]?.GetValue<string>()?.Contains("dialog") != true)
+                return Fail($"send or stop under a PC dialog: {blockedSend.Status} {blockedStop.Status} {blockedStop.Json}");
+            FolderDialog()!.Close();
+            if (await Task.WhenAny(folder.Task, Task.Delay(5000)) != folder.Task || folder.Result is not null)
+                return Fail("the PC-only popup did not close");
+            async Task<JsonNode?> Done(string conversation)
+            {
+                JsonNode? state = null;
+                for (var i = 0; i < 100 && state?["busy"]?.GetValue<bool>() != false; i++)
+                {
+                    await Task.Delay(200);
+                    state = (await Call(HttpMethod.Get, "/api/conversation/" + conversation)).Json;
+                }
+                return state;
+            }
+            var done = await Done(id);
             if (done?["messages"]?.AsArray().LastOrDefault() is not { } last || last["role"]?.GetValue<string>() != "assistant" ||
                 last["text"]?.GetValue<string>() != "Remote reply" || done["reply"] is not null || done["kind"]?.GetValue<string>() != "chat")
                 return Fail($"reply: {done}");
             if ((await Call(HttpMethod.Get, "/api/conversations")).Json?["conversations"]?.AsArray().Any(c => c?["id"]?.GetValue<string>() == id) != true)
                 return Fail("the new chat is not listed");
-            // A request popup: shown in the conversation with its choices; a choice it does not offer is refused; the answer closes it.
-            var asked = Dispatcher.InvokeAsync(() => Choose("Allow this command?", "The model wants to run: dir", ("Allow once", "allow"), ("Deny", "deny")));
+            if ((await Call(HttpMethod.Post, "/api/send", new { id, text = "  /ponytail ultra" })) is not { Status: 400, Json: { } slash } ||
+                slash["error"]?.GetValue<string>()?.Contains("Slash") != true)
+                return Fail("a slash command was not refused");
+            // A LAN client naming the loopback host (http.sys routes on Host): refused. Our own LAN address is not loopback.
+            if (System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName()).FirstOrDefault(a =>
+                a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(a)) is { } lan)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"http://{lan}:{p}/");
+                request.Headers.Host = $"127.0.0.1:{p}";
+                int status;
+                try { status = (int)(await http.SendAsync(request)).StatusCode; }
+                catch (HttpRequestException) { status = 0; } // refused before HTTP: not served either
+                if (status == 200)
+                    return Fail($"a LAN client ({lan}) was served: {status}");
+            }
+            var second = await Call(HttpMethod.Post, "/api/send", new { text = "A second chat" });
+            if (second.Json?["id"]?.GetValue<string>() is not { } other || other == id || (await Done(other))?["busy"]?.GetValue<bool>() != false)
+                return Fail($"second chat: {second.Status} {second.Json}");
+            // A request popup bound to the first chat: shown there (not in the second) with its choices and nonce; a choice it
+            // does not offer, an answer from the second chat and a stale nonce are refused; the answer closes it.
+            var asked = Dispatcher.InvokeAsync(() => Choose(remote: id, "Allow this command?", "The model wants to run: dir", ("Allow once", "allow"), ("Deny", "deny")));
             JsonNode? prompt = null;
             for (var i = 0; i < 50 && prompt is null; i++)
             {
                 await Task.Delay(100);
                 prompt = (await Call(HttpMethod.Get, "/api/conversation/" + id)).Json?["prompt"];
             }
-            if (prompt?["choices"]?.AsArray().Select(c => c?["value"]?.GetValue<string>()).SequenceEqual(["allow", "deny"]) != true)
+            if (prompt?["choices"]?.AsArray().Select(c => c?["value"]?.GetValue<string>()).SequenceEqual(["allow", "deny"]) != true ||
+                prompt["nonce"]?.GetValue<string>() is not { Length: > 0 } nonce)
                 return Fail($"prompt: {prompt}");
-            if ((await Call(HttpMethod.Post, "/api/answer", new { id, choice = "maybe" })).Status != 409 ||
-                (await Call(HttpMethod.Post, "/api/answer", new { id, choice = "deny" })).Status != 200)
+            if ((await Call(HttpMethod.Get, "/api/conversation/" + other)).Json?["prompt"] is { } elsewhere)
+                return Fail($"a prompt for one conversation shows in another: {elsewhere}");
+            if ((await Call(HttpMethod.Post, "/api/answer", new { id = other, choice = "deny", nonce })).Status != 409)
+                return Fail("answered from another conversation");
+            if ((await Call(HttpMethod.Post, "/api/answer", new { id, choice = "maybe", nonce })).Status != 409)
+                return Fail("a choice it does not offer");
+            if ((await Call(HttpMethod.Post, "/api/answer", new { id, choice = "deny", nonce = "0123456789ABCDEF0123456789ABCDEF" })).Status != 409)
+                return Fail("a stale nonce answered the popup");
+            if ((await Call(HttpMethod.Post, "/api/answer", new { id, choice = "deny", nonce })).Status != 200)
                 return Fail("answer");
             if (await Task.WhenAny(asked.Task, Task.Delay(5000)) != asked.Task || asked.Result != "deny" || _remotePrompt is not null)
                 return Fail("the popup did not take the answer");
@@ -322,6 +403,13 @@ public partial class MainWindow
                         RefreshRemote();
                     }
                 }
+            }
+            if (!RemoteTunnel.SignedBy(temp, "Cloudflare"))
+            {
+                File.Delete(temp);
+                _remoteFailure = "the download is not signed by Cloudflare";
+                Log($"Remote access: {_remoteFailure}");
+                return false;
             }
             File.Move(temp, _tunnel.Exe, overwrite: true);
             Log($"Remote access: downloaded cloudflared to {_tunnel.Exe}");

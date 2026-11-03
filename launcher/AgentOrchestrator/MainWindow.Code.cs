@@ -237,7 +237,11 @@ public partial class MainWindow
     }
 
     // A message and buttons (the first is the default); the chosen value, or null when cancelled.
-    private string? Choose(string title, string message, params (string Label, string Value)[] options)
+    private string? Choose(string title, string message, params (string Label, string Value)[] options) => Choose(remote: null, title, message, options);
+
+    // `remote`: the conversation the remote page shows it in and may answer it from (only the sandbox's approvals pass one);
+    // null: the PC only, and an open remote one stays hidden while this is on top of it.
+    private string? Choose(string? remote, string title, string message, params (string Label, string Value)[] options)
     {
         if (_codeChoice is { } answer)
             return answer(title);
@@ -259,9 +263,11 @@ public partial class MainWindow
         panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 });
         panel.Children.Add(buttons);
         dialog = new DialogShell(this, title, panel) { ShowActivated = !_dialogsQuiet };
-        // While it is open the remote page shows it with its choices; an answer from there resolves it as a click would.
+        // While it is open the remote page shows it with its choices; an answer from there (with its nonce) resolves it as a click would.
         var outer = _remotePrompt;
-        _remotePrompt = new RemotePrompt(RunningId, title, message, options, value => { result = value; dialog.Close(); });
+        _remotePrompt = remote is null ? null
+            : new RemotePrompt(remote, Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)), title, message, options, dialog,
+                value => { result = value; dialog.Close(); });
         try { dialog.ShowDialog(); }
         finally { _remotePrompt = outer; }
         return result;

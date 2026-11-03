@@ -45,8 +45,9 @@ public partial class MainWindow
                 after += "\n\nAllow similar commands for this session: " + (kind == "write" ? "writing in these folders" : $"{kind switch
                     { "network" => "network access for", _ => "running" }} \"{key}\" commands") + " is allowed in this chat without asking again, until the app closes.";
             var message = $"{what}\n\n{detail}" + (reason.Length > 0 ? $"\n\nReason given: {reason}" : "") + $"\n\n{after}";
-            var answer = similar ? Choose(title, message, (yes, "allow"), ("Allow similar commands for this session", "similar"), (no, "deny"))
-                : Choose(title, message, (yes, "allow"), (no, "deny"));
+            // the remote page may answer it in the conversation that asked (none running: the PC only)
+            var answer = similar ? Choose(remote: RunningId, title, message, (yes, "allow"), ("Allow similar commands for this session", "similar"), (no, "deny"))
+                : Choose(remote: RunningId, title, message, (yes, "allow"), (no, "deny"));
             if (answer == "similar")
             {
                 if (!_similarAllowed.TryGetValue(conversation, out var set))

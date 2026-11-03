@@ -32,22 +32,53 @@ internal static class RemoteAuth
     }
 }
 
-// Wrong passwords: after 5 in a row each further try is refused until a wait that doubles (5 s, 10 s, ... up to 5 min);
-// a correct one resets it. Global: every request comes from 127.0.0.1 through the tunnel.
+// Wrong passwords, per client (Cloudflare's CF-Connecting-IP, else the connection's address): after 5 each further try
+// is refused until a wait that doubles (5 s, 10 s, ... up to 5 min); a correct one clears the client, and its count is
+// forgotten 15 min after its last failure. Over 100 failures in 10 min from all clients together pause every login for
+// a minute. Not thread-safe: RemoteServer calls it under its lock.
 internal sealed class RemoteLockout(Func<DateTime> now)
 {
-    private int _failures;
-    private DateTime _until = DateTime.MinValue;
+    internal const int MaxClients = 1000;
+    private static readonly TimeSpan Decay = TimeSpan.FromMinutes(15), Window = TimeSpan.FromMinutes(10), Pause = TimeSpan.FromMinutes(1);
+    private readonly Dictionary<string, (int Failures, DateTime Last, DateTime Until)> _clients = new();
+    private readonly Queue<DateTime> _recent = new(); // every failure within Window
+    private DateTime _paused = DateTime.MinValue;
 
-    public TimeSpan Wait() => _until > now() ? _until - now() : TimeSpan.Zero;
+    internal int Clients => _clients.Count;
 
-    public void Failed()
+    public TimeSpan Wait(string client)
     {
-        if (++_failures >= 5)
-            _until = now() + TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, _failures - 5)));
+        var t = now();
+        var until = _clients.TryGetValue(client, out var c) && t - c.Last < Decay ? c.Until : DateTime.MinValue;
+        if (_paused > until)
+            until = _paused;
+        return until > t ? until - t : TimeSpan.Zero;
     }
 
-    public void Succeeded() => (_failures, _until) = (0, DateTime.MinValue);
+    public void Failed(string client)
+    {
+        var t = now();
+        var failures = _clients.TryGetValue(client, out var c) && t - c.Last < Decay ? c.Failures + 1 : 1;
+        if (!_clients.ContainsKey(client) && _clients.Count >= MaxClients)
+            Forget(t);
+        _clients[client] = (failures, t, failures >= 5 ? t + TimeSpan.FromSeconds(Math.Min(300, 5 * Math.Pow(2, failures - 5))) : DateTime.MinValue);
+        _recent.Enqueue(t);
+        while (_recent.Peek() <= t - Window)
+            _recent.Dequeue();
+        if (_recent.Count > 100)
+            _paused = t + Pause;
+    }
+
+    // ponytail: an O(n) scan when full (n = MaxClients): the decayed go, else the one idle longest; the global pause bounds the churn.
+    private void Forget(DateTime t)
+    {
+        foreach (var key in _clients.Where(e => t - e.Value.Last >= Decay).Select(e => e.Key).ToList())
+            _clients.Remove(key);
+        if (_clients.Count >= MaxClients)
+            _clients.Remove(_clients.MinBy(e => e.Value.Last).Key);
+    }
+
+    public void Succeeded(string client) => _clients.Remove(client);
 }
 
 // The remote page's server: http://127.0.0.1:<port>/ only (the tunnel is the way in from outside). "/" is the page;
@@ -123,12 +154,18 @@ internal sealed class RemoteServer
 
     private async Task Serve(HttpListenerContext context)
     {
-        var response = context.Response;
+        var (request, response) = (context.Request, context.Response);
         try
         {
-            var body = await ReadBody(context.Request);
+            if (!IsAllowedClient(request.RemoteEndPoint.Address))
+            {
+                response.StatusCode = 403;
+                return;
+            }
+            var body = await ReadBody(request);
+            var client = request.Headers["CF-Connecting-IP"] is { Length: > 0 and <= 64 } ip ? ip : request.RemoteEndPoint.Address.ToString();
             var r = body is null ? Json(413, new { error = "Too large" })
-                : await Handle(context.Request.HttpMethod, context.Request.Url?.AbsolutePath ?? "/", context.Request.Headers["Cookie"], body);
+                : await Handle(request.HttpMethod, request.Url?.AbsolutePath ?? "/", request.Headers["Cookie"], body, client);
             response.StatusCode = r.Status;
             response.ContentType = r.Type;
             response.Headers["Cache-Control"] = "no-store";
@@ -147,6 +184,10 @@ internal sealed class RemoteServer
         }
     }
 
+    // http.sys listens on every address and routes on the Host header, so a LAN device naming 127.0.0.1 in it would reach
+    // the server: only connections from this PC (cloudflared) are served.
+    internal static bool IsAllowedClient(IPAddress address) => IPAddress.IsLoopback(address);
+
     // The request's body as text; null when it is over MaxBody.
     private static async Task<string?> ReadBody(HttpListenerRequest request)
     {
@@ -164,7 +205,8 @@ internal sealed class RemoteServer
         return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
     }
 
-    public async Task<Response> Handle(string method, string path, string? cookie, string body)
+    // `client`: whom wrong passwords are counted against (RemoteLockout).
+    public async Task<Response> Handle(string method, string path, string? cookie, string body, string client = "")
     {
         if (path == "/")
             return method == "GET" ? new Response(200, "text/html; charset=utf-8", Page.Value) : Json(405, new { error = "Method not allowed" });
@@ -178,7 +220,7 @@ internal sealed class RemoteServer
         }
         catch (JsonException) { return Json(400, new { error = "Not JSON" }); }
         if (path == "/api/login")
-            return method == "POST" ? Login(json) : Json(405, new { error = "Method not allowed" });
+            return method == "POST" ? Login(json, client) : Json(405, new { error = "Method not allowed" });
         if (!SignedIn(cookie))
             return Json(401, new { error = "Sign in first" });
         try
@@ -190,12 +232,12 @@ internal sealed class RemoteServer
     }
 
     // ponytail: one lock around the PBKDF2 check, so logins run one at a time (also slows guessing); fine for one user.
-    private Response Login(JsonElement json)
+    private Response Login(JsonElement json, string client)
     {
         lock (_lock)
         {
             ForgetStaleSessions();
-            if (_lockout.Wait() is var wait && wait > TimeSpan.Zero)
+            if (_lockout.Wait(client) is var wait && wait > TimeSpan.Zero)
             {
                 var seconds = (int)Math.Ceiling(wait.TotalSeconds);
                 return Json(429, new { error = $"Too many wrong passwords. Try again in {seconds} s.", wait = seconds });
@@ -203,10 +245,10 @@ internal sealed class RemoteServer
             var password = json.ValueKind == JsonValueKind.Object && json.TryGetProperty("password", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "";
             if (!RemoteAuth.Verify(password, _hash()))
             {
-                _lockout.Failed();
+                _lockout.Failed(client);
                 return Json(401, new { error = "Wrong password" });
             }
-            _lockout.Succeeded();
+            _lockout.Succeeded(client);
             var token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
             _sessions.Add(Digest(token));
             return Json(200, new { ok = true }) with { Cookie = $"{CookieName}={token}; Path=/; HttpOnly; Secure; SameSite=Strict" };
@@ -251,27 +293,56 @@ internal sealed class RemoteServer
         var now = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
         var lockout = new RemoteLockout(() => now);
         for (var i = 0; i < 4; i++)
-            lockout.Failed();
-        Check(lockout.Wait() == TimeSpan.Zero, "four failures lock nothing");
+            lockout.Failed("a");
+        Check(lockout.Wait("a") == TimeSpan.Zero, "four failures lock nothing");
         var waits = new List<double>();
         for (var i = 0; i < 9; i++)
         {
-            lockout.Failed();
-            waits.Add(lockout.Wait().TotalSeconds);
-            now += lockout.Wait();
+            lockout.Failed("a");
+            waits.Add(lockout.Wait("a").TotalSeconds);
+            now += lockout.Wait("a");
         }
         Check(waits.SequenceEqual([5, 10, 20, 40, 80, 160, 300, 300, 300]), "lockout doubling: " + string.Join(",", waits));
-        lockout.Failed();
+        lockout.Failed("a");
         now += TimeSpan.FromSeconds(299);
-        Check(lockout.Wait() == TimeSpan.FromSeconds(1), "lockout counts down");
-        lockout.Succeeded();
-        Check(lockout.Wait() == TimeSpan.Zero, "a success resets");
+        Check(lockout.Wait("a") == TimeSpan.FromSeconds(1), "lockout counts down");
+        Check(lockout.Wait("b") == TimeSpan.Zero, "another client is not locked out");
+        lockout.Succeeded("a");
+        Check(lockout.Wait("a") == TimeSpan.Zero, "a success resets");
+        for (var i = 0; i < 5; i++)
+            lockout.Failed("a");
+        now += TimeSpan.FromMinutes(15);
+        lockout.Failed("a");
+        Check(lockout.Wait("a") == TimeSpan.Zero, "the count decays after 15 min without a failure");
+        for (var i = 0; i < 3; i++)
+            lockout.Failed("a");
+        Check(lockout.Wait("a") == TimeSpan.Zero, "decayed: counting from one again");
+        lockout = new RemoteLockout(() => now);
+        for (var i = 0; i < 100; i++)
+            lockout.Failed("k" + i);
+        Check(lockout.Wait("fresh") == TimeSpan.Zero, "100 failures across clients: no pause");
+        lockout.Failed("k100");
+        Check(lockout.Wait("fresh") == TimeSpan.FromMinutes(1), "over 100 failures in 10 min pause everyone");
+        now += TimeSpan.FromMinutes(10);
+        Check(lockout.Wait("fresh") == TimeSpan.Zero, "the pause ends");
+        lockout.Failed("k0");
+        Check(lockout.Wait("fresh") == TimeSpan.Zero, "older failures leave the window");
+        for (var i = 0; i < 2 * RemoteLockout.MaxClients; i++)
+            lockout.Failed("many" + i);
+        Check(lockout.Clients == RemoteLockout.MaxClients, "the client map is capped: " + lockout.Clients);
+        Check(RemoteServer.IsAllowedClient(IPAddress.Loopback) && RemoteServer.IsAllowedClient(IPAddress.IPv6Loopback) &&
+            !RemoteServer.IsAllowedClient(IPAddress.Parse("192.168.1.20")) && !RemoteServer.IsAllowedClient(IPAddress.Parse("10.0.0.5")) &&
+            !RemoteServer.IsAllowedClient(IPAddress.Parse("fe80::1")), "only loopback clients");
 
         var server = new RemoteServer(() => hash, (method, path, _) => Task.FromResult((200, (object)new { method, path })), () => now);
-        Response Call(string method, string path, string? cookie = null, string body = "") => server.Handle(method, path, cookie, body).GetAwaiter().GetResult();
+        Response Call(string method, string path, string? cookie = null, string body = "", string client = "owner") =>
+            server.Handle(method, path, cookie, body, client).GetAwaiter().GetResult();
         Check(Call("GET", "/api/conversations").Status == 401 && Call("POST", "/api/send", "ao_session=forged").Status == 401, "no session: 401");
         var wrong = Call("POST", "/api/login", body: """{"password":"nope"}""");
         Check(wrong.Status == 401 && wrong.Cookie is null, "wrong password");
+        for (var i = 0; i < 5; i++)
+            Call("POST", "/api/login", body: """{"password":"nope"}""", client: "203.0.113.9");
+        Check(Call("POST", "/api/login", body: """{"password":"open sesame"}""", client: "203.0.113.9").Status == 429, "a guessing client is locked out");
         var login = Call("POST", "/api/login", body: """{"password":"open sesame"}""");
         Check(login is { Status: 200, Cookie: { } set } && set.StartsWith("ao_session=") && set.Contains("HttpOnly") && set.Contains("Secure") &&
             set.Contains("SameSite=Strict") && set.Contains("Path=/"), "login sets the cookie");

@@ -141,7 +141,11 @@ function render(c) {
     for (const ch of c.prompt.choices) {
       const b = document.createElement("button");
       b.textContent = ch.label;
-      b.onclick = async () => { await api("POST", "/api/answer", { id: current, choice: ch.value }); poll(); };
+      b.onclick = async () => {
+        const { status, data } = await api("POST", "/api/answer", { id: current, choice: ch.value, nonce: c.prompt.nonce });
+        $("convError").textContent = status === 200 ? "" : status === 409 ? "That request was already answered" : data.error || "Not answered";
+        lastRender = ""; poll();
+      };
       p.append(b);
     }
   }
@@ -166,7 +170,7 @@ $("send").onclick = async () => {
     else $("convError").textContent = data.error || "Not sent";
   } finally { $("send").disabled = false; }
 };
-$("stop").onclick = async () => { await api("POST", "/api/stop", { id: current }); poll(); };
+$("stop").onclick = async () => { const { status, data } = await api("POST", "/api/stop", { id: current }); $("convError").textContent = status === 200 ? "" : data.error || "Not stopped"; poll(); };
 $("text").onkeydown = e => { if (e.key === "Enter" && !e.shiftKey && matchMedia("(pointer: fine)").matches) { e.preventDefault(); $("send").click(); } };
 loadList().catch(() => {});
 </script>

@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
@@ -167,11 +170,60 @@ internal sealed partial class RemoteTunnel(string exe)
             if (!File.Exists(PidFile) || !int.TryParse(File.ReadAllText(PidFile).Trim(), out var pid))
                 return;
             using var process = Process.GetProcessById(pid);
-            if (process.ProcessName.Equals("cloudflared", StringComparison.OrdinalIgnoreCase))
+            if (IsLeftover(process.ProcessName, process.StartTime, File.GetLastWriteTime(PidFile)))
                 process.Kill(entireProcessTree: true);
         }
         catch (Exception x) when (x is IOException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or Win32Exception) { } // gone already
     }
+
+    // The pid file's process: a cloudflared started before the file was written (a minute's grace); a later one reuses the pid.
+    internal static bool IsLeftover(string name, DateTime started, DateTime written) =>
+        name.Equals("cloudflared", StringComparison.OrdinalIgnoreCase) && started <= written + TimeSpan.FromMinutes(1);
+
+    // The file has a valid Authenticode signature (WinVerifyTrust; no revocation check, so it works offline) whose signer's
+    // subject names `publisher`.
+    internal static bool SignedBy(string path, string publisher)
+    {
+        var name = Marshal.StringToHGlobalUni(path);
+        var file = Marshal.AllocHGlobal(Marshal.SizeOf<WinTrustFileInfo>());
+        try
+        {
+            Marshal.StructureToPtr(new WinTrustFileInfo { Size = Marshal.SizeOf<WinTrustFileInfo>(), Path = name }, file, false);
+            var data = new WinTrustData { Size = Marshal.SizeOf<WinTrustData>(), UIChoice = 2 /* none */, UnionChoice = 1 /* file */, File = file, ProvFlags = 0x10 /* no revocation */ };
+            if (WinVerifyTrust(new IntPtr(-1), new Guid("00AAC56B-CD44-11d0-8CC2-00C04FC295EE") /* WINTRUST_ACTION_GENERIC_VERIFY_V2 */, ref data) != 0)
+                return false;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(file);
+            Marshal.FreeHGlobal(name);
+        }
+        try
+        {
+            using var signer = new X509Certificate2(X509Certificate.CreateFromSignedFile(path));
+            return signer.Subject.Contains(publisher, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (CryptographicException) { return false; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinTrustFileInfo { public int Size; public IntPtr Path, Handle, KnownSubject; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WinTrustData
+    {
+        public int Size;
+        public IntPtr PolicyCallbackData, SipClientData;
+        public int UIChoice, RevocationChecks, UnionChoice;
+        public IntPtr File;
+        public int StateAction;
+        public IntPtr StateData, UrlReference;
+        public int ProvFlags, UIContext;
+        public IntPtr SignatureSettings;
+    }
+
+    [DllImport("wintrust.dll")]
+    private static extern int WinVerifyTrust(IntPtr hwnd, [MarshalAs(UnmanagedType.LPStruct)] Guid action, ref WinTrustData data);
 
     // --self-test: the address parser on cloudflared's own lines, and the restart backoff.
     internal static void SelfTest()
@@ -198,5 +250,12 @@ internal sealed partial class RemoteTunnel(string exe)
             Check(ParseUrl(line) == url, $"parse {line}: {ParseUrl(line)}");
         var waits = Enumerable.Range(0, 7).Select(i => Backoff(i).TotalSeconds).ToList();
         Check(waits.SequenceEqual([5, 10, 20, 40, 60, 60, 60]), "backoff: " + string.Join(",", waits));
+        var written = new DateTime(2026, 11, 2, 10, 0, 0);
+        Check(IsLeftover("cloudflared", written.AddSeconds(-2), written) && IsLeftover("CLOUDFLARED", written.AddSeconds(50), written) &&
+            !IsLeftover("cloudflared", written.AddMinutes(2), written) && !IsLeftover("notepad", written, written), "leftover pid");
+        Check(!SignedBy(Environment.ProcessPath!, "Cloudflare"), "an unsigned file is not Cloudflare's");
+        var dotnet = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet", "dotnet.exe");
+        if (File.Exists(dotnet)) // a signed file, when this PC has one where expected
+            Check(SignedBy(dotnet, "Microsoft") && !SignedBy(dotnet, "Cloudflare"), "a signed file's publisher");
     }
 }
