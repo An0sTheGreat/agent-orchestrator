@@ -19,7 +19,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     {
         Role = role;
         IsCustom = custom;
-        _title = title ?? (role == "planner" ? "MAIN" : role.ToUpperInvariant());
+        _title = title ?? (role == "planner" ? "LEAD" : role.ToUpperInvariant());
     }
 
     // The planner's tab: the built-in roles it currently covers ("Planner · Implementer · Reviewer"); "" on other tabs.
@@ -186,8 +186,15 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
-    // The built-in roles (implementer, reviewer) added through "+"; a role not added runs as the planner ("same_as": "planner").
-    public List<string> AddedRoles { get; set; } = new();
+    // Settings > Agents: "dual" (Lead + Reviewer: the lead does the work) or "tri" (Lead + Implementer + Reviewer). Settings
+    // from before it: tri when the Implementer had been added through "+", else dual (Load).
+    public string WorkflowMode { get; set; } = "dual";
+    // The built-in roles the workflow shows; a role not in it runs as the planner ("same_as": "planner").
+    [JsonIgnore]
+    public List<string> AddedRoles => WorkflowMode == "tri" ? ["implementer", "reviewer"] : ["reviewer"];
+    // Settings files from before WorkflowMode: the built-in roles added through "+". Read once by Load, never written.
+    [JsonPropertyName("AddedRoles"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? OldAddedRoles { get; set; }
     // The one-time move to AddedRoles (MainWindow.MigrateRoles) has run; a new user's settings start with it done.
     public bool RolesMigrated { get; set; }
     // Named worker sets, global across projects.
@@ -267,7 +274,13 @@ internal sealed class AppSettings
     {
         if (!File.Exists(FilePath))
             return new() { RolesMigrated = true }; // a new user: nothing to migrate
-        try { return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new(); }
+        try
+        {
+            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new();
+            if (settings.OldAddedRoles is { } old)
+                (settings.WorkflowMode, settings.OldAddedRoles) = (old.Contains("implementer") ? "tri" : "dual", null);
+            return settings;
+        }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new() { LoadFailed = true }; }
     }
 
@@ -337,6 +350,4 @@ internal sealed class WorkerPreset
     public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
     // config.json task_limits as JSON; "{}" = none set (the defaults); null = saved without a project config, or before presets carried it.
     public string? TaskLimits { get; set; }
-    // AppSettings.AddedRoles when saved; null = a preset from before them (applying it leaves them).
-    public List<string>? AddedRoles { get; set; }
 }

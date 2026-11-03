@@ -1407,7 +1407,7 @@ internal static class LauncherLogic
         return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
-    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "COMPACTOR"];
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "LEAD", "COMPACTOR"];
 
     // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
     public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
@@ -1842,8 +1842,8 @@ internal static class LauncherLogic
         if (BuildChatRequest("implementer", timed).Contains("time", StringComparison.OrdinalIgnoreCase) ||
             BuildCodeRequest("chat", "implementer", timed, @"Y:\P", []).Contains("time", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("A message time reached the engine request.");
-        if (LlamaProgressLine("Main", 4415, 0, 0) != "Main is reading the conversation: 0 / 4,415 tokens…" ||
-            LlamaProgressLine("Main", 4415, 4415, 1234) != "Main is writing: 1,234 tokens so far…")
+        if (LlamaProgressLine("Lead", 4415, 0, 0) != "Lead is reading the conversation: 0 / 4,415 tokens…" ||
+            LlamaProgressLine("Lead", 4415, 4415, 1234) != "Lead is writing: 1,234 tokens so far…")
             throw new InvalidOperationException("The llama progress line failed.");
         if (StatsLine("Planner", 42.14, 1234, 5678) !="Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" || StatsLine("", 0, 5, 7) != "5 generated · 7 prompt" ||
             TotalsLine(12345, 45600) != "Turn: 12.3k tokens · Task: 45.6k tokens" || TotalsLine(950, 1_200_000) != "Turn: 950 tokens · Task: 1.2M tokens" ||
@@ -2313,6 +2313,12 @@ internal static class LauncherLogic
                 unread.Save();
                 if (!unread.LoadFailed || File.ReadAllText(settingsFile) != "{broken")
                     throw new InvalidOperationException("Settings that failed to load must not be saved over.");
+                // Settings from before WorkflowMode: tri when the Implementer was added, else dual; the old list is not written back.
+                string Mode(string json) { File.WriteAllText(settingsFile, json); var s = AppSettings.Load(); s.Save(); return s.WorkflowMode + "|" + AppSettings.Load().WorkflowMode; }
+                if (Mode("""{"AddedRoles":["implementer"]}""") != "tri|tri" || Mode("""{"AddedRoles":["reviewer"]}""") != "dual|dual" || Mode("{}") != "dual|dual" ||
+                    Mode("""{"WorkflowMode":"tri"}""") != "tri|tri" || File.ReadAllText(settingsFile).Contains("AddedRoles") ||
+                    string.Join(",", AppSettings.Load().AddedRoles) != "implementer,reviewer")
+                    throw new InvalidOperationException("The workflow mode was not migrated from the added roles.");
             }
             finally { Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", dataBefore); }
             // Task limits: read and write; an empty field removes its key, then the empty task_limits; other keys stay.

@@ -474,24 +474,6 @@ public partial class MainWindow
             note.Margin = new Thickness(0, 8, 0, 0);
             remotePanel.Children.Add(note);
             panel.Children.Add(remotePanel);
-            if (card.Role is not ("planner" or LauncherLogic.Compactor)) // an added Implementer / Reviewer: removing it hands its work back to MAIN
-            {
-                var name = ChatName(card, card.Role);
-                var removeRole = new Button { Content = "Remove", Tag = "RemoveRole", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0),
-                    ToolTip = $"MAIN covers the {name} again; these settings are kept for when you add it back" };
-                removeRole.Click += (_, _) =>
-                {
-                    if (AskDialog("Remove worker", $"Remove the {name}? MAIN (the planner) takes over its work.", "Remove") is null)
-                        return;
-                    HoldWorkerTab(() =>
-                    {
-                        RemoveBuiltInRole(card.Role);
-                        close();
-                    });
-                    Log($"{name}: removed; MAIN covers it");
-                };
-                panel.Children.Add(removeRole);
-            }
         }
 
         // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups
@@ -646,17 +628,17 @@ public partial class MainWindow
         advancedLabel.VerticalAlignment = VerticalAlignment.Center;
         var advancedRow = new DockPanel { Margin = new Thickness(0, 16, 0, 0), Children = { advanced, advancedLabel },
             ToolTip = "Memory, speed, output and server options" };
-        // COMPACTOR: whether it follows MAIN's model, and the way back to it.
+        // COMPACTOR: whether it follows LEAD's model, and the way back to it.
         StackPanel? follow = null;
         if (card.Role == LauncherLogic.Compactor)
         {
             follow = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Tag = "CompactorSource" };
             if (followsMain)
-                follow.Children.Add(Muted("Same as MAIN: compaction runs on MAIN's model and follows its changes. Pick a model (or change a setting) and Save to give COMPACTOR its own."));
+                follow.Children.Add(Muted("Same as LEAD: compaction runs on LEAD's model and follows its changes. Pick a model (or change a setting) and Save to give COMPACTOR its own."));
             else
             {
-                follow.Children.Add(Muted("COMPACTOR has its own model: summaries load it, then MAIN's model loads again."));
-                var back = new Button { Content = "Use MAIN's model", Tag = "UseMainModel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4),
+                follow.Children.Add(Muted("COMPACTOR has its own model: summaries load it, then LEAD's model loads again."));
+                var back = new Button { Content = "Use LEAD's model", Tag = "UseMainModel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4),
                     HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
                 back.Click += (_, _) =>
                 {
@@ -671,7 +653,7 @@ public partial class MainWindow
                         Toast($"{card.Title}: not changed ({failed})", "#FF667A");
                         return;
                     }
-                    Toast($"{card.Title}: same as MAIN");
+                    Toast($"{card.Title}: same as LEAD");
                     HoldWorkerTab(() =>
                     {
                         PrefillCards();
@@ -1103,7 +1085,7 @@ public partial class MainWindow
             // Options… opens the target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
             _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
-            if (Dropdown(ChatTargetChip) is not ["Options…", "Main", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && k.Role != LauncherLogic.Compactor) ||
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Lead", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && k.Role != LauncherLogic.Compactor) ||
                 ChatTargetChip.ToolTip as string != chipTip)
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
@@ -1403,9 +1385,9 @@ public partial class MainWindow
                 sampling.TranslatePoint(new Point(), WorkerSettingsHost));
             if (Math.Abs(m.Y - p.Y) > 2 || p.X <= m.X + 100 || s.Y <= m.Y + 100)
                 return Fail($"the layout: model {m}, prompts {p}, sampling {s}");
-            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as MAIN:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
+            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as LEAD:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
-                return Fail("Same as MAIN, no chat prompt");
+                return Fail("Same as LEAD, no chat prompt");
             TextBox Box() => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "Prompt:compactor.txt")!;
             Button Icon(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag)!;
             var original = DefaultPromptText("compactor.txt");
@@ -1434,15 +1416,16 @@ public partial class MainWindow
             if (File.Exists(overridden))
                 return Fail("a reset prompt keeps its file");
 
-            // "+ New preset": the default workers (none added, no custom ones), the template's settings, COMPACTOR on MAIN.
+            // "+ New preset": the default workers (no custom ones, the workflow mode kept), the template's settings, COMPACTOR on LEAD.
             if (BuildPresetsMenu().Items.OfType<MenuItem>().FirstOrDefault()?.Header as string != "+ New preset…")
                 return Fail("the menu item");
             SavePreset("smoke-before");
+            var mode = _settings.WorkflowMode;
             NewPreset("smoke-fresh");
             await Idle();
             var template = JsonNode.Parse(File.ReadAllText(Path.Combine(_workflowRoot!, "config.json")))!["roles"]!;
             var now = JsonNode.Parse(File.ReadAllText(config))!["roles"]!;
-            if (_settings.Presets.FirstOrDefault(x => x.Name == "smoke-fresh") is not { } fresh || fresh.Workers.Any(w => w.Custom) || _settings.AddedRoles.Count != 0 ||
+            if (_settings.Presets.FirstOrDefault(x => x.Name == "smoke-fresh") is not { } fresh || fresh.Workers.Any(w => w.Custom) || _settings.WorkflowMode != mode ||
                 _cards.Any(c => c.IsCustom) || !JsonNode.DeepEquals(now["planner"]?["auto_load"], template["planner"]?["auto_load"]) ||
                 (string?)now[LauncherLogic.Compactor]?["same_as"] != "planner")
                 return Fail("the fresh preset");

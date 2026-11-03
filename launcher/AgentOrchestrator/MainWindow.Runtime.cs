@@ -25,6 +25,7 @@ public partial class MainWindow
         ShowModelsFolder();
         RefreshLlamaStatus();
         InitPi();
+        ShowWorkflowMode();
         InitSandbox();
         AppVersionText.Text = LauncherLogic.VersionText();
     }

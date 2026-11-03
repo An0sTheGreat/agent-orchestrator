@@ -146,7 +146,7 @@ public partial class MainWindow
     private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) is { Hidden: false, Role: not "compactor" } target ? target : CardFor("planner");
 
     private static string ChatName(RoleCard? card, string role) =>
-        card is { IsCustom: true } ? card.Title : role == "planner" ? "Main" : RoleName(role);
+        card is { IsCustom: true } ? card.Title : role == "planner" ? "Lead" : RoleName(role);
 
     private static string RoleName(string role) => role.Length == 0 ? role : char.ToUpperInvariant(role[0]) + role[1..];
 
@@ -167,8 +167,8 @@ public partial class MainWindow
         CodeTargetChip.Content = $"Lead: {(model is { Length: > 0 } and not "Not loaded" ? model : "no model")}  ▾";
     }
 
-    // Both views: the Implementer and Reviewer tabs and rail dots show only once added (AppSettings.AddedRoles); until then
-    // MAIN (the planner) covers them, and its tab lists the roles it covers.
+    // Both views: the Implementer and Reviewer tabs and rail dots follow the workflow mode (AppSettings.AddedRoles); a role it
+    // leaves out runs as LEAD (the planner), and its tab lists the roles it covers.
     private void RefreshCardVisibility()
     {
         foreach (var card in _cards)
@@ -182,7 +182,7 @@ public partial class MainWindow
             SelectWorker(CardFor("planner"));
     }
 
-    // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat MAIN, the added roles and
+    // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat LEAD, the shown roles and
     // the custom workers.
     private List<RoleCard> ListedWorkers(Conversation c) => c.IsCode ? [] : _cards.Where(k => !k.Hidden && k.Role != "compactor").ToList(); // COMPACTOR only summarizes
 
