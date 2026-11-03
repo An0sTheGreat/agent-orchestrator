@@ -4683,7 +4683,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     env = {**os.environ, "PI_CODING_AGENT_DIR": str(turn), "PI_OFFLINE": "1", "PI_SKIP_VERSION_CHECK": "1", "PI_TELEMETRY": "0",
            "AO_GATEWAY": gateway.url, "AO_TOKEN": gateway.token, "AO_TOOLS": str(turn / "tools.json"), "AO_PI_KEY": client.api_key,
            "AO_READ_LINES": str(CODE_READ_LINES), "AO_READ_CHARS": str(int(TOOL_SHARE["read_file"] * n_ctx * 3.5)),  # Pi's read, as read_file
-           "AO_SLIM_CHARS": str(int(SLIM_AT * n_ctx * 3.5))}  # as slim_tool_results: older results become notes past this
+           "AO_SLIM_CHARS": str(int(SLIM_AT * n_ctx * 3.5)),  # as slim_tool_results: older results become notes past this
+           # a model that cannot see: the session's images (an earlier message's, a screenshot) stay out of every request
+           "AO_NO_IMAGES": vision_problem(config, role)}
     title = display_name(config, role)
     emit("chat_stage", role=role, stage="lead", title=title)
     process = subprocess.Popen(command, cwd=folders[0]["path"], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

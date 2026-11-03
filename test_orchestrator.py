@@ -1,3 +1,4 @@
+import base64
 import contextlib
 import io
 import json
@@ -3756,6 +3757,22 @@ class PiEngineTests(unittest.TestCase):
         self.assertTrue(all(r.startswith("[older result of list_files {}") for r in results[:2]), results[:2])
         self.assertTrue(all("module_59.py" in r for r in results[2:]), results[2:])
         self.assertIn("module_59.py", [d["result"] for e, d in events if e == "tool"][0])  # the launcher still shows it whole
+
+    def test_a_pi_session_keeps_its_images_from_a_model_that_cannot_see(self):
+        # An image in one turn stays in the Pi session; a later turn whose model cannot see (here the Vision switch off)
+        # sends it as a note, or the server refuses every request with "image input is not supported".
+        shot = self.root / "shot.png"
+        shot.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))  # 1x1
+        session = f"conv-{uuid.uuid4().hex[:8]}"
+        code, _, requests = self.turn(["I see it."], [{"role": "user", "content": "look"}], session=session, images=[str(shot)])
+        self.assertEqual(code, 0)
+        self.assertIn("image_url", json.dumps(requests[-1]["messages"]))
+        msgs = [{"role": "user", "content": "look"}, {"role": "assistant", "content": "I see it."}, {"role": "user", "content": "and now?"}]
+        code, _, requests = self.turn(["Fine."], msgs, session=session, vision=False)
+        self.assertEqual(code, 0)
+        sent = json.dumps(requests[-1]["messages"])
+        self.assertNotIn("image_url", sent)
+        self.assertIn("[an image is left out: Vision is off in the message box]", sent)
 
     def test_pi_gets_the_ponytail_prompt_when_on(self):
         with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_PONYTAIL": "lite"}):

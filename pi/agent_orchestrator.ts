@@ -73,10 +73,21 @@ export default function (pi: ExtensionAPI) {
 			? content.reduce((n: number, c: { type?: string; text?: string; thinking?: string; arguments?: unknown }) =>
 				n + (c.type === "image" ? 2500 * 3.5 : (c.text ?? c.thinking ?? "").length + (c.arguments ? JSON.stringify(c.arguments).length : 0)), 0)
 			: 0;
+	// AO_NO_IMAGES (why the model cannot see, from orchestrator.vision_problem): every image in the session (an earlier
+	// message's, a screenshot) becomes a note, or the server refuses each request ("image input is not supported").
+	const noImages = process.env.AO_NO_IMAGES ?? "";
+	const unseen = (content: unknown) => Array.isArray(content) && content.some((c: { type?: string }) => c.type === "image");
+	const textOnly = <M extends { content: unknown }>(m: M): M => !noImages || !unseen(m.content) ? m : {
+		...m,
+		content: (m.content as { type?: string }[]).map((c) =>
+			c.type === "image" ? { type: "text" as const, text: `[an image is left out: ${noImages}]` } : c),
+	};
 	pi.on("context", async (event) => {
+		if (noImages && event.messages.some((m) => unseen((m as { content?: unknown }).content)))
+			event = { ...event, messages: event.messages.map((m) => textOnly(m as typeof m & { content: unknown })) };
 		const rounds = event.messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
-		if (rounds.length <= KEEP_TOOL_ROUNDS) return undefined;
-		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return undefined;
+		if (rounds.length <= KEEP_TOOL_ROUNDS) return noImages ? { messages: event.messages } : undefined;
+		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return noImages ? { messages: event.messages } : undefined;
 		const keepFrom = rounds[rounds.length - KEEP_TOOL_ROUNDS];
 		const calls = new Map<string, string>();
 		for (const m of event.messages.slice(0, keepFrom))
