@@ -113,9 +113,17 @@ public partial class MainWindow
             ? new { title = p.Title, message = p.Message, nonce = p.Nonce, choices = p.Options.Select(o => new { label = o.Label, value = o.Value }).ToList() } : null;
         var reply = live && _reply is { } r
             ? new { text = r.Final ?? r.AnswerText.ToString(), status = r.Status.Visibility == Visibility.Visible ? r.Status.Text : "" } : null;
+        // The Code view's run output (a project run's thinking, tool calls and results) as its plain transcript, last 40k
+        // characters: it lives only in that view, not in the saved messages.
+        var text = id == _codeConv?.Id ? _transcript.ToString().Trim() : "";
+        var activity = text.Length == 0 ? null : new
+        {
+            text = text.Length > 40_000 ? "…" + text[^40_000..] : text,
+            running = _process is not null,
+        };
         return (200, new
         {
-            id, title = ConversationStore.TitleOf(saved), kind = Kind(saved.Kind), busy, queued, prompt, reply,
+            id, title = ConversationStore.TitleOf(saved), kind = Kind(saved.Kind), busy, queued, prompt, reply, activity,
             messages = messages.Select(m => new { role = m.Role, text = m.Content }).ToList(),
         });
     }
@@ -260,6 +268,26 @@ public partial class MainWindow
                 return Fail($"reply: {done}");
             if ((await Call(HttpMethod.Get, "/api/conversations")).Json?["conversations"]?.AsArray().Any(c => c?["id"]?.GetValue<string>() == id) != true)
                 return Fail("the new chat is not listed");
+            // The Code view's run output goes with its conversation only (a project run's steps are not saved messages).
+            if (_store.Create(Path.GetTempPath(), "code") is { } code)
+            {
+                var (shown, transcript) = (_codeConv, _transcript.ToString());
+                (_codeConv, _) = (code, _transcript.Clear().Append("[PROJECT RUN] Working through PROJECT.md\nread_file STATE.md\n=> ok\n"));
+                try
+                {
+                    var run = (await Call(HttpMethod.Get, "/api/conversation/" + code.Id)).Json?["activity"]?["text"]?.GetValue<string>();
+                    if (run?.Contains("read_file STATE.md") != true || done["activity"] is not null ||
+                        (await Call(HttpMethod.Get, "/api/conversation/" + id)).Json?["activity"] is not null)
+                        return Fail($"run output: {run}");
+                }
+                finally
+                {
+                    (_codeConv, _) = (shown, _transcript.Clear().Append(transcript));
+                    _store.Delete(code.Id);
+                }
+            }
+            else
+                return Fail("no code conversation for the run output check");
             if ((await Call(HttpMethod.Post, "/api/send", new { id, text = "  /ponytail ultra" })) is not { Status: 400, Json: { } slash } ||
                 slash["error"]?.GetValue<string>()?.Contains("Slash") != true)
                 return Fail("a slash command was not refused");
