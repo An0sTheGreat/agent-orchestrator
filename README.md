@@ -4,13 +4,18 @@
 
 ![Agent Orchestrator in the Dark Parchment theme](docs/images/chat-ParchmentDark.png)
 
-Big cloud models are impressive, but they cost money, send your code somewhere else, and change under you without asking. Agent Orchestrator takes another route. It's a harness for the models already on your PC: it gives them tools, a sandbox, a browser and a workflow, and has them work as a team: a **Planner** breaks your goal into tasks, an **Implementer** writes the code, and a **Reviewer** checks every change before the next task starts. A mistake gets caught where it happens instead of piling up. You describe what you want in plain words, press **Start project**, and watch the work happen, or just chat with your models when you want a second opinion.
+Big cloud models are impressive, but they cost money, send your code somewhere else, and change under you without asking. Agent Orchestrator takes another route. It's a harness for the models already on your PC: it gives them tools, a sandbox, a browser and a workflow, and has them work as a team: a **Lead** plans the work, an optional **Implementer** writes the code, and a **Reviewer** checks every finished item before the next one starts. A mistake gets caught where it happens instead of piling up. You describe what you want in plain words, press **Start project**, and watch the work happen, or just chat with your models when you want a second opinion.
 
 ## Why you'll like it
 
 ### Multi-agent workflows without the wiring
 
-Setting up several agents usually means config files, ports and scripts. Here it's a row of cards. Each worker (Main, Implementer, Reviewer and any you add) gets its own model, picked from a list of the models you have installed, with context length and sampling settings right beside it. Save a setup as a preset and switch between setups in one click. Don't want to split the work? Leave it at one model and Main covers every role.
+Setting up several agents usually means config files, ports and scripts. Here it's a row of cards. Each worker (Lead, Implementer, Reviewer, Compactor and any you add) gets its own model, picked from a list of the models you have installed, with context length and sampling settings right beside it. Save a setup as a preset and switch between setups in one click.
+
+Pick the workflow that fits your hardware under **Settings > Agents**:
+
+- **Lead + Reviewer** (the default): the Lead does the work, and the Reviewer has to approve every finished item before it counts as done.
+- **Lead + Implementer + Reviewer**: the Lead plans and directs, the Implementer writes every change, and the Reviewer checks each item.
 
 ![Worker details: one card per agent, each with its own model](docs/images/workers.png)
 
