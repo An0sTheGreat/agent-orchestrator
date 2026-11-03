@@ -1,10 +1,10 @@
 # Agent Orchestrator
 
-**A team of local AI models that builds software with you, one reviewed step at a time.**
+**The harness for your local AI setup: a team of local models that builds software with you, one reviewed step at a time.**
 
 ![Agent Orchestrator in the Dark Parchment theme](docs/images/chat-ParchmentDark.png)
 
-Big cloud models are impressive, but they cost money, send your code somewhere else, and change under you without asking. Agent Orchestrator takes another route. It runs small open models on your own PC and has them work as a team: a **Planner** breaks your goal into tasks, an **Implementer** writes the code, and a **Reviewer** checks every change before the next task starts. A mistake gets caught where it happens instead of piling up. You describe what you want in plain words, press **Start project**, and watch the work happen, or just chat with your models when you want a second opinion.
+Big cloud models are impressive, but they cost money, send your code somewhere else, and change under you without asking. Agent Orchestrator takes another route. It's a harness for the models already on your PC: it gives them tools, a sandbox, a browser and a workflow, and has them work as a team: a **Planner** breaks your goal into tasks, an **Implementer** writes the code, and a **Reviewer** checks every change before the next task starts. A mistake gets caught where it happens instead of piling up. You describe what you want in plain words, press **Start project**, and watch the work happen, or just chat with your models when you want a second opinion.
 
 ## Why you'll like it
 
