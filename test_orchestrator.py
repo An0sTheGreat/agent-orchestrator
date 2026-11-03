@@ -4343,7 +4343,7 @@ class LeadRunTests(unittest.TestCase):
         self.assertNotIn("write_file", [t["function"]["name"] for t in reviews[0]["tools"]])
         handoff = reviews[0]["messages"][0]["content"]
         for part in ("ITEM\nGreeting", "LEAD'S OUTCOME\nhello.py greets", "PROJECT.md\n# Project", "A greeting script",
-                     "CHANGES SINCE THE LAST RECORDED ITEM\n", "-print('bye')", "+print('hey')"):
+                     "CHANGES SINCE THIS RUN STARTED OR THE LAST RECORDED ITEM\n", "-print('bye')", "+print('hey')"):
             self.assertIn(part, handoff)
         self.assertIn("-print('bye')\n+print('hi')", reviews[1]["messages"][0]["content"])  # a FAIL keeps the baseline
         self.assertEqual([(d["id"], d["verdict"], d["round"]) for e, d in events if e == "verdict"], [("Greeting", "FAIL", 1), ("Greeting", "PASS", 2)])
@@ -4401,12 +4401,67 @@ class LeadRunTests(unittest.TestCase):
                                tool_call("record_progress", item="Greeting", outcome="delegated"), tool_call("finish", summary="done")],
                    "implementer": [tool_call("write_file", path="hello.py", content="print('hi')"), "Wrote hello.py."],
                    "reviewer": ["VERDICT: PASS"]}
-        code, log, events = self.run_project(replies)
+        code, log, events = self.run_project(replies, request={"workflow": "tri"})
         self.assertEqual(code, 0)
         self.assertEqual(self.text("hello.py"), "print('hi')\n")
         self.assertEqual([l["role"] for l in log], ["planner", "implementer", "implementer", "planner", "reviewer", "planner"])
         self.assertEqual(log[1]["messages"], [{"role": "user", "content": "OBJECTIVE\nWrite hello.py"}])
         self.assertIn(("planner", "delegate", "Wrote hello.py."), [(d["role"], d["name"], d["result"]) for e, d in events if e == "tool"])
+
+    def fake_runner(self, run=None):
+        def runner(folders, request, read_only=False):
+            def command(command, shell="", timeout_seconds=120, **_):
+                if run:
+                    run(command)
+                return f"EXIT 0\nread_only={read_only}"
+            return command
+        return patch.object(orchestrator, "command_runner", runner)
+
+    def test_the_tri_leads_run_command_is_the_read_only_one(self):
+        for workflow, read_only in (("tri", True), ("dual", False)):
+            replies = {"planner": [tool_call("run_command", command="dir"), tool_call("finish", summary="done")]}
+            with self.subTest(workflow=workflow), self.fake_runner():
+                _, _, events = self.run_project(replies, request={"workflow": workflow})
+                self.assertEqual(self.results(events, "run_command"), [f"EXIT 0\nread_only={read_only}"])
+
+    def test_a_command_that_edits_the_workflow_records_is_reverted(self):
+        def run(command):
+            if command == "edit":
+                with (self.root / "STATE.md").open("a", encoding="utf-8") as f:
+                    f.write("## Done: Everything\n")
+                (self.root / "HANDOFF.md").write_text("forged", encoding="utf-8")
+        replies = {"planner": [tool_call("run_command", command="edit"), tool_call("run_command", command="noop"),
+                               tool_call("finish", summary="done")]}
+        with self.fake_runner(run):
+            _, _, events = self.run_project(replies)
+        first, second = self.results(events, "run_command")
+        self.assertEqual(first, "EXIT 0\nread_only=False\nNOTE: STATE.md and HANDOFF.md restored: the workflow records change "
+                                "only through record_progress.")
+        self.assertEqual(second, "EXIT 0\nread_only=False")  # restored, so nothing differs any more
+        self.assertNotIn("Everything", self.text("STATE.md"))
+
+    def test_dual_has_no_implementer(self):
+        replies = {"planner": [tool_call("delegate", worker="implementer", brief="Write hello.py"), tool_call("finish", summary="done")]}
+        _, log, events = self.run_project(replies)
+        delegate = next(t for t in log[0]["tools"] if t["function"]["name"] == "delegate")
+        self.assertEqual(delegate["function"]["parameters"]["properties"]["worker"]["enum"], ["reviewer"])
+        self.assertEqual(self.results(events, "delegate"), [
+            "ERROR: the implementer is not in this workflow (Lead + Reviewer); make the change yourself"])
+        self.assertEqual([l["role"] for l in log], ["planner", "planner"])
+
+    def test_gate_reviews_do_not_count_toward_the_delegation_cap(self):
+        """The cap is max_lead_steps (here 2): the gate's reviews use none of it, and record_progress works once it is spent."""
+        self.config["max_lead_steps"] = 2
+        calls = lambda *c: {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{i}", "function": {"name": n, "arguments": json.dumps(a)}} for i, (n, a) in enumerate(c)]}
+        ask = ("delegate", {"worker": "reviewer", "brief": "check"})
+        replies = {"planner": [calls(("record_progress", {"item": "A", "outcome": "ok"}), ask, ask, ask),
+                               calls(("record_progress", {"item": "B", "outcome": "ok"}), ("finish", {"summary": "done"}))],
+                   "reviewer": ["VERDICT: PASS", "R1", "R2", "VERDICT: PASS"]}
+        _, _, events = self.run_project(replies)
+        self.assertEqual(self.results(events, "delegate"), ["R1", "R2", "ERROR: delegation limit reached (2 per turn); finish the work yourself"])
+        self.assertEqual([r.split("\n")[0] for r in self.results(events, "record_progress")],
+                         ["OK: recorded 'A' in STATE.md", "OK: recorded 'B' in STATE.md"])
 
 
 BROWSER = orchestrator.find_browser()
