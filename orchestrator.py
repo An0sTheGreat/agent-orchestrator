@@ -4148,7 +4148,7 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
             raise WorkflowError("the project folder overlaps the Agent Orchestrator folder, so commands cannot run in it")
         wanted = request_write if isinstance(request_write, list) else [request_write] if request_write else []
         if wanted and read_only:
-            raise WorkflowError("a reviewer's commands cannot write; ask the lead")
+            raise WorkflowError("these commands are read-only and cannot write: leave writing to the lead or the implementer")
         extra = {grantable(raw, request): "write" for raw in wanted}
         with RUN_LOCK:
             try:
@@ -4270,18 +4270,19 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
     worker inherits the request's extras (web search, utilities, skills); with folders (Code) the implementer also gets the
     file tools and the reviewer the read tools + run_checks, and with `runners` (the turn's sandboxed run_command: the
     writing one, the read-only one) the implementer and the reviewer get theirs. Sub-agents cannot delegate.
-    `back` = (role, stage, title) of the caller, announced again when a delegation ends."""
+    `back` = (role, stage, title) of the caller, announced again when a delegation ends. The handler's `uncounted`
+    attribute runs a delegation outside the cap (the project run's reviewer gate); the model cannot reach it."""
     used = 0
 
-    def delegate(worker: str, brief: str, context: Any = "", files: Any = None, acceptance: Any = None) -> str:
+    def run(worker: str, brief: str, context: Any, files: Any, acceptance: Any, counted: bool) -> str:
         nonlocal used
         if worker not in ("implementer", "reviewer"):
             raise WorkflowError(f"unknown worker {worker!r}; use 'implementer' or 'reviewer'")
-        if used >= cap:
+        if counted and used >= cap:
             raise WorkflowError(f"delegation limit reached ({cap} per turn); finish the work yourself")
         if not str(brief or "").strip():
             raise WorkflowError("the brief is empty")
-        used += 1
+        used += counted
         tools, handlers, note = extras
         if folders:
             read = code_handlers(folders)
@@ -4302,6 +4303,10 @@ def delegator(config: dict[str, Any], extras: tuple[list[dict[str, Any]], dict[s
             emit("chat_stage", role=back[0], stage=back[1], title=back[2])
         return clip(report or "(the worker returned no report)", SUB_REPORT_LIMIT)
 
+    def delegate(worker: str, brief: str, context: Any = "", files: Any = None, acceptance: Any = None) -> str:
+        return run(worker, brief, context, files, acceptance, True)
+
+    delegate.uncounted = lambda worker, brief, context="": run(worker, brief, context, None, None, False)
     return delegate
 
 
@@ -4333,11 +4338,12 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     return code_loop(config, role, system, messages, tools, handlers)
 
 
-def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None
-               ) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[str]]:
+def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None,
+               read_only_commands: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any], str, list[str]]:
     """The lead's request extras (tools, system note) and every lead handler (file tools, todo, run_checks, delegate and
     the extras), shared by both Code engines and the project run; plus the skill folders, the bundled init-projMD and
-    start-project included. `delegations` caps delegate (default: config max_delegations, 6). The lead alone gets
+    start-project included. `delegations` caps delegate (default: config max_delegations, 6); `read_only_commands` gives
+    the lead's run_command the read-only sandbox (run_checks keeps the writing one). The lead alone gets
     start_project, and only when the user's latest message invokes start-project: it emits code_start, and the launcher
     starts the run once the turn ends."""
     skills = [str(s) for s in request.get("skills") or []]
@@ -4351,7 +4357,7 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))
     runners = (command_runner(folders, request), command_runner(folders, request, read_only=True))
     handlers["run_checks"] = lambda: run_checks(config, folders, runners[0])
-    handlers["run_command"] = runners[0]
+    handlers["run_command"] = runners[read_only_commands]
     cap = int(config.get("max_delegations", 6)) if delegations is None else delegations
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
@@ -4369,6 +4375,11 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
 PROGRESS_TOOL = function_tool("record_progress", "Record one finished PROJECT.md item in STATE.md, after you verified it: a short "
                               "item name and its outcome (what now works, how you checked).",
                               {"item": {"type": "string"}, "outcome": {"type": "string"}}, ["item", "outcome"])
+REVIEWER_DELEGATE_TOOL = function_tool(  # the dual project run's lead: Lead + Reviewer, no implementer
+    "delegate", "Optional: hand a self-contained check to a 'reviewer' that starts with a fresh context and reports problems "
+    "without changing anything. It gets your tools' read access and the web results you read this turn, but nothing else of "
+    "this conversation, so fill in the fields. Returns the worker's final report.",
+    {**DELEGATE_TOOL["function"]["parameters"]["properties"], "worker": {"type": "string", "enum": ["reviewer"]}}, ["worker", "brief"])
 FINISH_TOOL = function_tool("finish", "End the project run: PROJECT.md's completion criteria are met, or nothing more can be done "
                             "(say what is left and why). The summary is recorded in STATE.md.",
                             {"summary": {"type": "string"}}, ["summary"])
@@ -4395,7 +4406,9 @@ def record_progress(project_root: Path, item: str, outcome: str) -> str:
 
 
 REVIEW_BRIEF = ("Check one PROJECT.md item the lead says is finished, before it is recorded as done. CONTEXT holds the item, "
-                "the lead's outcome, PROJECT.md and the file changes since the last recorded item. Read the files involved and "
+                "the lead's outcome, PROJECT.md and the file changes since this run started or the last recorded item. After a "
+                "resume the diff can be empty or partial because the work predates this run: then judge from the files "
+                "themselves, never FAIL just for 'no changes'. Read the files involved and "
                 "run the checks; judge the item against PROJECT.md and the outcome, not style. Begin your final report with the "
                 "line VERDICT: PASS or VERDICT: FAIL, then the defects (file and evidence for each) or, on PASS, what you checked.")
 REVIEW_VERDICT = re.compile(r"\bVERDICT\b[\s:*`_-]*(PASS|FAIL)\b", re.I)
@@ -4427,10 +4440,12 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with `once`, the first
     recorded item. `request` is a Code request (--request): its extra folders, extras, sandbox, session and effort; the
     project root is always folders[0]. The input carries STATE.md, so a new run resumes after the recorded items.
-    The request's "workflow": "dual" (the default) gates record_progress on a reviewer delegation (the item, the outcome,
-    PROJECT.md, the file diff since the last recorded item) whose report must give VERDICT: PASS, else nothing is recorded
-    and the lead gets the report back; "tri" also takes write_file/replace_text from the lead, so the implementer
-    (delegate) makes every change."""
+    The request's "workflow": "dual" (the default, Lead + Reviewer: the lead cannot delegate to the implementer) gates
+    record_progress on a reviewer delegation (the item, the outcome, PROJECT.md, the file diff since the run started or the
+    last recorded item; outside the delegation cap) whose report must give VERDICT: PASS, else nothing is recorded and the
+    lead gets the report back; "tri" also takes write_file/replace_text from the lead and gives its run_command the
+    read-only sandbox, so the implementer (delegate) makes every change. A lead command that changes STATE.md or
+    HANDOFF.md gets them restored: they change only through record_progress and finish."""
     if project_root == ROOT or ROOT in project_root.parents or project_root in ROOT.parents:
         raise WorkflowError(f"The project overlaps the Agent Orchestrator folder ({ROOT}); the lead project run needs "
                             "another --project (the legacy --pipeline can run here)")
@@ -4440,7 +4455,13 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     config = with_effort(config, request)
     title, state = display_name(config, "planner"), project_root / "STATE.md"
     workflow = request.get("workflow") if request.get("workflow") in ("dual", "tri") else "dual"
-    done = {"finished": False, "progress": 0, "files": project_texts(folders), "rounds": {}}
+
+    def records() -> dict[str, bytes | None]:
+        """STATE.md and HANDOFF.md as the engine last left them (None: missing)."""
+        paths = {name: project_root / name for name in ("STATE.md", HANDOFF_FILE)}
+        return {name: path.read_bytes() if path.is_file() else None for name, path in paths.items()}
+
+    done = {"finished": False, "progress": 0, "files": project_texts(folders), "rounds": {}, "records": records()}
 
     def progress(item: str, outcome: str) -> str:
         name = " ".join(str(item).split())
@@ -4448,9 +4469,9 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
             raise WorkflowError("item is empty")
         rounds = done["rounds"][name] = done["rounds"].get(name, 0) + 1
         diff = make_diff(done["files"], project_texts(folders))
-        report = handlers["delegate"](worker="reviewer", brief=REVIEW_BRIEF, context=(
+        report = review(worker="reviewer", brief=REVIEW_BRIEF, context=(
             f"ITEM\n{name}\n\nLEAD'S OUTCOME\n{outcome}\n\nPROJECT.md\n{clip(load_text(project_root / 'PROJECT.md').strip(), 6000)}"
-            f"\n\nCHANGES SINCE THE LAST RECORDED ITEM\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
+            f"\n\nCHANGES SINCE THIS RUN STARTED OR THE LAST RECORDED ITEM\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
         verdicts = {v.upper() for v in REVIEW_VERDICT.findall(report)}
         verdict = verdicts.pop() if len(verdicts) == 1 else ""  # none, or both: unreadable, which counts as FAIL
         emit("verdict", role="reviewer", id=name, verdict=verdict or "FAIL", round=rounds)
@@ -4461,23 +4482,48 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
         summary = " ".join(REVIEW_VERDICT.sub("", report, count=1).split()).lstrip(" *:.-")
         result = record_progress(project_root, name, f"{outcome} Review: {clip(summary, 600) or 'PASS'}")
         done["progress"] += 1
-        done["files"] = project_texts(folders)
+        done["files"], done["records"] = project_texts(folders), records()
         return result
 
     def finish(summary: str) -> str:
         summary = " ".join(str(summary).split()) or "Project goal complete"
         emit("task_end", id="finish", status="passed")
         record_complete(project_root, summary)
+        done["records"] = records()
         print(f"\nCOMPLETE: {summary}")
         done["finished"] = True
         return "OK: the run ends now."
 
     steps = int(config.get("max_lead_steps", 200))
-    extras, handlers, note, _ = lead_setup(config, folders, request, "planner", delegations=steps)
-    handlers.update(record_progress=progress, finish=finish)
+    extras, handlers, note, _ = lead_setup(config, folders, request, "planner", delegations=steps, read_only_commands=workflow == "tri")
+    review, lead_delegate, command = handlers["delegate"].uncounted, handlers["delegate"], handlers["run_command"]
+
+    def delegate(worker: str, **rest: Any) -> str:
+        if workflow == "dual" and worker == "implementer":
+            raise WorkflowError("the implementer is not in this workflow (Lead + Reviewer); make the change yourself")
+        return lead_delegate(worker=worker, **rest)
+
+    def run_command(**arguments: Any) -> str:
+        """The lead's run_command; a command that changed STATE.md or HANDOFF.md gets them restored."""
+        try:
+            result = command(**arguments)
+        finally:  # a command that failed may still have written
+            now = records()
+            changed = [name for name in now if now[name] != done["records"][name]]
+            for name in changed:
+                if done["records"][name] is None:
+                    (project_root / name).unlink()
+                else:
+                    (project_root / name).write_bytes(done["records"][name])
+        return result + (f"\nNOTE: {' and '.join(changed)} restored: the workflow records change only through record_progress."
+                         if changed else "")
+
+    handlers.update(record_progress=progress, finish=finish, delegate=delegate, run_command=run_command)
     if workflow == "tri":  # the implementer (delegate) makes every change
         del handlers["write_file"], handlers["replace_text"]
-    tools = (CODE_TOOLS if workflow == "dual" else CODE_TOOLS[:3]) +[TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + extras + [PROGRESS_TOOL, FINISH_TOOL]
+    delegate_tool = DELEGATE_TOOL if workflow == "tri" else REVIEWER_DELEGATE_TOOL
+    tools = ((CODE_TOOLS if workflow == "dual" else CODE_TOOLS[:3]) + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, delegate_tool]
+             + extras + [PROGRESS_TOOL, FINISH_TOOL])
     system = (f"{prompt_text('lead_project.txt').strip()}\n\n{prompt_text(f'lead_project_{workflow}.txt').strip()}"
               f"{note}\n\n{folders_context(folders)}")
     user = (f"PROJECT.md\n{load_text(project_root / 'PROJECT.md').strip()}\n\n"
