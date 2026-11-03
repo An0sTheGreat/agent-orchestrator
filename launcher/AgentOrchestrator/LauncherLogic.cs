@@ -611,8 +611,37 @@ internal static class LauncherLogic
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
     }
 
-    // The first NVIDIA GPU's total memory in bytes, or null (no driver, or unreadable).
-    public static long? GpuMemoryBytes()
+    // The first GPU's total memory in bytes, or null: nvidia-smi, else llama-server's own device list (Vulkan on an Intel or
+    // AMD GPU, where an integrated GPU reports the shared memory it may use).
+    public static long? GpuMemoryBytes() => NvidiaMemoryBytes() ?? LlamaDeviceMemoryBytes(LlamaServerPath);
+
+    // llama-server --list-devices: "  Vulkan0: Intel(R) Arc(TM) 140V GPU (16GB) (18390 MiB, 17000 MiB free)"; the first device.
+    public static long? ParseDeviceMemory(string listing) =>
+        Regex.Match(listing, @"\((\d+) MiB, \d+ MiB free\)") is { Success: true } m && long.TryParse(m.Groups[1].Value, out var mib) ? mib << 20 : null;
+
+    private static long? LlamaDeviceMemoryBytes(string server)
+    {
+        if (!File.Exists(server))
+            return null;
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(server, "--list-devices")
+                { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, CreateNoWindow = true });
+            if (process is null)
+                return null;
+            var output = process.StandardOutput.ReadToEndAsync();
+            var errors = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(10000))
+            {
+                process.Kill(entireProcessTree: true);
+                return null;
+            }
+            return ParseDeviceMemory(output.GetAwaiter().GetResult() + "\n" + errors.GetAwaiter().GetResult());
+        }
+        catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { return null; }
+    }
+
+    private static long? NvidiaMemoryBytes()
     {
         try
         {
@@ -1611,6 +1640,11 @@ internal static class LauncherLogic
     // The local runtime: asset picking (no network: the fetch is a lambda), the child environment, the state file, install.
     private static void LlamaSelfTest(string root)
     {
+        // The GPU meter's maximum without nvidia-smi: llama-server's device list (a name with parentheses of its own).
+        if (ParseDeviceMemory("Available devices:\n  Vulkan0: Intel(R) Arc(TM) 140V GPU (16GB) (18390 MiB, 17000 MiB free)\n") != 18390L << 20 ||
+            ParseDeviceMemory("Available devices:\n  CUDA0: NVIDIA GeForce RTX 5080 (16275 MiB, 14985 MiB free)") != 16275L << 20 ||
+            ParseDeviceMemory("Available devices:\n") is not null)
+            throw new InvalidOperationException("llama-server --list-devices was not read.");
         static string Release(params string[] names) => JsonSerializer.Serialize(new
         {
             tag_name = "b6100",
