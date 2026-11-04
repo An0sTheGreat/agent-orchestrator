@@ -171,8 +171,10 @@ public partial class MainWindow
     // leaves out runs as LEAD (the planner), and its tab lists the roles it covers.
     private void RefreshCardVisibility()
     {
+        var chat = ChatShown; // Chat shows LEAD and the agents added to it; Code follows the workflow mode
         foreach (var card in _cards)
-            card.Hidden = card.IsBuiltIn && card.Role is not ("planner" or "compactor") && !_settings.AddedRoles.Contains(card.Role);
+            card.Hidden = chat ? card.Role != "planner" && !_settings.ChatCards.Contains(card.Role)
+                : card.IsBuiltIn && card.Role is not ("planner" or "compactor") && !_settings.AddedRoles.Contains(card.Role);
         if (CardFor("planner") is { } main)
         {
             var covered = Roles.Where(r => r == "planner" || r != "compactor" && CardFor(r) is not { Hidden: false }).Select(RoleName).ToList();
@@ -181,6 +183,8 @@ public partial class MainWindow
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
     }
+
+    private bool ChatShown => NavChat.IsChecked == true;
 
     // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat LEAD, the shown roles and
     // the custom workers.

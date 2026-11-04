@@ -232,6 +232,10 @@ internal sealed class AppSettings
     public bool ReviewEveryTurn { get; set; }
     // The toggle beside CHAT and CODE: off, each run of a reply's thinking and tool steps folds into one THINKING row.
     public bool ViewThinking { get; set; } = true;
+    // Chat's own agent details: the agents its column shows besides LEAD (roles or custom worker ids; none by default) and
+    // its own presets. The agents' models and settings are the same as Code's.
+    public List<string> ChatCards { get; set; } = new();
+    public List<WorkerPreset> ChatPresets { get; set; } = new();
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring
@@ -361,4 +365,6 @@ internal sealed class WorkerPreset
     public Dictionary<string, string> Roles { get; set; } = new(); // built-in role -> its config.json object as JSON; empty when saved without a project config
     // config.json task_limits as JSON; "{}" = none set (the defaults); null = saved without a project config, or before presets carried it.
     public string? TaskLimits { get; set; }
+    // A Chat preset (AppSettings.ChatPresets): the agents Chat shows besides LEAD. null: a Code preset.
+    public List<string>? ChatCards { get; set; }
 }

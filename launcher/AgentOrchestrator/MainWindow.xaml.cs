@@ -987,6 +987,8 @@ public partial class MainWindow : Window
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         static Task Settle() => Task.Delay(400);
         _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-state.json"); // never the real server's record
+        // Chat shows every agent the checks use (it shows LEAD alone by default: checked on its own)
+        _settings.ChatCards = ["implementer", "reviewer", "compactor", "smoke-chat-custom"];
         _settingsShow = window => { window.ShowActivated = false; window.Show(); }; // ShowDialog would block the run
         _dialogsQuiet = true;
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
@@ -1015,7 +1017,9 @@ public partial class MainWindow : Window
             return Fail();
         // Dual by default (Lead + Reviewer): IMPLEMENTER is hidden and runs as LEAD (its activity lights LEAD), "+" adds only
         // custom workers; tri (Settings > Agents) shows it with its own config entry. The run's request carries the mode, and the
-        // cards go LEAD, IMPLEMENTER, REVIEWER, COMPACTOR, then the custom workers in the order added.
+        // cards go LEAD, IMPLEMENTER, REVIEWER, COMPACTOR, then the custom workers in the order added. (Code's cards: Chat
+        // shows LEAD and the agents added to it, checked below.)
+        ShowView();
         {
             var main = CardFor("planner")!;
             var (implementer, reviewer) = (CardFor("implementer")!, CardFor("reviewer")!);
@@ -1031,6 +1035,21 @@ public partial class MainWindow : Window
             if (_settings.WorkflowMode != "dual" || WorkflowDualRadio.IsChecked != true || !implementer.Hidden || reviewer.Hidden || main.Hidden || TabShown(implementer) ||
                 Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
                 Order() != "LEAD,REVIEWER,COMPACTOR" || RunMode() != "dual")
+                return Fail();
+            // Chat: LEAD alone by default; its "+" checks an agent to show it (Code's cards are unchanged), and back
+            var chatCards = _settings.ChatCards.ToList();
+            _settings.ChatCards.Clear();
+            ShowView(chat: true);
+            var chatDefault = string.Join(",", _cards.Where(c => !c.Hidden).Select(c => c.Title));
+            var reviewerItem = BuildAddWorkerMenu(this).Items.OfType<MenuItem>().FirstOrDefault(i => i.Tag as string == "chat:reviewer");
+            if (reviewerItem is null || reviewerItem.IsChecked)
+                return Fail();
+            reviewerItem.IsChecked = true;
+            reviewerItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            var chatAdded = string.Join(",", _cards.Where(c => !c.Hidden).Select(c => c.Title));
+            _settings.ChatCards = chatCards;
+            ShowView();
+            if (chatDefault != "LEAD" || chatAdded != "LEAD,REVIEWER" || Order() != "LEAD,REVIEWER,COMPACTOR")
                 return Fail();
             foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
                 _lines.Enqueue(LauncherLogic.EventPrefix + json);
@@ -1526,9 +1545,11 @@ public partial class MainWindow : Window
             await Settle();
             Snap("16-chat-delegate");
 
-            // Both views show the same cards: the added built-ins and the custom ones.
+            // Chat shows the agents added to it (here every one, as a custom worker added from Chat's "+" is); Code shows the
+            // workflow's built-ins and the custom ones.
             var visible = new RoleCard("smoke-visible", "Visible", custom: true);
             _cards.Add(visible);
+            _settings.ChatCards.Add(visible.Role);
             await Settle();
             bool Shown(RoleCard card) => WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) is UIElement { Visibility: Visibility.Visible };
             bool AllShown() => _cards.All(card => !card.Hidden && Shown(card));
@@ -4055,18 +4076,21 @@ public partial class MainWindow : Window
         return item;
     }
 
+    // Chat has its own presets (with the agents it shows); Code's are the workflow's.
+    private List<WorkerPreset> PresetList => ChatShown ? _settings.ChatPresets : _settings.Presets;
+
     private ContextMenu BuildPresetsMenu()
     {
         var menu = NewPresetMenu();
         menu.Items.Add(PresetItem("+ New preset…", NewPresetPrompt));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
-        foreach (var preset in _settings.Presets)
+        foreach (var preset in PresetList)
             menu.Items.Add(PresetItem(preset.Name, () => ApplyPreset(preset)));
-        if (_settings.Presets.Count == 0)
+        if (PresetList.Count == 0)
             menu.Items.Add(PresetItem("No saved presets", () => { }, enabled: false));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
         menu.Items.Add(PresetItem("Save current as preset…", SavePresetPrompt));
-        menu.Items.Add(PresetItem("Delete preset…", () => Dispatcher.InvokeAsync(DeletePresetMenu, DispatcherPriority.Background), _settings.Presets.Count > 0));
+        menu.Items.Add(PresetItem("Delete preset…", () => Dispatcher.InvokeAsync(DeletePresetMenu, DispatcherPriority.Background), PresetList.Count > 0));
         return menu;
     }
 
@@ -4074,7 +4098,7 @@ public partial class MainWindow : Window
     private void DeletePresetMenu()
     {
         var menu = NewPresetMenu();
-        foreach (var preset in _settings.Presets)
+        foreach (var preset in PresetList)
             menu.Items.Add(PresetItem($"Delete  {preset.Name}", () =>
             {
                 if (AskDialog("Delete preset", $"Delete the preset \"{preset.Name}\"?", "Delete") is null)
@@ -4139,7 +4163,7 @@ public partial class MainWindow : Window
     {
         if (_process is not null || AskDialog("Save preset", "Name this set of workers and their settings.", "Save", "") is not { } name)
             return;
-        if (_settings.Presets.Any(p => SamePreset(p, name)) &&
+        if (PresetList.Any(p => SamePreset(p, name)) &&
             AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
             return;
         SavePreset(name);
@@ -4154,7 +4178,7 @@ public partial class MainWindow : Window
                 "Name the new preset. It starts from the default workers and settings; edit them, then Save current as preset to keep your changes.",
                 "Create", "") is not { } name)
             return;
-        if (_settings.Presets.Any(p => SamePreset(p, name)) &&
+        if (PresetList.Any(p => SamePreset(p, name)) &&
             AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
             return;
         NewPreset(name);
@@ -4166,6 +4190,8 @@ public partial class MainWindow : Window
         try
         {
             preset = LauncherLogic.CapturePreset(name, Path.Combine(_workflowRoot ?? "", "config.json"), Roles.Select(r => new WorkerSetting { Id = r }));
+            if (ChatShown)
+                preset.ChatCards = []; // a new Chat setup: LEAD alone
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -4173,11 +4199,11 @@ public partial class MainWindow : Window
             SetStatus("Could not read the default config.json", "#FF667A");
             return;
         }
-        var index = _settings.Presets.FindIndex(p => SamePreset(p, name));
+        var index = PresetList.FindIndex(p => SamePreset(p, name));
         if (index >= 0)
-            _settings.Presets[index] = preset;
+            PresetList[index] = preset;
         else
-            _settings.Presets.Add(preset);
+            PresetList.Add(preset);
         _settings.Save();
         ApplyPreset(preset);
     }
@@ -4188,6 +4214,8 @@ public partial class MainWindow : Window
         try
         {
             preset = LauncherLogic.CapturePreset(name, ActiveConfigPath(), CurrentWorkers());
+            if (ChatShown)
+                preset.ChatCards = _settings.ChatCards.ToList();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException)
         {
@@ -4195,11 +4223,11 @@ public partial class MainWindow : Window
             SetStatus("Could not read config.json", "#FF667A");
             return;
         }
-        var index = _settings.Presets.FindIndex(p => SamePreset(p, name));
+        var index = PresetList.FindIndex(p => SamePreset(p, name));
         if (index >= 0)
-            _settings.Presets[index] = preset;
+            PresetList[index] = preset;
         else
-            _settings.Presets.Add(preset);
+            PresetList.Add(preset);
         _settings.Save();
         Log($"Preset saved: {name}");
         Toast($"Preset saved: {name}");
@@ -4226,6 +4254,8 @@ public partial class MainWindow : Window
             return;
         }
         _settings.Workers = preset.Workers;
+        if (preset.ChatCards is { } chatCards) // a Chat preset: the agents Chat shows
+            _settings.ChatCards = chatCards.ToList();
         HoldWorkerTab(() => // one build of the tab, not one per step
         {
             _cards.Clear();
@@ -4248,7 +4278,7 @@ public partial class MainWindow : Window
 
     private void DeletePreset(WorkerPreset preset)
     {
-        _settings.Presets.Remove(preset);
+        PresetList.Remove(preset);
         _settings.Save();
         Log($"Preset deleted: {preset.Name}");
         Toast($"Preset deleted: {preset.Name}");
@@ -4260,10 +4290,33 @@ public partial class MainWindow : Window
     private ContextMenu BuildAddWorkerMenu(FrameworkElement target)
     {
         var menu = new ContextMenu { PlacementTarget = target, Placement = PlacementMode.Bottom };
+        if (ChatShown) // Chat: which agents it shows besides LEAD, checked when shown
+        {
+            foreach (var card in _cards.Where(c => c.Role != "planner"))
+            {
+                var item = new MenuItem { Header = ChatName(card, card.Role), IsCheckable = true, IsChecked = _settings.ChatCards.Contains(card.Role),
+                    Tag = "chat:" + card.Role, InputGestureText = card.ModelName, ToolTip = "Show this agent in Chat; its model and settings are the same as in Code" };
+                item.Click += (_, _) => SetChatCard(card.Role, item.IsChecked);
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        }
         var custom = new MenuItem { Header = "Custom worker…", ToolTip = "Add a worker with a custom title and model", Tag = "custom" };
         custom.Click += (_, _) => AddCustomWorker();
         menu.Items.Add(custom);
         return menu;
+    }
+
+    private void SetChatCard(string role, bool shown)
+    {
+        _settings.ChatCards.Remove(role);
+        if (shown)
+            _settings.ChatCards.Add(role);
+        _settings.Save();
+        RefreshCardVisibility();
+        RefreshChatTarget();
+        if (shown && CardFor(role) is { } card)
+            SelectWorker(card);
     }
 
     private void AddCustomWorker()
@@ -4273,6 +4326,8 @@ public partial class MainWindow : Window
             n++;
         var card = new RoleCard(Guid.NewGuid().ToString("N"), $"WORKER {n}", custom: true);
         _cards.Add(card);
+        if (ChatShown) // added in Chat: shown there
+            _settings.ChatCards.Add(card.Role);
         SaveWorkers();
         RefreshSetupProblems();
         SelectWorker(card);
