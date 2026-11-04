@@ -122,7 +122,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
         NotifyTotals();
     }
 
-    // Unsloth's monitor row for the call that is running right now.
+    // llama-server's live row for the call that is running right now.
     public void SetLive(long prompt, long completion, double? decodeTps, double? promptTps)
     {
         _livePrompt = prompt;
@@ -258,9 +258,7 @@ internal sealed class AppSettings
     public bool BrowserOpen { get; set; }
     public string BrowserUrl { get; set; } = "";
     public bool BrowserFollow { get; set; } = true;
-    // Where local models run: "unsloth" (Unsloth Studio's API) or "llamacpp" (llama-server from <data>\llama.cpp).
-    public string Runtime { get; set; } = "unsloth";
-    public string ModelsFolder { get; set; } = ""; // llamacpp only: searched for GGUF files besides the Hugging Face cache; "" = none
+    public string ModelsFolder { get; set; } = ""; // searched for GGUF files besides the Hugging Face cache; "" = none
     // Who runs a Code turn's agent loop: "" (the built-in engine) or "pi" (Pi from <data>\pi, LauncherLogic.PiCli).
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.

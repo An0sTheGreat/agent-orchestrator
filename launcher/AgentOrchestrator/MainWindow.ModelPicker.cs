@@ -28,7 +28,7 @@ public partial class MainWindow
         { "flux", "sd1", "sd2", "sdxl", "sd3", "aura", "ltxv", "hyvid", "wan", "hidream", "cosmos", "lumina2", "chroma", "qwen_image" };
 
     // Off the UI thread: each choice's GGUF on this computer gives its size, its vision projector and its architecture. A
-    // model whose file is not found (a remote Unsloth path) is Text only, size unknown.
+    // model whose file is not found (a Hugging Face id not downloaded) is Text only, size unknown.
     private static List<PickerEntry> DescribeChoices(IEnumerable<ModelChoice> choices, string modelsFolder, string hubCache)
     {
         var ggufs = LauncherLogic.FindLocalGgufs(modelsFolder, hubCache);

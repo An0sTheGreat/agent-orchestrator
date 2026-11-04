@@ -21,7 +21,7 @@ public partial class MainWindow
     private List<QueuedMessage> QueueOf(Conversation c) => c.IsCode ? _codeQueue : _chatQueue;
 
     // While this is true, Send queues instead of sending.
-    private bool Queues => _chatBusy || _unloading;
+    private bool Queues => _chatBusy;
 
     // A view with messages still queued queues the next one too (between a turn's end and SendQueued), so none jumps ahead.
     private void SendOrQueue(Conversation c)
@@ -149,12 +149,12 @@ public partial class MainWindow
 
     private bool _sendingQueued; // a send's checks may open a dialog, whose message loop could run SendQueued again
 
-    // Also called when the end-of-turn unload finishes. A send that is refused (no API key, no folder, ...) leaves the app
+    // A send that is refused (no llama-server, no folder, ...) leaves the app
     // idle: that view's queue then goes back into its input and the other view's is tried. A project run (a Code turn may
     // start one) has no queue: both go back into their inputs.
     private void SendQueued()
     {
-        if (_sendingQueued || _chatBusy || _unloading || _workflowRoot is null)
+        if (_sendingQueued || _chatBusy || _workflowRoot is null)
             return;
         if (_process is not null)
         {

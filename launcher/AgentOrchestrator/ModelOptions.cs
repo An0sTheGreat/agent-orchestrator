@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 namespace AgentOrchestrator;
 
 // The per-worker Model settings window: one table drives its fields and their mapping into roles.<role> (or a custom
-// worker's entry) in config.json. Load options are Unsloth Studio's LoadRequest; the Unsloth-only sampling keys go in
+// worker's entry) in config.json. Load options are the engine's auto_load keys for llama-server; the extra sampling keys go in
 // sampling.extra_body, as config.json does with top_k.
 internal static class ModelOptions
 {
