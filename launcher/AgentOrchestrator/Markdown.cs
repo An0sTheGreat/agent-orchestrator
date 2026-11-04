@@ -35,7 +35,7 @@ internal static class Markdown
     public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false)
     {
         var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left,
-            LineHeight = Roomy ? Math.Round(fontSize * 1.55) : double.NaN }; // a minimum: a taller line (a heading) keeps its own
+            LineHeight = Roomy ? Math.Round(fontSize * 1.5) : double.NaN }; // Claude's 1.5; a minimum: a taller line (a heading) keeps its own
         doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var paragraph = new List<string>();
@@ -391,7 +391,7 @@ internal static class Markdown
             }
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)
             {
-                var bold = new Bold();
+                var bold = new Bold { FontWeight = FontWeights.SemiBold }; // Claude's bold is 600
                 AddInlines(bold.Inlines, m.Groups["bold"].Success ? m.Groups["bold"].Value : m.Groups["bold2"].Value, links);
                 target.Add(bold);
             }

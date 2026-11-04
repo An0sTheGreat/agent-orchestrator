@@ -6,7 +6,7 @@
         Title="Agent Orchestrator" Width="1400" Height="860" MinWidth="1040" MinHeight="620"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" Icon="/Assets/app.ico"
         Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="pack://application:,,,/Fonts/#Inter, Segoe UI" FontSize="13"
-        TextOptions.TextFormattingMode="Ideal">
+        TextOptions.TextFormattingMode="Ideal" TextOptions.TextRenderingMode="Grayscale">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0"
                             GlassFrameThickness="0" UseAeroCaptionButtons="False" />
