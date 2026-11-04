@@ -228,6 +228,8 @@ internal sealed class AppSettings
     public string ReadingSize { get; set; } = "comfortable";
     // How many emoji the models put in replies (an instruction the engine adds): "none", "less", "standard" or "more".
     public string Emoji { get; set; } = "standard";
+    // Code's "+" > Review every turn: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn).
+    public bool ReviewEveryTurn { get; set; }
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

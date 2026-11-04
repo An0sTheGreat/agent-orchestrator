@@ -40,6 +40,18 @@ public partial class MainWindow
         folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder" : "Its text files go with your message";
         menu.Items.Add(files);
         menu.Items.Add(folder);
+        if (c.IsCode) // the Reviewer checks each Code turn at its end; off, turns run as they always have
+        {
+            var review = PresetItem("Review every turn", () => { });
+            (review.IsCheckable, review.IsChecked, review.StaysOpenOnClick) = (true, _settings.ReviewEveryTurn, false);
+            review.ToolTip = "At the end of each turn the Reviewer checks the work; problems it finds go back to the lead to fix (up to 2 rounds)";
+            review.Click += (_, _) =>
+            {
+                _settings.ReviewEveryTurn = review.IsChecked;
+                _settings.Save();
+            };
+            menu.Items.Add(review);
+        }
         return menu;
     }
 
@@ -346,8 +358,24 @@ public partial class MainWindow
                 return Fail($"{_codeAttachments.Count} attached");
             var menu = PlusMenu(CodePlus, _code);
             if (menu.Style != (Style)FindResource(typeof(ContextMenu)) || menu.Placement != PlacementMode.Top ||
-                menu.Items.OfType<MenuItem>().Select(i => (string)i.Header).SequenceEqual(["Add files or photos", "Add folder"]) is false)
+                menu.Items.OfType<MenuItem>().Select(i => (string)i.Header).SequenceEqual(["Add files or photos", "Add folder", "Review every turn"]) is false ||
+                PlusMenu(ChatPlus, _chat).Items.Count != 2)
                 return Fail("the + menu");
+            // Review every turn: a checkmark, saved, and sent with the next Code request (off: not)
+            var reviewing = _settings.ReviewEveryTurn;
+            try
+            {
+                var review = menu.Items.OfType<MenuItem>().Last();
+                foreach (var on in new[] { !reviewing, reviewing })
+                {
+                    review.IsChecked = on;
+                    review.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    var sent = System.Text.Json.Nodes.JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], @"Y:\P", [], review: _settings.ReviewEveryTurn))!;
+                    if (_settings.ReviewEveryTurn != on || (bool)sent["review"]! != on || PlusMenu(CodePlus, _code).Items.OfType<MenuItem>().Last().IsChecked != on)
+                        return Fail("Review every turn");
+                }
+            }
+            finally { _settings.ReviewEveryTurn = reviewing; }
             return true;
         }
         finally

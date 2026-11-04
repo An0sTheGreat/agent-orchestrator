@@ -3261,6 +3261,31 @@ class CodeTests(unittest.TestCase):
         self.assertIn("Nothing to compact yet", [d["text"] for e, d in events if e == "code_reply"][0])
         self.assertIsNone(orchestrator.compact_command([{"role": "user", "content": "please /compact later"}]))
 
+    def test_review_every_turn_checks_the_turn_and_sends_failures_back(self):
+        # Off: the lead alone, as before. On: a reviewer checks the request, the reply and this turn's file changes; a FAIL
+        # goes back to the lead, which fixes it, and the next PASS ends the turn with the verdict in the reply.
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": ["Done."]})
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner"]))
+        (self.root / "readme.md").write_text("old\n", encoding="utf-8")
+        write = {"role": "assistant", "content": "", "tool_calls": [{"id": "w", "type": "function", "function": {
+            "name": "write_file", "arguments": json.dumps({"path": "readme.md", "content": "new\n"})}}]}
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "review": True},
+                                         {"planner": [write, "Wrote it.", "Fixed the title."],
+                                          "reviewer": ["VERDICT: FAIL\nreadme.md has no title", "VERDICT: PASS\nthe title is there"]})
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner", "planner", "reviewer", "planner", "reviewer"]))
+        first_review = json.dumps(log[2]["messages"])
+        self.assertIn("add a readme", first_review)
+        self.assertIn("-old", first_review)  # the diff of this turn
+        self.assertIn("readme.md has no title", json.dumps(log[3]["messages"][-1]))  # the defects reach the lead
+        reply = [d["text"] for e, d in events if e == "code_reply"][0]
+        self.assertTrue(reply.startswith("Fixed the title.") and reply.endswith("**Review: PASS.** the title is there"), reply)
+        self.assertEqual([d["verdict"] for e, d in events if e == "verdict"], ["FAIL", "PASS"])
+        # it keeps failing: after TURN_REVIEW_FIXES fix rounds the turn ends with the defects
+        code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "review": True},
+                                         {"planner": ["a", "b", "c"], "reviewer": ["VERDICT: FAIL\nx", "VERDICT: FAIL\ny", "no verdict"]})
+        self.assertEqual([c["role"] for c in log].count("reviewer"), orchestrator.TURN_REVIEW_FIXES + 1)
+        self.assertIn("**Review: FAIL** after 2 fix rounds.", [d["text"] for e, d in events if e == "code_reply"][0])
+
     def test_the_code_lead_gets_the_emoji_line(self):
         code, log, _, _ = self.code({"action": "chat", "messages": self.MSGS, "emoji": "none"}, {"planner": ["ok"]})
         self.assertEqual(code, 0)

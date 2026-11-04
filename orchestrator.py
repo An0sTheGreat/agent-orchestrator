@@ -4966,6 +4966,41 @@ def request_folders(raw: Any) -> list[dict[str, str]]:
     return folders
 
 
+TURN_REVIEW_BRIEF = ("Check the lead's work on the user's latest request in a Code conversation. CONTEXT holds the request, the "
+                     "lead's reply and the file changes this turn made. Read the files involved and run the checks where there "
+                     "are any; judge whether the request is done correctly, not style. With no file changes, judge the reply "
+                     "itself (is it correct and does it answer the request). Begin your final report with the line "
+                     "VERDICT: PASS or VERDICT: FAIL, then the defects (file and evidence for each) or, on PASS, what you checked.")
+TURN_REVIEW_FIXES = 2  # fix rounds after a FAIL before the turn ends with the reviewer's defects
+
+
+def reviewed_turn(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, Any]], request: dict[str, Any],
+                  role: str, lead: Any, text: str, before: dict[str, str | None]) -> str:
+    """The "Review every turn" option: a reviewer with a fresh context checks the turn (the request, the lead's reply and
+    the file changes since the turn began) and gives VERDICT: PASS or FAIL. On FAIL the lead gets the defects as a new
+    message and fixes them in the same turn, up to TURN_REVIEW_FIXES times. Returns the final reply with the verdict."""
+    review = lead_setup(config, folders, request, role)[1]["delegate"].uncounted
+    asked = str(messages[-1].get("content") or "")
+    for rounds in range(1, TURN_REVIEW_FIXES + 2):
+        diff = make_diff(before, project_texts(folders))
+        report = review(worker="reviewer", brief=TURN_REVIEW_BRIEF, context=(
+            f"USER'S REQUEST\n{clip(asked, 6000)}\n\nLEAD'S REPLY\n{clip(text, 6000)}\n\nCHANGES THIS TURN\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
+        verdicts = {v.upper() for v in REVIEW_VERDICT.findall(report)}
+        verdict = verdicts.pop() if len(verdicts) == 1 else ""  # none, or both: unreadable, which counts as FAIL
+        emit("verdict", role="reviewer", id="turn", verdict=verdict or "FAIL", round=rounds)
+        summary = clip(" ".join(REVIEW_VERDICT.sub("", report, count=1).split()).lstrip(" *:.-"), 600)
+        if verdict == "PASS":
+            return f"{text.rstrip()}\n\n**Review: PASS.** {summary}".rstrip()
+        if rounds > TURN_REVIEW_FIXES:
+            return f"{text.rstrip()}\n\n**Review: FAIL** after {TURN_REVIEW_FIXES} fix rounds. {summary}".rstrip()
+        why = "failed your work" if verdict else "gave no readable verdict, which counts as FAIL"
+        messages = [*messages, {"role": "assistant", "content": text},
+                    {"role": "user", "content": f"The reviewer {why}. Fix the problems it reports, verify, and reply with what "
+                                                f"you changed.\n\nREVIEW\n{report}"}]
+        text = lead(config, folders, messages, request, role) or text
+    return text
+
+
 def run_code(config: dict[str, Any], request_path: Path) -> int:
     """One Code turn with file tools confined to the request's folders: action "chat" runs the lead agent (lead_loop) as the
     request's `worker` when that names a configured worker, else the planner (a legacy `mode` is ignored); "write_project"
@@ -4996,9 +5031,13 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         return 0  # (a Pi session compacts itself: pi_lead_turn sends Pi's own compact)
     turn_images(request, messages[-1]["content"])
     messages = blind_images(config, role, messages)
-    text = (pi_lead_turn if request.get("engine") == "pi" else lead_loop)(config, folders, messages, request, role)
+    before = project_texts(folders) if request.get("review") else {}
+    lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
+    text = lead(config, folders, messages, request, role)
     if not text:
         raise WorkflowError("The model returned an empty reply")
+    if request.get("review"):
+        text = reviewed_turn(config, folders, messages, request, role, lead, text, before)
     emit("code_reply", role=role, text=text)
     if request.get("title") and (title := chat_title(plain, "planner", messages, text)):
         emit("chat_title", text=title)
