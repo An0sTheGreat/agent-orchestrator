@@ -577,10 +577,14 @@ class ApiClient:
         return THINK_TEMPLATES[key]
 
     def context_size(self) -> int | None:
-        """The loaded model's context window (llama-server /props, else auto_load.max_seq_length);
-        None for a remote role or when unknown. Asked once per process and model."""
+        """The loaded model's context window (llama-server /props, else auto_load.max_seq_length); for a remote role
+        the provider's /models entry (OpenRouter's context_length, vLLM's max_model_len). None when unknown.
+        Asked once per process and model."""
         if self.remote:
-            return None
+            key = (self.base_url, self.model)
+            if key not in CONTEXT_SIZES:
+                CONTEXT_SIZES[key] = remote_context(self._request_at, self.base_url, self.model)
+            return CONTEXT_SIZES[key]
         auto, key = self.auto_load or {}, self._context_key()
         if key not in CONTEXT_SIZES:
             size = None
@@ -636,7 +640,21 @@ class ApiClient:
                  parts=context_parts(body.get("messages") or [], body.get("tools"), prompt))
 
 
-CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port, model path) -> n_ctx
+CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port, model path) or (base_url, model id) -> n_ctx
+
+
+def remote_context(request_at: Any, base_url: str, model: str) -> int | None:
+    """A remote model's context window from the API's model list, or None (no list, or no size for this model)."""
+    try:
+        listed = request_at(base_url, "GET", "/models").get("data") or []
+    except (WorkflowError, OSError, ValueError, AttributeError):
+        return None
+    for entry in listed:
+        if isinstance(entry, dict) and entry.get("id") == model:
+            for name in ("context_length", "max_model_len", "context_window"):
+                if isinstance(entry.get(name), int) and entry[name] > 0:
+                    return entry[name]
+    return None
 LOADED_NOW: dict[Any, str] = {}  # llama port -> the model path this process last ensured there
 THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)
 

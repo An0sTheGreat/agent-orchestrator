@@ -4830,8 +4830,10 @@ class RemoteRoleTests(unittest.TestCase):
                 self.assertEqual(orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False), "planned")
                 self.assertEqual(orchestrator.chat_call(self.CONFIG, "planner", "plan", "sys", [{"role": "user", "content": "hi"}]), "planned")
                 orchestrator.unload_models()
-            self.assertEqual([url for url, _ in sent], [f"{self.URL}/chat/completions"] * 2, events)
-            self.assertTrue(all(body["model"] == "vendor/model-x" for _, body in sent))
+            # besides the completions only the model list, at most once, for the context window
+            self.assertEqual([url for url, _ in sent if url != f"{self.URL}/models"], [f"{self.URL}/chat/completions"] * 2, events)
+            self.assertLessEqual([url for url, _ in sent].count(f"{self.URL}/models"), 1)
+            self.assertTrue(all(body["model"] == "vendor/model-x" for _, body in sent if body))
             self.assertEqual(loaded, {})
             self.assertNotIn("loading", [c.args[0] for c in emit.call_args_list])
             self.assertNotIn(self.KEY, out.getvalue() + repr(emit.call_args_list) + repr([b for _, b in sent]))
@@ -4864,6 +4866,8 @@ class RemoteRoleTests(unittest.TestCase):
         sent = []
 
         def fake(request, timeout=None):
+            if request.data is None:  # the model list, for the context window
+                return self.response({"data": []})
             sent.append(json.loads(request.data))
             return self.response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}})
 
@@ -4878,6 +4882,8 @@ class RemoteRoleTests(unittest.TestCase):
         sent = []
 
         def fake(request, timeout=None):
+            if request.data is None:  # the model list, for the context window
+                return self.response({"data": []})
             sent.append(json.loads(request.data))
             return self.response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}})
 
@@ -5587,7 +5593,22 @@ class ContextTests(unittest.TestCase):
         with patch.object(down, "_request_at", side_effect=orchestrator.WorkflowError("down")):
             self.assertEqual(down.context_size(), 8192)  # /props unavailable: the role's max_seq_length
         remote = orchestrator.ApiClient({"base_url": "https://api.example/v1", "api_key": "k", "model": "gpt"})
-        self.assertIsNone(remote.context_size())
+        with patch.object(remote, "_request_at", side_effect=orchestrator.WorkflowError("no list")):
+            self.assertIsNone(remote.context_size())  # no model list: unknown
+        # OpenRouter's list gives the window as context_length (vLLM: max_model_len); asked once per model
+        listed = orchestrator.ApiClient({"base_url": "https://router.example/v1", "api_key": "k", "model": "nvidia/nemotron:free"})
+        lists = []
+
+        def models(base, method, route, body=None):
+            lists.append(f"{base}{route}")
+            return {"data": [{"id": "other", "context_length": 8192}, {"id": "nvidia/nemotron:free", "context_length": 1_000_000}]}
+
+        with patch.object(listed, "_request_at", models):
+            self.assertEqual((listed.context_size(), listed.context_size()), (1_000_000, 1_000_000))
+        self.assertEqual(lists, ["https://router.example/v1/models"])
+        vllm = orchestrator.ApiClient({"base_url": "https://vllm.example/v1", "api_key": "k", "model": "m"})
+        with patch.object(vllm, "_request_at", lambda *a, **k: {"data": [{"id": "m", "max_model_len": 65536}]}):
+            self.assertEqual(vllm.context_size(), 65536)
 
     def test_parts_sum_exactly_with_rounding(self):
         for prompt in (0, 1, 7, 999, 100003):
