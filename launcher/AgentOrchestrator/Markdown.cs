@@ -15,6 +15,12 @@ internal static class Markdown
     // Where a clicked link opens (the app's browser); null: the default browser.
     public static Action<string>? OpenLink;
 
+    // Settings > Appearance > Reading size: Comfortable and Large space replies out as ChatGPT does (taller lines, more room
+    // around paragraphs, headings, lists, code and tables); Compact keeps the denser layout.
+    public static bool Roomy = true;
+
+    private static double R(double compact, double roomy) => Roomy ? roomy : compact;
+
     private static readonly Regex Heading = new(@"^(#{1,6})\s+(.*?)\s*#*\s*$");
     private static readonly Regex Rule = new(@"^\s{0,3}([-*_])(\s*\1){2,}\s*$");
     private static readonly Regex Item = new(@"^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$");
@@ -28,7 +34,8 @@ internal static class Markdown
     // muted: thinking text, in the theme's muted colour.
     public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false)
     {
-        var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left };
+        var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left,
+            LineHeight = Roomy ? Math.Round(fontSize * 1.55) : double.NaN }; // a minimum: a taller line (a heading) keeps its own
         doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
         var paragraph = new List<string>();
@@ -82,9 +89,11 @@ internal static class Markdown
                 lists.Clear();
                 var level = heading.Groups[1].Length;
                 var p = Para();
-                p.FontSize = fontSize * (level switch { 1 => 1.5, 2 => 1.3, 3 => 1.15, _ => 1.0 });
-                p.FontWeight = FontWeights.SemiBold;
-                p.Margin = new Thickness(0, level <= 2 ? 14 : 10, 0, 4);
+                p.FontSize = fontSize * (level switch { 1 => 1.5, 2 => R(1.3, 1.25), 3 => R(1.15, 1.06), _ => 1.0 });
+                p.FontWeight = Roomy && level >= 3 ? FontWeights.Bold : FontWeights.SemiBold;
+                p.LineHeight = Roomy ? Math.Round(p.FontSize * 1.3) : double.NaN;
+                // more room above than below: a heading belongs to the section under it (a reply's first block has none: NoTopMargin)
+                p.Margin = new Thickness(0, level <= 2 ? R(14, 26) : R(10, 20), 0, R(4, 8));
                 AddInlines(p.Inlines, heading.Groups[2].Value);
                 doc.Blocks.Add(p);
                 continue;
@@ -92,7 +101,7 @@ internal static class Markdown
             if (Rule.IsMatch(line) && paragraph.Count == 0)
             {
                 lists.Clear();
-                var rule = new Paragraph { Margin = new Thickness(0, 8, 0, 8), BorderThickness = new Thickness(0, 0, 0, 1), FontSize = 2 };
+                var rule = new Paragraph { Margin = new Thickness(0, R(8, 20), 0, R(8, 22)), BorderThickness = new Thickness(0, 0, 0, 1), FontSize = 2, LineHeight = 2 };
                 rule.SetResourceReference(Block.BorderBrushProperty, "Border");
                 doc.Blocks.Add(rule);
                 continue;
@@ -139,7 +148,7 @@ internal static class Markdown
                 {
                     if (lists.Count > 0 && lists[^1].Indent == indent)
                         lists.RemoveAt(lists.Count - 1); // the other kind of list at the same depth starts a new one
-                    var list = new List { MarkerStyle = ordered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = new Thickness(0, 2, 0, 6), Padding = new Thickness(22, 0, 0, 0) };
+                    var list = new List { MarkerStyle = ordered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = new Thickness(0, 2, 0, R(6, 14)), Padding = new Thickness(R(22, 26), 0, 0, 0) };
                     if (ordered && int.TryParse(item.Groups[2].Value.TrimEnd('.', ')'), out var start) && start > 1)
                         list.StartIndex = start;
                     if (lists.Count > 0 && lists[^1].List.ListItems.LastOrDefault() is { } parent)
@@ -152,7 +161,7 @@ internal static class Markdown
                     lists.Add((indent, list));
                 }
                 var p = Para();
-                p.Margin = new Thickness(0, 1, 0, 1);
+                p.Margin = new Thickness(0, R(1, 3), 0, R(1, 3));
                 AddInlines(p.Inlines, item.Groups[3].Value);
                 lists[^1].List.ListItems.Add(new ListItem(p));
                 continue;
@@ -195,14 +204,29 @@ internal static class Markdown
         return stable;
     }
 
-    private static Paragraph Para() => new() { Margin = new Thickness(0, 0, 0, 8), LineHeight = double.NaN };
+    // A reply's first block starts right under its header: a heading's or a rule's room above goes.
+    public static void NoTopMargin(Block? first)
+    {
+        if (first is Paragraph p)
+            p.Margin = new Thickness(p.Margin.Left, 0, p.Margin.Right, p.Margin.Bottom);
+    }
+
+    private static Paragraph Para()
+    {
+        var p = new Paragraph { Margin = new Thickness(0, 0, 0, R(8, 14)) };
+        if (!Roomy)
+            p.LineHeight = double.NaN;
+        return p;
+    }
 
     // A FlowDocument paragraph cannot round its corners, so a code block is a rounded card: the coloured code (wrapped, clear
     // of the button's column) and a copy button at the top right, whose Tag is the raw code. MainWindow wires the button:
     // copying, and keeping it in view while the block scrolls (its TranslateTransform).
     private static Block CodeBlock(string code, string language)
     {
-        var text = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = 12.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
+        var text = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
+        if (Roomy)
+            text.LineHeight = 20;
         foreach (var (piece, color) in Highlight(code, language))
         {
             var run = new Run(piece);
@@ -219,10 +243,13 @@ internal static class Markdown
             Cursor = System.Windows.Input.Cursors.Hand,
         };
         copy.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
-        var card = new Border { Child = new Grid { Children = { text, copy } }, Padding = new Thickness(10, 6, 6, 6) };
+        var card = new Border { Child = new Grid { Children = { text, copy } }, Padding = Roomy ? new Thickness(16, 12, 8, 12) : new Thickness(10, 6, 6, 6) };
         card.SetResourceReference(Border.BackgroundProperty, "Hover");
-        card.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
-        return new BlockUIContainer(card) { Margin = new Thickness(0, 2, 0, 10) };
+        if (Roomy)
+            card.CornerRadius = new CornerRadius(10);
+        else
+            card.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
+        return new BlockUIContainer(card) { Margin = new Thickness(0, R(2, 6), 0, R(10, 16)) };
     }
 
     public const string CopyGlyph = "", CopiedGlyph = "";
@@ -311,7 +338,7 @@ internal static class Markdown
     {
         static string[] Cells(string row) => row.Trim().Trim('|').Split('|').Select(c => c.Trim()).ToArray();
         var header = Cells(rows[0]);
-        var table = new Table { CellSpacing = 0, Margin = new Thickness(0, 2, 0, 10), BorderThickness = new Thickness(1, 1, 0, 0) };
+        var table = new Table { CellSpacing = 0, Margin = new Thickness(0, R(2, 6), 0, R(10, 16)), BorderThickness = new Thickness(1, 1, 0, 0) };
         table.SetResourceReference(Table.BorderBrushProperty, "Border");
         foreach (var _ in header)
             table.Columns.Add(new TableColumn());
@@ -327,7 +354,7 @@ internal static class Markdown
                 AddInlines(p.Inlines, c < cells.Length ? cells[c] : "");
                 if (r == 0)
                     p.FontWeight = FontWeights.SemiBold;
-                var cell = new TableCell(p) { Padding = new Thickness(8, 4, 8, 4), BorderThickness = new Thickness(0, 0, 1, 1) };
+                var cell = new TableCell(p) { Padding = Roomy ? new Thickness(12, 7, 12, 7) : new Thickness(8, 4, 8, 4), BorderThickness = new Thickness(0, 0, 1, 1) };
                 cell.SetResourceReference(TableCell.BorderBrushProperty, "Border");
                 if (r == 0)
                     cell.SetResourceReference(TableCell.BackgroundProperty, "Hover");

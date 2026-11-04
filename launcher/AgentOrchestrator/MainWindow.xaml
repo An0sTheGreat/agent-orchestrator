@@ -1552,6 +1552,22 @@
                         <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
+                        <ComboBox x:Name="ReadingSizeBox" DockPanel.Dock="Right" Width="150" SelectionChanged="ReadingSize_Changed" AutomationProperties.Name="Reading size">
+                        <ComboBoxItem Content="Compact" Tag="compact" /><ComboBoxItem Content="Comfortable" Tag="comfortable" /><ComboBoxItem Content="Large" Tag="large" />
+                        </ComboBox>
+                        <TextBlock Text="Reading size" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="How replies and your messages read: Comfortable and Large give the text more room, as ChatGPT does. Compact is the denser layout."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                        <ComboBox x:Name="EmojiBox" DockPanel.Dock="Right" Width="150" SelectionChanged="Emoji_Changed" AutomationProperties.Name="Emoji in replies">
+                        <ComboBoxItem Content="None" Tag="none" /><ComboBoxItem Content="Less" Tag="less" /><ComboBoxItem Content="Standard" Tag="standard" /><ComboBoxItem Content="More" Tag="more" />
+                        </ComboBox>
+                        <TextBlock Text="Emoji in replies" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="How many emoji the models use when they answer you, in Chat and Code. Summaries, reviews and code never get them."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ContextPercentToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ContextPercent_Click" VerticalAlignment="Center"
                         AutomationProperties.Name="Show the context percentage" />
                         <TextBlock Text="Show the context percentage" VerticalAlignment="Center" />

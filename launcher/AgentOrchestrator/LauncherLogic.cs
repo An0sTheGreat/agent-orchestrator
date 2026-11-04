@@ -107,7 +107,9 @@ internal static class LauncherLogic
     // The composer's switches, sent with each Chat and Code message: web search, utilities, and the skill folders turned on.
     // Images: photo paths attached to this message (the engine sends them with it only).
     // Vision: the message box's switch; off, the engine shows no image to the model (orchestrator.vision_problem).
-    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true);
+    // Emoji: Settings > Appearance's emoji in replies (none, less, standard, more), an instruction the engine adds.
+    public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true,
+        string Emoji = "standard");
 
     public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
@@ -320,6 +322,7 @@ internal static class LauncherLogic
             skills = extras?.Skills ?? [],
             images = extras?.Images ?? [],
             vision = extras?.Vision ?? true,
+            emoji = extras?.Emoji ?? "standard",
             title,
             effort,
             summary,
@@ -365,6 +368,7 @@ internal static class LauncherLogic
             skills = extras?.Skills ?? [],
             images = extras?.Images ?? [],
             vision = extras?.Vision ?? true,
+            emoji = extras?.Emoji ?? "standard",
             title,
             effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });

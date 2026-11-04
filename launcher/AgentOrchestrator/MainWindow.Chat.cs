@@ -136,6 +136,8 @@ public partial class MainWindow
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
+        SelectTagged(ReadingSizeBox, _settings.ReadingSize);
+        SelectTagged(EmojiBox, _settings.Emoji);
         ApplyChatWidth();
         ShowContext(false, null);
         ShowContext(true, null);
@@ -277,11 +279,15 @@ public partial class MainWindow
     private void OpenModelOptions(Conversation c) => OpenWorkerTab(TargetOf(c));
 
     // Centered: the conversations keep ChatWidth in the middle of the column (a Stretch element narrower than its slot is
-    // centered); off: they fill it.
-    private const double ChatWidth = 860;
+    // centered); off: they fill it. The roomier reading sizes keep lines at a comfortable length, as ChatGPT does.
+    private double ChatWidth => _settings.ReadingSize == "compact" ? 860 : 800;
+
+    // The reading size's text: replies and the user's messages.
+    private double ReadingFont => _settings.ReadingSize switch { "compact" => 14, "large" => 17.5, _ => 16 };
 
     private void ApplyChatWidth()
     {
+        Markdown.Roomy = _settings.ReadingSize != "compact";
         foreach (var part in new FrameworkElement?[] { _chat.Panel, _parked?.Panel, CodePanel, ChatComposer, CodeComposer }.OfType<FrameworkElement>())
             part.MaxWidth = _settings.CenterChat ? ChatWidth : double.PositiveInfinity;
     }
@@ -291,6 +297,79 @@ public partial class MainWindow
         _settings.ContextPercent = ContextPercentToggle.IsChecked == true;
         _settings.Save();
         RefreshContextPins();
+    }
+
+    private static void SelectTagged(ComboBox box, string tag) =>
+        box.SelectedItem = box.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == tag) ?? box.Items[0];
+
+    // Reading size: the messages on screen take it now (a streaming reply's rest renders in it too).
+    private void ReadingSize_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (ReadingSizeBox.SelectedItem is not ComboBoxItem { Tag: string size } || size == _settings.ReadingSize)
+            return;
+        var old = ReadingFont;
+        _settings.ReadingSize = size;
+        _settings.Save();
+        ApplyChatWidth();
+        RefreshContextPins();
+        foreach (var panel in new[] { _chat.Panel, _parked?.Panel, CodePanel }.OfType<Panel>())
+            Restyle(panel, old);
+    }
+
+    // The answers' and user messages' text (thinking and tool output keep their smaller size) and the replies' footers.
+    private void Restyle(DependencyObject root, double old)
+    {
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().ToList())
+        {
+            if (child is TextBox { FontStyle: var style } box && style != FontStyles.Italic && box.FontSize == old)
+                box.FontSize = ReadingFont;
+            if (child is RichTextBox { Tag: MarkdownState state } view)
+            {
+                Render(view);
+                continue;
+            }
+            Restyle(child, old);
+        }
+    }
+
+    // --ui-smoke: a reading size re-renders the reply on screen in its text size and spacing (a first heading with no room
+    // above it), and the emoji setting goes with the next request.
+    private bool ReadingSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: reading size: {what}"); return false; }
+        var (size, emoji, turn) = (_settings.ReadingSize, _settings.Emoji, _turn);
+        RichTextBox? View() => SmokeFind<RichTextBox>(_chat.Panel, v => v.Tag is MarkdownState);
+        try
+        {
+            ClearConversation(_chat);
+            Replay(_chat, [new("user", "Hi"), new("assistant", "## Plan\n\nFirst paragraph.\n\nSecond paragraph.")], "planner");
+            foreach (var (tag, font, roomy) in new[] { ("large", 17.5, true), ("compact", 14.0, false), ("comfortable", 16.0, true) })
+            {
+                SelectTagged(ReadingSizeBox, tag);
+                if (View() is not { Document: var doc } || doc.FontSize != font || Markdown.Roomy != roomy || doc.Blocks.FirstBlock.Margin.Top != 0 ||
+                    ((Paragraph)doc.Blocks.LastBlock).Margin.Bottom != (roomy ? 14 : 8))
+                    return Fail($"{tag}: {View()?.Document.FontSize}");
+            }
+            SelectTagged(EmojiBox, "none");
+            if (System.Text.Json.Nodes.JsonNode.Parse(LauncherLogic.BuildChatRequest("planner", [], CurrentExtras()))?["emoji"]?.GetValue<string>() != "none" || _settings.Emoji != "none")
+                return Fail("the emoji setting");
+            return true;
+        }
+        finally
+        {
+            SelectTagged(ReadingSizeBox, size);
+            SelectTagged(EmojiBox, emoji);
+            ClearConversation(_chat);
+            _turn = turn;
+        }
+    }
+
+    private void Emoji_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (EmojiBox.SelectedItem is not ComboBoxItem { Tag: string emoji } || emoji == _settings.Emoji)
+            return;
+        _settings.Emoji = emoji;
+        _settings.Save();
     }
 
     private void CenterChat_Click(object sender, RoutedEventArgs e)
@@ -720,7 +799,7 @@ public partial class MainWindow
         var photos = ThumbRow(images, 120, HorizontalAlignment.Right);
         var shownText = BubbleText(text, photos is null ? null : images!.Where(File.Exists));
         var box = BodyText(shownText, mono: false, muted: false, conv: _turn);
-        box.FontSize = 14;
+        box.FontSize = ReadingFont;
         var bubble = new Border
         {
             Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,
@@ -811,6 +890,8 @@ public partial class MainWindow
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
         reply.Footer.Visibility = Visibility.Collapsed;
+        if (Markdown.Roomy) // the stats stand back from the answer
+            (reply.Footer.Margin, reply.Footer.Opacity) = (new Thickness(0, 10, 0, 0), 0.8);
         reply.Stats = new TextBlock { FontSize = 11, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis };
         reply.Stats.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         reply.Footer.Children.Add(reply.Stats);
@@ -1227,7 +1308,7 @@ public partial class MainWindow
         if (r.Answer is not null)
             return r.Answer;
         var box = r.Answer = BodyText("", mono: false, muted: false, conv: _turn);
-        box.FontSize = 14;
+        box.FontSize = ReadingFont;
         box.Margin = new Thickness(2, 4, 0, 0);
         r.Content.Children.Add(box);
         r.Rendered = MarkdownView(box);
@@ -1289,6 +1370,7 @@ public partial class MainWindow
         var s = (MarkdownState)view.Tag;
         var text = s.Raw.Text;
         view.Document = DocumentOf(s, text);
+        Markdown.NoTopMargin(view.Document.Blocks.FirstBlock);
         WireCodeBlocks(view.Document.Blocks);
         (s.Shown, s.Stable, s.StableBlocks) = (text.Length, 0, 0);
     }
@@ -1332,6 +1414,8 @@ public partial class MainWindow
     {
         var source = DocumentOf(s, markdown);
         var moved = source.Blocks.ToList();
+        if (view.Document.Blocks.Count == 0)
+            Markdown.NoTopMargin(moved.FirstOrDefault());
         WireCodeBlocks(moved);
         foreach (var block in moved)
         {

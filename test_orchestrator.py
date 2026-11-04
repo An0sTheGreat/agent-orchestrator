@@ -3261,6 +3261,11 @@ class CodeTests(unittest.TestCase):
         self.assertIn("Nothing to compact yet", [d["text"] for e, d in events if e == "code_reply"][0])
         self.assertIsNone(orchestrator.compact_command([{"role": "user", "content": "please /compact later"}]))
 
+    def test_the_code_lead_gets_the_emoji_line(self):
+        code, log, _, _ = self.code({"action": "chat", "messages": self.MSGS, "emoji": "none"}, {"planner": ["ok"]})
+        self.assertEqual(code, 0)
+        self.assertIn(orchestrator.EMOJI_NOTES["none"], log[0]["system"])
+
     def test_a_separate_compactor_writes_the_conversation_summary(self):
         # /compact and a long turn's summary go to the Compactor's model (its window bounds the call); the long turn's role
         # is loaded again for its turn, a /compact's is not (no turn follows); the event still names the turn's role.
@@ -5066,6 +5071,14 @@ class ExtrasTests(unittest.TestCase):
                              "https://example.org/b")
         self.assertEqual((orchestrator.web_charset("bogus"), orchestrator.web_charset(None), orchestrator.web_charset("latin-1")),
                          ("utf-8", "utf-8", "iso8859-1"))
+
+    def test_the_emoji_setting_adds_its_line_to_the_answering_prompt(self):
+        # each level its own instruction, no tools; an absent or unknown level adds nothing
+        for level in ("none", "less", "standard", "more"):
+            tools, _, note = orchestrator.request_extras({"emoji": level})
+            self.assertEqual((tools, note), ([], "\n\n" + orchestrator.EMOJI_NOTES[level]))
+        self.assertIn("Do not use emoji", orchestrator.EMOJI_NOTES["none"])
+        self.assertEqual(orchestrator.request_extras({"emoji": "lots"})[2], "")
 
     def test_request_extras_switches_and_skills(self):
         names = lambda request: [t["function"]["name"] for t in orchestrator.request_extras(request)[0]]

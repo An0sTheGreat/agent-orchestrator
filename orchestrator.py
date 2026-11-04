@@ -3463,8 +3463,20 @@ def skill_info(folder: Path) -> dict[str, str]:
             "path": str(folder)}
 
 
+# The launcher's "emoji in replies" (Settings > Appearance): how the answering model uses emoji. Only the answering worker's
+# prompt gets it (request_extras); summaries, reviews and project runs never do. Unknown or absent: no line.
+EMOJI_NOTES = {
+    "none": "EMOJI\nDo not use emoji in your replies.",
+    "less": "EMOJI\nUse emoji sparingly: at most one or two in a reply, and only where one adds meaning. Never in code or files.",
+    "standard": "EMOJI\nYou may use a few emoji where they help a reply read well, such as on section headings or to mark key points. "
+                "Never in code or files.",
+    "more": "EMOJI\nUse emoji generously to make replies lively and easy to scan: on section headings, list items and key points. "
+            "Never in code or files.",
+}
+
+
 def request_extras(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
-    """(tools, handlers, system prompt addition) for the request's "search", "tools" and "skills" switches."""
+    """(tools, handlers, system prompt addition) for the request's "search", "tools" and "skills" switches and its "emoji"."""
     names, handlers, notes = [], {}, []
     if request.get("search"):
         names += ["web_search", "fetch_page"]
@@ -3496,6 +3508,8 @@ def request_extras(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[
                 raise WorkflowError(f"no file {file!r} in skill {name!r}")
             return target.read_bytes()[:CODE_MAX_READ].decode("utf-8", errors="replace")
         handlers["load_skill"] = load_skill
+    if note := EMOJI_NOTES.get(str(request.get("emoji") or "")):
+        notes.append(note)
     handlers.update({"web_search": web_search, "fetch_page": fetch_page, "calculator": calculator, "current_time": current_time})
     names = list(dict.fromkeys(names))
     handlers = {name: handlers[name] for name in names}

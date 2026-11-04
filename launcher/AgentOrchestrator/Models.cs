@@ -224,6 +224,10 @@ internal sealed class AppSettings
     public bool ChatKeepLoaded { get; set; } = true;
     // Chat and Code conversations (messages and the message box) at a readable width in the middle of the column.
     public bool CenterChat { get; set; } = true;
+    // Replies' and messages' text: "compact" (the denser layout), "comfortable" or "large" (ChatGPT-like spacing).
+    public string ReadingSize { get; set; } = "comfortable";
+    // How many emoji the models put in replies (an instruction the engine adds): "none", "less", "standard" or "more".
+    public string Emoji { get; set; } = "standard";
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

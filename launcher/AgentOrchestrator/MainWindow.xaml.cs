@@ -2927,7 +2927,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!AttachSmoke() || !ImagesSmoke())
+        if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke())
             return false;
         // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
         {
