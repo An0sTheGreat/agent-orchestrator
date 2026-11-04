@@ -1889,8 +1889,7 @@ public partial class MainWindow : Window
             bool NoMode(string action) => JsonNode.Parse(CodeRequest(action, "planner", action == "chat" ? "Fix it" : null, @"Y:\app"))!["mode"] is null;
             PickWorker(_code, "implementer");
             RefreshChatTarget();
-            var leadName = CardFor("planner")!.ModelName;
-            if (CodeTarget()?.Role != "planner" || (string)CodeTargetChip.Content != $"Lead: {(leadName == "Not loaded" ? "no model" : leadName)}  ▾" ||
+            if (CodeTarget()?.Role != "planner" || (string)CodeTargetChip.Content != "Lead  ▾" ||
                 !NoMode("chat") || !NoMode("write_project") || ListedWorkers(_code).Count != 0 || CodePlus.Visibility != Visibility.Visible)
                 return Fail();
             // New conversation (the "Main" preset applies), extra folders through the Add / × buttons, save, resume, Start new.

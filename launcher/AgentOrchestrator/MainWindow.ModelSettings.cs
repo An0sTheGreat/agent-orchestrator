@@ -1082,7 +1082,7 @@ public partial class MainWindow
         try
         {
             // Chat: the dropdown lists every shown worker (MAIN, the added roles, the custom workers), the target checked;
-            // Options… opens the target's tab. Code: Options… alone, opening the lead's (the Planner's) tab.
+            // Options… opens the target's tab. Code: Options… and the lead (with its model), opening the lead's (the Planner's) tab.
             _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
             if (Dropdown(ChatTargetChip) is not ["Options…", "Lead", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && k.Role != LauncherLogic.Compactor) ||
@@ -1090,7 +1090,7 @@ public partial class MainWindow
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
                 return Fail("Single chat Options…");
-            if (Dropdown(CodeTargetChip) is not ["Options…"] || !((string)CodeTargetChip.Content).StartsWith("Lead: ") ||
+            if (Dropdown(CodeTargetChip) is not ["Options…", "Lead*"] || (string)CodeTargetChip.Content != "Lead  ▾" ||
                 await Open(CodeTargetChip) != planner || CodeTargetChip.ToolTip as string != leadTip)
                 return Fail("Code Options…");
             SelectWorker(reviewer);

@@ -416,10 +416,13 @@
                     <ControlTemplate TargetType="MenuItem">
                         <Border x:Name="Row" Background="Transparent" CornerRadius="{DynamicResource SmallRadius}" Padding="{TemplateBinding Padding}" Margin="0,1">
                             <Grid>
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="24" /><ColumnDefinition Width="*" MinWidth="120" /></Grid.ColumnDefinitions>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="24" /><ColumnDefinition Width="*" MinWidth="120" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                                 <TextBlock x:Name="Check" Text="&#x2713;" Foreground="{DynamicResource AccentLight}" FontWeight="Bold"
                                            VerticalAlignment="Center" Visibility="Collapsed" />
                                 <ContentPresenter Grid.Column="1" ContentSource="Header" RecognizesAccessKey="False" VerticalAlignment="Center" />
+                                <!-- InputGestureText: a muted note on the right (the worker menus: each worker's model) -->
+                                <TextBlock Grid.Column="2" Text="{TemplateBinding InputGestureText}" Foreground="{DynamicResource Muted}" FontSize="11"
+                                           Margin="18,0,2,0" VerticalAlignment="Center" MaxWidth="320" TextTrimming="CharacterEllipsis" />
                             </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
@@ -1206,7 +1209,7 @@
                                     </ToggleButton>
                                     <ToggleButton x:Name="CodeVisionToggle" Style="{StaticResource ChipToggle}" Tag="vision" Click="ExtraToggle_Click" AutomationProperties.Name="Vision"
                                                   ToolTipService.ShowOnDisabled="True" ToolTip="Send attached images and browser screenshots to the model">
-                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B9;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE890;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
                                     </ToggleButton>
                                     <ToggleButton x:Name="CodeSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                                   ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">
@@ -1219,6 +1222,11 @@
                                     <ToggleButton x:Name="CodeSkillsButton" Style="{StaticResource ChipToggle}" Click="Skills_Click" AutomationProperties.Name="Skills"
                                                   ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
+                                    </ToggleButton>
+                                    <!-- Reviewer: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn) -->
+                                    <ToggleButton x:Name="CodeReviewerToggle" Style="{StaticResource ChipToggle}" Click="ReviewerToggle_Click" AutomationProperties.Name="Reviewer"
+                                                  ToolTip="Review every turn: when the lead finishes, the Reviewer checks the work. Problems it finds go back to the lead to fix, up to 2 rounds">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE9D5;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Reviewer" /></StackPanel>
                                     </ToggleButton>
                                 </WrapPanel>
                                 <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
@@ -1431,7 +1439,7 @@
                             <WrapPanel DockPanel.Dock="Left" Margin="-4,0,8,0"> <!-- wraps when the column is narrow -->
                                 <ToggleButton x:Name="ChatVisionToggle" Style="{StaticResource ChipToggle}" Tag="vision" Click="ExtraToggle_Click" AutomationProperties.Name="Vision"
                                                   ToolTipService.ShowOnDisabled="True" ToolTip="Send attached images and browser screenshots to the model">
-                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8B9;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE890;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Vision" /></StackPanel>
                                     </ToggleButton>
                                     <ToggleButton x:Name="ChatSearchToggle" Style="{StaticResource ChipToggle}" Tag="search" Click="ExtraToggle_Click" AutomationProperties.Name="Search"
                                               ToolTip="Let the worker search the web (DuckDuckGo) and read the pages it finds">

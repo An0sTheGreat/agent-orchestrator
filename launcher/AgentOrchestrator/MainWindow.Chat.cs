@@ -137,6 +137,7 @@ public partial class MainWindow
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
+        CodeReviewerToggle.IsChecked = _settings.ReviewEveryTurn;
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
         ApplyChatWidth();
@@ -163,12 +164,8 @@ public partial class MainWindow
         RefreshVision();
     }
 
-    // The Code view always talks to the lead (the Planner): its chip names the lead's model.
-    private void RefreshLeadChip()
-    {
-        var model = CodeTarget()?.ModelName;
-        CodeTargetChip.Content = $"Lead: {(model is { Length: > 0 } and not "Not loaded" ? model : "no model")}  ▾";
-    }
+    // The Code view always talks to the lead (the Planner): its chip names it; its model shows in the dropdown.
+    private void RefreshLeadChip() => CodeTargetChip.Content = "Lead  ▾";
 
     // Both views: the Implementer and Reviewer tabs and rail dots follow the workflow mode (AppSettings.AddedRoles); a role it
     // leaves out runs as LEAD (the planner), and its tab lists the roles it covers.
@@ -240,6 +237,7 @@ public partial class MainWindow
                 Header = broken is null ? name : $"{name}  —  {broken}",
                 IsChecked = card.Role == TargetOf(c)?.Role,
                 IsEnabled = broken is null,
+                InputGestureText = broken is null ? card.ModelName : "", // the chip names only the worker: its model shows here
                 ToolTip = broken is null ? card.ModelName : card.SetupTip,
                 Tag = card.Role,
             };
@@ -268,7 +266,7 @@ public partial class MainWindow
     {
         var chip = (Button)sender;
         var c = ConvOf(sender);
-        var menu = chip.ContextMenu = BuildWorkerMenu(chip, c, ListedWorkers(c));
+        var menu = chip.ContextMenu = BuildWorkerMenu(chip, c, c.IsCode ? CodeTarget() is { } lead ? [lead] : [] : ListedWorkers(c));
         var options = new MenuItem { Header = "Options…", ToolTip = "Model settings for these workers", IsEnabled = _process is null };
         options.Click += (_, _) => Dispatcher.InvokeAsync(() => OpenModelOptions(c), System.Windows.Threading.DispatcherPriority.Background);
         menu.Items.Insert(0, options);
@@ -365,6 +363,13 @@ public partial class MainWindow
             ClearConversation(_chat);
             _turn = turn;
         }
+    }
+
+    // Code's Reviewer chip: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn); off, turns run as before.
+    private void ReviewerToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ReviewEveryTurn = CodeReviewerToggle.IsChecked == true;
+        _settings.Save();
     }
 
     private void Emoji_Changed(object sender, SelectionChangedEventArgs e)

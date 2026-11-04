@@ -228,7 +228,7 @@ internal sealed class AppSettings
     public string ReadingSize { get; set; } = "comfortable";
     // How many emoji the models put in replies (an instruction the engine adds): "none", "less", "standard" or "more".
     public string Emoji { get; set; } = "standard";
-    // Code's "+" > Review every turn: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn).
+    // Code's Reviewer chip (Review every turn): the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn).
     public bool ReviewEveryTurn { get; set; }
     // The toggle beside CHAT and CODE: off, each run of a reply's thinking and tool steps folds into one THINKING row.
     public bool ViewThinking { get; set; } = true;
