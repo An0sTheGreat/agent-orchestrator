@@ -2884,6 +2884,13 @@ public partial class MainWindow : Window
             var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
             BrowserFollowTool("calculator", """{"expression":"1+1"}""");
             var ignored = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
+            // Each followed search gets a tab of its own, up to FollowTabs; then the oldest followed one is reused
+            var tabsBefore = _tabs.Count;
+            for (var n = 1; n <= FollowTabs + 2; n++)
+                BrowserFollowTool("web_search", $$"""{"query":"cap {{n}}"}""");
+            var capped = _followTabs.Count == FollowTabs && _tabs.Count <= tabsBefore + FollowTabs && BrowserAddress.Text == SearchUrl($"cap {FollowTabs + 2}");
+            if (!capped)
+                return Fail();
             // Tabs: a new one shows (its chip checked), a chip switches back, closing the shown one shows its neighbour.
             var before = _tabs.Count;
             OpenTab(BrowserHome + "?q=two");

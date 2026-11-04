@@ -288,16 +288,42 @@ public partial class MainWindow
             }
             return;
         }
-        if (!BrowserPanel.IsVisible || !_settings.BrowserFollow || tool is not ("web_search" or "fetch_page"))
+        if (!_settings.BrowserFollow || tool is not ("web_search" or "fetch_page"))
             return;
         try
         {
             using var doc = JsonDocument.Parse(args);
             var key = tool == "fetch_page" ? "url" : "query";
-            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty(key, out var value) && value.GetString() is { Length: > 0 } text)
-                Navigate(tool == "fetch_page" ? text : SearchUrl(text));
+            if (doc.RootElement.ValueKind == JsonValueKind.Object && doc.RootElement.TryGetProperty(key, out var value) && value.GetString() is { Length: > 0 } text &&
+                BrowserUrl(tool == "fetch_page" ? text : SearchUrl(text)) is { } url)
+                FollowTo(url);
         }
         catch (JsonException) { }
+    }
+
+    // Follow the model: each search or page opens the browser (sliding in) in a tab of its own, at most FollowTabs of them;
+    // past that the oldest one the model opened shows the next page. The user's own tabs are never taken.
+    private readonly List<BrowserTab> _followTabs = new(); // oldest first
+    private const int FollowTabs = 5;
+
+    private void FollowTo(string url)
+    {
+        _followTabs.RemoveAll(t => !_tabs.Contains(t)); // closed by the user
+        if (!BrowserPanel.IsVisible)
+            OpenBrowser(null, navigate: false);
+        BrowserTab tab;
+        if (_followTabs.Count >= FollowTabs)
+        {
+            tab = _followTabs[0];
+            _followTabs.RemoveAt(0);
+            SelectTab(tab);
+        }
+        else if (NewTab() is { } fresh)
+            tab = fresh;
+        else
+            return; // the browser can't start
+        _followTabs.Add(tab);
+        Navigate(url);
     }
 
     private static string SearchUrl(string words) => BrowserHome + "?q=" + Uri.EscapeDataString(words);

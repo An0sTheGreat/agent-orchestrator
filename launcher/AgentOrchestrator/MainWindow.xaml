@@ -1313,7 +1313,7 @@
                         </Button>
                         <TextBlock DockPanel.Dock="Left" Text="BROWSER" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                         <ToggleButton x:Name="BrowserFollowToggle" DockPanel.Dock="Right" Style="{StaticResource ChipToggle}" Click="BrowserFollow_Click" VerticalAlignment="Center"
-                                      ToolTip="Open each page the model reads (fetch_page) here as it reads it" AutomationProperties.Name="Follow the model">
+                                      ToolTip="Open each search and page the model reads here as it reads it, opening the browser if needed (up to 5 tabs)" AutomationProperties.Name="Follow the model">
                             <TextBlock Text="Follow the model" />
                         </ToggleButton>
                         <Border />
