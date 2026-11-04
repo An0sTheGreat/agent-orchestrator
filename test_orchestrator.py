@@ -5097,6 +5097,12 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual((orchestrator.web_charset("bogus"), orchestrator.web_charset(None), orchestrator.web_charset("latin-1")),
                          ("utf-8", "utf-8", "iso8859-1"))
 
+    def test_web_search_asks_for_links_to_what_it_found(self):
+        # products, stores and pages found on the web come back as links to their own pages, never invented ones
+        note = orchestrator.request_extras({"search": True})[2]
+        for words in ("make its name a Markdown link to the exact page", "never make one up", "site:amazon.com"):
+            self.assertIn(words, note)
+
     def test_the_emoji_setting_adds_its_line_to_the_answering_prompt(self):
         # each level its own instruction, no tools; an absent or unknown level adds nothing
         for level in ("none", "less", "standard", "more"):

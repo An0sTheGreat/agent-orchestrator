@@ -1537,6 +1537,16 @@
                         </DockPanel>
                         <TextBlock Text="A desktop notification when a reply or project run finishes, only while Agent Orchestrator is not the window in front. Click it to come back."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Links (MainWindow.Browser.cs OpenLink): where a link in a reply opens; asked on the first click -->
+                        <TextBlock Text="Links" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ComboBox x:Name="LinkOpenBox" DockPanel.Dock="Right" Width="170" SelectionChanged="LinkOpen_Changed" AutomationProperties.Name="Open links in">
+                                <ComboBoxItem Content="Ask me" Tag="" /><ComboBoxItem Content="In-app browser" Tag="app" /><ComboBoxItem Content="Default browser" Tag="default" />
+                            </ComboBox>
+                            <TextBlock Text="Open links in" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="Where a link in a reply opens: the browser beside the conversation, or your own default browser."
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />

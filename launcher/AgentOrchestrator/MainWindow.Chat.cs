@@ -140,6 +140,7 @@ public partial class MainWindow
         CodeReviewerToggle.IsChecked = _settings.ReviewEveryTurn;
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
+        SelectTagged(LinkOpenBox, _settings.LinkOpen);
         ApplyChatWidth();
         ShowContext(false, null);
         ShowContext(true, null);

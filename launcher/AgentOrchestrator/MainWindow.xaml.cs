@@ -2891,6 +2891,21 @@ public partial class MainWindow : Window
             var capped = _followTabs.Count == FollowTabs && _tabs.Count <= tabsBefore + FollowTabs && BrowserAddress.Text == SearchUrl($"cap {FollowTabs + 2}");
             if (!capped)
                 return Fail();
+            // A reply's link: the first asks where links open (saved, shown in Settings > General), later ones don't ask
+            var (linkOpen, choice) = (_settings.LinkOpen, _codeChoice);
+            string? askedTitle = null;
+            _settings.LinkOpen = "";
+            _codeChoice = title => { askedTitle = title; return "app"; };
+            OpenLink(BrowserHome + "?q=link");
+            var linked = askedTitle == "Open links" && _settings.LinkOpen == "app" && BrowserAddress.Text == BrowserHome + "?q=link" &&
+                         (LinkOpenBox.SelectedItem as ComboBoxItem)?.Tag as string == "app";
+            askedTitle = null;
+            OpenLink(BrowserHome + "?q=again");
+            linked &= askedTitle is null && BrowserAddress.Text == BrowserHome + "?q=again";
+            (_settings.LinkOpen, _codeChoice) = (linkOpen, choice);
+            SelectTagged(LinkOpenBox, linkOpen);
+            if (!linked)
+                return Fail();
             // Tabs: a new one shows (its chip checked), a chip switches back, closing the shown one shows its neighbour.
             var before = _tabs.Count;
             OpenTab(BrowserHome + "?q=two");

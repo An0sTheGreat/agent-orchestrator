@@ -236,6 +236,8 @@ internal sealed class AppSettings
     // its own presets. The agents' models and settings are the same as Code's.
     public List<string> ChatCards { get; set; } = new();
     public List<WorkerPreset> ChatPresets { get; set; } = new();
+    // Where a link in a reply opens: "" (ask on the first click), "app" (the in-app browser) or "default" (the system's).
+    public string LinkOpen { get; set; } = "";
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

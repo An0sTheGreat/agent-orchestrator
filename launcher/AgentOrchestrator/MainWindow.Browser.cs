@@ -264,8 +264,34 @@ public partial class MainWindow
         _settings.Save();
     }
 
-    // A link in a reply: opens in the browser.
-    private void OpenLink(string url) => OpenBrowser(url);
+    // A link in a reply: opens where Settings > General > Open links in says; the first one asks (and remembers).
+    private void OpenLink(string url)
+    {
+        if (_settings.LinkOpen is not ("app" or "default"))
+        {
+            if (Choose("Open links", "Where should links from replies open? You can change this later in Settings > General > Links.",
+                    ("In-app browser", "app"), ("Default browser", "default")) is not { } where)
+                return;
+            _settings.LinkOpen = where;
+            _settings.Save();
+            SelectTagged(LinkOpenBox, where);
+        }
+        if (_settings.LinkOpen == "default")
+        {
+            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+            catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException) { Toast($"Could not open the link: {e.Message}", "#F7C873"); }
+        }
+        else
+            OpenBrowser(url);
+    }
+
+    private void LinkOpen_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (LinkOpenBox.SelectedItem is not ComboBoxItem { Tag: string where } || where == _settings.LinkOpen)
+            return;
+        _settings.LinkOpen = where;
+        _settings.Save();
+    }
 
     // A model's web_search or fetch_page: shown in the open browser when it follows the model. A file the model wrote or
     // edited (result: not an error) reloads each tab's local page that is that file or sits in its folder (its CSS,
