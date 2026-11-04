@@ -199,6 +199,27 @@ internal static class Markdown
             }
     }
 
+    // ©, ™, arrows and the like read as text, as chat apps show them: only pictographs and FE0F-marked ones are drawn.
+    private static IEnumerable<Match> EmojiIn(string text) => Emoji.Wpf.EmojiData.MatchOne.Matches(text)
+        .Where(m => m.Length > 1 || m.Value[0] is >= '☀' and <= '➿' or >= '⬀' and <= '⯿');
+
+    public static bool HasEmoji(string text) => EmojiIn(text).Any();
+
+    // Plain text (a user's message: no Markdown) with its emoji in colour, sized to its text as a bubble needs.
+    public static TextBlock EmojiTextBlock(string text)
+    {
+        var block = new TextBlock { TextWrapping = TextWrapping.Wrap };
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (i > 0)
+                block.Inlines.Add(new LineBreak());
+            block.Inlines.Add(new Run(lines[i]));
+        }
+        ColorEmoji(block.Inlines);
+        return block;
+    }
+
     private static void ColorEmoji(InlineCollection inlines)
     {
         foreach (var inline in inlines.ToList())
@@ -211,11 +232,8 @@ internal static class Markdown
             if (inline is not Run run || run.Text is not { Length: > 0 } text)
                 continue;
             var at = 0;
-            foreach (Match m in Emoji.Wpf.EmojiData.MatchOne.Matches(text))
+            foreach (var m in EmojiIn(text))
             {
-                // ©, ™, arrows and the like read as text, as chat apps show them: only pictographs and FE0F-marked ones
-                if (m.Length == 1 && m.Value[0] is not (>= '☀' and <= '➿' or >= '⬀' and <= '⯿'))
-                    continue;
                 if (m.Index > at)
                     inlines.InsertBefore(run, Piece(run, text[at..m.Index]));
                 inlines.InsertBefore(run, new Emoji.Wpf.EmojiInline { Text = m.Value });
@@ -519,6 +537,11 @@ internal static class Markdown
         var colored = Everything(emoji.Blocks).OfType<Emoji.Wpf.EmojiInline>().Select(e => e.Text).ToList();
         if (!colored.SequenceEqual(["✅", "📁", "🚀", "🎮", "💡"]))
             throw new InvalidOperationException($"Markdown emoji: {string.Join(" ", colored.Select(e => char.ConvertToUtf32(e, 0).ToString("X")))}");
+        // a user's message: its emoji in colour, its text and lines kept; © and arrows stay text
+        var message = EmojiTextBlock("Ship it 🚀\n© ok → next");
+        if (message.Inlines.OfType<Emoji.Wpf.EmojiInline>().Single().Text != "🚀" || message.Inlines.OfType<LineBreak>().Count() != 1 ||
+            string.Concat(message.Inlines.OfType<Run>().Select(r => r.Text)) != "Ship it © ok → next" || HasEmoji("© → ™") || !HasEmoji("done ✅"))
+            throw new InvalidOperationException("Markdown emoji: a user's message");
     }
 
     // The document's text with its structure flattened, for tests.

@@ -323,6 +323,8 @@ public partial class MainWindow
         {
             if (child is TextBox { FontStyle: var style } box && style != FontStyles.Italic && box.FontSize == old)
                 box.FontSize = ReadingFont;
+            if (child is TextBlock emojiBubble && emojiBubble.FontSize == old) // a message with emoji (Markdown.EmojiTextBlock)
+                emojiBubble.FontSize = ReadingFont;
             if (child is RichTextBox { Tag: MarkdownState state } view)
             {
                 Render(view);
@@ -798,8 +800,10 @@ public partial class MainWindow
     {
         var photos = ThumbRow(images, 120, HorizontalAlignment.Right);
         var shownText = BubbleText(text, photos is null ? null : images!.Where(File.Exists));
-        var box = BodyText(shownText, mono: false, muted: false, conv: _turn);
-        box.FontSize = ReadingFont;
+        // with emoji: a TextBlock, which can show them in colour (not selectable; Copy below copies the message)
+        FrameworkElement box = Markdown.HasEmoji(shownText) ? Markdown.EmojiTextBlock(shownText).WithForeground("TextPrimary")
+            : BodyText(shownText, mono: false, muted: false, conv: _turn);
+        box.SetValue(TextElement.FontSizeProperty, ReadingFont);
         var bubble = new Border
         {
             Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,
