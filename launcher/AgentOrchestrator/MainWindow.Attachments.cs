@@ -40,6 +40,12 @@ public partial class MainWindow
         folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder" : "Its text files go with your message";
         menu.Items.Add(files);
         menu.Items.Add(folder);
+        if (AppSettings.Unified && !c.IsCode) // the test build: a chat that starts working in a folder becomes a Code conversation
+        {
+            var work = PresetItem("Work in a folder…", WorkInFolder, enabled: !_chatBusy);
+            work.ToolTip = "Let the lead read and edit a folder from now on: the chat moves to Code, keeping what was said";
+            menu.Items.Add(work);
+        }
         return menu;
     }
 
@@ -161,6 +167,47 @@ public partial class MainWindow
         }
         foreach (var file in picked ?? [])
             Attach(c, file);
+    }
+
+    // The test build's chat gains a working folder: the saved chat becomes a Code conversation there (its messages, summary
+    // and context kept; the sidebar moves it to Code with the code icon) and opens in the Code view; a chat with nothing said
+    // yet starts a new one there. What was being typed moves along.
+    private void WorkInFolder()
+    {
+        if (_chatBusy || _process is not null)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (PickFolder("Choose the folder to work in") is not { } picked)
+            return;
+        var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
+        if (RefuseWorkflowRoot(folder))
+            return;
+        var typed = ChatInput.Text;
+        if (_chatConv is { Messages.Count: > 0 } chat)
+        {
+            var id = chat.Id;
+            if (!_store.MakeCode(id, folder))
+            {
+                Toast("The chat could not be moved to the folder", "#FF667A");
+                return;
+            }
+            ClearChatConversation();
+            ProjectPath = folder;
+            OpenCodeConversation(id);
+        }
+        else
+        {
+            ClearChatConversation();
+            NewCodeConversation(folder);
+        }
+        ShowView();
+        ChatInput.Clear();
+        CodeInput.Text = typed;
+        CodeInput.CaretIndex = typed.Length;
+        RefreshSidebarList();
+        Toast($"Working in {Path.GetFileName(folder)}");
     }
 
     private void AddFolder(Conversation c)

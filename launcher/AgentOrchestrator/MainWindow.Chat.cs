@@ -185,9 +185,23 @@ public partial class MainWindow
         }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
+        if (!AppSettings.Unified)
+            return;
+        // The test build's groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the
+        // workflow or the lead calls them. The first shown card of each group carries its label; the helpers start after a gap.
+        var firstHelper = true;
+        foreach (var card in _cards.Where(c => !c.Hidden))
+        {
+            var core = card.Role is "planner" or "compactor";
+            card.GroupLabel = card.Role == "planner" ? "ALWAYS ON" : !core && firstHelper ? "HELPERS · WHEN NEEDED" : "";
+            card.GroupGap = !core && firstHelper ? new Thickness(10, 0, 0, 0) : new Thickness(0);
+            card.GroupOpacity = core ? 1 : 0.82;
+            firstHelper &= core;
+        }
     }
 
-    private bool ChatShown => NavChat.IsChecked == true;
+    // Chat's own agents and presets; the test build has one set for every conversation (Code's)
+    private bool ChatShown => !AppSettings.Unified && NavChat.IsChecked == true;
 
     // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat LEAD, the shown roles and
     // the custom workers.

@@ -18,6 +18,10 @@
     <PublishReferencesDocumentationFiles>false</PublishReferencesDocumentationFiles>
     <AllowedReferenceRelatedFileExtensions>.pdb</AllowedReferenceRelatedFileExtensions>
   </PropertyGroup>
+  <!-- The test build (publish-test.ps1, -p:TestBuild=true): the unified conversation view, its own data folder and exe -->
+  <PropertyGroup Condition="'$(TestBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);TEST_BUILD</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
     <Resource Include="Assets\title.png" />

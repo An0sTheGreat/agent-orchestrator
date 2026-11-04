@@ -839,6 +839,10 @@
         <!-- One worker tab (MainWindow.WorkerTabs.cs): title and activity dot, model, then tok/s and task / turn tokens.
              WorkerTabWidth fits three tabs across the column, down to a minimum; narrower columns scroll the strip. -->
         <DataTemplate x:Key="WorkerTabTemplate">
+            <!-- The test build's card groups (RoleCard.GroupLabel): a label over a group's first card, a gap before the helpers -->
+            <StackPanel Margin="{Binding GroupGap}" Opacity="{Binding GroupOpacity}">
+            <TextBlock Text="{Binding GroupLabel}" Visibility="{Binding GroupLabelShown}" Style="{StaticResource SectionHeader}" FontSize="9"
+                       Foreground="{DynamicResource Muted}" Margin="2,0,0,4" />
             <Button Tag="WorkerTab" Width="{DynamicResource WorkerTabWidth}" Margin="0,0,6,0" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}"
                     Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
                 <Button.Template>
@@ -877,6 +881,7 @@
                     </TextBlock>
                 </StackPanel>
             </Button>
+            </StackPanel>
         </DataTemplate>
 
         <!-- The worker rail's hover card (MainWindow.WorkerRail.cs): the worker's live figures; the gear opens its tab. -->
@@ -1011,7 +1016,7 @@
                                 Click="SidebarToggle_Click" ToolTip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar (Ctrl+B)">
                             <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
-                        <Border HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
+                        <Border x:Name="NavSwitch" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
                                 BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
                             <StackPanel Orientation="Horizontal">
                                 <ToggleButton x:Name="NavChat" Style="{StaticResource SegToggle}" Padding="7,5" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" AutomationProperties.Name="Chat">

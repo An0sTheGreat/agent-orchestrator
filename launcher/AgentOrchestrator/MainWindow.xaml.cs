@@ -56,6 +56,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        if (AppSettings.Unified) // the test build: one conversation view (a chat until it works in a folder), no Chat/Code switch
+        {
+            Title += " (Test)";
+            NavSwitch.Visibility = Visibility.Collapsed;
+        }
         LoadWorkers();
         _cards.CollectionChanged += (_, _) => RefreshCardVisibility(); // a preset rebuilds the cards
         InitWorkerTabs();
@@ -3955,7 +3960,9 @@ public partial class MainWindow : Window
     {
         // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR), then the custom workers in the order added.
         var saved = _settings.Workers.Where(w => w.Id.Length > 0 && (w.Custom || Roles.Contains(w.Id))).ToList();
-        foreach (var w in Roles.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
+        // the test build groups them: LEAD and COMPACTOR (always on), then the helpers
+        string[] order = AppSettings.Unified ? ["planner", "compactor", "implementer", "reviewer"] : Roles;
+        foreach (var w in order.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
             if (w.Custom && w.ModelId is not null)

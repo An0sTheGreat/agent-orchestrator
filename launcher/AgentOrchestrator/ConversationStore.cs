@@ -43,11 +43,13 @@ internal sealed class ConversationStore
         public List<Group> Groups { get; set; } = new();
         public List<string> Items { get; set; } = new();
         public bool ArchivedCollapsed { get; set; } = true;
+        public bool ChatArchivedCollapsed { get; set; } = true; // the unified sidebar's Chat section (ArchivedCollapsed: Code's)
     }
 
     public sealed record Entry(string Id, string Title, string Folder, DateTime Updated, string Kind);
     public sealed record GroupView(string Id, string Name, bool Collapsed, IReadOnlyList<Entry> Items, string Kind = "");
-    public sealed record SidebarView(IReadOnlyList<GroupView> Groups, IReadOnlyList<Entry> Ungrouped, IReadOnlyList<Entry> Archived, bool ArchivedCollapsed);
+    public sealed record SidebarView(IReadOnlyList<GroupView> Groups, IReadOnlyList<Entry> Ungrouped, IReadOnlyList<Entry> Archived, bool ArchivedCollapsed,
+        bool ChatArchivedCollapsed = true);
 
     private static readonly JsonSerializerOptions Json = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase, PropertyNameCaseInsensitive = true };
     private static readonly Regex IdName = new("^[0-9a-f]{32}$"), LegacyName = new("^[0-9a-f]{16}$");
@@ -221,11 +223,30 @@ internal sealed class ConversationStore
     public bool MoveGroupUp(string groupId) => MoveGroup(groupId, -1);
     public bool MoveGroupDown(string groupId) => MoveGroup(groupId, 1);
 
-    public bool SetArchivedCollapsed(bool collapsed)
+    // chat: the unified sidebar's Chat section's archived list (each section keeps its own)
+    public bool SetArchivedCollapsed(bool collapsed, bool chat = false)
     {
         if (ReadOnly)
             return false;
-        _index.ArchivedCollapsed = collapsed;
+        if (chat)
+            _index.ChatArchivedCollapsed = collapsed;
+        else
+            _index.ArchivedCollapsed = collapsed;
+        SaveIndex();
+        return true;
+    }
+
+    // A chat that now works in a folder: a Code conversation there (the lead answers it), at the top of the ungrouped
+    // list (its project was a Chat one); its messages, summary and context stay.
+    public bool MakeCode(string id, string folder)
+    {
+        if (ReadOnly || Get(id) is not { Kind: "chat" } c || ListOf(id) is not { } from)
+            return false;
+        (c.Kind, c.Folder, c.Worker) = ("code", folder, "planner");
+        c.Updated = DateTime.Now;
+        Write(PathOf(id), c);
+        from.Remove(id);
+        _index.Items.Insert(0, id);
         SaveIndex();
         return true;
     }
@@ -240,7 +261,7 @@ internal sealed class ConversationStore
             _index.Groups.Select(g => new GroupView(g.Id, g.Name, g.Collapsed, Pick(g.Items, false), g.Kind)).ToList(),
             Pick(_index.Items, false),
             Pick(_index.Groups.SelectMany(g => g.Items).Concat(_index.Items), true),
-            _index.ArchivedCollapsed);
+            _index.ArchivedCollapsed, _index.ChatArchivedCollapsed);
     }
 
     // The Rename title, else the first user message (whitespace collapsed, about 40 chars), else the folder's leaf name.
@@ -503,6 +524,23 @@ internal sealed class ConversationStore
                   s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0, Summary: null, SummaryCovers: 0 }, "hand-edited conversation cleaned");
             s.Delete(edited);
             s.Delete(c.Id);
+
+            // A chat that works in a folder (the test build's Work in a folder): a Code conversation there, its messages
+            // kept, at the top of the ungrouped list and out of its Chat project; once only. Each section's archived state is
+            // its own.
+            var talk = s.Create("", "chat")!;
+            talk.Messages.Add(new("user", "hi"));
+            Check(s.Save(talk) && s.CreateGroup("Chats", "chat") is { } chats && s.MoveToGroup(talk.Id, chats), "a chat in a project");
+            Check(s.MakeCode(talk.Id, @"C:\Work\Beta") && !s.MakeCode(talk.Id, @"C:\Work\Other"), "make code once");
+            s = Reload();
+            Check(s.Get(talk.Id) is { Kind: "code", Folder: @"C:\Work\Beta", Worker: "planner", Messages.Count: 1 } && s.View().Ungrouped[0].Id == talk.Id &&
+                  s.GroupOf(talk.Id) is null, "the chat works in the folder");
+            var codeArchived = s.View().ArchivedCollapsed;
+            Check(s.SetArchivedCollapsed(false, chat: true) && Reload().View() is { ChatArchivedCollapsed: false } sections && sections.ArchivedCollapsed == codeArchived,
+                "each section's archived state");
+            s = Reload();
+            s.Delete(talk.Id);
+            s.DeleteGroup(s.View().Groups.First(g => g.Name == "Chats").Id);
 
             // Legacy migration: converted once, folder and messages kept, file renamed .migrated.
             var legacyPath = LauncherLogic.ConversationPath(@"C:\Work\Legacy", root);
