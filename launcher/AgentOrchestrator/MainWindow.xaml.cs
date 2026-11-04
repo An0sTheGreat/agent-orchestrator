@@ -2884,11 +2884,21 @@ public partial class MainWindow : Window
             var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
             BrowserFollowTool("calculator", """{"expression":"1+1"}""");
             var ignored = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
-            // Each followed search gets a tab of its own, up to FollowTabs; then the oldest followed one is reused
+            // Each followed search gets a tab of its own, up to the setting (the slider: 3 tabs here); then the oldest followed
+            // one is reused. Unlimited (the slider's last stop) keeps opening tabs.
+            var followSetting = _settings.FollowTabs;
+            FollowTabsSlider.Value = 3;
             var tabsBefore = _tabs.Count;
-            for (var n = 1; n <= FollowTabs + 2; n++)
+            for (var n = 1; n <= 5; n++)
                 BrowserFollowTool("web_search", $$"""{"query":"cap {{n}}"}""");
-            var capped = _followTabs.Count == FollowTabs && _tabs.Count <= tabsBefore + FollowTabs && BrowserAddress.Text == SearchUrl($"cap {FollowTabs + 2}");
+            var capped = _settings.FollowTabs == 3 && FollowTabsValue.Text == "3 tabs" && _followTabs.Count == 3 && _tabs.Count <= tabsBefore + 3 &&
+                         BrowserAddress.Text == SearchUrl("cap 5");
+            FollowTabsSlider.Value = 11;
+            for (var n = 6; n <= 9; n++)
+                BrowserFollowTool("web_search", $$"""{"query":"cap {{n}}"}""");
+            capped &= _settings.FollowTabs == 0 && FollowTabsValue.Text == "Unlimited" && _followTabs.Count == 7;
+            _settings.FollowTabs = followSetting;
+            FollowTabsSlider.Value = followSetting is >= 3 and <= 10 ? followSetting : 11;
             if (!capped)
                 return Fail();
             // A reply's link: the first asks where links open (saved, shown in Settings > General), later ones don't ask

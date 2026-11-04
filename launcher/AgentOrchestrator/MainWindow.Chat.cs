@@ -141,6 +141,8 @@ public partial class MainWindow
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
         SelectTagged(LinkOpenBox, _settings.LinkOpen);
+        FollowTabsSlider.Value = _settings.FollowTabs is >= 3 and <= 10 ? _settings.FollowTabs : 11;
+        FollowTabs_Changed(FollowTabsSlider, new RoutedPropertyChangedEventArgs<double>(0, FollowTabsSlider.Value)); // the label
         ApplyChatWidth();
         ShowContext(false, null);
         ShowContext(true, null);

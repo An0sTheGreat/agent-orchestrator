@@ -327,10 +327,24 @@ public partial class MainWindow
         catch (JsonException) { }
     }
 
-    // Follow the model: each search or page opens the browser (sliding in) in a tab of its own, at most FollowTabs of them;
-    // past that the oldest one the model opened shows the next page. The user's own tabs are never taken.
+    // Follow the model: each search or page opens the browser (sliding in) in a tab of its own, at most FollowTabs of them
+    // (Settings > General > Links); past that the oldest one the model opened shows the next page. The user's own tabs are
+    // never taken, and the user can open more.
     private readonly List<BrowserTab> _followTabs = new(); // oldest first
-    private const int FollowTabs = 5;
+    private int FollowTabs => _settings.FollowTabs is >= 3 and <= 10 ? _settings.FollowTabs : int.MaxValue; // 0: unlimited
+
+    private void FollowTabs_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (FollowTabsValue is null) // the slider's first value, while the window is built
+            return;
+        var stop = (int)Math.Round(FollowTabsSlider.Value);
+        FollowTabsValue.Text = stop >= 11 ? "Unlimited" : $"{stop} tabs";
+        var value = stop >= 11 ? 0 : stop;
+        if (_settings is null || !IsLoaded || value == _settings.FollowTabs) // only the user's moves save
+            return;
+        _settings.FollowTabs = value;
+        _settings.Save();
+    }
 
     private void FollowTo(string url)
     {
