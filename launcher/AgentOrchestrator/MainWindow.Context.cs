@@ -200,8 +200,8 @@ public partial class MainWindow
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
         card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
-        card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "AccentLight");
-        card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.MouseEnter += (_, _) => card.SetResourceReference(Border.BackgroundProperty, "CardHover"); // a little brighter, no outline
+        card.MouseLeave += (_, _) => card.SetResourceReference(Border.BackgroundProperty, "Card");
         (code ? CodeContextPin : ChatContextPin).Content = card;
         return _overlays[code] = new ContextOverlay { Card = card, Header = header, Body = body, Arrow = arrow };
     }
@@ -244,8 +244,8 @@ public partial class MainWindow
             card.SetResourceReference(Border.BackgroundProperty, "Card");
             card.SetResourceReference(Border.BorderBrushProperty, "Border");
             card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
-            card.MouseEnter += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "AccentLight");
-            card.MouseLeave += (_, _) => card.SetResourceReference(Border.BorderBrushProperty, "Border");
+            card.MouseEnter += (_, _) => card.SetResourceReference(Border.BackgroundProperty, "CardHover"); // a little brighter, no outline
+            card.MouseLeave += (_, _) => card.SetResourceReference(Border.BackgroundProperty, "Card");
             stack.Children.Add(card);
         }
         CodeContextPin.Content = stack;

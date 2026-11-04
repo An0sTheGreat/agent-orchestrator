@@ -4709,6 +4709,12 @@ public partial class MainWindow : Window
         Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#3B3B3B" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", graphite ? 0 : clay ? 0.02 : 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
         SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9A9A9A" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        // A card under the mouse (the Context cards): the card a step toward the text colour, brighter on dark themes
+        {
+            var (card, text) = (((SolidColorBrush)Resources["Card"]).Color, ((SolidColorBrush)Resources["TextPrimary"]).Color);
+            byte Step(byte from, byte to) => (byte)Math.Round(from + (to - from) * 0.06);
+            Resources["CardHover"] = new SolidColorBrush(Color.FromArgb(card.A, Step(card.R, text.R), Step(card.G, text.G), Step(card.B, text.B)));
+        }
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
         var rim = (byte)(parchment || graphite ? 0 : glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A); // Graphite: flat, as Claude's
         // Code colours: VS Code's light palette on Parchment, its dark one elsewhere; inline code sits on a chip of the opposite shade.

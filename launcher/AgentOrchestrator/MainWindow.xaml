@@ -134,10 +134,34 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Ghost buttons (the message box's +, Effort, the target chip, Presets, copy...): on hover a soft rounded wash of the
+             text colour (brighter on the dark themes, darker on Parchment), never an outline -->
         <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform><ScaleTransform x:Name="RootScale" /></Grid.RenderTransform>
+                            <Border Background="{TemplateBinding Background}" CornerRadius="{DynamicResource ControlRadius}" />
+                            <Border x:Name="HoverWash" Background="{DynamicResource TextPrimary}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="HoverWash" Property="Opacity" Value="0.08" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="HoverWash" Property="Opacity" Value="0.14" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Root" Property="Opacity" Value="0.4" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="TitleButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Width" Value="46" /><Setter Property="Height" Value="32" />
@@ -590,12 +614,15 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <Border x:Name="Chip" Background="Transparent" CornerRadius="{DynamicResource ControlRadius}" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Chip" Background="Transparent" CornerRadius="{DynamicResource ControlRadius}" />
+                            <!-- hover: the same soft wash as the ghost buttons, over the chip's own state (on or off) -->
+                            <Border x:Name="HoverWash" Background="{DynamicResource TextPrimary}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Hover}" />
+                                <Setter TargetName="HoverWash" Property="Opacity" Value="0.08" />
                                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
@@ -632,9 +659,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="{DynamicResource PanelRadius}" />
             <Setter Property="Padding" Value="10,8,10,8" />
-            <Style.Triggers>
-                <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
-            </Style.Triggers>
+            <!-- no focus outline: the caret shows where typing goes (an accent outline read as a white frame on light accents) -->
         </Style>
         <Style TargetType="ScrollBar">
             <Setter Property="Width" Value="10" /><Setter Property="Background" Value="Transparent" />
