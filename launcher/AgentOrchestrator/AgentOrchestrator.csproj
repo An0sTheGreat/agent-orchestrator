@@ -31,9 +31,9 @@
     <Using Remove="System.Drawing" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="Emoji.Wpf" Version="0.3.4" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
     <!-- the remote access address as a QR code (PngByteQRCode: no System.Drawing) -->
     <PackageReference Include="QRCoder" Version="1.6.0" />
+    <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
   </ItemGroup>
 </Project>

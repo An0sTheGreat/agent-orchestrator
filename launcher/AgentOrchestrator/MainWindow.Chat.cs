@@ -801,7 +801,7 @@ public partial class MainWindow
         var photos = ThumbRow(images, 120, HorizontalAlignment.Right);
         var shownText = BubbleText(text, photos is null ? null : images!.Where(File.Exists));
         // with emoji: a TextBlock, which can show them in colour (not selectable; Copy below copies the message)
-        FrameworkElement box = Markdown.HasEmoji(shownText) ? Markdown.EmojiTextBlock(shownText).WithForeground("TextPrimary")
+        FrameworkElement box = Markdown.HasEmoji(shownText) ? Markdown.EmojiTextBlock(shownText, ReadingFont).WithForeground("TextPrimary")
             : BodyText(shownText, mono: false, muted: false, conv: _turn);
         box.SetValue(TextElement.FontSizeProperty, ReadingFont);
         box.SetValue(TextElement.FontWeightProperty, Markdown.TextWeight); // as replies: Light
