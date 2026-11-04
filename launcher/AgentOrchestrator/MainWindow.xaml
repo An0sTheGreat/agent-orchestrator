@@ -1647,5 +1647,11 @@
                 <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             </DockPanel>
         </Border>
+
+        <!-- A picture full size (MainWindow.Images): a click or Esc closes it -->
+        <Grid x:Name="ImageViewer" Grid.Row="1" Grid.RowSpan="3" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#D8000000" Focusable="True"
+              Cursor="Hand" MouseLeftButtonUp="ImageViewer_MouseUp" KeyDown="ImageViewer_KeyDown">
+            <Image x:Name="ImageViewerPicture" Stretch="Uniform" StretchDirection="DownOnly" Margin="40" RenderOptions.BitmapScalingMode="HighQuality" />
+        </Grid>
     </Grid>
 </Window>

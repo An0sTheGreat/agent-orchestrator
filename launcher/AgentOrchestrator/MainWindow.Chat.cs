@@ -491,11 +491,16 @@ public partial class MainWindow
         _turn = c;
         foreach (var message in messages)
             if (message.Role == "user")
-                AddUserBubble(message.Content, message.Time);
+                AddUserBubble(message.Content, message.Time, message.Images);
             else
             {
                 var reply = _reply = AddReply(role);
                 SetChatFinal(message.Content);
+                if (ThumbRow(message.Images, 160, HorizontalAlignment.Left) is { } shots) // its browser screenshots
+                {
+                    shots.Margin = new Thickness(0, 6, 0, 0);
+                    reply.Content.Children.Add(shots);
+                }
                 reply.Status.Visibility = Visibility.Collapsed;
                 SetStamp(reply.Stamp, message.Time);
                 reply.Footer.Visibility = Visibility.Visible;
@@ -690,9 +695,11 @@ public partial class MainWindow
         _codeStartRequested = false;
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
         _pendingUserTime = Now();
+        _turnUserImages = text is null ? [] : _turnImages.ToList();
+        (_turnShots, _pendingShot) = ([], null);
         if (text is not null)
         {
-            AddUserBubble(text, _pendingUserTime);
+            AddUserBubble(text, _pendingUserTime, _turnUserImages);
             SavePendingTurn(c, text);
             if (!queued)
             {
@@ -708,9 +715,11 @@ public partial class MainWindow
     }
 
     // The user's message bubble and an empty reply (header, content, status, Copy), added to _turn's conversation.
-    private void AddUserBubble(string text, DateTimeOffset? time)
+    private void AddUserBubble(string text, DateTimeOffset? time, IReadOnlyList<string>? images = null)
     {
-        var box = BodyText(BubbleText(text), mono: false, muted: false, conv: _turn);
+        var photos = ThumbRow(images, 120, HorizontalAlignment.Right);
+        var shownText = BubbleText(text, photos is null ? null : images!.Where(File.Exists));
+        var box = BodyText(shownText, mono: false, muted: false, conv: _turn);
         box.FontSize = 14;
         var bubble = new Border
         {
@@ -721,7 +730,15 @@ public partial class MainWindow
         bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
         var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => TypedText(text)); // Copy: what the user wrote, not the attached files
         SetStamp(stamp, time);
-        ChatAdd(new StackPanel { Children = { bubble, row }, Margin = new Thickness(60, 10, 0, 6), HorizontalAlignment = HorizontalAlignment.Right });
+        var message = new StackPanel { Children = { bubble, row }, Margin = new Thickness(60, 10, 0, 6), HorizontalAlignment = HorizontalAlignment.Right };
+        if (photos is not null)
+        {
+            photos.Margin = new Thickness(0, 0, -6, 0); // the last thumbnail's gap
+            message.Children.Insert(0, photos);
+        }
+        if (photos is not null && shownText is "(see the attachments)" or "")
+            bubble.Visibility = Visibility.Collapsed; // photos alone: no empty bubble under them
+        ChatAdd(message);
     }
 
     // ---- message footers: a muted relative timestamp (exact time on hover) and a copy icon under every message
@@ -829,7 +846,7 @@ public partial class MainWindow
             {
                 var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
                 c.History.AddRange(TurnMessages(lost));
-                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now()));
+                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now(), TurnShots()));
                 kept = true;
             }
             if (!stopped && problem is null)
@@ -839,7 +856,7 @@ public partial class MainWindow
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
                     c.History.AddRange(TurnMessages(user));
-                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now()));
+                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now(), TurnShots()));
                 }
                 completed = true;
             }
@@ -905,7 +922,7 @@ public partial class MainWindow
         var reply = partial.Trim().Length > 0 ? $"{partial.TrimEnd()}\n\n{InterruptedReply}" : InterruptedReply;
         var pending = new List<LauncherLogic.ChatMessage>(c.History);
         pending.AddRange(TurnMessages(text));
-        pending.Add(new("assistant", reply, _pendingUserTime));
+        pending.Add(new("assistant", reply, _pendingUserTime, TurnShots()));
         if (c.IsCode)
         {
             if (_codeConv is { } code)
@@ -933,7 +950,7 @@ public partial class MainWindow
     // (a placeholder when a tool call cleared it: empty messages are dropped and roles must alternate) and the steered message.
     private IEnumerable<LauncherLogic.ChatMessage> TurnMessages(string user)
     {
-        yield return new("user", user, _pendingUserTime);
+        yield return new("user", user, _pendingUserTime, _turnUserImages.Count > 0 ? _turnUserImages : null);
         foreach (var (said, text, time) in _steered)
         {
             yield return new("assistant", said.Trim().Length > 0 ? said.TrimEnd() : SteeredReply, time);

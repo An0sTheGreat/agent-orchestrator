@@ -50,7 +50,9 @@ internal static class LauncherLogic
 
     // ---- chat: one orchestrator process per user message, fed the whole conversation through a request file
 
-    public sealed record ChatMessage(string Role, string Content, DateTimeOffset? Time = null); // Time: when it was sent / completed (null in old saved chats); never sent to the engine
+    // Time: when it was sent / completed (null in old saved chats). Images: the user's photos, or the reply's browser
+    // screenshots, shown as thumbnails. Neither is sent to the engine.
+    public sealed record ChatMessage(string Role, string Content, DateTimeOffset? Time = null, IReadOnlyList<string>? Images = null);
 
     // The stats under a model call's output: "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" (no tok/s when unknown).
     // The chat status line while llama-server works and nothing is on screen yet: reading the prompt, then writing (a quiet

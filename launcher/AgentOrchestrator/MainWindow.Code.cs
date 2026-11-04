@@ -74,6 +74,7 @@ public partial class MainWindow
         var expander = BuildExpander(name, ToolTarget(args), body, out _);
         expander.Margin = new Thickness(0, 2, 0, 2);
         r.Content.Children.Add(expander);
+        ShowPendingShot(r); // a browser screenshot: under its step
         FadeIn(expander);
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);

@@ -325,6 +325,7 @@ public partial class MainWindow
         var asker = _chatProcess ?? _process;
         var (result, image) = await BrowserAnswerAsync(Str(ev, "action"), Str(ev, "url"),
             ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True, (int)Num(ev, "tab"), Str(ev, "find"));
+        NoteShot(image);
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
 

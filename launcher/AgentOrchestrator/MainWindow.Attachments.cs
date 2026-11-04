@@ -199,6 +199,20 @@ public partial class MainWindow
         panel.Children.Clear();
         foreach (var path in AttachmentsOf(c))
         {
+            if (ImageExtensions.Contains(Path.GetExtension(path)) && Thumb(path, 64) is { } thumb)
+            {
+                var x = new Button { Content = "×", Width = 20, Height = 20, Padding = new Thickness(0), FontSize = 12, ToolTip = "Remove", Tag = "RemoveAttachment",
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, -6, -6, 0) };
+                x.SetResourceReference(StyleProperty, "GhostButton");
+                x.SetResourceReference(BackgroundProperty, "Card");
+                x.Click += (_, _) =>
+                {
+                    AttachmentsOf(c).Remove(path);
+                    RefreshAttachments(c);
+                };
+                panel.Children.Add(new Grid { Margin = new Thickness(0, 6, 10, 4), Children = { thumb, x } });
+                continue;
+            }
             var folder = Directory.Exists(path);
             var icon = Glyph(folder ? "" : ImageExtensions.Contains(Path.GetExtension(path)) ? "" : "");
             icon.Margin = new Thickness(0, 0, 6, 0);
@@ -297,16 +311,19 @@ public partial class MainWindow
     internal static string TypedText(string message) =>
         message.IndexOf(AttachMarker, StringComparison.Ordinal) is var at and >= 0 ? message[..at] : message;
 
-    // A sent message as its bubble shows it: the typed text, then the attachments' names.
-    internal static string BubbleText(string message)
+    // A sent message as its bubble shows it: the typed text, then the attachments' names (but the photos shown as
+    // thumbnails above it).
+    internal static string BubbleText(string message, IEnumerable<string>? shown = null)
     {
         var at = message.IndexOf(AttachMarker, StringComparison.Ordinal);
         if (at < 0)
             return message;
+        var thumbs = (shown ?? []).Select(Path.GetFileName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var names = System.Text.RegularExpressions.Regex.Matches(message[at..], "^<(file|image|folder) name=\"([^\"]*)\"", System.Text.RegularExpressions.RegexOptions.Multiline)
             .Where(m => m.Groups[1].Value != "file" || !m.Groups[2].Value.Contains('/')) // a folder's files are listed under it
-            .Select(m => m.Groups[2].Value + (m.Groups[1].Value == "folder" ? "/" : ""));
-        return message[..at] + "\n\n📎 " + string.Join(", ", names);
+            .Where(m => m.Groups[1].Value != "image" || !thumbs.Contains(m.Groups[2].Value))
+            .Select(m => m.Groups[2].Value + (m.Groups[1].Value == "folder" ? "/" : "")).ToList();
+        return names.Count == 0 ? message[..at] : message[..at] + "\n\n📎 " + string.Join(", ", names);
     }
 
     // --ui-smoke: "Add files or photos" attaches while a reply runs (it goes with the queued message), a 21st photo is
