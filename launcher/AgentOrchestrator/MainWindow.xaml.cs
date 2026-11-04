@@ -2221,7 +2221,7 @@ public partial class MainWindow : Window
                 var lists = blocks.OfType<System.Windows.Documents.List>().ToList();
                 var mdText = markdownReply.Rendered is { } rendered ? Markdown.PlainText(rendered.Document) : "";
                 if (markdownReply.Answer?.Visibility != Visibility.Collapsed || markdownReply.Answer.Text != sample ||
-                    blocks.FirstOrDefault() is not System.Windows.Documents.Paragraph { FontWeight: var headingWeight, FontFamily: var headingFont } || headingWeight != FontWeights.Medium || headingFont != AppFonts.Serif || lists.Count != 2 || lists[0].MarkerStyle != TextMarkerStyle.Disc ||
+                    blocks.FirstOrDefault() is not System.Windows.Documents.Paragraph { FontWeight: var headingWeight, FontFamily: var headingFont } || headingWeight != Markdown.StrongWeight || headingFont != AppFonts.Serif || lists.Count != 2 || lists[0].MarkerStyle != TextMarkerStyle.Disc ||
                     lists[1].MarkerStyle != TextMarkerStyle.Decimal || lists[0].ListItems.First().Blocks.OfType<System.Windows.Documents.List>().Count() != 1 ||
                     blocks.OfType<System.Windows.Documents.Table>().Single().RowGroups[0].Rows.Count != 2 || blocks.OfType<System.Windows.Documents.Section>().Count() != 1 ||
                     Markdown.CodeBlocks(blocks).SingleOrDefault() is not { Child: Grid { Children: [TextBlock codeText, Button { Tag: "code **raw**" }] } } ||

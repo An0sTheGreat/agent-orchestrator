@@ -804,6 +804,7 @@ public partial class MainWindow
         FrameworkElement box = Markdown.HasEmoji(shownText) ? Markdown.EmojiTextBlock(shownText).WithForeground("TextPrimary")
             : BodyText(shownText, mono: false, muted: false, conv: _turn);
         box.SetValue(TextElement.FontSizeProperty, ReadingFont);
+        box.SetValue(TextElement.FontWeightProperty, Markdown.TextWeight); // as replies: Light
         var bubble = new Border
         {
             Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,

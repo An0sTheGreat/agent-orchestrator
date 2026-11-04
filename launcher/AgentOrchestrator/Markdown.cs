@@ -21,6 +21,9 @@ internal static class Markdown
 
     private static double R(double compact, double roomy) => Roomy ? roomy : compact;
 
+    // Messages' and replies' weights: Light text, Regular for bold, headings and table headers (the styles Fonts\ has).
+    public static readonly FontWeight TextWeight = FontWeights.Light, StrongWeight = FontWeights.Normal;
+
     private static readonly Regex Heading = new(@"^(#{1,6})\s+(.*?)\s*#*\s*$");
     private static readonly Regex Rule = new(@"^\s{0,3}([-*_])(\s*\1){2,}\s*$");
     private static readonly Regex Item = new(@"^(\s*)([-*+]|\d{1,9}[.)])\s+(.*)$");
@@ -34,7 +37,8 @@ internal static class Markdown
     // muted: thinking text, in the theme's muted colour.
     public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false)
     {
-        var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left,
+        // Text weights are about 0.7 of the usual (Light body, Regular bold and headings): a lighter, smoother page
+        var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left, FontWeight = TextWeight,
             LineHeight = Roomy ? Math.Round(fontSize * 1.5) : double.NaN }; // Claude's 1.5; a minimum: a taller line (a heading) keeps its own
         doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
         var lines = markdown.Replace("\r\n", "\n").Split('\n');
@@ -90,9 +94,9 @@ internal static class Markdown
                 var level = heading.Groups[1].Length;
                 var p = Para();
                 p.FontSize = fontSize * (level switch { 1 => 1.5, 2 => R(1.3, 1.25), 3 => R(1.15, 1.06), _ => 1.0 });
-                // headings in the serif, as Claude's: Medium for the top levels, SemiBold below (the weights Fonts\ has)
+                // headings in the serif, as Claude's, at Regular (0.7 of Medium/SemiBold; their size sets them apart)
                 p.FontFamily = AppFonts.Serif;
-                p.FontWeight = level <= 2 ? FontWeights.Medium : FontWeights.SemiBold;
+                p.FontWeight = StrongWeight;
                 p.LineHeight = Roomy ? Math.Round(p.FontSize * 1.3) : double.NaN;
                 // more room above than below: a heading belongs to the section under it (a reply's first block has none: NoTopMargin)
                 p.Margin = new Thickness(0, level <= 2 ? R(14, 26) : R(10, 20), 0, R(4, 8));
@@ -308,7 +312,7 @@ internal static class Markdown
     // copying, and keeping it in view while the block scrolls (its TranslateTransform).
     private static Block CodeBlock(string code, string language)
     {
-        var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
+        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
         if (Roomy)
             text.LineHeight = 20;
         foreach (var (piece, color) in Highlight(code, language))
@@ -437,7 +441,7 @@ internal static class Markdown
                 var p = new Paragraph { Margin = new Thickness(0) };
                 AddInlines(p.Inlines, c < cells.Length ? cells[c] : "");
                 if (r == 0)
-                    p.FontWeight = FontWeights.SemiBold;
+                    p.FontWeight = StrongWeight;
                 var cell = new TableCell(p) { Padding = Roomy ? new Thickness(12, 7, 12, 7) : new Thickness(8, 4, 8, 4), BorderThickness = new Thickness(0, 0, 1, 1) };
                 cell.SetResourceReference(TableCell.BorderBrushProperty, "Border");
                 if (r == 0)
@@ -473,7 +477,7 @@ internal static class Markdown
             }
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)
             {
-                var bold = new Bold { FontWeight = FontWeights.SemiBold }; // Claude's bold is 600
+                var bold = new Bold { FontWeight = StrongWeight }; // 0.7 of Claude's 600
                 AddInlines(bold.Inlines, m.Groups["bold"].Success ? m.Groups["bold"].Value : m.Groups["bold2"].Value, links);
                 target.Add(bold);
             }
@@ -537,6 +541,11 @@ internal static class Markdown
         var colored = Everything(emoji.Blocks).OfType<Emoji.Wpf.EmojiInline>().Select(e => e.Text).ToList();
         if (!colored.SequenceEqual(["✅", "📁", "🚀", "🎮", "💡"]))
             throw new InvalidOperationException($"Markdown emoji: {string.Join(" ", colored.Select(e => char.ConvertToUtf32(e, 0).ToString("X")))}");
+        // replies are Light, their bold and headings Regular
+        var weights = ToDocument("## Head\n\nPlain **bold**", 14);
+        if (weights.FontWeight != FontWeights.Light || ((Paragraph)weights.Blocks.FirstBlock).FontWeight != FontWeights.Normal ||
+            ((Paragraph)weights.Blocks.LastBlock).Inlines.OfType<Bold>().Single().FontWeight != FontWeights.Normal)
+            throw new InvalidOperationException("Markdown weights");
         // a user's message: its emoji in colour, its text and lines kept; © and arrows stay text
         var message = EmojiTextBlock("Ship it 🚀\n© ok → next");
         if (message.Inlines.OfType<Emoji.Wpf.EmojiInline>().Single().Text != "🚀" || message.Inlines.OfType<LineBreak>().Count() != 1 ||
