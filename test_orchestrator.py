@@ -5071,6 +5071,19 @@ class ExtrasTests(unittest.TestCase):
         with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
                 patch.object(orchestrator, "web_request", lambda url, data=None: (page, "text/html")):
             self.assertEqual(orchestrator.fetch_page("https://example.com/a"), "TITLE: T & C\n\nT & C Hello\nworld")
+        # a results page: each item's own link listed before the text (absolute, once, titles before menu links; no
+        # javascript:, anchors or the page itself)
+        shop = ('<html><title>Results</title><a href="/cart">Cart</a><a href="javascript:x()">Open menu here</a>'
+                '<div><a href="/ZOTAC-RTX-3090/dp/B08H?ref=sr_1">ZOTAC Gaming GeForce RTX 3090 Trinity</a> $899</div>'
+                '<a href="/ZOTAC-RTX-3090/dp/B08H?ref=sr_1"><img alt="x"></a><a href="#top">Back to the very top</a>'
+                '<a href="https://other.example/dp/B09X" title="EVGA RTX 3090 FTW3"><img></a></html>')
+        with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
+                patch.object(orchestrator, "web_request", lambda url, data=None: (shop, "text/html")):
+            got = orchestrator.fetch_page("https://www.amazon.com/s?k=rtx+3090")
+        links = got.split("LINKS ON THE PAGE (text -> address)\n")[1].split("\n\nTEXT\n")[0].split("\n")
+        self.assertEqual(links, ["ZOTAC Gaming GeForce RTX 3090 Trinity -> https://www.amazon.com/ZOTAC-RTX-3090/dp/B08H?ref=sr_1",
+                                 "EVGA RTX 3090 FTW3 -> https://other.example/dp/B09X", "Cart -> https://www.amazon.com/cart"])
+        self.assertTrue(got.startswith("TITLE: Results\n\nLINKS ON THE PAGE") and "$899" in got.split("\n\nTEXT\n")[1])
         with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
                 patch.object(orchestrator, "web_request", lambda url, data=None: ("x" * 130_000, "text/plain")):
             self.assertTrue(orchestrator.fetch_page("http://example.com/").endswith("truncated at 100000 characters"))
