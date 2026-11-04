@@ -1097,7 +1097,8 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" /><RowDefinition Height="*" />
                 </Grid.RowDefinitions>
-                <DockPanel Margin="20,16,20,0" LastChildFill="False">
+                <StackPanel Margin="20,16,20,0">
+                <DockPanel LastChildFill="False">
                     <TextBlock Text="CODE" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <StackPanel Orientation="Horizontal" Margin="16,0,4,0" VerticalAlignment="Center"
                                 ToolTip="Off: each reply's thinking, tool calls, reads and searches fold into one THINKING row">
@@ -1136,6 +1137,13 @@
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
+                <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
+                <Button x:Name="CodeUnloadButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="-6,6,0,0" Padding="6,3"
+                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload model"
+                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, freeing their memory; the next message loads them again">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload model" /></StackPanel>
+                </Button>
+                </StackPanel>
                 <Grid x:Name="CodeChat" Grid.Row="1">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" /><RowDefinition Height="Auto" />
@@ -1261,10 +1269,10 @@
                 </Border>
                 <DockPanel DockPanel.Dock="Top" Margin="17,17,17,10">
                     <Button x:Name="RailCollapseButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="4,0,-6,0"
-                            Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse worker details">
+                            Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse agent details">
                         <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
-                    <TextBlock DockPanel.Dock="Left" Text="WORKER DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <TextBlock DockPanel.Dock="Left" Text="AGENT DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
                             Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
                             ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
@@ -1300,7 +1308,7 @@
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
                         <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
-                                Click="BrowserClose_Click" ToolTip="Close the browser (back to the worker details)" AutomationProperties.Name="Close browser">
+                                Click="BrowserClose_Click" ToolTip="Close the browser (back to the agent details)" AutomationProperties.Name="Close browser">
                             <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
                         <TextBlock DockPanel.Dock="Left" Text="BROWSER" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
@@ -1345,7 +1353,7 @@
             <Border x:Name="WorkerRail" Grid.Column="3" Width="44" HorizontalAlignment="Left" Panel.ZIndex="1" Background="{DynamicResource Panel}" Visibility="Collapsed">
                 <StackPanel Margin="0,12,0,0">
                     <Button x:Name="RailExpandButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,10"
-                            Click="WorkerRailToggle_Click" ToolTip="Show worker details" AutomationProperties.Name="Show worker details">
+                            Click="WorkerRailToggle_Click" ToolTip="Show agent details" AutomationProperties.Name="Show agent details">
                         <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
                     <ItemsControl x:Name="RailDots">
@@ -1379,7 +1387,8 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
-                <DockPanel Margin="20,16,20,8" LastChildFill="False">
+                <StackPanel Margin="20,16,20,8">
+                <DockPanel LastChildFill="False">
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <!-- View thinking (MainWindow.Thinking.cs): off, each run of a reply's steps folds into one THINKING row -->
                     <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center"
@@ -1391,6 +1400,13 @@
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
+                <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
+                <Button x:Name="ChatUnloadButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="-6,6,0,0" Padding="6,3"
+                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload model"
+                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, freeing their memory; the next message loads them again">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload model" /></StackPanel>
+                </Button>
+                </StackPanel>
                 <Grid Grid.Row="1">
                     <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged"
                                   SizeChanged="ConversationScroll_SizeChanged">

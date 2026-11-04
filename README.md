@@ -31,7 +31,7 @@ Pick the workflow that fits your hardware under **Settings > Agents**:
 - **Lead + Reviewer** (the default): the Lead does the work, and the Reviewer has to approve every finished item before it counts as done.
 - **Lead + Implementer + Reviewer**: the Lead plans and directs, the Implementer writes every change, and the Reviewer checks each item.
 
-![Worker details: one card per agent, each with its own model](docs/images/workers.png)
+![Agent details: one card per agent, each with its own model](docs/images/workers.png)
 
 ### 100% local, and you decide when it updates
 
@@ -85,7 +85,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 3. Open **Settings** (the gear at the bottom left) **> Models** and pick where your models run:
    - **Unsloth Studio**: paste the API key from Unsloth's Settings > API Keys.
    - **llama.cpp**: press **Download llama-server**. Models already downloaded through Unsloth or Hugging Face are found automatically.
-4. Pick a model for each worker in the right-hand **Worker details** column, or start with the defaults.
+4. Pick a model for each worker in the right-hand **Agent details** column, or start with the defaults.
 5. Start a **New chat**, or press **New project**, choose a folder and press **Start project**.
 
 ### Updating

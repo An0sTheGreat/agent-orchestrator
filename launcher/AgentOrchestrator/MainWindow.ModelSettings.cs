@@ -786,6 +786,9 @@ public partial class MainWindow
             Content = "Presets  ▾", Tag = "ModelPresets", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0),
             ToolTip = "Save these options as a preset, or fill them from one",
         };
+        // Presets are the model's: the menu (built on each click) lists those of the model in the picker now
+        string ShownModel() => (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
+        bool Mine(ModelPreset p) => p.Model.Length == 0 || p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
         presets.Click += (_, _) =>
         {
             var menu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Top };
@@ -799,12 +802,12 @@ public partial class MainWindow
             {
                 if (SidebarAsk("Save preset", "Name this set of model options.", "Save", "")?.Trim() is not { Length: > 0 } name)
                     return;
-                var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase));
                 if (same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
                     return;
                 var preset = new ModelPreset
                 {
-                    Name = name, Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
+                    Name = name, Model = ShownModel(), Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
                     SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
                 };
                 if (same >= 0)
@@ -814,13 +817,13 @@ public partial class MainWindow
                 _settings.Save();
                 Toast($"Preset {name} saved");
             }));
-            if (_settings.ModelPresets.Count > 0)
+            if (_settings.ModelPresets.Any(Mine))
             {
                 menu.Items.Add(new Separator());
                 var delete = new MenuItem { Header = "Delete preset" };
-                foreach (var preset in _settings.ModelPresets.ToList())
+                foreach (var preset in _settings.ModelPresets.Where(Mine).ToList())
                 {
-                    menu.Items.Add(Item(preset.Name, () =>
+                    menu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
                     {
                         // values only; load options only with a model to load (Save would refuse them)
                         var load = hasModel && !remoteMode();
@@ -1144,7 +1147,8 @@ public partial class MainWindow
             answer = "Smoke options";
             Preset("Save as preset…");
             if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options") is not { } stored || stored.Options.GetValueOrDefault("temperature") != "0.21" ||
-                stored.Options.ContainsKey("gguf_variant") || stored.Options.ContainsKey("seed") || stored.SystemPrompt != "Smoke prompt")
+                stored.Options.ContainsKey("gguf_variant") || stored.Options.ContainsKey("seed") || stored.SystemPrompt != "Smoke prompt" ||
+                stored.Model != reviewer.ModelName)
                 return Fail("save a preset");
             // As if saved on a worker with a model, or by an older version: a load value and an empty one; neither is applied
             // to the Implementer, which has no model to load.
@@ -1154,6 +1158,15 @@ public partial class MainWindow
             await Idle();
             if (asked[^1] != "Unsaved changes" || _shownWorker != implementer || SmokeField("temperature").Text != "0.33" || SmokeField("ChatSystemPrompt").Text != "")
                 return Fail("discard the Reviewer's change");
+            // presets are the model's: another model's is not listed; the Implementer's model's is
+            stored.Model = "Some other model";
+            var listed = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
+            SmokeClick(listed);
+            var others = listed.ContextMenu.Items.OfType<MenuItem>().Any(i => (string)i.Header == "Smoke options");
+            listed.ContextMenu.IsOpen = false;
+            if (others)
+                return Fail("another model's preset is listed");
+            stored.Model = implementer.ModelName;
             Preset("Smoke options");
             if (SmokeField("temperature").Text != "0.21" || SmokeField("top_k").Text != "7" || SmokeField("n_batch").Text != "" || SmokeField("top_p").Text != "0.95" ||
                 SmokeField("ChatSystemPrompt").Text != "Smoke prompt" || !File.ReadAllBytes(config).SequenceEqual(bytes))

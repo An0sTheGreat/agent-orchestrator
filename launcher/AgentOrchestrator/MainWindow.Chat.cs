@@ -213,6 +213,7 @@ public partial class MainWindow
             c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
+        ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && _unloadsPending == 0 && ModelsLoaded;
         CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
@@ -387,6 +388,20 @@ public partial class MainWindow
         ApplyChatWidth();
         RefreshContextPins();
     }
+
+    // Unload model (under CHAT and CODE): what chat has loaded, and the local llama-server, now; with Keep models loaded
+    // on, this frees the memory without the round trip through Settings. Greyed out with nothing loaded or while working.
+    private void UnloadModels_Click(object sender, RoutedEventArgs e)
+    {
+        UnloadChat(_loadedByChat.ToList());
+        if (_process is null) // a run may be using the local server
+            StopLocalServer();
+        WorkerContextsCleared();
+        Toast("Models unloaded");
+        RefreshChatInput();
+    }
+
+    private bool ModelsLoaded => _loadedByChat.Count > 0 || LocalRuntime && File.Exists(_llamaStateFile);
 
     // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
     private void ChatKeep_Click(object sender, RoutedEventArgs e)

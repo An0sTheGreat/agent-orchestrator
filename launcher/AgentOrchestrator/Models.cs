@@ -348,6 +348,9 @@ internal sealed class ModelPreset
     public string Name { get; set; } = "";
     public Dictionary<string, string> Options { get; set; } = new();
     public string SystemPrompt { get; set; } = ""; // "" = none stored (blank, or the worker kind's default when saved)
+    // The model it was saved for (the picker's name for it): presets list only for that model, whatever the role.
+    // "" = saved before presets had a model: listed for every model.
+    public string Model { get; set; } = "";
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.
