@@ -1,30 +1,17 @@
 # Agent Setup
 
-Agent Setup is a local Windows launcher and bounded three-model software-development orchestrator for Unsloth Desktop. It sequences a Planner, Implementer, and Reviewer while keeping each implementation task small, project-scoped, and independently reviewed.
+Agent Setup is a local Windows launcher and bounded three-model software-development orchestrator for local llama.cpp models. It sequences a Planner, Implementer, and Reviewer while keeping each implementation task small, project-scoped, and independently reviewed.
 
 ## Quick start
 
-1. Keep Unsloth Desktop running.
-2. Launch `dist\Agent Orchestrator.exe`.
-3. Select or type the target project folder.
-4. If prompted, initialize the project. A nonexistent target folder will be created.
-5. Edit the target project's `PROJECT.md` with its goal, constraints, phases, and completion criteria.
-6. Enter the Unsloth API key or use the optional `api_key.txt` mechanism described below.
-7. Leave **Run one reviewed task, then stop** enabled for the safest default behavior.
-8. Click **Start workflow**.
+1. Launch `dist\Agent Orchestrator.exe` and download llama-server under **Options**.
+2. Select or type the target project folder.
+3. If prompted, initialize the project. A nonexistent target folder will be created.
+4. Edit the target project's `PROJECT.md` with its goal, constraints, phases, and completion criteria.
+5. Leave **Run one reviewed task, then stop** enabled for the safest default behavior.
+6. Click **Start workflow**.
 
 The launcher is self-contained for .NET, but Python 3.11 or newer must be installed and available on `PATH`.
-
-## API key handling
-
-The key can be entered in the masked field or loaded automatically from `api_key.txt`.
-
-Search order:
-
-1. `api_key.txt` beside the running EXE.
-2. `api_key.txt` in the Agent Setup root.
-
-The file must contain exactly one nonblank line. The launcher does not print the key and passes it to the Python child process through `UNSLOTH_API_KEY`. `api_key.txt` is Git-ignored, but it remains an unencrypted credential on disk and must not be committed, shared, or copied into project documentation.
 
 ## Project initialization
 
@@ -60,13 +47,13 @@ Validation commands are argument arrays executed directly with `shell=False`. Sh
 
 ## Models and limits
 
-The supplied template targets the local Unsloth Studio backend at port `8888` and sequentially loads:
+The supplied template runs each role's model on llama.cpp's llama-server, one at a time:
 
-- Planner: AgentWorld 35B A3B
-- Implementer: Qwen2.5 Coder 14B
-- Reviewer: Qwen3.5 9B
+- Planner: Qwen3.5 4B
+- Implementer: Qwen2.5 Coder 3B
+- Reviewer: Phi-4 mini
 
-Default bounds are 20 tasks, two review-repair rounds, and 30 tool steps per agent turn. Automatic model loading uses Unsloth's local management endpoint, so only one role needs to occupy the GPU at a time.
+Default bounds are 20 tasks, two review-repair rounds, and 30 tool steps per agent turn. Only one role occupies the GPU at a time.
 
 ## Launcher controls
 
@@ -85,7 +72,7 @@ From the Agent Setup root:
 python .\orchestrator.py --project 'Y:\path\to\initialized-project' --once
 ```
 
-Set `UNSLOTH_API_KEY` in the environment for direct command-line use. The Python script does not read `api_key.txt`; that convenience belongs to the Windows launcher.
+Set `AGENT_ORCHESTRATOR_LLAMA_SERVER` to the full path of `llama-server.exe` for direct command-line use.
 
 ## Source layout
 
@@ -122,7 +109,7 @@ Publish the single-file launcher to `dist\` (close the app first), then commit a
 
 ## Operational cautions
 
-- Do not expose `api_key.txt`, environment variables, or copied credentials in logs or handoffs.
+- Do not expose environment variables or copied credentials in logs or handoffs.
 - Do not edit project workflow records while a run is active.
 - The EXE may move only with access to the Agent Setup tree containing `orchestrator.py`, `config.json`, and `prompts\`.
 - Generated application code can still be harmful even when file and command scope is bounded.
