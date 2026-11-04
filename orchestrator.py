@@ -1017,8 +1017,8 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
     except (WorkflowError, OSError, ValueError):
         text = ""
     finally:
-        if summarizer is not client:
-            client.ensure_model(role, False)  # the turn goes on on its own model
+        if summarizer is not client and not force:
+            client.ensure_model(role, False)  # the turn goes on on its own model (a /compact has no turn after it)
     if not text:  # the full history goes as it is; the in-request compactor or a context error follows
         print(f"[{client.title or role}] the conversation summary failed; sending the full history")
         return full
@@ -4723,8 +4723,12 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     Pi session per conversation under the Pi home ("pi_home", default a temp folder), so later turns see earlier tool
     results; a new session gets the earlier messages as text once. Pi's events become the usual @@AO events. A steer from
     the launcher (stdin_lines) goes to Pi while the prompt runs; "steered" reports its delivery (Pi's next user message)."""
-    client, sampling = role_settings(config, role)
-    model = client.ensure_model(role, False)
+    focus = compact_command(messages) if pi_session(request) and pi_seeded(request).is_file() else None  # /compact in a Pi session
+    # Pi summarizes on the model it runs: a /compact runs it on a separate Compactor's (Pi's own mid-turn compaction stays
+    # on the lead's), and no lead turn follows, so the lead's model is not loaded for it
+    model_role = "compactor" if focus is not None and separate_compactor(config) else role
+    client, sampling = role_settings(config, model_role)
+    model = client.ensure_model(model_role, False)
     n_ctx = client.context_size() or int((client.auto_load or {}).get("max_seq_length") or 32768)
     tools, handlers, note, skills = lead_setup(config, folders, request, role)
     lead_delegate = handlers["delegate"]
@@ -4743,7 +4747,6 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     turn = Path(tempfile.mkdtemp(prefix="pi-turn-", dir=home))
     max_tokens = int(sampling.get("max_tokens") or 8192)
     save_text(turn / "models.json", json.dumps(pi_model_config(client, model, sampling, n_ctx), indent=1))
-    focus = compact_command(messages) if pi_session(request) and pi_seeded(request).is_file() else None  # /compact in a Pi session
     # Pi keeps the newest keepRecentTokens unsummarized; a manual /compact keeps only the last ~2k, or right after an
     # automatic compaction there is nothing older left to summarize ("session too small")
     save_text(turn / "settings.json", json.dumps({"quietStartup": True, "compaction": {

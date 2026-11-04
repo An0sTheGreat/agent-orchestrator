@@ -3262,15 +3262,15 @@ class CodeTests(unittest.TestCase):
         self.assertIsNone(orchestrator.compact_command([{"role": "user", "content": "please /compact later"}]))
 
     def test_a_separate_compactor_writes_the_conversation_summary(self):
-        # /compact and a long turn's summary go to the Compactor's model (its window bounds the call), then the turn's
-        # role is loaded again; the event still names the turn's role.
+        # /compact and a long turn's summary go to the Compactor's model (its window bounds the call); the long turn's role
+        # is loaded again for its turn, a /compact's is not (no turn follows); the event still names the turn's role.
         self.config["roles"]["compactor"] = {"base_url": "http://c", "expected_model_contains": "c-model", "n_ctx": 3000}
         msgs = [{"role": "user", "content": "Build a todo app in plain JS."}, {"role": "assistant", "content": "Done: index.html."},
                 {"role": "user", "content": "/compact keep the colour choices"}]
         code, log, events, _ = self.code({"action": "chat", "messages": msgs}, {"compactor": ["SHORT"], "planner": []})
         self.assertEqual((code, [c["role"] for c in log]), (0, ["compactor"]))
         self.assertEqual(log[0]["system"], orchestrator.summary_system(orchestrator.CONVERSATION_PROMPT + " Focus especially on: keep the colour choices"))
-        self.assertEqual(self.ensured[-2:], ["compactor", "planner"])
+        self.assertEqual(self.ensured[-1], "compactor")
         history = []
         for i in range(4):
             history += [{"role": "user", "content": f"Change {i}"}, {"role": "assistant", "content": f"DIFF{i} " + "line " * 2000}]
@@ -3706,11 +3706,13 @@ class PiEngineTests(unittest.TestCase):
 
     setUp = CodeTests.setUp
 
-    def turn(self, replies, messages, hook=None, **request):
+    def turn(self, replies, messages, hook=None, compactor=None, **request):
         fake = FakeModelServer(replies)
         self.addCleanup(fake.close)
         config = {"roles": {"planner": {"base_url": fake.url, "api_key": "k", "model": "fake-model",
                                         "sampling": {"temperature": 0.3, "max_tokens": 2000}}}}
+        if compactor:  # a separate Compactor on its own model
+            config["roles"]["compactor"] = {"base_url": fake.url, "api_key": "k", "model": compactor}
         (self.cfg / "config.json").write_text(json.dumps(config), encoding="utf-8")
         req = self.cfg / "request.json"
         req.write_text(json.dumps({"action": "chat", "engine": "pi", "folders": self.folders, "messages": messages,
@@ -3959,6 +3961,11 @@ for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
             out({"type": "padding", "text": "x" * 1000})
     elif step == "settle":
         out({"type": "agent_settled"})
+    elif step == "argv":
+        open(arg, "w").write(json.dumps(sys.argv))
+    elif step == "compacted":
+        take("compact")
+        out({"type": "response", "command": "compact", "success": True, "data": {"tokensBefore": 900, "estimatedTokensAfter": 100}})
 """
 
 
@@ -4001,6 +4008,29 @@ class PiSteerTests(unittest.TestCase):
                  ["say", {"error": "the model failed"}], ["ctx", None], ["settle", None]]
         with self.assertRaisesRegex(orchestrator.WorkflowError, "the model failed"):
             self.steered(steps, {"steer": "and the docs", "key": "k1"})
+
+    def test_a_compact_in_a_pi_session_runs_pi_on_the_compactors_model(self):
+        # The user's /compact in a seeded Pi session: Pi starts on the separate Compactor's model and compacts; the lead's
+        # model is never asked for (no lead turn follows). Without a separate Compactor, Pi compacts on the lead's.
+        script, argv = self.cfg / "fake_pi.py", self.cfg / "argv.json"
+        script.write_text(FAKE_PI, encoding="utf-8")
+        session = f"conv-{uuid.uuid4().hex[:8]}"
+        seeded = self.cfg / "pi" / "sessions" / f"{session}.seeded"
+        seeded.parent.mkdir(parents=True, exist_ok=True)
+        seeded.touch()
+        msgs = [{"role": "user", "content": "build it"}, {"role": "assistant", "content": "Built."}, {"role": "user", "content": "/compact"}]
+        for compactor, expected in (("compact-model", "compact-model"), (None, "fake-model")):
+            ensured = []
+            real = orchestrator.ApiClient.ensure_model
+            with patch.object(orchestrator, "pi_command", lambda: [sys.executable, str(script)]), \
+                    patch.object(orchestrator.ApiClient, "ensure_model", lambda client, role, *a, **k: (ensured.append(role), real(client, role, *a, **k))[1]), \
+                    patch.dict(os.environ, {"FAKE_PI_STEPS": json.dumps([["argv", str(argv)], ["compacted", None]])}):
+                code, events, _ = self.turn([], msgs, compactor=compactor, session=session)
+            self.assertEqual(code, 0)
+            command = json.loads(argv.read_text(encoding="utf-8"))
+            self.assertEqual(command[command.index("--model") + 1], expected)
+            self.assertEqual(ensured, ["compactor" if compactor else "planner"])
+            self.assertTrue([d["text"] for e, d in events if e == "code_reply"][0].startswith("Conversation compacted: about 900"))
 
     def test_a_steer_with_images_the_role_cannot_see_is_not_sent(self):
         shot = self.root / "shot.png"
