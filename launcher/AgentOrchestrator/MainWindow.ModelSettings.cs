@@ -60,7 +60,7 @@ public partial class MainWindow
         {
             Text = OverrideText(file) ?? fallback, Tag = "Prompt:" + file, Height = 180, Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(8, 6, 8, 6),
             AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, IsReadOnly = true,
-            VerticalContentAlignment = VerticalAlignment.Top, FontFamily = new FontFamily("Consolas"),
+            VerticalContentAlignment = VerticalAlignment.Top, FontFamily = AppFonts.Mono,
         };
         box.SetResourceReference(ForegroundProperty, "Muted");
         var title = new TextBlock { FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom, ToolTip = $"prompts/{file}" };
@@ -315,7 +315,7 @@ public partial class MainWindow
                 {
                     var box = Box(value, o.Key, wide ? 76 : 30);
                     if (o.Kind is ModelOptions.Kind.Multiline or ModelOptions.Kind.ArgList)
-                        box.FontFamily = new FontFamily("Consolas");
+                        box.FontFamily = AppFonts.Mono;
                     editor = box;
                 }
                 editors[o.Key] = editor;
@@ -389,7 +389,7 @@ public partial class MainWindow
                             box.Text = of(KindOf(k));
                 };
             Explain();
-            prompt.FontFamily = new FontFamily("Consolas");
+            prompt.FontFamily = AppFonts.Mono;
             var remove = new Button { Content = "Remove worker", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0) };
             remove.Click += (_, _) =>
             {
@@ -423,7 +423,7 @@ public partial class MainWindow
             // The Chat view: an optional prompt of the user's. The Code view: the role's fixed workflow prompts, read only
             // (the multi-agent workflow depends on them). ApplyPromptView shows the one for the view on screen.
             chatPrompt = Box(followsMain ? "" : (string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120);
-            chatPrompt.FontFamily = new FontFamily("Consolas");
+            chatPrompt.FontFamily = AppFonts.Mono;
             if (card.Role != LauncherLogic.Compactor) // COMPACTOR never chats
             {
                 var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");

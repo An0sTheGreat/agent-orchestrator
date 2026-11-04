@@ -5,7 +5,7 @@
         xmlns:local="clr-namespace:AgentOrchestrator"
         Title="Agent Orchestrator" Width="1400" Height="860" MinWidth="1040" MinHeight="620"
         WindowStartupLocation="CenterScreen" WindowStyle="None" ResizeMode="CanResize" Icon="/Assets/app.ico"
-        Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI Variable Text, Segoe UI" FontSize="13"
+        Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="pack://application:,,,/Fonts/#Inter, Segoe UI" FontSize="13"
         TextOptions.TextFormattingMode="Ideal">
     <shell:WindowChrome.WindowChrome>
         <shell:WindowChrome CaptionHeight="0" ResizeBorderThickness="6" CornerRadius="0"
@@ -29,7 +29,9 @@
         <CornerRadius x:Key="CardRadius">14</CornerRadius>
         <CornerRadius x:Key="PanelRadius">14</CornerRadius>
         <CornerRadius x:Key="SmallRadius">10</CornerRadius>
-        <FontFamily x:Key="DisplayFont">Segoe UI Variable Display, Segoe UI</FontFamily>
+        <!-- The bundled fonts (AppFonts): Newsreader for titles, JetBrains Mono for code and figures -->
+        <FontFamily x:Key="DisplayFont">pack://application:,,,/Fonts/#Newsreader 16pt, Georgia</FontFamily>
+        <FontFamily x:Key="MonoFont">pack://application:,,,/Fonts/#JetBrains Mono, Consolas</FontFamily>
 
         <!-- Material: raised surfaces carry a 1 px EdgeHighlight rim (light at the top edge, fading out), and fade in an
              AccentEdge rim on hover through an overlay named HoverFill. ApplyTheme / ApplyAccent build these brushes,
@@ -887,7 +889,7 @@
                                     <Style.Triggers><DataTrigger Binding="{Binding IsActive}" Value="True"><Setter Property="Background" Value="{DynamicResource Accent}" /></DataTrigger></Style.Triggers>
                                 </Style>
                             </Border.Style>
-                            <TextBlock Text="{Binding Status}" FontSize="10" FontFamily="Consolas" FontWeight="Bold">
+                            <TextBlock Text="{Binding Status}" FontSize="10" FontFamily="{StaticResource MonoFont}" FontWeight="Bold">
                                 <TextBlock.Style>
                                     <Style TargetType="TextBlock">
                                         <Setter Property="Foreground" Value="{DynamicResource Muted}" />
@@ -1659,8 +1661,8 @@
         <!-- Status bar -->
         <Border Grid.Row="3" Grid.Column="1" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
             <DockPanel Margin="14,0" LastChildFill="False">
-                <TextBlock x:Name="FooterRight" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" />
-                <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="Consolas" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                <TextBlock x:Name="FooterRight" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             </DockPanel>
         </Border>
 

@@ -90,7 +90,9 @@ internal static class Markdown
                 var level = heading.Groups[1].Length;
                 var p = Para();
                 p.FontSize = fontSize * (level switch { 1 => 1.5, 2 => R(1.3, 1.25), 3 => R(1.15, 1.06), _ => 1.0 });
-                p.FontWeight = Roomy && level >= 3 ? FontWeights.Bold : FontWeights.SemiBold;
+                // headings in the serif, as Claude's: Medium for the top levels, SemiBold below (the weights Fonts\ has)
+                p.FontFamily = AppFonts.Serif;
+                p.FontWeight = level <= 2 ? FontWeights.Medium : FontWeights.SemiBold;
                 p.LineHeight = Roomy ? Math.Round(p.FontSize * 1.3) : double.NaN;
                 // more room above than below: a heading belongs to the section under it (a reply's first block has none: NoTopMargin)
                 p.Margin = new Thickness(0, level <= 2 ? R(14, 26) : R(10, 20), 0, R(4, 8));
@@ -224,7 +226,7 @@ internal static class Markdown
     // copying, and keeping it in view while the block scrolls (its TranslateTransform).
     private static Block CodeBlock(string code, string language)
     {
-        var text = new TextBlock { FontFamily = new FontFamily("Consolas"), FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
+        var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
         if (Roomy)
             text.LineHeight = 20;
         foreach (var (piece, color) in Highlight(code, language))
@@ -383,7 +385,7 @@ internal static class Markdown
             if (m.Groups["codetext"].Success)
             {
                 // inline code keeps the text colour on a light chip, like other AI chat apps
-                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = new FontFamily("Consolas") };
+                var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = AppFonts.Mono };
                 code.SetResourceReference(TextElement.BackgroundProperty, "InlineCode");
                 target.Add(code);
             }

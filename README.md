@@ -97,4 +97,6 @@ This project grows from what its users ask for, so tell us what you'd like to se
 - [Reference](docs/reference.md): every feature, setting and command-line option in detail
 - [Remote access](docs/remote-access.md): how the phone and browser access works and how it is secured
 
+The app ships with three open fonts, [Inter](https://rsms.me/inter/), [Newsreader](https://github.com/productiontype/Newsreader) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), under the SIL Open Font License (`launcher/AgentOrchestrator/Fonts`).
+
 The screenshots in this README come from the app itself: `"Agent Orchestrator.exe" --screenshots <folder>` renders them off-screen from a seeded data folder (`AGENT_ORCHESTRATOR_DATA`).

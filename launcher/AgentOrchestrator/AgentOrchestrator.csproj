@@ -21,6 +21,8 @@
   <ItemGroup>
     <Resource Include="Assets\app.ico" />
     <Resource Include="Assets\title.png" />
+    <!-- Inter, Newsreader and JetBrains Mono (SIL Open Font License; the licenses are beside them in Fonts\) -->
+    <Resource Include="Fonts\*.ttf" />
     <None Remove="Assets\make_icon.py" />
     <EmbeddedResource Include="remote.html" LogicalName="remote.html" />
   </ItemGroup>
