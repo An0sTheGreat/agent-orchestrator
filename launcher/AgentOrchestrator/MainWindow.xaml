@@ -1227,7 +1227,7 @@
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
                                 <!-- placeholder in the empty box, where the caret is; gone once typing starts (RefreshChatInput) -->
                                 <TextBlock x:Name="CodeHint" Grid.Column="1" Text="Enter to send, Shift+Enter for a new line" Foreground="{DynamicResource Muted}"
-                                           FontSize="{Binding FontSize, ElementName=CodeInput}" Margin="10,0,8,0" VerticalAlignment="Center"
+                                           FontSize="{Binding FontSize, ElementName=CodeInput}" Margin="15,0,8,0" VerticalAlignment="Center"
                                            TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                                 <TextBlock x:Name="CodeBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                            MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
@@ -1491,7 +1491,7 @@
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
                             <!-- placeholder in the empty box, where the caret is; gone once typing starts (RefreshChatInput) -->
                             <TextBlock x:Name="ChatHint" Grid.Column="1" Text="Enter to send, Shift+Enter for a new line" Foreground="{DynamicResource Muted}"
-                                       FontSize="{Binding FontSize, ElementName=ChatInput}" Margin="10,0,8,0" VerticalAlignment="Center"
+                                       FontSize="{Binding FontSize, ElementName=ChatInput}" Margin="15,0,8,0" VerticalAlignment="Center"
                                        TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                             <TextBlock x:Name="ChatBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                        MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
