@@ -1185,6 +1185,11 @@
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
+                                <!-- the hint sits on the typing line, right of where the caret runs: a one-line box at the bottom, as the input's last line -->
+                                <Grid Grid.Column="2" Height="34" VerticalAlignment="Bottom" Margin="0,0,8,0">
+                                    <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11"
+                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                                </Grid>
                                 <TextBlock x:Name="CodeBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                            MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                                 <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
@@ -1229,7 +1234,6 @@
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE9D5;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Reviewer" /></StackPanel>
                                     </ToggleButton>
                                 </WrapPanel>
-                                <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                             </DockPanel>
                         </Grid>
                     </Border>
@@ -1419,6 +1423,11 @@
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                      VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
+                            <!-- the hint sits on the typing line, right of where the caret runs: a one-line box at the bottom, as the input's last line -->
+                            <Grid Grid.Column="2" Height="34" VerticalAlignment="Bottom" Margin="0,0,8,0">
+                                <TextBlock x:Name="ChatHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11"
+                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                            </Grid>
                             <TextBlock x:Name="ChatBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                        MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                             <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
@@ -1454,7 +1463,6 @@
                                     <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
                                 </ToggleButton>
                             </WrapPanel>
-                            <TextBlock x:Name="ChatHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         </DockPanel>
                     </Grid>
                 </Border>

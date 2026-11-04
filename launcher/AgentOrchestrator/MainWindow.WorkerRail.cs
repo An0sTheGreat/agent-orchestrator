@@ -66,6 +66,7 @@ public partial class MainWindow
         SplitterColumn.Width = new GridLength(collapsed ? 0 : 6);
         void Settle()
         {
+            PinConversations(false);
             page.ClearValue(WidthProperty);
             page.HorizontalAlignment = HorizontalAlignment.Stretch;
             page.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible; // (an interrupted slide's cleanup may have hidden it)
@@ -83,7 +84,20 @@ public partial class MainWindow
         page.Width = collapsed ? from : target;
         page.HorizontalAlignment = HorizontalAlignment.Left;
         DetailsColumn.MinWidth = 0;
+        PinConversations(true);
         TweenColumn(from, collapsed ? WorkerRail.Width : target, Settle);
+    }
+
+    // While the column slides, the conversations keep their width: otherwise every message (a large chat's hundreds of
+    // documents) re-wraps on every frame and the slide stutters. They reflow once, when it settles.
+    private void PinConversations(bool pin)
+    {
+        // (at start-up the column settles before the conversations exist)
+        foreach (var panel in new FrameworkElement?[] { _chat?.Panel, _parked?.Panel, CodePanel, ChatComposer, CodeComposer }.OfType<FrameworkElement>())
+            if (!pin)
+                panel.ClearValue(WidthProperty);
+            else if (panel.ActualWidth > 0)
+                panel.Width = panel.ActualWidth;
     }
 
     // A ColumnDefinition's GridLength width can't take a DoubleAnimation, so the slide is stepped each frame.

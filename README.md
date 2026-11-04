@@ -8,6 +8,20 @@ Big cloud models are impressive, but they cost money, send your code somewhere e
 
 ## Why you'll like it
 
+### Big projects, small models: Start project
+
+> **This is what Agent Orchestrator is built for.** Start project lets small local models, the 4B to 27B ones that fit on one consumer GPU, finish large tasks on their own, the kind that would normally need a much bigger cloud model.
+
+A small model can write good code, but it loses its way in a long task: its context fills up, it forgets what it already did, and an early mistake quietly spoils everything after it. Start project is a harness designed around those limits:
+
+- **One item at a time.** You describe the goal in `PROJECT.md`. The Lead works through it one small, checkable item at a time, so each step stays well inside what a small model can handle.
+- **Every item is reviewed before it counts.** When the Lead says an item is done, the Reviewer checks it with a fresh context, reading the item, the goal and the exact file changes, and answers PASS or FAIL. Only a PASS is recorded. A FAIL goes back to the Lead with the Reviewer's defects to fix.
+- **Progress lives on disk, not in the model's memory.** Finished items are written to `STATE.md`. The Lead sees that list on every step, so nothing is redone or lost, even after its context is compacted, and a stopped run picks up where it left off.
+- **The context stays small.** The Compactor, which can run its own small model, summarizes old steps, so a long run never overflows the model's window.
+- **Changes stay safe.** Commands run in a sandbox, and the Lead can't rewrite its own records: only a reviewed item reaches `STATE.md`.
+
+Write or generate a `PROJECT.md`, press **Start project**, and come back to verified, recorded work.
+
 ### Multi-agent workflows without the wiring
 
 Setting up several agents usually means config files, ports and scripts. Here it's a row of cards. Each worker (Lead, Implementer, Reviewer, Compactor and any you add) gets its own model, picked from a list of the models you have installed, with context length and sampling settings right beside it. Save a setup as a preset and switch between setups in one click.
