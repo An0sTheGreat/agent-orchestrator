@@ -6,6 +6,7 @@
   "validation_commands": {},
   "roles": {
     "planner": {
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Qwen3.5-4B-GGUF",
@@ -35,6 +36,7 @@
       "display_name": "Qwen3.5-4B"
     },
     "implementer": {
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF",
@@ -65,6 +67,7 @@
       "display_name": "Qwen2.5-Coder-3B-Instruct"
     },
     "reviewer": {
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Phi-4-mini-instruct-GGUF",
