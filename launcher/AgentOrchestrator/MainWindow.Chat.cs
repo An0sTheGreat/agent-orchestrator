@@ -138,6 +138,7 @@ public partial class MainWindow
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
         CodeReviewerToggle.IsChecked = _settings.ReviewEveryTurn;
+        ShowFooterPath();
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
         SelectTagged(LinkOpenBox, _settings.LinkOpen);
@@ -185,6 +186,8 @@ public partial class MainWindow
         }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
+        // the Add agent card lines up with the cards (the test build's sit under their group labels)
+        AddWorkerButton.Margin = new Thickness(AppSettings.Unified ? 4 : 0, AppSettings.Unified ? 17 : 0, 0, 8);
         if (!AppSettings.Unified)
             return;
         // The test build's groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the
@@ -385,6 +388,21 @@ public partial class MainWindow
             ClearConversation(_chat);
             _turn = turn;
         }
+    }
+
+    // The status bar's eye: the folder path shown or hidden (for screenshots), saved.
+    private void FooterPath_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ShowFooterPath = !_settings.ShowFooterPath;
+        _settings.Save();
+        ShowFooterPath();
+    }
+
+    private void ShowFooterPath()
+    {
+        FooterLeft.Visibility = _settings.ShowFooterPath ? Visibility.Visible : Visibility.Hidden;
+        FooterPathGlyph.Text = _settings.ShowFooterPath ? "" : ""; // an eye; the eye struck through
+        FooterPathToggle.ToolTip = _settings.ShowFooterPath ? "Hide the folder path" : "Show the folder path";
     }
 
     // Code's Reviewer chip: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn); off, turns run as before.

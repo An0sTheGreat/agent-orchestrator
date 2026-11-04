@@ -1284,25 +1284,44 @@
                 </DockPanel>
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
-                    <Button x:Name="AddWorkerButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="+" FontSize="16" Width="28" Padding="0,0,0,2"
-                            Margin="4,0,0,8" Click="AddWorker_Click" ToolTip="Add a custom worker" AutomationProperties.Name="Add worker" />
                     <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                                   SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
-                        <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
-                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemContainerStyle>
-                                <Style TargetType="ContentPresenter">
-                                    <Style.Triggers>
-                                        <MultiDataTrigger>
-                                            <MultiDataTrigger.Conditions>
-                                                <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
-                                            </MultiDataTrigger.Conditions>
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                        </MultiDataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </ItemsControl.ItemContainerStyle>
-                        </ItemsControl>
+                        <StackPanel Orientation="Horizontal">
+                            <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                            </ItemsControl>
+                            <!-- Add agent: a card of its own after the last one (custom workers; Chat's "+" also shows or hides agents) -->
+                            <Button x:Name="AddWorkerButton" Width="96" Margin="0,0,0,8" Click="AddWorker_Click" Cursor="Hand"
+                                    ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Grid x:Name="AddBox" Background="Transparent" MinHeight="72">
+                                            <Rectangle x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="4 3" RadiusX="8" RadiusY="8" />
+                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                                <TextBlock Text="Add agent" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="AddBox" Property="Opacity" Value="0.45" /></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
                 <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
@@ -1526,6 +1545,13 @@
                             <TextBlock Text="Agents" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Plugins" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Plugins">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xEA86;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Plugins" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
                     </StackPanel>
                 </DockPanel>
                 <Border Grid.Column="1" Width="1" Background="{DynamicResource Border}" />
@@ -1693,16 +1719,6 @@
                         </DockPanel>
                         <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
-                        <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
-                        <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
-                        </WrapPanel>
-                        <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
                         <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1715,6 +1731,20 @@
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <!-- Plugins: prompt add-ons and, later, other extensions -->
+                    <StackPanel Tag="Plugins" Visibility="Collapsed">
+                        <TextBlock Text="Plugins" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
+                        <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
+                        <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
+                        </WrapPanel>
+                        <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                 </Grid>
@@ -1731,6 +1761,11 @@
         <Border Grid.Row="3" Grid.Column="1" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
             <DockPanel Margin="14,0" LastChildFill="False">
                 <TextBlock x:Name="FooterRight" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" />
+                <!-- The eye: shows or hides the folder path (for screenshots); saved -->
+                <Button x:Name="FooterPathToggle" Style="{StaticResource GhostButton}" Padding="4,2" Margin="-6,0,6,0" VerticalAlignment="Center" Click="FooterPath_Click"
+                        ToolTip="Hide the folder path" AutomationProperties.Name="Show or hide the folder path">
+                    <TextBlock x:Name="FooterPathGlyph" Text="&#xE890;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                </Button>
                 <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             </DockPanel>
         </Border>

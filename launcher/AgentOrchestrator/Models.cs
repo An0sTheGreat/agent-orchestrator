@@ -250,6 +250,7 @@ internal sealed class AppSettings
     public string LinkOpen { get; set; } = "";
     // The most browser tabs the model opens on its own (Follow the model): 3 to 10; 0 = unlimited. The user's own are extra.
     public int FollowTabs { get; set; } = 5;
+    public bool ShowFooterPath { get; set; } = true; // the status bar's folder path (the eye beside it hides it)
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

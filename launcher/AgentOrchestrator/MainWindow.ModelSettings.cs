@@ -1543,6 +1543,14 @@ public partial class MainWindow
             // fields (no model_path: the load options empty again), so Save is not refused.
             if (await FakeItem() is not { } fakeItem || !Model().IsEnabled)
                 return Fail("the model list");
+            // A press anywhere in the window closes it at once (StaysOpen alone missed presses while the search box held the
+            // mouse, so it stayed open, and a rebuilt tab left it at the window's corner)
+            await Task.Delay(450); // past JustClosed, so the release opens it again
+            Model().RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonUpEvent });
+            await Until(() => _modelPickerTest is { IsOpen: true });
+            RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent });
+            if (_modelPickerTest is not { IsOpen: false })
+                return Fail("a press outside the model picker");
             snap("tabs-settings", null);
             SmokeField("top_k").Text = "33";
             _modelPickerTest!.Choose(fakeItem); // an unreadable GGUF: the static defaults
