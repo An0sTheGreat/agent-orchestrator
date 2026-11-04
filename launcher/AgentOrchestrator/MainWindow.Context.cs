@@ -163,7 +163,32 @@ public partial class MainWindow
 
     // Centered conversations leave room beside them: there the ring pins its card open (saved), showing the open chat's
     // context as it changes. Without that room (or with centering off) the ring opens the usual popup.
-    private const double PinWidth = 280;
+    private const double PinWidth = 314; // a rail worker card's width (RailPopup: 320 less its 6 gap)
+
+    // Chat and Code place the context card alike: level with the header's Context button, its right edge where a rail
+    // worker card's is (6 left of the collapsed rail), else the button's.
+    private Thickness PinMargin(FrameworkElement area, FrameworkElement ring)
+    {
+        AlignContextRing(ring);
+        area.UpdateLayout();
+        var corner = ring.TranslatePoint(new Point(ring.ActualWidth, 0), area);
+        return new Thickness(0, corner.Y, Math.Max(0, area.ActualWidth - corner.X), 0);
+    }
+
+    // The header button itself moves so its right edge is a rail worker card's (12 from the header's edge without the rail).
+    private void AlignContextRing(FrameworkElement ring)
+    {
+        if (ring.Parent is not FrameworkElement header)
+            return;
+        var right = 12.0;
+        if (WorkerRail.IsVisible)
+        {
+            header.UpdateLayout();
+            right = Math.Max(0, header.ActualWidth - (WorkerRail.TranslatePoint(new Point(), header).X - 6));
+        }
+        if (Math.Abs(ring.Margin.Right - right) > 0.5)
+            ring.Margin = new Thickness(0, 0, right, 0);
+    }
 
     private bool CanPin(bool code)
     {
@@ -213,7 +238,9 @@ public partial class MainWindow
 
     private void RefreshCodeContextStack()
     {
-        CodeContextRing.Visibility = Visibility.Collapsed; // the stack replaces the header button in Code
+        // The stack replaces the header button in Code; hidden, the button keeps the place the stack lines up with (as Chat's).
+        CodeContextRing.Visibility = Visibility.Hidden;
+        CodeContextRing.Content = ContextFace(null, null, PinWidth, bordered: true, ContextTitle(CodeLead));
         var entries = _codeContexts.OrderBy(p => p.Key != CodeLead).Select(p => (Role: p.Key, Snapshot: (ContextSnapshot?)p.Value)).ToList();
         if (entries.All(e => e.Role != CodeLead))
             entries.Insert(0, (CodeLead, null));
@@ -250,7 +277,8 @@ public partial class MainWindow
         }
         CodeContextPin.Content = stack;
         CodeContextPin.Visibility = Visibility.Visible;
-        CodeContextPin.Margin = new Thickness(0, 6, 20, 0); // the conversation's right edge (Start now sits in the title bar)
+        if (CodeContextPin.Parent is FrameworkElement area)
+            CodeContextPin.Margin = PinMargin(area, CodeContextRing);
         ReserveCodeContextStack();
     }
 
@@ -290,11 +318,14 @@ public partial class MainWindow
             var s = ContextOf(code);
             var room = CanPin(code);
             var label = code ? ContextTitle(CodeLead) : "Context";
-            ring.Content = ContextFace(s, null, room ? PinWidth : double.NaN, bordered: true, label);
+            ring.Content = ContextFace(s, null, PinWidth, bordered: true, label);
             ring.Opacity = room ? 0 : 1; // the card over it is the one shown
             pin.Visibility = room ? Visibility.Visible : Visibility.Collapsed;
             if (!room)
+            {
+                AlignContextRing(ring);
                 continue;
+            }
             var overlay = OverlayFor(code);
             var open = _settings.ContextPinned || overlay.Closing;
             overlay.Header.Content = ContextFace(s, overlay.Arrow, double.NaN, bordered: false, label);
@@ -303,11 +334,7 @@ public partial class MainWindow
             if (overlay.Body.HasAnimatedProperties == false)
                 overlay.Body.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
             if (pin.Parent is FrameworkElement area && ring.IsVisible)
-            {
-                area.UpdateLayout();
-                var corner = ring.TranslatePoint(new Point(ring.ActualWidth, 0), area);
-                pin.Margin = new Thickness(0, corner.Y, Math.Max(0, area.ActualWidth - corner.X), 0); // exactly over the header button
-            }
+                pin.Margin = PinMargin(area, ring);
         }
     }
 
@@ -520,8 +547,8 @@ public partial class MainWindow
     private Popup ContextPopup(ContextSnapshot s, FrameworkElement anchor)
     {
         var card = ContextCard(s);
-        card.Child.SetValue(WidthProperty, 280.0);
-        return new Popup { Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, HorizontalOffset = -262, VerticalOffset = 6,
+        card.Width = PinWidth; // under the header button, edges flush with it
+        return new Popup { Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, HorizontalOffset = anchor.ActualWidth - PinWidth, VerticalOffset = 6,
             StaysOpen = false, AllowsTransparency = true, PopupAnimation = PopupAnimation.Fade };
     }
 

@@ -38,6 +38,7 @@ public partial class MainWindow
     private void InitComposerLanding()
     {
         InitStartSlide();
+        WorkerRail.IsVisibleChanged += (_, _) => Dispatcher.BeginInvoke(RefreshContextPins); // the cards line up with the rail's
         foreach (var (box, empty, panel) in new[] { (ChatComposer, (FrameworkElement)ChatEmpty, (Panel)ChatPanel), (CodeComposer, CodeEmpty, CodePanel) })
         {
             box.RenderTransform = new TranslateTransform();

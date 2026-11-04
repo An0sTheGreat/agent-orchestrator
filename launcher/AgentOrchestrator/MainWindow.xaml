@@ -1166,7 +1166,7 @@
                         <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
                                    Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
-                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
+                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
@@ -1186,7 +1186,7 @@
                             <StackPanel x:Name="CodePanel" Margin="20,0,12,12" />
                         </ScrollViewer>
                         <!-- The context card pinned open by the ring (centered conversations with room beside them; MainWindow.Context.cs) -->
-                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed"
+                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="314" Margin="0,0,20,0" Visibility="Collapsed"
                                         SizeChanged="CodeContextPin_SizeChanged" />
                         <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
@@ -1462,7 +1462,7 @@
                                   SizeChanged="ConversationScroll_SizeChanged">
                         <StackPanel x:Name="ChatPanel" Margin="20,0,12,12" />
                     </ScrollViewer>
-                    <ContentControl x:Name="ChatContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed" />
+                    <ContentControl x:Name="ChatContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="314" Margin="0,0,20,0" Visibility="Collapsed" />
                     <StackPanel x:Name="ChatEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                         <TextBlock Text="Start a conversation" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
                         <TextBlock Text="Ask anything; the model can hand parts off to other workers when needed." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
