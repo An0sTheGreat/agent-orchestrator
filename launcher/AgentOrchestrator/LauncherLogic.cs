@@ -31,9 +31,9 @@ internal static class LauncherLogic
     }
 
     // requestFile: a Code request (BuildCodeRequest) giving the run a Code turn's tools; the project stays folders[0].
-    public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, string apiKey, bool once, string requestFile = "")
+    public static ProcessStartInfo BuildStartInfo(string python, string workflowRoot, string projectRoot, bool once, string requestFile = "")
     {
-        var info = NewStartInfo(python, workflowRoot, apiKey);
+        var info = NewStartInfo(python, workflowRoot);
         info.ArgumentList.Add("--project");
         info.ArgumentList.Add(projectRoot);
         info.ArgumentList.Add("--non-interactive");
@@ -329,9 +329,9 @@ internal static class LauncherLogic
             summary_covers = summary.Length > 0 ? summaryCovers : 0,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
-    public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string apiKey, string requestFile)
+    public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string requestFile)
     {
-        var info = NewStartInfo(python, workflowRoot, apiKey);
+        var info = NewStartInfo(python, workflowRoot);
         info.ArgumentList.Add("--project");
         info.ArgumentList.Add(folder);
         info.ArgumentList.Add("--chat");
@@ -374,9 +374,9 @@ internal static class LauncherLogic
             effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
-    public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string apiKey, string requestFile)
+    public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string requestFile)
     {
-        var info = NewStartInfo(python, workflowRoot, apiKey);
+        var info = NewStartInfo(python, workflowRoot);
         info.ArgumentList.Add("--project");
         info.ArgumentList.Add(configFolder);
         info.ArgumentList.Add("--events");
@@ -469,7 +469,7 @@ internal static class LauncherLogic
         }
     }
 
-    private static ProcessStartInfo NewStartInfo(string python, string workflowRoot, string apiKey)
+    private static ProcessStartInfo NewStartInfo(string python, string workflowRoot)
     {
         var info = new ProcessStartInfo
         {
@@ -484,14 +484,12 @@ internal static class LauncherLogic
             CreateNoWindow = true,
         };
         info.ArgumentList.Add(Path.Combine(workflowRoot, "orchestrator.py"));
-        info.Environment["UNSLOTH_API_KEY"] = apiKey;
         info.Environment["PYTHONUNBUFFERED"] = "1";
         return info;
     }
 
-    // ---- local runtime: llama.cpp's llama-server instead of Unsloth Studio
+    // ---- local runtime: llama.cpp's llama-server
 
-    public const string LlamaRuntime = "llamacpp";
     // Recent releases, newest first: llama.cpp publishes its builds (b1234) as prereleases, and "latest" can be a tag
     // without any binaries.
     public const string LlamaReleaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
@@ -500,16 +498,11 @@ internal static class LauncherLogic
     // The engine keeps one llama-server and records it here: {"pid", "port", "signature", "model_file", "log"}.
     public static string LlamaStateFile => Path.Combine(Path.GetTempPath(), "agent-orchestrator-llama.json");
 
-    private static readonly string[] RuntimeVariables = ["AGENT_ORCHESTRATOR_BACKEND", "AGENT_ORCHESTRATOR_LLAMA_SERVER", "AGENT_ORCHESTRATOR_GGUF_DIRS"];
-
-    // Tells an orchestrator process which runtime to use. Unsloth: none of the variables (even ones the launcher inherited).
-    public static void ApplyRuntimeEnv(ProcessStartInfo info, string runtime, string llamaServer, string? modelsFolder)
+    // Tells an orchestrator process where llama-server and the models folder are (never values the launcher inherited).
+    public static void ApplyRuntimeEnv(ProcessStartInfo info, string llamaServer, string? modelsFolder)
     {
-        foreach (var name in RuntimeVariables)
+        foreach (var name in new[] { "AGENT_ORCHESTRATOR_BACKEND", "AGENT_ORCHESTRATOR_GGUF_DIRS" })
             info.Environment.Remove(name);
-        if (runtime != LlamaRuntime)
-            return;
-        info.Environment["AGENT_ORCHESTRATOR_BACKEND"] = LlamaRuntime;
         info.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] = llamaServer;
         if (!string.IsNullOrWhiteSpace(modelsFolder))
             info.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] = modelsFolder;
@@ -905,24 +898,6 @@ internal static class LauncherLogic
     public static string[] MissingProjectFiles(string projectRoot) =>
         ProjectFiles.Where(name => !File.Exists(Path.Combine(projectRoot, name))).ToArray();
 
-    public static (string Key, string Path)? FindApiKeyFile(string workflowRoot, string executableDirectory)
-    {
-        foreach (var path in new[]
-        {
-            Path.Combine(executableDirectory, "api_key.txt"),
-            Path.Combine(workflowRoot, "api_key.txt"),
-        }.Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (!File.Exists(path))
-                continue;
-            var lines = File.ReadAllLines(path);
-            if (lines.Length != 1 || string.IsNullOrWhiteSpace(lines[0]))
-                throw new InvalidDataException($"{path} must contain exactly one nonblank line.");
-            return (lines[0].Trim(), path);
-        }
-        return null;
-    }
-
     public static string[] InitializeProject(
         string workflowRoot, string projectRoot, string? customProjectFile = null, string? customConfigFile = null)
     {
@@ -1061,27 +1036,16 @@ internal static class LauncherLogic
         return null;
     }
 
-    // A role on a remote OpenAI-compatible API: config.json gives its model id and no Unsloth management_url, so the
+    // A role on a remote OpenAI-compatible API: config.json gives its model id and no auto_load, so the
     // orchestrator neither loads nor monitors it. The key itself stays in the environment variable KeyEnv.
     public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout);
 
-    // The Unsloth keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
-    private static readonly string[] LocalKeys = ["base_url", "management_url", "api_key_env", "api_key", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
+    // The local (llama.cpp) keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
+    private static readonly string[] LocalKeys = ["base_url", "api_key_env", "api_key", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
 
     public static ModelInfo RemoteModelInfo(string model) => new(model, "—", "Remote");
 
-    public static bool IsRemote(JsonNode? role) => role?["management_url"] is null && role?["model"] is JsonValue;
-
-    // Whether a run talks to the local Unsloth server (needs its key, can poll its monitor): some role or custom
-    // worker in the config has a management_url. With llama.cpp as the local runtime a role that also has auto_load is served
-    // by llama-server; one without auto_load expects a model already loaded in Unsloth, so it still counts.
-    public static bool UsesUnsloth(JsonElement config, bool llamaRuntime = false)
-    {
-        bool Has(JsonElement e) => e.ValueKind == JsonValueKind.Object && e.TryGetProperty("management_url", out _) &&
-                                   !(llamaRuntime && e.TryGetProperty("auto_load", out _));
-        return config.TryGetProperty("roles", out var roles) && roles.ValueKind == JsonValueKind.Object && roles.EnumerateObject().Any(r => Has(r.Value)) ||
-               config.TryGetProperty("custom_workers", out var workers) && workers.ValueKind == JsonValueKind.Array && workers.EnumerateArray().Any(Has);
-    }
+    public static bool IsRemote(JsonNode? role) => role?["auto_load"] is null && role?["model"] is JsonValue;
 
     public static RemoteRole? ReadRemoteRole(string configPath, string role)
     {
@@ -1099,14 +1063,12 @@ internal static class LauncherLogic
             return "Enter the model id the API expects, e.g. openai/gpt-4o-mini.";
         if (!Regex.IsMatch(remote.KeyEnv.Trim(), "^[A-Za-z_][A-Za-z0-9_]*$"))
             return "API key variable must be an environment variable name, e.g. OPENAI_API_KEY (not the key itself).";
-        if (remote.KeyEnv.Trim().Equals("UNSLOTH_API_KEY", StringComparison.OrdinalIgnoreCase))
-            return "UNSLOTH_API_KEY holds the local Unsloth key; use the remote API's own variable, e.g. OPENAI_API_KEY.";
         if (remote.Timeout.Trim().Length > 0 && !(long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var t) && t is >= 1 and <= 86400))
             return "Timeout must be a whole number of seconds from 1 to 86400 (or empty).";
         return null;
     }
 
-    // remote: switch the role to (or edit) Remote mode; null: switch it back to the local Unsloth flow, restoring the
+    // remote: switch the role to (or edit) Remote mode; null: switch it back to local llama.cpp, restoring the
     // saved local_settings, else the template's (templatePath, only read) values for this role. Error message or null.
     public static string? WriteRemoteRole(string configPath, string role, RemoteRole? remote, string templatePath)
     {
@@ -1480,7 +1442,7 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return false; }
     }
 
-    // The implementer's local Unsloth settings: the role itself, or when it is Remote the local_settings it saved,
+    // The implementer's local settings: the role itself, or when it is Remote the local_settings it saved,
     // else the template's (templatePath, only read). Null when none is known.
     private static JsonObject? LocalImplementer(JsonObject? implementer, string? templatePath)
     {
@@ -1700,20 +1662,20 @@ internal static class LauncherLogic
         }
         catch (InvalidOperationException e) when (e.Message.Contains("no Windows x64 build")) { }
 
-        var local = BuildChatStartInfo("python.exe", root, @"Y:\p", "", @"Y:\req.json");
+        var local = BuildChatStartInfo("python.exe", root, @"Y:\p", @"Y:\req.json");
         local.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] = @"Y:\stale"; // inherited from the launcher's own environment
-        ApplyRuntimeEnv(local, LlamaRuntime, @"Y:\data\llama.cpp\llama-server.exe", @"Y:\models");
-        var unsloth = BuildStartInfo("python.exe", root, @"Y:\p", "k", true);
-        unsloth.Environment["AGENT_ORCHESTRATOR_BACKEND"] = "llamacpp";
-        ApplyRuntimeEnv(unsloth, "unsloth", @"Y:\data\llama.cpp\llama-server.exe", @"Y:\models");
-        var noFolder = BuildCodeStartInfo("python.exe", root, @"Y:\p", "", @"Y:\code.json");
+        local.Environment["AGENT_ORCHESTRATOR_BACKEND"] = "other";
+        ApplyRuntimeEnv(local, @"Y:\data\llama.cpp\llama-server.exe", @"Y:\models");
+        var noFolder = BuildCodeStartInfo("python.exe", root, @"Y:\p", @"Y:\code.json");
         noFolder.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] = @"Y:\stale";
-        ApplyRuntimeEnv(noFolder, LlamaRuntime, @"Y:\s.exe", "");
-        if (local.Environment["AGENT_ORCHESTRATOR_BACKEND"] != "llamacpp" || local.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] != @"Y:\data\llama.cpp\llama-server.exe" ||
-            local.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] != @"Y:\models" || RuntimeVariables.Any(unsloth.Environment.ContainsKey) ||
-            unsloth.Environment["UNSLOTH_API_KEY"] != "k" || noFolder.Environment.ContainsKey("AGENT_ORCHESTRATOR_GGUF_DIRS") ||
+        ApplyRuntimeEnv(noFolder, @"Y:\s.exe", "");
+        if (local.Environment.ContainsKey("AGENT_ORCHESTRATOR_BACKEND") || local.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] != @"Y:\data\llama.cpp\llama-server.exe" ||
+            local.Environment["AGENT_ORCHESTRATOR_GGUF_DIRS"] != @"Y:\models" || noFolder.Environment.ContainsKey("AGENT_ORCHESTRATOR_GGUF_DIRS") ||
             noFolder.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] != @"Y:\s.exe")
             throw new InvalidOperationException("Runtime environment failed.");
+        // settings.json from before llama.cpp was the only runtime (Runtime, an API key) still loads.
+        if (JsonSerializer.Deserialize<AppSettings>("{\"Runtime\":\"unsloth\",\"ApiKey\":\"k\",\"ModelsFolder\":\"Y:\\\\m\"}")?.ModelsFolder != @"Y:\m")
+            throw new InvalidOperationException("An old settings.json did not load.");
 
         var area = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-llama-{Guid.NewGuid():N}");
         try
@@ -1829,20 +1791,18 @@ internal static class LauncherLogic
             FormatElapsed(TimeSpan.FromSeconds(3725)) != "1:02:05" || FormatElapsed(TimeSpan.FromHours(25)) != "25:00:00")
             throw new InvalidOperationException("Elapsed time formatting failed.");
         var root = FindWorkflowRoot() ?? throw new InvalidOperationException("Workflow root discovery failed.");
-        var info = BuildStartInfo("python.exe", root, @"Y:\Example Project", "test-key", true);
+        var info = BuildStartInfo("python.exe", root, @"Y:\Example Project", true);
         if (!info.ArgumentList.Contains("--once") || !info.ArgumentList.Contains("--non-interactive") || info.ArgumentList.Contains("--request"))
             throw new InvalidOperationException("Argument construction failed.");
-        var runArgs = BuildStartInfo("python.exe", root, @"Y:\Example Project", "k", false, @"Y:\run.json").ArgumentList;
+        var runArgs = BuildStartInfo("python.exe", root, @"Y:\Example Project", false, @"Y:\run.json").ArgumentList;
         if (runArgs.IndexOf("--request") < 0 || runArgs[runArgs.IndexOf("--request") + 1] != @"Y:\run.json")
             throw new InvalidOperationException("A project run must pass its Code request.");
-        if (info.Environment["UNSLOTH_API_KEY"] != "test-key")
-            throw new InvalidOperationException("API key environment handling failed.");
 
-        var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\req.json");
+        var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", @"Y:\req.json");
         var chatArgs = chatInfo.ArgumentList;
         if (chatArgs.IndexOf("--chat") < 0 || chatArgs[chatArgs.IndexOf("--chat") + 1] != @"Y:\req.json" || !chatArgs.Contains("--events") ||
             !chatArgs.Contains("--non-interactive") || chatArgs[chatArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || chatArgs.Contains("--once") ||
-            chatInfo.Environment["UNSLOTH_API_KEY"] != "test-key" || chatInfo.Environment["PYTHONUNBUFFERED"] != "1")
+            chatInfo.Environment["PYTHONUNBUFFERED"] != "1")
             throw new InvalidOperationException("Chat start info failed.");
         var chat = new[] { new ChatMessage("user", "hi \"there\"\nline2 é"), new ChatMessage("assistant", "hello"), new ChatMessage("user", "again") };
         var timed = new[] { new ChatMessage("user", "hi", DateTimeOffset.Now) };
@@ -1872,10 +1832,10 @@ internal static class LauncherLogic
             (string)sm[2]!["content"]! != "again" || (string)custom["worker"]! != customId || custom["messages"]!.AsArray().Count != 1)
             throw new InvalidOperationException("Chat request failed.");
 
-        var codeInfo = BuildCodeStartInfo("python.exe", root, @"Y:\Example Project", "test-key", @"Y:\code.json");
+        var codeInfo = BuildCodeStartInfo("python.exe", root, @"Y:\Example Project", @"Y:\code.json");
         var codeArgs = codeInfo.ArgumentList;
         if (codeArgs.IndexOf("--code") < 0 || codeArgs[codeArgs.IndexOf("--code") + 1] != @"Y:\code.json" || !codeArgs.Contains("--events") ||
-            codeArgs[codeArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || codeArgs.Contains("--chat") || codeInfo.Environment["UNSLOTH_API_KEY"] != "test-key")
+            codeArgs[codeArgs.IndexOf("--project") + 1] != @"Y:\Example Project" || codeArgs.Contains("--chat"))
             throw new InvalidOperationException("Code start info failed.");
         var code = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [new(@"Y:\lib", "read"), new(@"Y:\shared", "write"), new(@"Y:\odd", "bogus")]))!;
         var codeFolders = code["folders"]!.AsArray();
@@ -2116,10 +2076,6 @@ internal static class LauncherLogic
             var customConfig = Path.Combine(testArea, "custom-config.json");
             File.WriteAllText(customProject, "custom-project");
             File.WriteAllText(customConfig, "{\"roles\":{\"planner\":{},\"implementer\":{},\"reviewer\":{}}}");
-            File.WriteAllText(Path.Combine(testArea, "api_key.txt"), "test-api-key\n");
-            var detectedKey = FindApiKeyFile(testArea, Path.Combine(testArea, "elsewhere"));
-            if (detectedKey?.Key != "test-api-key")
-                throw new InvalidOperationException("API key file detection failed.");
             var rootDir = Path.Combine(testArea, "root");
             var rootConfig = Path.Combine(rootDir, "config.json");
             Directory.CreateDirectory(rootDir);
@@ -2204,19 +2160,19 @@ internal static class LauncherLogic
                 WriteRoleSettings(roleConfig, "reviewer", new RoleSettings("", "", "", "", "", "Maybe")) is not null;
             if (!thinkingOk)
                 throw new InvalidOperationException("Thinking setting was not written, read back or removed correctly.");
-            // Remote API mode: save moves the Unsloth keys aside, Local puts them back (or the template's, when none were saved).
+            // Remote API mode: save moves the local keys aside, Local puts them back (or the template's, when none were saved).
             var remoteConfig = Path.Combine(testArea, "remote-config.json");
             var remoteTemplate = Path.Combine(testArea, "remote-template.json");
-            const string localPlanner = "{\"base_url\":\"http://127.0.0.1:8888/v1\",\"management_url\":\"http://127.0.0.1:8888\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"expected_model_contains\":\"Q\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"u/Q\"},\"display_name\":\"u/Q\",\"sampling\":{\"temperature\":0.6}}";
+            const string localPlanner = "{\"base_url\":\"http://127.0.0.1:8888/v1\",\"api_key_env\":\"LOCAL_KEY\",\"expected_model_contains\":\"Q\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"u/Q\"},\"display_name\":\"u/Q\",\"sampling\":{\"temperature\":0.6}}";
             File.WriteAllText(remoteConfig, $"{{\"keep\":1,\"roles\":{{\"planner\":{localPlanner}}}}}");
-            File.WriteAllText(remoteTemplate, "{\"roles\":{\"planner\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"auto_load\":{\"model_path\":\"t/M\"}}}}");
+            File.WriteAllText(remoteTemplate, "{\"roles\":{\"planner\":{\"base_url\":\"http://t/v1\",\"api_key_env\":\"LOCAL_KEY\",\"auto_load\":{\"model_path\":\"t/M\"}}}}");
             var templateBytes = File.ReadAllBytes(remoteTemplate);
             JsonNode Planner() => JsonNode.Parse(File.ReadAllText(remoteConfig))!["roles"]!["planner"]!;
             var remote = new RemoteRole("https://openrouter.ai/api/v1/", "vendor/model-x", "OPENAI_API_KEY", "120");
             if (ReadRemoteRole(remoteConfig, "planner") is not null || WriteRemoteRole(remoteConfig, "planner", remote, remoteTemplate) is not null)
                 throw new InvalidOperationException("Remote role: a local role read as remote, or the remote save failed.");
             var saved = Planner();
-            if (saved["management_url"] is not null || saved["auto_load"] is not null || saved["expected_model_contains"] is not null ||
+            if (saved["auto_load"] is not null || saved["expected_model_contains"] is not null ||
                 (string?)saved["base_url"] != "https://openrouter.ai/api/v1" || (string?)saved["model"] != "vendor/model-x" ||
                 (string?)saved["api_key_env"] != "OPENAI_API_KEY" || (int?)saved["timeout_seconds"] != 120 || (double?)saved["sampling"]?["temperature"] != 0.6 ||
                 ReadRemoteRole(remoteConfig, "planner") != new RemoteRole("https://openrouter.ai/api/v1", "vendor/model-x", "OPENAI_API_KEY", "120") ||
@@ -2230,19 +2186,16 @@ internal static class LauncherLogic
                 if (WriteRemoteRole(remoteConfig, "planner", bad, remoteTemplate) is null)
                     throw new InvalidOperationException($"Remote role: invalid input was accepted: {bad}");
             File.WriteAllText(remoteConfig, "{\"roles\":{\"planner\":{\"base_url\":\"https://r/v1\",\"model\":\"r/m\",\"api_key_env\":\"K\",\"sampling\":{}}}}");
-            if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["management_url"] != "http://t" ||
+            if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["base_url"] != "http://t/v1" ||
                 (string?)Planner()["auto_load"]?["model_path"] != "t/M" || Planner()["model"] is not null || !File.ReadAllBytes(remoteTemplate).SequenceEqual(templateBytes))
                 throw new InvalidOperationException($"Remote role: Local without saved settings should use the template's: {Planner().ToJsonString()}");
-            // A literal api_key is moved aside with the Unsloth keys, and the local Unsloth key variable is refused.
-            var keyedPlanner = localPlanner.Replace("\"api_key_env\":\"UNSLOTH_API_KEY\",", "\"api_key_env\":\"UNSLOTH_API_KEY\",\"api_key\":\"sk-local\",");
+            // A literal api_key is moved aside with the local keys.
+            var keyedPlanner = localPlanner.Replace("\"api_key_env\":\"LOCAL_KEY\",", "\"api_key_env\":\"LOCAL_KEY\",\"api_key\":\"sk-local\",");
             File.WriteAllText(remoteConfig, $"{{\"roles\":{{\"planner\":{keyedPlanner}}}}}");
             if (WriteRemoteRole(remoteConfig, "planner", remote, remoteTemplate) is not null || Planner()["api_key"] is not null ||
                 (string?)Planner()["local_settings"]?["api_key"] != "sk-local" || WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
                 !JsonNode.DeepEquals(Planner(), JsonNode.Parse(keyedPlanner)))
                 throw new InvalidOperationException($"Remote role: api_key was not moved aside and restored: {Planner().ToJsonString()}");
-            if (ValidateRemoteRole(remote with { KeyEnv = "UNSLOTH_API_KEY" }) is null || ValidateRemoteRole(remote with { KeyEnv = " unsloth_api_key " }) is null ||
-                WriteRemoteRole(remoteConfig, "planner", remote with { KeyEnv = "UNSLOTH_API_KEY" }, remoteTemplate) is null || Planner()["model"] is not null)
-                throw new InvalidOperationException("Remote role: UNSLOTH_API_KEY must not be accepted as a remote key variable.");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");
@@ -2424,7 +2377,7 @@ internal static class LauncherLogic
             File.WriteAllText(cwConfig, $"{{\"roles\":{rolesBefore}}}");
             var remoteImpl = new RemoteRole("https://remote.example/v1", "vendor/m", "OPENAI_API_KEY", "30");
             var cwTemplate = Path.Combine(testArea, "cw-template.json");
-            File.WriteAllText(cwTemplate, "{\"roles\":{\"implementer\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"UNSLOTH_API_KEY\",\"timeout_seconds\":9,\"auto_load\":{\"model_path\":\"t\",\"n_batch\":7}}}}");
+            File.WriteAllText(cwTemplate, "{\"roles\":{\"implementer\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"LOCAL_KEY\",\"timeout_seconds\":9,\"auto_load\":{\"model_path\":\"t\",\"n_batch\":7}}}}");
             JsonNode Worker() => JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]![0]!;
             if (WriteRemoteRole(cwConfig, "implementer", remoteImpl, cwTemplate) is not null || WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 ||
                 (string?)Worker()["base_url"] != "http://h/v1" || (string?)Worker()["management_url"] != "http://h" || (string?)Worker()["api_key_env"] != "K" ||
@@ -2432,19 +2385,9 @@ internal static class LauncherLogic
                 throw new InvalidOperationException($"Custom workers: a Remote implementer's connection was copied: {Worker().ToJsonString()}");
             File.WriteAllText(cwConfig, "{\"roles\":{\"implementer\":{\"base_url\":\"https://remote.example/v1\",\"model\":\"vendor/m\",\"api_key_env\":\"OPENAI_API_KEY\",\"sampling\":{}}}}");
             if (WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 || (string?)Worker()["base_url"] != "http://t/v1" ||
-                (string?)Worker()["management_url"] != "http://t" || (string?)Worker()["api_key_env"] != "UNSLOTH_API_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
+                (string?)Worker()["management_url"] != "http://t" || (string?)Worker()["api_key_env"] != "LOCAL_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
                 WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")]) is not [var noLocal] || !noLocal.Contains("base_url"))
                 throw new InvalidOperationException($"Custom workers: a Remote implementer without saved settings should use the template's: {Worker().ToJsonString()}");
-            // Every role remote and no custom worker: no Unsloth key needed and no monitor to poll.
-            static bool Unsloth(string json, bool llama = false) { using var doc = JsonDocument.Parse(json); return UsesUnsloth(doc.RootElement, llama); }
-            if (Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\",\"auto_load\":{\"model_path\":\"m\"}}}}", llama: true) ||
-                !Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\"}}}", llama: true) ||
-                !Unsloth("{\"roles\":{\"reviewer\":{\"management_url\":\"http://h\",\"auto_load\":{}}}}"))
-                throw new InvalidOperationException("UsesUnsloth: a role with management_url but no auto_load still needs Unsloth on llama.cpp.");
-            if (Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[]}") || Unsloth("{}") ||
-                !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"},\"reviewer\":{\"management_url\":\"http://h\"}}}") ||
-                !Unsloth("{\"roles\":{\"planner\":{\"model\":\"m\"}},\"custom_workers\":[{\"management_url\":\"http://h\"}]}"))
-                throw new InvalidOperationException("UsesUnsloth: wrong answer for remote-only or mixed configs.");
             var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
             if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
                 TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)
