@@ -36,11 +36,30 @@ public partial class MainWindow
         menu.Placement = PlacementMode.Top;
         var files = PresetItem("Add files or photos", () => AddFiles(c));
         files.ToolTip = $"Or paste (Ctrl+V) or drop them on the message box; up to {MaxImages} photos per message";
-        var folder = PresetItem("Add folder", () => AddFolder(c));
-        folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder" : "Its text files go with your message";
+        // the test build's chat: one Add folder that asks how the folder is used (attached once, or worked in from now on)
+        var chooses = AppSettings.Unified && !c.IsCode;
+        var folder = PresetItem(chooses ? "Add folder…" : "Add folder", () => { if (chooses) AddChatFolder(c); else AddFolder(c); });
+        folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder"
+            : chooses ? "Attach its files to your message, or work in it: the lead reads and edits it and the chat moves to Code" : "Its text files go with your message";
         menu.Items.Add(files);
         menu.Items.Add(folder);
         return menu;
+    }
+
+    // The test build's chat: how a folder joins it. Work in it: the chat becomes a Code conversation there (WorkInFolder).
+    // Attach: its text files go with the next message, as before.
+    private void AddChatFolder(Conversation c)
+    {
+        switch (Choose("Add folder", "How should the lead use the folder?",
+                    ("Work in it", "work"), ("Attach its files to this message", "attach")))
+        {
+            case "work":
+                WorkInFolder();
+                break;
+            case "attach":
+                AddFolder(c);
+                break;
+        }
     }
 
     // Ctrl+V in a message box: copied files, or a copied picture (saved as a PNG in <data>\pasted), are attached; plain
@@ -161,6 +180,47 @@ public partial class MainWindow
         }
         foreach (var file in picked ?? [])
             Attach(c, file);
+    }
+
+    // The test build's chat gains a working folder: the saved chat becomes a Code conversation there (its messages, summary
+    // and context kept; the sidebar moves it to Code with the code icon) and opens in the Code view; a chat with nothing said
+    // yet starts a new one there. What was being typed moves along.
+    private void WorkInFolder()
+    {
+        if (_chatBusy || _process is not null)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (PickFolder("Choose the folder to work in") is not { } picked)
+            return;
+        var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
+        if (RefuseWorkflowRoot(folder))
+            return;
+        var typed = ChatInput.Text;
+        if (_chatConv is { Messages.Count: > 0 } chat)
+        {
+            var id = chat.Id;
+            if (!_store.MakeCode(id, folder))
+            {
+                Toast("The chat could not be moved to the folder", "#FF667A");
+                return;
+            }
+            ClearChatConversation();
+            ProjectPath = folder;
+            OpenCodeConversation(id);
+        }
+        else
+        {
+            ClearChatConversation();
+            NewCodeConversation(folder);
+        }
+        ShowView();
+        ChatInput.Clear();
+        CodeInput.Text = typed;
+        CodeInput.CaretIndex = typed.Length;
+        RefreshSidebarList();
+        Toast($"Working in {Path.GetFileName(folder)}");
     }
 
     private void AddFolder(Conversation c)

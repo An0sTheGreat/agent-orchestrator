@@ -41,6 +41,16 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: an implementer or reviewer not added).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
+    // The test build's card groups (MainWindow.RefreshCardVisibility): LEAD and COMPACTOR always on, the others helpers. A
+    // group's first card carries its label and, for the helpers, a gap before it; helper cards are a little fainter.
+    private string _groupLabel = "";
+    public string GroupLabel { get => _groupLabel; set { Set(ref _groupLabel, value); Raise(nameof(GroupLabelShown)); } }
+    public System.Windows.Visibility GroupLabelShown => AppSettings.Unified ? _groupLabel.Length > 0 ? System.Windows.Visibility.Visible
+        : System.Windows.Visibility.Hidden : System.Windows.Visibility.Collapsed; // the test build keeps the row's height even
+    private System.Windows.Thickness _groupGap;
+    public System.Windows.Thickness GroupGap { get => _groupGap; set => Set(ref _groupGap, value); }
+    private double _groupOpacity = 1;
+    public double GroupOpacity { get => _groupOpacity; set => Set(ref _groupOpacity, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
     public string? ModelId { get; set; }
     public string? ModelVariant { get; set; }
@@ -112,7 +122,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
         NotifyTotals();
     }
 
-    // Unsloth's monitor row for the call that is running right now.
+    // llama-server's live row for the call that is running right now.
     public void SetLive(long prompt, long completion, double? decodeTps, double? promptTps)
     {
         _livePrompt = prompt;
@@ -240,6 +250,7 @@ internal sealed class AppSettings
     public string LinkOpen { get; set; } = "";
     // The most browser tabs the model opens on its own (Follow the model): 3 to 10; 0 = unlimited. The user's own are extra.
     public int FollowTabs { get; set; } = 5;
+    public bool ShowFooterPath { get; set; } = true; // the status bar's folder path (the eye beside it hides it)
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring
@@ -247,9 +258,7 @@ internal sealed class AppSettings
     public bool BrowserOpen { get; set; }
     public string BrowserUrl { get; set; } = "";
     public bool BrowserFollow { get; set; } = true;
-    // Where local models run: "unsloth" (Unsloth Studio's API) or "llamacpp" (llama-server from <data>\llama.cpp).
-    public string Runtime { get; set; } = "unsloth";
-    public string ModelsFolder { get; set; } = ""; // llamacpp only: searched for GGUF files besides the Hugging Face cache; "" = none
+    public string ModelsFolder { get; set; } = ""; // searched for GGUF files besides the Hugging Face cache; "" = none
     // Who runs a Code turn's agent loop: "" (the built-in engine) or "pi" (Pi from <data>\pi, LauncherLogic.PiCli).
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
@@ -282,7 +291,15 @@ internal sealed class AppSettings
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).
     public static string DataRoot => Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Unified ? "Agent Orchestrator Test" : "Agent Orchestrator");
+
+    // The test build (TEST_BUILD): one conversation view, a chat until it works in a folder (then a Code conversation), the
+    // sidebar's Chat and Code sections, and its own data folder so the regular app's conversations and settings stay apart.
+#if TEST_BUILD
+    public const bool Unified = true;
+#else
+    public const bool Unified = false;
+#endif
 
     private static string FilePath => Path.Combine(DataRoot, "settings.json");
 

@@ -6,22 +6,17 @@ using Microsoft.Win32;
 
 namespace AgentOrchestrator;
 
-// Settings > Model runtime: Unsloth Studio's API, or llama.cpp's llama-server (downloaded into <data>\llama.cpp) that the
+// Settings > Model runtime: llama.cpp's llama-server (downloaded into <data>\llama.cpp), which the
 // engine starts itself and records in LauncherLogic.LlamaStateFile; the launcher stops it where it unloads chat models.
 public partial class MainWindow
 {
     private CancellationTokenSource? _llamaDownload; // the download in progress; cancelled when the app closes
     private string _llamaStateFile = LauncherLogic.LlamaStateFile; // --ui-smoke points it at its own file
 
-    private bool LocalRuntime => _settings.Runtime == LauncherLogic.LlamaRuntime;
-
     private void InitRuntime()
     {
         try { LauncherLogic.CleanLlamaLeftovers(LauncherLogic.LlamaFolder); } // an install that died half-way
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
-        _settings.Runtime = LocalRuntime ? LauncherLogic.LlamaRuntime : "unsloth";
-        RuntimeLlamaRadio.IsChecked = LocalRuntime;
-        RuntimeUnslothRadio.IsChecked = !LocalRuntime;
         ShowModelsFolder();
         RefreshLlamaStatus();
         InitPi();
@@ -30,36 +25,15 @@ public partial class MainWindow
         AppVersionText.Text = LauncherLogic.VersionText();
     }
 
-    // Refused while a reply or run is using the models. Leaving the local runtime stops its server (frees the GPU for Unsloth).
-    private void Runtime_Checked(object sender, RoutedEventArgs e)
-    {
-        if (_initializing)
-            return;
-        var runtime = RuntimeLlamaRadio.IsChecked == true ? LauncherLogic.LlamaRuntime : "unsloth";
-        if (runtime == _settings.Runtime)
-            return;
-        if (_process is not null || _chatBusy)
-        {
-            Toast("Wait for the reply or run to finish", "#F7C873");
-            (LocalRuntime ? RuntimeLlamaRadio : RuntimeUnslothRadio).IsChecked = true; // re-enters here with nothing to change
-            return;
-        }
-        if (!LocalRuntime)
-            UnloadChat(_loadedByChat.ToList()); // leaving Unsloth: free the models chat loaded there (_apiBase / _runKey still point at it)
-        StopLocalServer();
-        _settings.Runtime = runtime;
-        _settings.Save();
-    }
-
-    // False, with a toast, when the local runtime is chosen but llama-server has not been downloaded, or is being updated.
+    // False, with a toast, when llama-server has not been downloaded, or is being updated.
     private bool RuntimeReady()
     {
-        if (LocalRuntime && _llamaDownload is not null)
+        if (_llamaDownload is not null)
         {
             Toast("llama-server is being updated", "#F7C873");
             return false;
         }
-        if (!LocalRuntime || File.Exists(LauncherLogic.LlamaServerPath))
+        if (File.Exists(LauncherLogic.LlamaServerPath))
             return true;
         Toast("Download llama-server in Settings first", "#F7C873");
         return false;
@@ -67,7 +41,7 @@ public partial class MainWindow
 
     private void ApplyRuntime(ProcessStartInfo info)
     {
-        LauncherLogic.ApplyRuntimeEnv(info, _settings.Runtime, LauncherLogic.LlamaServerPath, _settings.ModelsFolder);
+        LauncherLogic.ApplyRuntimeEnv(info, LauncherLogic.LlamaServerPath, _settings.ModelsFolder);
         LauncherLogic.ApplyPiEnv(info, LauncherLogic.PiCli);
         info.Environment["AGENT_ORCHESTRATOR_PROMPTS"] = Path.Combine(AppSettings.DataRoot, "prompts"); // the edited prompts (orchestrator.prompt_text)
         if (_settings.Ponytail is "lite" or "full" or "ultra") // orchestrator.ponytail_block
@@ -76,10 +50,10 @@ public partial class MainWindow
             info.Environment.Remove("AGENT_ORCHESTRATOR_PONYTAIL");
     }
 
-    // Kills the server the engine recorded (only if that pid is still a llama-server). The Unsloth runtime never has one.
+    // Kills the server the engine recorded (only if that pid is still a llama-server).
     private void StopLocalServer()
     {
-        if (LocalRuntime && LauncherLogic.StopLlamaServer(_llamaStateFile))
+        if (LauncherLogic.StopLlamaServer(_llamaStateFile))
             Log("Stopped the local llama-server.");
     }
 

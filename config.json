@@ -6,10 +6,7 @@
   "validation_commands": {},
   "roles": {
     "planner": {
-      "base_url": "http://127.0.0.1:8888/v1",
-      "management_url": "http://127.0.0.1:8888",
-      "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "Qwen3.5-4B-GGUF",
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Qwen3.5-4B-GGUF",
@@ -36,13 +33,10 @@
           "top_k": 20
         }
       },
-      "display_name": "unsloth/Qwen3.5-4B-GGUF"
+      "display_name": "Qwen3.5-4B"
     },
     "implementer": {
-      "base_url": "http://127.0.0.1:8888/v1",
-      "management_url": "http://127.0.0.1:8888",
-      "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "Qwen2.5-Coder-3B-Instruct-GGUF",
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF",
@@ -70,13 +64,10 @@
           "repetition_penalty": 1.05
         }
       },
-      "display_name": "unsloth/Qwen2.5-Coder-3B-Instruct-GGUF"
+      "display_name": "Qwen2.5-Coder-3B-Instruct"
     },
     "reviewer": {
-      "base_url": "http://127.0.0.1:8888/v1",
-      "management_url": "http://127.0.0.1:8888",
-      "api_key_env": "UNSLOTH_API_KEY",
-      "expected_model_contains": "Phi-4-mini-instruct-GGUF",
+      "base_url": "http://127.0.0.1:8899/v1",
       "timeout_seconds": 600,
       "auto_load": {
         "model_path": "unsloth/Phi-4-mini-instruct-GGUF",
@@ -103,7 +94,7 @@
           "top_k": 20
         }
       },
-      "display_name": "unsloth/Phi-4-mini-instruct-GGUF"
+      "display_name": "Phi-4-mini-instruct"
     }
   }
 }

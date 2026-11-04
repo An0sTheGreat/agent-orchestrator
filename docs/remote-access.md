@@ -5,7 +5,7 @@ Use the app from a phone or another computer through a browser, from anywhere.
 ## Decisions (from the user)
 
 - Browser page only: no remote mode in the desktop app.
-- Reached through a Cloudflare quick tunnel (`cloudflared`), as Unsloth Studio does: nothing to install on the other
+- Reached through a Cloudflare quick tunnel (`cloudflared`): nothing to install on the other
   device, HTTPS from Cloudflare. No Tailscale, no LAN mode, no port forwarding.
 
 ## Shape

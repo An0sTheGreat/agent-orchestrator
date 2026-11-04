@@ -134,10 +134,34 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Ghost buttons (the message box's +, Effort, the target chip, Presets, copy...): on hover a soft rounded wash of the
+             text colour (brighter on the dark themes, darker on Parchment), never an outline -->
         <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" RenderTransformOrigin="0.5,0.5">
+                            <Grid.RenderTransform><ScaleTransform x:Name="RootScale" /></Grid.RenderTransform>
+                            <Border Background="{TemplateBinding Background}" CornerRadius="{DynamicResource ControlRadius}" />
+                            <Border x:Name="HoverWash" Background="{DynamicResource TextPrimary}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="HoverWash" Property="Opacity" Value="0.08" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="HoverWash" Property="Opacity" Value="0.14" /></Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Root" Property="Opacity" Value="0.4" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style x:Key="TitleButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Width" Value="46" /><Setter Property="Height" Value="32" />
@@ -590,12 +614,15 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
-                        <Border x:Name="Chip" Background="Transparent" CornerRadius="{DynamicResource ControlRadius}" Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Chip" Background="Transparent" CornerRadius="{DynamicResource ControlRadius}" />
+                            <!-- hover: the same soft wash as the ghost buttons, over the chip's own state (on or off) -->
+                            <Border x:Name="HoverWash" Background="{DynamicResource TextPrimary}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Chip" Property="Background" Value="{DynamicResource Hover}" />
+                                <Setter TargetName="HoverWash" Property="Opacity" Value="0.08" />
                                 <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
@@ -632,9 +659,7 @@
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="CornerRadius" Value="{DynamicResource PanelRadius}" />
             <Setter Property="Padding" Value="10,8,10,8" />
-            <Style.Triggers>
-                <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
-            </Style.Triggers>
+            <!-- no focus outline: the caret shows where typing goes (an accent outline read as a white frame on light accents) -->
         </Style>
         <Style TargetType="ScrollBar">
             <Setter Property="Width" Value="10" /><Setter Property="Background" Value="Transparent" />
@@ -839,6 +864,10 @@
         <!-- One worker tab (MainWindow.WorkerTabs.cs): title and activity dot, model, then tok/s and task / turn tokens.
              WorkerTabWidth fits three tabs across the column, down to a minimum; narrower columns scroll the strip. -->
         <DataTemplate x:Key="WorkerTabTemplate">
+            <!-- The test build's card groups (RoleCard.GroupLabel): a label over a group's first card, a gap before the helpers -->
+            <StackPanel Margin="{Binding GroupGap}" Opacity="{Binding GroupOpacity}">
+            <TextBlock Text="{Binding GroupLabel}" Visibility="{Binding GroupLabelShown}" Style="{StaticResource SectionHeader}" FontSize="9"
+                       Foreground="{DynamicResource Muted}" Margin="2,0,0,4" />
             <Button Tag="WorkerTab" Width="{DynamicResource WorkerTabWidth}" Margin="0,0,6,0" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}"
                     Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
                 <Button.Template>
@@ -877,6 +906,7 @@
                     </TextBlock>
                 </StackPanel>
             </Button>
+            </StackPanel>
         </DataTemplate>
 
         <!-- The worker rail's hover card (MainWindow.WorkerRail.cs): the worker's live figures; the gear opens its tab. -->
@@ -960,13 +990,19 @@
             <!-- While a run or reply is in progress a light sweeps along the title bar's lower edge (SetActivity starts and stops it).
                  The Viewbox stretches a fixed 100-unit track to the bar's width, so the sweep needs no resize handling. -->
                 <!-- The open chat's title, like other chat apps; its menu is the sidebar row's (RefreshTitleChat). -->
-                <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0"
+                <!-- The Code view's Start button sits right of the title; it slides over when the title appears (MainWindow.Landing.cs). -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0">
+                <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Padding="8,3" Visibility="Collapsed" Click="TitleChat_Click" ToolTip="Chat options">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock x:Name="TitleChatText" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" MaxWidth="420" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                         <TextBlock Text="&#xE70D;" Style="{StaticResource RailGlyph}" FontSize="10" Margin="8,1,0,0" Foreground="{DynamicResource Muted}" />
                     </StackPanel>
                 </Button>
+                <Button x:Name="CodeStartButton" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11" VerticalAlignment="Center"
+                        Visibility="{Binding Visibility, ElementName=CodeView}"
+                        Click="CodeStart_Click" ToolTip="Start or resume the project run in this folder (Ctrl+Enter)" ToolTipService.ShowOnDisabled="True" />
+                </StackPanel>
                 <Viewbox x:Name="Shimmer" Stretch="Fill" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-1" Opacity="0" IsHitTestVisible="False">
                 <Canvas Width="100" Height="2" ClipToBounds="True">
                     <Rectangle Width="34" Height="2" Fill="{DynamicResource ShimmerBrush}">
@@ -1011,7 +1047,7 @@
                                 Click="SidebarToggle_Click" ToolTip="Collapse sidebar (Ctrl+B)" AutomationProperties.Name="Collapse sidebar (Ctrl+B)">
                             <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
-                        <Border HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
+                        <Border x:Name="NavSwitch" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" Padding="2" Background="{DynamicResource Card}"
                                 BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}">
                             <StackPanel Orientation="Horizontal">
                                 <ToggleButton x:Name="NavChat" Style="{StaticResource SegToggle}" Padding="7,5" Click="Nav_Click" Tag="Chat" ToolTip="Chat with the workers (Ctrl+1)" AutomationProperties.Name="Chat">
@@ -1120,10 +1156,6 @@
                                     ToolTip="Let the Code worker read or edit another folder" />
                         </StackPanel>
                     </ContentControl>
-                    <Button x:Name="CodeStartButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Start project" Padding="12,4" FontSize="11"
-                            Click="CodeStart_Click" ToolTip="Start or resume the project run in this folder (Ctrl+Enter)" ToolTipService.ShowOnDisabled="True" />
-                    <Button x:Name="CodeNewButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="New conversation" Padding="10,4" FontSize="11" Margin="0,0,8,0"
-                            Click="CodeNew_Click" ToolTip="Start a new conversation" />
                     <!-- Run clocks (MainWindow.ShowClocks), shown once a project run starts: the current/last item and worker turn. -->
                     <StackPanel x:Name="RunClocks" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0" TextBlock.FontSize="11"
                                 Visibility="Collapsed">
@@ -1134,7 +1166,7 @@
                         <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
                                    Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
-                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,10,0" VerticalAlignment="Center"
+                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
@@ -1154,7 +1186,7 @@
                             <StackPanel x:Name="CodePanel" Margin="20,0,12,12" />
                         </ScrollViewer>
                         <!-- The context card pinned open by the ring (centered conversations with room beside them; MainWindow.Context.cs) -->
-                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed"
+                        <ContentControl x:Name="CodeContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="314" Margin="0,0,20,0" Visibility="Collapsed"
                                         SizeChanged="CodeContextPin_SizeChanged" />
                         <StackPanel x:Name="CodeEmpty" HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock x:Name="CodeEmptyTitle" Text="Choose a folder to start" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
@@ -1193,11 +1225,10 @@
                                 <TextBox x:Name="CodeInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                          VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                          PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
-                                <!-- the hint sits on the typing line, right of where the caret runs: a one-line box at the bottom, as the input's last line -->
-                                <Grid Grid.Column="2" Height="34" VerticalAlignment="Bottom" Margin="0,0,8,0">
-                                    <TextBlock x:Name="CodeHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11"
-                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                                </Grid>
+                                <!-- placeholder in the empty box, where the caret is; gone once typing starts (RefreshChatInput) -->
+                                <TextBlock x:Name="CodeHint" Grid.Column="1" Text="Enter to send, Shift+Enter for a new line" Foreground="{DynamicResource Muted}"
+                                           FontSize="{Binding FontSize, ElementName=CodeInput}" Margin="15,0,8,0" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                                 <TextBlock x:Name="CodeBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                            MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                                 <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
@@ -1279,25 +1310,44 @@
                 </DockPanel>
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
-                    <Button x:Name="AddWorkerButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Content="+" FontSize="16" Width="28" Padding="0,0,0,2"
-                            Margin="4,0,0,8" Click="AddWorker_Click" ToolTip="Add a custom worker" AutomationProperties.Name="Add worker" />
                     <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
                                   SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
-                        <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
-                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                            <ItemsControl.ItemContainerStyle>
-                                <Style TargetType="ContentPresenter">
-                                    <Style.Triggers>
-                                        <MultiDataTrigger>
-                                            <MultiDataTrigger.Conditions>
-                                                <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
-                                            </MultiDataTrigger.Conditions>
-                                            <Setter Property="Visibility" Value="Collapsed" />
-                                        </MultiDataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </ItemsControl.ItemContainerStyle>
-                        </ItemsControl>
+                        <StackPanel Orientation="Horizontal">
+                            <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                            </ItemsControl>
+                            <!-- Add agent: a card of its own after the last one (custom workers; Chat's "+" also shows or hides agents) -->
+                            <Button x:Name="AddWorkerButton" Width="96" Margin="0,0,0,8" Click="AddWorker_Click" Cursor="Hand"
+                                    ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Grid x:Name="AddBox" Background="Transparent" MinHeight="72">
+                                            <Rectangle x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="4 3" RadiusX="8" RadiusY="8" />
+                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                                <TextBlock Text="Add agent" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="AddBox" Property="Opacity" Value="0.45" /></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
                     </ScrollViewer>
                 </DockPanel>
                 <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
@@ -1412,7 +1462,7 @@
                                   SizeChanged="ConversationScroll_SizeChanged">
                         <StackPanel x:Name="ChatPanel" Margin="20,0,12,12" />
                     </ScrollViewer>
-                    <ContentControl x:Name="ChatContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="280" Margin="0,0,20,0" Visibility="Collapsed" />
+                    <ContentControl x:Name="ChatContextPin" HorizontalAlignment="Right" VerticalAlignment="Top" Width="314" Margin="0,0,20,0" Visibility="Collapsed" />
                     <StackPanel x:Name="ChatEmpty" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
                         <TextBlock Text="Start a conversation" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,0,0,6" />
                         <TextBlock Text="Ask anything; the model can hand parts off to other workers when needed." Foreground="{DynamicResource Muted}" HorizontalAlignment="Center" />
@@ -1439,11 +1489,10 @@
                             <TextBox x:Name="ChatInput" Grid.Column="1" Style="{StaticResource ChatInput}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="34" MaxHeight="170"
                                      VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Center" Margin="4,0,8,0"
                                      PreviewKeyDown="ChatInput_PreviewKeyDown" TextChanged="ChatInput_TextChanged" AutomationProperties.Name="Message" />
-                            <!-- the hint sits on the typing line, right of where the caret runs: a one-line box at the bottom, as the input's last line -->
-                            <Grid Grid.Column="2" Height="34" VerticalAlignment="Bottom" Margin="0,0,8,0">
-                                <TextBlock x:Name="ChatHint" Text="Enter to send  ·  Shift+Enter for a new line" Foreground="{DynamicResource Muted}" FontSize="11"
-                                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                            </Grid>
+                            <!-- placeholder in the empty box, where the caret is; gone once typing starts (RefreshChatInput) -->
+                            <TextBlock x:Name="ChatHint" Grid.Column="1" Text="Enter to send, Shift+Enter for a new line" Foreground="{DynamicResource Muted}"
+                                       FontSize="{Binding FontSize, ElementName=ChatInput}" Margin="15,0,8,0" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                             <TextBlock x:Name="ChatBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                        MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
                             <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
@@ -1519,6 +1568,13 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
                             <TextBlock Text="Agents" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Plugins" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Plugins">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xEA86;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Plugins" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
                     </StackPanel>
@@ -1644,8 +1700,8 @@
                     <StackPanel Tag="Models" Visibility="Collapsed">
                         <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
                         <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
-                        <RadioButton x:Name="RuntimeUnslothRadio" GroupName="Runtime" Content="Unsloth Studio (API)" Margin="0,14,0,8" Checked="Runtime_Checked" />
-                        <RadioButton x:Name="RuntimeLlamaRadio" GroupName="Runtime" Content="Local — llama.cpp (llama-server)" Checked="Runtime_Checked" />
+                        <TextBlock Text="Local models run on llama.cpp's llama-server, which the app starts and stops itself." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
                         <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
@@ -1655,11 +1711,7 @@
                         <Button x:Name="ModelsFolderClear" DockPanel.Dock="Right" Content="Clear" Padding="11,6" VerticalAlignment="Center" Margin="10,0,0,0" Click="ModelsFolderClear_Click" />
                         <TextBlock x:Name="ModelsFolderText" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" />
                         </DockPanel>
-                        <TextBlock Text="GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in this folder." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <TextBlock Text="Unsloth API key" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <PasswordBox x:Name="ApiKeyBox" Margin="0,14,0,0" />
-                        <TextBlock x:Name="ApiKeyHint" Text="Enter the key, or place a one-line api_key.txt beside the EXE." TextWrapping="Wrap"
+                        <TextBlock Text="GGUF files are found in the Hugging Face cache (where Hugging Face downloads go) and in this folder." TextWrapping="Wrap"
                         Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1688,16 +1740,6 @@
                         </DockPanel>
                         <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
-                        <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
-                        <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
-                        <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
-                        </WrapPanel>
-                        <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
                         <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1710,6 +1752,20 @@
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <!-- Plugins: prompt add-ons and, later, other extensions -->
+                    <StackPanel Tag="Plugins" Visibility="Collapsed">
+                        <TextBlock Text="Plugins" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Ponytail (MainWindow.SkillComplete.cs SetPonytail): settings.Ponytail -->
+                        <TextBlock Text="Ponytail" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <WrapPanel x:Name="PonytailLevels" Margin="0,14,0,0">
+                        <RadioButton GroupName="Ponytail" Tag="" Content="Off" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="lite" Content="Lite" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="full" Content="Full" Margin="0,0,18,0" Checked="Ponytail_Checked" />
+                        <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
+                        </WrapPanel>
+                        <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                 </Grid>
@@ -1726,6 +1782,11 @@
         <Border Grid.Row="3" Grid.Column="1" Background="{DynamicResource TitleBackground}" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0">
             <DockPanel Margin="14,0" LastChildFill="False">
                 <TextBlock x:Name="FooterRight" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" />
+                <!-- The eye: shows or hides the folder path (for screenshots); saved -->
+                <Button x:Name="FooterPathToggle" Style="{StaticResource GhostButton}" Padding="4,2" Margin="-6,0,6,0" VerticalAlignment="Center" Click="FooterPath_Click"
+                        ToolTip="Hide the folder path" AutomationProperties.Name="Show or hide the folder path">
+                    <TextBlock x:Name="FooterPathGlyph" Text="&#xE890;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                </Button>
                 <TextBlock x:Name="FooterLeft" Foreground="{DynamicResource Muted}" FontFamily="{StaticResource MonoFont}" FontSize="11" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
             </DockPanel>
         </Border>

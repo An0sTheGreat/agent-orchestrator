@@ -337,7 +337,7 @@ public partial class MainWindow
                     rows[o.Key].ToolTipOpening += (_, _) => rows[o.Key].ToolTip = TipBlock();
                     continue;
                 }
-                // Label left, a compact control right (as Unsloth Studio's run settings); the help shows on hover.
+                // Label left, a compact control right; the help shows on hover.
                 (editor.Width, editor.Margin, editor.HorizontalAlignment) = (o.Kind == ModelOptions.Kind.Text ? 170 : 120, new Thickness(12, 0, 0, 0), HorizontalAlignment.Right);
                 var name = Label(o.Label);
                 name.VerticalAlignment = VerticalAlignment.Center;
@@ -413,7 +413,7 @@ public partial class MainWindow
                 panel.Children.Add(part);
         }
 
-        // Built-in roles: Local (Unsloth / llama.cpp) or a remote OpenAI-compatible API.
+        // Built-in roles: Local (llama.cpp) or a remote OpenAI-compatible API.
         TextBox[]? remoteBoxes = null;
         TextBox? chatPrompt = null;
         var promptEdits = new List<(string File, TextBox Box)>(); // the editable workflow prompts (PromptEditor)
@@ -730,7 +730,7 @@ public partial class MainWindow
                 var entries = await Task.Run(() => DescribeChoices(choices, folder, hub));
                 initial = choices.FirstOrDefault(choice => LauncherLogic.DescribeModel(choice.Display, choice.Variant) is var d
                     && card.ModelName == d.Name && (card.Quant == d.Quant || d.Quant == "—"));
-                modelStatus.Text = choices.Count == 0 ? "No installed text models found." : LocalRuntime ? "GGUF files on this computer (llama.cpp runtime)." : "Models installed in Unsloth.";
+                modelStatus.Text = choices.Count == 0 ? "No installed text models found." : "GGUF files on this computer.";
                 picker.SetEntries(entries, choices.Count == 0 ? modelStatus.Text : "");
                 if (picker.IsOpen)
                     picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
@@ -1022,10 +1022,10 @@ public partial class MainWindow
 
     // The settings body's groups in display order (one column, or two read left to right); Help: an option group's note (null:
     // built by ModelSettingsBody itself). An option whose key SettingsGroupKeys does not name goes in Other.
-    // Grouped as Unsloth Studio's run settings: Memory, Speed, Output and Server show with the Advanced switch (AdvancedGroups).
+    // Grouped: Memory, Speed, Output and Server show with the Advanced switch (AdvancedGroups).
     private static readonly (string Name, string? Help)[] SettingsGroups =
     [
-        ("Model", null), ("Sampling", "Sent with every request; top_k, min_p and repetition_penalty go in extra_body (Unsloth only)."),
+        ("Model", null), ("Sampling", "Sent with every request; top_k, min_p and repetition_penalty go in extra_body."),
         ("Memory", "Load options: apply at the next model load."), ("Speed", "Load options: apply at the next model load."),
         ("Output", "The reasoning budget, its message and the chat template apply at the next model load; the rest is sent with every request."),
         ("Server", "Load options: apply at the next model load."), ("Request", "How long the orchestrator waits for this worker."), ("Other", "Other options."),
@@ -1074,10 +1074,10 @@ public partial class MainWindow
         }
         const string chipTip = "Choose the worker to message, or open model Options";
         const string leadTip = "The lead (the Planner) answers and hands parts to your other workers; Options opens its model settings";
-        var saved = (_settings.ChatWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice);
+        var saved = (_settings.ChatWorker, _settings.ModelsFolder, _codeChoice);
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-config");
         Directory.CreateDirectory(models);
-        (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models); // a disk scan: never a real Unsloth server
+        _settings.ModelsFolder = models; // a disk scan
         var asked = new List<string>();
         string? answer = null;
         _codeChoice = title => { asked.Add(title); return answer; };
@@ -1210,7 +1210,7 @@ public partial class MainWindow
         finally
         {
             RefreshWorkerTab(force: true); // a check that failed with a change pending
-            (_settings.ChatWorker, _settings.Runtime, _settings.ModelsFolder, _codeChoice) = saved;
+            (_settings.ChatWorker, _settings.ModelsFolder, _codeChoice) = saved;
             RefreshChatTarget();
             Directory.Delete(models, recursive: true);
         }
@@ -1236,7 +1236,7 @@ public partial class MainWindow
             if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || !CodeBusyText.Text.StartsWith("Replying…") || CodeStop.Visibility != Visibility.Visible ||
                 Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeStop) - 1 || Grid.GetRow(CodeBusyText) != 0 ||
                 CodeBusyText.TranslatePoint(new Point(CodeBusyText.ActualWidth, 0), top).X > CodeStop.TranslatePoint(new Point(0, 0), top).X ||
-                CodeHint.Visibility == Visibility.Visible || CodeHint.Text.Contains("Replying") ||
+                (CodeInput.Text.Length == 0) != (CodeHint.Visibility == Visibility.Visible) || !CodeHint.Text.StartsWith("Enter to queue") ||
                 ChatBusyText.Text.Contains("Replying")) // the other conversation is only locked
                 return false;
             snap("36-ui-tweaks", null);
@@ -1311,18 +1311,18 @@ public partial class MainWindow
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: true } || !prompts.Text.StartsWith("▾") || !_settings.PromptsExpanded)
                 return Fail("the prompts open");
 
-            // Vision: the switch goes in the request; a model that cannot see (Disable vision, or on llama.cpp no mmproj beside
-            // its GGUF) greys it with the reason as its tip.
+            // Vision: the switch goes in the request; a model that cannot see (Disable vision, or no mmproj beside its GGUF)
+            // greys it with the reason as its tip.
             var sight = Path.Combine(AppSettings.DataRoot, "smoke-vision");
             Directory.CreateDirectory(sight);
             var blind = Path.Combine(sight, "Blind-Q4_K_M.gguf");
             File.WriteAllText(blind, "x");
             JsonObject Load() => new() { ["model_path"] = "Blind", ["gguf_file"] = blind };
-            if (LauncherLogic.CanSee(new JsonObject { ["disable_vision"] = "on" }, false, "", "") || !LauncherLogic.CanSee(Load(), false, "", "") ||
-                LauncherLogic.CanSee(Load(), true, "", "") || !LauncherLogic.CanSee(null, true, "", ""))
+            if (LauncherLogic.CanSee(new JsonObject { ["disable_vision"] = "on" }, "", "") ||
+                LauncherLogic.CanSee(Load(), "", "") || !LauncherLogic.CanSee(null, "", ""))
                 return Fail("CanSee");
             File.WriteAllText(Path.Combine(sight, "mmproj-F16.gguf"), "x");
-            if (!LauncherLogic.CanSee(Load(), true, "", ""))
+            if (!LauncherLogic.CanSee(Load(), "", ""))
                 return Fail("CanSee with a projector");
             // a flat models folder: only a projector named for the model counts
             var flat = Path.Combine(AppSettings.DataRoot, "smoke-flat");
@@ -1363,8 +1363,7 @@ public partial class MainWindow
             ExtraToggle_Click(CodeVisionToggle, new RoutedEventArgs());
             if (!_settings.UseVision || ChatVisionToggle.IsChecked != true)
                 return Fail("the Vision switch back on");
-            // MAIN on a model with no projector, on the llama.cpp runtime: Code's switch greys with the tip
-            var runtime = _settings.Runtime;
+            // MAIN on a model with no projector: Code's switch greys with the tip
             var mainLoad = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["planner"]!["auto_load"]?.ToJsonString();
             File.Delete(Path.Combine(sight, "mmproj-F16.gguf"));
             WriteConfigs(WorkerConfigTargets(), target =>
@@ -1374,13 +1373,11 @@ public partial class MainWindow
                 WriteJson(target, root);
                 return null;
             });
-            _settings.Runtime = LauncherLogic.LlamaRuntime;
             RefreshVision();
             for (var i = 0; i < 50 && CodeVisionToggle.IsEnabled; i++)
                 await Task.Delay(100);
             var greyed = !CodeVisionToggle.IsEnabled && CodeVisionToggle.ToolTip as string == "Vision is not supported for the selected model(s).";
             snap("vision-greyed", null);
-            _settings.Runtime = runtime;
             WriteConfigs(WorkerConfigTargets(), target =>
             {
                 var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
@@ -1472,8 +1469,8 @@ public partial class MainWindow
         var fake = Path.Combine(models, "Fake-Model-Q4_K_M.gguf");
         Directory.CreateDirectory(models);
         File.WriteAllText(fake, "");
-        var (runtime, ask) = (_settings.Runtime, _codeChoice);
-        (_settings.Runtime, _settings.ModelsFolder) = (LauncherLogic.LlamaRuntime, models);
+        var ask = _codeChoice;
+        _settings.ModelsFolder = models;
         var asked = 0;
         _codeChoice = _ => { asked++; return null; }; // nothing below leaves a tab with unsaved edits
         try
@@ -1543,6 +1540,14 @@ public partial class MainWindow
             // fields (no model_path: the load options empty again), so Save is not refused.
             if (await FakeItem() is not { } fakeItem || !Model().IsEnabled)
                 return Fail("the model list");
+            // A press anywhere in the window closes it at once (StaysOpen alone missed presses while the search box held the
+            // mouse, so it stayed open, and a rebuilt tab left it at the window's corner)
+            await Task.Delay(450); // past JustClosed, so the release opens it again
+            Model().RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonUpEvent });
+            await Until(() => _modelPickerTest is { IsOpen: true });
+            RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent });
+            if (_modelPickerTest is not { IsOpen: false })
+                return Fail("a press outside the model picker");
             snap("tabs-settings", null);
             SmokeField("top_k").Text = "33";
             _modelPickerTest!.Choose(fakeItem); // an unreadable GGUF: the static defaults
@@ -1641,7 +1646,7 @@ public partial class MainWindow
         }
         finally
         {
-            (_settings.Runtime, _settings.ModelsFolder, _codeChoice) = (runtime, "", ask);
+            (_settings.ModelsFolder, _codeChoice) = ("", ask);
             RefreshWorkerTab(force: true);
             Directory.Delete(models, recursive: true);
         }

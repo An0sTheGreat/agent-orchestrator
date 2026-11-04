@@ -28,7 +28,7 @@ public partial class MainWindow
         { "flux", "sd1", "sd2", "sdxl", "sd3", "aura", "ltxv", "hyvid", "wan", "hidream", "cosmos", "lumina2", "chroma", "qwen_image" };
 
     // Off the UI thread: each choice's GGUF on this computer gives its size, its vision projector and its architecture. A
-    // model whose file is not found (a remote Unsloth path) is Text only, size unknown.
+    // model whose file is not found (a Hugging Face id not downloaded) is Text only, size unknown.
     private static List<PickerEntry> DescribeChoices(IEnumerable<ModelChoice> choices, string modelsFolder, string hubCache)
     {
         var ggufs = LauncherLogic.FindLocalGgufs(modelsFolder, hubCache);
@@ -146,9 +146,28 @@ public partial class MainWindow
                 Child = card, PlacementTarget = anchor, Placement = PlacementMode.Bottom, VerticalOffset = 4, AllowsTransparency = true, StaysOpen = false,
             };
             _popup.Opened += (_, _) => _search.Focus();
-            _popup.Closed += (_, _) => _closedAt = DateTime.UtcNow;
+            _popup.Closed += (_, _) =>
+            {
+                _closedAt = DateTime.UtcNow;
+                if (_window is not null)
+                    _window.PreviewMouseDown -= OnWindowPress;
+                _window = null;
+            };
+            // StaysOpen=false closes only while the popup holds the mouse, which the search box takes: a press anywhere in
+            // the window closes it now (one on the box too: its release then does not reopen it, JustClosed). A box that
+            // leaves the screen (the worker tab rebuilt) closes it, or the popup would stay open at the window's corner.
+            anchor.Unloaded += (_, _) => Close();
+            anchor.IsVisibleChanged += (_, _) =>
+            {
+                if (!anchor.IsVisible)
+                    Close();
+            };
             SortTitles();
         }
+
+        private Window? _window;
+
+        private void OnWindowPress(object sender, MouseButtonEventArgs e) => Close();
 
         // The listed models (null: still loading) and the line shown above them.
         public void SetEntries(List<PickerEntry>? entries, string status)
@@ -166,6 +185,11 @@ public partial class MainWindow
             Refresh();
             ((Border)_popup.Child).Width = Math.Max(_anchor.ActualWidth, 380);
             _popup.IsOpen = true;
+            if (_popup.IsOpen && Window.GetWindow(_anchor) is { } window && _window is null)
+            {
+                _window = window;
+                window.PreviewMouseDown += OnWindowPress; // presses in the popup go to its own window, not this one
+            }
         }
 
         public void Close() => _popup.IsOpen = false;

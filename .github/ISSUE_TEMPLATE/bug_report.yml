@@ -21,7 +21,6 @@ body:
     attributes:
       label: Model runtime
       options:
-        - Unsloth Studio
         - llama.cpp
         - Remote API
     validations:

@@ -270,8 +270,7 @@ class ThinkSplitter:
         return [("thinking" if self.thinking else "text", rest)] if rest else []
 
 
-LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-UNSLOTH_ONLY_FIELDS = ("top_k", "repetition_penalty", "min_p", "chat_template_kwargs", "enable_thinking")  # dropped for remote roles
+LOCAL_ONLY_FIELDS = ("top_k", "repetition_penalty", "min_p", "chat_template_kwargs", "enable_thinking")  # dropped for remote roles
 
 
 class ApiClient:
@@ -283,19 +282,17 @@ class ApiClient:
             source = key_env or "api_key"
             raise WorkflowError(f"Missing API key for {self.base_url}: set {source}")
         self.key_source = key_env or "api_key"
-        self.expected = settings.get("expected_model_contains", "").lower()
         self.model = str(settings.get("model") or "").strip()  # request model id as given (remote APIs); skips /models
         self.timeout = int(settings.get("timeout_seconds", 600))
-        self.management_url = settings.get("management_url", "").rstrip("/")
         self.auto_load = settings.get("auto_load")
-        # A remote API role (as the launcher writes it): a model id and no Unsloth management_url.
-        self.remote = bool(self.model) and not self.management_url
-        self.send_extra_body = settings.get("send_extra_body") is True  # remote roles: keep Unsloth-only fields
+        # A remote API role (as the launcher writes it): a model id and no auto_load (local roles run on llama-server).
+        self.remote = bool(self.model) and not self.auto_load
+        self.send_extra_body = settings.get("send_extra_body") is True  # remote roles: keep LOCAL_ONLY_FIELDS
         self.role = ""
         self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
         self.cut_off = False  # the last reply stopped at max_tokens
-        self.llama_port = 0  # set by role_settings when this role runs on the llama.cpp backend
+        self.llama_port = 0  # set by role_settings when this role runs on our llama-server (a role with auto_load)
         self.compactor = None  # set by role_settings: () -> (client, sampling) of a separate Compactor role
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -332,34 +329,10 @@ class ApiClient:
 
     def model_id(self) -> str:
         payload = self._request("GET", "/models")
-        models = [m for m in payload.get("data", []) if m.get("loaded", True) is not False]  # Unsloth lists installed models too
+        models = [m for m in payload.get("data", []) if m.get("loaded", True) is not False]  # skip entries a server marks unloaded
         if not models:
             raise WorkflowError("The API returned no loaded models")
         return str(models[0]["id"])
-
-    def load_mismatch(self) -> str:
-        """Why the loaded model cannot serve this role's auto_load ("" if it can, or unknowable). Compatible, so kept: a
-        context at least as large as wanted, and a thinking model for a role that wants none (reasoning_budget 0): this
-        client then turns thinking off per request (thinking_off). Sampling never counts: it is sent with each request."""
-        if not (self.management_url and self.auto_load):
-            return ""
-        try:
-            status = self._request_at(self.management_url, "GET", "/api/inference/status")
-        except WorkflowError:
-            return ""
-        # requested_* hold what the active load was invoked with; the unprefixed reasoning_budget is the effective value.
-        ctx, want_ctx = status.get("requested_context_length"), self.auto_load.get("max_seq_length")
-        budget = status.get("requested_reasoning_budget", status.get("reasoning_budget"))
-        want_budget = self.auto_load.get("reasoning_budget")
-        diffs = []
-        if isinstance(ctx, int) and isinstance(want_ctx, int) and ctx < want_ctx:
-            diffs.append(f"max_seq_length {ctx} -> {want_ctx}")
-        if isinstance(budget, int) and isinstance(want_budget, int) and budget != want_budget:
-            if want_budget == 0:
-                self.thinking_off = True
-            else:
-                diffs.append(f"reasoning_budget {budget} -> {want_budget}")
-        return ", ".join(diffs)
 
     def ensure_model(self, role: str, interactive: bool) -> str:
         model = self._ensure_model(role, interactive)
@@ -368,62 +341,17 @@ class ApiClient:
         return model
 
     def _ensure_model(self, role: str, interactive: bool) -> str:
-        load_error = ""
         name = self.title or role
         if self.llama_port:
             return llama_ensure(self, role)
-        if self.model and not (self.management_url and self.auto_load):
-            print(f"[{name}] {self.model}")  # a configured id is used as is: no /models check, nothing to load
-            emit("model", role=role, id=self.model)
-            return self.model
-        while True:
-            try:
-                model = self.model_id()
-            except WorkflowError:
-                model = ""
-            matched = bool(model) and (not self.expected or self.expected in model.lower())
-            reason = self.load_mismatch() if matched else ""
-            if matched and not reason:
-                print(f"[{name}] {model}")
-                emit("model", role=role, id=model)
-                return model
-            if self.management_url and self.auto_load:
-                try:
-                    if reason:
-                        print(f"[{name}] {model} is loaded with other settings ({reason}); reloading ...")
-                    print(f"[{name}] loading {self.auto_load['model_path']} ...")
-                    emit("loading", role=role, path=self.auto_load["model_path"], url=self.management_url)
-                    self._request_at(self.management_url, "POST", "/api/inference/load", self.auto_load)
-                    # A model the user had loaded and we reloaded is ours from here on, so it is unloaded at exit.
-                    LOADED_BY_RUN[self.auto_load["model_path"]] = self
-                    model = self.model_id()
-                    if not self.expected or self.expected in model.lower():
-                        print(f"[{name}] {model}")
-                        emit("model", role=role, id=model)
-                        return model
-                    load_error = f"load completed but API reports {model!r}"
-                except WorkflowError as exc:
-                    load_error = str(exc)
-                    if matched:
-                        # A failed reload may already have unloaded the old model (OOM, timeout mid-load): re-check.
-                        try:
-                            model = self.model_id()
-                        except WorkflowError:
-                            model = ""
-                        if model and (not self.expected or self.expected in model.lower()):
-                            print(f"[{name}] reload failed ({load_error}); continuing with the loaded model")
-                            emit("model", role=role, id=model)
-                            return model
-            expected = self.expected or "the configured model"
-            if not interactive:
-                raise WorkflowError(f"{name}: expected {expected!r}, loaded {model or 'nothing'!r}; {load_error}")
-            detail = f"\nAutomatic load failed: {load_error}" if load_error else ""
-            answer = input(f"{detail}\nLoad {role} model ({expected}) in Unsloth, then press Enter [q quits]: ")
-            if answer.strip().lower() == "q":
-                raise KeyboardInterrupt
+        if not self.model:
+            raise WorkflowError(f"{name}: no model is set; pick a model for this role (a local GGUF model or a remote API model id)")
+        print(f"[{name}] {self.model}")  # a configured id is used as is: no /models check, nothing to load
+        emit("model", role=role, id=self.model)
+        return self.model
 
     def _thinking(self, body: dict[str, Any], on: bool) -> dict[str, Any]:
-        """Copy of `body` with the thinking switch set: Unsloth takes a top-level field, llama-server a chat-template kwarg."""
+        """Copy of `body` with the thinking switch set: a remote API takes a top-level field, llama-server a chat-template kwarg."""
         if not self.llama_port:
             return {**body, "enable_thinking": on}
         body = {key: value for key, value in body.items() if key != "enable_thinking"}
@@ -446,8 +374,8 @@ class ApiClient:
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))), **sampling}
-        if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp/Unsloth-only fields
-            for key in UNSLOTH_ONLY_FIELDS:
+        if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp-only fields
+            for key in LOCAL_ONLY_FIELDS:
                 body.pop(key, None)
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
@@ -486,7 +414,7 @@ class ApiClient:
             except (KeyError, IndexError, TypeError) as exc:
                 raise WorkflowError(f"Unexpected API response: {payload}") from exc
             if choice.get("finish_reason") == "length" and not has_output(message):
-                if not self.remote and not self._thinking_off(body):  # enable_thinking is Unsloth/llama-server only
+                if not self.remote and not self._thinking_off(body):  # enable_thinking is llama-server only
                     print(f"[{self.title or self.role}] reply cut off while thinking; retrying without thinking")
                     body = self._thinking(body, False)
                     fell_back = True
@@ -637,35 +565,26 @@ class ApiClient:
         The template is asked once per process and model."""
         if self.remote or self._thinking_off(body):
             return False
-        key = (self.llama_port or self.management_url, str((self.auto_load or {}).get("model_path", "")))
+        key = self._context_key()
         if key not in THINK_TEMPLATES:
             template = None
             try:
                 if self.llama_port:
                     template = self._request_at(f"http://127.0.0.1:{self.llama_port}", "GET", "/props").get("chat_template")
-                elif self.management_url:
-                    template = self._request_at(self.management_url, "GET", "/api/inference/status").get("chat_template")
             except (WorkflowError, OSError, ValueError, AttributeError):
                 template = None
             THINK_TEMPLATES[key] = opens_think(template) if isinstance(template, str) and template else None
         return THINK_TEMPLATES[key]
 
-    def _monitor_row(self, started: float) -> dict[str, Any]:
-        """Unsloth's own per-request stats (same source as the live-TPS mod); empty if unavailable."""
-        if not self.management_url:
-            return {}  # a remote API has no Unsloth management routes
-        try:
-            rows = self._request_at(self.management_url, "GET", "/api/inference/monitor").get("entries", [])
-        except WorkflowError:
-            return {}
-        mine = [r for r in rows if r.get("kind") == "request" and r.get("via_api_key") and r.get("started_at", 0) >= started - 2]
-        return max(mine, key=lambda r: r["started_at"]) if mine else {}
-
     def context_size(self) -> int | None:
-        """The loaded model's context window (llama-server /props, else Unsloth's status, else auto_load.max_seq_length);
-        None for a remote role or when unknown. Asked once per process and model."""
+        """The loaded model's context window (llama-server /props, else auto_load.max_seq_length); for a remote role
+        the provider's /models entry (OpenRouter's context_length, vLLM's max_model_len). None when unknown.
+        Asked once per process and model."""
         if self.remote:
-            return None
+            key = (self.base_url, self.model)
+            if key not in CONTEXT_SIZES:
+                CONTEXT_SIZES[key] = remote_context(self._request_at, self.base_url, self.model)
+            return CONTEXT_SIZES[key]
         auto, key = self.auto_load or {}, self._context_key()
         if key not in CONTEXT_SIZES:
             size = None
@@ -673,9 +592,6 @@ class ApiClient:
                 if self.llama_port:
                     props = self._request_at(f"http://127.0.0.1:{self.llama_port}", "GET", "/props")
                     size = (props.get("default_generation_settings") or {}).get("n_ctx") or props.get("n_ctx")
-                elif self.management_url:
-                    status = self._request_at(self.management_url, "GET", "/api/inference/status")
-                    size = status.get("context_length") or status.get("requested_context_length")
             except (WorkflowError, OSError, ValueError, AttributeError):
                 size = None
             if not isinstance(size, int) or size <= 0:
@@ -684,7 +600,7 @@ class ApiClient:
         return CONTEXT_SIZES[key]
 
     def _context_key(self) -> tuple[Any, str]:
-        return self.llama_port or self.management_url, str((self.auto_load or {}).get("model_path", ""))
+        return self.llama_port, str((self.auto_load or {}).get("model_path", ""))
 
     def window_before_load(self) -> int | None:
         """The context window before this turn loads the model, never asked of the server (it may hold another model now):
@@ -707,25 +623,39 @@ class ApiClient:
                 emit("thinking", role=self.role, text=thinking[:40_000])
             if answer or message.get("tool_calls"):
                 emit("message", role=self.role, text=answer[:40_000], final=not message.get("tool_calls"))
-        usage, row = payload.get("usage") or {}, self._monitor_row(started)
+        usage = payload.get("usage") or {}
         elapsed = max(time.time() - started, 1e-3)
-        completion = row.get("completion_tokens") or usage.get("completion_tokens") or 0
-        prompt = row.get("prompt_tokens") or usage.get("prompt_tokens") or 0
+        completion = usage.get("completion_tokens") or 0
+        prompt = usage.get("prompt_tokens") or 0
         emit(
             "usage",
             role=self.role,
             prompt=prompt,
             completion=completion,
-            tps=row.get("tok_per_sec") or round(completion / elapsed, 2),
-            prompt_tps=row.get("prompt_tok_per_sec"),
+            tps=round(completion / elapsed, 2),
+            prompt_tps=None,
         )
         if EVENTS and body is not None:  # the launcher's per-worker context cards (chat, Code turns and project runs)
             emit("context", role=self.role, n_ctx=self.context_size(), prompt_tokens=prompt, completion_tokens=completion,
                  parts=context_parts(body.get("messages") or [], body.get("tools"), prompt))
 
 
-CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port or management url, model path) -> n_ctx
-LOADED_NOW: dict[Any, str] = {}  # llama port or management url -> the model path this process last ensured there
+CONTEXT_SIZES: dict[tuple[Any, str], int | None] = {}  # (llama port, model path) or (base_url, model id) -> n_ctx
+
+
+def remote_context(request_at: Any, base_url: str, model: str) -> int | None:
+    """A remote model's context window from the API's model list, or None (no list, or no size for this model)."""
+    try:
+        listed = request_at(base_url, "GET", "/models").get("data") or []
+    except (WorkflowError, OSError, ValueError, AttributeError):
+        return None
+    for entry in listed:
+        if isinstance(entry, dict) and entry.get("id") == model:
+            for name in ("context_length", "max_model_len", "context_window"):
+                if isinstance(entry.get(name), int) and entry[name] > 0:
+                    return entry[name]
+    return None
+LOADED_NOW: dict[Any, str] = {}  # llama port -> the model path this process last ensured there
 THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)
 
 
@@ -1092,8 +1022,8 @@ def tool_call_note(messages: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# llama.cpp backend (AGENT_ORCHESTRATOR_BACKEND=llamacpp): roles with auto_load run on one llama-server.exe that this
-# engine starts, instead of Unsloth Studio. The launcher sets the env vars and kills the server at app close by reading
+# llama.cpp backend: every role with auto_load runs on one llama-server.exe that this engine starts.
+# The launcher sets the env vars and kills the server at app close by reading
 # the state file {"pid", "port", "signature", "model_file", "log"}; keep those names.
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -1176,7 +1106,7 @@ def gguf_file(auto_load: dict[str, Any]) -> Path:
     if preferred or found:
         return (preferred or found)[0]
     raise WorkflowError(f"No GGUF file for {repo} in {', '.join(str(root) for root, _ in roots)}. "
-                        "Download the model in Unsloth, or add its models folder in Options.")
+                        "Download the model from Hugging Face, or add its models folder in Options.")
 
 
 def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[str]:
@@ -1285,7 +1215,7 @@ def llama_ensure(client: ApiClient, role: str) -> str:
             )
         llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature, "args": args,
                                                    "model_file": str(model_file), "log": str(log)}), encoding="utf-8")
-        emit("loading", role=role, path=path)  # no url: the launcher would send Unsloth unload calls to it
+        emit("loading", role=role, path=path)
         deadline = time.time() + client.timeout
         while not llama_healthy(port):
             if process.poll() is not None:
@@ -1415,16 +1345,12 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
     sampling = dict(settings.get("sampling", {}))
     sampling.update(sampling.pop("extra_body", {}))
     sampling.update(config.get("turn_effort") or {})  # a chat/Code request's effort (with_effort)
-    if not settings.get("management_url") and settings.get("api_key_env") == "UNSLOTH_API_KEY" \
-            and (urlsplit(str(settings.get("base_url", ""))).hostname or "").lower() not in LOOPBACK_HOSTS:
-        raise WorkflowError(f"{display_name(config, role)}: a remote role must not use UNSLOTH_API_KEY (the local Unsloth key); "
-                            "give it its own api_key_env")
     port = 0
-    if os.environ.get("AGENT_ORCHESTRATOR_BACKEND") == "llamacpp" and settings.get("auto_load"):
-        # A local role served by our own llama-server: no Unsloth routes, no key (the dummy keeps the Bearer header valid).
+    if settings.get("auto_load"):
+        # A local role served by our own llama-server: no key (the dummy keeps the Bearer header valid); a base_url,
+        # management_url or api_key_env left in an older config is ignored.
         port = int(config.get("llama_port", LLAMA_PORT))
-        settings = {**settings, "base_url": f"http://127.0.0.1:{port}/v1", "management_url": "", "api_key_env": "",
-                    "api_key": "no-key", "model": ""}
+        settings = {**settings, "base_url": f"http://127.0.0.1:{port}/v1", "api_key_env": "", "api_key": "no-key", "model": ""}
     client = ApiClient(settings)
     client.llama_port = port
     client.role = role
@@ -1436,7 +1362,7 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
 
 def ask_once(config: dict[str, Any], role: str, system: str, user: str, interactive: bool, thinking: bool = True) -> str:
     client, sampling = role_settings(config, role)
-    if not thinking and not getattr(client, "remote", False):  # enable_thinking is Unsloth-only; fakes in tests lack .remote
+    if not thinking and not getattr(client, "remote", False):  # remote APIs take no enable_thinking; fakes in tests lack .remote
         sampling = {**sampling, "enable_thinking": False}  # this call only
     model = client.ensure_model(role, interactive)
     message = client.complete(model, [{"role": "system", "content": system}, {"role": "user", "content": user}], sampling)
@@ -4680,7 +4606,7 @@ def pi_model_config(client: ApiClient, model: str, sampling: dict[str, Any], n_c
     model with the role's sampling, thinking switch and output limit sent on every request, as this engine sends them."""
     params = {key: value for key, value in sampling.items() if key != "max_tokens"}
     if client.remote and not client.send_extra_body:
-        params = {key: value for key, value in params.items() if key not in UNSLOTH_ONLY_FIELDS}
+        params = {key: value for key, value in params.items() if key not in LOCAL_ONLY_FIELDS}
     if client.thinking_off and not client.remote:
         params = client._thinking(params, False)
     elif client.llama_port and "enable_thinking" in params:
@@ -5220,23 +5146,15 @@ PROJECT_ROOT_ARG: Path = ROOT
 CHAT_MODE = False  # --chat/--code: models stay loaded after the turn; the launcher unloads them when the app closes
 
 
-# Models this run loaded itself (path -> client). A model the user loaded in Unsloth Desktop is not in
-# here, unless this run reloads it for a role's load settings; then it is added and unloaded at exit.
+# Models this run served on its own llama-server (path -> client); the server is stopped at exit.
 LOADED_BY_RUN: dict[str, "ApiClient"] = {}
 
 
 def unload_models() -> None:
     """Free VRAM/RAM: unload only the models this run loaded, ignoring failures."""
-    for path, client in LOADED_BY_RUN.items():
-        if client.llama_port:
-            if llama_stop():
-                print(f"[{client.title or client.role}] stopped llama-server")
-            continue
-        try:
-            client._request_at(client.management_url, "POST", "/api/inference/unload", {"model_path": path})
-            print(f"[{client.title or client.role}] unloaded {path}")
-        except WorkflowError:
-            pass  # already unloaded or server unreachable
+    for client in LOADED_BY_RUN.values():
+        if client.llama_port and llama_stop():
+            print(f"[{client.title or client.role}] stopped llama-server")
     LOADED_BY_RUN.clear()
 
 

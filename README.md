@@ -35,7 +35,7 @@ Pick the workflow that fits your hardware under **Settings > Agents**:
 
 ### 100% local, and you decide when it updates
 
-Your models, your code and your conversations stay on your machine. The app runs models through [Unsloth Studio](https://unsloth.ai) or a llama.cpp server it can download for you, and it works with no internet connection at all (web search is optional and off unless you switch it on). There is no auto-updater, no telemetry and no account. A new version shows up only when you run `git pull`, so nothing changes until you're ready for it.
+Your models, your code and your conversations stay on your machine. The app runs models on a llama.cpp server it downloads for you, and it works with no internet connection at all (web search is optional and off unless you switch it on). There is no auto-updater, no telemetry and no account. A new version shows up only when you run `git pull`, so nothing changes until you're ready for it.
 
 ### A Claude-like interface you can make your own
 
@@ -67,9 +67,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 - Windows 10 or 11
 - [Git](https://git-scm.com/download/win) with [Git LFS](https://git-lfs.com) (the app's `.exe` is stored with LFS)
 - [Python 3.11 or newer](https://www.python.org/downloads/) on your `PATH` (the workflow engine is a Python script)
-- A way to run models, either one:
-  - [Unsloth Studio](https://unsloth.ai) (the default), or
-  - llama.cpp, which the app downloads for you under **Settings > Models** (CUDA, Vulkan or CPU, picked for your hardware)
+- llama.cpp to run the models, which the app downloads for you under **Settings > Models** (CUDA, Vulkan or CPU, picked for your hardware)
 - A GPU helps a lot. The default setup uses small 3B-4B models that fit in a few GB of video memory.
 
 ### Steps
@@ -82,9 +80,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
    ```
 
 2. Open `agent-orchestrator\dist\Agent Orchestrator.exe`. No installer, nothing else to set up.
-3. Open **Settings** (the gear at the bottom left) **> Models** and pick where your models run:
-   - **Unsloth Studio**: paste the API key from Unsloth's Settings > API Keys.
-   - **llama.cpp**: press **Download llama-server**. Models already downloaded through Unsloth or Hugging Face are found automatically.
+3. Open **Settings** (the gear at the bottom left) **> Models** and press **Download llama-server**. GGUF models already in your Hugging Face cache, or in a models folder you pick there, are found automatically.
 4. Pick a model for each worker in the right-hand **Agent details** column, or start with the defaults.
 5. Start a **New chat**, or press **New project**, choose a folder and press **Start project**.
 

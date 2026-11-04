@@ -22,11 +22,6 @@ public partial class MainWindow
     private bool _turnCompleted; // the last turn ended with a reply (not stopped or failed)
     private string? _chatError;
     private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
-    private readonly HashSet<(string Url, string Path)> _loadedByChat = new(); // unloaded when the app closes, or after each turn when ChatKeepLoaded is off
-    private HashSet<(string Url, string Path)> _turnLoaded = new(); // what the current turn's loading events added; a fresh set per turn so a late unload never touches the next turn
-    private Task _chatUnload = Task.CompletedTask;
-    private int _unloadsPending; // end-of-turn unloads in flight: Send waits so they cannot unload what the next turn loads
-    private bool _unloading => _unloadsPending > 0;
     private ChatReply? _reply;
 
     // A conversation kind's own controls, history and scroll state.
@@ -129,6 +124,7 @@ public partial class MainWindow
         RefreshExtras();
         RefreshPermissions();
         InitAttachments();
+        InitComposerLanding();
         InitNotify();
         RefreshPonytailSetting();
         if (CardFor(_settings.ChatWorker) is null)
@@ -138,6 +134,7 @@ public partial class MainWindow
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
         CodeReviewerToggle.IsChecked = _settings.ReviewEveryTurn;
+        ShowFooterPath();
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
         SelectTagged(LinkOpenBox, _settings.LinkOpen);
@@ -185,9 +182,25 @@ public partial class MainWindow
         }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
+        // the Add agent card lines up with the cards (the test build's sit under their group labels)
+        AddWorkerButton.Margin = new Thickness(AppSettings.Unified ? 4 : 0, AppSettings.Unified ? 17 : 0, 0, 8);
+        if (!AppSettings.Unified)
+            return;
+        // The test build's groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the
+        // workflow or the lead calls them. The first shown card of each group carries its label; the helpers start after a gap.
+        var firstHelper = true;
+        foreach (var card in _cards.Where(c => !c.Hidden))
+        {
+            var core = card.Role is "planner" or "compactor";
+            card.GroupLabel = card.Role == "planner" ? "ALWAYS ON" : !core && firstHelper ? "HELPERS · WHEN NEEDED" : "";
+            card.GroupGap = !core && firstHelper ? new Thickness(10, 0, 0, 0) : new Thickness(0);
+            card.GroupOpacity = core ? 1 : 0.82;
+            firstHelper &= core;
+        }
     }
 
-    private bool ChatShown => NavChat.IsChecked == true;
+    // Chat's own agents and presets; the test build has one set for every conversation (Code's)
+    private bool ChatShown => !AppSettings.Unified && NavChat.IsChecked == true;
 
     // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat LEAD, the shown roles and
     // the custom workers.
@@ -210,18 +223,20 @@ public partial class MainWindow
             c.Send.Visibility = hasInput ? Visibility.Visible : Visibility.Collapsed;
             c.Send.ToolTip = Queues ? "Queue (Enter): sent when the current reply finishes" : "Send (Enter)";
             // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
-            var queued = QueueOf(c).Count > 0 ? $" {QueueOf(c).Count} queued." : " Enter queues a message.";
+            var queued = QueueOf(c).Count > 0 ? $" {QueueOf(c).Count} queued." : "";
             var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" + queued : _chatBusy ? $"{(_turn.IsCode == c.IsCode ? (c.IsCode ? "Another conversation's" : "Another chat's") : c.IsCode ? "A chat" : "A Code")} reply is using the models;" + queued
-                : _unloading ? "Unloading models…" + queued : "";
+                : "";
             c.Busy.Text = status;
             c.Busy.ToolTip = status;
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-            c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+            // Placeholder, as Claude's: in the empty box only, saying what Enter does now.
+            c.Hint.Text = runActive ? "" : _chatBusy ? "Enter to queue for later, Shift+Enter for a new line" : "Enter to send, Shift+Enter for a new line";
+            c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
-        ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && _unloadsPending == 0 && ModelsLoaded;
-        CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
+        ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && ModelsLoaded;
+        CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
         CodeStartButton.ToolTip = hasMd ? "Start or resume the project run in this folder (Ctrl+Enter)"
@@ -373,6 +388,21 @@ public partial class MainWindow
         }
     }
 
+    // The status bar's eye: the folder path shown or hidden (for screenshots), saved.
+    private void FooterPath_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.ShowFooterPath = !_settings.ShowFooterPath;
+        _settings.Save();
+        ShowFooterPath();
+    }
+
+    private void ShowFooterPath()
+    {
+        FooterLeft.Visibility = _settings.ShowFooterPath ? Visibility.Visible : Visibility.Hidden;
+        FooterPathGlyph.Text = _settings.ShowFooterPath ? "" : ""; // an eye; the eye struck through
+        FooterPathToggle.ToolTip = _settings.ShowFooterPath ? "Hide the folder path" : "Show the folder path";
+    }
+
     // Code's Reviewer chip: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn); off, turns run as before.
     private void ReviewerToggle_Click(object sender, RoutedEventArgs e)
     {
@@ -396,11 +426,10 @@ public partial class MainWindow
         RefreshContextPins();
     }
 
-    // Unload model (under CHAT and CODE): what chat has loaded, and the local llama-server, now; with Keep models loaded
-    // on, this frees the memory without the round trip through Settings. Greyed out with nothing loaded or while working.
+    // Unload model (under CHAT and CODE): stops the local llama-server now; with Keep models loaded on, this frees the
+    // memory without the round trip through Settings. Greyed out with nothing loaded or while working.
     private void UnloadModels_Click(object sender, RoutedEventArgs e)
     {
-        UnloadChat(_loadedByChat.ToList());
         if (_process is null) // a run may be using the local server
             StopLocalServer();
         WorkerContextsCleared();
@@ -408,49 +437,17 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
-    private bool ModelsLoaded => _loadedByChat.Count > 0 || LocalRuntime && File.Exists(_llamaStateFile);
+    private bool ModelsLoaded => File.Exists(_llamaStateFile);
 
-    // Off: unload what chat has loaded right now (the toggle is locked while a reply streams).
+    // Off: stop the local server right now (the toggle is locked while a reply streams).
     private void ChatKeep_Click(object sender, RoutedEventArgs e)
     {
         _settings.ChatKeepLoaded = ChatKeepToggle.IsChecked == true;
         _settings.Save();
         if (_settings.ChatKeepLoaded)
             return;
-        UnloadChat(_loadedByChat.ToList());
         if (_process is null) // a run may be using the local server
             StopLocalServer();
-    }
-
-    // Unloads the given chat-loaded models, each on the server that loaded it, without blocking the UI thread. Only models
-    // chat itself still tracks (never ones a project run loaded or the user loaded beforehand).
-    private void UnloadChat(List<(string Url, string Path)> wanted)
-    {
-        var pairs = wanted.Where(_loadedByChat.Remove).Where(p => !_loadedByRun.Contains(p)).ToList();
-        if (pairs.Count == 0)
-            return;
-        _unloadsPending++;
-        RefreshChatInput();
-        _chatUnload = UnloadChatAsync(pairs, _runKey);
-    }
-
-    // The POSTs run on the thread pool; the log line and the Send lock are updated back on the UI thread.
-    private async Task UnloadChatAsync(List<(string Url, string Path)> pairs, string key)
-    {
-        var unloaded = await Task.Run(async () =>
-        {
-            var count = 0;
-            foreach (var (url, path) in pairs)
-                if (await PostUnloadAsync(url, path, key).ConfigureAwait(false))
-                    count++;
-            return count;
-        });
-        Log($"Unloaded {unloaded} chat model(s)");
-        if (unloaded > 0)
-            WorkerContextsCleared();
-        _unloadsPending--;
-        RefreshChatInput();
-        SendQueued(); // a message queued behind the unload
     }
 
     // ---- input
@@ -652,21 +649,10 @@ public partial class MainWindow
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.
     // True when the turn completed with a reply.
     private async Task<bool> RunTurn(Conversation c, string? text, string role, Func<string, string> buildRequest,
-        Func<string, string, string, string, string, ProcessStartInfo> buildStartInfo, string label, bool queued = false)
+        Func<string, string, string, string, ProcessStartInfo> buildStartInfo, string label, bool queued = false)
     {
         if (_chatBusy || _process is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
             return false;
-        if (ApiKeyBox.Password.Length == 0)
-            TryLoadApiKeyFile();
-        _runKey = ApiKeyBox.Password.Trim();
-        var unsloth = UsesUnsloth(SelectedProjectPath());
-        if (_runKey.Length == 0 && unsloth)
-        {
-            SetStatus("API key required", "#FF667A");
-            Log("Enter your Unsloth API key.");
-            OpenSettings(ApiKeyBox);
-            return false;
-        }
         var skipped = new List<string>();
         if (!SyncCustomWorkers(skipped))
         {
@@ -699,19 +685,16 @@ public partial class MainWindow
                     Log($"Not written to config.json, so it will not take part: {reason}");
             }
             File.WriteAllText(requestFile, buildRequest(role));
-            var startInfo = buildStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, _runKey, requestFile);
+            var startInfo = buildStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, requestFile);
             ApplyRuntime(startInfo);
             var process = _chatProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
             process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
-            _apiBase = ManagementUrl(folder) ?? _apiBase;
-            _runStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             Log($"{label} in {folder}");
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            if (unsloth || LocalRuntime) // live speed: Unsloth's monitor, or llama-server's /slots
-                _poll.Start();
+            _poll.Start(); // live speed from llama-server's /slots
             _pump.Start();
             await process.WaitForExitAsync();
             exitCode = process.ExitCode;
@@ -800,7 +783,6 @@ public partial class MainWindow
         _turn = c;
         _turnWorker = _settings.ChatWorker;
         _pendingUser = text;
-        _turnLoaded = new();
         _codeStartRequested = false;
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
         _pendingUserTime = Now();
@@ -992,13 +974,8 @@ public partial class MainWindow
         _activeRole = null;
         _chatClosed.Clear();
         _callLive.Clear();
-        var loadedThisTurn = _turnLoaded.ToList();
-        _turnLoaded = new();
         if (!_settings.ChatKeepLoaded)
-        {
-            UnloadChat(loadedThisTurn);
             StopLocalServer();
-        }
         SetChatBusy(false);
         if (c.Input.IsVisible)
             c.Input.Focus();
@@ -1109,11 +1086,6 @@ public partial class MainWindow
             case "loading":
                 EndChatBlock();
                 Activate(role, "Loading model");
-                if (Str(ev, "path").Length > 0 && LoadedOn(ev) is { } loaded)
-                {
-                    _loadedByChat.Add(loaded);
-                    _turnLoaded.Add(loaded);
-                }
                 if (_turn.IsCode)
                     WorkerContextsCleared();
                 SetChatStatus($"Loading the {name} model…");

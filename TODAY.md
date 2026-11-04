@@ -17,12 +17,12 @@ Everything changed in this session, in order, written so a fresh chat can contin
 
 ## 1. Original problem: selected models produced no output
 
-Models at the time: Planner Qwen3.5-4B (Q4_K_M), Implementer Qwen2.5-Coder-3B (Q8_0), Reviewer Phi-4-mini (Q5_K_M), all via local Unsloth Studio at `http://127.0.0.1:8888`. Previous primary models (AgentWorld 35B, Coder 14B, Qwen3.5 9B) are referenced only in `.ai_documents/readme.md`; no config still points at them.
+Models at the time: Planner Qwen3.5-4B (Q4_K_M), Implementer Qwen2.5-Coder-3B (Q8_0), Reviewer Phi-4-mini (Q5_K_M), all via a local model server at `http://127.0.0.1:8888`. Previous primary models (AgentWorld 35B, Coder 14B, Qwen3.5 9B) are referenced only in `.ai_documents/readme.md`; no config still points at them.
 
 Root causes found and fixed in `orchestrator.py` (`run_agent` / `ApiClient`):
 1. **Implementer looped until `max_tool_steps`.** Coder-3B prints tool calls as JSON text instead of native `tool_calls`. `text_tool_calls` recovered them every turn, so `run_agent` never reached its "finished" branch and repeated identical turns ~30 times, then raised. Fix: if a text turn's recovered calls are identical (name + parsed arguments) to the immediately previous text turn's, treat it as "no calls"; a native turn resets the comparison.
-2. **Reviewer rejected by the server.** Phi-4-mini's GGUF template has no tool support; Unsloth returns `API 400 ... "param":"tools"`. Fix: on that specific error, retry the same turn without tools and continue the agent run without tools. Other errors propagate unchanged.
-3. **Wrong model treated as loaded.** Unsloth's `/v1/models` lists every installed model (most recently used first) with a `loaded` flag; `model_id()` took entry 0 even if unloaded → "No model loaded" 400s. Fix: skip entries with `"loaded": false` (entries without the flag still count, for other servers).
+2. **Reviewer rejected by the server.** Phi-4-mini's GGUF template has no tool support; the server returns `API 400 ... "param":"tools"`. Fix: on that specific error, retry the same turn without tools and continue the agent run without tools. Other errors propagate unchanged.
+3. **Wrong model treated as loaded.** The server's `/v1/models` lists every installed model (most recently used first) with a `loaded` flag; `model_id()` took entry 0 even if unloaded → "No model loaded" 400s. Fix: skip entries with `"loaded": false` (entries without the flag still count, for other servers).
 4. **Silent stop.** When the Implementer never uses a tool, its last reply is now saved to RESULT.md and included in the error, so the reason is visible.
 5. **Implementer prompt** (`prompts/implementer.txt`): added "Functionality the task asks you to add is the work itself, never a blocker; a blocker is only something you cannot do with the allowed files and tools." (Coder-7B had been replying "BLOCKED" because the feature didn't exist yet.)
 

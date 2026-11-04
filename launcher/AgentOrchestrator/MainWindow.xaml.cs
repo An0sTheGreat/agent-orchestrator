@@ -35,9 +35,7 @@ public partial class MainWindow : Window
     private readonly System.Collections.Concurrent.ConcurrentQueue<string> _lines = new();
     private readonly DispatcherTimer _pump = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Queue<StreamBlock> _pendingTools = new();
-    private readonly HttpClient _httpLong = new() { Timeout = TimeSpan.FromSeconds(25) };
     private StreamBlock? _stream;
-    private readonly HashSet<(string Url, string Path)> _loadedByRun = new(); // only these are unloaded on Stop/close, each on the server it loaded on
     private bool _stopRequested;
     private string? _runError; // the run's last ERROR line, shown in the conversation when it ends
     // The project run's output: a panel appended to the Code conversation (AddBlock) after the messages shown when it started.
@@ -50,12 +48,15 @@ public partial class MainWindow : Window
     private readonly Stopwatch _taskWatch = new(), _turnWatch = new();
     private readonly DispatcherTimer _clock = new(DispatcherPriority.Normal) { Interval = TimeSpan.FromMilliseconds(250) }; // Background starves while output streams
     private bool _initializing = true, _polling;
-    private double _runStart;
-    private string _apiBase = "http://127.0.0.1:8888", _runKey = "";
 
     public MainWindow()
     {
         InitializeComponent();
+        if (AppSettings.Unified) // the test build: one conversation view (a chat until it works in a folder), no Chat/Code switch
+        {
+            Title += " (Test)";
+            NavSwitch.Visibility = Visibility.Collapsed;
+        }
         LoadWorkers();
         _cards.CollectionChanged += (_, _) => RefreshCardVisibility(); // a preset rebuilds the cards
         InitWorkerTabs();
@@ -101,7 +102,6 @@ public partial class MainWindow : Window
             {
                 ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
                 Log($"Workflow: {_workflowRoot}");
-                TryLoadApiKeyFile();
                 if (_settings.LoadFailed)
                     Log("settings.json could not be read; settings changed this session will not be saved.");
                 MigrateRoles();
@@ -133,17 +133,6 @@ public partial class MainWindow : Window
 
         if (!RuntimeReady())
             return;
-        if (ApiKeyBox.Password.Length == 0)
-            TryLoadApiKeyFile();
-        _runKey = ApiKeyBox.Password.Trim();
-        var unsloth = UsesUnsloth(project);
-        if (_runKey.Length == 0 && unsloth)
-        {
-            SetStatus("API key required", "#FF667A");
-            Log("Enter your Unsloth API key.");
-            OpenSettings(ApiKeyBox);
-            return;
-        }
         if (LauncherLogic.IsProjectComplete(project) && !RestartProject(project))
             return;
         if (!PrepareRun())
@@ -153,7 +142,7 @@ public partial class MainWindow : Window
         {
             File.WriteAllText(requestFile, RunRequest(project));
             var python = LauncherLogic.FindPython();
-            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _runKey, _settings.Once, requestFile);
+            var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _settings.Once, requestFile);
             ApplyRuntime(startInfo);
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -161,8 +150,6 @@ public partial class MainWindow : Window
 
             _settings.LastProject = project;
             _settings.Save();
-            _apiBase = ManagementUrl(project) ?? _apiBase;
-            _runStart = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
             Log($"Starting workflow for {project}");
             SetRunning(true);
             _process.Start();
@@ -170,8 +157,7 @@ public partial class MainWindow : Window
             AddNote("PROJECT RUN", $"Working through PROJECT.md in {project}" + (_settings.Once ? ", stopping after the first finished item" : ""));
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
-            if (unsloth || LocalRuntime) // live speed: Unsloth's monitor, or llama-server's /slots
-                _poll.Start();
+            _poll.Start(); // live speed from llama-server's /slots
             _pump.Start();
             await _process.WaitForExitAsync();
             var exitCode = _process.ExitCode;
@@ -242,8 +228,6 @@ public partial class MainWindow : Window
             RecordStopNote(activity);
         }
         catch (InvalidOperationException) { }
-        // The killed orchestrator cannot run its own cleanup, so release the models from here.
-        await UnloadModelsAsync();
     }
 
     // What the run was doing when stopped: the active worker and its status, else the overall status text.
@@ -290,7 +274,6 @@ public partial class MainWindow : Window
         _stream = null;
         _pendingTools.Clear();
         _lines.Clear();
-        _loadedByRun.Clear();
         _stopRequested = false;
         _runError = null;
         Jump(_code);
@@ -307,7 +290,6 @@ public partial class MainWindow : Window
 
     private void SetRunning(bool running, bool preserveStatus = false)
     {
-        ApiKeyBox.IsEnabled = !running;
         AddWorkerButton.IsEnabled = !running;
         PresetsButton.IsEnabled = !running;
         foreach (var card in _cards)
@@ -431,8 +413,6 @@ public partial class MainWindow : Window
                 EndStream(false);
                 Activate(role, "Loading model");
                 WorkerContextsCleared();
-                if (LoadedOn(ev) is { } loaded)
-                    _loadedByRun.Add(loaded);
                 Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
                 break;
             case "model":
@@ -1510,13 +1490,13 @@ public partial class MainWindow : Window
             if (!await Turn("Hello", new[]
             {
                 Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""),
-                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf","url":"http://127.0.0.1:9"}"""),
+                Ev("""{"e":"loading","role":"reviewer","path":"smoke/chat-model.gguf"}"""),
                 Ev("""{"e":"model","role":"reviewer","id":"chat-model Q4_K_M"}"""),
                 Delta("reviewer", "thinking", "hmm"),
                 Delta("reviewer", "text", "streamed answer"),
                 Ev("""{"e":"done","role":"reviewer","final":true}"""),
                 Ev("""{"e":"usage","role":"reviewer","prompt":321,"completion":45,"tps":30}"""),
-            }, "Final reviewed reply") || _chatHistory.Count != 2 || !_loadedByChat.Any(l => l.Path == "smoke/chat-model.gguf") ||
+            }, "Final reviewed reply") || _chatHistory.Count != 2 ||
                 !reviewer.TurnDetail.Contains("321 prompt") || !reviewer.TurnDetail.Contains("45 generated") || OutputPanel.Children.Count != outputCount ||
                 _reply!.Content.Children.OfType<Expander>().Count() != 1)
                 return Fail();
@@ -1530,7 +1510,7 @@ public partial class MainWindow : Window
                 Ev("""{"e":"chat_stage","role":"reviewer","stage":"answer"}"""),
                 Delta("reviewer", "text", "Asking the implementer"),
                 Ev("""{"e":"chat_stage","role":"implementer","stage":"delegate","title":"Write the draft"}"""),
-                Ev("""{"e":"loading","role":"implementer","path":"smoke/implementer.gguf","url":"http://127.0.0.1:9"}"""),
+                Ev("""{"e":"loading","role":"implementer","path":"smoke/implementer.gguf"}"""),
                 Delta("implementer", "thinking", "hmm"),
                 Delta("implementer", "text", "Draft body"),
                 Ev("""{"e":"done","role":"implementer","final":true}"""),
@@ -1540,7 +1520,7 @@ public partial class MainWindow : Window
             string SectionTitle(Expander e) => ((TextBlock)((StackPanel)e.Header).Children[0]).Text;
             if (!await Turn("Build it", delegated, "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
                 _reply!.Content.Children.OfType<Expander>().Select(SectionTitle).SequenceEqual(new[] { "THINKING  ·  IMPLEMENTER", "IMPLEMENTER" }) is false ||
-                _reply.Content.Children.OfType<TextBlock>().Any(t => t.Text == "FINAL ANSWER") || !_loadedByChat.Any(l => l.Path == "smoke/implementer.gguf"))
+                _reply.Content.Children.OfType<TextBlock>().Any(t => t.Text == "FINAL ANSWER"))
                 return Fail();
             await Settle();
             Snap("16-chat-delegate");
@@ -1715,7 +1695,6 @@ public partial class MainWindow : Window
             File.WriteAllText(Path.Combine(strayDir, "config.json"), "{}");
             (_chatRequestFile, _chatTempFolder) = (strayFile, strayDir);
             StartChatTurn("Busy");
-            _loadedByChat.Clear(); // the close path would unload these from a real server
             OnClosing(this, new CancelEventArgs()); // the real close path: no chat process here, only the files
             if (File.Exists(strayFile) || Directory.Exists(strayDir) || _chatRequestFile is not null || _chatTempFolder is not null)
                 return Fail();
@@ -1736,114 +1715,6 @@ public partial class MainWindow : Window
             }
             finally { Directory.Delete(realProject, true); }
 
-            // Unload on close, called on the UI thread against two fake servers: each receives exactly its own paths, and fast.
-            (System.Net.Sockets.TcpListener Listener, System.Collections.Concurrent.ConcurrentBag<string> Seen, Task Serving) Fake()
-            {
-                var bag = new System.Collections.Concurrent.ConcurrentBag<string>();
-                var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
-                listener.Start();
-                var task = Task.Run(async () =>
-                {
-                    try
-                    {
-                        while (true)
-                        {
-                            var client = await listener.AcceptTcpClientAsync();
-                            _ = Task.Run(async () =>
-                            {
-                                using var c = client;
-                                var stream = c.GetStream();
-                                var head = new StringBuilder();
-                                var one = new byte[1];
-                                while (!head.ToString().EndsWith("\r\n\r\n") && await stream.ReadAsync(one) == 1)
-                                    head.Append((char)one[0]);
-                                var length = System.Text.RegularExpressions.Regex.Match(head.ToString(), @"Content-Length:\s*(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-                                var body = new byte[length.Success ? int.Parse(length.Groups[1].Value) : 0];
-                                for (var got = 0; got < body.Length;)
-                                    got += await stream.ReadAsync(body.AsMemory(got));
-                                bag.Add(Encoding.UTF8.GetString(body));
-                                await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"));
-                            });
-                        }
-                    }
-                    catch (Exception) { } // the listener was stopped
-                });
-                return (listener, bag, task);
-            }
-            string UrlOf(System.Net.Sockets.TcpListener l) => $"http://127.0.0.1:{((System.Net.IPEndPoint)l.LocalEndpoint).Port}";
-            var (fakeA, seenA, servingA) = Fake();
-            var (fakeB, seenB, servingB) = Fake();
-            var (savedBase, savedKey) = (_apiBase, _runKey);
-            (_apiBase, _runKey) = (UrlOf(fakeA), "smoke-key"); // the fallback for a loading event without a url
-            _loadedByChat.Clear();
-            _loadedByRun.Clear();
-            _chatBusy = true;
-            _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/a.gguf","url":"{{UrlOf(fakeA)}}"}""")); // chat, server A
-            _lines.Enqueue(Ev("""{"e":"loading","role":"planner","path":"smoke/b.gguf"}""")); // chat, no url (llama.cpp): never tracked
-            DrainLines();
-            _chatBusy = false;
-            _lines.Enqueue(Ev($$"""{"e":"loading","role":"planner","path":"smoke/c.gguf","url":"{{UrlOf(fakeB)}}"}""")); // run, server B
-            // G3: a line still queued when closing begins is drained first, so it is unloaded too.
-            _lines.Enqueue(Ev($$"""{"e":"loading","role":"implementer","path":"smoke/d.gguf","url":"{{UrlOf(fakeB)}}"}"""));
-            if (_loadedByChat.Count != 1 || _loadedByRun.Count != 0 || _lines.Count != 2) // c and d are still queued, undrained
-                return Fail();
-            var clock = Stopwatch.StartNew();
-            OnClosing(this, new CancelEventArgs()); // the real close path (drain, then unload) on the UI thread
-            clock.Stop();
-            (_apiBase, _runKey) = (savedBase, savedKey);
-            fakeA.Stop();
-            fakeB.Stop();
-            await servingA;
-            await servingB;
-            bool Only(System.Collections.Concurrent.ConcurrentBag<string> bag, params string[] names) =>
-                bag.Count == names.Length && names.All(n => bag.Count(b => b.Contains($"smoke/{n}.gguf")) == 1);
-            if (!Only(seenA, "a") || !Only(seenB, "c", "d") ||
-                clock.Elapsed > TimeSpan.FromSeconds(2) || _loadedByChat.Count != 0 || _loadedByRun.Count != 0)
-            {
-                Console.Error.WriteLine($"ui-smoke: unload on close: server A saw {seenA.Count}, server B saw {seenB.Count}, took {clock.Elapsed.TotalSeconds:F1}s");
-                return Fail();
-            }
-
-            // Keep models loaded: On leaves them tracked and unposted; Off unloads exactly what the turn loaded, on its server;
-            // switching On to Off unloads the tracked ones once; a model chat did not load is never touched.
-            var (fakeC, seenC, servingC) = Fake();
-            (_apiBase, _runKey) = (UrlOf(fakeC), "smoke-key");
-            _loadedByChat.Clear();
-            _loadedByRun.Clear();
-            async Task KeepTurn(params string[] names)
-            {
-                StartChatTurn("K");
-                foreach (var n in names)
-                    _lines.Enqueue(Ev($$"""{"e":"loading","role":"reviewer","path":"smoke/{{n}}.gguf","url":"{{UrlOf(fakeC)}}"}"""));
-                DrainLines();
-                FinishChatTurn(-1, true, null);
-                await _chatUnload;
-            }
-            bool Posted(params string[] names) => Only(seenC, names) && names.All(n => _loadedByChat.All(l => l.Path != $"smoke/{n}.gguf"));
-            _settings.ChatKeepLoaded = true;
-            ChatKeepToggle.IsChecked = true;
-            await KeepTurn("k1", "k2");
-            var keepOk = seenC.IsEmpty && _loadedByChat.Count == 2 && !_unloading;
-            ChatKeepToggle.IsChecked = false;
-            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs());
-            var sentWhileBusy = _unloading && !ChatSend.IsEnabled; // nothing typed: no Send (with text it queues behind the unload)
-            await _chatUnload;
-            var switchOk = keepOk && sentWhileBusy && !_settings.ChatKeepLoaded && Posted("k1", "k2") && _loadedByChat.Count == 0 && !_unloading;
-            ChatKeep_Click(ChatKeepToggle, new RoutedEventArgs()); // already Off: nothing more to unload
-            await _chatUnload;
-            await KeepTurn("k3", "k4");
-            var offOk = switchOk && Posted("k1", "k2", "k3", "k4") && _loadedByChat.Count == 0;
-            await KeepTurn(); // a model that was already loaded sends no loading event: nothing is unloaded
-            _settings.ChatKeepLoaded = true;
-            ChatKeepToggle.IsChecked = true;
-            fakeC.Stop();
-            await servingC;
-            (_apiBase, _runKey) = (savedBase, savedKey);
-            if (!offOk || !Only(seenC, "k1", "k2", "k3", "k4") || _loadedByChat.Count != 0)
-            {
-                Console.Error.WriteLine($"ui-smoke: keep loaded: keep={keepOk} switch={switchOk} off={offOk}, server saw {seenC.Count}");
-                return Fail();
-            }
             // Code view: a turn with a tool call lands in the Code conversation (not Chat); code_reply is the answer; both sub-views toggle.
             ShowView();
             await Settle();
@@ -2364,14 +2235,14 @@ public partial class MainWindow : Window
                     if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
                         string.Join("|", titles() ?? []) != "Lead Context|Implementer Context")
                         return Fail();
-                    // The cards stack under the header, the lead's first, right edges flush with Start project's.
+                    // The cards stack level with the header's Context button, the lead's first, lined up as Chat's (PinMargin).
                     await Settle();
                     Snap("38-code-context-stack");
                     var stacked = (CodeContextPin.Content as StackPanel)?.Children.OfType<Border>().ToList() ?? [];
                     var stackArea = (FrameworkElement)CodeContextPin.Parent;
-                    double RightOf(FrameworkElement e) => e.TranslatePoint(new Point(e.ActualWidth, 0), stackArea).X;
-                    if (stacked.Count != 2 || ((stacked[0].Child as StackPanel)?.Children[0] as Button)?.Tag as string != "planner" ||
-                        Math.Abs(RightOf(stacked[0]) - RightOf(CodeStartButton)) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
+                    double RightOf(FrameworkElement e) => e.TranslatePoint(new Point(e.ActualWidth, 0), stackArea).X;                    if (stacked.Count != 2 || ((stacked[0].Child as StackPanel)?.Children[0] as Button)?.Tag as string != "planner" ||
+                        Math.Abs(RightOf(stacked[0]) - (stackArea.ActualWidth - PinMargin(stackArea, CodeContextRing).Right)) > 1 ||
+                        Math.Abs(stacked[0].TranslatePoint(new Point(), stackArea).Y - CodeContextRing.TranslatePoint(new Point(), stackArea).Y) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
                         return Fail();
                     // Without room beside the conversation (centering off), the conversation starts below the stack.
                     var centered = _settings.CenterChat;
@@ -2708,21 +2579,17 @@ public partial class MainWindow : Window
         WindowState = WindowState.Normal;
         (Left, Top) = (-20000, -20000);
         await Settle();
-        // The Settings window: the gear, the rail's gear and a run missing its API key open it, owned and borderless with the
-        // Options content inside (a run's key box focused); a theme picked in it restyles it live; × and Esc close it, and
-        // its content goes back to the holder each time, so it opens again.
-        for (var way = 0; way < 3; way++)
+        // The Settings window: the gear and the rail's gear open it, owned and borderless with the Options content inside;
+        // a theme picked in it restyles it live; × and Esc close it, and its content goes back to the holder each time, so it opens again.
+        for (var way = 0; way < 2; way++)
         {
             if (way == 0)
                 NavOptions.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-            else if (way == 1)
-                RailSettings.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             else
-                OpenSettings(ApiKeyBox);
+                RailSettings.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             if (_settingsWindow is not { } settings || !settings.IsVisible || settings.Owner != this || settings.WindowStyle != WindowStyle.None
-                || !settings.AllowsTransparency || settings.ActualWidth < 900 || SettingsHolder.Child is not null || !ThemeFlatRadio.IsDescendantOf(settings)
-                || (way == 2) != (FocusManager.GetFocusedElement(settings) == ApiKeyBox))
+                || !settings.AllowsTransparency || settings.ActualWidth < 900 || SettingsHolder.Child is not null || !ThemeFlatRadio.IsDescendantOf(settings))
                 return Fail();
             if (way == 0)
             {
@@ -2738,7 +2605,7 @@ public partial class MainWindow : Window
                 await Settle();
                 if (((SolidColorBrush)settings.Frame.Background).Color != background)
                     return Fail();
-                // Each tab shows its own page only; the key box's tab (Models) is left for way 2 to open by focus.
+                // Each tab shows its own page only.
                 foreach (var tab in SettingsTabs.Children.OfType<RadioButton>().Reverse())
                 {
                     tab.IsChecked = true;
@@ -2749,8 +2616,6 @@ public partial class MainWindow : Window
                         return Fail();
                     Snap($"26-settings-{tab.Tag}", settings);
                 }
-                if (ApiKeyBox.IsVisible)
-                    return Fail();
             }
             if (way == 1) // Esc
                 settings.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(settings)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
@@ -3207,8 +3072,6 @@ public partial class MainWindow : Window
             ChatInput.Clear();
             Queue("auto");
             ChatInput.Text = "draft";
-            var runtime = _settings.Runtime;
-            _settings.Runtime = LauncherLogic.LlamaRuntime;
             var bubbles = _chat.Panel.Children.Count;
             _chatBusy = false;
             Queue("late"); // a queued message waits for it: Enter does not jump ahead
@@ -3217,7 +3080,6 @@ public partial class MainWindow : Window
                 return Fail();
             AfterTurn(completed: true);
             await Task.Delay(300);
-            _settings.Runtime = runtime;
             if (ChatInput.Text != "auto\n\nlate\n\ndraft" || _chatQueue.Count != 0 || _chatBusy || _chat.Panel.Children.Count != bubbles)
                 return Fail();
         }
@@ -3299,25 +3161,12 @@ public partial class MainWindow : Window
         return true;
     }
 
-    // --ui-smoke, local runtime: the radios persist (and are refused mid-reply), the status follows the data folder, a turn
-    // without llama-server is refused, and stopping the recorded server kills a llama-server but never another process.
+    // --ui-smoke, local runtime: the status follows the data folder, a turn without llama-server is refused, and stopping
+    // the recorded server kills a llama-server but never another process.
     private async Task<bool> LocalRuntimeSmoke()
     {
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
         bool Toasted(string text) => ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text);
-        RuntimeLlamaRadio.IsChecked = true;
-        if (AppSettings.Load().Runtime != LauncherLogic.LlamaRuntime)
-            return Fail();
-        RuntimeUnslothRadio.IsChecked = true;
-        if (AppSettings.Load().Runtime != "unsloth")
-            return Fail();
-        _chatBusy = true;
-        RuntimeLlamaRadio.IsChecked = true;
-        _chatBusy = false;
-        await Task.Delay(100);
-        if (_settings.Runtime != "unsloth" || RuntimeUnslothRadio.IsChecked != true || RuntimeLlamaRadio.IsChecked == true)
-            return Fail();
-        RuntimeLlamaRadio.IsChecked = true;
         RefreshLlamaStatus();
         if (LlamaStatus.Text != "llama-server not installed" || (string)LlamaDownloadButton.Content != "Download llama-server")
             return Fail();
@@ -3358,7 +3207,7 @@ public partial class MainWindow : Window
             foreach (var p in new[] { other, server })
                 try { p.Kill(); } catch (InvalidOperationException) { }
         }
-        // Change on this runtime lists the GGUFs on disk (no Unsloth): a file in the models folder is assigned by its path.
+        // Change lists the GGUFs on disk: a file in the models folder is assigned by its path.
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models");
         var fake = Path.Combine(models, "Fake-Model-Q4_K_M.gguf");
         Directory.CreateDirectory(models);
@@ -3366,10 +3215,7 @@ public partial class MainWindow : Window
         _settings.ModelsFolder = models;
         var choices = await FetchModelChoicesAsync();
         _settings.ModelsFolder = "";
-        if (choices.SingleOrDefault(c => c.File == fake) is not { Label: "Fake-Model-Q4_K_M", Variant: "Q4_K_M", LoadPath: "Fake-Model-Q4_K_M" })
-            return Fail();
-        RuntimeUnslothRadio.IsChecked = true;
-        return _settings.Runtime == "unsloth" || Fail();
+        return choices.SingleOrDefault(c => c.File == fake) is { Label: "Fake-Model-Q4_K_M", Variant: "Q4_K_M", LoadPath: "Fake-Model-Q4_K_M" } || Fail();
     }
 
     // Real hover cannot be faked, so begin every IsMouseOver storyboard of each control and data template directly:
@@ -3442,52 +3288,19 @@ public partial class MainWindow : Window
         }
     }
 
-    // ---------------------------------------------------------------- live speed (Unsloth's monitor, or llama-server's /slots)
+    // ---------------------------------------------------------------- live speed (llama-server's /slots)
 
     private async void Poll_Tick(object? sender, EventArgs e)
     {
         if (_polling || (_process ?? _chatProcess) is null || _activeRole is null || CardFor(_activeRole) is not { } card)
             return;
         _polling = true;
-        try
-        {
-            if (LocalRuntime)
-            {
-                await PollLlamaAsync(card);
-                return;
-            }
-            using var request = new HttpRequestMessage(HttpMethod.Get, _apiBase + "/api/inference/monitor");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
-            using var response = await _http.SendAsync(request);
-            if (!response.IsSuccessStatusCode)
-                return;
-            using var doc = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync());
-            JsonElement? best = null;
-            var bestStart = 0.0;
-            foreach (var row in doc.RootElement.GetProperty("entries").EnumerateArray())
-            {
-                if (Prop(row, "kind") != "request" || Prop(row, "status") != "running" ||
-                    !(row.TryGetProperty("via_api_key", out var via) && via.ValueKind == JsonValueKind.True))
-                    continue;
-                var started = Number(row, "started_at") ?? 0;
-                if (started >= _runStart - 2 && started >= bestStart)
-                    (best, bestStart) = (row, started);
-            }
-            if (best is not { } live || (_process ?? _chatProcess) is null)
-                return;
-            var tps = Number(live, "tok_per_sec");
-            var decodeMs = Number(live, "decode_ms");
-            var generated = tps > 0 && decodeMs > 0 ? (long)Math.Round(tps.Value * decodeMs.Value / 1000) : 0;
-            card.SetLive((long)(Number(live, "prompt_tokens") ?? 0), generated, tps, Number(live, "prompt_tok_per_sec"));
-        }
+        try { await PollLlamaAsync(card); }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
-            // Monitor unavailable: the per-call numbers from the orchestrator still arrive.
+            // /slots unavailable: the per-call numbers from the orchestrator still arrive.
         }
         finally { _polling = false; }
-
-        static string Prop(JsonElement el, string name) => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
-        static double? Number(JsonElement el, string name) => el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
     }
 
     // ---------------------------------------------------------------- project / config helpers
@@ -3521,33 +3334,12 @@ public partial class MainWindow : Window
     // The roles.<entry> a worker's model is read from: an implementer or reviewer not added runs as the planner.
     private string ConfigRole(string role) => role is "implementer" or "reviewer" && !_settings.AddedRoles.Contains(role) ? "planner" : role;
 
-    // False when every role is remote or local models run on llama-server: no Unsloth key is needed and its monitor is not polled
-    // (a role with a management_url but no auto_load still talks to Unsloth). Custom workers always use the local server
-    // (they copy the Implementer's local connection), and an unreadable config counts as local.
-    private bool UsesUnsloth(string project)
-    {
-        using var config = ReadConfig(project);
-        return config is null ? !LocalRuntime : !LocalRuntime && CurrentWorkers().Any(w => w.Custom) || LauncherLogic.UsesUnsloth(config.RootElement, LocalRuntime);
-    }
-
-    // The first built-in role's Unsloth server (a remote role has none).
-    private string? ManagementUrl(string project)
-    {
-        using var config = ReadConfig(project);
-        if (config is null || !config.RootElement.TryGetProperty("roles", out var roles))
-            return null;
-        foreach (var role in LauncherLogic.BuiltInRoles)
-            if (roles.TryGetProperty(role, out var r) && r.TryGetProperty("management_url", out var u) && u.GetString() is { Length: > 0 } url)
-                return url.TrimEnd('/');
-        return null;
-    }
-
     // The model id of a built-in role set to a remote API (Settings > Remote API), else null.
     private string? RemoteModel(string role)
     {
         using var config = ReadConfig(SelectedProjectPath());
         return config is not null && config.RootElement.TryGetProperty("roles", out var roles) && roles.TryGetProperty(ConfigRole(role), out var r) &&
-               !r.TryGetProperty("management_url", out _) && r.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
+               !r.TryGetProperty("auto_load", out _) && r.TryGetProperty("model", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
     }
 
     private LauncherLogic.ModelInfo ModelInfoFor(string role, string id) =>
@@ -3582,94 +3374,6 @@ public partial class MainWindow : Window
         }
         RefreshLeadChip(); // the Code chip names the Planner's model
         RefreshVision();
-    }
-
-    // A loading event's (server, model): the orchestrator names the management URL it loaded on; older ones omit it.
-    // A loading event names the Unsloth server it loaded on; llama.cpp loads carry no url and are never tracked (the launcher stops that server instead).
-    private (string Url, string Path)? LoadedOn(JsonElement ev) => Str(ev, "url") is { Length: > 0 } u ? (u, Str(ev, "path")) : null;
-
-    // Release only the models this run loaded; one the user had already loaded in Unsloth is left alone.
-    private async Task UnloadModelsAsync()
-    {
-        var paths = _loadedByRun.ToList();
-        _loadedByRun.Clear();
-        foreach (var (url, path) in paths)
-            if (await PostUnloadAsync(url, path, _runKey))
-                Log($"Unloaded {path}");
-        if (paths.Count > 0)
-            WorkerContextsCleared();
-    }
-
-    // One unload POST; false when the server is unreachable or refuses. Touches no UI, so it is safe off the UI thread.
-    private async Task<bool> PostUnloadAsync(string url, string path, string key)
-    {
-        try
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
-            {
-                Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
-            };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            using var response = await _http.SendAsync(request).ConfigureAwait(false);
-            return response.IsSuccessStatusCode;
-        }
-        catch (Exception e) when (e is HttpRequestException or TaskCanceledException) { return false; }
-    }
-
-    // The close-time unload. It runs on the UI thread inside Closing, so it must not await anything that needs the
-    // dispatcher (a Task.Wait on UnloadModelsAsync starves its own continuation and only the first POST goes out).
-    // Synchronous sends, each bounded, the whole thing bounded; every tracked path from both sets is attempted.
-    private int UnloadOnClose(double budgetSeconds = 4)
-    {
-        var paths = _loadedByRun.Concat(_loadedByChat).Distinct().ToList();
-        _loadedByRun.Clear();
-        _loadedByChat.Clear();
-        var deadline = DateTime.UtcNow.AddSeconds(budgetSeconds);
-        var unloaded = 0;
-        foreach (var (url, path) in paths)
-        {
-            var left = deadline - DateTime.UtcNow;
-            if (left <= TimeSpan.Zero)
-                break;
-            try
-            {
-                using var cancel = new CancellationTokenSource(left < TimeSpan.FromSeconds(2) ? left : TimeSpan.FromSeconds(2));
-                using var request = new HttpRequestMessage(HttpMethod.Post, url.TrimEnd('/') + "/api/inference/unload")
-                {
-                    Content = new StringContent(JsonSerializer.Serialize(new { model_path = path }), Encoding.UTF8, "application/json"),
-                };
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _runKey);
-                using var response = _http.Send(request, cancel.Token);
-                if (response.IsSuccessStatusCode)
-                    unloaded++;
-            }
-            catch (Exception e) when (e is HttpRequestException or OperationCanceledException) { } // try the next path
-        }
-        return unloaded;
-    }
-
-    private bool TryLoadApiKeyFile()
-    {
-        if (_workflowRoot is null)
-            return false;
-        try
-        {
-            var detected = LauncherLogic.FindApiKeyFile(_workflowRoot, AppContext.BaseDirectory);
-            if (detected is null)
-                return false;
-            ApiKeyBox.Password = detected.Value.Key;
-            ApiKeyHint.Text = "API key loaded from api_key.txt; it remains hidden and is not saved by the launcher.";
-            ApiKeyHint.ToolTip = detected.Value.Path;
-            Log("API key loaded from api_key.txt.");
-            return true;
-        }
-        catch (Exception exception)
-        {
-            ApiKeyHint.Text = "api_key.txt is invalid; enter the key manually or correct the file.";
-            Log($"Could not load api_key.txt: {exception.Message}");
-            SetStatus("Invalid api_key.txt", "#FF667A");
-            return false;
-        }
     }
 
     // Test hooks for --ui-smoke: answer the restart confirmation without showing it, and replace the Recycle Bin.
@@ -3955,7 +3659,9 @@ public partial class MainWindow : Window
     {
         // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR), then the custom workers in the order added.
         var saved = _settings.Workers.Where(w => w.Id.Length > 0 && (w.Custom || Roles.Contains(w.Id))).ToList();
-        foreach (var w in Roles.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
+        // the test build groups them: LEAD and COMPACTOR (always on), then the helpers
+        string[] order = AppSettings.Unified ? ["planner", "compactor", "implementer", "reviewer"] : Roles;
+        foreach (var w in order.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
             if (w.Custom && w.ModelId is not null)
@@ -4460,74 +4166,19 @@ public partial class MainWindow : Window
         }
     }
 
-    // Installed text-generation GGUF models: local files, plus each downloaded quantization of cached Hugging Face repos.
-    // On the llama.cpp runtime: the GGUF files the engine itself would find (models folder and Hugging Face cache), no server needed.
-    private async Task<List<ModelChoice>> FetchModelChoicesAsync()
-    {
-        if (LocalRuntime)
-            return (await Task.Run(() => LauncherLogic.FindLocalGgufs(_settings.ModelsFolder, LauncherLogic.HubCache())))
-                .Select(g =>
+    // Installed GGUF models: the files the engine itself would find (models folder and Hugging Face cache), no server needed.
+    private async Task<List<ModelChoice>> FetchModelChoicesAsync() =>
+        (await Task.Run(() => LauncherLogic.FindLocalGgufs(_settings.ModelsFolder, LauncherLogic.HubCache())))
+            .Select(g =>
+            {
+                if (g.Repo.Length > 0)
                 {
-                    if (g.Repo.Length > 0)
-                    {
-                        var tail = g.Repo.Split('/')[^1];
-                        return new ModelChoice($"{tail}  ·  {(g.Variant.Length > 0 ? g.Variant : Path.GetFileName(g.File))}", g.Repo, g.Repo, g.Variant.Length > 0 ? g.Variant : null, tail);
-                    }
-                    var name = Path.GetFileNameWithoutExtension(g.File);
-                    return new ModelChoice(name, name, name, g.Variant.Length > 0 ? g.Variant : null, name, g.File);
-                }).DistinctBy(c => c.Label).OrderBy(c => c.Label, StringComparer.OrdinalIgnoreCase).ToList();
-        var baseUrl = ManagementUrl(SelectedProjectPath()) ?? _apiBase;
-        if (ApiKeyBox.Password.Length == 0)
-            TryLoadApiKeyFile();
-        var key = ApiKeyBox.Password.Trim();
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-
-        async Task<JsonDocument> Get(string route)
-        {
-            using var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + route);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
-            using var response = await _httpLong.SendAsync(request, cts.Token);
-            response.EnsureSuccessStatusCode();
-            return await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cts.Token), cancellationToken: cts.Token);
-        }
-
-        var local = new List<ModelChoice>();
-        var repos = new List<string>();
-        using (var doc = await Get("/api/models/local"))
-        {
-            foreach (var m in doc.RootElement.GetProperty("models").EnumerateArray())
-            {
-                var partial = m.TryGetProperty("partial", out var p) && p.ValueKind == JsonValueKind.True;
-                if (partial || Str(m, "model_format") != "gguf" || Str(m, "task") != "text-generation")
-                    continue;
-                if (Str(m, "source") == "hf_cache")
-                    repos.Add(Str(m, "id"));
-                else
-                    local.Add(new ModelChoice(Str(m, "display_name"), Str(m, "display_name"), Str(m, "id"), null, Str(m, "display_name")));
-            }
-        }
-
-        var cached = await Task.WhenAll(repos.Select(async repo =>
-        {
-            try
-            {
-                using var doc = await Get("/api/models/gguf-variants?repo_id=" + Uri.EscapeDataString(repo));
-                return doc.RootElement.GetProperty("variants").EnumerateArray()
-                    .Where(v => v.TryGetProperty("downloaded", out var d) && d.ValueKind == JsonValueKind.True && Str(v, "quant").Length > 0)
-                    .Select(v =>
-                    {
-                        var tail = repo.Split('/')[^1];
-                        return new ModelChoice($"{tail}  ·  {Str(v, "quant")}", repo, repo, Str(v, "quant"), tail);
-                    }).ToList();
-            }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException)
-            {
-                return new List<ModelChoice>();
-            }
-        }));
-        return local.OrderBy(c => c.Label, StringComparer.OrdinalIgnoreCase)
-            .Concat(cached.SelectMany(c => c).OrderBy(c => c.Label, StringComparer.OrdinalIgnoreCase)).ToList();
-    }
+                    var tail = g.Repo.Split('/')[^1];
+                    return new ModelChoice($"{tail}  ·  {(g.Variant.Length > 0 ? g.Variant : Path.GetFileName(g.File))}", g.Repo, g.Repo, g.Variant.Length > 0 ? g.Variant : null, tail);
+                }
+                var name = Path.GetFileNameWithoutExtension(g.File);
+                return new ModelChoice(name, name, name, g.Variant.Length > 0 ? g.Variant : null, name, g.File);
+            }).DistinctBy(c => c.Label).OrderBy(c => c.Label, StringComparer.OrdinalIgnoreCase).ToList();
 
     // ---------------------------------------------------------------- navigation, theme, window chrome
 
@@ -4702,6 +4353,12 @@ public partial class MainWindow : Window
         Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#3B3B3B" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", graphite ? 0 : clay ? 0.02 : 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
         SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9A9A9A" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        // A card under the mouse (the Context cards): the card a step toward the text colour, brighter on dark themes
+        {
+            var (card, text) = (((SolidColorBrush)Resources["Card"]).Color, ((SolidColorBrush)Resources["TextPrimary"]).Color);
+            byte Step(byte from, byte to) => (byte)Math.Round(from + (to - from) * 0.06);
+            Resources["CardHover"] = new SolidColorBrush(Color.FromArgb(card.A, Step(card.R, text.R), Step(card.G, text.G), Step(card.B, text.B)));
+        }
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
         var rim = (byte)(parchment || graphite ? 0 : glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A); // Graphite: flat, as Claude's
         // Code colours: VS Code's light palette on Parchment, its dark one elsewhere; inline code sits on a chip of the opposite shade.
@@ -4860,7 +4517,6 @@ public partial class MainWindow : Window
         }
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
-        UnloadOnClose(); // the models this run loaded, and those chat left loaded between messages
         _llamaDownload?.Cancel();
         StopLocalServer();
         _settings.Save();

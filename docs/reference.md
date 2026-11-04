@@ -2,7 +2,7 @@
 
 ## Introduction
 
-Agent Orchestrator lets a set of small local language models build software together, one verified step at a time. Instead of asking one large model to write a whole project, it splits the work across three specialised roles served by [Unsloth](https://unsloth.ai) on your own machine, and it refuses to move forward until an independent reviewer approves each step.
+Agent Orchestrator lets a set of small local language models build software together, one verified step at a time. Instead of asking one large model to write a whole project, it splits the work across three specialised roles served by llama.cpp on your own machine, and it refuses to move forward until an independent reviewer approves each step.
 
 ## Description
 
@@ -19,31 +19,29 @@ You describe the goal, constraints, and completion criteria in a `PROJECT.md`. *
 
 The sections below on task limits, the configurator, the contract, the behaviour and code checks as gates, checkpoints and review rounds describe this legacy pipeline.
 
-Models are loaded one at a time through Unsloth's local API, so the three roles can share a single GPU, and they are unloaded again when a run ends. A Windows launcher (`dist\Agent Orchestrator.exe`) wraps the Python engine with project setup, live model output in the conversation, per-model token statistics, and a saved execution log.
+Models are loaded one at a time on a local llama-server, so the three roles can share a single GPU, and the server is stopped again when a run ends. A Windows launcher (`dist\Agent Orchestrator.exe`) wraps the Python engine with project setup, live model output in the conversation, per-model token statistics, and a saved execution log.
 
-The engine uses only Python's standard library and Unsloth's OpenAI-compatible API. The implementer can only touch the files named by the planner; the per-task limits are `"task_limits": {"max_allowed_files": N, "max_required_work": M}` in the project's `config.json` (defaults 5 and 10; set them in the launcher under Project > Task limits). The reviewer is read-only. Shell access is not general-purpose: models can only run commands you explicitly name in `validation_commands`.
+The engine uses only Python's standard library and llama-server's OpenAI-compatible API. The implementer can only touch the files named by the planner; the per-task limits are `"task_limits": {"max_allowed_files": N, "max_required_work": M}` in the project's `config.json` (defaults 5 and 10; set them in the launcher under Project > Task limits). The reviewer is read-only. Shell access is not general-purpose: models can only run commands you explicitly name in `validation_commands`.
 
-**Requirements:** Windows, Python 3.11+ on `PATH`, Unsloth Desktop running with an API key, and the three models installed in Unsloth.
+**Requirements:** Windows, Python 3.11+ on `PATH`, `llama-server.exe` (the launcher downloads it), and the three models as GGUF files in the Hugging Face cache or a models folder.
 
 ## Windows application
 
-Double-click `dist\Agent Orchestrator.exe` for the graphical launcher (`publish.ps1` builds it; it is stored with Git LFS, so `git pull` brings the latest). Enter the Unsloth API key under **Options**, then start a chat in the **Code** view (see Code mode below): pick a folder, optionally add a `PROJECT.md` from the **Project** menu, and press **Start project**, which adds the workflow files automatically. **Project > Run one reviewed task, then stop** gives `--once` behavior. The key is passed only to the child process and is not saved.
+Double-click `dist\Agent Orchestrator.exe` for the graphical launcher (`publish.ps1` builds it; it is stored with Git LFS, so `git pull` brings the latest). Download llama-server under **Options**, then start a chat in the **Code** view (see Code mode below): pick a folder, optionally add a `PROJECT.md` from the **Project** menu, and press **Start project**, which adds the workflow files automatically. **Project > Run one reviewed task, then stop** gives `--once` behavior.
 
 The window follows the Image Parser design language: selectable themes (Dark Parchment is the default; Parchment is a light theme; Flat, Track Gold, Liquid Glass, OLED and Graphite are dark) with per-theme accent colours, a left navigation panel, and a two-column workspace with a draggable divider.
 
 - The Code header's start button reads **Start project** until the folder has the workflow files, then *Start Task* for a project with no tasks yet, and otherwise **Resume Project — <task>**, naming the active task (from `TASK.md`) or the last one that passed (Ctrl+Enter).
 - A project run's **model output** goes into the Code conversation, after the messages shown when it started: each agent's thinking, tool calls with results, and responses in execution order, between a **PROJECT RUN** note and one saying how the run ended. Thinking and tool sections are collapsible (Ctrl+E / Ctrl+Shift+E expand or collapse them all). TASK TIME and TURN TIME sit in the Code header once a run has started.
 - The **execution log** is saved per day in the data folder's `logs` (kept 14 days); **Project > Open run logs** opens the folder and **Copy run log** copies the last run's log.
-- **Model details** (right column) has one card per role with the model name, weights, quantization, live tokens/sec, and total tokens for the current turn. Speed and token counts come from Unsloth's own `/api/inference/monitor` data.
-- While a reply or a run is using the models, a stop icon appears to the left of **Send** (Ctrl+Shift+X). It stops the run, or the reply; stopping a run or closing the window also unloads the models from Unsloth.
+- **Model details** (right column) has one card per role with the model name, weights, quantization, live tokens/sec, and total tokens for the current turn. Speed and token counts come from llama-server's `/slots` data.
+- While a reply or a run is using the models, a stop icon appears to the left of **Send** (Ctrl+Shift+X). It stops the run, or the reply; stopping a run or closing the window also stops the llama-server and frees its models.
 
 The launcher starts the engine with `--events`, which makes `orchestrator.py` print structured `@@AO {json}` lines alongside its normal log output. Plain command-line runs do not emit them.
 
 **Context compaction.** Before each model call the engine estimates the prompt (characters ÷ 3.5). When the model's context size is known and the estimate passes 90% (`COMPACT_AT`) of what the reply's `max_tokens` leaves (at least half the window), or when the API rejects a request as too long for the context (once per call, then it retries), the history is compacted: the system message, the task and the most recent steps stay, and the steps in between are summarized by one quiet call to the same model (falling back to a list of the tool calls made) and appended to the task message under `CONTEXT SUMMARY`. The run, Chat and Code then carry on with the shorter history. The engine logs `[role] context compacted: <before> → <after> tokens` and emits `{"e":"compacted","role","before","after"}`, which the launcher shows as a muted line in the reply and a note in a project run's output. A history too short to drop anything from still fails with the context-length error.
 
-**Options > Model runtime** picks where local models run: **Unsloth Studio (API)** (the default) or **Local — llama.cpp (llama-server)**. **Download llama-server** fetches the latest llama.cpp Windows build from GitHub into `%APPDATA%\Agent Orchestrator\llama.cpp` (CUDA with its runtime when `nvidia-smi.exe` is found, else Vulkan, else CPU; **Update llama-server** replaces it). With the local runtime no Unsloth API key is needed; GGUF files are found in the Hugging Face cache (where Unsloth downloads them) and in the optional **Models folder**. The engine starts one llama-server on `127.0.0.1:8899`; the launcher stops it when the app closes and, with **Keep models loaded** off, after each chat turn. The runtime cannot be switched while a reply or run is in progress.
-
-For automatic key entry, create `api_key.txt` beside the EXE or in the Agent Orchestrator root. It must contain exactly one nonblank line: the API key. A file beside the EXE takes precedence. The launcher masks the detected value and never prints it. `api_key.txt` is excluded from Git, but it is still an unencrypted credential on disk.
+Local models run on llama.cpp's llama-server. **Options > Model runtime > Download llama-server** fetches the latest llama.cpp Windows build from GitHub into `%APPDATA%\Agent Orchestrator\llama.cpp` (CUDA with its runtime when `nvidia-smi.exe` is found, else Vulkan, else CPU; **Update llama-server** replaces it). GGUF files are found in the Hugging Face cache and in the optional **Models folder**. The engine starts one llama-server on `127.0.0.1:8899`; the launcher stops it when the app closes and, with **Keep models loaded** off, after each chat turn.
 
 Initialization adds these project-local files without overwriting existing files: `PROJECT.md`, `STATE.md`, `TASK.md`, `RESULT.md`, `REVIEW.md`, `ISSUES.md`, and `config.json`. Edit the initialized project’s `PROJECT.md`; the workflow maintains the handoff files.
 
@@ -57,15 +55,14 @@ The EXE is self-contained for .NET, but the workflow engine still requires Pytho
 
 1. Put this workflow folder anywhere. Your code may be this folder or a different folder.
 2. Replace the placeholder in the target project’s `PROJECT.md` with the full desired outcome and acceptance criteria.
-3. In Unsloth Desktop, create an API key under Settings > API Keys. This installation returns `401 Not authenticated` without one.
-4. In the PowerShell window that will run the controller, set the key without saving it in this folder:
+3. In the PowerShell window that will run the controller, point the engine at `llama-server.exe` (the launcher downloads it into `%APPDATA%\Agent Orchestrator\llama.cpp`):
 
    ```powershell
-   $env:UNSLOTH_API_KEY = 'paste-your-key-here'
+   $env:AGENT_ORCHESTRATOR_LLAMA_SERVER = "$env:APPDATA\Agent Orchestrator\llama.cpp\llama-server.exe"
    ```
 
-5. Keep Unsloth Desktop open. The supplied config targets your installed Studio backend at port 8888 and the three model paths detected in your installation logs.
-6. Review the generated project-local `validation_commands` after the first run. Each command is an argument array, not a shell string.
+4. Make sure the three models' GGUF files are in the Hugging Face cache, or set `AGENT_ORCHESTRATOR_GGUF_DIRS` to the folder holding them (see Local models below).
+5. Review the generated project-local `validation_commands` after the first run. Each command is an argument array, not a shell string.
 
 Run the legacy pipeline against code in this folder:
 
@@ -83,26 +80,24 @@ Use `--once` to complete one reviewed task. Use `--non-interactive` for three in
 
 ## Automatic model switching
 
-The default config calls this installed Unsloth build's `POST /api/inference/load` route. It sequentially swaps the Planner, Implementer, and Reviewer on the same 16 GB GPU, using the settings already proven by your Unsloth logs. No three-model simultaneous load is attempted.
-
-If automatic loading is rejected, the controller reports the API error and falls back to asking you to load the role in Desktop. `--non-interactive` instead fails immediately. To disable automatic swaps, remove `management_url` or `auto_load` from each role. When a role's model is already loaded, it is kept unless it cannot serve the role: a smaller `max_seq_length` than the role's `auto_load`, or a different nonzero `reasoning_budget` (a role with `reasoning_budget` 0 is served by a thinking load with thinking turned off per request). Sampling is sent with each request and never reloads. A model that does need it is reloaded with the role's settings, and a model reloaded this way is unloaded at exit like any other this run loaded.
+Each role's `auto_load` describes the model llama-server loads for it. The Planner, Implementer, and Reviewer are swapped one at a time on the same GPU; no three-model simultaneous load is attempted. Sampling is sent with each request and never reloads the model.
 
 Set `roles.<role>.sampling.enable_thinking` to `true` or `false` to switch thinking on or off for that role's requests; leave it out to use the model's default. If a reply is cut off by the output limit while still thinking, it is retried once with thinking off before the run fails.
 
 ### Local models (llama.cpp)
 
-With `AGENT_ORCHESTRATOR_BACKEND=llamacpp` (the launcher sets it), every role with an `auto_load` runs on llama.cpp's `llama-server.exe` instead of Unsloth Studio; remote API roles are unchanged. No Unsloth API key is needed for these roles.
+Every role with an `auto_load` runs on llama.cpp's `llama-server.exe`; remote API roles are unchanged.
 
-- `AGENT_ORCHESTRATOR_LLAMA_SERVER`: full path to `llama-server.exe` (download it in **Options**). Required with this backend.
+- `AGENT_ORCHESTRATOR_LLAMA_SERVER`: full path to `llama-server.exe` (download it in **Options**). Required for local roles.
 - `AGENT_ORCHESTRATOR_GGUF_DIRS`: optional `;`-separated extra folders holding GGUF files.
 
-The model file is `auto_load.gguf_file` when set and present. Otherwise it is looked up, in order, in each extra folder (recursively, files whose path names the model, for example `Qwen3.5-4B` for `unsloth/Qwen3.5-4B-GGUF`) and in the Hugging Face cache (`HF_HUB_CACHE`, else `HF_HOME\hub`, else `~\.cache\huggingface\hub`, under `models--<org>--<name>\snapshots`). A file whose name contains `gguf_variant` is preferred, `mmproj` files are skipped, and a split model starts from its `-00001-of-0000N` part. If nothing is found, download the model in Unsloth or add its folder in Options.
+The model file is `auto_load.gguf_file` when set and present. Otherwise it is looked up, in order, in each extra folder (recursively, files whose path names the model, for example `Qwen3.5-4B` for `unsloth/Qwen3.5-4B-GGUF`) and in the Hugging Face cache (`HF_HUB_CACHE`, else `HF_HOME\hub`, else `~\.cache\huggingface\hub`, under `models--<org>--<name>\snapshots`). A file whose name contains `gguf_variant` is preferred, `mmproj` files are skipped, and a split model starts from its `-00001-of-0000N` part. If nothing is found, download the model from Hugging Face or add its folder in Options.
 
 One server runs at a time on `127.0.0.1:8899` (top-level `"llama_port"` in `config.json` overrides), started with the role's `max_seq_length`, `gpu_layers` (`-1` = all), `cache_type_kv`, `n_batch`, `n_ubatch`, `reasoning_budget` (only `0` is passed) and `llama_extra_args`. A server already running with arguments that can serve the role is reused: the same arguments, except that a larger `-c` is fine and a thinking server serves a `reasoning_budget` 0 role with thinking off per request. A different model or other setting restarts it. Its state is in `%TEMP%\agent-orchestrator-llama.json` (`pid`, `port`, `signature`, `args`, `model_file`, `log`) and its output in `%TEMP%\agent-orchestrator-llama.log`. A workflow run stops the server when it ends; in chat and code mode it stays up until the launcher closes. `python orchestrator.py --unload-local` stops the recorded server and deletes the state file.
 
 ## Remote models per role
 
-Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's OpenAI-compatible endpoint, another local server) while the others stay on Unsloth. Give the role `base_url`, a `model` id and `api_key_env`, and no `management_url` or `auto_load`:
+Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's OpenAI-compatible endpoint, another local server) while the others stay local. Give the role `base_url`, a `model` id and `api_key_env`, and no `auto_load`:
 
 ```json
 "planner": {
@@ -114,7 +109,7 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 }
 ```
 
-`model` is sent as the request's model id as is (no `/models` check), and the role is never loaded, unloaded or monitored. The key is read from the named environment variable and never written to config, logs or prompts; set it before starting the launcher. Errors name the role and URL (for example `planner: API 401 from https://…/chat/completions (check the key in OPENROUTER_API_KEY)`). Keep `sampling` to parameters the API accepts: some reject Unsloth extras such as `top_k` or `enable_thinking`. In the launcher, a role's **Settings** has a **Remote API** mode that writes these keys and keeps the Unsloth settings in `local_settings`; switching back to **Local** restores them.
+`model` is sent as the request's model id as is (no `/models` check), and the role is never loaded, unloaded or monitored. The key is read from the named environment variable and never written to config, logs or prompts; set it before starting the launcher. Errors name the role and URL (for example `planner: API 401 from https://…/chat/completions (check the key in OPENROUTER_API_KEY)`). Keep `sampling` to parameters the API accepts: some reject llama.cpp extras such as `top_k` or `enable_thinking`. In the launcher, a role's **Settings** has a **Remote API** mode that writes these keys and keeps the local settings in `local_settings`; switching back to **Local** restores them.
 
 ## Chat mode
 
@@ -177,7 +172,7 @@ Both Code engines, and their Implementer and Reviewer, have `run_command(command
 - **`.git` stays read-only.** Its hooks and config run later as you. Windows ignores deny entries for an AppContainer's own SID, so every `.git` in a write folder stops inheriting instead, with its ACL saved and restored exactly when the grant goes. That covers nested repositories and the `.git` files of worktrees and submodules (dependency and build folders are skipped). A repository a command creates is checked after the command: if it has hooks, config that names programs, or is a `.git` file, you are asked to keep it or quarantine it (its `.git` is renamed). From then on it is read-only too.
 - **Network.** Off: the container has no network capability, so loopback (the model servers) is closed too. Settings > **Command sandbox** can allow outbound internet (`internetClient`: no LAN, never loopback) for every command; otherwise `request_network`, or output that looks like a blocked network call, asks you in a dialog.
 - **Extra write folders.** `request_write` asks before granting a folder for one command. It takes plain `C:\...` paths only, compared by their real path (no junction, link, UNC or `\\?\` spelling). It refuses drive roots, your profile or anything above it, AppData, Desktop and the dot-folders of your profile (`.vscode`, `.config`, ...), and anything that is, holds or lies in: the Agent Orchestrator folder, the launcher's data folder, Python's installs and site-packages, Windows, the program folders, ProgramData, the Startup and PowerShell profile folders, or a folder on PATH. An approval holds for that one command, and the command still runs in the container. Commands run one at a time.
-- **Secrets.** Variables whose names contain KEY, TOKEN, SECRET, PASSWORD or AUTH are not passed to the command. Their values, the secret-named values of `HKCU\Environment` and `api_key.txt` are replaced by `[secret removed]` in the output before the model sees it. Windows lets every AppContainer read parts of HKCU, so while a user environment variable has a secret-looking name, **commands are refused until the setup has closed `HKCU\Environment`**, where user environment variables live. PowerShell 5.1 reads that key as it starts, so while it is closed commands use cmd. To get PowerShell back, move the secret out of your user environment variables (the launcher reads `api_key.txt`), then run `sandbox.py --unprotect-environment --state <data>\sandbox`. With no secret-looking variable, the setup leaves the key readable. In PowerShell any error record (a refused write, say) makes the command exit 1. The rest of `HKCU\Software` stays readable as Windows ships it, so keep secrets out of the registry. Redaction is a plain text replacement: an encoded or split secret gets through. Fully closing the registry would need commands to run under a separate Windows account.
+- **Secrets.** Variables whose names contain KEY, TOKEN, SECRET, PASSWORD or AUTH are not passed to the command. Their values, the secret-named values of `HKCU\Environment` and `api_key.txt` are replaced by `[secret removed]` in the output before the model sees it. Windows lets every AppContainer read parts of HKCU, so while a user environment variable has a secret-looking name, **commands are refused until the setup has closed `HKCU\Environment`**, where user environment variables live. PowerShell 5.1 reads that key as it starts, so while it is closed commands use cmd. To get PowerShell back, move the secret out of your user environment variables, then run `sandbox.py --unprotect-environment --state <data>\sandbox`. With no secret-looking variable, the setup leaves the key readable. In PowerShell any error record (a refused write, say) makes the command exit 1. The rest of `HKCU\Software` stays readable as Windows ships it, so keep secrets out of the registry. Redaction is a plain text replacement: an encoded or split secret gets through. Fully closing the registry would need commands to run under a separate Windows account.
 - **Limits.** A command runs at most `timeout_seconds` (default 120, at most 1800) in a kill-on-close Job, so a timeout ends its whole process tree. Output is clipped to 30,000 characters.
 - **Setup.** **Set up sandbox access…** does two things:
   1. As you, without elevation (`sandbox.py --protect-environment`): it removes the AppContainer entries from `HKCU\Environment`'s ACL, saved so it can be restored, which lets commands run.
@@ -201,7 +196,6 @@ With `"engine": "pi"` in the Code request the engine loads the lead's model as u
   "id": "8f0c...", "title": "Tester", "kind": "specialist",
   "description": "Writes and runs unit tests for a feature.",
   "system_prompt": "You are a meticulous test engineer...",
-  "base_url": "...", "management_url": "...", "api_key_env": "UNSLOTH_API_KEY",
   "expected_model_contains": "...", "display_name": "...", "timeout_seconds": 600,
   "auto_load": {}, "sampling": {}
 }]
@@ -242,7 +236,7 @@ Whenever the contract is written or amended, the orchestrator scaffolds the web 
 - An implementer that prints tool calls as JSON text instead of calling the tools has them executed anyway; one that never writes a file is stopped rather than passed to the reviewer.
 - Unreviewed changes left by an interrupted attempt (resume) or an earlier round are flagged to the implementer as PRIOR WORK; if it reports them complete without writing, the reviewer still checks the full diff against the task start instead of the task being blocked.
 - A reply cut off at the output limit is logged; a truncated tool call is never executed and the model is sent back to write in smaller pieces, then the run stops asking to raise `sampling.max_tokens`. A prompt over the context window stops with a request to raise `auto_load.max_seq_length`.
-- Models are unloaded from Unsloth when a run ends, whether it passed, failed, or was stopped.
+- The llama-server is stopped when a run ends, whether it passed, failed, or was stopped.
 - Stop with Ctrl+C. Re-run after inspecting the latest workflow records.
 
 This is not a security sandbox. A local model allowed to edit project files can still write harmful source code. Use version control or a disposable copy of valuable projects.

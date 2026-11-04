@@ -34,23 +34,64 @@ public partial class MainWindow
         _sidebarMenus.Clear();
         _sidebarDrops.Clear();
         var view = _store.View();
-        // Each view lists its own kind: Chat-view chats in Chat, folder conversations in Code, and projects with them.
-        // ponytail: Move up/down swaps with the store neighbour, which may be the other kind's (no visible move then).
-        var chat = NavChat.IsChecked == true;
+        if (AppSettings.Unified) // the test build: no Chat/Code switch; Chat's section on top, Code's below, each with its own lists
+        {
+            SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
+            SidebarList.Children.Add(SidebarAction("", "Work in a folder", () => NewCodeConversation()));
+            AddSidebarSection(view, chat: true, "CHAT");
+            AddSidebarSection(view, chat: false, "CODE");
+        }
+        else
+        {
+            SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
+            SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
+            AddSidebarSection(view, NavChat.IsChecked == true, null);
+        }
+        RefreshTitleChat(view);
+    }
+
+    // One kind's lists: its projects, RECENTS, then ARCHIVED. title (the unified sidebar): the section's name over them, with
+    // a "+" for a new project of that kind; its drop keys and archived state are the section's own.
+    // ponytail: Move up/down swaps with the store neighbour, which may be the other kind's (no visible move then).
+    private void AddSidebarSection(ConversationStore.SidebarView view, bool chat, string? title)
+    {
         List<Entry> Mine(IEnumerable<Entry> entries) => entries.Where(e => (e.Kind == "chat") == chat).ToList();
-        SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
-        SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
+        var kindName = chat ? "chat" : "code";
+        // a dragged chat stays in its own section (its kind decides where it shows)
+        bool Fits(string id) => title is null || (_store.Get(id)?.Kind == "chat") == chat;
+        var suffix = title is null ? "" : ":" + kindName;
+        if (title is not null)
+        {
+            var label = new TextBlock { Text = title, Tag = "SECTION:" + title, FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(8, 18, 0, 2) };
+            label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            // + starts a conversation of the section's kind; the folder beside it makes a project there
+            Button HeaderButton(string glyph, string tag, string tip, double right, Action click)
+            {
+                var icon = new TextBlock { Text = glyph, FontSize = 11 };
+                icon.SetResourceReference(StyleProperty, "RailGlyph");
+                var button = new Button { Content = icon, Width = 24, Height = 22, Padding = new Thickness(0), Margin = new Thickness(0, 16, right, 0), Tag = tag,
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, ToolTip = tip };
+                button.SetResourceReference(StyleProperty, "SidebarRow");
+                button.SetResourceReference(ForegroundProperty, "Muted");
+                AutomationProperties.SetName(button, tip);
+                button.Click += (_, _) => click();
+                return button;
+            }
+            var plus = HeaderButton("", "+new" + suffix, chat ? "New chat" : "New code conversation", 4, chat ? NewSidebarChat : NewCodeChat);
+            var project = HeaderButton("", "+project" + suffix, $"New project in {title.ToLowerInvariant()}", 30, () => NewSidebarProject(kindName));
+            SidebarList.Children.Add(new Grid { Children = { label, project, plus } });
+        }
         // A project shows in the view of its chats: one with chats of the other kind only stays out, an empty one shows where
         // it was made (an older one, with no kind, in both). Moves and drops offer only these.
-        var shown = view.Groups.Where(g => Mine(g.Items).Count > 0 || g.Items.Count == 0 && (g.Kind.Length == 0 || g.Kind == (chat ? "chat" : "code"))).ToList();
+        var shown = view.Groups.Where(g => Mine(g.Items).Count > 0 || g.Items.Count == 0 && (g.Kind.Length == 0 || g.Kind == kindName)).ToList();
         foreach (var group in shown)
         {
             var items = Mine(group.Items);
             var header = SidebarHeader(ProjectName(group), group.Collapsed, items.Count, () => _store.SetGroupCollapsed(group.Id, !group.Collapsed));
             Draggable(header, "project:" + group.Id);
             header.Padding = new Thickness(8, 5, 56, 5); // room for + and …
-            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, shown), () => NewChatInProject(group)), group.Id,
-                (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, group.Id) : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
+            SidebarList.Children.Add(DropTarget(WithMenu(header, group.Id, ProjectName(group), () => ProjectMenu(group, shown), () => NewChatInProject(group, chat)), group.Id,
+                (kind, id) => kind == "chat" ? Fits(id) ? () => _store.MoveToGroup(id, group.Id) : null : id == group.Id ? null : () => _store.MoveGroupTo(id, group.Id)));
             if (!group.Collapsed)
                 for (var i = 0; i < items.Count; i++)
                     SidebarList.Children.Add(ChatRow(items[i], group.Id, i, items.Count, shown, archived: false));
@@ -58,21 +99,27 @@ public partial class MainWindow
         var ungrouped = Mine(view.Ungrouped);
         if (ungrouped.Count > 0 || shown.Count > 0) // with projects, RECENTS is where a chat is dragged out to
         {
-            var recents = new TextBlock { Text = "RECENTS", Tag = "RECENTS", Margin = new Thickness(8, 14, 0, 6) };
+            var recents = new TextBlock { Text = "RECENTS", Tag = "RECENTS" + suffix, Margin = new Thickness(8, 14, 0, 6) };
             recents.SetResourceReference(StyleProperty, "SectionHeader");
-            SidebarList.Children.Add(DropTarget(new Grid { Children = { recents } }, "RECENTS", (kind, id) => kind == "chat" ? () => _store.MoveToGroup(id, null) : null));
+            SidebarList.Children.Add(DropTarget(new Grid { Children = { recents } }, "RECENTS" + suffix, (kind, id) => kind == "chat" && Fits(id) ? () => _store.MoveToGroup(id, null) : null));
             for (var i = 0; i < ungrouped.Count; i++)
                 SidebarList.Children.Add(ChatRow(ungrouped[i], null, i, ungrouped.Count, shown, archived: false));
         }
+        else if (title is not null)
+        {
+            var empty = new TextBlock { Text = chat ? "No chats yet" : "No folder conversations yet", FontSize = 11, Margin = new Thickness(10, 6, 0, 4) };
+            empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            SidebarList.Children.Add(empty);
+        }
         var archivedRows = Mine(view.Archived);
+        var collapsed = title is not null && chat ? view.ChatArchivedCollapsed : view.ArchivedCollapsed;
         if (archivedRows.Count > 0)
         {
-            SidebarList.Children.Add(SidebarHeader("ARCHIVED", view.ArchivedCollapsed, archivedRows.Count, () => _store.SetArchivedCollapsed(!view.ArchivedCollapsed)));
-            if (!view.ArchivedCollapsed)
+            SidebarList.Children.Add(SidebarHeader("ARCHIVED", collapsed, archivedRows.Count, () => _store.SetArchivedCollapsed(!collapsed, chat: title is not null && chat)));
+            if (!collapsed)
                 foreach (var entry in archivedRows)
                     SidebarList.Children.Add(ChatRow(entry, null, 0, 1, shown, archived: true));
         }
-        RefreshTitleChat(view);
     }
 
     // The title bar names the chat open in the current view (Chat or Code); its menu is that chat's sidebar menu.
@@ -167,7 +214,12 @@ public partial class MainWindow
     // A new chat in the view shown: the Chat view's own, else a Code chat (which asks for its folder).
     private void NewSidebarChat()
     {
-        if (NavChat.IsChecked == true)
+        if (AppSettings.Unified) // the test build: a new conversation is a chat until it works in a folder
+        {
+            ShowView(chat: true);
+            NewChat_Click(this, new RoutedEventArgs());
+        }
+        else if (NavChat.IsChecked == true)
             NewChat_Click(this, new RoutedEventArgs());
         else
             NewCodeConversation();
@@ -175,17 +227,37 @@ public partial class MainWindow
 
     // A project header's "+": a new chat already in that project. In Code it works in the folder of the project's latest
     // Code chat, without asking; only a project with no Code chat in an existing folder asks for one.
-    private void NewChatInProject(GroupView group)
+    // The Code section's +: a new Code conversation without asking for a folder. The Code view shows its empty state: the
+    // current folder's (its PROJECT.md message), or choose a folder when there is none.
+    private void NewCodeChat()
     {
-        if (CodeBusy && NavChat.IsChecked != true)
+        if (CodeBusy)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (!DiscardWorkerEdits())
+            return;
+        CloseCodeConversation();
+        ShowView();
+        RefreshCodeFolder();
+        RefreshSidebarList();
+        CodeInput.Focus();
+    }
+
+    // chat: the section (or view) the project is in.
+    private void NewChatInProject(GroupView group, bool chat)
+    {
+        if (CodeBusy && !chat)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
         }
         if (group.Collapsed)
             _store.SetGroupCollapsed(group.Id, false);
-        if (NavChat.IsChecked == true)
+        if (chat)
         {
+            ShowView(chat: true);
             NewChat_Click(this, new RoutedEventArgs());
             _newChatGroup = group.Id; // the chat is saved at its first reply (NewStoredChat)
             return;
@@ -344,10 +416,13 @@ public partial class MainWindow
         return menu;
     }
 
-    private void NewSidebarProject()
+    // kind: the section it is made in (the unified sidebar); else the view shown.
+    private void NewSidebarProject() => NewSidebarProject(NavChat.IsChecked == true ? "chat" : "code");
+
+    private void NewSidebarProject(string kind)
     {
         if (SidebarAsk("New project", "Name the project; drag chats into it, or use a chat's menu.", "Create", "") is { } name)
-            StoreChange(() => _store.CreateGroup(name, NavChat.IsChecked == true ? "chat" : "code"));
+            StoreChange(() => _store.CreateGroup(name, kind));
     }
 
     private void RenameChat(Entry entry)
@@ -366,6 +441,7 @@ public partial class MainWindow
         }
         if (SidebarAsk("Delete chat", $"Delete \"{entry.Title}\"? This can't be undone.", "Delete") is null)
             return;
+        var wasOpen = _codeConv?.Id == entry.Id && NavCode.IsChecked == true;
         if (_codeConv?.Id == entry.Id)
         {
             _codeConv = null; // so closing does not treat it as an empty chat to clean up
@@ -374,6 +450,8 @@ public partial class MainWindow
         if (_chatConv?.Id == entry.Id)
             ClearChatConversation();
         StoreChange(() => _store.Delete(entry.Id));
+        if (AppSettings.Unified && wasOpen) // the test build: a fresh chat, not the folder's PROJECT.md prompts
+            NewSidebarChat();
     }
 
     private void StoreChange(Action change)
