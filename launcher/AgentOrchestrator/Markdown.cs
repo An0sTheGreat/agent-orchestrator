@@ -171,7 +171,71 @@ internal static class Markdown
             paragraph.Add(lists.Count > 0 ? line.Trim() : line.TrimEnd());
         }
         EndParagraph();
+        ColorEmoji(doc.Blocks);
         return doc;
+    }
+
+    // WPF draws emoji as gray outlines: each becomes Emoji.Wpf's colour glyph from Segoe UI Emoji, as browsers show them.
+    // Its own substitution misses some (a list item's first emoji), so the runs are split here.
+    private static void ColorEmoji(IEnumerable<Block> blocks)
+    {
+        foreach (var block in blocks.ToList())
+            switch (block)
+            {
+                case Paragraph p:
+                    ColorEmoji(p.Inlines);
+                    break;
+                case List list:
+                    foreach (var item in list.ListItems.ToList())
+                        ColorEmoji(item.Blocks);
+                    break;
+                case Table table:
+                    foreach (var cell in table.RowGroups.SelectMany(g => g.Rows).SelectMany(r => r.Cells).ToList())
+                        ColorEmoji(cell.Blocks);
+                    break;
+                case Section section:
+                    ColorEmoji(section.Blocks);
+                    break;
+            }
+    }
+
+    private static void ColorEmoji(InlineCollection inlines)
+    {
+        foreach (var inline in inlines.ToList())
+        {
+            if (inline is Span span)
+            {
+                ColorEmoji(span.Inlines);
+                continue;
+            }
+            if (inline is not Run run || run.Text is not { Length: > 0 } text)
+                continue;
+            var at = 0;
+            foreach (Match m in Emoji.Wpf.EmojiData.MatchOne.Matches(text))
+            {
+                // ©, ™, arrows and the like read as text, as chat apps show them: only pictographs and FE0F-marked ones
+                if (m.Length == 1 && m.Value[0] is not (>= '☀' and <= '➿' or >= '⬀' and <= '⯿'))
+                    continue;
+                if (m.Index > at)
+                    inlines.InsertBefore(run, Piece(run, text[at..m.Index]));
+                inlines.InsertBefore(run, new Emoji.Wpf.EmojiInline { Text = m.Value });
+                at = m.Index + m.Length;
+            }
+            if (at == 0)
+                continue;
+            if (at < text.Length)
+                inlines.InsertBefore(run, Piece(run, text[at..]));
+            inlines.Remove(run);
+        }
+
+        static Run Piece(Run from, string text) // keeps the run's own look (inline code's font and chip)
+        {
+            var run = new Run(text);
+            for (var e = from.GetLocalValueEnumerator(); e.MoveNext();)
+                if (e.Current.Property != Run.TextProperty && !e.Current.Property.ReadOnly)
+                    run.SetValue(e.Current.Property, e.Current.Value);
+            return run;
+        }
     }
 
     // While a reply streams: the length of the longest prefix of text that more text cannot render differently, so its blocks
@@ -442,6 +506,19 @@ internal static class Markdown
         var links = doc.Blocks.OfType<Paragraph>().SelectMany(p => All(p.Inlines)).OfType<Hyperlink>().Count();
         if (links != 3 || PlainText(doc).Trim() != "see https://example.com/a and https://x.org https://b.io")
             throw new InvalidOperationException($"Markdown links: {links} links, text '{PlainText(doc).Trim()}'");
+        // emoji become colour images in a heading, a list item, a table cell, bold text and a quote; code keeps them as text
+        var emoji = ToDocument("## ✅ Done\n\n- 📁 files\n\n| a |\n|---|\n| 🚀 |\n\n**🎮 bold**\n\n> 💡 tip\n\n```\n🚫\n```", 14);
+        static IEnumerable<object> Everything(IEnumerable<Block> blocks) => blocks.SelectMany(b => b switch
+        {
+            Paragraph p => All(p.Inlines).Cast<object>(),
+            List l => Everything(l.ListItems.SelectMany(i => i.Blocks)),
+            Table t => Everything(t.RowGroups.SelectMany(g => g.Rows).SelectMany(r => r.Cells).SelectMany(c => c.Blocks)),
+            Section s => Everything(s.Blocks),
+            _ => [],
+        });
+        var colored = Everything(emoji.Blocks).OfType<Emoji.Wpf.EmojiInline>().Select(e => e.Text).ToList();
+        if (!colored.SequenceEqual(["✅", "📁", "🚀", "🎮", "💡"]))
+            throw new InvalidOperationException($"Markdown emoji: {string.Join(" ", colored.Select(e => char.ConvertToUtf32(e, 0).ToString("X")))}");
     }
 
     // The document's text with its structure flattened, for tests.
