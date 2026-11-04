@@ -68,8 +68,7 @@ public partial class MainWindow
         var mine = ++_visionRead;
         var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
         var loads = new[] { ChatTarget(), CardFor("planner") }.Select(card => card is null ? null : VisionLoad(card)).ToArray();
-        var local = LocalRuntime;
-        var seeing = await Task.Run(() => loads.Select(load => LauncherLogic.CanSee(load, local, folder, hub)).ToArray());
+        var seeing = await Task.Run(() => loads.Select(load => LauncherLogic.CanSee(load, folder, hub)).ToArray());
         if (mine != _visionRead)
             return;
         foreach (var (toggle, sees) in new[] { (ChatVisionToggle, seeing[0]), (CodeVisionToggle, seeing[1]) })

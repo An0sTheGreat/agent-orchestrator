@@ -182,7 +182,7 @@ public partial class MainWindow
                 await Task.Delay(50);
             return done();
         }
-        var (hash, port, root, project, key, runtime, choice, notify) = (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, ApiKeyBox.Password, _settings.Runtime, _codeChoice, _notifyHook);
+        var (hash, port, root, project, choice, notify) = (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, _codeChoice, _notifyHook);
         var engine = Path.Combine(AppSettings.DataRoot, "remote-engine");
         Directory.CreateDirectory(engine);
         File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, time\n" +
@@ -194,7 +194,7 @@ public partial class MainWindow
         try
         {
             // no project: with the root swapped, the real template would pass for a project's config and be written
-            (_workflowRoot, _projectPath, ApiKeyBox.Password, _settings.Runtime, _codeChoice, _notifyHook) = (engine, "", "smoke-key", "unsloth", null, (_, _) => { });
+            (_workflowRoot, _projectPath, _codeChoice, _notifyHook) = (engine, "", null, (_, _) => { });
             _settings.RemotePasswordHash = RemoteAuth.HashPassword("smoke password");
             _settings.RemotePort = Random.Shared.Next(20000, 60000);
             if (!StartRemoteServer() || RemotePort is not { } p)
@@ -337,8 +337,8 @@ public partial class MainWindow
         finally
         {
             StopRemoteServer();
-            (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, ApiKeyBox.Password, _settings.Runtime, _codeChoice, _notifyHook) =
-                (hash, port, root, project, key, runtime, choice, notify);
+            (_settings.RemotePasswordHash, _settings.RemotePort, _workflowRoot, _projectPath, _codeChoice, _notifyHook) =
+                (hash, port, root, project, choice, notify);
         }
     }
 

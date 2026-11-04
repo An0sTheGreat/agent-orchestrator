@@ -138,7 +138,7 @@ public partial class MainWindow
     // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card keeps its last
     // measured call, marked unloaded, until its next call replaces it. The lead's stays as it is: its next call sends the
     // whole conversation again.
-    // ponytail: assumes one local model at a time (Unsloth, llama-server); per-server tracking if several ever run at once.
+    // ponytail: assumes one local model at a time (llama-server); per-server tracking if several ever run at once.
     private void WorkerContextsCleared()
     {
         foreach (var (role, s) in _codeContexts)

@@ -80,7 +80,7 @@ public partial class MainWindow
                 context.Response.Close();
             }
         });
-        var (state, chat, runtime, last, reply, busy) = (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, _reply, _chatBusy);
+        var (state, chat, last, reply, busy) = (_llamaStateFile, _chatProcess, _llamaLast, _reply, _chatBusy);
         var card = CardFor("planner")!;
         var status = card.Status;
         try
@@ -111,7 +111,7 @@ public partial class MainWindow
         {
             listener.Stop();
             _toolArgs.Clear();
-            (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, card.Status, _reply, _chatBusy) = (state, chat, runtime, last, status, reply, busy);
+            (_llamaStateFile, _chatProcess, _llamaLast, card.Status, _reply, _chatBusy) = (state, chat, last, status, reply, busy);
         }
     }
 

@@ -92,7 +92,7 @@ public partial class MainWindow
             SelectWorker(CardFor("planner"));
             await Settle();
             Snap("workers");
-            OpenBrowser("https://unsloth.ai");
+            OpenBrowser("https://github.com/ggml-org/llama.cpp");
             await Task.Delay(8000); // the page loads from the network
             await SnapBrowser("browser");
             CloseBrowser();

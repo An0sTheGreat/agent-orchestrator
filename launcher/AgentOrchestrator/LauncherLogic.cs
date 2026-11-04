@@ -1136,15 +1136,15 @@ internal static class LauncherLogic
     public static string QuantOfFileType(string? fileType) =>
         int.TryParse(fileType, out var t) && t >= 0 && t < FileTypes.Length ? FileTypes[t] : "";
 
-    // Whether a model can see images, as orchestrator.vision_problem decides: not with Disable vision on, nor (llama.cpp
-    // runtime) when its GGUF has no vision projector beside it. A remote role, an unknown model or a file not found: yes.
-    public static bool CanSee(JsonObject? autoLoad, bool llamaRuntime, string modelsFolder, string hubCache)
+    // Whether a model can see images, as orchestrator.vision_problem decides: not with Disable vision on, nor
+    // when its GGUF has no vision projector beside it. A remote role, an unknown model or a file not found: yes.
+    public static bool CanSee(JsonObject? autoLoad, string modelsFolder, string hubCache)
     {
         if (autoLoad is null)
             return true;
         if ((autoLoad["disable_vision"]?.ToString() ?? "").ToLowerInvariant() is "on" or "true" or "1")
             return false;
-        return !llamaRuntime || ResolveGguf(autoLoad, modelsFolder, hubCache) is not { } file || VramEstimate.FileSizes(file).Vision > 0;
+        return ResolveGguf(autoLoad, modelsFolder, hubCache) is not { } file || VramEstimate.FileSizes(file).Vision > 0;
     }
 
     // orchestrator.vision_projector: the smallest *mmproj*.gguf beside the model; in a folder holding other models too, only
@@ -1515,7 +1515,7 @@ internal static class LauncherLogic
                 ["description"] = string.IsNullOrWhiteSpace(w.Description) ? DefaultDescription(kind) : w.Description,
                 ["system_prompt"] = string.IsNullOrWhiteSpace(w.SystemPrompt) ? DefaultSystemPrompt(kind) : w.SystemPrompt,
             };
-            foreach (var key in new[] { "base_url", "management_url", "api_key_env", "api_key" })
+            foreach (var key in new[] { "base_url", "api_key_env", "api_key" })
                 if (local?[key] is { } value)
                     entry[key] = value.DeepClone();
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
@@ -1674,7 +1674,7 @@ internal static class LauncherLogic
             noFolder.Environment["AGENT_ORCHESTRATOR_LLAMA_SERVER"] != @"Y:\s.exe")
             throw new InvalidOperationException("Runtime environment failed.");
         // settings.json from before llama.cpp was the only runtime (Runtime, an API key) still loads.
-        if (JsonSerializer.Deserialize<AppSettings>("{\"Runtime\":\"unsloth\",\"ApiKey\":\"k\",\"ModelsFolder\":\"Y:\\\\m\"}")?.ModelsFolder != @"Y:\m")
+        if (JsonSerializer.Deserialize<AppSettings>("{\"Runtime\":\"llamacpp\",\"ApiKey\":\"k\",\"ModelsFolder\":\"Y:\\\\m\"}")?.ModelsFolder != @"Y:\m")
             throw new InvalidOperationException("An old settings.json did not load.");
 
         var area = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-llama-{Guid.NewGuid():N}");
@@ -2315,7 +2315,7 @@ internal static class LauncherLogic
                 throw new InvalidOperationException("Task limits context warning thresholds failed.");
             // Custom workers: contract of the written custom_workers array.
             var cwConfig = Path.Combine(testArea, "cw.json");
-            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"management_url\":\"http://h\",\"api_key_env\":\"K\",\"api_key\":\"sk\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
+            File.WriteAllText(cwConfig, "{\"keep\":1,\"custom_workers\":[{\"id\":\"old\"}],\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\",\"api_key_env\":\"K\",\"api_key\":\"sk\",\"timeout_seconds\":600,\"auto_load\":{\"model_path\":\"impl\",\"gguf_variant\":\"Q8_0\",\"max_seq_length\":32768,\"n_parallel\":1},\"sampling\":{\"temperature\":0.4,\"top_p\":0.8,\"max_tokens\":8192,\"enable_thinking\":true,\"extra_body\":{\"top_k\":20,\"repetition_penalty\":1.05}}}}}");
             var rolesBefore = JsonNode.Parse(File.ReadAllText(cwConfig))!["roles"]!.ToJsonString();
             var cwWorkers = new[]
             {
@@ -2345,7 +2345,7 @@ internal static class LauncherLogic
                 (string)rev["description"]! != DefaultDescription("reviewer"))
                 throw new InvalidOperationException("Custom workers: empty fields must take the kind's defaults.");
             if ((string)spec["id"]! != "s1" || (string)spec["title"]! != "Tester" || (string)spec["kind"]! != "specialist" || (string)spec["description"]! != "Runs tests" ||
-                (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" || (string)spec["management_url"]! != "http://h" ||
+                (string)spec["system_prompt"]! != "You test.\nBe brief." || (string)spec["base_url"]! != "http://h/v1" ||
                 (string)spec["api_key_env"]! != "K" || (string)spec["api_key"]! != "sk" || (int)spec["timeout_seconds"]! != 600 || (string)spec["expected_model_contains"]! != "Model-GGUF" || (string)spec["display_name"]! != "org/Model-GGUF")
                 throw new InvalidOperationException("Custom workers: specialist fields do not match the contract.");
             if ((string)specLoad["model_path"]! != "org/Model-GGUF" || (string)specLoad["gguf_variant"]! != "Q4_K_M" || (int)specLoad["reasoning_budget"]! != 0 ||
@@ -2377,15 +2377,15 @@ internal static class LauncherLogic
             File.WriteAllText(cwConfig, $"{{\"roles\":{rolesBefore}}}");
             var remoteImpl = new RemoteRole("https://remote.example/v1", "vendor/m", "OPENAI_API_KEY", "30");
             var cwTemplate = Path.Combine(testArea, "cw-template.json");
-            File.WriteAllText(cwTemplate, "{\"roles\":{\"implementer\":{\"base_url\":\"http://t/v1\",\"management_url\":\"http://t\",\"api_key_env\":\"LOCAL_KEY\",\"timeout_seconds\":9,\"auto_load\":{\"model_path\":\"t\",\"n_batch\":7}}}}");
+            File.WriteAllText(cwTemplate, "{\"roles\":{\"implementer\":{\"base_url\":\"http://t/v1\",\"api_key_env\":\"LOCAL_KEY\",\"timeout_seconds\":9,\"auto_load\":{\"model_path\":\"t\",\"n_batch\":7}}}}");
             JsonNode Worker() => JsonNode.Parse(File.ReadAllText(cwConfig))!["custom_workers"]![0]!;
             if (WriteRemoteRole(cwConfig, "implementer", remoteImpl, cwTemplate) is not null || WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 ||
-                (string?)Worker()["base_url"] != "http://h/v1" || (string?)Worker()["management_url"] != "http://h" || (string?)Worker()["api_key_env"] != "K" ||
+                (string?)Worker()["base_url"] != "http://h/v1" || (string?)Worker()["api_key_env"] != "K" ||
                 (string?)Worker()["api_key"] != "sk" || (int?)Worker()["timeout_seconds"] != 600 || (int?)Worker()["auto_load"]?["n_parallel"] != 1)
                 throw new InvalidOperationException($"Custom workers: a Remote implementer's connection was copied: {Worker().ToJsonString()}");
             File.WriteAllText(cwConfig, "{\"roles\":{\"implementer\":{\"base_url\":\"https://remote.example/v1\",\"model\":\"vendor/m\",\"api_key_env\":\"OPENAI_API_KEY\",\"sampling\":{}}}}");
             if (WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")], cwTemplate).Length != 0 || (string?)Worker()["base_url"] != "http://t/v1" ||
-                (string?)Worker()["management_url"] != "http://t" || (string?)Worker()["api_key_env"] != "LOCAL_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
+                (string?)Worker()["api_key_env"] != "LOCAL_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
                 WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")]) is not [var noLocal] || !noLocal.Contains("base_url"))
                 throw new InvalidOperationException($"Custom workers: a Remote implementer without saved settings should use the template's: {Worker().ToJsonString()}");
             var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
