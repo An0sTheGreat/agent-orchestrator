@@ -12,8 +12,32 @@ public partial class MainWindow
 {
     private const double LandingGap = 28; // between the empty text and the box
 
+    // The title bar's Start button slides to its new place when the chat title beside it appears or changes width
+    // (its layout offset is compared with the last one; the transform carries it from the old place to the new).
+    private double _startX = double.NaN;
+
+    private void InitStartSlide()
+    {
+        var move = new TranslateTransform();
+        CodeStartButton.RenderTransform = move;
+        CodeStartButton.LayoutUpdated += (_, _) =>
+        {
+            if (!CodeStartButton.IsVisible)
+            {
+                _startX = double.NaN;
+                return;
+            }
+            var x = VisualTreeHelper.GetOffset(CodeStartButton).X;
+            if (!double.IsNaN(_startX) && Math.Abs(x - _startX) > 0.5)
+                move.BeginAnimation(TranslateTransform.XProperty,
+                    new DoubleAnimation(_startX + move.X - x, 0, TimeSpan.FromMilliseconds(220)) { EasingFunction = Decelerate });
+            _startX = x;
+        };
+    }
+
     private void InitComposerLanding()
     {
+        InitStartSlide();
         foreach (var (box, empty, panel) in new[] { (ChatComposer, (FrameworkElement)ChatEmpty, (Panel)ChatPanel), (CodeComposer, CodeEmpty, CodePanel) })
         {
             box.RenderTransform = new TranslateTransform();

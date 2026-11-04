@@ -250,12 +250,7 @@ public partial class MainWindow
         }
         CodeContextPin.Content = stack;
         CodeContextPin.Visibility = Visibility.Visible;
-        if (CodeContextPin.Parent is FrameworkElement area && CodeStartButton.IsVisible)
-        {
-            area.UpdateLayout();
-            var right = CodeStartButton.TranslatePoint(new Point(CodeStartButton.ActualWidth, 0), area).X;
-            CodeContextPin.Margin = new Thickness(0, 6, Math.Max(0, area.ActualWidth - right), 0);
-        }
+        CodeContextPin.Margin = new Thickness(0, 6, 20, 0); // the conversation's right edge (Start now sits in the title bar)
         ReserveCodeContextStack();
     }
 

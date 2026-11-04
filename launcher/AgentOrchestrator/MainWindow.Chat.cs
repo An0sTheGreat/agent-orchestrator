@@ -223,18 +223,20 @@ public partial class MainWindow
             c.Send.Visibility = hasInput ? Visibility.Visible : Visibility.Collapsed;
             c.Send.ToolTip = Queues ? "Queue (Enter): sent when the current reply finishes" : "Send (Enter)";
             // The status sits beside the stop square (top row); the bottom row keeps only the idle hint.
-            var queued = QueueOf(c).Count > 0 ? $" {QueueOf(c).Count} queued." : " Enter queues a message.";
+            var queued = QueueOf(c).Count > 0 ? $" {QueueOf(c).Count} queued." : "";
             var status = runActive ? $"A project run is using the models; {(c.IsCode ? "Code" : "chat")} is available when it finishes."
                 : mine ? "Replying…" + queued : _chatBusy ? $"{(_turn.IsCode == c.IsCode ? (c.IsCode ? "Another conversation's" : "Another chat's") : c.IsCode ? "A chat" : "A Code")} reply is using the models;" + queued
                 : "";
             c.Busy.Text = status;
             c.Busy.ToolTip = status;
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
-            c.Hint.Visibility = status.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+            // Placeholder, as Claude's: in the empty box only, saying what Enter does now.
+            c.Hint.Text = runActive ? "" : _chatBusy ? "Enter to queue for later, Shift+Enter for a new line" : "Enter to send, Shift+Enter for a new line";
+            c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
         ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && ModelsLoaded;
-        CodeNewButton.IsEnabled = CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
+        CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
         CodeStartButton.ToolTip = hasMd ? "Start or resume the project run in this folder (Ctrl+Enter)"

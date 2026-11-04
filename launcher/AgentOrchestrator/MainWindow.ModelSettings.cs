@@ -1236,7 +1236,7 @@ public partial class MainWindow
             if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || !CodeBusyText.Text.StartsWith("Replying…") || CodeStop.Visibility != Visibility.Visible ||
                 Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeStop) - 1 || Grid.GetRow(CodeBusyText) != 0 ||
                 CodeBusyText.TranslatePoint(new Point(CodeBusyText.ActualWidth, 0), top).X > CodeStop.TranslatePoint(new Point(0, 0), top).X ||
-                CodeHint.Visibility == Visibility.Visible || CodeHint.Text.Contains("Replying") ||
+                (CodeInput.Text.Length == 0) != (CodeHint.Visibility == Visibility.Visible) || !CodeHint.Text.StartsWith("Enter to queue") ||
                 ChatBusyText.Text.Contains("Replying")) // the other conversation is only locked
                 return false;
             snap("36-ui-tweaks", null);

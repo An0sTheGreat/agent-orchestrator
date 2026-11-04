@@ -2235,14 +2235,14 @@ public partial class MainWindow : Window
                     if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
                         string.Join("|", titles() ?? []) != "Lead Context|Implementer Context")
                         return Fail();
-                    // The cards stack under the header, the lead's first, right edges flush with Start project's.
+                    // The cards stack under the header, the lead's first, 20 from the conversation's right edge (Start is in the title bar).
                     await Settle();
                     Snap("38-code-context-stack");
                     var stacked = (CodeContextPin.Content as StackPanel)?.Children.OfType<Border>().ToList() ?? [];
                     var stackArea = (FrameworkElement)CodeContextPin.Parent;
                     double RightOf(FrameworkElement e) => e.TranslatePoint(new Point(e.ActualWidth, 0), stackArea).X;
                     if (stacked.Count != 2 || ((stacked[0].Child as StackPanel)?.Children[0] as Button)?.Tag as string != "planner" ||
-                        Math.Abs(RightOf(stacked[0]) - RightOf(CodeStartButton)) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
+                        Math.Abs(RightOf(stacked[0]) - (stackArea.ActualWidth - 20)) > 1 || !CodeContextPin.IsVisible || CodeContextRing.IsVisible)
                         return Fail();
                     // Without room beside the conversation (centering off), the conversation starts below the stack.
                     var centered = _settings.CenterChat;
