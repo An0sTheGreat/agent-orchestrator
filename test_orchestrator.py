@@ -5081,9 +5081,16 @@ class ExtrasTests(unittest.TestCase):
                 patch.object(orchestrator, "web_request", lambda url, data=None: (shop, "text/html")):
             got = orchestrator.fetch_page("https://www.amazon.com/s?k=rtx+3090")
         links = got.split("LINKS ON THE PAGE (text -> address)\n")[1].split("\n\nTEXT\n")[0].split("\n")
-        self.assertEqual(links, ["ZOTAC Gaming GeForce RTX 3090 Trinity -> https://www.amazon.com/ZOTAC-RTX-3090/dp/B08H?ref=sr_1",
+        self.assertEqual(links, ["ZOTAC Gaming GeForce RTX 3090 Trinity -> https://www.amazon.com/ZOTAC-RTX-3090/dp/B08H",
                                  "EVGA RTX 3090 FTW3 -> https://other.example/dp/B09X", "Cart -> https://www.amazon.com/cart"])
         self.assertTrue(got.startswith("TITLE: Results\n\nLINKS ON THE PAGE") and "$899" in got.split("\n\nTEXT\n")[1])
+        # an item's own page loses its tracking; a search page keeps its query; products rank above long menu links
+        self.assertEqual(orchestrator.item_url("https://www.amazon.com/EVGA-3090/dp/B0916ZWZ9S/ref=sr_1_3?qid=1&sr=8-3"),
+                         "https://www.amazon.com/EVGA-3090/dp/B0916ZWZ9S")
+        self.assertEqual(orchestrator.item_url("https://www.amazon.com/s?k=rtx+3090&ref=nb"), "https://www.amazon.com/s?k=rtx+3090&ref=nb")
+        menus = "".join(f'<a href="/s?k=x&rh={n}">A long filter menu entry number {n}</a>' for n in range(60))
+        ranked = orchestrator.page_links(menus + '<a href="/MSI-3090/dp/B095">MSI Gaming GeForce RTX 3090 Tri-Frozr</a>', "https://www.amazon.com/s?k=x")
+        self.assertTrue(ranked.startswith("MSI Gaming GeForce RTX 3090 Tri-Frozr -> https://www.amazon.com/MSI-3090/dp/B095\n"), ranked[:200])
         with patch.object(orchestrator.socket, "getaddrinfo", lambda host, port: public), \
                 patch.object(orchestrator, "web_request", lambda url, data=None: ("x" * 130_000, "text/plain")):
             self.assertTrue(orchestrator.fetch_page("http://example.com/").endswith("truncated at 100000 characters"))
