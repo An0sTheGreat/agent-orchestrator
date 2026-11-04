@@ -225,36 +225,6 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
-    def _managed_client(self, status, **auto):
-        auto = {"model_path": "u/M", "max_seq_length": 32768, "reasoning_budget": 0, **auto}
-        client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://m", "api_key": "k",
-                                         "expected_model_contains": "m", "auto_load": auto})
-        calls = []
-
-        def fake(base, method, route, body=None):
-            calls.append((method, route, body))
-            if route == "/api/inference/status":
-                if status is None:
-                    raise orchestrator.WorkflowError("down")
-                return status
-            return {}
-
-        client._request_at = fake
-        client.model_id = lambda: "u/M"
-        return client, calls
-
-    def _ensure(self, client):
-        with patch.object(orchestrator, "LOADED_BY_RUN", {}) as mine, patch.object(orchestrator, "emit"):
-            client.ensure_model("implementer", False)
-        return mine
-
-    def test_loading_event_carries_management_url(self):
-        client, _ = self._managed_client({"requested_context_length": 16384, "requested_reasoning_budget": 0})
-        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit") as emit:
-            client.ensure_model("implementer", False)
-        emit.assert_any_call("loading", role="implementer", path="u/M", url=client.management_url)
-        self.assertEqual(client.management_url, "http://m")
-
     def test_answer_text_strips_every_think_block_and_only_a_trailing_open_one(self):
         def answer(content):
             return orchestrator.answer_text({"content": content})
@@ -271,72 +241,10 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(reply({"content": "answer", "reasoning_content": "thoughts"}), "answer")
         self.assertEqual(reply({"content": ""}), "")
 
-    def test_reloads_when_loaded_settings_differ(self):
-        # a smaller context, or a load without thinking for a role that thinks, cannot serve the role
-        for status, want in (({"requested_context_length": 16384, "requested_reasoning_budget": 0}, {}),
-                             ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, {"reasoning_budget": 4096}),
-                             ({"requested_context_length": 32768, "requested_reasoning_budget": 8192}, {"reasoning_budget": 4096})):
-            client, calls = self._managed_client(status, **want)
-            mine = self._ensure(client)
-            loads = [c for c in calls if c[1] == "/api/inference/load"]
-            self.assertEqual(loads[0][2], client.auto_load, status)
-            self.assertIn("u/M", mine)
-
-    def test_a_compatible_load_is_kept_and_thinking_goes_off_per_request(self):
-        # Same model, a larger context, thinking on while this role wants none: no reload; this client sends thinking off.
-        client, calls = self._managed_client({"requested_context_length": 65536, "requested_reasoning_budget": 8192})
-        self._ensure(client)
-        self.assertFalse([c for c in calls if c[1] == "/api/inference/load"])
-        self.assertTrue(client.thinking_off)
-        self.assertIs(client._thinking({"x": 1}, not client.thinking_off)["enable_thinking"], False)
-        client, calls = self._managed_client({"requested_context_length": 32768, "requested_reasoning_budget": 0})
-        self._ensure(client)
-        self.assertFalse(client.thinking_off)  # the load already has no thinking
-
-    def test_no_reload_when_settings_match_or_status_unreadable(self):
-        for status in ({"requested_context_length": 32768, "requested_reasoning_budget": 0}, None, {}):
-            client, calls = self._managed_client(status)
-            self._ensure(client)
-            self.assertFalse([c for c in calls if c[1] == "/api/inference/load"], status)
-
-    def _failed_reload(self, models_after):
-        client, calls = self._managed_client({"requested_context_length": 16384, "requested_reasoning_budget": 0})
-        seq = iter(["u/M"] + models_after)
-
-        def model_id():
-            try:
-                value = next(seq)
-            except StopIteration:
-                value = ""
-            if not value:
-                raise orchestrator.WorkflowError("none loaded")
-            return value
-
-        client.model_id = model_id
-        inner = client._request_at
-
-        def fake(base, method, route, body=None):
-            if route == "/api/inference/load":
-                raise orchestrator.WorkflowError("OOM")
-            return inner(base, method, route, body)
-
-        client._request_at = fake
-        return client
-
-    def _ensure_ret(self, client):
-        with patch.object(orchestrator, "LOADED_BY_RUN", {}), patch.object(orchestrator, "emit"):
-            return client.ensure_model("implementer", False)
-
-    def test_failed_reload_continues_only_if_model_still_loaded(self):
-        self.assertEqual(self._ensure_ret(self._failed_reload(["u/M"])), "u/M")
-        for after in ([""], ["other"]):
-            with self.assertRaisesRegex(orchestrator.WorkflowError, "OOM"):
-                self._ensure_ret(self._failed_reload(after))
-
     def test_thinking_fallback_is_sticky(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="a"), self._reply("stop", content="ok"), self._reply("stop", content="ok")])
-        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"):
             client.complete("m", [], {})
             client.complete("m", [], {})
         self.assertNotIn("enable_thinking", bodies[0])
@@ -349,7 +257,7 @@ class OrchestratorTests(unittest.TestCase):
         for i in range(3):
             messages += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}", "type": "function",
                           "function": {"name": "list_files", "arguments": "{}"}}]}, {"role": "tool", "tool_call_id": f"c{i}", "content": "f\n" * 400}]
-        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}), \
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), \
                 patch.object(client, "context_size", return_value=None):
             client.complete("m", messages, {})  # far under half of the assumed 32,768 tokens: sent as it is, for the prompt cache
             with patch.object(orchestrator, "SLIM_AT", 0.0):
@@ -365,7 +273,7 @@ class OrchestratorTests(unittest.TestCase):
         client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")] * 5)
         with_system = [{"role": "system", "content": "You are the Planner."}, {"role": "user", "content": "task"}]
         bare = [{"role": "user", "content": "task"}]
-        with patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}), \
+        with patch.object(orchestrator, "emit"), \
                 patch.object(client, "context_size", return_value=None):
             with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_PONYTAIL": "Ultra"}):
                 with patch.object(orchestrator, "EVENTS", True):
@@ -398,7 +306,7 @@ class OrchestratorTests(unittest.TestCase):
             return replies[order.count("delta") - 1]
 
         client._stream_chat = stream
-        with patch.object(orchestrator, "EVENTS", True), patch.object(client, "_monitor_row", return_value={}), \
+        with patch.object(orchestrator, "EVENTS", True), \
                 patch.object(orchestrator, "emit", side_effect=lambda e, **k: order.append((e, k.get("final")))):
             client.complete("m", [], {})
         self.assertEqual(order[:3], ["delta", ("done", False), "delta"])
@@ -424,7 +332,7 @@ class OrchestratorTests(unittest.TestCase):
         call = [{"id": "c", "type": "function", "function": {"name": "write_file", "arguments": "{}"}}]
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client._stream_chat, bodies = self._fake_stream([self._reply("length", reasoning="hmm"), self._reply("tool_calls", calls=call)])
-        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"):
             message = client.complete("m", [], {})
         self.assertNotIn("enable_thinking", bodies[0])
         self.assertIs(bodies[1]["enable_thinking"], False)
@@ -441,7 +349,7 @@ class OrchestratorTests(unittest.TestCase):
     def test_truncated_but_non_empty_reply_is_not_retried(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client._stream_chat, bodies = self._fake_stream([self._reply("length", content="partial answer")])
-        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"), patch.object(client, "_monitor_row", return_value={}):
+        with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"):
             self.assertEqual(client.complete("m", [], {})["content"], "partial answer")
         self.assertEqual(len(bodies), 1)
 
@@ -534,14 +442,6 @@ class OrchestratorTests(unittest.TestCase):
             with patch.object(orchestrator, "EVENTS", False):
                 client.complete("m", [], extra)
             self.assertEqual(sent[0].get("enable_thinking", "absent"), expected)
-
-    def test_unload_only_models_loaded_by_this_run(self):
-        client = orchestrator.ApiClient({"base_url": "http://x/v1", "management_url": "http://x", "api_key": "k"})
-        client.role = "reviewer"
-        mine = {"mine.gguf": client}
-        with patch.object(orchestrator, "LOADED_BY_RUN", mine),                 patch.object(orchestrator.ApiClient, "_request_at", return_value={}) as request:
-            orchestrator.unload_models()
-        self.assertEqual([c.args[3] for c in request.call_args_list], [{"model_path": "mine.gguf"}])
 
     def test_implementer_sees_current_files_and_missing_ones(self):
         text = orchestrator.allowed_files_context({"a.js": "let x = 1;", "b.js": None})
@@ -864,7 +764,7 @@ class OrchestratorTests(unittest.TestCase):
         client, sent = self._compacting_client(1000, "SUMMARY", lambda n: self.OK_REPLY)
         events, out = [], io.StringIO()
         with patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
-                patch.object(orchestrator.ApiClient, "_monitor_row", lambda client, started: {}), contextlib.redirect_stdout(out):
+                contextlib.redirect_stdout(out):
             self.assertEqual(client.complete("m", messages, {"max_tokens": 100})["content"], "ok")
         # one quiet summary call (no streaming, thinking off, its own max_tokens), then the compacted request
         self.assertEqual([via for via, _ in sent], ["request", "stream"])
@@ -2458,13 +2358,12 @@ class CustomWorkerTests(unittest.TestCase):
     def test_log_lines_show_title_but_events_keep_id(self):
         tester = self.worker("s1-guid", "Tester")
         with patch.dict(os.environ, {"AO_TEST_KEY": "k"}):
-            settings = dict(tester, api_key_env="AO_TEST_KEY")
+            settings = dict(tester, api_key_env="AO_TEST_KEY", model="s1-guid-model")
             client = orchestrator.ApiClient(settings)
             client.title = orchestrator.display_name(self.config([tester]), "s1-guid")
             events = []
             out = io.StringIO()
-            with patch.object(client, "model_id", return_value="s1-guid-model"), patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
-                    contextlib.redirect_stdout(out):
+            with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), contextlib.redirect_stdout(out):
                 client.ensure_model("s1-guid", False)
         self.assertIn("[Tester] s1-guid-model", out.getvalue())
         self.assertNotIn("[s1-guid]", out.getvalue())
@@ -2715,19 +2614,18 @@ class ChatTests(unittest.TestCase):
                          + [("reviewer", "delegate"), ("planner", "answer")])
 
     def test_missing_or_same_as_builtin_falls_back_to_the_planner(self):
-        config = {"roles": {"planner": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "planner-model",
-                                        "sampling": {"temperature": 0.5}, "auto_load": {"model_path": "p"}},
+        config = {"roles": {"planner": {"sampling": {"temperature": 0.5}, "auto_load": {"model_path": "p"}},
                             "reviewer": {"same_as": "planner", "chat_system_prompt": "Be strict."}}}
         for role in ("implementer", "reviewer"):
             client, sampling = orchestrator.role_settings(config, role)
-            self.assertEqual((client.expected, sampling, client.auto_load, client.role), ("planner-model", {"temperature": 0.5}, {"model_path": "p"}, role))
+            self.assertEqual((sampling, client.auto_load, client.role), ({"temperature": 0.5}, {"model_path": "p"}, role))
             self.assertIsNone(orchestrator.chat_worker(config, role))
         self.assertIn("Reviewer: p\n", orchestrator.team_context(config))  # the planner's auto_load model
         self.assertIn("Be strict.", orchestrator.role_block(config, "reviewer"))
         added = {"roles": {"planner": {**config["roles"]["planner"], "chat_system_prompt": "Be brief."}}}
         self.assertEqual(orchestrator.role_block(added, "implementer"), "\n\n=== YOUR ROLE: Implementer ===\nBe brief.\n")  # not added: the planner's
-        own ={"roles": {**config["roles"], "implementer": {"base_url": "http://x", "api_key": "k", "expected_model_contains": "impl-model"}}}
-        self.assertEqual(orchestrator.role_settings(own, "implementer")[0].expected, "impl-model")
+        own ={"roles": {**config["roles"], "implementer": {"base_url": "http://x", "api_key": "k", "model": "impl-model"}}}
+        self.assertEqual(orchestrator.role_settings(own, "implementer")[0].model, "impl-model")
         for bad in ({"roles": {}}, {"roles": {"implementer": {"base_url": "http://x", "api_key": "k"}}}):
             with self.assertRaisesRegex(orchestrator.WorkflowError, "planner"):
                 orchestrator.role_settings(bad, "reviewer")
@@ -2780,24 +2678,27 @@ class ConversationCompactionTests(unittest.TestCase):
                 self.assertEqual(orchestrator.main(), 0)
         return calls, events
 
-    def unsloth_turn(self):
-        """A --chat turn on a real client against a fake Unsloth that holds another model with a 32k window; the role
-        loads its own at 8k. Returns (calls, events, CONTEXT_SIZES after the turn)."""
+    def llama_turn(self):
+        """A --chat turn on a real client against a fake llama-server that holds another model with a 32k window; the
+        role loads its own at 8k. Returns (calls, events, CONTEXT_SIZES after the turn)."""
         server = {"model": "other-model", "ctx": 32768}
 
         def request_at(client, base, method, route, body=None):
             if route == "/models":
                 return {"data": [{"id": server["model"]}]}
-            if route == "/api/inference/status":
-                return {"context_length": server["ctx"], "requested_context_length": server["ctx"]}
-            if route == "/api/inference/load":
-                server.update(model=body["model_path"], ctx=body["max_seq_length"])
-                return {}
-            return {"entries": []}
+            if route == "/props":
+                return {"default_generation_settings": {"n_ctx": server["ctx"]}}
+            return {}
 
-        settings = {"base_url": "http://u/v1", "management_url": "http://u", "api_key": "k", "expected_model_contains": "mine",
-                    "auto_load": {"model_path": "org/mine", "max_seq_length": 8192}}
-        with patch.object(orchestrator.ApiClient, "_request_at", request_at), patch.dict(orchestrator.CONTEXT_SIZES, clear=True):
+        def ensure(client, role):
+            orchestrator.emit("loading", role=role, path=client.auto_load["model_path"])
+            server.update(model=client.auto_load["model_path"], ctx=client.auto_load["max_seq_length"])
+            orchestrator.emit("model", role=role, id=server["model"])
+            return server["model"]
+
+        settings = {"auto_load": {"model_path": "org/mine", "max_seq_length": 8192}}
+        with patch.object(orchestrator.ApiClient, "_request_at", request_at), patch.object(orchestrator, "llama_ensure", ensure), \
+                patch.dict(orchestrator.CONTEXT_SIZES, clear=True):
             calls, events = self.turn({"mode": "single", "worker": "implementer", "messages": self.history()},
                                       base=orchestrator.ApiClient, settings=settings)
             return calls, events, dict(orchestrator.CONTEXT_SIZES)
@@ -2860,15 +2761,15 @@ class ConversationCompactionTests(unittest.TestCase):
         self.assertFalse([e for e, _ in events if e == "history_compacted"])
 
     def test_window_before_the_load_is_the_roles_not_the_loaded_models(self):
-        calls, events, sizes = self.unsloth_turn()
+        calls, events, sizes = self.llama_turn()
         self.assertEqual(calls[0]["messages"][0]["content"], orchestrator.summary_system(orchestrator.CONVERSATION_PROMPT))  # 8k, not the other model's 32k
         self.assertEqual([d["covers"] for e, d in events if e == "history_compacted"], [8])
         self.assertNotIn(32768, sizes.values())  # no pre-load guess cached for the turn
 
     def test_summary_model_load_is_reported_to_the_launcher(self):
-        calls, events, _ = self.unsloth_turn()
+        calls, events, _ = self.llama_turn()
         names = [e for e, _ in events]
-        self.assertIn(("loading", {"role": "implementer", "path": "org/mine", "url": "http://u"}), events)
+        self.assertIn(("loading", {"role": "implementer", "path": "org/mine"}), events)
         self.assertLess(names.index("loading"), names.index("history_compacted"))  # the summary call's load, not the answer's
         self.assertIn("model", names[:names.index("history_compacted")])
 
@@ -3504,7 +3405,7 @@ class SandboxTests(unittest.TestCase):
         for network in (False, True):
             code, output = self.run_(f"(Invoke-WebRequest -UseBasicParsing {url} -TimeoutSec 5).StatusCode", "powershell", network=network)
             self.assertNotEqual(code, 0, output)
-        self.assertEqual(hits, [])  # the model's own server (Unsloth, llama-server) is out of reach either way
+        self.assertEqual(hits, [])  # the model's own server (llama-server) is out of reach either way
 
     def test_secrets_stay_out_and_a_timeout_ends_the_whole_tree(self):
         with patch.dict(os.environ, {"AO_TEST_API_KEY": "sekrit", "AO_TEST_PLAIN": "visible"}):
@@ -3602,7 +3503,7 @@ class RunCommandTests(unittest.TestCase):
 
     def test_commands_wait_for_the_environment_variables_to_be_hidden(self):
         with patch.object(sandbox, "environment_protected", return_value=False), patch.object(sandbox, "run") as run_, \
-                patch.object(sandbox, "environment_secrets", return_value=["UNSLOTH_API_KEY"]):
+                patch.object(sandbox, "environment_secrets", return_value=["OPENAI_API_KEY"]):
             result = orchestrator.command_runner(self.folders, self.request)("dir", shell="cmd")
         self.assertIn("Set up sandbox access", result)
         run_.assert_not_called()
@@ -4954,21 +4855,10 @@ class RemoteRoleTests(unittest.TestCase):
                 self.assertIn(hint, text)
                 self.assertNotIn(self.KEY, text)
 
-    def test_remote_role_refuses_the_local_unsloth_key(self):
-        sent = []
-        for url, refused in ((self.URL, True), ("http://localhost:9000/v1", False), ("http://[::1]:9000/v1", False)):
-            role = dict(self.CONFIG["roles"]["planner"], base_url=url, api_key_env="UNSLOTH_API_KEY")
-            config = {"roles": {"planner": role}}
-            with patch.dict(os.environ, {"UNSLOTH_API_KEY": self.KEY}), patch.object(orchestrator, "urlopen", side_effect=lambda r, timeout=None: sent.append(r)):
-                if refused:
-                    with self.assertRaises(orchestrator.WorkflowError) as ctx:
-                        orchestrator.role_settings(config, "planner")
-                    self.assertTrue(str(ctx.exception).startswith("planner: "), ctx.exception)
-                    self.assertIn("UNSLOTH_API_KEY", str(ctx.exception))
-                    self.assertNotIn(self.KEY, str(ctx.exception))
-                else:
-                    orchestrator.role_settings(config, "planner")  # a local server without Unsloth management is fine
-        self.assertEqual(sent, [])
+    def test_a_role_without_model_or_auto_load_asks_to_pick_a_model(self):
+        client, _ = orchestrator.role_settings({"roles": {"planner": {"base_url": self.URL, "api_key": "k"}}}, "planner")
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "^planner: no model is set; pick a model"):
+            client.ensure_model("planner", False)
 
     def test_remote_effort_keeps_reasoning_effort_and_drops_enable_thinking(self):
         sent = []
@@ -4984,7 +4874,7 @@ class RemoteRoleTests(unittest.TestCase):
         self.assertNotIn("enable_thinking", sent[0])
         self.assertEqual(sent[0]["reasoning_effort"], "high")
 
-    def test_remote_body_omits_unsloth_only_fields_unless_send_extra_body(self):
+    def test_remote_body_omits_local_only_fields_unless_send_extra_body(self):
         sent = []
 
         def fake(request, timeout=None):
@@ -5205,13 +5095,14 @@ class ExtrasTests(unittest.TestCase):
 
 
 class LlamaCppTests(unittest.TestCase):
-    """Local roles on our own llama-server (AGENT_ORCHESTRATOR_BACKEND=llamacpp); no network and no real process."""
+    """Local roles (auto_load) on our own llama-server; no network and no real process."""
 
     PATH = "unsloth/Qwen3.5-4B-GGUF"
     SNAP = "hub/models--unsloth--Qwen3.5-4B-GGUF/snapshots/abc/"
     AUTO = {"model_path": PATH, "gguf_variant": "Q4_K_M", "max_seq_length": 32768, "cache_type_kv": "q8_0", "n_batch": 1024,
             "n_ubatch": 256, "gpu_layers": -1, "reasoning_budget": 0, "llama_extra_args": ["--flash-attn", "on"]}
-    ROLE = {"base_url": "http://127.0.0.1:8888/v1", "management_url": "http://127.0.0.1:8888", "api_key_env": "UNSLOTH_API_KEY",
+    # base_url, management_url and api_key_env as an older config left them: ignored for a role with auto_load
+    ROLE = {"base_url": "http://127.0.0.1:8888/v1", "management_url": "http://127.0.0.1:8888", "api_key_env": "OLD_LOCAL_KEY",
             "expected_model_contains": "Qwen3.5-4B-GGUF", "timeout_seconds": 30, "auto_load": AUTO}
 
     def setUp(self):
@@ -5220,9 +5111,10 @@ class LlamaCppTests(unittest.TestCase):
         (self.tmp / "temp").mkdir()
         self.exe = self.tmp / "llama-server.exe"
         self.exe.write_bytes(b"")
-        self.enterContext(patch.dict(os.environ, {"AGENT_ORCHESTRATOR_BACKEND": "llamacpp", "AGENT_ORCHESTRATOR_LLAMA_SERVER": str(self.exe),
+        self.enterContext(patch.dict(os.environ, {"AGENT_ORCHESTRATOR_LLAMA_SERVER": str(self.exe),
                                                   "AGENT_ORCHESTRATOR_GGUF_DIRS": "", "HF_HUB_CACHE": str(self.tmp / "hub")}))
-        os.environ.pop("UNSLOTH_API_KEY", None)  # restored by patch.dict; llama.cpp roles need no key
+        for name in ("OLD_LOCAL_KEY", "AGENT_ORCHESTRATOR_BACKEND"):  # restored by patch.dict; llama.cpp roles need neither
+            os.environ.pop(name, None)
         self.enterContext(patch.object(tempfile, "tempdir", str(self.tmp / "temp")))
         self.enterContext(patch.object(orchestrator.time, "sleep"))
         self.enterContext(contextlib.redirect_stdout(io.StringIO()))
@@ -5297,7 +5189,7 @@ class LlamaCppTests(unittest.TestCase):
         with self.assertRaises(orchestrator.WorkflowError) as ctx:
             self.find()
         text = str(ctx.exception)
-        for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Unsloth", "Options"):
+        for part in (self.PATH, str(self.tmp / "models1"), "models--unsloth--Qwen3.5-4B-GGUF", "Hugging Face", "Options"):
             self.assertIn(part, text)
 
     def test_images_a_model_will_not_see_are_left_out_with_a_note(self):
@@ -5314,7 +5206,7 @@ class LlamaCppTests(unittest.TestCase):
         self.assertEqual(images, [])
         self.assertTrue(text.startswith("look\n\n[1 attached image not shown to you: Disable vision is on"), text)
         config["roles"]["planner"]["auto_load"]["disable_vision"] = False
-        self.assertEqual(sent(), ("look", image[1]))  # Unsloth's runtime: nothing to check, sent
+        self.assertEqual(sent(), ("look", image[1]))  # no GGUF found yet: nothing to check, sent
         text, images = sent({"vision": False})
         self.assertIn("Vision is off in the message box", text)
         self.assertEqual(images, [])
@@ -5323,11 +5215,10 @@ class LlamaCppTests(unittest.TestCase):
         model.parent.mkdir(parents=True, exist_ok=True)
         model.write_bytes(b"x")
         os.environ["AGENT_ORCHESTRATOR_GGUF_DIRS"] = str(model.parent)
-        with patch.dict(os.environ, {"AGENT_ORCHESTRATOR_BACKEND": "llamacpp"}):
-            text, images = sent()
-            self.assertIn("no vision projector (mmproj) file", text)
-            (model.parent / "mmproj-F16.gguf").write_bytes(b"x")
-            self.assertEqual(sent(), ("look", image[1]))
+        text, images = sent()
+        self.assertIn("no vision projector (mmproj) file", text)
+        (model.parent / "mmproj-F16.gguf").write_bytes(b"x")
+        self.assertEqual(sent(), ("look", image[1]))
         self.assertEqual(messages, [{"role": "user", "content": "look"}])  # the history keeps its text
 
     def test_a_vision_projector_beside_the_model_is_loaded_unless_vision_is_off(self):
@@ -5366,10 +5257,7 @@ class LlamaCppTests(unittest.TestCase):
 
     def test_llama_role_needs_no_key_and_uses_the_llama_port(self):
         client = self.client({"llama_port": 9001, "roles": {"planner": self.ROLE}})
-        self.assertEqual((client.base_url, client.management_url, client.llama_port, client.remote),
-                         ("http://127.0.0.1:9001/v1", "", 9001, False))
-        self.assertEqual(client.load_mismatch(), "")
-        self.assertEqual(client._monitor_row(0), {})
+        self.assertEqual((client.base_url, client.llama_port, client.remote), ("http://127.0.0.1:9001/v1", 9001, False))
 
     def test_reuses_the_running_server_when_the_signature_matches(self):
         model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
@@ -5394,7 +5282,7 @@ class LlamaCppTests(unittest.TestCase):
         log = self.tmp / "temp" / "agent-orchestrator-llama.log"
         self.assertEqual(json.loads(self.state_file().read_text()),
                          {"pid": 77, "port": 8899, "signature": " ".join(args), "args": args, "model_file": str(model_file), "log": str(log)})
-        self.emit.assert_any_call("loading", role="planner", path=self.PATH)  # no url: the launcher would unload via Unsloth
+        self.emit.assert_any_call("loading", role="planner", path=self.PATH)
         self.assertIn(self.PATH, self.loaded)
 
     def test_load_compatibility_ignores_sampling_and_allows_a_larger_context(self):
@@ -5512,15 +5400,6 @@ class LlamaCppTests(unittest.TestCase):
         self.assertNotIn("reasoning_effort", body)
         self.assertEqual(body["chat_template_kwargs"], {"x": 1, "enable_thinking": True, "reasoning_effort": "high"})
 
-    def test_unsloth_thinking_switch_stays_top_level(self):
-        os.environ["AGENT_ORCHESTRATOR_BACKEND"] = "unsloth"
-        os.environ["UNSLOTH_API_KEY"] = "k"
-        reply = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
-        (body,) = self.chat(self.client(), {"enable_thinking": False})
-        self.assertEqual((body["enable_thinking"], "chat_template_kwargs" in body), (False, False))
-        _, retry = self.chat(self.client(), {}, [self.CUT_OFF, reply])
-        self.assertEqual((retry["enable_thinking"], "chat_template_kwargs" in retry), (False, False))
-
     def test_gguf_warns_when_no_file_matches_the_variant(self):
         wanted = self.touch(self.SNAP + "Qwen3.5-4B-BF16.gguf")
         out = io.StringIO()
@@ -5566,21 +5445,14 @@ class LlamaCppTests(unittest.TestCase):
             self.assertIn("Download llama-server in Options", str(ctx.exception))
         self.popen.assert_not_called()
 
-    def test_backend_unset_keeps_the_unsloth_path(self):
-        os.environ["UNSLOTH_API_KEY"] = "k"
-        for backend in (None, "unsloth"):
-            if backend is None:
-                os.environ.pop("AGENT_ORCHESTRATOR_BACKEND", None)
-            else:
-                os.environ["AGENT_ORCHESTRATOR_BACKEND"] = backend
-            client = self.client()
-            self.assertEqual((client.base_url, client.management_url, client.llama_port),
-                             ("http://127.0.0.1:8888/v1", "http://127.0.0.1:8888", 0))
-            client.model_id = unittest.mock.Mock(side_effect=[orchestrator.WorkflowError("none"), self.PATH])
-            with patch.object(orchestrator.ApiClient, "_request_at", return_value={}) as request:
-                client.ensure_model("planner", False)
-            request.assert_any_call("http://127.0.0.1:8888", "POST", "/api/inference/load", self.AUTO)
-        self.popen.assert_not_called()
+    def test_auto_load_role_runs_on_llama_server_without_a_backend_variable(self):
+        # No AGENT_ORCHESTRATOR_BACKEND (setUp removes it), a leftover management_url and an unset api_key_env:
+        # the role is still served by our llama-server, never by the base_url in the config.
+        client = self.client()
+        self.assertEqual((client.base_url, client.llama_port, client.remote), ("http://127.0.0.1:8899/v1", 8899, False))
+        with patch.object(orchestrator, "llama_ensure", return_value=self.PATH) as ensure:
+            self.assertEqual(client.ensure_model("planner", False), self.PATH)
+        ensure.assert_called_once_with(client, "planner")
 
     def test_remote_roles_are_unaffected(self):
         os.environ["REMOTE_TEST_KEY"] = "sk"
@@ -5650,7 +5522,6 @@ class ContextTests(unittest.TestCase):
         with patch.object(orchestrator.ApiClient, "_stream_chat", stream), \
                 patch.object(orchestrator.ApiClient, "_request", lambda client, method, route, body=None: title), \
                 patch.object(orchestrator.ApiClient, "ensure_model", lambda client, role, interactive: "m"), \
-                patch.object(orchestrator.ApiClient, "_monitor_row", lambda client, started: {}), \
                 patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), \
                 patch.object(orchestrator, "unload_models", lambda: None), patch.object(orchestrator.sys, "argv", argv), \
                 patch.object(orchestrator.sys, "stdout", out):
@@ -5710,13 +5581,11 @@ class ContextTests(unittest.TestCase):
         with patch.object(llama, "_request_at", props):
             self.assertEqual((llama.context_size(), llama.context_size()), (32768, 32768))
         self.assertEqual(asked, ["http://127.0.0.1:8899/props"])  # cached per process
-        unsloth = orchestrator.ApiClient({"base_url": "http://u/v1", "management_url": "http://u", "api_key": "k",
-                                          "auto_load": {"model_path": "p", "max_seq_length": 8192}})
-        with patch.object(unsloth, "_request_at", side_effect=orchestrator.WorkflowError("down")):
-            self.assertEqual(unsloth.context_size(), 8192)  # status unavailable: the role's max_seq_length
-        orchestrator.CONTEXT_SIZES.clear()
-        with patch.object(unsloth, "_request_at", return_value={"context_length": 16384}):
-            self.assertEqual(unsloth.context_size(), 16384)
+        down = orchestrator.ApiClient({"base_url": "http://127.0.0.1:8900/v1", "api_key": "no-key",
+                                       "auto_load": {"model_path": "p", "max_seq_length": 8192}})
+        down.llama_port = 8900
+        with patch.object(down, "_request_at", side_effect=orchestrator.WorkflowError("down")):
+            self.assertEqual(down.context_size(), 8192)  # /props unavailable: the role's max_seq_length
         remote = orchestrator.ApiClient({"base_url": "https://api.example/v1", "api_key": "k", "model": "gpt"})
         self.assertIsNone(remote.context_size())
 
