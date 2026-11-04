@@ -64,14 +64,22 @@ public partial class MainWindow
         {
             var label = new TextBlock { Text = title, Tag = "SECTION:" + title, FontSize = 12, FontWeight = FontWeights.SemiBold, Margin = new Thickness(8, 18, 0, 2) };
             label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-            var add = new TextBlock { Text = "", FontSize = 11 };
-            add.SetResourceReference(StyleProperty, "RailGlyph");
-            var plus = new Button { Content = add, Width = 24, Height = 22, Padding = new Thickness(0), Margin = new Thickness(0, 16, 4, 0), Tag = "+project" + suffix,
-                HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, ToolTip = $"New project in {title.ToLowerInvariant()}" };
-            plus.SetResourceReference(StyleProperty, "SidebarRow");
-            plus.SetResourceReference(ForegroundProperty, "Muted");
-            plus.Click += (_, _) => NewSidebarProject(kindName);
-            SidebarList.Children.Add(new Grid { Children = { label, plus } });
+            // + starts a conversation of the section's kind; the folder beside it makes a project there
+            Button HeaderButton(string glyph, string tag, string tip, double right, Action click)
+            {
+                var icon = new TextBlock { Text = glyph, FontSize = 11 };
+                icon.SetResourceReference(StyleProperty, "RailGlyph");
+                var button = new Button { Content = icon, Width = 24, Height = 22, Padding = new Thickness(0), Margin = new Thickness(0, 16, right, 0), Tag = tag,
+                    HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, ToolTip = tip };
+                button.SetResourceReference(StyleProperty, "SidebarRow");
+                button.SetResourceReference(ForegroundProperty, "Muted");
+                AutomationProperties.SetName(button, tip);
+                button.Click += (_, _) => click();
+                return button;
+            }
+            var plus = HeaderButton("", "+new" + suffix, chat ? "New chat" : "New code conversation", 4, chat ? NewSidebarChat : NewCodeChat);
+            var project = HeaderButton("", "+project" + suffix, $"New project in {title.ToLowerInvariant()}", 30, () => NewSidebarProject(kindName));
+            SidebarList.Children.Add(new Grid { Children = { label, project, plus } });
         }
         // A project shows in the view of its chats: one with chats of the other kind only stays out, an empty one shows where
         // it was made (an older one, with no kind, in both). Moves and drops offer only these.
@@ -219,6 +227,24 @@ public partial class MainWindow
 
     // A project header's "+": a new chat already in that project. In Code it works in the folder of the project's latest
     // Code chat, without asking; only a project with no Code chat in an existing folder asks for one.
+    // The Code section's +: a new Code conversation without asking for a folder. The Code view shows its empty state: the
+    // current folder's (its PROJECT.md message), or choose a folder when there is none.
+    private void NewCodeChat()
+    {
+        if (CodeBusy)
+        {
+            Toast("Wait for the reply or run to finish", "#F7C873");
+            return;
+        }
+        if (!DiscardWorkerEdits())
+            return;
+        CloseCodeConversation();
+        ShowView();
+        RefreshCodeFolder();
+        RefreshSidebarList();
+        CodeInput.Focus();
+    }
+
     // chat: the section (or view) the project is in.
     private void NewChatInProject(GroupView group, bool chat)
     {
@@ -415,6 +441,7 @@ public partial class MainWindow
         }
         if (SidebarAsk("Delete chat", $"Delete \"{entry.Title}\"? This can't be undone.", "Delete") is null)
             return;
+        var wasOpen = _codeConv?.Id == entry.Id && NavCode.IsChecked == true;
         if (_codeConv?.Id == entry.Id)
         {
             _codeConv = null; // so closing does not treat it as an empty chat to clean up
@@ -423,6 +450,8 @@ public partial class MainWindow
         if (_chatConv?.Id == entry.Id)
             ClearChatConversation();
         StoreChange(() => _store.Delete(entry.Id));
+        if (AppSettings.Unified && wasOpen) // the test build: a fresh chat, not the folder's PROJECT.md prompts
+            NewSidebarChat();
     }
 
     private void StoreChange(Action change)

@@ -129,6 +129,7 @@ public partial class MainWindow
         RefreshExtras();
         RefreshPermissions();
         InitAttachments();
+        InitComposerLanding();
         InitNotify();
         RefreshPonytailSetting();
         if (CardFor(_settings.ChatWorker) is null)
