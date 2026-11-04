@@ -230,6 +230,8 @@ internal sealed class AppSettings
     public string Emoji { get; set; } = "standard";
     // Code's "+" > Review every turn: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn).
     public bool ReviewEveryTurn { get; set; }
+    // The toggle beside CHAT and CODE: off, each run of a reply's thinking and tool steps folds into one THINKING row.
+    public bool ViewThinking { get; set; } = true;
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

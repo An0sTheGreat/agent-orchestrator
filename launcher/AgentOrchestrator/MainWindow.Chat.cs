@@ -136,6 +136,7 @@ public partial class MainWindow
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
+        ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
         SelectTagged(ReadingSizeBox, _settings.ReadingSize);
         SelectTagged(EmojiBox, _settings.Emoji);
         ApplyChatWidth();
@@ -887,10 +888,11 @@ public partial class MainWindow
     private ChatReply AddReply(string role)
     {
         var root = new StackPanel { Margin = new Thickness(0, 8, 0, 14) };
+        var reply = new ChatReply { Content = new StackPanel() };
+        root.Tag = reply; // View thinking finds the replies by it
         var header = new TextBlock { Text = ChatName(CardFor(role), role), Margin = new Thickness(2, 0, 0, 6) };
         header.SetResourceReference(StyleProperty, "SectionHeader");
         header.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
-        var reply = new ChatReply { Content = new StackPanel() };
         reply.Status = new TextBlock { Text = "Starting…", FontStyle = FontStyles.Italic, FontSize = 12, Margin = new Thickness(2, 4, 0, 0) };
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
@@ -1074,6 +1076,7 @@ public partial class MainWindow
         var role = Str(ev, "role");
         var card = CardForActivity(role);
         var name = ChatName(card, role);
+        QueueRegroup(); // View thinking off: the event's new steps fold into their row once it is handled
         switch (Str(ev, "e"))
         {
             case "loading":
@@ -1240,6 +1243,7 @@ public partial class MainWindow
         Activate(role, kind == "thinking" ? "Thinking" : kind == "tool" ? "Using tools" : "Working");
         if (_reply is not { } r)
             return;
+        QueueRegroup();
         if (kind == "tool")
         {
             _toolArgs.Append(text);

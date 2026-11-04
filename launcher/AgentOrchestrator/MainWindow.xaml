@@ -1096,6 +1096,12 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,0" LastChildFill="False">
                     <TextBlock Text="CODE" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <StackPanel Orientation="Horizontal" Margin="16,0,4,0" VerticalAlignment="Center"
+                                ToolTip="Off: each reply's thinking, tool calls, reads and searches fold into one THINKING row">
+                        <ToggleButton x:Name="CodeThinkingToggle" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ViewThinking_Click" VerticalAlignment="Center"
+                                      AutomationProperties.Name="View thinking"><ToggleButton.LayoutTransform><ScaleTransform ScaleX="0.75" ScaleY="0.75" /></ToggleButton.LayoutTransform></ToggleButton>
+                        <TextBlock Text="View thinking" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="7,0,0,0" />
+                    </StackPanel>
                     <TextBlock x:Name="CodeFolderText" Text="No folder" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
                                Margin="12,0,0,0" MaxWidth="200" TextTrimming="CharacterEllipsis" />
                     <Button x:Name="CodeProjectButton" Style="{StaticResource GhostButton}" Content="Project  &#x25BE;" FontSize="11" Padding="9,3" Margin="10,0,0,0"
@@ -1363,6 +1369,13 @@
                 </Grid.RowDefinitions>
                 <DockPanel Margin="20,16,20,8" LastChildFill="False">
                     <TextBlock Text="CHAT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                    <!-- View thinking (MainWindow.Thinking.cs): off, each run of a reply's steps folds into one THINKING row -->
+                    <StackPanel Orientation="Horizontal" Margin="16,0,0,0" VerticalAlignment="Center"
+                                ToolTip="Off: each reply's thinking, tool calls, reads and searches fold into one THINKING row">
+                        <ToggleButton x:Name="ChatThinkingToggle" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ViewThinking_Click" VerticalAlignment="Center"
+                                      AutomationProperties.Name="View thinking"><ToggleButton.LayoutTransform><ScaleTransform ScaleX="0.75" ScaleY="0.75" /></ToggleButton.LayoutTransform></ToggleButton>
+                        <TextBlock Text="View thinking" FontSize="12" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" Margin="7,0,0,0" />
+                    </StackPanel>
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
