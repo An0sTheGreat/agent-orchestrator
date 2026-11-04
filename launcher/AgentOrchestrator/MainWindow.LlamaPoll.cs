@@ -41,7 +41,8 @@ public partial class MainWindow
             card.SetLive(prompt, decoded, decodeTps, promptTps);
             if (decoded == 0 && prompt > 0)
                 card.Status = $"Reading prompt {processed:N0} / {prompt:N0}";
-            if (prompt > 0 && _chatBusy && _reply?.Status.Visibility == System.Windows.Visibility.Visible)
+            // a streaming tool call's own line ("Writing index.html… 7,743 characters") is kept: the two would alternate
+            if (prompt > 0 && _chatBusy && _toolArgs.Length == 0 && _reply?.Status.Visibility == System.Windows.Visibility.Visible)
                 SetChatStatus(LauncherLogic.LlamaProgressLine(ChatName(card, card.Role), prompt, processed, decoded));
             return;
         }
@@ -99,11 +100,17 @@ public partial class MainWindow
             await PollLlamaAsync(card);
             if (!_reply.Status.Text.EndsWith("is writing: 300 tokens so far…"))
                 return Fail(_reply.Status.Text);
+            _toolArgs.Append("{\"path\": \"index.html\"");
+            SetChatStatus("Writing index.html… 22 characters");
+            await PollLlamaAsync(card);
+            if (_reply.Status.Text != "Writing index.html… 22 characters")
+                return Fail("a streaming tool call's line was replaced: " + _reply.Status.Text);
             return true;
         }
         finally
         {
             listener.Stop();
+            _toolArgs.Clear();
             (_llamaStateFile, _chatProcess, _settings.Runtime, _llamaLast, card.Status, _reply, _chatBusy) = (state, chat, runtime, last, status, reply, busy);
         }
     }
