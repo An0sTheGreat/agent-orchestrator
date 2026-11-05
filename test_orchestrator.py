@@ -5,6 +5,7 @@ import json
 import re
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -5273,7 +5274,7 @@ class LlamaCppTests(unittest.TestCase):
         self.popen.assert_not_called()
         self.kill.assert_not_called()
         self.assertIn(self.PATH, self.loaded)
-        self.emit.assert_any_call("model", role="planner", id=self.PATH)
+        self.emit.assert_any_call("model", role="planner", id=self.PATH, port=8899)
 
     def test_restarts_the_server_when_the_signature_differs(self):
         model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
@@ -5285,10 +5286,12 @@ class LlamaCppTests(unittest.TestCase):
         call = self.popen.call_args
         self.assertEqual(call.args[0], [str(self.exe), *args])
         self.assertTrue(call.kwargs["creationflags"] & subprocess.DETACHED_PROCESS)
-        log = self.tmp / "temp" / "agent-orchestrator-llama.log"
-        self.assertEqual(json.loads(self.state_file().read_text()),
+        log = self.tmp / "temp" / "agent-orchestrator-llama-8899.log"
+        (server,) = json.loads(self.state_file().read_text())["servers"]
+        self.assertIsInstance(server.pop("last_used"), float)
+        self.assertEqual(server,
                          {"pid": 77, "port": 8899, "signature": " ".join(args), "args": args, "model_file": str(model_file), "log": str(log)})
-        self.emit.assert_any_call("loading", role="planner", path=self.PATH)
+        self.emit.assert_any_call("loading", role="planner", path=self.PATH, port=8899)
         self.assertIn(self.PATH, self.loaded)
 
     def test_load_compatibility_ignores_sampling_and_allows_a_larger_context(self):
@@ -5364,7 +5367,7 @@ class LlamaCppTests(unittest.TestCase):
             self.client().ensure_model("planner", False)
         self.assertIn("did not load", str(ctx.exception))
         self.assertIn("within 30s", str(ctx.exception))
-        self.assertIn(str(self.tmp / "temp" / "agent-orchestrator-llama.log"), str(ctx.exception))
+        self.assertIn(str(self.tmp / "temp" / "agent-orchestrator-llama-8899.log"), str(ctx.exception))
         self.kill.assert_called_once_with(77, orchestrator.signal.SIGTERM)
         self.assertFalse(self.state_file().exists())
 
@@ -5493,6 +5496,184 @@ class LlamaCppTests(unittest.TestCase):
         for image, expected in (('"llama-server.exe","41","Console"', True), ('"notepad.exe","41","Console"', False)):
             with patch.object(orchestrator.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, image, "")):
                 self.assertEqual(REAL_LLAMA_ALIVE(41), expected)
+
+
+class MultiModelTests(unittest.TestCase):
+    """AGENT_ORCHESTRATOR_MULTI_MODEL: several llama-servers side by side (LlamaCppTests' fakes, no real process)."""
+
+    PATH, SNAP, AUTO, ROLE = LlamaCppTests.PATH, LlamaCppTests.SNAP, LlamaCppTests.AUTO, LlamaCppTests.ROLE
+    touch, state_file, write_state, client = LlamaCppTests.touch, LlamaCppTests.state_file, LlamaCppTests.write_state, LlamaCppTests.client
+
+    def setUp(self):
+        LlamaCppTests.setUp(self)
+        self.port_free = self.enterContext(patch.object(orchestrator, "port_free", return_value=True))
+        self.model_file = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
+
+    def mode(self, value):
+        os.environ["AGENT_ORCHESTRATOR_MULTI_MODEL"] = value
+
+    def servers(self, *records):
+        """Record live servers (pid, port, last_used, alias); returns their pids."""
+        self.state_file().write_text(json.dumps({"servers": [
+            {"pid": pid, "port": port, "signature": "x", "args": ["--alias", alias], "model_file": "x", "log": "y", "last_used": used}
+            for pid, port, used, alias in records]}))
+        self.alive.update(pid for pid, *_ in records)
+
+    def recorded(self):
+        return {s["port"]: s["pid"] for s in json.loads(self.state_file().read_text())["servers"]}
+
+    def killed(self):
+        return [c.args[0] for c in self.kill.call_args_list]
+
+    def test_reads_the_older_single_server_file_and_only_live_servers(self):
+        self.write_state(41, "sig")
+        self.alive.add(41)
+        self.assertEqual(orchestrator.llama_servers(),
+                         [{"pid": 41, "port": 8899, "signature": "sig", "model_file": "x", "log": "y", "last_used": 0}])
+        self.servers((41, 8899, 5.0, "a"), (42, 8900, 6.0, "b"))
+        self.alive.discard(42)
+        self.assertEqual([s["pid"] for s in orchestrator.llama_servers()], [41])
+        self.assertEqual(len(orchestrator.llama_servers(live=False)), 2)
+
+    def test_stop_one_port_or_all(self):
+        self.servers((41, 8899, 0, "a"), (42, 8900, 0, "b"))
+        self.assertTrue(orchestrator.llama_stop(8900))
+        self.assertEqual((self.killed(), self.recorded()), ([42], {8899: 41}))
+        self.assertTrue(orchestrator.llama_stop())
+        self.assertEqual(self.killed(), [42, 41])
+        self.assertFalse(self.state_file().exists())
+        self.assertFalse(orchestrator.llama_stop())
+
+    def test_reuses_a_compatible_server_on_another_port(self):
+        self.mode("always")
+        self.servers((41, 8899, 1.0, "other/M"))
+        args = orchestrator.llama_args(self.model_file, self.AUTO, 8900)
+        state = json.loads(self.state_file().read_text())
+        state["servers"].append({"pid": 42, "port": 8900, "signature": " ".join(args), "args": args, "model_file": "x", "log": "y", "last_used": 2.0})
+        self.state_file().write_text(json.dumps(state))
+        self.alive.add(42)
+        client = self.client()
+        self.assertEqual(client.ensure_model("planner", False), self.PATH)
+        self.popen.assert_not_called()
+        self.kill.assert_not_called()
+        self.assertEqual((client.llama_port, client.base_url), (8900, "http://127.0.0.1:8900/v1"))
+        self.emit.assert_any_call("model", role="planner", id=self.PATH, port=8900)
+        last_used = {s["port"]: s["last_used"] for s in json.loads(self.state_file().read_text())["servers"]}
+        self.assertEqual(last_used[8899], 1.0)
+        self.assertGreater(last_used[8900], 2.0)  # refreshed
+
+    def test_always_starts_beside_the_others_on_the_next_free_port(self):
+        self.mode("always")
+        self.servers((41, 8899, 1.0, "other/M"))
+        self.port_free.side_effect = lambda port: port != 8900  # something else listens there
+        client = self.client()
+        with patch.object(orchestrator, "gpu_free_mib") as free:
+            client.ensure_model("planner", False)
+        free.assert_not_called()
+        self.kill.assert_not_called()
+        self.assertEqual(self.popen.call_args.args[0][1:], orchestrator.llama_args(self.model_file, self.AUTO, 8901))
+        self.assertEqual(self.recorded(), {8899: 41, 8901: 77})
+        self.assertEqual((client.llama_port, client.base_url), (8901, "http://127.0.0.1:8901/v1"))
+        self.emit.assert_any_call("loading", role="planner", path=self.PATH, port=8901)
+        self.emit.assert_any_call("model", role="planner", id=self.PATH, port=8901)
+
+    def fit(self, free):
+        self.mode("fit")
+        with patch.object(orchestrator, "gpu_free_mib", side_effect=free) as gpu, \
+                patch.object(orchestrator, "estimate_vram_mib", return_value=1000), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            client = self.client()
+            client.ensure_model("planner", False)
+        return client, gpu, out.getvalue()
+
+    def unloaded(self):
+        return [c.kwargs for c in self.emit.call_args_list if c.args == ("unloading",)]
+
+    def test_fit_evicts_the_least_recently_used_until_the_model_fits(self):
+        self.servers((41, 8899, 5.0, "a/A"), (42, 8900, 1.0, "b/B"), (43, 8901, 9.0, "c/C"))
+        client, gpu, out = self.fit([500, 800, 1200])
+        self.assertEqual(self.killed(), [42, 41])  # oldest first, and C is kept once it fits
+        self.assertEqual(self.unloaded(), [{"role": "planner", "model": "b/B", "port": 8900},
+                                           {"role": "planner", "model": "a/A", "port": 8899}])
+        self.assertIn("unloading b/B to make room", out)
+        self.assertEqual(gpu.call_count, 3)  # read again after each eviction
+        self.assertEqual(self.recorded(), {8901: 43, 8899: 77})
+        self.assertEqual(client.llama_port, 8899)
+
+    def test_fit_loads_without_evicting_when_it_fits(self):
+        self.servers((41, 8899, 1.0, "a/A"))
+        client, _, _ = self.fit([1000])
+        self.kill.assert_not_called()
+        self.assertEqual(self.recorded(), {8899: 41, 8900: 77})
+
+    def test_fit_never_evicts_a_server_this_run_used_and_loads_anyway(self):
+        self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
+        self.loaded["a/A"] = self.client()  # this run's client on 8899
+        client, _, out = self.fit([100, 100])
+        self.assertEqual(self.killed(), [42])
+        self.assertEqual(self.unloaded(), [{"role": "planner", "model": "b/B", "port": 8900}])
+        self.assertIn("warning", out)
+        self.assertIn("loading anyway", out)
+        self.assertEqual(self.recorded(), {8899: 41, 8900: 77})
+
+    def test_fit_without_nvidia_smi_loads_one_model_at_a_time(self):
+        self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
+        client, _, out = self.fit([None])
+        self.assertEqual(sorted(self.killed()), [41, 42])
+        self.assertEqual(self.unloaded(), [])
+        self.assertIn("nvidia-smi", out)
+        self.assertEqual((self.recorded(), client.llama_port), ({8899: 77}, 8899))
+
+    def test_never_stops_every_other_server(self):
+        for value in ("never", "bogus"):
+            self.kill.reset_mock()
+            self.mode(value)
+            self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
+            self.client().ensure_model("planner", False)
+            self.assertEqual(sorted(self.killed()), [41, 42], value)
+            self.assertEqual(self.recorded(), {8899: 77})
+
+    def test_gpu_free_memory_from_nvidia_smi(self):
+        for result, expected in ((subprocess.CompletedProcess([], 0, "8000\n4000\n", ""), 8000),
+                                 (subprocess.CompletedProcess([], 9, "NVIDIA-SMI has failed\n", ""), None),
+                                 (FileNotFoundError(), None)):
+            with patch.object(orchestrator.subprocess, "run", side_effect=[result]) as run:
+                self.assertEqual(orchestrator.gpu_free_mib(), expected)
+            self.assertTrue(run.call_args.kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
+
+    @staticmethod
+    def gguf(path, meta, pad=0):
+        def string(text):
+            return struct.pack("<Q", len(text)) + text.encode()
+        body = b""
+        for key, value in meta.items():
+            body += string(key)
+            if isinstance(value, list):
+                kind = 8 if isinstance(value[0], str) else 5
+                body += struct.pack("<IIQ", 9, kind, len(value))
+                body += b"".join(string(v) if kind == 8 else struct.pack("<i", v) for v in value)
+            elif isinstance(value, str):
+                body += struct.pack("<I", 8) + string(value)
+            else:
+                body += struct.pack("<II", 4, value)  # uint32
+        path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, len(meta)) + body + b"\0" * pad)
+        return path.stat().st_size
+
+    def test_vram_estimate_counts_weights_split_parts_and_the_kv_cache(self):
+        meta = {"general.architecture": "llama", "llama.block_count": 2, "llama.attention.head_count": 4,
+                "llama.attention.head_count_kv": [2, 2], "llama.embedding_length": 64, "llama.context_length": 4096,
+                "tokenizer.ggml.tokens": ["a", "bc"]}
+        first = self.tmp / "m-00001-of-00002.gguf"
+        size = self.gguf(first, meta, pad=1000) + 2**20
+        (self.tmp / "m-00002-of-00002.gguf").write_bytes(b"\0" * 2**20)
+        args = ["-m", str(first), "-c", "1000000", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
+        per_token = 4 * (16 * 1.0625 + 16 * 2)  # 2+2 KV heads of 64/4 wide; q8_0 keys, f16 values
+        self.assertEqual(orchestrator.estimate_vram_mib(first, args), int((size + 1000000 * per_token) * 1.1 / 2**20))
+        no_ctx = int((size + 4096 * 4 * 16 * 2 * 2) * 1.1 / 2**20)  # the model's own context, f16 cache
+        self.assertEqual(orchestrator.estimate_vram_mib(first, ["-m", str(first)]), no_ctx)
+        other = self.tmp / "bad.gguf"
+        other.write_bytes(b"\0" * 2**21)
+        self.assertEqual(orchestrator.estimate_vram_mib(other, args), int(2**21 * 1.25 / 2**20))
 
 
 class ContextTests(unittest.TestCase):

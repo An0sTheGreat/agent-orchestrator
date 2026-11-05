@@ -24,6 +24,7 @@ import re
 import shutil
 import signal
 import socket
+import struct
 from pathlib import Path
 import subprocess
 import sys
@@ -293,6 +294,7 @@ class ApiClient:
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
         self.cut_off = False  # the last reply stopped at max_tokens
         self.llama_port = 0  # set by role_settings when this role runs on our llama-server (a role with auto_load)
+        self.llama_base = 0  # the configured llama_port; llama_ensure moves llama_port to the server that serves the role
         self.compactor = None  # set by role_settings: () -> (client, sampling) of a separate Compactor role
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1022,9 +1024,10 @@ def tool_call_note(messages: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
-# llama.cpp backend: every role with auto_load runs on one llama-server.exe that this engine starts.
-# The launcher sets the env vars and kills the server at app close by reading
-# the state file {"pid", "port", "signature", "model_file", "log"}; keep those names.
+# llama.cpp backend: every role with auto_load runs on a llama-server.exe that this engine starts; one at a time, or
+# one per model with AGENT_ORCHESTRATOR_MULTI_MODEL=fit|always. The launcher sets the env vars and kills the servers at
+# app close by reading the state file {"servers": [{"pid", "port", "signature", "args", "model_file", "log",
+# "last_used"}]}; keep those names.
 # ---------------------------------------------------------------------------------------------------------------------
 
 LLAMA_PORT = 8899  # config "llama_port" overrides
@@ -1032,15 +1035,33 @@ SPLIT_PART = re.compile(r"-(\d{5})-of-\d{5}\.gguf$", re.I)
 
 
 def llama_path(suffix: str) -> Path:
-    """The server's state file (.json) or log (.log) in the temp dir."""
+    """The servers' state file (.json) or a server's log (-<port>.log) in the temp dir."""
     return Path(tempfile.gettempdir()) / f"agent-orchestrator-llama{suffix}"
 
 
-def llama_state() -> dict[str, Any]:
+def llama_servers(live: bool = True) -> list[dict[str, Any]]:
+    """The recorded servers (only those still running unless live=False); reads the older single-server file too."""
     try:
-        return json.loads(llama_path(".json").read_text(encoding="utf-8"))
+        state = json.loads(llama_path(".json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
+        return []
+    if not isinstance(state, dict):
+        return []
+    servers = state.get("servers") if "servers" in state else [{**state, "last_used": 0}] if state else []
+    return [s for s in servers or [] if isinstance(s, dict) and (not live or llama_alive(s.get("pid")))]
+
+
+def llama_save(servers: list[dict[str, Any]]) -> None:
+    if servers:
+        llama_path(".json").write_text(json.dumps({"servers": servers}), encoding="utf-8")
+    else:
+        llama_path(".json").unlink(missing_ok=True)
+
+
+def multi_model() -> str:
+    """AGENT_ORCHESTRATOR_MULTI_MODEL: never (one server at a time), fit (more while they fit the GPU), always."""
+    mode = os.environ.get("AGENT_ORCHESTRATOR_MULTI_MODEL", "").strip().lower()
+    return mode if mode in ("fit", "always") else "never"
 
 
 def llama_alive(pid: Any) -> bool:
@@ -1061,21 +1082,128 @@ def llama_healthy(port: int) -> bool:
         return False
 
 
-def llama_stop() -> bool:
-    """Stop the recorded llama-server if it still runs and forget it; True if one was stopped."""
-    pid = llama_state().get("pid")
-    stopped = llama_alive(pid)
-    if stopped:
-        try:
-            os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
-        except OSError:
-            pass
-        for _ in range(50):  # wait until its port and VRAM are free before the next server starts
-            if not llama_alive(pid):
-                break
-            time.sleep(0.2)
-    llama_path(".json").unlink(missing_ok=True)
+def llama_stop(port: int | None = None) -> bool:
+    """Stop the recorded llama-server on `port` (all of them when None) if it still runs and forget it; True if one was
+    stopped."""
+    servers = llama_servers(live=False)
+    stopped = False
+    for server in [s for s in servers if port is None or s.get("port") == port]:
+        pid = server.get("pid")
+        if llama_alive(pid):
+            stopped = True
+            try:
+                os.kill(pid, signal.SIGTERM)  # TerminateProcess on Windows
+            except OSError:
+                pass
+            for _ in range(50):  # wait until its port and VRAM are free before the next server starts
+                if not llama_alive(pid):
+                    break
+                time.sleep(0.2)
+        servers.remove(server)
+    llama_save(servers)
     return stopped
+
+
+def port_free(port: int) -> bool:
+    """Nothing listens on 127.0.0.1:`port` and it can be bound."""
+    with socket.socket() as probe:
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    with socket.socket() as probe:
+        probe.settimeout(0.2)
+        return probe.connect_ex(("127.0.0.1", port)) != 0
+
+
+def gpu_free_mib() -> int | None:
+    """Free memory of the first GPU in MiB from nvidia-smi; None without nvidia-smi or a figure."""
+    try:
+        listed = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True,
+                                text=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
+        return int(listed.stdout.splitlines()[0].strip())
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
+
+
+def gguf_metadata(path: Path) -> dict[str, Any]:
+    """The key/value header of a GGUF (v2+) file; raises ValueError, KeyError or struct.error on anything else."""
+    with open(path, "rb") as f:
+        def read(fmt: str) -> Any:
+            return struct.unpack("<" + fmt, f.read(struct.calcsize(fmt)))[0]
+
+        def value(kind: int) -> Any:
+            if kind == 8:
+                return f.read(read("Q")).decode("utf-8", "replace")
+            if kind == 9:
+                inner, count = read("I"), read("Q")
+                return [value(inner) for _ in range(count)]
+            return read(GGUF_SCALARS[kind])
+
+        if f.read(4) != b"GGUF" or read("I") < 2:
+            raise ValueError(f"{path.name} is not a GGUF v2+ file")
+        read("Q")  # tensor count
+        meta = {}
+        for _ in range(read("Q")):
+            key = value(8)
+            meta[key] = value(read("I"))
+        return meta
+
+
+KV_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "q8_0": 1.0625, "q4_0": 0.5625}  # bytes per cached element by --cache-type
+
+
+def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
+    """VRAM a server started with `args` needs, in MiB: the weights (every split part) plus the KV cache for its context,
+    plus 10%; the weights plus 25% when the GGUF header cannot be read. The mmproj stays on the CPU and is not counted."""
+    def arg(flag: str) -> str:
+        return args[args.index(flag) + 1] if flag in args[:-1] else ""
+
+    parts = [model_file]
+    if split := re.search(r"-\d{5}-of-(\d{5})\.gguf$", model_file.name, re.I):
+        stem = model_file.name[:split.start()]
+        parts = [model_file.with_name(f"{stem}-{i:05d}-of-{split.group(1)}.gguf") for i in range(1, int(split.group(1)) + 1)]
+    size = sum(p.stat().st_size for p in parts if p.is_file())
+    try:
+        meta = gguf_metadata(model_file)
+        arch = meta["general.architecture"]
+        get = lambda key: meta.get(f"{arch}.{key}")  # noqa: E731
+        layers, heads = int(get("block_count")), get("attention.head_count")
+        heads = max(heads) if isinstance(heads, list) else heads
+        kv_heads = get("attention.head_count_kv") or heads
+        kv_heads = sum(kv_heads) if isinstance(kv_heads, list) else kv_heads * layers  # per layer, or the same in each
+        width = get("embedding_length") // heads if heads else 0
+        ctx = int(arg("-c") or 0) or int(get("context_length") or 0)
+        per_token = kv_heads * (int(get("attention.key_length") or width) * KV_BYTES.get(arg("--cache-type-k"), 2)
+                                + int(get("attention.value_length") or width) * KV_BYTES.get(arg("--cache-type-v"), 2))
+        return int((size + ctx * per_token) * 1.1 / 2**20)
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return int(size * 1.25 / 2**20)
+
+
+def llama_alias(server: dict[str, Any]) -> str:
+    args = server.get("args") or []
+    return str(args[args.index("--alias") + 1]) if "--alias" in args[:-1] else Path(str(server.get("model_file", ""))).name
+
+
+def llama_make_room(name: str, role: str, need: int, free: int, servers: list[dict[str, Any]]) -> None:
+    """Stop the least recently used of `servers` (not one this run used) until `need` MiB of GPU memory are free."""
+    used = {client.llama_port for client in LOADED_BY_RUN.values()}
+    while free < need:
+        spare = [s for s in servers if s.get("port") not in used]
+        if not spare:
+            print(f"[{name}] warning: the model needs ~{need} MiB of GPU memory but {free} MiB are free; loading anyway")
+            return
+        victim = min(spare, key=lambda s: s.get("last_used") or 0)
+        print(f"[{name}] unloading {llama_alias(victim)} to make room")
+        emit("unloading", role=role, model=llama_alias(victim), port=victim.get("port"))
+        llama_stop(victim.get("port"))
+        servers.remove(victim)
+        if (free := gpu_free_mib()) is None:
+            return
 
 
 def gguf_file(auto_load: dict[str, Any]) -> Path:
@@ -1186,50 +1314,72 @@ def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]
 
 
 def llama_ensure(client: ApiClient, role: str) -> str:
-    """Serve the role's model on llama-server: reuse the running server if its args can serve this role
-    (llama_compatible), else restart it."""
+    """Serve the role's model on llama-server: reuse a running server whose args can serve this role (llama_compatible),
+    else start one: after stopping the others (multi_model never), beside them (always), or beside the ones that leave
+    it room on the GPU (fit: the least recently used others are stopped)."""
     name = client.title or role
     exe = os.environ.get("AGENT_ORCHESTRATOR_LLAMA_SERVER", "")
     if not exe or not Path(exe).is_file():
         raise WorkflowError(f"{name}: llama-server.exe was not found ({exe or 'AGENT_ORCHESTRATOR_LLAMA_SERVER is not set'}). "
                             "Download llama-server in Options.")
-    path, port = str(client.auto_load["model_path"]), client.llama_port
+    path, base = str(client.auto_load["model_path"]), client.llama_base or client.llama_port
     model_file = gguf_file(client.auto_load)
-    args = llama_args(model_file, client.auto_load, port)
-    signature = " ".join(args)
-    state = llama_state()
-    running = state.get("args")
-    usable, no_thinking = llama_compatible(running, args) if isinstance(running, list) else (state.get("signature") == signature, False)
-    if usable and llama_alive(state.get("pid")) and llama_healthy(port):
-        if state.get("signature") != signature:
-            print(f"[{name}] keeping the loaded {path}: its load settings also serve this role")
-        client.thinking_off = client.thinking_off or no_thinking
+    servers = llama_servers(live=False)
+    for server in servers:
+        port = server.get("port")
+        args = llama_args(model_file, client.auto_load, port)
+        signature, running = " ".join(args), server.get("args")
+        usable, no_thinking = llama_compatible(running, args) if isinstance(running, list) else (server.get("signature") == signature, False)
+        if usable and llama_alive(server.get("pid")) and llama_healthy(port):
+            if server.get("signature") != signature:
+                print(f"[{name}] keeping the loaded {path}: its load settings also serve this role")
+            client.thinking_off = client.thinking_off or no_thinking
+            server["last_used"] = time.time()
+            llama_save(servers)
+            break
     else:
-        llama_stop()
+        mode = multi_model()
+        free = gpu_free_mib() if mode == "fit" else None
+        if mode == "fit" and free is None:
+            print(f"[{name}] nvidia-smi reported no free GPU memory: loading one model at a time")
+            mode = "never"
+        if mode == "never":
+            llama_stop()
+            servers, port = [], base
+        else:
+            servers = [s for s in servers if llama_alive(s.get("pid"))]
+            if free is not None:
+                llama_make_room(name, role, estimate_vram_mib(model_file, llama_args(model_file, client.auto_load, base)), free, servers)
+            taken = {s.get("port") for s in servers}
+            port = next(p for p in range(base, base + 1000) if p not in taken and port_free(p))
+        args = llama_args(model_file, client.auto_load, port)
         print(f"[{name}] loading {path} ({model_file.name}) on llama-server ...")
-        log = llama_path(".log")
+        log = llama_path(f"-{port}.log")
         with open(log, "wb") as out:  # the child keeps its own handle
             process = subprocess.Popen(
                 [exe, *args], stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
             )
-        llama_path(".json").write_text(json.dumps({"pid": process.pid, "port": port, "signature": signature, "args": args,
-                                                   "model_file": str(model_file), "log": str(log)}), encoding="utf-8")
-        emit("loading", role=role, path=path)
+        llama_save(servers + [{"pid": process.pid, "port": port, "signature": " ".join(args), "args": args,
+                               "model_file": str(model_file), "log": str(log), "last_used": time.time()}])
+        emit("loading", role=role, path=path, port=port)
         deadline = time.time() + client.timeout
         while not llama_healthy(port):
             if process.poll() is not None:
-                llama_stop()
+                llama_stop(port)
                 tail = "\n".join(log.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
                 raise WorkflowError(f"{name}: llama-server exited (code {process.returncode}) while loading {model_file.name}:\n{tail}")
             if time.time() > deadline:
-                llama_stop()
+                llama_stop(port)
                 raise WorkflowError(f"{name}: llama-server did not load {model_file.name} within {client.timeout}s; see {log}")
             time.sleep(0.5)
-    LOADED_BY_RUN[path] = client  # the server is always ours: stopped at the end of a workflow run
+    client.llama_port, client.base_url = port, f"http://127.0.0.1:{port}/v1"
+    # the server is always ours: stopped at the end of a workflow run (the same model on a second server gets its own key)
+    key = path if path not in LOADED_BY_RUN or LOADED_BY_RUN[path].llama_port == port else f"{path}@{port}"
+    LOADED_BY_RUN[key] = client
     model = client.model_id()
     print(f"[{name}] {model}")
-    emit("model", role=role, id=model)
+    emit("model", role=role, id=model, port=port)
     return model
 
 
@@ -1352,7 +1502,7 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
         port = int(config.get("llama_port", LLAMA_PORT))
         settings = {**settings, "base_url": f"http://127.0.0.1:{port}/v1", "api_key_env": "", "api_key": "no-key", "model": ""}
     client = ApiClient(settings)
-    client.llama_port = port
+    client.llama_port = client.llama_base = port
     client.role = role
     client.title = display_name(config, role)
     if role != "compactor" and separate_compactor(config):
@@ -5041,7 +5191,7 @@ def _run() -> int:
     turn.add_argument("--code", type=Path, help="Run one Code turn (file tools confined to the request's folders) for this JSON request")
     parser.add_argument("--request", type=Path, help="Lead project run: a Code request JSON (folders, search, tools, skills, sandbox, "
                         "session, effort) for the run's tools")
-    parser.add_argument("--unload-local", action="store_true", help="Stop the llama-server this app started, then exit")
+    parser.add_argument("--unload-local", action="store_true", help="Stop the llama-servers this app started, then exit")
     args = parser.parse_args()
     if args.unload_local:
         llama_stop()
@@ -5153,7 +5303,7 @@ LOADED_BY_RUN: dict[str, "ApiClient"] = {}
 def unload_models() -> None:
     """Free VRAM/RAM: unload only the models this run loaded, ignoring failures."""
     for client in LOADED_BY_RUN.values():
-        if client.llama_port and llama_stop():
+        if client.llama_port and llama_stop(client.llama_port):
             print(f"[{client.title or client.role}] stopped llama-server")
     LOADED_BY_RUN.clear()
 
