@@ -2028,8 +2028,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New chat and Work in a folder, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New chat,+Work in a folder,SECTION:CHAT,?,SECTION:CODE";
+                // New chat, Work in a folder and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New chat,+Work in a folder,+Remote API,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
