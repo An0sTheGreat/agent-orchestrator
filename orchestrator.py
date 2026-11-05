@@ -376,6 +376,9 @@ class ApiClient:
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))), **sampling}
+        if self.remote and (urlsplit(self.base_url).hostname or "").endswith("openrouter.ai") and body.get("enable_thinking") is False:
+            body.pop("reasoning_effort", None)
+            body["reasoning"] = {"effort": "none"}  # OpenRouter's switch for no thinking (enable_thinking is llama.cpp's)
         if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp-only fields
             for key in LOCAL_ONLY_FIELDS:
                 body.pop(key, None)
@@ -400,6 +403,11 @@ class ApiClient:
                     payload = self._request("POST", "/chat/completions", body)
             except WorkflowError as exc:
                 text = str(exc).lower()
+                if "api 400 " in text and "reasoning" in text and "reasoning" in body:
+                    # a model that cannot switch thinking off (OpenRouter: reasoning is mandatory) rejects "none": ask without it
+                    print(f"[{self.title or self.role}] this model cannot turn thinking off; retrying with its default")
+                    body.pop("reasoning")
+                    continue
                 if "api 400 " in text and "context" in text and re.search(r"length|exceed|too long|too many tokens", text):
                     if not compacted_on_error and self._compact(model, messages, sampling, tools, force=True):
                         compacted_on_error = True  # retry once with the compacted history

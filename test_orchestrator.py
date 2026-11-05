@@ -4879,6 +4879,40 @@ class RemoteRoleTests(unittest.TestCase):
         self.assertNotIn("enable_thinking", sent[0])
         self.assertEqual(sent[0]["reasoning_effort"], "high")
 
+    def test_openrouter_effort_off_sends_reasoning_none_and_retries_without_it_when_refused(self):
+        from urllib.error import HTTPError
+
+        sent = []
+        refuse = [False]
+
+        def fake(request, timeout=None):
+            if request.data is None:
+                return self.response({"data": []})
+            body = json.loads(request.data)
+            sent.append(body)
+            if refuse[0] and "reasoning" in body:
+                raise HTTPError(request.full_url, 400, "bad", {}, io.BytesIO(b'{"error":{"message":"reasoning is mandatory for this model"}}'))
+            return self.response({"choices": [{"message": {"content": "{}"}, "finish_reason": "stop"}], "usage": {}})
+
+        role = dict(self.CONFIG["roles"]["planner"], base_url="https://openrouter.ai/api/v1")
+        config = orchestrator.with_effort({"roles": {"planner": role}}, {"effort": "off"})
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False),                 patch.object(orchestrator, "urlopen", side_effect=fake), contextlib.redirect_stdout(io.StringIO()):
+            orchestrator.ask_once(config, "planner", "sys", "user", False)
+            self.assertEqual(sent[0]["reasoning"], {"effort": "none"})
+            self.assertNotIn("enable_thinking", sent[0])
+            self.assertNotIn("reasoning_effort", sent[0])
+            sent.clear()
+            refuse[0] = True  # a model that cannot switch thinking off
+            orchestrator.ask_once(config, "planner", "sys", "user", False)
+        self.assertEqual(["reasoning" in body for body in sent], [True, False])
+        # another remote API gets no OpenRouter-only field
+        sent.clear()
+        other = orchestrator.with_effort(self.CONFIG, {"effort": "off"})
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", False),                 patch.object(orchestrator, "urlopen", side_effect=fake), contextlib.redirect_stdout(io.StringIO()):
+            refuse[0] = False
+            orchestrator.ask_once(other, "planner", "sys", "user", False)
+        self.assertNotIn("reasoning", sent[0])
+
     def test_remote_body_omits_local_only_fields_unless_send_extra_body(self):
         sent = []
 
