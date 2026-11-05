@@ -1048,7 +1048,9 @@ def llama_servers(live: bool = True) -> list[dict[str, Any]]:
     if not isinstance(state, dict):
         return []
     servers = state.get("servers") if "servers" in state else [{**state, "last_used": 0}] if state else []
-    return [s for s in servers or [] if isinstance(s, dict) and (not live or llama_alive(s.get("pid")))]
+    if not isinstance(servers, list):
+        return []
+    return [s for s in servers if isinstance(s, dict) and (not live or llama_alive(s.get("pid")))]
 
 
 def llama_save(servers: list[dict[str, Any]]) -> None:
@@ -1176,11 +1178,15 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         kv_heads = get("attention.head_count_kv") or heads
         kv_heads = sum(kv_heads) if isinstance(kv_heads, list) else kv_heads * layers  # per layer, or the same in each
         width = get("embedding_length") // heads if heads else 0
-        ctx = int(arg("-c") or 0) or int(get("context_length") or 0)
+        # ponytail: without -c the server's own default is unknown here, so the model's trained context is capped at 32768
+        # (a 262k trained context would otherwise estimate hundreds of GB); a guess, not llama.cpp's real default.
+        ctx = int(arg("-c") or 0) or min(int(get("context_length") or 0), 32768)
+        ngl = int(arg("-ngl")) if arg("-ngl").isdigit() else layers  # 999 or more: every layer on the GPU
+        weights = size * min(ngl, layers) / layers  # ponytail: layers weigh the same; ignores the output layer and the KV split
         per_token = kv_heads * (int(get("attention.key_length") or width) * KV_BYTES.get(arg("--cache-type-k"), 2)
                                 + int(get("attention.value_length") or width) * KV_BYTES.get(arg("--cache-type-v"), 2))
-        return int((size + ctx * per_token) * 1.1 / 2**20)
-    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return int((weights + ctx * per_token) * 1.1 / 2**20)
+    except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, struct.error):
         return int(size * 1.25 / 2**20)
 
 
@@ -1341,8 +1347,12 @@ def llama_ensure(client: ApiClient, role: str) -> str:
         mode = multi_model()
         free = gpu_free_mib() if mode == "fit" else None
         if mode == "fit" and free is None:
-            print(f"[{name}] nvidia-smi reported no free GPU memory: loading one model at a time")
-            mode = "never"
+            if LOADED_BY_RUN:  # a server this run uses must not be stopped for want of a figure: load beside it
+                print(f"[{name}] nvidia-smi reported no free GPU memory: loading beside the models this run uses")
+                mode = "always"
+            else:
+                print(f"[{name}] nvidia-smi reported no free GPU memory: loading one model at a time")
+                mode = "never"
         if mode == "never":
             llama_stop()
             servers, port = [], base

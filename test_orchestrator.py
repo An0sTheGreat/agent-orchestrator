@@ -5607,14 +5607,33 @@ class MultiModelTests(unittest.TestCase):
         self.assertEqual(self.recorded(), {8899: 41, 8900: 77})
 
     def test_fit_never_evicts_a_server_this_run_used_and_loads_anyway(self):
-        self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
-        self.loaded["a/A"] = self.client()  # this run's client on 8899
+        # a/A (the oldest, so the first victim) runs on 8900, the client's llama_port; llama_base stays 8899, where b/B runs
+        self.servers((41, 8899, 5.0, "b/B"), (42, 8900, 1.0, "a/A"))
+        used = self.client()
+        used.llama_port = 8900
+        self.loaded["a/A"] = used
         client, _, out = self.fit([100, 100])
-        self.assertEqual(self.killed(), [42])
-        self.assertEqual(self.unloaded(), [{"role": "planner", "model": "b/B", "port": 8900}])
+        self.assertEqual(self.killed(), [41])
+        self.assertEqual(self.unloaded(), [{"role": "planner", "model": "b/B", "port": 8899}])
         self.assertIn("warning", out)
         self.assertIn("loading anyway", out)
-        self.assertEqual(self.recorded(), {8899: 41, 8900: 77})
+        self.assertEqual(self.recorded(), {8900: 42, 8899: 77})
+
+    def test_fit_without_nvidia_smi_keeps_the_servers_this_run_uses(self):
+        self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
+        used = self.client()
+        used.llama_port = 8899
+        self.loaded["a/A"] = used
+        client, _, out = self.fit([None])
+        self.assertEqual(self.killed(), [])
+        self.assertEqual(self.unloaded(), [])
+        self.assertIn("nvidia-smi", out)
+        self.assertEqual((self.recorded(), client.llama_port), ({8899: 41, 8900: 42, 8901: 77}, 8901))
+
+    def test_a_malformed_state_file_lists_no_servers(self):
+        for state in ({"servers": 5}, {"servers": {"pid": 1}}, {"servers": [5, "x", None]}, [1]):
+            self.state_file().write_text(json.dumps(state))
+            self.assertEqual(orchestrator.llama_servers(live=False), [], state)
 
     def test_fit_without_nvidia_smi_loads_one_model_at_a_time(self):
         self.servers((41, 8899, 1.0, "a/A"), (42, 8900, 5.0, "b/B"))
@@ -5674,6 +5693,20 @@ class MultiModelTests(unittest.TestCase):
         other = self.tmp / "bad.gguf"
         other.write_bytes(b"\0" * 2**21)
         self.assertEqual(orchestrator.estimate_vram_mib(other, args), int(2**21 * 1.25 / 2**20))
+
+    def test_vram_estimate_caps_the_default_context_and_scales_weights_by_ngl(self):
+        meta = {"general.architecture": "llama", "llama.block_count": 4, "llama.attention.head_count": 4,
+                "llama.attention.head_count_kv": 4, "llama.embedding_length": 64, "llama.context_length": 262144}
+        model = self.tmp / "big.gguf"
+        size = self.gguf(model, meta, pad=40 * 2**20)
+        per_token = 4 * 4 * (16 * 2 + 16 * 2)  # 4 layers x 4 KV heads, f16 keys and values
+        full = int((size + 32768 * per_token) * 1.1 / 2**20)  # no -c: capped at 32768, not the trained 262144
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model)]), full)
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-ngl", "999"]), full)
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "1000000"]),
+                         int((size + 1000000 * per_token) * 1.1 / 2**20))  # an explicit -c is never capped
+        half = int((size / 2 + 32768 * per_token) * 1.1 / 2**20)  # 2 of 4 layers on the GPU
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-ngl", "2"]), half)
 
 
 class ContextTests(unittest.TestCase):
