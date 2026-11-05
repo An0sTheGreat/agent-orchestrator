@@ -3583,6 +3583,65 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual([orchestrator.command_key(c) for c in ("python -m pytest", '"C:\\Program Files\\x\\tool.exe" a', ".\\build.ps1", "")],
                          ["python", "tool", "build", ""])
 
+    def test_every_mode_grants_the_skills_folder_read_only_and_never_for_writing(self):
+        skills = self.cfg / "skills"  # <data>\skills beside the sandbox home <data>\sb
+        skills.mkdir()
+        synced = []
+        with patch.object(sandbox, "sync_grants", lambda name, sid, wanted, state: synced.append(dict(wanted))), \
+                patch.object(sandbox, "run", lambda *a, **kw: (0, "fine")), patch.object(orchestrator, "ask_user", lambda *a: True):
+            for mode in ("ask", "safe", "all"):
+                run = orchestrator.command_runner(self.folders, {**self.request, "permissions": mode})
+                self.assertEqual(run("dir", shell="cmd"), "EXIT 0\nfine")
+                with self.subTest(mode), self.assertRaises(orchestrator.WorkflowError):  # refused before anyone is asked
+                    run("echo", shell="cmd", request_write=[str(skills)])
+            for wanted in synced:
+                self.assertEqual(wanted.get(str(skills)), "read")
+            self.assertEqual(len(synced), 6)  # every mode: the first sync and the one after the command
+            reviewer = orchestrator.command_runner(self.folders, self.request, read_only=True)
+            reviewer("dir", shell="cmd")
+            self.assertEqual(synced[-1].get(str(skills)), "read")
+            skills.rmdir()  # a missing skills folder is no grant and no error
+            synced.clear()
+            self.assertEqual(orchestrator.command_runner(self.folders, self.request)("dir", shell="cmd"), "EXIT 0\nfine")
+            self.assertNotIn(str(skills), synced[0])
+
+    def test_only_the_real_skills_folder_is_granted(self):
+        skills, elsewhere = self.cfg / "skills", self.root.parent / "elsewhere"
+        elsewhere.mkdir()
+        self.assertIsNone(orchestrator.skills_root(self.request))  # missing
+        self.assertIsNone(orchestrator.skills_root({}))  # no sandbox home: no skills folder known
+        if subprocess.run(["cmd", "/c", "mklink", "/J", str(skills), str(elsewhere)], capture_output=True).returncode != 0:
+            self.skipTest("junctions unavailable")
+        self.assertIsNone(orchestrator.skills_root(self.request))  # a junction to another folder is not the skills folder
+        os.rmdir(skills)  # the junction, not its target
+        skills.mkdir()
+        self.assertEqual(orchestrator.skills_root(self.request), skills)
+        self.assertEqual(orchestrator.skills_root({"sandbox": {"home": str(self.cfg / "x" / ".." / "sb")}}), skills)
+        self.assertIsNone(orchestrator.skills_root({"sandbox": {"home": str(self.cfg / "sb" / ".." / ".." / "sb")}}))  # <base>\skills
+
+    def test_the_lead_is_told_where_the_skills_are_only_when_they_exist(self):
+        line = "(read-only; run a skill's scripts from there"
+        self.enterContext(patch.object(orchestrator, "vision_off", lambda *a: True))  # no model server here
+        self.assertNotIn(line, orchestrator.lead_setup(self.config, self.folders, self.request, "planner")[2])
+        (self.cfg / "skills").mkdir()
+        note = orchestrator.lead_setup(self.config, self.folders, self.request, "planner")[2]
+        self.assertIn(f"\n\nSkills: {self.cfg / 'skills'} {line}", note)
+
+    def test_a_command_reads_and_runs_a_skill_in_place_but_cannot_write_there(self):
+        skill, other = self.cfg / "skills" / "demo", self.cfg / "other"
+        skill.mkdir(parents=True)
+        other.mkdir()
+        (skill / "hello.cmd").write_text("@echo hello from the skill\n", encoding="utf-8")
+        (other / "secret.txt").write_text("not for commands\n", encoding="utf-8")
+        run = orchestrator.command_runner(self.folders, self.request)
+        self.assertEqual(run(f'dir /b "{skill}"', shell="cmd"), "EXIT 0\nhello.cmd")
+        self.assertEqual(run(f'"{skill / "hello.cmd"}"', shell="cmd"), "EXIT 0\nhello from the skill")
+        for command in (f'echo x>"{skill / "new.txt"}"', f'echo x>>"{skill / "hello.cmd"}"', f'type "{other / "secret.txt"}"'):
+            with self.subTest(command):
+                self.assertTrue(run(command, shell="cmd").startswith("EXIT 1"))
+        self.assertEqual(sorted(p.name for p in skill.iterdir()), ["hello.cmd"])
+        self.assertEqual((skill / "hello.cmd").read_text(encoding="utf-8"), "@echo hello from the skill\n")
+
     def test_ask_user_waits_for_its_own_answer_and_defaults_to_no(self):
         events = []
         stdin = io.StringIO('garbage\n{"id": "other", "allow": true}\n')

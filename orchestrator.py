@@ -4238,6 +4238,19 @@ def never_writable(request: dict[str, Any]) -> list[Path]:
     return [p.resolve() for p in found if str(p).strip()]
 
 
+def skills_root(request: dict[str, Any]) -> Path | None:
+    """The user's skills folder (<launcher data>\\skills, beside the sandbox's home), which every command may read and
+    run but never write, so a skill's scripts run in place; None when it is missing, a link (junction or symlink) or
+    overlaps the Agent Orchestrator folder. Only this exact folder: grantable still refuses it, and AppData, for writing."""
+    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    if not settings.get("home"):
+        return None
+    root = Path(str(settings["home"])).resolve().parent / "skills"
+    if not root.is_dir() or os.path.normcase(str(root.resolve())) != os.path.normcase(str(root)) or overlaps_root(str(root)):
+        return None
+    return root
+
+
 def grantable(raw: Any, request: dict[str, Any]) -> str:
     """A folder a command may be given write access to (after the user approves): a plain drive-letter path to an
     existing local folder, named by its real path (no link, junction, UNC or \\\\?\\ spelling can stand in for another),
@@ -4284,6 +4297,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     temp, state = home / "tmp" / name, home / "grants"
     grants = {f["path"]: "read" if read_only else f["access"] for f in folders if not overlaps_root(f["path"])}
     grants[str(temp)] = "write"
+    if skills := skills_root(request):
+        grants[str(skills)] = "read"  # read and run, never write: a skill's own files stay as the user made them
     synced: list[str] = []  # the container's SID and the default shell, once its grants are synced this turn
     key_file = ROOT / "api_key.txt"
     secrets = sandbox.secret_values([load_text(key_file).strip()] if key_file.is_file() else [])
@@ -4515,6 +4530,8 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
         if (bundled / "SKILL.md").is_file() and skill_info(bundled)["name"].lower() not in names:
             skills.append(str(bundled))  # a user skill of the same name replaces it
     tools, extra_handlers, note = request_extras({**request, "skills": skills})
+    if folder := skills_root(request):
+        note += f"\n\nSkills: {folder} (read-only; run a skill's scripts from there, copy any output into the project)"
     lead_extras, research = with_research(extra_handlers)  # workers get the plain ones: their searches are not the lead's
     handlers = {**code_handlers(folders), **code_write_handlers(folders), **lead_extras}
     handlers["todo"] = lambda items: "CHECKLIST\n" + "\n".join(map(str, items if isinstance(items, list) else [items]))

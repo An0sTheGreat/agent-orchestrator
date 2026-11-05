@@ -2,7 +2,8 @@
 
 Every command runs as a child of this (trusted) process inside a Windows AppContainer: an OS-enforced token that can open
 only objects whose ACL grants its SID (or ALL APPLICATION PACKAGES, which Windows grants read-only on its system folders).
-The engine grants the container exactly the conversation's folders (write or read) with sync_grants; anything else on
+The engine grants the container exactly the conversation's folders (write or read), plus the user's skills folder read
+only (orchestrator.skills_root), with sync_grants; anything else on
 disk is unreadable or read-only. The container has no network capability unless one is granted for the command, and
 loopback stays blocked even then. Child processes inherit the token; a kill-on-close Job holds the whole tree, so a
 timeout or the engine's exit ends it. Nothing here runs a command with the user's own token.
