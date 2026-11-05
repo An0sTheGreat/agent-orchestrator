@@ -57,7 +57,7 @@ public partial class App : Application
         {
             var window = new MainWindow
             {
-                WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, Width = 1400, Height = 860,
+                WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, Width = 1400, Height = 1060, // tall enough for a whole conversation in one picture
                 ShowActivated = false, ShowInTaskbar = false,
             };
             window.Show();

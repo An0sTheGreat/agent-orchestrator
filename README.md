@@ -2,7 +2,7 @@
 
 **The harness for your local AI setup: a team of local models that builds software with you, one reviewed step at a time.**
 
-![Agent Orchestrator in the Dark Parchment theme](docs/images/chat-ParchmentDark.png)
+![Agent Orchestrator in the Graphite theme: a conversation with headings, lists, a table, a quote and emoji](docs/images/chat-Graphite.png)
 
 Big cloud models are impressive, but they cost money, send your code somewhere else, and change under you without asking. Agent Orchestrator takes another route. It's a harness for the models already on your PC: it gives them tools, a sandbox, a browser and a workflow, and has them work as a team: a **Lead** plans the work, an optional **Implementer** writes the code, and a **Reviewer** checks every finished item before the next one starts. A mistake gets caught where it happens instead of piling up. You describe what you want in plain words, press **Start project**, and watch the work happen, or just chat with your models when you want a second opinion.
 
@@ -22,6 +22,8 @@ A small model can write good code, but it loses its way in a long task: its cont
 
 Write or generate a `PROJECT.md`, press **Start project**, and come back to verified, recorded work.
 
+![A project run: the Lead works an item, the Reviewer checks it, and a line marks each switch from one model to the next](docs/images/project.png)
+
 ### Multi-agent workflows without the wiring
 
 Setting up several agents usually means config files, ports and scripts. Here it's a row of cards. Each worker (Lead, Implementer, Reviewer, Compactor and any you add) gets its own model, picked from a list of the models you have installed, with context length and sampling settings right beside it. Save a setup as a preset and switch between setups in one click.
@@ -39,11 +41,11 @@ Your models, your code and your conversations stay on your machine. The app runs
 
 ### A Claude-like interface you can make your own
 
-If you've used Claude, you'll feel at home: conversations in a sidebar, a clean composer, markdown replies with code blocks and tables, and a Code view for working inside a project folder. Choose from seven themes, Dark Parchment, Parchment, Graphite, OLED, Liquid Glass, Track Gold and Flat, and give each one its own accent colour.
+If you've used Claude, you'll feel at home: conversations in a sidebar, a clean composer, markdown replies with code blocks and tables, and a Code view for working inside a project folder. Choose from seven themes, Graphite (the default, shown above), Dark Parchment, Parchment, OLED, Liquid Glass, Track Gold and Flat, and give each one its own accent colour.
 
 | | |
 |---|---|
-| ![Parchment](docs/images/chat-Parchment.png) | ![Graphite](docs/images/chat-Graphite.png) |
+| ![Dark Parchment](docs/images/chat-ParchmentDark.png) | ![Parchment](docs/images/chat-Parchment.png) |
 | ![OLED](docs/images/chat-Oled.png) | ![Liquid Glass](docs/images/chat-Glass.png) |
 
 ![Settings: themes and accent colours](docs/images/settings-appearance.png)
