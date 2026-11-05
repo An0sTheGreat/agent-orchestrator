@@ -52,7 +52,7 @@ public partial class MainWindow
     private string _turnWorker = ""; // the Chat target when the turn started (opening another chat changes ChatWorker)
 
     // The saved conversation a reply or project run is using (null: none): it cannot be deleted meanwhile.
-    private string? RunningId => _process is not null ? _codeConv?.Id : !_chatBusy ? null : _turn.IsCode ? _codeConv?.Id : _parked is not null ? _parkedConv?.Id : _chatConv?.Id;
+    private string? RunningId => _process is not null ? CodeConvOf(RunConv)?.Id : !_chatBusy ? null : _turn.IsCode ? _codeConv?.Id : _parked is not null ? _parkedConv?.Id : _chatConv?.Id;
 
     private bool ChatTurnShown => _chatBusy && !_turn.IsCode && _turn == _chat;
 

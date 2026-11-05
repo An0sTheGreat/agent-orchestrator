@@ -14,6 +14,87 @@ public partial class MainWindow
 
     private RoleCard? CodeTarget() => CardFor("planner"); // the lead: it does the work and may delegate to the other workers
 
+    // A project run keeps working while the user opens another Code conversation: its view and state are parked off screen
+    // and keep collecting its output; opening that conversation again brings them back (as ParkChatTurn does for Chat).
+    private sealed class ParkedCode
+    {
+        public required Conversation View;
+        public required ConversationStore.Conversation? Conv;
+        public required string Folder;
+        public required List<LauncherLogic.CodeFolder> Folders;
+        public required Dictionary<string, ContextSnapshot> Contexts;
+        public ContextSnapshot? Context;
+    }
+
+    private ParkedCode? _codeParked; // kept after the work ends, until its conversation is opened or another one is parked
+    private Conversation? _runCode; // the project run's conversation (ResetRunView)
+    private string _runProject = ""; // the project run's folder (Start_Click)
+    private Conversation RunConv => _runCode ?? _code;
+    private bool CodeWorking => _process is not null && RunConv == _code;
+
+    private ParkedCode? ParkedOf(Conversation c) => _codeParked is { } p && p.View == c ? p : null;
+    private ConversationStore.Conversation? CodeConvOf(Conversation c) => ParkedOf(c) is { } p ? p.Conv : _codeConv;
+    private Dictionary<string, ContextSnapshot> ContextsOf(Conversation c) => ParkedOf(c)?.Contexts ?? _codeContexts;
+
+    // A measured call of `owner`'s turn or run: on the cards when it is shown, else kept with its parked view.
+    private void CodeContextOf(Conversation owner, ContextSnapshot s)
+    {
+        if (ParkedOf(owner) is not { } p)
+        {
+            SetCodeContext(s);
+            return;
+        }
+        var role = s.Role ?? CodeLead;
+        p.Contexts[role] = s;
+        if (role == CodeLead)
+            p.Context = s;
+    }
+
+    private void ParkCode()
+    {
+        var view = _code;
+        Unqueue(view); // queued for the conversation being left: back to the input, not sent into the next one
+        _codeParked = new ParkedCode { View = view, Conv = _codeConv, Folder = ProjectPath, Folders = CodeExtraFolders.ToList(), Contexts = new(_codeContexts), Context = _codeContext };
+        var panel = new StackPanel { Margin = view.Panel.Margin, MaxWidth = view.Panel.MaxWidth };
+        _code = new Conversation { IsCode = true, Panel = panel, Scroll = CodeScroll, Empty = CodeEmpty, Jump = CodeJumpPill, Send = CodeSend, Stop = CodeStop,
+            Plus = CodePlus, Chip = CodeTargetChip, Input = CodeInput, Hint = CodeHint, Busy = CodeBusyText };
+        // what the work still touches: stand-ins, so the conversation on screen is left alone
+        (view.Scroll, view.Empty, view.Jump) = (new ScrollViewer(), new StackPanel(), new Button());
+        CodeScroll.Content = CodePanel = panel;
+        CodeEmpty.Visibility = Visibility.Visible;
+        _codeConv = null;
+        CodeExtraFolders.Clear();
+        ShowContext(true, null);
+        Jump(_code);
+    }
+
+    private void UnparkCode()
+    {
+        var p = _codeParked!;
+        _codeParked = null;
+        var view = p.View;
+        (view.Scroll, view.Empty, view.Jump, view.Follow) = (CodeScroll, CodeEmpty, CodeJumpPill, true);
+        _code = view;
+        CodeScroll.Content = CodePanel = view.Panel;
+        CodeEmpty.Visibility = view.Panel.Children.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _codeConv = p.Conv;
+        ProjectPath = p.Folder;
+        CodeExtraFolders.AddRange(p.Folders);
+        ShowContext(true, null);
+        foreach (var (role, s) in p.Contexts)
+            _codeContexts[role] = s;
+        if (p.Context is { } lead)
+            ShowContext(true, lead);
+        else
+        {
+            RefreshContextSection();
+            RefreshCodeContextStack();
+        }
+        RefreshCodeFolders();
+        RefreshChatTarget();
+        Jump(view);
+    }
+
     // action "chat" sends the typed message; "write_project" asks the worker (the Planner, say) to write PROJECT.md from
     // the conversation so far, with no user message.
     // True when the turn completed with a reply.
@@ -313,7 +394,7 @@ public partial class MainWindow
     // "Main" one, when there is one), in sidebar project `groupId` when given. Earlier ones stay in the sidebar; a folder may have several.
     private void NewCodeConversation(string? folder = null, string? groupId = null)
     {
-        if (_chatBusy || _process is not null)
+        if (_chatBusy && _turn.IsCode)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
@@ -328,7 +409,7 @@ public partial class MainWindow
         if (groupId is not null)
             StoreChange(() => _store.MoveToGroup(_codeConv!.Id, groupId));
         WorkerPreset? Named(string name) => _settings.Presets.FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        if ((Named("Lead") ?? Named("Main")) is { } lead)
+        if (!CodeBusy && (Named("Lead") ?? Named("Main")) is { } lead) // not under work that is using the workers
             ApplyPreset(lead);
         RefreshCodeFolders();
         RefreshChatTarget();
@@ -347,13 +428,23 @@ public partial class MainWindow
         return true;
     }
 
-    // A sidebar row: shows the saved conversation in the Code view, in its own folder. Refused while a turn or run is
-    // active (it would change the conversation that turn belongs to).
+    // A sidebar row: shows the saved conversation in the Code view, in its own folder. Refused while a Code turn is active
+    // (it would change the conversation that turn belongs to); a project run's conversation is parked (CloseCodeConversation).
     private void OpenCodeConversation(string id)
     {
-        if (_codeConv?.Id != id && _store.Get(id) is { } conversation)
+        if (_codeConv?.Id != id && _codeParked?.Conv?.Id == id)
         {
-            if ((_chatBusy && _turn.IsCode) || _process is not null) // a chat's reply leaves Code conversations free
+            if (DiscardWorkerEdits())
+            {
+                CloseCodeConversation();
+                UnparkCode();
+                _settings.LastConversation = id;
+                _settings.Save();
+            }
+        }
+        else if (_codeConv?.Id != id && _store.Get(id) is { } conversation)
+        {
+            if (_chatBusy && _turn.IsCode) // a chat's reply leaves Code conversations free
             {
                 Toast("Wait for the reply or run to finish", "#F7C873");
                 RefreshSidebarList(); // the clicked row unchecks itself
@@ -385,6 +476,13 @@ public partial class MainWindow
     // rather than kept as clutter, unless it was moved into a project or archived.
     private void CloseCodeConversation()
     {
+        if (CodeWorking)
+        {
+            ParkCode();
+            RefreshCodeFolders();
+            RefreshSidebarList();
+            return; // LastConversation stays the working one: the app reopens it after a restart
+        }
         if (_codeConv is { Title: null } c && _code.History.Count == 0 && CodeExtraFolders.Count == 0 && !_store.IsOrganized(c.Id))
             StoreDo(() => _store.Delete(c.Id));
         _codeConv = null;

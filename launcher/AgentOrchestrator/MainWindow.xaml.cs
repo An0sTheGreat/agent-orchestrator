@@ -147,7 +147,7 @@ public partial class MainWindow : Window
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
             _process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
 
-            _settings.LastProject = project;
+            _settings.LastProject = _runProject = project;
             _settings.Save();
             Log($"Starting workflow for {project}");
             SetRunning(true);
@@ -238,7 +238,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            Log(LauncherLogic.RecordStop(SelectedProjectPath(), DateTime.Now, activity));
+            Log(LauncherLogic.RecordStop(_runProject, DateTime.Now, activity)); // the run's folder, whichever conversation is open
             Toast("Handoff saved");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -276,7 +276,7 @@ public partial class MainWindow : Window
         _lines.Clear();
         _stopRequested = false;
         _runError = null;
-        Jump(_code);
+        Jump(_runCode = _code);
         _transcript.Clear();
         _log.Clear();
         _activeRole = _blockRole = null;
@@ -461,11 +461,11 @@ public partial class MainWindow : Window
                 EndStream(false);
                 AddNote("CONTEXT", $"{card?.Title ?? role}: {CompactedLine(ev)}");
                 AddBlock(CompactionRule(), "\n----\n");
-                if (_codeContexts.GetValueOrDefault(role) is { } full)
-                    SetCodeContext(full.Compacted((long)Num(ev, "after")));
+                if (ContextsOf(RunConv).GetValueOrDefault(role) is { } full)
+                    CodeContextOf(RunConv, full.Compacted((long)Num(ev, "after")));
                 break;
             case "context": // the run's calls fill the same per-worker cards as Code turns
-                SetCodeContext(ContextSnapshot.From(ev));
+                CodeContextOf(RunConv, ContextSnapshot.From(ev));
                 break;
             case "task":
                 EndStream(false);
@@ -608,8 +608,8 @@ public partial class MainWindow : Window
             _stream.Name = name;
         _stream.Text.Append(text);
         _stream.Body.AppendText(text);
-        if (!_code.Follow)
-            Reveal(CodeJumpPill, true, slide: 10); // returns at once while the pill is already showing
+        if (!RunConv.Follow)
+            Reveal(RunConv.Jump, true, slide: 10); // returns at once while the pill is already showing
         _transcript.Append(text);
         if (_stream.Preview is not null && _stream.Text.Length <= 300)
             _stream.Preview.Text = PreviewFor(_stream);
@@ -822,13 +822,14 @@ public partial class MainWindow : Window
 
     private void AddBlock(UIElement block, string transcript)
     {
+        var run = RunConv; // parked while the user is in another conversation
         if (OutputPanel.Parent is null) // first output of this run, or the conversation was cleared since
-            CodePanel.Children.Add(OutputPanel);
-        CodeEmpty.Visibility = Visibility.Collapsed;
+            run.Panel.Children.Add(OutputPanel);
+        run.Empty.Visibility = Visibility.Collapsed;
         OutputPanel.Children.Add(block);
         _transcript.Append(transcript);
-        if (!_code.Follow)
-            Reveal(CodeJumpPill, true, slide: 10);
+        if (!run.Follow)
+            Reveal(run.Jump, true, slide: 10);
         FadeIn(block);
     }
 
@@ -1899,27 +1900,51 @@ public partial class MainWindow : Window
                     CodePanel.Children[1] is not StackPanel { Children: [_, StackPanel content, ..] } || !content.Children.OfType<TextBox>().Any(t => t.Text == "Hello") ||
                     CodeEmpty.Visibility == Visibility.Visible || File.ReadAllText(firstPath) != savedText)
                     return Fail();
-                // Opening is refused while a run is active.
+                // A run never locks the app: while it works the user opens other conversations (no refusal, never an empty
+                // dead end), its view is parked and keeps collecting the run's output and contexts, and its row brings it back.
                 _process = new Process();
-                var third = _store.Create(codeProject)!;
-                OpenCodeConversation(third.Id);
-                var lastToast = ToastStack.Children.OfType<UIElement>().LastOrDefault();
-                NewCodeConversation(); // refused with the same toast
-                // The working conversation's row always shows it again (the user left it for a new chat), and a repeated
-                // refusal is one toast, not a stack.
-                ShowView(chat: true);
+                ResetRunView(); // the run belongs to `first`
                 ToastStack.Children.Clear();
-                for (var i = 0; i < 10; i++)
-                    OpenCodeConversation(first.Id);
-                if (NavCode.IsChecked != true || _codeConv != first || ToastStack.Children.Count != 0 || CodePanel.Children.Count != 2)
+                void RunEvent(string json) { _lines.Enqueue(LauncherLogic.EventPrefix + json); DrainLines(); }
+                // the run's last note in the panel on screen: its title
+                string LastBlock() => CodePanel.Children.Count > 0 && CodePanel.Children[^1] == OutputPanel && OutputPanel.Children.Count > 0 &&
+                    OutputPanel.Children[^1] is StackPanel { Children: [TextBlock title, ..] } ? title.Text : "";
+                RunEvent("""{"e":"task","id":"T1","outcome":"before leaving"}""");
+                if (CodePanel.Children.Count != 3 || LastBlock() != "TASK  T1")
                     return Fail();
-                for (var i = 0; i < 10; i++)
-                    NewCodeChat();
-                if (ToastStack.Children.Count != 1 || _codeConv != first || NavCode.IsChecked != true)
+                var parkB = _store.Create(codeProject)!;
+                parkB.Title = "Other"; // kept when left empty
+                _store.Save(parkB);
+                OpenCodeConversation(parkB.Id);
+                CodeInput.Text = "typed in other";
+                RunEvent("""{"e":"task","id":"T2","outcome":"while away"}""");
+                RunEvent("""{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":4000,"completion_tokens":0,"parts":{"messages":4000}}""");
+                if (_codeConv != parkB || RunningId != first.Id || ToastStack.Children.Count != 0 || CodeEmpty.Visibility != Visibility.Visible ||
+                    _code.History.Count != 0 || CodePanel.Children.Count != 0 || CodeInput.Text != "typed in other" || _codeContexts.ContainsKey("implementer"))
+                    return Fail();
+                NewCodeConversation(); // New, the CODE "+" and a chat row: no refusal either
+                NewCodeChat();
+                ShowView(chat: true);
+                for (var i = 0; i < 3; i++)
+                    OpenCodeConversation(first.Id);
+                if (NavCode.IsChecked != true || _codeConv != first || ToastStack.Children.Count != 0 || CodePanel.Children.Count != 3 ||
+                    CodeEmpty.Visibility == Visibility.Visible || OutputPanel.Children.Count != 2 || LastBlock() != "TASK  T2" || CodeExtraFolders.Count != 1 ||
+                    _codeContexts.GetValueOrDefault("implementer") is not { Used: 4000 } || SelectedProjectPath() != codeProject || _store.Get(parkB.Id) is null)
+                    return Fail();
+                // B opened and left again: A comes back exactly (its blocks and the last one), still collecting.
+                OpenCodeConversation(parkB.Id);
+                OpenCodeConversation(first.Id);
+                if (_codeConv != first || CodePanel.Children.Count != 3 || OutputPanel.Children.Count != 2 || LastBlock() != "TASK  T2")
+                    return Fail();
+                RunEvent("""{"e":"task","id":"T3","outcome":"back home"}""");
+                if (CodePanel.Children.Count != 3 || OutputPanel.Children.Count != 3 || LastBlock() != "TASK  T3" || ToastStack.Children.Count != 0)
                     return Fail();
                 _process = null;
+                CodeInput.Text = "";
                 RefreshChatInput();
-                if (_codeConv != first || ToastStack.Children.OfType<UIElement>().LastOrDefault() == lastToast)
+                _store.Delete(parkB.Id);
+                var third = _store.Create(codeProject)!;
+                if (_codeConv != first)
                     return Fail();
                 // A chat with a damaged (relative) folder is refused, and the open one stays. ("": no folder yet, opens.)
                 var noFolder = _store.Create(@"relative\folder")!;
