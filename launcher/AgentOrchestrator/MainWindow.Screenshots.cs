@@ -132,11 +132,11 @@ public partial class MainWindow
         await _searchRun;
         Snap("search");
         CloseSearch();
-        // The Remote API page on the canned OpenRouter replies, a model chosen, two providers ticked, enough providers to scroll
-        // and the table sorted by input price.
+        // The Remote API page on the canned OpenRouter replies, a model chosen, two providers ticked, enough providers to scroll,
+        // the table sorted by input price, Cheapest on and a max output price.
         _remoteHttp = new HttpClient(new RemoteApiFakeHandler { ExtraProviders = 6 });
         _settings.RemoteHelpShown = true; // memory only: no first-use popup over the picture
-        OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole("https://openrouter.ai/api/v1", "z-ai/glm-5.3-flash", "OPENROUTER_API_KEY", "", "relace/fp4, gmicloud/fp8"));
+        OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole("https://openrouter.ai/api/v1", "z-ai/glm-5.3-flash", "OPENROUTER_API_KEY", "", "relace/fp4, gmicloud/fp8", SortPrice: true, MaxOutput: "0.5"));
         await Task.WhenAll(_remoteModelsTask, _remoteProvidersTask);
         if (SmokeFind<Button>(RemoteApiView, b => b.Tag as string == "sort:3") is { } byInput)
             SmokeClick(byInput);

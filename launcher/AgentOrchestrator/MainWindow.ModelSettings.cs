@@ -465,8 +465,7 @@ public partial class MainWindow
         var remotePanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
         if (remoteNow is not null)
         {
-            var provider = remoteNow.Provider.Trim().Length > 0 ? remoteNow.Provider.Trim() : "any provider";
-            var summary = new TextBlock { Text = $"Remote: {remoteNow.Model} @ {provider}", Tag = "RemoteSummary", FontSize = 12, TextWrapping = TextWrapping.Wrap };
+            var summary = new TextBlock { Text = RemoteSummary(remoteNow), Tag = "RemoteSummary", FontSize = 12, TextWrapping = TextWrapping.Wrap };
             var hint = Muted("Edit it on the Remote API page");
             hint.Margin = new Thickness(0, 2, 0, 0);
             remotePanel.Children.Add(summary);

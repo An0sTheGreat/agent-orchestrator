@@ -114,18 +114,22 @@ public partial class MainWindow
 
         // ---- models
         var models = new List<RemoteCatalog.ModelEntry>();
-        var search = Box("RemoteSearch");
-        var searchHint = RemoteMuted("Search models");
-        searchHint.IsHitTestVisible = false;
-        searchHint.VerticalAlignment = VerticalAlignment.Center;
-        searchHint.Margin = new Thickness(22, 4, 0, 0);
-        // the hint starts where the box's own text (and its caret) starts: read that from the template, so a theme change cannot misalign them
-        search.Loaded += (_, _) =>
+        // A box with a hint while empty, the hint where the box's own text (and its caret) starts: read that from the template, so
+        // a theme change cannot misalign them.
+        Grid Hinted(TextBox box, string text)
         {
-            if (search.Template.FindName("PART_ContentHost", search) is FrameworkElement host && host.TranslatePoint(new Point(), search).X is var x and > 0)
-                searchHint.Margin = new Thickness(x, 4, 0, 0);
-        };
-        search.TextChanged += (_, _) => searchHint.Visibility = search.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            var hint = RemoteMuted(text);
+            (hint.IsHitTestVisible, hint.VerticalAlignment, hint.TextWrapping, hint.Margin) = (false, VerticalAlignment.Center, TextWrapping.NoWrap, new Thickness(22, 4, 0, 0));
+            box.Loaded += (_, _) =>
+            {
+                if (box.Template.FindName("PART_ContentHost", box) is FrameworkElement host && host.TranslatePoint(new Point(), box).X is var x and > 0)
+                    hint.Margin = new Thickness(x, 4, 0, 0);
+            };
+            box.TextChanged += (_, _) => hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            return new Grid { Children = { box, hint } };
+        }
+        var search = Box("RemoteSearch");
+        var searchBox = Hinted(search, "Search models");
         var list = new StackPanel { Tag = "RemoteModels" };
         var listScroll = new ScrollViewer
         {
@@ -220,6 +224,41 @@ public partial class MainWindow
         DockPanel.SetDock(visionPair, Dock.Right);
         providersHead.Children.Add(visionPair);
         providersHead.Children.Add(new TextBlock { Text = "Providers", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center });
+        // Price: OpenRouter's provider.sort "price" and max_price ($/M, empty = no cap), and the model id's ":floor" variant
+        // (the Model id box keeps the base id; Apply adds the suffix).
+        const string Floor = ":floor";
+        ToggleButton Switch(string tag) => new() { Style = (Style)FindResource("ToggleSwitch"), Tag = tag, VerticalAlignment = VerticalAlignment.Center };
+        StackPanel Labelled(string text, UIElement control)
+        {
+            var label = RemoteMuted(text);
+            (label.VerticalAlignment, label.TextWrapping, label.Margin) = (VerticalAlignment.Center, TextWrapping.NoWrap, new Thickness(0, 0, 8, 0));
+            return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 24, 0), Children = { label, control } };
+        }
+        Grid MaxBox(TextBox box, string hint)
+        {
+            box.ToolTip = "US dollars per million tokens, such as 0.3; empty: no cap";
+            var g = Hinted(box, hint);
+            (g.Width, g.Margin) = (120, new Thickness(0, 0, 12, 0));
+            return g;
+        }
+        var sortPrice = Switch("RemoteSortPrice");
+        var floor = Switch("RemoteFloor");
+        var maxIn = Box("RemoteMaxInput");
+        var maxOut = Box("RemoteMaxOutput");
+        var cheapestNow = RemoteMuted("");
+        cheapestNow.Tag = "RemoteCheapestNow";
+        cheapestNow.Margin = new Thickness(0, 6, 0, 0);
+        var floorNote = RemoteMuted("");
+        floorNote.Tag = "RemoteFloorNote";
+        floorNote.Margin = new Thickness(0, 2, 0, 0);
+        var priceHelp = RemoteMuted("Cheapest and :floor apply only when no provider is ticked; the max prices always apply. " +
+            "The cheapest provider is not always the best: quantization, speed and reliability differ.");
+        priceHelp.Margin = new Thickness(0, 2, 0, 0);
+        var priceRow = new WrapPanel
+        {
+            Tag = "RemotePriceRow", Margin = new Thickness(0, 8, 0, 0),
+            Children = { Labelled("Cheapest", sortPrice), MaxBox(maxIn, "Max in $/M"), MaxBox(maxOut, "Max out $/M"), Labelled("Use :floor", floor) },
+        };
         var providers = new StackPanel
         {
             Tag = "RemoteProviders",
@@ -230,6 +269,7 @@ public partial class MainWindow
                 keyNote, providersNote,
                 tableScroll,
                 new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { clearOrder, orderText } },
+                priceRow, cheapestNow, floorNote, priceHelp,
             },
         };
 
@@ -402,6 +442,7 @@ public partial class MainWindow
                     orderText.Inlines.Add(new Run(" (not offered for this model)") { Foreground = amber });
             }
             clearOrder.Visibility = order.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            Note(cheapestNow, rows.Count == 0 ? "" : $"Cheapest now: in {RemotePrice(rows.Min(r => r.InputPerM))} / out {RemotePrice(rows.Min(r => r.OutputPerM))}");
             tableScroll.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (rows.Count == 0)
                 return;
@@ -517,6 +558,22 @@ public partial class MainWindow
             }
         }
 
+        // The id Apply writes: the base id, plus ":floor" when that is on. An id with a variant of its own (":free", ":nitro", …)
+        // gets no second one: the switch is off and disabled for it.
+        string SavedId()
+        {
+            var id = modelId.Text.Trim();
+            return floor.IsChecked == true && id.Length > 0 && !id.Contains(':') ? id + Floor : id;
+        }
+        void FloorShown()
+        {
+            var id = modelId.Text.Trim();
+            floor.IsEnabled = !id.Contains(':');
+            if (!floor.IsEnabled)
+                floor.IsChecked = false;
+            Note(floorNote, !floor.IsEnabled ? "This id already has a variant: :floor cannot be added." : SavedId() != id ? $"Will be saved as {SavedId()}" : "");
+        }
+
         void Apply()
         {
             Note(errorLine, "");
@@ -533,7 +590,10 @@ public partial class MainWindow
                 return;
             }
             CommitKeyEnv(); // what the box shows is what gets written
-            var remote = new LauncherLogic.RemoteRole(baseUrl.Text.Trim().TrimEnd('/'), modelId.Text.Trim(), keyVar, "",Selected().HasProviders ? string.Join(", ", order) : "");
+            var url = baseUrl.Text.Trim().TrimEnd('/');
+            var remote = Selected().HasProviders // the price settings are OpenRouter's
+                ? new LauncherLogic.RemoteRole(url, SavedId(), keyVar, "", string.Join(", ", order), sortPrice.IsChecked == true, maxIn.Text.Trim(), maxOut.Text.Trim())
+                : new LauncherLogic.RemoteRole(url, modelId.Text.Trim(), keyVar, "");
             if (LauncherLogic.ValidateRemoteRole(remote) is { } problem)
             {
                 Note(errorLine, problem, error: true);
@@ -604,7 +664,13 @@ public partial class MainWindow
         baseUrl.IsReadOnly = start != custom;
         loadModels.Visibility = start == custom ? Visibility.Visible : Visibility.Collapsed;
         keyEnv.Text = preset?.KeyEnv is { Length: > 0 } presetKey ? presetKey : start.KeyEnv;
-        modelId.Text = preset?.Model ?? (_remoteLast is { } m && m.Service == start.Id ? m.Model : "");
+        var presetModel = preset?.Model.Trim();
+        if (start.HasProviders && presetModel?.EndsWith(Floor, StringComparison.Ordinal) == true && !presetModel[..^Floor.Length].Contains(':')) // the box shows the base id, the switch the suffix
+            (presetModel, floor.IsChecked) = (presetModel[..^Floor.Length], true);
+        if (start.HasProviders && preset is not null)
+            (sortPrice.IsChecked, maxIn.Text, maxOut.Text) = (preset.SortPrice, preset.MaxInput, preset.MaxOutput);
+        modelId.Text = presetModel ?? (_remoteLast is { } m && m.Service == start.Id ? m.Model : "");
+        FloorShown();
         CommitKeyEnv();
 
         service.SelectionChanged += (_, _) =>
@@ -612,8 +678,10 @@ public partial class MainWindow
             var s = Selected();
             baseUrl.IsReadOnly = s != custom;
             loadModels.Visibility = s == custom ? Visibility.Visible : Visibility.Collapsed;
-            order.Clear(); // another service's model and providers mean nothing here
+            order.Clear(); // another service's model, providers and prices mean nothing here
+            (sortPrice.IsChecked, floor.IsChecked, maxIn.Text, maxOut.Text) = (false, false, "", "");
             modelId.Text = "";
+            FloorShown();
             keyEnv.Text = s.KeyEnv; // Custom's are empty: the last service's key variable and address must not carry over
             CommitKeyEnv(); // before the address, whose TextChanged loads
             baseUrl.Text = s.BaseUrl;
@@ -654,10 +722,12 @@ public partial class MainWindow
             foreach (var row in list.Children.OfType<ToggleButton>())
                 row.IsChecked = ((RemoteCatalog.ModelEntry)row.Tag).Id == modelId.Text.Trim();
             _remoteLast = (Selected().Id, baseUrl.Text.Trim(), modelId.Text.Trim());
-            order.Clear(); // another model's provider tags (a preset's are set above, before this handler)
+            order.Clear(); // another model's provider tags (a preset's are set above, before this handler); the prices stay
+            FloorShown();
             LoadProviders();
             FavoriteShown();
         };
+        floor.Click += (_, _) => FloorShown();
         favorites.SelectionChanged += (_, _) =>
         {
             if (favorites.SelectedItem is not ComboBoxItem { Tag: string f } || f == RemoteFavorite(Selected().Id, modelId.Text.Trim()) || RemoteFavoriteParts(f) is not { } chosen)
@@ -685,7 +755,7 @@ public partial class MainWindow
         intro.Margin = new Thickness(0, 4, 0, 0);
         var divider = new Border { Height = 1, Margin = new Thickness(0, 22, 0, 0) };
         divider.SetResourceReference(Border.BackgroundProperty, "Border");
-        var searchBox = new Grid { Width = 260, HorizontalAlignment = HorizontalAlignment.Right, Children = { search, searchHint } };
+        (searchBox.Width, searchBox.HorizontalAlignment) = (260, HorizontalAlignment.Right);
         DockPanel.SetDock(searchBox, Dock.Right);
         var modelHead = new TextBlock { Text = "Model", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         var page = new StackPanel
@@ -948,6 +1018,11 @@ public partial class MainWindow
         return [.. descending ? known.ThenByDescending(Key, by) : known.ThenBy(Key, by)];
     }
 
+    // Agent details' line for a remote role: model @ providers, then the price settings that are set.
+    private static string RemoteSummary(LauncherLogic.RemoteRole r) =>
+        $"Remote: {r.Model} @ {(r.Provider.Trim() is { Length: > 0 } p ? p : "any provider")}" + (r.SortPrice ? " · cheapest" : "") +
+        (LauncherLogic.MaxPrice(r.MaxInput) is { } i ? $" · max {RemotePrice(i)}/M in" : "") + (LauncherLogic.MaxPrice(r.MaxOutput) is { } o ? $" · max {RemotePrice(o)}/M out" : "");
+
     private static string RemoteFigure(double? value, string format) => value is { } v ? v.ToString(format, CultureInfo.InvariantCulture) : "—";
 
     // A context length in tokens: 262K, 1.05M; "" unknown.
@@ -966,6 +1041,10 @@ public partial class MainWindow
             RemotePrice(12.345678m) == "$12.3457" && RemotePrice(null) == "—", "price format");
         Check(RemoteContext(262144) == "262K" && RemoteContext(1048576) == "1.05M" && RemoteContext(2_000_000) == "2M" && RemoteContext(8192) == "8K" && RemoteContext(0) == "",
             "context length");
+        var plain = new LauncherLogic.RemoteRole("u", "vendor/m", "K", "");
+        Check(RemoteSummary(plain) == "Remote: vendor/m @ any provider" && RemoteSummary(plain with { Provider = "a/x" }) == "Remote: vendor/m @ a/x" &&
+            RemoteSummary(plain with { SortPrice = true, MaxOutput = "0.3" }) == "Remote: vendor/m @ any provider · cheapest · max $0.30/M out" &&
+            RemoteSummary(plain with { MaxInput = "1.5", MaxOutput = "2" }) == "Remote: vendor/m @ any provider · max $1.50/M in · max $2.00/M out", "remote summary");
         Check(RemoteFigure(0.45, "0.00") == "0.45" && RemoteFigure(93.33333, "0.#") == "93.3" && RemoteFigure(85.5, "0") == "86" && RemoteFigure(null, "0") == "—", "figures");
         Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
             RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
@@ -1213,7 +1292,8 @@ public partial class MainWindow
             Toggle(Find<ToggleButton>("RemoteVisionOnly"));
             SmokeClick(SortBy(8));
             if (!Rows().SequenceEqual(wantRows) || Uptime() != "Uptime" || OrderText() != tickOrder)
-                return Fail($"a third click did not bring back cheapest first: {string.Join(" / ", Rows())}");            var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
+                return Fail($"a third click did not bring back cheapest first: {string.Join(" / ", Rows())}");
+            var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
             Apply();
             if (Wrote("reviewer", ticked) is { } wrong)
                 return Fail($"Apply to REVIEWER wrote {wrong}");
@@ -1248,16 +1328,74 @@ public partial class MainWindow
             if (worker.Config.Remote != ticked || worker.ModelId != Glm || AppSettings.Load().Workers.FirstOrDefault(w => w.Id == worker.Role)?.Remote != ticked)
                 return Fail($"Apply to a custom worker: {worker.Config.Remote}");
 
-            // Another model drops the ticked providers: their tags belong to the last model.
+            // Price (OpenRouter): Cheapest and a max price go with the ticked order, and alone (then no allow_fallbacks); ":floor"
+            // writes the suffixed id while the Model id box keeps the base id; bad prices write nothing.
+            string Provider(string role) => string.Join(" | ", targets.Select(t => JsonNode.Parse(File.ReadAllText(t))!["roles"]![role]!["sampling"]?["extra_body"]?["provider"]?.ToJsonString()).Distinct());
+            ToggleButton Cheapest() => Find<ToggleButton>("RemoteSortPrice");
+            ToggleButton FloorSwitch() => Find<ToggleButton>("RemoteFloor");
+            string FloorNote() => Find<TextBlock>("RemoteFloorNote") is { Visibility: Visibility.Visible } n ? n.Text : "";
+            if (Cheapest() is not { IsVisible: true, IsChecked: false } || !Find<TextBox>("RemoteMaxInput").IsVisible || !Find<TextBox>("RemoteMaxOutput").IsVisible ||
+                FloorSwitch() is not { IsVisible: true, IsEnabled: true, IsChecked: false } || Find<TextBlock>("RemoteCheapestNow").Text != "Cheapest now: in <$0.0001 / out $0")
+                return Fail($"the price controls for OpenRouter, cheapest now \"{Find<TextBlock>("RemoteCheapestNow").Text}\"");
+            Target("reviewer");
+            Toggle(Cheapest());
+            Type("RemoteMaxOutput", "0.3");
+            Apply();
+            var priced = ticked with { SortPrice = true, MaxOutput = "0.3" };
+            if (Wrote("reviewer", priced) is not null || Provider("reviewer") != """{"order":["relace/fp4","open-inference/fp4"],"allow_fallbacks":false,"sort":"price","max_price":{"completion":0.3}}""")
+                return Fail($"Cheapest and max out 0.3 with ticked providers wrote {Provider("reviewer")}");
+            SmokeClick(Find<Button>("RemoteClearOrder"));
+            Apply();
+            if (Wrote("reviewer", priced with { Provider = "" }) is not null || Provider("reviewer") != """{"sort":"price","max_price":{"completion":0.3}}""")
+                return Fail($"Cheapest and max out 0.3 wrote {Provider("reviewer")}");
+            Toggle(FloorSwitch());
+            if (Find<TextBox>("RemoteModelId").Text != Glm || FloorNote() != $"Will be saved as {Glm}:floor")
+                return Fail($":floor on: the box shows \"{Find<TextBox>("RemoteModelId").Text}\", the note \"{FloorNote()}\"");
+            Apply();
+            if (Wrote("reviewer", priced with { Provider = "", Model = Glm + ":floor" }) is { } floored)
+                return Fail($":floor wrote {floored}");
+            // A preset's ":floor" turns the switch on and leaves the box; an id with a variant of its own takes no second one.
+            Reset();
+            var preset = new LauncherLogic.RemoteRole(OpenRouter, Glm + ":floor", Unset, "", "", true, "", "0.3");
+            OpenRemoteApi("reviewer", preset);
+            await Loaded();
+            if (Find<TextBox>("RemoteModelId").Text != Glm || FloorSwitch().IsChecked != true || Cheapest().IsChecked != true || Find<TextBox>("RemoteMaxOutput").Text != "0.3" ||
+                FloorNote() != $"Will be saved as {Glm}:floor")
+                return Fail($"the :floor preset shows \"{Find<TextBox>("RemoteModelId").Text}\", switch {FloorSwitch().IsChecked}, note \"{FloorNote()}\"");
+            Find<TextBox>("RemoteModelId").Text = Glm + ":free";
+            if (FloorSwitch() is not { IsEnabled: false, IsChecked: false } || FloorNote() != "This id already has a variant: :floor cannot be added.")
+                return Fail($"an id with :free: switch enabled {FloorSwitch().IsEnabled}, note \"{FloorNote()}\"");
+            Find<TextBox>("RemoteModelId").Text = Glm;
+            await Loaded();
+            foreach (var bad in new[] { "abc", "-1" })
+            {
+                Type("RemoteMaxInput", bad);
+                Apply();
+                if (Find<TextBlock>("RemoteError") is not { Visibility: Visibility.Visible } refused || refused.Text != LauncherLogic.ValidateRemoteRole(preset with { MaxInput = bad }) || !Unchanged())
+                    return Fail($"Apply with max in \"{bad}\" was not refused");
+            }
+            Type("RemoteMaxInput", "");
+            Target(worker.Role);
+            Apply();
+            if (worker.Config.Remote != preset with { Model = Glm } || AppSettings.Load().Workers.FirstOrDefault(w => w.Id == worker.Role)?.Remote != preset with { Model = Glm })
+                return Fail($"Apply of the prices to a custom worker: {worker.Config.Remote}");
+
+            // Another model drops the ticked providers: their tags belong to the last model. The prices stay.
+            Toggle(Tick("relace/fp4")!);
+            Toggle(FloorSwitch());
             SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "qwen/qwen3-coder" })!);
             await Loaded();
             if (Find<TextBox>("RemoteModelId").Text != "qwen/qwen3-coder" || OrderText() != "Any provider.")
                 return Fail($"another model kept the order \"{OrderText()}\"");
+            if (Cheapest().IsChecked != true || Find<TextBox>("RemoteMaxOutput").Text != "0.3" || FloorSwitch().IsChecked != true)
+                return Fail("another model dropped the price settings");
 
-            // Another service starts with no model and no providers.
+            // Another service starts with no model, no providers and no price settings (and shows none).
             Service("openai");
             if (Find<TextBox>("RemoteModelId").Text.Length != 0 || OrderText() != "Any provider.")
                 return Fail($"switching the service kept model \"{Find<TextBox>("RemoteModelId").Text}\", order \"{OrderText()}\"");
+            if (Cheapest().IsChecked != false || FloorSwitch().IsChecked != false || Find<TextBox>("RemoteMaxOutput").Text.Length != 0 || Cheapest().IsVisible)
+                return Fail("switching the service kept (or showed) the price settings");
 
             // A service that lists models only with a key, without one: the note, no request, and a typed model id applies.
             KeyEnv(Unset);
