@@ -171,14 +171,18 @@ public partial class MainWindow
     {
         AlignContextRing(ring);
         area.UpdateLayout();
-        var corner = ring.TranslatePoint(new Point(ring.ActualWidth, 0), area);
+        // Code's run clocks share the button's place, top-right: the cards stack 6 below them, right edges flush.
+        var corner = ring == CodeContextRing && RunClocks.Visibility == Visibility.Visible
+            ? RunClocks.TranslatePoint(new Point(RunClocks.ActualWidth, RunClocks.ActualHeight + 6), area)
+            : ring.TranslatePoint(new Point(ring.ActualWidth, 0), area);
         return new Thickness(0, corner.Y, Math.Max(0, area.ActualWidth - corner.X), 0);
     }
 
     // The header button itself moves so its right edge is a rail worker card's (12 from the header's edge without the rail).
     private void AlignContextRing(FrameworkElement ring)
     {
-        if (ring.Parent is not FrameworkElement header)
+        var slot = ring.Parent is Grid shared ? shared : ring; // Code's button shares its place with the run clocks
+        if (slot.Parent is not FrameworkElement header)
             return;
         var right = 12.0;
         if (WorkerRail.IsVisible)
@@ -186,8 +190,8 @@ public partial class MainWindow
             header.UpdateLayout();
             right = Math.Max(0, header.ActualWidth - (WorkerRail.TranslatePoint(new Point(), header).X - 6));
         }
-        if (Math.Abs(ring.Margin.Right - right) > 0.5)
-            ring.Margin = new Thickness(0, 0, right, 0);
+        if (Math.Abs(slot.Margin.Right - right) > 0.5)
+            slot.Margin = new Thickness(0, 0, right, 0);
     }
 
     private bool CanPin(bool code)
@@ -239,7 +243,7 @@ public partial class MainWindow
     private void RefreshCodeContextStack()
     {
         // The stack replaces the header button in Code; hidden, the button keeps the place the stack lines up with (as Chat's).
-        CodeContextRing.Visibility = Visibility.Hidden;
+        CodeContextRing.Visibility = RunClocks.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Hidden; // the clocks take its place
         CodeContextRing.Content = ContextFace(null, null, PinWidth, bordered: true, ContextTitle(CodeLead));
         var entries = _codeContexts.OrderBy(p => p.Key != CodeLead).Select(p => (Role: p.Key, Snapshot: (ContextSnapshot?)p.Value)).ToList();
         if (entries.All(e => e.Role != CodeLead))
