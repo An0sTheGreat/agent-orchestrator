@@ -1513,7 +1513,7 @@ internal static class LauncherLogic
 
     // The orchestrator's acceptance rules for every worker in order (null = accepted or not a custom worker):
     // the title may not be empty, reserved, or used by an earlier accepted worker, and the project's
-    // implementer needs a base_url (custom workers copy it). Used by the writer and by the card warnings.
+    // implementer needs a base_url (local custom workers copy it). Used by the writer and by the card warnings.
     public static string?[] CustomProblems(IReadOnlyList<WorkerSetting> workers, bool implementerHasBaseUrl)
     {
         var problems = new string?[workers.Count];
@@ -1524,7 +1524,7 @@ internal static class LauncherLogic
             if (!w.Custom)
                 continue;
             var title = w.Title.Trim();
-            problems[i] = !implementerHasBaseUrl ? "the project's implementer has no base_url in config.json" :
+            problems[i] = !implementerHasBaseUrl && w.Remote is null ? "the project's implementer has no base_url in config.json" : // a remote worker has its own
                 title.Length == 0 ? "the title is empty — rename it" :
                 ReservedTitles.Contains(title, StringComparer.OrdinalIgnoreCase) ? $"title '{title}' is reserved for a built-in worker — rename it" :
                 used.Contains(title) ? $"title '{title}' is already used — rename it" :
@@ -2570,6 +2570,8 @@ internal static class LauncherLogic
                 (string?)Worker()["model"] != "vendor/m" || (string?)Worker()["api_key_env"] != "OPENROUTER_API_KEY" || Worker()["expected_model_contains"] is not null ||
                 (int?)Worker()["timeout_seconds"] != 9 || string.Join(",", Worker()["sampling"]?["extra_body"]?["provider"]?["order"]?.AsArray().Select(n => (string?)n) ?? []) != "b/y,a/x")
                 throw new InvalidOperationException($"Custom workers: a remote worker was written wrong: {Worker().ToJsonString()}");
+            if (WriteCustomWorkers(noUrlConfig, [cloud]).Length != 0 || JsonNode.Parse(File.ReadAllText(noUrlConfig))!["custom_workers"]!.AsArray().Count != 1)
+                throw new InvalidOperationException("Custom workers: a remote worker needs no implementer base_url.");
             cloud.Remote = cloud.Remote with { BaseUrl = "ftp://x" };
             if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate) is not [var badCloud] || !badCloud.Contains("Base URL"))
                 throw new InvalidOperationException("Custom workers: a remote worker with a bad base URL was written.");

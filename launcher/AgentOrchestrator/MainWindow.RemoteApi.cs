@@ -362,9 +362,19 @@ public partial class MainWindow
             var name = ChatName(card, card.Role);
             if (card.IsCustom)
             {
+                var w = card.Config;
+                var before = (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, new LauncherLogic.ModelInfo(card.ModelName, card.Weights, card.Quant));
                 SetCustomRemote(card, remote);
+                if (!SyncCustomWorkers() || card.SetupProblem is not null) // not written: the worker stays as it was
+                {
+                    var refused = card.SetupProblem;
+                    (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, _) = before;
+                    card.SetModel(before.Item6);
+                    SyncCustomWorkers();
+                    Note(errorLine, refused is not null ? $"Not applied to {name}: {refused}." : "Could not update config.json: see the log.", error: true);
+                    return;
+                }
                 SaveWorkers();
-                SyncCustomWorkers();
             }
             else
             {
