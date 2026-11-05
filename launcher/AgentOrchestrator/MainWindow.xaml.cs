@@ -202,12 +202,12 @@ public partial class MainWindow : Window
     }
 
     // The run's request: a Code turn's tools (the conversation's extra folders, search, utilities, skills, sandbox and
-    // effort) and the workflow mode ("workflow": "dual" or "tri", Settings > Agents).
+    // effort) and the workflow mode ("workflow": "dual", "tri" or "solo", Settings > Agents).
     private string RunRequest(string project)
     {
         var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
             effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions))!;
-        request["workflow"] = _settings.WorkflowMode == "tri" ? "tri" : "dual";
+        request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
 
@@ -1070,6 +1070,15 @@ public partial class MainWindow : Window
             if (_settings.WorkflowMode != "dual" || !implementer.Hidden || TabShown(implementer) || ListedWorkers(_chat).Contains(implementer) || _shownWorker != main ||
                 (string?)RoleConfig("implementer")?["same_as"] != "planner" || RoleConfig("reviewer")?["same_as"] is not null ||
                 Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
+                return Fail();
+            WorkflowSoloRadio.IsChecked = true; // Lead only: no Implementer or Reviewer, the run asks for "solo"
+            await Settle();
+            if (_settings.WorkflowMode != "solo" || AppSettings.Load().WorkflowMode != "solo" || !implementer.Hidden || !reviewer.Hidden || Order() != "LEAD,COMPACTOR" ||
+                RunMode() != "solo" || (string?)RoleConfig("reviewer")?["same_as"] != "planner")
+                return Fail();
+            WorkflowDualRadio.IsChecked = true;
+            await Settle();
+            if (_settings.WorkflowMode != "dual" || reviewer.Hidden || RunMode() != "dual" || Order() != "LEAD,COMPACTOR,REVIEWER")
                 return Fail();
             Snap("0-dual");
             // The checks below use all three built-ins. Saved workers with a custom one before COMPACTOR load in the fixed order.
@@ -4004,7 +4013,7 @@ public partial class MainWindow : Window
     // A project's not-added role with a model of its own keeps it (the user is told once) unless removing that role is the change.
     private readonly HashSet<string> _ownModelNotices = new(StringComparer.OrdinalIgnoreCase);
 
-    private bool SyncCustomWorkers(List<string>? collectSkipped = null, string? removedRole = null)
+    private bool SyncCustomWorkers(List<string>? collectSkipped = null, params string[] removedRoles)
     {
         RefreshSetupProblems();
         try
@@ -4013,7 +4022,7 @@ public partial class MainWindow : Window
             var targets = WorkerConfigTargets();
             foreach (var path in targets)
             {
-                var keepOwn = path != targets[^1] ? Roles.Skip(1).Where(r => r != removedRole) : []; // the worker config is always last
+                var keepOwn = path != targets[^1] ? Roles.Skip(1).Where(r => !removedRoles.Contains(r)) : []; // the worker config is always last
                 foreach (var role in LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles, keepOwn))
                     if (_ownModelNotices.Add($"{path}|{role}"))
                     {
@@ -4400,7 +4409,7 @@ public partial class MainWindow : Window
     {
         if (_initializing)
             return;
-        var mode = WorkflowTriRadio.IsChecked == true ? "tri" : "dual";
+        var mode = WorkflowTriRadio.IsChecked == true ? "tri" : WorkflowSoloRadio.IsChecked == true ? "solo" : "dual";
         if (mode == _settings.WorkflowMode)
             return;
         if (_process is not null || _chatBusy)
@@ -4412,7 +4421,7 @@ public partial class MainWindow : Window
         SetWorkflow(mode);
     }
 
-    private void ShowWorkflowMode() => (_settings.WorkflowMode == "tri" ? WorkflowTriRadio : WorkflowDualRadio).IsChecked = true;
+    private void ShowWorkflowMode() => (_settings.WorkflowMode switch { "tri" => WorkflowTriRadio, "solo" => WorkflowSoloRadio, _ => WorkflowDualRadio }).IsChecked = true;
 
     // tri gives the Implementer its own roles.implementer entry back (or a copy of the planner's) and its tab; dual runs it
     // as the planner again ("same_as") and hides it. The Reviewer is in both.
@@ -4423,7 +4432,7 @@ public partial class MainWindow : Window
         ShowWorkflowMode();
         HoldWorkerTab(() =>
         {
-            SyncCustomWorkers(removedRole: mode == "tri" ? null : "implementer");
+            SyncCustomWorkers(removedRoles: mode switch { "tri" => [], "solo" => ["implementer", "reviewer"], _ => ["implementer"] });
             RefreshCardVisibility(); // a hidden tab that was shown hands over to LEAD
             PrefillCards();
         });

@@ -1758,7 +1758,9 @@
                         <RadioButton x:Name="WorkflowDualRadio" GroupName="Workflow" Content="Lead + Reviewer" Margin="0,14,0,0" Checked="Workflow_Checked" />
                         <TextBlock Text="The lead does the work and the reviewer checks every finished item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
                         <RadioButton x:Name="WorkflowTriRadio" GroupName="Workflow" Content="Lead + Implementer + Reviewer" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
+                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
+                        <RadioButton x:Name="WorkflowSoloRadio" GroupName="Workflow" Content="Lead only" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead does everything alone: no implementer, no reviewer. Fastest; best with a strong model." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
                         <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
                         <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <RadioButton x:Name="EngineBuiltinRadio" GroupName="CodeEngine" Content="Built-in" Margin="0,14,0,8" Checked="CodeEngine_Checked" />

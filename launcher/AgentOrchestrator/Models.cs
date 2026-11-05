@@ -196,12 +196,12 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
-    // Settings > Agents: "dual" (Lead + Reviewer: the lead does the work) or "tri" (Lead + Implementer + Reviewer). Settings
+    // Settings > Agents: "dual" (Lead + Reviewer: the lead does the work), "solo" (Lead only) or "tri" (Lead + Implementer + Reviewer). Settings
     // from before it: tri when the Implementer had been added through "+", else dual (Load).
     public string WorkflowMode { get; set; } = "dual";
     // The built-in roles the workflow shows; a role not in it runs as the planner ("same_as": "planner").
     [JsonIgnore]
-    public List<string> AddedRoles => WorkflowMode == "tri" ? ["implementer", "reviewer"] : ["reviewer"];
+    public List<string> AddedRoles => WorkflowMode switch { "tri" => ["implementer", "reviewer"], "solo" => [], _ => ["reviewer"] };
     // Settings files from before WorkflowMode: the built-in roles added through "+". Read once by Load, never written.
     [JsonPropertyName("AddedRoles"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<string>? OldAddedRoles { get; set; }
