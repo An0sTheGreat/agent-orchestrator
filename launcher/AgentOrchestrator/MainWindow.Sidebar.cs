@@ -228,7 +228,7 @@ public partial class MainWindow
     // folder is added (ChooseCodeFolder).
     private void NewCodeChat()
     {
-        if (CodeBusy)
+        if (_chatBusy && _turn.IsCode) // a run is parked instead (CloseCodeConversation)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             ShowView(); // the working conversation, never a dead end
@@ -247,7 +247,7 @@ public partial class MainWindow
     // chat: the section (or view) the project is in.
     private void NewChatInProject(GroupView group, bool chat)
     {
-        if (CodeBusy && !chat)
+        if (_chatBusy && _turn.IsCode && !chat)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
             return;
