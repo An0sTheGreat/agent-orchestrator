@@ -1131,7 +1131,10 @@ internal static class LauncherLogic
     // orchestrator neither loads nor monitors it. The key itself stays in the environment variable KeyEnv.
     // Provider: OpenRouter provider names, comma-separated ("" = let the API choose). Sent as sampling.extra_body.provider
     // {"order": [...], "allow_fallbacks": false}, which OpenRouter reads and other OpenAI-compatible APIs ignore.
-    public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout, string Provider = "");
+    // SortPrice: provider.sort "price" (the cheapest provider first). MaxInput/MaxOutput: provider.max_price prompt/completion,
+    // USD per million tokens ("" = no cap). Model keeps an OpenRouter variant such as ":floor" as stored.
+    public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout, string Provider = "",
+        bool SortPrice = false, string MaxInput = "", string MaxOutput = "");
 
     // The local (llama.cpp) keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
     private static readonly string[] LocalKeys = ["base_url", "api_key_env", "api_key", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
@@ -1143,11 +1146,17 @@ internal static class LauncherLogic
     public static RemoteRole? ReadRemoteRole(string configPath, string role)
     {
         var settings = JsonNode.Parse(File.ReadAllText(configPath))!["roles"]![role];
+        var provider = settings?["sampling"]?["extra_body"]?["provider"];
         return IsRemote(settings)
             ? new RemoteRole((string?)settings!["base_url"] ?? "", (string?)settings["model"] ?? "", (string?)settings["api_key_env"] ?? "", settings["timeout_seconds"]?.ToJsonString() ?? "",
-                string.Join(", ", (settings["sampling"]?["extra_body"]?["provider"]?["order"] as JsonArray ?? []).Select(p => (string?)p ?? "")))
+                string.Join(", ", (provider?["order"] as JsonArray ?? []).Select(p => (string?)p ?? "")), provider?["sort"]?.ToString() == "price",
+                provider?["max_price"]?["prompt"]?.ToString() ?? "", provider?["max_price"]?["completion"]?.ToString() ?? "")
             : null;
     }
+
+    // A max price as typed: US dollars per million tokens, "." decimals, >= 0; null for anything else (or empty).
+    public static decimal? MaxPrice(string? text) =>
+        decimal.TryParse(text?.Trim(), NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var price) ? price : null;
 
     public static string? ValidateRemoteRole(RemoteRole remote)
     {
@@ -1159,6 +1168,9 @@ internal static class LauncherLogic
             return "API key variable must be an environment variable name, e.g. OPENAI_API_KEY (not the key itself).";
         if (remote.Timeout.Trim().Length > 0 && !(long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var t) && t is >= 1 and <= 86400))
             return "Timeout must be a whole number of seconds from 1 to 86400 (or empty).";
+        foreach (var (name, text) in new[] { ("Max input", remote.MaxInput), ("Max output", remote.MaxOutput) })
+            if (text.Trim().Length > 0 && MaxPrice(text) is null)
+                return $"{name} $/M must be US dollars per million tokens, such as 0.3 (or empty).";
         return null;
     }
 
@@ -1203,7 +1215,7 @@ internal static class LauncherLogic
             settings["api_key_env"] = remote.KeyEnv.Trim();
             if (long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var timeout))
                 settings["timeout_seconds"] = timeout;
-            SetProvider(settings, remote.Provider);
+            SetProvider(settings, remote);
         }
         else if (IsRemote(settings))
         {
@@ -1217,24 +1229,40 @@ internal static class LauncherLogic
                 else
                     settings.Remove(key);
             settings.Remove("local_settings");
-            SetProvider(settings, "");
+            SetProvider(settings, null);
         }
         return null;
     }
 
-    // The role's OpenRouter provider choice in sampling.extra_body.provider; empty names remove it.
-    private static void SetProvider(JsonObject settings, string names)
+    // The role's OpenRouter provider choice in sampling.extra_body.provider: order (+ no fallbacks) for ticked providers,
+    // sort "price", max_price; none of them (or null, Local) removes it. The other extra_body keys stay.
+    private static void SetProvider(JsonObject settings, RemoteRole? remote)
     {
-        var order = names.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var order = (remote?.Provider ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var provider = new JsonObject();
+        if (order.Length > 0)
+        {
+            provider["order"] = new JsonArray(order.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray());
+            provider["allow_fallbacks"] = false;
+        }
+        if (remote?.SortPrice == true)
+            provider["sort"] = "price";
+        var max = new JsonObject();
+        if (MaxPrice(remote?.MaxInput) is { } maxIn)
+            max["prompt"] = maxIn;
+        if (MaxPrice(remote?.MaxOutput) is { } maxOut)
+            max["completion"] = maxOut;
+        if (max.Count > 0)
+            provider["max_price"] = max;
         var extra = (settings["sampling"] as JsonObject)?["extra_body"] as JsonObject;
-        if (order.Length == 0)
+        if (provider.Count == 0)
         {
             extra?.Remove("provider");
             return;
         }
         var sampling = settings["sampling"] as JsonObject ?? (settings["sampling"] = new JsonObject()).AsObject();
         extra ??= (sampling["extra_body"] = new JsonObject()).AsObject();
-        extra["provider"] = new JsonObject { ["order"] = new JsonArray(order.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()), ["allow_fallbacks"] = false };
+        extra["provider"] = provider;
     }
 
     // A GGUF the llama.cpp runtime can load. Repo "org/name" for a Hugging Face cache file (the engine finds it by repo and
@@ -1656,7 +1684,7 @@ internal static class LauncherLogic
                 if (long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var timeout))
                     entry["timeout_seconds"] = timeout;
                 entry["sampling"] = new JsonObject();
-                SetProvider(entry, remote.Provider);
+                SetProvider(entry, remote);
                 ModelOptions.Apply(entry, ModelOptions.Effective(w), includeLoad: false);
                 array.Add(entry);
                 continue;
@@ -2413,6 +2441,31 @@ internal static class LauncherLogic
                 WriteRemoteRole(remoteConfig, "planner", viaProvider, remoteTemplate) is not null || WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
                 (Planner()["sampling"]?["extra_body"] as JsonObject)?.ContainsKey("provider") == true)
                 throw new InvalidOperationException($"Remote role: the provider was not removed: {Planner().ToJsonString()}");
+            // Price controls: sort "price" and max_price (only the caps set) beside or without the order; allow_fallbacks only
+            // with ticked providers; a ":floor" model id kept as is; a bad cap writes nothing; empty or Local removes the provider.
+            string ProviderNow() => providerJson()["provider"]?.ToJsonString() ?? "";
+            foreach (var (price, want) in new (RemoteRole, string)[]
+            {
+                (remote with { SortPrice = true }, "{\"sort\":\"price\"}"),
+                (remote with { MaxOutput = "0.3" }, "{\"max_price\":{\"completion\":0.3}}"),
+                (remote with { SortPrice = true, MaxInput = " 1.25 " }, "{\"sort\":\"price\",\"max_price\":{\"prompt\":1.25}}"),
+                (viaProvider with { MaxInput = "0", MaxOutput = "2" }, "{\"order\":[\"Sail Research\",\"DeepInfra\"],\"allow_fallbacks\":false,\"max_price\":{\"prompt\":0,\"completion\":2}}"),
+                (remote with { Model = "vendor/model-x:floor" }, ""),
+            })
+            {
+                var back = WriteRemoteRole(remoteConfig, "planner", price, remoteTemplate) is null ? ReadRemoteRole(remoteConfig, "planner") : null;
+                if (ProviderNow() != want || (int?)providerJson()["top_k"] != 20 || back is null ||
+                    back != price with { BaseUrl = "https://openrouter.ai/api/v1", Provider = string.Join(", ", price.Provider.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)), MaxInput = price.MaxInput.Trim() })
+                    throw new InvalidOperationException($"Remote role: price settings {price} wrote {Planner().ToJsonString()}, read back {back}");
+            }
+            var priceBytes = File.ReadAllBytes(remoteConfig);
+            foreach (var badPrice in new[] { "-1", "0,3", "1e3", "abc", "$1" })
+                if (WriteRemoteRole(remoteConfig, "planner", remote with { MaxOutput = badPrice }, remoteTemplate) is not { } refused || !refused.Contains("Max output") ||
+                    WriteRemoteRole(remoteConfig, "planner", remote with { MaxInput = badPrice }, remoteTemplate) is null || !File.ReadAllBytes(remoteConfig).SequenceEqual(priceBytes))
+                    throw new InvalidOperationException($"Remote role: a max price of \"{badPrice}\" was accepted or half-written.");
+            if (WriteRemoteRole(remoteConfig, "planner", remote with { SortPrice = true, MaxOutput = "1" }, remoteTemplate) is not null || ProviderNow().Length == 0 ||
+                WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (Planner()["sampling"]?["extra_body"] as JsonObject)?.ContainsKey("provider") == true)
+                throw new InvalidOperationException($"Remote role: Local kept the price settings: {Planner().ToJsonString()}");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");
@@ -2612,6 +2665,17 @@ internal static class LauncherLogic
                 (string?)Worker()["model"] != "vendor/m" || (string?)Worker()["api_key_env"] != "OPENROUTER_API_KEY" || Worker()["expected_model_contains"] is not null ||
                 Worker()["timeout_seconds"] is not null || string.Join(",", Worker()["sampling"]?["extra_body"]?["provider"]?["order"]?.AsArray().Select(n => (string?)n) ?? []) != "b/y,a/x")
                 throw new InvalidOperationException($"Custom workers: a remote worker was written wrong: {Worker().ToJsonString()}");
+            // ... with its price settings, which the saved workers keep; a bad cap is skipped.
+            var cloudRemote = cloud.Remote;
+            cloud.Remote = cloudRemote with { SortPrice = true, MaxOutput = "0.5" };
+            if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate).Length != 0 ||
+                Worker()["sampling"]?["extra_body"]?["provider"]?.ToJsonString() != "{\"order\":[\"b/y\",\"a/x\"],\"allow_fallbacks\":false,\"sort\":\"price\",\"max_price\":{\"completion\":0.5}}" ||
+                JsonSerializer.Deserialize<WorkerSetting>(JsonSerializer.Serialize(cloud))?.Remote != cloud.Remote)
+                throw new InvalidOperationException($"Custom workers: a remote worker's price settings were written or saved wrong: {Worker().ToJsonString()}");
+            cloud.Remote = cloudRemote with { MaxInput = "x" };
+            if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate) is not [var badCap] || !badCap.Contains("Max input"))
+                throw new InvalidOperationException("Custom workers: a remote worker with a bad max price was written.");
+            cloud.Remote = cloudRemote;
             // ... and nothing of a local Implementer's (llama-only sampling keys, timeout 600): its own timeout and options only.
             File.WriteAllText(cwConfig, $"{{\"roles\":{rolesBefore}}}");
             (cloud.Remote, cloud.ModelOptions) = (cloud.Remote with { Timeout = "45" }, new() { ["temperature"] = "0.3" });
