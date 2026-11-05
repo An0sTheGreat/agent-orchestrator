@@ -1721,6 +1721,17 @@
                         </DockPanel>
                         <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Several models at once (MainWindow.Runtime.cs): settings.MultiModel, the engine's AGENT_ORCHESTRATOR_MULTI_MODEL -->
+                        <TextBlock Text="Several models at once" Margin="0,22,0,0" />
+                        <StackPanel x:Name="MultiModelOptions">
+                        <RadioButton GroupName="MultiModel" Tag="never" Content="Never" Margin="0,10,0,0" Checked="MultiModel_Checked" />
+                        <TextBlock Text="One model at a time: loading another unloads the previous one." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
+                        <RadioButton GroupName="MultiModel" Tag="fit" Content="If they fit the GPU" Checked="MultiModel_Checked" />
+                        <TextBlock Text="Models stay loaded side by side while they fit in free GPU memory; otherwise the oldest loaded model is unloaded first. Needs an NVIDIA GPU (without one it behaves like Never)."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
+                        <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Checked="MultiModel_Checked" />
+                        <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
+                        </StackPanel>
                     </StackPanel>
                     <StackPanel Tag="Agents" Visibility="Collapsed">
                         <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />

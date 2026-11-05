@@ -413,10 +413,15 @@ public partial class MainWindow : Window
                 Activate(role, "Loading model");
                 WorkerContextsCleared();
                 Log($"[{card?.Title ?? role}] loading {Str(ev, "path")} ...");
+                RecordLlamaPort(card, ev);
+                break;
+            case "unloading":
+                Toast($"Unloading {Str(ev, "model")} to make room", "#F7C873");
                 break;
             case "model":
                 EndStream(false);
                 Activate(role, "Working");
+                RecordLlamaPort(card, ev);
                 card?.SetModel(ModelInfoFor(role, Str(ev, "id")));
                 Log($"[{card?.Title ?? role}] {Str(ev, "id")}");
                 break;
@@ -1065,7 +1070,7 @@ public partial class MainWindow : Window
         }
         foreach (var json in new[]
         {
-            """{"e":"model","role":"planner","id":"smoke-model Q4_K_M"}""",
+            """{"e":"model","role":"planner","id":"smoke-model Q4_K_M","port":51234}""",
             """{"e":"delta","role":"planner","kind":"thinking","text":"thinking about it"}""",
             """{"e":"delta","role":"planner","kind":"tool","index":0,"name":"read_file","text":"{\"path\":\"a.js\"}"}""",
             """{"e":"done","role":"planner","final":false}""",
@@ -1079,8 +1084,9 @@ public partial class MainWindow : Window
         _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"resume","id":"T0","round":1}""");
         DrainLines();
         await Settle();
-        if (!_transcript.ToString().Contains("[RESUMED  T0] Continuing at review round 2"))
+        if (!_transcript.ToString().Contains("[RESUMED  T0] Continuing at review round 2") || _llamaPorts.GetValueOrDefault("planner") != 51234)
             return Fail();
+        _llamaPorts.Clear();
 
         var expanders = OutputPanel.Children.OfType<Expander>().ToList();
         if (expanders.Count < 3)
@@ -1120,6 +1126,11 @@ public partial class MainWindow : Window
         for (var waited = 0; waited < 5000 && ToastStack.Children.Count != 0; waited += 100)
             await Task.Delay(100);
         if (ToastStack.Children.Count != 0)
+            return Fail();
+        // The engine unloads a model to make room for another (Several models at once): a toast says so.
+        _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"unloading","role":"planner","model":"Old-Model","port":8899}""");
+        DrainLines();
+        if (!Toasted("Unloading Old-Model to make room"))
             return Fail();
         // Live token stats: deltas alone drive the count and rate until the call's usage event gives the exact numbers.
         var live = CardFor("implementer");
@@ -1730,7 +1741,11 @@ public partial class MainWindow : Window
                 return Fail();
             StartTurn(_code, "Fix it", "planner");
             if (!_chatBusy || ChatSend.IsEnabled || CodeSend.IsEnabled || CodeStop.Visibility != Visibility.Visible || ChatStop.Visibility != Visibility.Visible ||
-                CodeSend.Visibility == Visibility.Visible || ChatSend.Visibility == Visibility.Visible)
+                CodeSend.Visibility == Visibility.Visible || ChatSend.Visibility == Visibility.Visible || MultiModelOptions.IsEnabled)
+                return Fail();
+            _lines.Enqueue(Ev("""{"e":"unloading","role":"implementer","model":"Chat-Old-Model","port":8899}"""));
+            DrainLines();
+            if (!Toasted("Unloading Chat-Old-Model to make room"))
                 return Fail();
             _lines.Enqueue(Delta("implementer", "text", "Looking"));
             _lines.Enqueue(Ev("""{"e":"tool","role":"implementer","name":"read_file","args":"{\"path\":\"src/a.js\"}","result":"OK"}"""));
@@ -3173,10 +3188,22 @@ public partial class MainWindow : Window
 
     // --ui-smoke, local runtime: the status follows the data folder, a turn without llama-server is refused, and stopping
     // the recorded server kills a llama-server but never another process.
+    private bool Toasted(string text) => ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text);
+
     private async Task<bool> LocalRuntimeSmoke()
     {
         static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.xaml.cs:{line}"); return false; }
-        bool Toasted(string text) => ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text);
+        // Several models at once: Never by default; a choice is saved and reaches the engine's environment.
+        string? MultiEnv() { var info = new ProcessStartInfo(); ApplyRuntime(info); return info.Environment.TryGetValue("AGENT_ORCHESTRATOR_MULTI_MODEL", out var v) ? v : null; }
+        RadioButton Multi(string tag) => MultiModelOptions.Children.OfType<RadioButton>().Single(r => (string)r.Tag == tag);
+        if (_settings.MultiModel != "never" || Multi("never").IsChecked != true || MultiEnv() != "never")
+            return Fail();
+        foreach (var mode in new[] { "fit", "always", "never" })
+        {
+            Multi(mode).IsChecked = true;
+            if (_settings.MultiModel != mode || AppSettings.Load().MultiModel != mode || MultiEnv() != mode)
+                return Fail();
+        }
         RefreshLlamaStatus();
         if (LlamaStatus.Text != "llama-server not installed" || (string)LlamaDownloadButton.Content != "Download llama-server")
             return Fail();
@@ -3198,6 +3225,8 @@ public partial class MainWindow : Window
         StopLocalServer(); // our own pid: not a llama-server, so it must survive (this line returning is the check)
         using var other = Run(ping);
         using var server = Run(LauncherLogic.LlamaServerPath);
+        using var second = Run(LauncherLogic.LlamaServerPath);
+        using var third = Run(LauncherLogic.LlamaServerPath);
         try
         {
             Record(other.Id);
@@ -3211,10 +3240,19 @@ public partial class MainWindow : Window
             StopLocalServer();
             if (!server.WaitForExit(5000) || File.Exists(_llamaStateFile))
                 return Fail();
+            // The engine's server list (one per loaded model): every llama-server in it stops, another program survives,
+            // and the cards' ports are forgotten.
+            File.WriteAllText(_llamaStateFile, $$"""{"servers": [{"pid": {{second.Id}}, "port": 8899}, {"pid": {{other.Id}}, "port": 8900}, {"pid": {{third.Id}}, "port": 8901}]}""");
+            _llamaPorts["planner"] = 8901;
+            if (second.HasExited || third.HasExited)
+                return Fail();
+            StopLocalServer();
+            if (!second.WaitForExit(5000) || !third.WaitForExit(5000) || other.HasExited || File.Exists(_llamaStateFile) || _llamaPorts.Count != 0)
+                return Fail();
         }
         finally
         {
-            foreach (var p in new[] { other, server })
+            foreach (var p in new[] { other, server, second, third })
                 try { p.Kill(); } catch (InvalidOperationException) { }
         }
         // Change lists the GGUFs on disk: a file in the models folder is assigned by its path.
