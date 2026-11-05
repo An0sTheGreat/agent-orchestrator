@@ -118,10 +118,25 @@ public partial class MainWindow
         searchHint.Margin = new Thickness(12, 4, 0, 0);
         search.TextChanged += (_, _) => searchHint.Visibility = search.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         var list = new StackPanel { Tag = "RemoteModels" };
+        var listScroll = new ScrollViewer
+        {
+            Tag = "RemoteModelsScroll", Content = list, MaxHeight = 9 * ModelRow, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        TextBlock Head(string text, string tag)
+        {
+            var t = RemoteMuted(text);
+            (t.Tag, t.FontWeight, t.TextWrapping) = (tag, FontWeights.SemiBold, TextWrapping.NoWrap);
+            return t;
+        }
+        var listHead = ModelColumns(new FrameworkElement(), Head("Model name", "name"), Head("Context", "context"));
+        listHead.Tag = "RemoteModelsHeader";
+        listHead.Margin = new Thickness(ModelRowSide, 2, ModelRowSide, 4);
+        KeepClearOfScrollBar(listScroll, listHead);
+        DockPanel.SetDock(listHead, Dock.Top);
         var listBox = new Border
         {
             Padding = new Thickness(4), Margin = new Thickness(0, 6, 0, 0), BorderThickness = new Thickness(1),
-            Child = new ScrollViewer { Content = list, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled },
+            Child = new DockPanel { Children = { listHead, listScroll } }, // the header stays put while the list scrolls
         };
         listBox.SetResourceReference(Border.BackgroundProperty, "Card");
         listBox.SetResourceReference(Border.BorderBrushProperty, "ControlBorder");
@@ -129,7 +144,33 @@ public partial class MainWindow
         var modelsNote = RemoteMuted("");
         modelsNote.Tag = "RemoteModelsNote";
         modelsNote.Margin = new Thickness(2, 6, 0, 0);
+        // What Apply writes: the model picked in the list, read-only (select or Copy it). When the service cannot list its
+        // models (no key, an unconfirmed or failing address, an empty list) the manual box takes the list's place and this
+        // box mirrors it.
         var modelId = Box("RemoteModelId");
+        modelId.IsReadOnly = true;
+        var copyId = new Button { Content = "Copy", Tag = "RemoteModelCopy", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 4, 0, 0) };
+        DockPanel.SetDock(copyId, Dock.Right);
+        copyId.Click += (_, _) =>
+        {
+            try { Clipboard.SetText(modelId.Text); }
+            catch (System.Runtime.InteropServices.COMException) { } // another app holds the clipboard: the box is still selectable
+        };
+        var manual = Box("RemoteModelManual");
+        var manualHint = RemoteMuted("Enter a model id");
+        (manualHint.IsHitTestVisible, manualHint.VerticalAlignment, manualHint.Margin) = (false, VerticalAlignment.Center, new Thickness(12, 4, 0, 0));
+        manual.TextChanged += (_, _) =>
+        {
+            manualHint.Visibility = manual.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            modelId.Text = manual.Text;
+        };
+        var manualBox = new Grid { Margin = new Thickness(0, 6, 0, 0), Children = { manual, manualHint } };
+        void Manual(bool on) // the list cannot be had: type the id instead
+        {
+            if (on)
+                manual.Text = modelId.Text;
+            manualBox.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        }
 
         // ---- providers (OpenRouter)
         var rows = new List<RemoteCatalog.ProviderRow>();
@@ -205,10 +246,19 @@ public partial class MainWindow
             foreach (var m in shown.Take(200)) // ponytail: a 200-row cap instead of a virtualized list; search narrows the rest
             {
                 var context = RemoteMuted(RemoteContext(m.ContextLength));
-                context.VerticalAlignment = VerticalAlignment.Center;
-                context.Margin = new Thickness(10, 0, 0, 0);
-                DockPanel.SetDock(context, Dock.Right);
-                var name = new TextBlock { TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = m.Id };
+                context.Tag = "context";
+                var (initials, rgb) = RemoteVendorBadge(m.Id);
+                var badge = new Border
+                {
+                    Width = 22, Height = 22, CornerRadius = new CornerRadius(5), Tag = "badge:" + initials,
+                    Background = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)),
+                    Child = new TextBlock
+                    {
+                        Text = initials, Foreground = Brushes.White, FontWeight = FontWeights.Bold, FontSize = initials.Length > 1 ? 9.5 : 11,
+                        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                    },
+                };
+                var name = new TextBlock { Tag = "name", TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = m.Id };
                 name.Inlines.Add(new Run(m.Name));
                 if (m.Name != m.Id)
                 {
@@ -218,8 +268,8 @@ public partial class MainWindow
                 }
                 var row = new ToggleButton
                 {
-                    Content = new DockPanel { Children = { context, name } }, Tag = m, IsChecked = m.Id == modelId.Text.Trim(),
-                    Padding = new Thickness(14, 5, 10, 5), Margin = new Thickness(0, 0, 0, 1),
+                    Content = ModelColumns(badge, name, context), Tag = m, IsChecked = m.Id == modelId.Text.Trim(),
+                    Height = ModelRow - 1, Padding = new Thickness(ModelRowSide, 0, ModelRowSide, 0), Margin = new Thickness(0, 0, 0, 1),
                 };
                 row.SetResourceReference(StyleProperty, "NavToggle");
                 row.Click += (_, _) => modelId.Text = m.Id; // its TextChanged marks the row and loads the providers
@@ -236,6 +286,7 @@ public partial class MainWindow
             var cts = _remoteModelsCts = new CancellationTokenSource();
             models = [];
             RenderModels();
+            Manual(true);
             var s = Selected();
             var url = baseUrl.Text.Trim();
             var key = Key();
@@ -256,6 +307,7 @@ public partial class MainWindow
                 return;
             }
             Note(modelsNote, "Loading models…");
+            Manual(false);
             _remoteModelsTask = Fetch(cts.Token);
             async Task Fetch(CancellationToken ct)
             {
@@ -269,12 +321,15 @@ public partial class MainWindow
                     if (models.Count == 0)
                         Note(modelsNote, "The service lists no models: type the model id below.");
                     RenderModels();
+                    Manual(models.Count == 0);
                 }
                 catch (OperationCanceledException) { }
                 catch (Exception e) // any failure replaces "Loading models…": an escaped one would leave it there for good
                 {
-                    if (!ct.IsCancellationRequested) // a custom URL is tried without a key too (local servers need none)
-                        Note(modelsNote, e.Message + (key is null && s == custom ? " If it needs a key, name its variable above." : ""), error: true);
+                    if (ct.IsCancellationRequested)
+                        return;
+                    Manual(true);
+                    Note(modelsNote, e.Message + (key is null && s == custom ? " If it needs a key, name its variable above." : ""), error: true);
                 }
             }
         }
@@ -565,8 +620,8 @@ public partial class MainWindow
                 new DockPanel { Children = { keyHelp, new StackPanel { Children = { title, intro } } } },
                 connection,
                 new DockPanel { Margin = new Thickness(0, 18, 0, 0), Children = { searchBox, modelHead } },
-                listBox, modelsNote,
-                Label("Model id"), RemoteMuted("What the worker's config gets: pick one above or type it."), modelId,
+                listBox, modelsNote, manualBox,
+                Label("Model id"), RemoteMuted("What the worker's config gets: the model picked or entered above."), new DockPanel { Children = { copyId, modelId } },
                 providers,
                 divider,
                 Label("Apply to"),
@@ -643,6 +698,44 @@ public partial class MainWindow
         dialog.Show();
     }
 
+    private const double ModelRow = 31, ModelRowSide = 10; // a model row's height with its 1 px gap; its side padding
+
+    // The model list's columns, shared by its header and rows so they line up: badge, name, context.
+    private static Grid ModelColumns(FrameworkElement badge, FrameworkElement name, TextBlock context)
+    {
+        (context.TextAlignment, context.VerticalAlignment, name.VerticalAlignment) = (TextAlignment.Right, VerticalAlignment.Center, VerticalAlignment.Center);
+        var g = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(30) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(72) } } };
+        badge.HorizontalAlignment = HorizontalAlignment.Left;
+        Grid.SetColumn(name, 1);
+        Grid.SetColumn(context, 2);
+        g.Children.Add(badge);
+        g.Children.Add(name);
+        g.Children.Add(context);
+        return g;
+    }
+
+    // A sticky header over a scrolling list keeps its columns over the rows: it leaves room for the list's scroll bar.
+    private static void KeepClearOfScrollBar(ScrollViewer rows, FrameworkElement head)
+    {
+        var right = head.Margin.Right;
+        rows.ScrollChanged += (_, _) => head.Margin = head.Margin with { Right = right + Math.Max(0, rows.ActualWidth - rows.ViewportWidth) };
+    }
+
+    // A model maker's badge, keyed by the id's prefix before "/": its initials on its colour. Others (and ids with no prefix,
+    // as most services list them) get grey and the id's first letter. Mid-tone colours under white text read on every theme.
+    private static readonly Dictionary<string, (string Text, uint Rgb)> Vendors = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["openai"] = ("OA", 0x10806A), ["anthropic"] = ("A", 0xB05A36), ["google"] = ("G", 0x2B6CD4), ["meta-llama"] = ("M", 0x5848C8),
+        ["mistralai"] = ("Mi", 0xC4520E), ["deepseek"] = ("DS", 0x1F7A9C), ["qwen"] = ("Q", 0x6A3FC2), ["z-ai"] = ("Z", 0x384B8F),
+        ["x-ai"] = ("X", 0x404040), ["nvidia"] = ("NV", 0x4E7A00), ["cohere"] = ("Co", 0xA3407A), ["microsoft"] = ("MS", 0x00749E),
+        ["amazon"] = ("Am", 0xA86400), ["perplexity"] = ("Px", 0x1F6F8B), ["moonshotai"] = ("K", 0x3A3A8C), ["minimax"] = ("MM", 0xC2185B),
+    };
+    private const uint VendorGrey = 0x6B7280;
+
+    internal static (string Text, uint Rgb) RemoteVendorBadge(string modelId) =>
+        modelId.IndexOf('/') is > 0 and var slash && Vendors.TryGetValue(modelId[..slash], out var v) ? v
+        : (modelId.Length > 0 ? char.ToUpperInvariant(modelId[0]).ToString() : "?", VendorGrey);
+
     private static TextBlock RemoteMuted(string text)
     {
         var t = new TextBlock { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };
@@ -678,6 +771,9 @@ public partial class MainWindow
         Check(RemoteContext(262144) == "262K" && RemoteContext(1048576) == "1.05M" && RemoteContext(2_000_000) == "2M" && RemoteContext(8192) == "8K" && RemoteContext(0) == "",
             "context length");
         Check(RemoteFigure(0.45, "0.00") == "0.45" && RemoteFigure(93.33333, "0.#") == "93.3" && RemoteFigure(85.5, "0") == "86" && RemoteFigure(null, "0") == "—", "figures");
+        Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
+            RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
+            RemoteVendorBadge("").Text == "?" && Vendors.Values.Select(v => v.Rgb).Append(VendorGrey).Distinct().Count() == Vendors.Count + 1, "vendor badges");
     }
 
     // --ui-smoke: the sidebar's Remote API opens the page (the first time with the key help) in place of Code and Chat,
@@ -802,8 +898,20 @@ public partial class MainWindow
                 return Fail("clearing the search did not bring the models back");
             SmokeClick(glm);
             await Loaded();
-            if (Find<TextBox>("RemoteModelId").Text != Glm || glm.IsChecked != true || !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
+            if (Find<TextBox>("RemoteModelId") is not { IsReadOnly: true, Text: Glm } || glm.IsChecked != true || !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints") ||
+                Find<TextBox>("RemoteModelManual").IsVisible)
                 return Fail($"choosing a model: id {Find<TextBox>("RemoteModelId").Text}, asked {string.Join(", ", fake.Seen)}");
+
+            // The model list: a vendor badge per row, a header outside the scrolling list whose columns sit over the rows', 9 rows tall at most.
+            RemoteApiView.UpdateLayout();
+            var listScroll = Find<ScrollViewer>("RemoteModelsScroll");
+            var listHead = Find<Grid>("RemoteModelsHeader");
+            Rect In(FrameworkElement e) => e.TransformToAncestor(RemoteApiView).TransformBounds(new Rect(e.RenderSize));
+            Rect Cell(FrameworkElement root, string tag) => In(SmokeFind<TextBlock>(root, t => t.Tag as string == tag)!);
+            if (!listHead.IsVisible || listHead.IsDescendantOf(listScroll) || listScroll.MaxHeight != 9 * ModelRow ||
+                Math.Abs(Cell(listHead, "name").Left - Cell(glm, "name").Left) > 1 || Math.Abs(Cell(listHead, "context").Right - Cell(glm, "context").Right) > 1 ||
+                SmokeFind<Border>(glm, b => b.Tag as string == "badge:Z") is null)
+                return Fail($"the model list header: name {Cell(listHead, "name")} / {Cell(glm, "name")}, context {Cell(listHead, "context")} / {Cell(glm, "context")}");
             var head = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().FirstOrDefault();
             string[] wantRows = ["Untagged|—|<$0.0001|$0|—|—|—|—|", "Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
                 "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
@@ -877,7 +985,7 @@ public partial class MainWindow
             await Loaded();
             if (Find<TextBlock>("RemoteModelsNote") is not { Visibility: Visibility.Visible } needsKey ||
                 needsKey.Text != "OpenAI lists its models only with an API key: set OPENAI_API_KEY (see Key help), or type the model id below." ||
-                fake.Seen.Any(r => r.Url.Contains("api.openai.com", StringComparison.Ordinal)) || Find<TextBox>("RemoteModelId") is not { Visibility: Visibility.Visible, IsReadOnly: false } ||
+                fake.Seen.Any(r => r.Url.Contains("api.openai.com", StringComparison.Ordinal)) || Find<TextBox>("RemoteModelManual") is not { IsVisible: true, IsReadOnly: false } || Find<StackPanel>("RemoteModels").IsVisible ||
                 Find<StackPanel>("RemoteProviders").Visibility == Visibility.Visible)
                 return Fail("OpenAI without a key: no needs-a-key note, or the models were asked for");
             Reset();
@@ -886,7 +994,9 @@ public partial class MainWindow
             Apply();
             if (Find<TextBlock>("RemoteError") is not { Visibility: Visibility.Visible } empty || empty.Text != LauncherLogic.ValidateRemoteRole(typed) || !Unchanged())
                 return Fail("Apply with no model id was not refused");
-            Find<TextBox>("RemoteModelId").Text = "gpt-4o-mini";
+            Type("RemoteModelManual", "gpt-4o-mini");
+            if (Find<TextBox>("RemoteModelId").Text != "gpt-4o-mini")
+                return Fail($"the model id box shows \"{Find<TextBox>("RemoteModelId").Text}\" for a typed gpt-4o-mini");
             Apply();
             if (Wrote("reviewer", typed with { Model = "gpt-4o-mini" }) is { } openai)
                 return Fail($"Apply of a typed model id wrote {openai}");
@@ -939,7 +1049,7 @@ public partial class MainWindow
             const string Lan = "http://192.168.1.5:8080/v1";
             Type("RemoteBaseUrl", Lan);
             await Loaded();
-            if (fake.Seen.Count != before || Find<TextBlock>("RemoteModelsNote").Text != "Press Enter or Load models to list this server's models.")
+            if (fake.Seen.Count != before || Find<TextBlock>("RemoteModelsNote").Text != "Press Enter or Load models to list this server's models." || !Find<TextBox>("RemoteModelManual").IsVisible)
                 return Fail($"typing a Custom URL asked [{Asked(before)}], note \"{Find<TextBlock>("RemoteModelsNote").Text}\"");
             Type("RemoteKeyEnv", KeyB);
             KeyEnv(KeyB);
@@ -958,7 +1068,9 @@ public partial class MainWindow
             if (fake.Seen.Count != before || Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set", ToolTip: string tip } || tip != $"{KeyB} is set in your environment.")
                 return Fail($"a half-typed key variable asked [{Asked(before)}], status \"{Find<TextBlock>("RemoteKeyStatus").Text}\"");
             Find<TextBox>("RemoteKeyEnv").Text = KeyB;
-            Find<TextBox>("RemoteModelId").Text = Glm;
+            if (Find<TextBox>("RemoteModelManual").IsVisible) // the server listed its models: picked, not typed
+                return Fail("the manual model id box shows beside a model list");
+            SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: Glm })!);
             Apply();
             if (Wrote("reviewer", new(Lan, Glm, KeyB, "")) is { } lan)
                 return Fail($"Apply to the Custom URL wrote {lan}");
