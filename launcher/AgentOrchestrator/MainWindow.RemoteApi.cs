@@ -114,17 +114,19 @@ public partial class MainWindow
 
         // ---- models
         var models = new List<RemoteCatalog.ModelEntry>();
-        // A box with a hint while empty, the hint where the box's own text (and its caret) starts: read that from the template, so
-        // a theme change cannot misalign them.
+        // A box with a hint while empty, the hint where the box's own text (and its caret) starts: read from the laid-out caret
+        // (the template's content host sits left of the box's Padding), so a theme change cannot misalign them.
         Grid Hinted(TextBox box, string text)
         {
             var hint = RemoteMuted(text);
             (hint.IsHitTestVisible, hint.VerticalAlignment, hint.TextWrapping, hint.Margin) = (false, VerticalAlignment.Center, TextWrapping.NoWrap, new Thickness(22, 4, 0, 0));
-            box.Loaded += (_, _) =>
+            void Place() // when shown: a box in a collapsed panel has no laid-out caret yet
             {
-                if (box.Template.FindName("PART_ContentHost", box) is FrameworkElement host && host.TranslatePoint(new Point(), box).X is var x and > 0)
+                if (box.IsVisible && box.GetRectFromCharacterIndex(0).X is var x and > 0 and < double.PositiveInfinity) // Rect.Empty before layout
                     hint.Margin = new Thickness(x, 4, 0, 0);
-            };
+            }
+            box.Loaded += (_, _) => Place();
+            box.SizeChanged += (_, _) => Place();
             box.TextChanged += (_, _) => hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
             return new Grid { Children = { box, hint } };
         }
@@ -1196,12 +1198,21 @@ public partial class MainWindow
             KeyEnv(Unset);
             await Loaded();
             await Task.Delay(400);
-            // the empty search box's hint starts where its own text (and caret) starts
-            var searchBox = Find<TextBox>("RemoteSearch");
-            var searchHint = SmokeFind<TextBlock>(RemoteApiView, t => t.Text == "Search models")!;
-            if (searchBox.Template.FindName("PART_ContentHost", searchBox) is not FrameworkElement textHost ||
-                Math.Abs(searchHint.TranslatePoint(new Point(), RemoteApiView).X - textHost.TranslatePoint(new Point(), RemoteApiView).X) > 1.5)
-                return Fail("the search hint is not where the search box's text starts");
+            // an empty box's hint (search, the max prices) starts where its own text (and caret) starts
+            string? HintOff(params (string Box, string Hint)[] boxes)
+            {
+                RemoteApiView.UpdateLayout();
+                foreach (var (boxTag, hintText) in boxes)
+                {
+                    var hinted = Find<TextBox>(boxTag);
+                    var hint = SmokeFind<TextBlock>(RemoteApiView, t => t.Text == hintText)!;
+                    if (Math.Abs(hint.TranslatePoint(new Point(), hinted).X - hinted.GetRectFromCharacterIndex(0).X) > 1.5)
+                        return $"the hint \"{hintText}\" starts at {hint.TranslatePoint(new Point(), hinted).X}, the text at {hinted.GetRectFromCharacterIndex(0).X}";
+                }
+                return null;
+            }
+            if (HintOff(("RemoteSearch", "Search models")) is { } searchOff)
+                return Fail(searchOff);
             Find<TextBox>("RemoteSearch").Text = "qwen";
             if (Find<StackPanel>("RemoteModels").Children is not { Count: 1 } found || ((RemoteCatalog.ModelEntry)((ToggleButton)found[0]).Tag).Id != "qwen/qwen3-coder" ||
                 Find<TextBlock>("RemoteModelsNote").Text != "1 of 3 models")
@@ -1337,6 +1348,16 @@ public partial class MainWindow
             if (Cheapest() is not { IsVisible: true, IsChecked: false } || !Find<TextBox>("RemoteMaxInput").IsVisible || !Find<TextBox>("RemoteMaxOutput").IsVisible ||
                 FloorSwitch() is not { IsVisible: true, IsEnabled: true, IsChecked: false } || Find<TextBlock>("RemoteCheapestNow").Text != "Cheapest now: in <$0.0001 / out $0")
                 return Fail($"the price controls for OpenRouter, cheapest now \"{Find<TextBlock>("RemoteCheapestNow").Text}\"");
+            if (HintOff(("RemoteMaxInput", "Max in $/M"), ("RemoteMaxOutput", "Max out $/M")) is { } maxOff)
+                return Fail(maxOff);
+            // narrow, the price row wraps: nothing past the providers' edge
+            var priceRow = Find<WrapPanel>("RemotePriceRow");
+            Find<StackPanel>("RemoteProviders").Width = 360;
+            RemoteApiView.UpdateLayout();
+            var priceParts = priceRow.Children.OfType<FrameworkElement>().Select(e => e.TransformToAncestor(priceRow).TransformBounds(new Rect(e.RenderSize))).ToArray();
+            Find<StackPanel>("RemoteProviders").Width = double.NaN;
+            if (priceParts.Any(r => r.Right > 360.5))
+                return Fail($"narrow, the price row clips: {string.Join(" / ", priceParts)}");
             Target("reviewer");
             Toggle(Cheapest());
             Type("RemoteMaxOutput", "0.3");
