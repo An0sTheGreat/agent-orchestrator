@@ -108,6 +108,7 @@ public partial class MainWindow
         var tableScroll = new ScrollViewer { Content = table, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0) };
         tableScroll.SizeChanged += (_, e) => table.Width = Math.Max(table.MinWidth, e.NewSize.Width); // the whole column; narrower scrolls
         var providersNote = RemoteMuted("");
+        providersNote.Tag = "RemoteProvidersNote";
         providersNote.Margin = new Thickness(0, 6, 0, 0);
         var keyNote = RemoteMuted("Latency and throughput show only with an OpenRouter key in the environment.");
         keyNote.Margin = new Thickness(0, 2, 0, 0);
@@ -239,7 +240,7 @@ public partial class MainWindow
                     RenderModels();
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception e) when (e is HttpRequestException or InvalidOperationException or FormatException)
+                catch (Exception e) // any failure replaces "Loading models…": an escaped one would leave it there for good
                 {
                     if (!ct.IsCancellationRequested) // a custom URL is tried without a key too (local servers need none)
                         Note(modelsNote, e.Message + (key is null && s == custom ? " If it needs a key, name its variable above." : ""), error: true);
@@ -358,7 +359,7 @@ public partial class MainWindow
                     RenderProviders();
                 }
                 catch (OperationCanceledException) { }
-                catch (Exception e) when (e is HttpRequestException or InvalidOperationException or FormatException)
+                catch (Exception e) // as with the models: never left on "Loading providers…"
                 {
                     if (!ct.IsCancellationRequested)
                         Note(providersNote, e.Message, error: true);
@@ -849,6 +850,20 @@ public partial class MainWindow
             if (OrderText() != "Any provider." || Tick("relace/fp4")?.IsChecked != false || Find<Button>("RemoteClearOrder").Visibility == Visibility.Visible)
                 return Fail($"Clear left \"{OrderText()}\"");
 
+            // A reply that is no list (a duplicate key), or a failure of any kind, replaces both loading notes with the error.
+            foreach (var (body, failure, words) in new (string?, Exception?, string[])[]
+                { ("{\"data\":[],\"data\":[]}", null, ["not a model list", "not a provider list"]), (null, new ArgumentException("fake failure"), ["fake failure", "fake failure"]) })
+            {
+                (fake.Body, fake.Failure) = (body, failure);
+                OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, ""));
+                try { await Loaded(); }
+                catch (Exception e) { return Fail($"a broken reply escaped the page: {e.GetType().Name}: {e.Message}"); }
+                var notes = new[] { Find<TextBlock>("RemoteModelsNote"), Find<TextBlock>("RemoteProvidersNote") };
+                if (notes.Where((n, i) => n.Visibility != Visibility.Visible || !n.Text.Contains(words[i], StringComparison.Ordinal)).Any())
+                    return Fail($"a broken reply left the notes \"{notes[0].Text}\" / \"{notes[1].Text}\"");
+            }
+            (fake.Body, fake.Failure) = (null, null);
+
             // The key goes only where the user confirmed: Custom URL starts empty (no address, no key variable), asks nothing
             // while its address is typed, and sends only the variable typed for it once Load models confirms the address.
             Environment.SetEnvironmentVariable(KeyA, "secret-a");
@@ -924,6 +939,8 @@ public partial class MainWindow
 internal sealed class RemoteApiFakeHandler : HttpMessageHandler
 {
     public List<(string Url, string? Auth)> Seen { get; } = [];
+    public string? Body; // when set, the reply to every address
+    public Exception? Failure; // when set, thrown for every address
 
     private const string Models = "{\"data\":[" +
         "{\"id\":\"z-ai/glm-5.3-flash\",\"name\":\"Z.ai: GLM 5.3 Flash\",\"context_length\":1048576}," +
@@ -947,7 +964,9 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         var url = request.RequestUri!.ToString();
         lock (Seen)
             Seen.Add((url, request.Headers.Authorization?.ToString()));
-        var body = url.EndsWith("/endpoints", StringComparison.Ordinal) ? Endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null;
+        if (Failure is not null)
+            throw Failure;
+        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? Endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null);
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });

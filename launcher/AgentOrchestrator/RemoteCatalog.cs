@@ -50,13 +50,10 @@ internal static class RemoteCatalog
             : null;
 
     // {"data":[{id, name?, context_length?}]} (OpenAI, OpenRouter) or a bare array of the same (Together); sorted by id.
-    public static List<ModelEntry> ParseModels(string json)
+    public static List<ModelEntry> ParseModels(string json) =>
+        Reply(json, "The service's reply is not a model list (expected {\"data\":[...]} or a JSON array).", root =>
     {
-        JsonNode? root;
-        try { root = JsonNode.Parse(json); }
-        catch (JsonException) { root = null; }
-        var list = root as JsonArray ?? (root as JsonObject)?["data"] as JsonArray
-            ?? throw new InvalidOperationException("The service's reply is not a model list (expected {\"data\":[...]} or a JSON array).");
+        var list = root as JsonArray ?? (root as JsonObject)?["data"] as JsonArray ?? throw new FormatException();
         var models = new List<ModelEntry>();
         foreach (var m in list.OfType<JsonObject>())
         {
@@ -69,19 +66,24 @@ internal static class RemoteCatalog
         }
         models.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Id, b.Id));
         return models;
+    });
+
+    // JsonNode reads objects lazily, so a reply it parsed can still throw (ArgumentException on a duplicate key) while
+    // read: anything but cancellation becomes the one "not a ... list" error the page shows.
+    private static T Reply<T>(string json, string notList, Func<JsonNode?, T> read)
+    {
+        try { return read(JsonNode.Parse(json)); }
+        catch (Exception e) when (e is not OperationCanceledException) { throw new InvalidOperationException(notList, e); }
     }
 
     public static async Task<List<ModelEntry>> FetchModelsAsync(HttpClient http, string baseUrl, string? apiKey, CancellationToken ct) =>
         ParseModels(await GetAsync(http, baseUrl.TrimEnd('/') + "/models", apiKey, ct).ConfigureAwait(false));
 
     // OpenRouter's GET /models/{id}/endpoints: one row per provider, cheapest input first (unknown prices last).
-    public static List<ProviderRow> ParseProviders(string json)
+    public static List<ProviderRow> ParseProviders(string json) => Reply(json, "OpenRouter's reply is not a provider list.", root =>
     {
-        JsonNode? root;
-        try { root = JsonNode.Parse(json); }
-        catch (JsonException) { root = null; }
         var data = (root as JsonObject)?["data"] as JsonObject;
-        var endpoints = data?["endpoints"] as JsonArray ?? throw new InvalidOperationException("OpenRouter's reply is not a provider list.");
+        var endpoints = data?["endpoints"] as JsonArray ?? throw new FormatException();
         // supports_image_reference is false even for image-input models (gpt-4o-mini), so the model's input modalities count too.
         var modelVision = (data!["architecture"] as JsonObject)?["input_modalities"] is JsonArray inputs && inputs.Any(i => Str(i) == "image");
         var rows = endpoints.OfType<JsonObject>().Select(e =>
@@ -95,8 +97,8 @@ internal static class RemoteCatalog
                 modelVision || (e["supports_image_reference"] as JsonValue)?.TryGetValue<bool>(out var image) == true && image,
                 (long)(Num(e["context_length"]) ?? 0));
         }).ToList();
-        return [.. rows.OrderBy(r => r.InputPerM is null).ThenBy(r => r.InputPerM).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)];
-    }
+        return (List<ProviderRow>)[.. rows.OrderBy(r => r.InputPerM is null).ThenBy(r => r.InputPerM).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)];
+    });
 
     // Public without a key; latency and throughput come back null unless a key is sent.
     public static async Task<List<ProviderRow>> FetchProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey = null) =>
@@ -168,10 +170,19 @@ internal static class RemoteCatalog
         Check(bare is [{ Id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", ContextLength: 131072 }], "bare array");
         var gemini = ParseModels("{\"object\":\"list\",\"data\":[{\"id\":\"models/gemini-2.0-flash\",\"object\":\"model\",\"owned_by\":\"google\"}]}");
         Check(gemini is [{ Id: "gemini-2.0-flash", Name: "gemini-2.0-flash", ContextLength: 0 }], "Gemini models/ prefix");
-        foreach (var junk in new[] { "", "<html>502</html>", "{\"error\":{\"code\":404}}", "null", "42" })
+        // The probe: .NET 8's JsonNode parses a duplicate key and throws only when the object is read (so the replies below reach the reader).
+        var duplicate = JsonNode.Parse("{\"a\":1,\"a\":2}")!.AsObject();
+        try { _ = duplicate["a"]; Check(false, "probe: JsonNode read a duplicate key"); }
+        catch (ArgumentException) { }
+        string[] junkReplies = ["", "<html>502</html>", "{\"error\":{\"code\":404}}", "null", "42", "{\"data\":5}", "{\"data\":{\"endpoints\":\"x\"}}",
+            "{\"data\":[],\"data\":[]}", "{\"data\":[{\"id\":\"a\",\"id\":\"b\"}]}", "{\"data\":{\"endpoints\":[],\"endpoints\":[]}}",
+            "{\"data\":{\"endpoints\":[{\"tag\":\"a\",\"tag\":\"b\"}]}}", "{\"data\":{\"architecture\":{\"x\":1,\"x\":2},\"endpoints\":[]}}"];
+        foreach (var junk in junkReplies) // each is neither list; anything but the InvalidOperationException fails the self-test
         {
-            try { ParseModels(junk); Check(false, $"junk accepted: {junk}"); }
+            try { ParseModels(junk); Check(false, $"junk accepted as models: {junk}"); }
             catch (InvalidOperationException e) when (e.Message.Contains("not a model list")) { }
+            try { ParseProviders(junk); Check(false, $"junk accepted as providers: {junk}"); }
+            catch (InvalidOperationException e) when (e.Message.Contains("not a provider list")) { }
         }
 
         var providers = ParseProviders("{\"data\":{\"id\":\"z-ai/glm-5.3-flash\",\"architecture\":{\"input_modalities\":[\"text\"]},\"endpoints\":[" +
