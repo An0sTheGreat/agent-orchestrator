@@ -26,7 +26,7 @@ public partial class MainWindow
     private Task _remoteModelsTask = Task.CompletedTask, _remoteProvidersTask = Task.CompletedTask; // smokes await them
 
     // The providers table: 0 = the Provider column, which takes the width left over (at least 130).
-    private const double ConnectionOneLine = 680; // narrower: the connection settings take two lines
+    private const double ConnectionOneLine = 700, KeyEnvWidth = 210; // narrower: the connection settings take two lines; OPENROUTER_API_KEY fits
     private static readonly double[] ProviderColumns = [34, 0, 64, 76, 76, 82, 68, 56, 64, 52];
     private static readonly string?[] HeadTips = [null, null, "Quantization", "Input, USD per million tokens", "Output, USD per million tokens",
         "Cached input read, USD per million tokens", "Median latency in seconds, last 30 minutes", "Median throughput in tokens per second, last 30 minutes",
@@ -87,7 +87,7 @@ public partial class MainWindow
         var connection = new Grid
         {
             Tag = "RemoteConnection", RowDefinitions = { new RowDefinition(), new RowDefinition() },
-            ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(170) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(190) }, new ColumnDefinition { Width = GridLength.Auto } },
+            ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(170) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(KeyEnvWidth) }, new ColumnDefinition { Width = GridLength.Auto } },
         };
         void PlaceConnection(bool oneLine)
         {
@@ -99,7 +99,7 @@ public partial class MainWindow
                 Grid.SetColumnSpan(connectionCells[i], at[i].Span);
                 ((FrameworkElement)connectionCells[i]).Margin = new Thickness(at[i].Column == 0 ? 0 : 12, 0, 0, 0);
             }
-            connection.ColumnDefinitions[2].Width = new GridLength(oneLine ? 190 : 0);
+            connection.ColumnDefinitions[2].Width = new GridLength(oneLine ? KeyEnvWidth : 0);
             keyStatus.MaxWidth = oneLine ? 120 : double.PositiveInfinity; // "✗ Key not set — see Key help" takes two lines there
         }
         foreach (var cell in connectionCells)
