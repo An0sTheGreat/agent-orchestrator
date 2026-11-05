@@ -45,6 +45,14 @@ public partial class MainWindow
                     Regroup(reply.Content);
     }
 
+    // The muted line that says the context was compacted. Not a working step (no "stats" tag): it shows with View thinking off too.
+    private static TextBlock CompactionNote(string text)
+    {
+        var note = new TextBlock { Text = text, FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "compaction-note" };
+        note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        return note;
+    }
+
     // A reply's working steps; its answers, notes and rules are not.
     private static bool IsWork(UIElement e) => e is Expander { Tag: not WorkGroup } or TextBlock { Tag: "stats" } or WrapPanel;
 
@@ -155,6 +163,9 @@ public partial class MainWindow
             r.Content.Children.Add(BuildExpander("read", "index.html", new StackPanel(), out _));
             r.Content.Children.Add(BuildExpander("read", "app.js", new StackPanel(), out _));
             r.Content.Children.Add(new TextBlock { Text = "Lead · 40 tok/s", Tag = "stats" });
+            var compacted = CompactionNote("Context compacted: 40,000 → 9,000 tokens");
+            r.Content.Children.Add(compacted);
+            r.Content.Children.Add(CompactionRule());
             EnsureAnswer(r).Text = "Second answer.";
             _settings.ViewThinking = false;
             RegroupAll();
@@ -163,6 +174,8 @@ public partial class MainWindow
             if (rows.Count != 1 || hidden != 4 || WorkSummary(r.Content.Children.OfType<UIElement>().Where(IsWork)) != "1 thought · read 2 files" ||
                 ((TextBlock)((StackPanel)rows[0].Header).Children[1]).Text != "1 thought · read 2 files" || r.Content.Children.IndexOf(rows[0]) != 2)
                 return Fail($"{rows.Count} rows, {hidden} hidden");
+            if (compacted.Visibility != Visibility.Visible || IsWork(compacted))
+                return Fail("the compaction note folded into the row");
             rows[0].IsExpanded = true;
             if (r.Content.Children.OfType<UIElement>().Any(e => IsWork(e) && e.Visibility != Visibility.Visible))
                 return Fail("the opened row");

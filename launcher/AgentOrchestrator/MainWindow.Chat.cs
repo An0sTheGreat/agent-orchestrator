@@ -1183,9 +1183,7 @@ public partial class MainWindow
                 if (_reply is { } compactReply)
                 {
                     DetachAnswer(compactReply); // text after it starts below the line
-                    var note = new TextBlock { Text = CompactedLine(ev), FontSize = 11, Margin = new Thickness(2, 2, 0, 4), TextWrapping = TextWrapping.Wrap, Tag = "stats" };
-                    note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-                    compactReply.Content.Children.Add(note);
+                    compactReply.Content.Children.Add(CompactionNote(CompactedLine(ev)));
                     compactReply.Content.Children.Add(CompactionRule());
                 }
                 break;
