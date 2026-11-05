@@ -961,16 +961,10 @@ public partial class MainWindow
                 {
                     var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
                     if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
-                    {
-                        GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
-                        WriteJson(target, root);
-                    }
-                    if (remote is null && remoteNow is not null)
-                    {
-                        if (LauncherLogic.WriteRemoteRole(target, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
-                            return failed;
-                        root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
-                    }
+                        LauncherLogic.GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
+                    if (remote is null && remoteNow is not null &&
+                        LauncherLogic.WriteRemoteRole(root, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
+                        return failed; // nothing written: the one WriteJson below writes every change
                     var settings = root["roles"]![card.Role]!.AsObject();
                     if (choice is not null && remote is null)
                         SetRoleModel(settings, choice);
@@ -1032,14 +1026,6 @@ public partial class MainWindow
         _gpuMemory.ContinueWith(_ => Vram(), TaskScheduler.FromCurrentSynchronizationContext());
         Derive(startLoad, atOpen: true);
         return (new DockPanel { Children = { footer, scroll } }, () => !State().SequenceEqual(clean), Save);
-    }
-
-    // COMPACTOR on MAIN's model gets its own roles.compactor from here on: MAIN's settings to start (not MAIN's chat prompt).
-    private static void GiveCompactorOwn(JsonObject root)
-    {
-        var copy = (JsonObject)root["roles"]!["planner"]!.DeepClone();
-        copy.Remove("chat_system_prompt");
-        root["roles"]![LauncherLogic.Compactor] = copy;
     }
 
     private static Task<long?>? _gpuMemory; // the first GPU's total memory (nvidia-smi), read once

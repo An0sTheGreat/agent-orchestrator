@@ -387,19 +387,8 @@ public partial class MainWindow
                 string? failed;
                 try
                 {
-                    failed = WriteConfigs(targets, t =>
-                    {
-                        if (card.Role == LauncherLogic.Compactor) // following MAIN: its own roles.compactor first, then remote
-                        {
-                            var root = JsonNode.Parse(File.ReadAllText(t))!.AsObject();
-                            if (!LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
-                            {
-                                GiveCompactorOwn(root);
-                                WriteJson(t, root);
-                            }
-                        }
-                        return LauncherLogic.WriteRemoteRole(t, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json"));
-                    });
+                    // COMPACTOR following MAIN gets its own copy in the same single write: a refusal or throw writes nothing
+                    failed = WriteConfigs(targets, t => LauncherLogic.WriteRemoteRole(t, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")));
                 }
                 catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
                 {

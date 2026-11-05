@@ -1152,9 +1152,24 @@ internal static class LauncherLogic
     // saved local_settings, else the template's (templatePath, only read) values for this role. Error message or null.
     public static string? WriteRemoteRole(string configPath, string role, RemoteRole? remote, string templatePath)
     {
+        var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
+        if (WriteRemoteRole(root, role, remote, templatePath) is { } problem)
+            return problem;
+        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
+        {
+            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        }));
+        return null;
+    }
+
+    // The same on a config.json already in memory (root is changed; the caller writes it once, or drops it on an error or throw).
+    // COMPACTOR following MAIN gets its own roles.compactor first, so Switch to Local restores its copy of MAIN's.
+    public static string? WriteRemoteRole(JsonObject root, string role, RemoteRole? remote, string templatePath)
+    {
         if (remote is not null && ValidateRemoteRole(remote) is { } problem)
             return problem;
-        var root = JsonNode.Parse(File.ReadAllText(configPath))!.AsObject();
+        if (remote is not null && role == Compactor && !CompactorHasOwn(root["roles"] as JsonObject))
+            GiveCompactorOwn(root);
         var settings = root["roles"]![role]!.AsObject();
         if (remote is not null)
         {
@@ -1190,10 +1205,6 @@ internal static class LauncherLogic
             settings.Remove("local_settings");
             SetProvider(settings, "");
         }
-        File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
-        {
-            WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        }));
         return null;
     }
 
@@ -1303,6 +1314,14 @@ internal static class LauncherLogic
     public static bool CompactorHasOwn(JsonElement roles) =>
         roles.TryGetProperty(Compactor, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _);
     public static bool CompactorHasOwn(JsonObject? roles) => roles?[Compactor] is JsonObject c && c["same_as"] is null;
+
+    // COMPACTOR on MAIN's model gets its own roles.compactor from here on: MAIN's settings to start (not MAIN's chat prompt).
+    public static void GiveCompactorOwn(JsonObject root)
+    {
+        var copy = (JsonObject)root["roles"]!["planner"]!.DeepClone();
+        copy.Remove("chat_system_prompt");
+        root["roles"]![Compactor] = copy;
+    }
 
     // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
     public static WorkerPreset CapturePreset(string name, string configPath, IEnumerable<WorkerSetting> workers)
@@ -2348,6 +2367,14 @@ internal static class LauncherLogic
             foreach (var bad in new[] { remote with { BaseUrl = "openrouter.ai" }, remote with { Model = " " }, remote with { KeyEnv = "sk-abc 123" }, remote with { Timeout = "0" } })
                 if (WriteRemoteRole(remoteConfig, "planner", bad, remoteTemplate) is null)
                     throw new InvalidOperationException($"Remote role: invalid input was accepted: {bad}");
+            // COMPACTOR following MAIN: a refused write leaves the file byte for byte; an accepted one gives it MAIN's copy, then remote.
+            File.WriteAllText(remoteConfig, $"{{\"roles\":{{\"planner\":{localPlanner},\"compactor\":{{\"same_as\":\"planner\"}}}}}}");
+            var followingBytes = File.ReadAllBytes(remoteConfig);
+            JsonNode CompactorNow() => JsonNode.Parse(File.ReadAllText(remoteConfig))!["roles"]![Compactor]!;
+            if (WriteRemoteRole(remoteConfig, Compactor, remote with { Model = " " }, remoteTemplate) is null || !File.ReadAllBytes(remoteConfig).SequenceEqual(followingBytes) ||
+                WriteRemoteRole(remoteConfig, Compactor, remote, remoteTemplate) is not null || (string?)CompactorNow()["model"] != "vendor/model-x" ||
+                (string?)CompactorNow()["local_settings"]?["auto_load"]?["model_path"] != "u/Q" || !JsonNode.DeepEquals(Planner(), JsonNode.Parse(localPlanner)))
+                throw new InvalidOperationException($"Remote role: COMPACTOR following MAIN was half-written or not given its own: {File.ReadAllText(remoteConfig)}");
             File.WriteAllText(remoteConfig, "{\"roles\":{\"planner\":{\"base_url\":\"https://r/v1\",\"model\":\"r/m\",\"api_key_env\":\"K\",\"sampling\":{}}}}");
             if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["base_url"] != "http://t/v1" ||
                 (string?)Planner()["auto_load"]?["model_path"] != "t/M" || Planner()["model"] is not null || !File.ReadAllBytes(remoteTemplate).SequenceEqual(templateBytes))
