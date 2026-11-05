@@ -1909,6 +1909,7 @@ internal static class LauncherLogic
     {
         ModelOptions.SelfTest();
         ContextSnapshot.SelfTest();
+        RemoteCatalog.SelfTest();
         var work = new System.Windows.Rect(0, 0, 1920, 1040);
         var restored = new System.Windows.Rect(300, 200, 1000, 600);
         var fallbackSize = new System.Windows.Size(1400, 860);
