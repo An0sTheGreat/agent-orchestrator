@@ -211,18 +211,11 @@ public partial class MainWindow
             OpenCodeConversation(entry.Id);
     }
 
-    // A new chat in the view shown: the Chat view's own, else a Code chat (which asks for its folder).
+    // A new conversation is a chat until it works in a folder.
     private void NewSidebarChat()
     {
-        if (AppSettings.Unified) // the test build: a new conversation is a chat until it works in a folder
-        {
-            ShowView(chat: true);
-            NewChat_Click(this, new RoutedEventArgs());
-        }
-        else if (NavChat.IsChecked == true)
-            NewChat_Click(this, new RoutedEventArgs());
-        else
-            NewCodeConversation();
+        ShowView(chat: true);
+        NewChat_Click(this, new RoutedEventArgs());
     }
 
     // A project header's "+": a new chat already in that project. In Code it works in the folder of the project's latest

@@ -291,15 +291,10 @@ internal sealed class AppSettings
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).
     public static string DataRoot => Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Unified ? "Agent Orchestrator Test" : "Agent Orchestrator");
+        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Agent Orchestrator");
 
-    // The test build (TEST_BUILD): one conversation view, a chat until it works in a folder (then a Code conversation), the
-    // sidebar's Chat and Code sections, and its own data folder so the regular app's conversations and settings stay apart.
-#if TEST_BUILD
+    // One conversation view: a chat until it works in a folder (then a Code conversation), and the sidebar's Chat and Code sections.
     public const bool Unified = true;
-#else
-    public const bool Unified = false;
-#endif
 
     private static string FilePath => Path.Combine(DataRoot, "settings.json");
 
