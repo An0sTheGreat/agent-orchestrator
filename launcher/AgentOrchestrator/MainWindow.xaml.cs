@@ -2045,7 +2045,7 @@ public partial class MainWindow : Window
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 // New chat, Work in a folder and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New chat,+Work in a folder,+Remote API,SECTION:CHAT,?,SECTION:CODE";
+                const string top = "+New chat,+Search,+Work in a folder,+Remote API,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
@@ -2949,6 +2949,8 @@ public partial class MainWindow : Window
         if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
             return false;
         if (!await RemoteApiSmoke())
+            return false;
+        if (!await SearchSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
         {

@@ -37,6 +37,7 @@ public partial class MainWindow
         if (AppSettings.Unified) // the test build: no Chat/Code switch; Chat's section on top, Code's below, each with its own lists
         {
             SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
+            SidebarList.Children.Add(SidebarAction("", "Search", OpenSearch));
             SidebarList.Children.Add(SidebarAction("", "Work in a folder", () => NewCodeConversation()));
             SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             AddSidebarSection(view, chat: true, "CHAT");
@@ -45,6 +46,7 @@ public partial class MainWindow
         else
         {
             SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
+            SidebarList.Children.Add(SidebarAction("", "Search", OpenSearch));
             SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
             AddSidebarSection(view, NavChat.IsChecked == true, null);
         }

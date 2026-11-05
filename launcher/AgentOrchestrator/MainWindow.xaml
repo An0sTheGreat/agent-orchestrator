@@ -1789,6 +1789,47 @@
         </Grid>
 
 
+        <!-- Search (MainWindow.Search): the conversations palette over a dim scrim; a scrim click, × or Esc closes it. Under the
+             toasts, so a refused open's toast shows over it. -->
+        <Grid x:Name="SearchOverlay" Grid.Row="1" Grid.RowSpan="3" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#99000000"
+              MouseLeftButtonDown="SearchOverlay_MouseDown" PreviewKeyDown="SearchOverlay_PreviewKeyDown">
+            <Border x:Name="SearchCard" Width="640" VerticalAlignment="Top" Margin="0,64,0,48" Padding="8,6,8,8" Background="{DynamicResource Card}"
+                    BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource CardRadius}">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="8,2,0,4">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="30" Height="30" Padding="0" Click="SearchClose_Click"
+                                ToolTip="Close" AutomationProperties.Name="Close search">
+                            <TextBlock Text="&#xE711;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <TextBlock Text="&#xE721;" Style="{StaticResource RailGlyph}" FontSize="14" Foreground="{DynamicResource Muted}" VerticalAlignment="Center" />
+                        <Grid Margin="6,0,6,0">
+                            <TextBox x:Name="SearchBox" Style="{StaticResource ChatInput}" FontSize="15" VerticalContentAlignment="Center"
+                                     TextChanged="SearchBox_TextChanged" AutomationProperties.Name="Search conversations" />
+                            <TextBlock x:Name="SearchHint" Text="Search" FontSize="15" Foreground="{DynamicResource Muted}" Margin="6,0,0,0"
+                                       VerticalAlignment="Center" IsHitTestVisible="False" />
+                        </Grid>
+                    </DockPanel>
+                    <Border DockPanel.Dock="Top" Height="1" Margin="-8,0,-8,8" Background="{DynamicResource Border}" />
+                    <StackPanel x:Name="SearchTabs" DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,0,0,6">
+                        <ToggleButton Tag="All" Content="All" Style="{StaticResource ChipToggle}" FontSize="12" Padding="12,4" Click="SearchTab_Click" />
+                        <ToggleButton Tag="Chat" Content="Chat" Style="{StaticResource ChipToggle}" FontSize="12" Padding="12,4" Click="SearchTab_Click" />
+                        <ToggleButton Tag="Code" Content="Code" Style="{StaticResource ChipToggle}" FontSize="12" Padding="12,4" Click="SearchTab_Click" />
+                    </StackPanel>
+                    <Border DockPanel.Dock="Bottom" Height="1" Margin="-8,6,-8,6" Background="{DynamicResource Border}" />
+                    <ToggleButton x:Name="SearchArchived" DockPanel.Dock="Bottom" Style="{StaticResource ChipToggle}" FontSize="12" Padding="10,5" HorizontalAlignment="Left"
+                                  Click="SearchArchived_Click" ToolTip="Include archived conversations">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE7B8;" Style="{StaticResource RailGlyph}" FontSize="12" Margin="0,0,8,0" VerticalAlignment="Center" />
+                            <TextBlock Text="Show archived" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </ToggleButton>
+                    <ScrollViewer x:Name="SearchScroll" MaxHeight="420" VerticalScrollBarVisibility="Auto" Focusable="False">
+                        <StackPanel x:Name="SearchResults" />
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+        </Grid>
+
         <!-- Toasts (MainWindow.Toast): newest at the bottom, just above the status bar -->
         <StackPanel x:Name="ToastStack" Grid.Row="2" Grid.Column="1" IsHitTestVisible="False" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="0,0,20,16" />
 
