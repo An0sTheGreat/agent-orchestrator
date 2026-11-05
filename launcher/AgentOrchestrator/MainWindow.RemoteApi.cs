@@ -26,6 +26,7 @@ public partial class MainWindow
     private Task _remoteModelsTask = Task.CompletedTask, _remoteProvidersTask = Task.CompletedTask; // smokes await them
 
     // The providers table: 0 = the Provider column, which takes the width left over (at least 130).
+    private const double ConnectionOneLine = 680; // narrower: the connection settings take two lines
     private static readonly double[] ProviderColumns = [34, 0, 64, 76, 76, 82, 68, 56, 64, 52];
     private static readonly string?[] HeadTips = [null, null, "Quantization", "Input, USD per million tokens", "Output, USD per million tokens",
         "Cached input read, USD per million tokens", "Median latency in seconds, last 30 minutes", "Median throughput in tokens per second, last 30 minutes",
@@ -67,7 +68,7 @@ public partial class MainWindow
             service.Items.Add(new ComboBoxItem { Content = s.Name, Tag = s });
         var baseUrl = Box("RemoteBaseUrl");
         var keyEnv = Box("RemoteKeyEnv");
-        var keyStatus = new TextBlock { Tag = "RemoteKeyStatus", FontSize = 11.5, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 7) }; // level with the box beside it
+        var keyStatus = new TextBlock { Tag = "RemoteKeyStatus", FontSize = 11.5, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
         RemoteCatalog.Service Selected() => (RemoteCatalog.Service)((ComboBoxItem)service.SelectedItem).Tag;
         // The key goes only where the user confirmed: a known service's own host, or a Custom URL confirmed with Enter or
         // Load models (a preset's URL counts). keyVar is the variable name committed with Enter or leaving the box, never a
@@ -76,6 +77,35 @@ public partial class MainWindow
         var urlConfirmed = preset is not null;
         var loadModels = new Button { Content = "Load models", Tag = "RemoteLoadModels", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 4, 0, 0) };
         DockPanel.SetDock(loadModels, Dock.Right);
+        // One line: Service, Base URL (the width left over), key variable, its status. Narrower than ConnectionOneLine, the key
+        // variable and its status take a second line, so nothing clips.
+        UIElement[] connectionCells =
+        [
+            new StackPanel { Children = { Label("Service"), service } }, new StackPanel { Children = { Label("Base URL"), new DockPanel { Children = { loadModels, baseUrl } } } },
+            new StackPanel { Children = { Label("API key variable"), keyEnv } }, new Border { Height = 30, VerticalAlignment = VerticalAlignment.Bottom, Child = keyStatus }, // level with the boxes
+        ];
+        var connection = new Grid
+        {
+            Tag = "RemoteConnection", RowDefinitions = { new RowDefinition(), new RowDefinition() },
+            ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(170) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(190) }, new ColumnDefinition { Width = GridLength.Auto } },
+        };
+        void PlaceConnection(bool oneLine)
+        {
+            (int Column, int Row, int Span)[] at = oneLine ? [(0, 0, 1), (1, 0, 1), (2, 0, 1), (3, 0, 1)] : [(0, 0, 1), (1, 0, 3), (0, 1, 1), (1, 1, 3)];
+            for (var i = 0; i < connectionCells.Length; i++)
+            {
+                Grid.SetColumn(connectionCells[i], at[i].Column);
+                Grid.SetRow(connectionCells[i], at[i].Row);
+                Grid.SetColumnSpan(connectionCells[i], at[i].Span);
+                ((FrameworkElement)connectionCells[i]).Margin = new Thickness(at[i].Column == 0 ? 0 : 12, 0, 0, 0);
+            }
+            connection.ColumnDefinitions[2].Width = new GridLength(oneLine ? 190 : 0);
+            keyStatus.MaxWidth = oneLine ? 120 : double.PositiveInfinity; // "✗ Key not set — see Key help" takes two lines there
+        }
+        foreach (var cell in connectionCells)
+            connection.Children.Add(cell);
+        PlaceConnection(true);
+        connection.SizeChanged += (_, e) => PlaceConnection(e.NewSize.Width >= ConnectionOneLine);
         string? EnvKey() => keyVar.Length > 0 && Environment.GetEnvironmentVariable(keyVar) is { Length: > 0 } key ? key : null;
         string? Key() => (Selected() == custom ? urlConfirmed : RemoteCatalog.ServiceFor(baseUrl.Text) == Selected()) ? EnvKey() : null;
 
@@ -151,7 +181,8 @@ public partial class MainWindow
         {
             var env = keyVar;
             var set = EnvKey() is not null;
-            keyStatus.Text = env.Length == 0 ? "No variable: requests go without a key." : set ? $"✓ {env} is set in your environment." : $"{env} is not set — see Key help.";
+            keyStatus.Text = env.Length == 0 ? "No key variable" : set ? "✓ Key set" : "✗ Key not set — see Key help";
+            keyStatus.ToolTip = env.Length == 0 ? "No variable: requests go without a key." : set ? $"{env} is set in your environment." : $"{env} is not set in your environment — see Key help.";
             if (set || env.Length == 0)
                 keyStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             else
@@ -532,8 +563,7 @@ public partial class MainWindow
             Children =
             {
                 new DockPanel { Children = { keyHelp, new StackPanel { Children = { title, intro } } } },
-                Columns(new StackPanel { Children = { Label("Service"), service } }, new StackPanel { Children = { Label("Base URL"), new DockPanel { Children = { loadModels, baseUrl } } } }),
-                Columns(new StackPanel { Children = { Label("API key variable"), keyEnv } }, new StackPanel { VerticalAlignment = VerticalAlignment.Bottom, Children = { keyStatus } }),
+                connection,
                 new DockPanel { Margin = new Thickness(0, 18, 0, 0), Children = { searchBox, modelHead } },
                 listBox, modelsNote,
                 Label("Model id"), RemoteMuted("What the worker's config gets: pick one above or type it."), modelId,
@@ -725,6 +755,23 @@ public partial class MainWindow
                 !fake.Seen.Any(r => r.Url == "https://openrouter.ai/api/v1/models"))
                 return Fail($"the model list: {string.Join(", ", fake.Seen)}");
 
+            // Service, Base URL, key variable and its status on one line; narrower, on two, with nothing past the page's edge.
+            var connection = Find<Grid>("RemoteConnection");
+            FrameworkElement[] parts = [Find<ComboBox>("RemoteService"), Find<TextBox>("RemoteBaseUrl"), Find<TextBox>("RemoteKeyEnv"), Find<TextBlock>("RemoteKeyStatus")];
+            Rect At(FrameworkElement e) => e.TransformToAncestor(connection).TransformBounds(new Rect(e.RenderSize));
+            connection.Width = ConnectionOneLine; // the window's own width varies from run to run
+            RemoteApiView.UpdateLayout();
+            var line = parts.Select(At).ToArray();
+            if (line.Any(r => Math.Abs((r.Top + r.Bottom) / 2 - (line[0].Top + line[0].Bottom) / 2) > 3) || line[3].Left < line[2].Right || line[2].Left < line[1].Right ||
+                line[3].Right > ConnectionOneLine + 0.5 || line[1].Width < 150)
+                return Fail($"the connection settings are not on one line: {string.Join(" / ", line)}");
+            connection.Width = 360;
+            RemoteApiView.UpdateLayout();
+            line = parts.Select(At).ToArray();
+            connection.Width = double.NaN;
+            if (line.Any(r => r.Right > 360.5) || line[1].Width < 150 || line[2].Top < line[0].Bottom)
+                return Fail($"narrow, the connection settings clip: {string.Join(" / ", line)}");
+
             // The key help shows once by itself; Key help reopens it with the selected service first, and its links open outside.
             OpenRemoteApi();
             await Loaded();
@@ -908,7 +955,7 @@ public partial class MainWindow
             before = fake.Seen.Count;
             Type("RemoteKeyEnv", KeyA); // on its way to AO_SMOKE_KEY_AB, say
             await Loaded();
-            if (fake.Seen.Count != before || Find<TextBlock>("RemoteKeyStatus").Text != $"✓ {KeyB} is set in your environment.")
+            if (fake.Seen.Count != before || Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set", ToolTip: string tip } || tip != $"{KeyB} is set in your environment.")
                 return Fail($"a half-typed key variable asked [{Asked(before)}], status \"{Find<TextBlock>("RemoteKeyStatus").Text}\"");
             Find<TextBox>("RemoteKeyEnv").Text = KeyB;
             Find<TextBox>("RemoteModelId").Text = Glm;
