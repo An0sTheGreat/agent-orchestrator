@@ -125,6 +125,13 @@ public partial class MainWindow
             CloseBrowser();
             SetWorkerRail(true);
         }
+        // Search over the Code view: a seeded word, All conversations.
+        OpenSearch();
+        SearchBox.Text = "dashboard";
+        await Settle();
+        await _searchRun;
+        Snap("search");
+        CloseSearch();
         // The Remote API page on the canned OpenRouter replies, a model chosen, two providers ticked, enough providers to scroll
         // and the table sorted by input price.
         _remoteHttp = new HttpClient(new RemoteApiFakeHandler { ExtraProviders = 6 });

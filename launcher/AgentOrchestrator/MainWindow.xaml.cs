@@ -2111,8 +2111,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New,+Remote API,SECTION:CHAT,?,SECTION:CODE";
+                // New, Search and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Search,+Remote API,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
@@ -3016,6 +3016,8 @@ public partial class MainWindow : Window
         if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
             return false;
         if (!await RemoteApiSmoke())
+            return false;
+        if (!await SearchSmoke())
             return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
