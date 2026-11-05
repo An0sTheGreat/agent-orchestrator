@@ -307,7 +307,7 @@ public partial class MainWindow
                 var tick = new ToggleButton
                 {
                     Style = (Style)FindResource("SegToggle"), Width = 22, Height = 22, Padding = new Thickness(0), FontSize = 11, Tag = "tick:" + r.Tag,
-                    IsChecked = position >= 0, Content = position >= 0 ? (position + 1).ToString(CultureInfo.InvariantCulture) : "",
+                    IsChecked = position >= 0, IsEnabled = r.Tag.Length > 0, Content = position >= 0 ? (position + 1).ToString(CultureInfo.InvariantCulture) : "",
                     ToolTip = position >= 0 ? $"Provider {position + 1} of {order.Count}: click to remove" : "Use this provider (in the order ticked)",
                 };
                 tick.Click += (_, _) =>
@@ -620,8 +620,14 @@ public partial class MainWindow
         return t;
     }
 
-    // USD per million tokens; "—" unknown.
-    private static string RemotePrice(decimal? perMillion) => perMillion is { } v ? "$" + v.ToString("0.00##", CultureInfo.InvariantCulture) : "—";
+    // USD per million tokens; "—" unknown, "$0" free, "<$0.0001" any other price the format would round down to $0.00.
+    private static string RemotePrice(decimal? perMillion) => perMillion switch
+    {
+        null => "—",
+        0 => "$0",
+        < 0.0001m => "<$0.0001",
+        { } v => "$" + v.ToString("0.00##", CultureInfo.InvariantCulture),
+    };
 
     private static string RemoteFigure(double? value, string format) => value is { } v ? v.ToString(format, CultureInfo.InvariantCulture) : "—";
 
@@ -636,7 +642,8 @@ public partial class MainWindow
             if (!ok)
                 throw new InvalidOperationException($"Remote API self-test failed: {what}");
         }
-        Check(RemotePrice(0.0285m) == "$0.0285" && RemotePrice(0.03m) == "$0.03" && RemotePrice(1.5m) == "$1.50" && RemotePrice(0m) == "$0.00" &&
+        Check(RemotePrice(0.0285m) == "$0.0285" && RemotePrice(0.03m) == "$0.03" && RemotePrice(1.5m) == "$1.50" && RemotePrice(0m) == "$0" &&
+            RemotePrice(0.00004m) == "<$0.0001" && RemotePrice(0.00009m) == "<$0.0001" && RemotePrice(0.0001m) == "$0.0001" &&
             RemotePrice(12.345678m) == "$12.3457" && RemotePrice(null) == "—", "price format");
         Check(RemoteContext(262144) == "262K" && RemoteContext(1048576) == "1.05M" && RemoteContext(2_000_000) == "2M" && RemoteContext(8192) == "8K" && RemoteContext(0) == "",
             "context length");
@@ -751,17 +758,19 @@ public partial class MainWindow
             if (Find<TextBox>("RemoteModelId").Text != Glm || glm.IsChecked != true || !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
                 return Fail($"choosing a model: id {Find<TextBox>("RemoteModelId").Text}, asked {string.Join(", ", fake.Seen)}");
             var head = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().FirstOrDefault();
-            string[] wantRows = ["Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
+            string[] wantRows = ["Untagged|—|<$0.0001|$0|—|—|—|—|", "Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
                 "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
             if (Find<StackPanel>("RemoteProviders").Visibility != Visibility.Visible ||
                 string.Join("|", head?.Children.OfType<TextBlock>().Select(t => t.Text) ?? []) != "|Provider|Quant.|In $/M|Out $/M|Cache $/M|Latency|tok/s|Uptime|Vision" ||
                 !Rows().SequenceEqual(wantRows))
                 return Fail($"the providers table: {string.Join(" / ", Rows())}");
+            if (Tick("") is not { IsEnabled: false } || Tick("relace/fp4") is not { IsEnabled: true }) // no tag: nothing to put in the order
+                return Fail("the untagged provider's tick is enabled (or a tagged one's is not)");
             Toggle(Find<ToggleButton>("RemoteVisionOnly"));
-            if (!Rows().SequenceEqual([wantRows[3]]))
+            if (!Rows().SequenceEqual([wantRows[4]]))
                 return Fail($"Vision only left {string.Join(" / ", Rows())}");
             Toggle(Find<ToggleButton>("RemoteVisionOnly"));
-            if (Rows().Count != 4)
+            if (Rows().Count != 5)
                 return Fail($"Vision only off left {Rows().Count} providers");
 
             // Ticked providers keep the order ticked (not sorted), on the page and in what Apply writes.
@@ -933,8 +942,8 @@ public partial class MainWindow
     }
 }
 
-// Canned OpenRouter replies for --ui-smoke and --screenshots: /models lists three models, /models/<id>/endpoints four
-// providers (one with latency and throughput, as with a key; one with an unknown price). Records every address asked
+// Canned OpenRouter replies for --ui-smoke and --screenshots: /models lists three models, /models/<id>/endpoints five
+// providers (one with latency and throughput, as with a key; one with an unknown price; one with no tag and a price under $0.0001). Records every address asked
 // with the Authorization header it carried (null: none).
 internal sealed class RemoteApiFakeHandler : HttpMessageHandler
 {
@@ -957,7 +966,9 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "{\"provider_name\":\"GMICloud\",\"tag\":\"gmicloud/fp8\",\"quantization\":\"fp8\",\"context_length\":202752," +
         "\"pricing\":{\"prompt\":\"0.00000006\",\"completion\":\"0.00000044\"},\"uptime_last_30m\":99.5,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
         "{\"provider_name\":\"Mystery\",\"tag\":\"mystery\",\"quantization\":\"unknown\",\"context_length\":65536,\"pricing\":{\"prompt\":\"-1\"}," +
-        "\"uptime_last_30m\":null,\"supports_image_reference\":true,\"latency_last_30m\":null,\"throughput_last_30m\":null}]}}";
+        "\"uptime_last_30m\":null,\"supports_image_reference\":true,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
+        "{\"provider_name\":\"Untagged\",\"quantization\":\"\",\"context_length\":8192,\"pricing\":{\"prompt\":\"0.00000000004\",\"completion\":\"0\"}," +
+        "\"uptime_last_30m\":null,\"supports_image_reference\":false,\"latency_last_30m\":null,\"throughput_last_30m\":null}]}}";
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
