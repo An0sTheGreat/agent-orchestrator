@@ -336,7 +336,7 @@ public partial class MainWindow
         {
             var tags = SidebarList.Children.OfType<Button>().Select(b => b.Tag as string).ToList();
             var at = tags.IndexOf("+Search");
-            if (at < 1 || tags[at - 1] != "+New chat" || tags.IndexOf("+Remote API") < at)
+            if (at < 1 || tags[at - 1] != "+New" || tags.IndexOf("+Remote API") < at)
                 return Fail("the Search row is not below New: " + string.Join(",", tags));
             SmokeClick(SidebarList.Children.OfType<Button>().First(b => b.Tag as string == "+Search"));
             await _searchRun;
