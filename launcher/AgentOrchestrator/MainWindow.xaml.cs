@@ -39,7 +39,7 @@ public partial class MainWindow : Window
     private bool _stopRequested;
     private string? _runError; // the run's last ERROR line, shown in the conversation when it ends
     // The project run's output: a panel appended to the Code conversation (AddBlock) after the messages shown when it started.
-    private StackPanel OutputPanel = new();
+    private StackPanel OutputPanel = new() { Tag = RunOutput };
     private readonly StringBuilder _log = new(), _transcript = new();
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer _poll = new() { Interval = TimeSpan.FromMilliseconds(500) };
@@ -268,7 +268,7 @@ public partial class MainWindow : Window
 
     private void ResetRunView()
     {
-        OutputPanel = new StackPanel(); // the last run's output stays in the conversation above
+        OutputPanel = new StackPanel { Tag = RunOutput }; // the last run's output stays in the conversation above
         if (_stream is { } live)
             SetPulse(live, false);
         _stream = null;
@@ -510,6 +510,7 @@ public partial class MainWindow : Window
                 RefreshPrimary();
                 break;
         }
+        QueueRegroup(); // View thinking off: the run's new steps fold into their row
     }
 
     // A turn is a stretch of one role working; a different role taking over starts that role's turn fresh.
@@ -677,6 +678,7 @@ public partial class MainWindow : Window
         if (_stream is not { } block)
             return;
         _stream = null;
+        QueueRegroup(); // no longer streaming: it can fold (View thinking off)
         DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Kind != "tool")
             _runClosed.Add(block);
@@ -3049,7 +3051,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke())
+        if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !await RunThinkingSmoke(Snap))
             return false;
         // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
         {
