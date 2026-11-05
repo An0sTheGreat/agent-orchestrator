@@ -305,11 +305,17 @@ public partial class MainWindow
             return keyVar != was;
         }
 
+        var pinnedOverCap = false; // the list shows the pick although it is over the price cap
         void RenderModels()
         {
             list.Children.Clear();
             var q = search.Text.Trim();
-            var shown = models.Where(m => q.Length == 0 || m.Id.Contains(q, StringComparison.OrdinalIgnoreCase) || m.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+            var (capIn, capOut, picked) = (LauncherLogic.MaxPrice(maxIn.Text), LauncherLogic.MaxPrice(maxOut.Text), modelId.Text.Trim());
+            var found = models.Where(m => q.Length == 0 || m.Id.Contains(q, StringComparison.OrdinalIgnoreCase) || m.Name.Contains(q, StringComparison.OrdinalIgnoreCase)).ToList();
+            bool Over(RemoteCatalog.ModelEntry m) => RemoteOverCap(m.InputPerM, m.OutputPerM, capIn, capOut);
+            var shown = found.Where(m => !Over(m) || m.Id == picked).ToList(); // the pick stays, tagged, so the user does not lose it
+            var capped = found.Count - shown.Count;
+            pinnedOverCap = shown.Any(Over);
             foreach (var m in shown.Take(200)) // ponytail: a 200-row cap instead of a virtualized list; search narrows the rest
             {
                 var context = RemoteMuted(RemoteContext(m.ContextLength));
@@ -321,6 +327,12 @@ public partial class MainWindow
                     var id = new Run("   " + m.Id) { FontSize = 11 };
                     id.SetResourceReference(TextElement.ForegroundProperty, "Muted");
                     name.Inlines.Add(id);
+                }
+                if (Over(m))
+                {
+                    var over = new Run("   over cap") { FontSize = 10.5, Tag = "overCap" };
+                    over.SetResourceReference(TextElement.ForegroundProperty, "Muted");
+                    name.Inlines.Add(over);
                 }
                 Button? star = null;
                 if (Selected() != custom) // a Custom URL is the user's own address: nothing to come back to by name
@@ -357,7 +369,8 @@ public partial class MainWindow
             }
             listBox.Visibility = shown.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (models.Count > 0)
-                Note(modelsNote, shown.Count > 200 ? $"Showing 200 of {shown.Count} models: search to narrow." : q.Length > 0 ? $"{shown.Count} of {models.Count} models" : $"{models.Count} models");
+                Note(modelsNote, (shown.Count > 200 ? $"Showing 200 of {shown.Count} models: search to narrow." : q.Length > 0 || capped > 0 ? $"{shown.Count} of {models.Count} models" : $"{models.Count} models") +
+                    (capped > 0 ? $" · {capped} over your price cap hidden" : ""));
         }
 
         void RenderFavorites()
@@ -435,6 +448,8 @@ public partial class MainWindow
         void RenderProviders()
         {
             table.Children.Clear();
+            var (capIn, capOut) = (LauncherLogic.MaxPrice(maxIn.Text), LauncherLogic.MaxPrice(maxOut.Text));
+            bool Over(RemoteCatalog.ProviderRow r) => RemoteOverCap(r.InputPerM, r.OutputPerM, capIn, capOut);
             orderText.Text = order.Count == 0 ? "Any provider." : "Only, in this order: ";
             for (var i = 0; i < order.Count; i++)
             {
@@ -442,9 +457,12 @@ public partial class MainWindow
                 orderText.Inlines.Add((i > 0 ? " → " : "") + (row?.Name is { Length: > 0 } n ? $"{n} ({order[i]})" : order[i]));
                 if (rows.Count > 0 && row is null) // still applies: OpenRouter then refuses every request (no fallbacks)
                     orderText.Inlines.Add(new Run(" (not offered for this model)") { Foreground = amber });
+                else if (row is not null && Over(row)) // hidden in the table, kept in the order: the tick is the user's
+                    orderText.Inlines.Add(new Run(" (over cap)") { Foreground = amber });
             }
             clearOrder.Visibility = order.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-            Note(cheapestNow, rows.Count == 0 ? "" : $"Cheapest now: in {RemotePrice(rows.Min(r => r.InputPerM))} / out {RemotePrice(rows.Min(r => r.OutputPerM))}");
+            var withinCap = rows.Where(r => !Over(r)).ToList();
+            Note(cheapestNow, withinCap.Count == 0 ? "" : $"Cheapest now: in {RemotePrice(withinCap.Min(r => r.InputPerM))} / out {RemotePrice(withinCap.Min(r => r.OutputPerM))}");
             tableScroll.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (rows.Count == 0)
                 return;
@@ -494,7 +512,7 @@ public partial class MainWindow
                     return sort;
                 }).ToArray();
             tableHead.Child = Line(heads);
-            foreach (var r in SortProviders(rows, sortColumn, sortDescending).Where(r => visionOnly.IsChecked != true || r.Vision))
+            foreach (var r in SortProviders(rows, sortColumn, sortDescending).Where(r => (visionOnly.IsChecked != true || r.Vision) && !Over(r)))
             {
                 var position = order.IndexOf(r.Tag);
                 var tick = new ToggleButton
@@ -719,10 +737,19 @@ public partial class MainWindow
         };
         keyEnv.LostFocus += (_, _) => KeyEnvDone();
         search.TextChanged += (_, _) => RenderModels();
+        foreach (var cap in new[] { maxIn, maxOut }) // live, as the search
+            cap.TextChanged += (_, _) =>
+            {
+                RenderModels();
+                RenderProviders();
+            };
         modelId.TextChanged += (_, _) =>
         {
+            var marked = false;
             foreach (var row in list.Children.OfType<ToggleButton>())
-                row.IsChecked = ((RemoteCatalog.ModelEntry)row.Tag).Id == modelId.Text.Trim();
+                marked |= (row.IsChecked = ((RemoteCatalog.ModelEntry)row.Tag).Id == modelId.Text.Trim()) == true;
+            if (pinnedOverCap || !marked) // the old pick over the cap goes, a new one (a favorite) over the cap comes
+                RenderModels();
             _remoteLast = (Selected().Id, baseUrl.Text.Trim(), modelId.Text.Trim());
             order.Clear(); // another model's provider tags (a preset's are set above, before this handler); the prices stay
             FloorShown();
@@ -1025,6 +1052,9 @@ public partial class MainWindow
         $"Remote: {r.Model} @ {(r.Provider.Trim() is { Length: > 0 } p ? p : "any provider")}" + (r.SortPrice ? " · cheapest" : "") +
         (LauncherLogic.MaxPrice(r.MaxInput) is { } i ? $" · max {RemotePrice(i)}/M in" : "") + (LauncherLogic.MaxPrice(r.MaxOutput) is { } o ? $" · max {RemotePrice(o)}/M out" : "");
 
+    // A model or provider row priced above a set cap ($/M): lifted comparisons, so an unknown price or an unset cap never hides.
+    private static bool RemoteOverCap(decimal? inPerM, decimal? outPerM, decimal? maxIn, decimal? maxOut) => inPerM > maxIn || outPerM > maxOut;
+
     private static string RemoteFigure(double? value, string format) => value is { } v ? v.ToString(format, CultureInfo.InvariantCulture) : "—";
 
     // A context length in tokens: 262K, 1.05M; "" unknown.
@@ -1047,6 +1077,11 @@ public partial class MainWindow
         Check(RemoteSummary(plain) == "Remote: vendor/m @ any provider" && RemoteSummary(plain with { Provider = "a/x" }) == "Remote: vendor/m @ a/x" &&
             RemoteSummary(plain with { SortPrice = true, MaxOutput = "0.3" }) == "Remote: vendor/m @ any provider · cheapest · max $0.30/M out" &&
             RemoteSummary(plain with { MaxInput = "1.5", MaxOutput = "2" }) == "Remote: vendor/m @ any provider · max $1.50/M in · max $2.00/M out", "remote summary");
+        Check(RemoteOverCap(1.5m, 9m, 1m, null) && RemoteOverCap(0.1m, 9m, null, 8.99m) && RemoteOverCap(2m, 0.1m, 1m, 1m) && RemoteOverCap(0.1m, 2m, 1m, 1m) &&
+            !RemoteOverCap(1m, 1m, 1m, 1m) && !RemoteOverCap(0.5m, 0.5m, 1m, 1m) && !RemoteOverCap(0m, 0m, 0m, 0m) && !RemoteOverCap(null, null, 0m, 0m) &&
+            !RemoteOverCap(null, 0.1m, 0m, 1m) && !RemoteOverCap(99m, 99m, null, null) &&
+            !RemoteOverCap(99m, 99m, LauncherLogic.MaxPrice("abc"), LauncherLogic.MaxPrice("-1")) && RemoteOverCap(0.31m, 0m, LauncherLogic.MaxPrice(" 0.3 "), null),
+            "price cap: above hides, equal or below or unknown or no cap shows");
         Check(RemoteFigure(0.45, "0.00") == "0.45" && RemoteFigure(93.33333, "0.#") == "93.3" && RemoteFigure(85.5, "0") == "86" && RemoteFigure(null, "0") == "—", "figures");
         Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
             RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
@@ -1580,6 +1615,61 @@ public partial class MainWindow
                 !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
                 return Fail($"choosing the OpenRouter favorite: model id \"{Find<TextBox>("RemoteModelId").Text}\"");
 
+            // The max prices hide the models and the providers priced above them, live; equal, free and unknown prices stay,
+            // as do the pick (tagged over cap), a ticked provider (in the order, as over cap) and the search.
+            fake.PricedModels = true;
+            OpenRemoteApi("reviewer");
+            Service("openrouter");
+            await Loaded();
+            string Listed8() => string.Join(", ", Find<StackPanel>("RemoteModels").Children.OfType<ToggleButton>().Select(t => ((RemoteCatalog.ModelEntry)t.Tag).Id));
+            string ModelsNote() => Find<TextBlock>("RemoteModelsNote").Text;
+            const string All8 = "acme/cheap, acme/free, acme/mid, acme/pricey, acme/unpriced, openai/gpt-4o-mini, qwen/qwen3-coder, z-ai/glm-5.3-flash";
+            string? Capped(string maxIn, string maxOut, string search, string want, string note)
+            {
+                Type("RemoteMaxInput", maxIn);
+                Type("RemoteMaxOutput", maxOut);
+                Type("RemoteSearch", search);
+                return Listed8() == want && ModelsNote() == note ? null : $"max in \"{maxIn}\", out \"{maxOut}\", search \"{search}\" listed [{Listed8()}], note \"{ModelsNote()}\"";
+            }
+            if ((Capped("", "", "", All8, "8 models") ??
+                Capped("", "10", "", All8.Replace("acme/pricey, ", ""), "7 of 8 models · 1 over your price cap hidden") ??
+                Capped("1", "", "", All8.Replace("acme/pricey, ", ""), "7 of 8 models · 1 over your price cap hidden") ??
+                Capped("0.5", "", "", All8.Replace("acme/mid, acme/pricey, ", ""), "6 of 8 models · 2 over your price cap hidden") ??
+                Capped("1", "2.9", "", All8.Replace("acme/mid, acme/pricey, ", ""), "6 of 8 models · 2 over your price cap hidden") ??
+                Capped("1", "2.9", "acme", "acme/cheap, acme/free, acme/unpriced", "3 of 8 models · 2 over your price cap hidden") ??
+                Capped("abc", "-1", "", All8, "8 models") ??
+                Capped("", "", "", All8, "8 models")) is { } cap)
+                return Fail(cap);
+            SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "acme/pricey" })!);
+            await Loaded();
+            Type("RemoteMaxOutput", "10");
+            var pricey = SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "acme/pricey" });
+            if (pricey is not { IsChecked: true } || !Said(SmokeFind<TextBlock>(pricey, t => t.Tag as string == "name")!).TrimEnd().EndsWith("   over cap", StringComparison.Ordinal) || Listed8() != All8 ||
+                Find<StackPanel>("RemoteModels").Children.OfType<ToggleButton>().Count(r => Said(SmokeFind<TextBlock>(r, t => t.Tag as string == "name")!).Contains("over cap")) != 1)
+                return Fail($"the pick over the cap: [{Listed8()}], tagged \"{(pricey is null ? "" : Said(SmokeFind<TextBlock>(pricey, t => t.Tag as string == "name")!))}\"");
+            SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: Glm })!);
+            await Loaded();
+            if (Listed8() != All8.Replace("acme/pricey, ", "") || ModelsNote() != "7 of 8 models · 1 over your price cap hidden")
+                return Fail($"another pick left the one over the cap: [{Listed8()}], note \"{ModelsNote()}\"");
+            Type("RemoteMaxOutput", "");
+            Toggle(Tick("relace/fp4")!);
+            Toggle(Tick("gmicloud/fp8")!);
+            const string Both = "Only, in this order: Relace (relace/fp4) → GMICloud (gmicloud/fp8)";
+            string? Providers(string maxIn, string maxOut, string tags, string order)
+            {
+                Type("RemoteMaxInput", maxIn);
+                Type("RemoteMaxOutput", maxOut);
+                var said = Said(Find<TextBlock>("RemoteOrder"));
+                return RowTags() == tags && said == order ? null : $"providers at max in \"{maxIn}\", out \"{maxOut}\": [{RowTags()}], order \"{said}\"";
+            }
+            if ((Providers("", "", ", relace/fp4, open-inference/fp4, gmicloud/fp8, mystery", Both) ??
+                Providers("", "0.3", ", relace/fp4, open-inference/fp4, mystery", Both + " (over cap)") ??
+                Providers("0.029", "", ", relace/fp4, mystery", Both + " (over cap)") ??
+                Providers("0.03", "0.22", ", relace/fp4, open-inference/fp4, mystery", Both + " (over cap)") ??
+                Providers("", "", ", relace/fp4, open-inference/fp4, gmicloud/fp8, mystery", Both)) is { } providerCap)
+                return Fail(providerCap);
+            fake.PricedModels = false;
+
             if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New") is not { } newChat)
                 return Fail("no New in the sidebar");
             newChat.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -1613,11 +1703,20 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
     public string? Body; // when set, the reply to every address
     public Exception? Failure; // when set, thrown for every address
     public int ExtraProviders; // more providers after the five, Extra 1, 2, … ($1/M in, 90% up)
+    public bool PricedModels; // /models also lists five priced ones (OpenRouter's "pricing", USD per token)
 
     private const string Models = "{\"data\":[" +
         "{\"id\":\"z-ai/glm-5.3-flash\",\"name\":\"Z.ai: GLM 5.3 Flash\",\"context_length\":1048576}," +
         "{\"id\":\"qwen/qwen3-coder\",\"name\":\"Qwen: Qwen3 Coder\",\"context_length\":262144}," +
         "{\"id\":\"openai/gpt-4o-mini\",\"name\":\"OpenAI: GPT-4o-mini\",\"context_length\":128000}]}";
+
+    // $/M in / out: cheap 0.1 / 0.2, mid 1 / 3, pricey 5 / 15, free 0 / 0, unpriced variable ("-1").
+    private const string Priced =
+        ",{\"id\":\"acme/cheap\",\"name\":\"Acme: Cheap\",\"context_length\":131072,\"pricing\":{\"prompt\":\"0.0000001\",\"completion\":\"0.0000002\"}}" +
+        ",{\"id\":\"acme/mid\",\"name\":\"Acme: Mid\",\"context_length\":131072,\"pricing\":{\"prompt\":\"0.000001\",\"completion\":\"0.000003\"}}" +
+        ",{\"id\":\"acme/pricey\",\"name\":\"Acme: Pricey\",\"context_length\":131072,\"pricing\":{\"prompt\":\"0.000005\",\"completion\":\"0.000015\"}}" +
+        ",{\"id\":\"acme/free\",\"name\":\"Acme: Free\",\"context_length\":131072,\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}}" +
+        ",{\"id\":\"acme/unpriced\",\"name\":\"Acme: Unpriced\",\"context_length\":131072,\"pricing\":{\"prompt\":\"-1\",\"completion\":\"-1\"}}";
 
     private const string Endpoints = "{\"data\":{\"id\":\"z-ai/glm-5.3-flash\",\"architecture\":{\"input_modalities\":[\"text\"]},\"endpoints\":[" +
         "{\"provider_name\":\"OpenInference\",\"tag\":\"open-inference/fp4\",\"quantization\":\"fp4\",\"context_length\":1048576," +
@@ -1642,7 +1741,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
             throw Failure;
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
-        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null);
+        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
