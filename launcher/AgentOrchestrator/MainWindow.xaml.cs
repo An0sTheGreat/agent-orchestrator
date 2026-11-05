@@ -187,6 +187,7 @@ public partial class MainWindow : Window
             EndStream(false);
             _process?.Dispose();
             _process = null;
+            EndRunLog();
             _callLive.Clear();
             foreach (var card in _cards)
             {
@@ -268,6 +269,7 @@ public partial class MainWindow : Window
 
     private void ResetRunView()
     {
+        BeginRunLog(); // the run's output is saved as it comes (MainWindow.RunLog.cs)
         OutputPanel = new StackPanel { Tag = RunOutput }; // the last run's output stays in the conversation above
         if (_stream is { } live)
             SetPulse(live, false);
@@ -3110,6 +3112,8 @@ public partial class MainWindow : Window
             return false;
         if (!await SearchSmoke())
             return false;
+        if (!await RunLogSmoke(Snap))
+            return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Flat" })
@@ -4831,6 +4835,7 @@ public partial class MainWindow : Window
             p.WaitForExit(2000); // let it finish so it cannot overwrite the note
             RecordStopNote(activity);
         }
+        FlushRunLog();
         if (_chatProcess is { HasExited: false } chat)
         {
             DrainLines(); // the reply's last output first

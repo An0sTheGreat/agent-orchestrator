@@ -154,6 +154,7 @@ internal sealed class ConversationStore
         if (ReadOnly || !_conversations.Remove(id))
             return false;
         File.Delete(PathOf(id));
+        try { File.Delete(RunLogPath(id)); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } // a locked run log stays behind
         ListOf(id)?.Remove(id);
         SaveIndex();
         return true;
@@ -388,6 +389,8 @@ internal sealed class ConversationStore
 
     private void SaveIndex() => Write(_indexPath, _index);
     private string PathOf(string id) => Path.Combine(_dir, id + ".json");
+    // A Code conversation's project-run output as plain text (MainWindow.RunLog.cs), beside its JSON; deleted with it.
+    public string RunLogPath(string id) => Path.Combine(_dir, id + ".run.txt");
     private static string NewId() => Guid.NewGuid().ToString("N");
 
     public static void SelfTest()
@@ -480,8 +483,11 @@ internal sealed class ConversationStore
             Check(Ids(v.Archived) == Of(b, c) && v.Groups[0].Items.Count == 0 && v.ArchivedCollapsed, "archived persists");
             Check(s.Archive(c.Id, false) && Ids(s.View().Ungrouped) == Of(c, a) && Ids(s.View().Archived) == Of(b), "unarchive");
 
-            // Delete removes the file and the entry; a late Save does not resurrect it.
-            Check(s.Delete(a.Id) && !s.Delete(a.Id) && s.Get(a.Id) is null && !File.Exists(Path.Combine(conversations, a.Id + ".json")), "delete");
+            // Delete removes the file, its run log and the entry; a late Save does not resurrect it.
+            Check(s.RunLogPath(a.Id) == Path.Combine(conversations, a.Id + ".run.txt"), "run log name");
+            File.WriteAllText(s.RunLogPath(a.Id), "[thinking]\n");
+            Check(s.Archive(a.Id, true) && s.Archive(a.Id, false) && s.Rename(a.Id, "R") && s.Rename(a.Id, null) && File.Exists(s.RunLogPath(a.Id)), "run log kept");
+            Check(s.Delete(a.Id) && !s.Delete(a.Id) && s.Get(a.Id) is null && !File.Exists(Path.Combine(conversations, a.Id + ".json")) && !File.Exists(s.RunLogPath(a.Id)), "delete");
             Check(!s.Save(a) && !File.Exists(Path.Combine(conversations, a.Id + ".json")) && Ids(s.View().Ungrouped) == Of(c), "no resurrection");
 
             // A Chat-view chat: kind and no folder round-trip; an unknown kind loads as code, and an old file's mode is ignored.

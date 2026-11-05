@@ -17,6 +17,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.RemoteApiSelfTest();
             AgentOrchestrator.MainWindow.SearchSelfTest();
             AgentOrchestrator.MainWindow.SkillCompleteSelfTest();
+            AgentOrchestrator.MainWindow.RunLogSelfTest();
             RemoteServer.SelfTest();
             RemoteTunnel.SelfTest();
             Shutdown(0);
