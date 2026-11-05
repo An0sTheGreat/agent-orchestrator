@@ -1138,6 +1138,22 @@
                 </Grid.RowDefinitions>
                 <StackPanel Margin="20,16,20,0">
                 <DockPanel LastChildFill="False">
+                    <!-- First, so a narrow header clips its left items rather than this. The (hidden) Context button keeps the context
+                         cards' place; once a project run starts the run clocks (MainWindow.ShowClocks) take it and the cards stack under
+                         them (MainWindow.Context.cs PinMargin). -->
+                    <Grid DockPanel.Dock="Right" Margin="0,0,12,0">
+                    <Button x:Name="CodeContextRing" Style="{StaticResource GhostButton}" Padding="0" VerticalAlignment="Center"
+                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
+                    <StackPanel x:Name="RunClocks" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" TextBlock.FontSize="11"
+                                Visibility="Collapsed">
+                        <TextBlock Text="TASK TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TaskTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,14,0" VerticalAlignment="Center" />
+                        <TextBlock Text="TURN TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
+                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                    </Grid>
                     <TextBlock Text="CODE" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
                     <StackPanel Orientation="Horizontal" Margin="16,0,4,0" VerticalAlignment="Center"
                                 ToolTip="Off: each reply's thinking, tool calls, reads and searches fold into one THINKING row">
@@ -1162,18 +1178,6 @@
                                     ToolTip="Let the Code worker read or edit another folder" />
                         </StackPanel>
                     </ContentControl>
-                    <!-- Run clocks (MainWindow.ShowClocks), shown once a project run starts: the current/last item and worker turn. -->
-                    <StackPanel x:Name="RunClocks" DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0" TextBlock.FontSize="11"
-                                Visibility="Collapsed">
-                        <TextBlock Text="TASK TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
-                        <TextBlock x:Name="TaskTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
-                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,14,0" VerticalAlignment="Center" />
-                        <TextBlock Text="TURN TIME" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
-                        <TextBlock x:Name="TurnTimeText" Text="—" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" MinWidth="34"
-                                   Foreground="{DynamicResource TextPrimary}" Margin="6,0,0,0" VerticalAlignment="Center" />
-                    </StackPanel>
-                    <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
-                            Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
                 <!-- The conversation's folder is gone or can't be opened: it chats without it until another is chosen -->
                 <StackPanel x:Name="CodeFolderMissingBar" Orientation="Horizontal" Margin="0,6,0,0" Visibility="Collapsed">

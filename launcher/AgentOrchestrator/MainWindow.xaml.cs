@@ -153,6 +153,7 @@ public partial class MainWindow : Window
             SetRunning(true);
             _process.Start();
             RunClocks.Visibility = Visibility.Visible;
+            RefreshCodeContextStack(); // the context cards move under the clocks
             AddNote("PROJECT RUN", $"Working through PROJECT.md in {project}" + (_settings.Once ? ", stopping after the first finished item" : ""));
             _process.BeginOutputReadLine();
             _process.BeginErrorReadLine();
@@ -2396,6 +2397,57 @@ public partial class MainWindow : Window
                     RefreshContextPins();
                     if (!below)
                         return Fail();
+                    // A run's clocks sit top-right; the cards stack 6 below them, right edges flush with theirs, and without room beside
+                    // the conversation it starts below the stack: one card and three, wide and narrow (1100 px, details column open).
+                    var (width, state, rail) = (Width, WindowState, _settings.DetailsCollapsed);
+                    RunClocks.Visibility = Visibility.Visible;
+                    var underClocks = new List<string>();
+                    foreach (var narrow in new[] { false, true })
+                    {
+                        if (narrow)
+                        {
+                            (WindowState, Width) = (WindowState.Normal, 1100);
+                            SetWorkerRail(false);
+                        }
+                        foreach (var cardCount in new[] { 1, 3 })
+                            foreach (var center in new[] { true, false })
+                            {
+                                if (cardCount == 1)
+                                    foreach (var other in new[] { "implementer", "reviewer" })
+                                        _codeContexts.Remove(other);
+                                else
+                                    DrainContext("""{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":4000,"completion_tokens":0,"parts":{"messages":4000}}""",
+                                        """{"e":"context","role":"reviewer","n_ctx":32000,"prompt_tokens":2000,"completion_tokens":0,"parts":{"messages":2000}}""");
+                                _settings.CenterChat = center;
+                                RefreshContextPins();
+                                await Settle();
+                                var cards = (CodeContextPin.Content as StackPanel)?.Children.OfType<Border>().ToList() ?? [];
+                                var clocksBottom = RunClocks.TranslatePoint(new Point(0, RunClocks.ActualHeight), stackArea).Y;
+                                var stackTop = CodeContextPin.TranslatePoint(new Point(), stackArea).Y;
+                                var stackEnd = CodeContextPin.TranslatePoint(new Point(0, CodeContextPin.ActualHeight), stackArea).Y;
+                                var clocksSlot = (FrameworkElement)RunClocks.Parent; // a squeezed header would clip the clocks away
+                                if (cards.Count != cardCount || stackTop < clocksBottom || stackTop - clocksBottom > 8 ||
+                                    LayoutInformation.GetLayoutSlot(clocksSlot).Width < clocksSlot.DesiredSize.Width - 0.5 ||
+                                    cards.Any(c => Math.Abs(RightOf(c) - RightOf(RunClocks)) > 2) ||
+                                    (!CanPin(true) && CodeScroll.TranslatePoint(new Point(), stackArea).Y < stackEnd))
+                                    underClocks.Add($"{(narrow ? "narrow" : "wide")} {cardCount}/{cards.Count} cards centered {center}: clocks end {clocksBottom:0}, " +
+                                        $"stack {stackTop:0}-{stackEnd:0}, right {RightOf(RunClocks):0} vs {string.Join(",", cards.Select(c => RightOf(c).ToString("0")))}, scroll {CodeScroll.TranslatePoint(new Point(), stackArea).Y:0}");
+                                if (narrow && cardCount == 3 && !center)
+                                    Snap("38b-code-context-under-clocks");
+                            }
+                    }
+                    _codeContexts.Remove("reviewer");
+                    _settings.CenterChat = centered;
+                    RunClocks.Visibility = Visibility.Collapsed;
+                    (WindowState, Width) = (state, width);
+                    SetWorkerRail(rail);
+                    RefreshContextPins();
+                    await Settle();
+                    if (underClocks.Count > 0)
+                    {
+                        Console.Error.WriteLine("ui-smoke: context cards under the clocks: " + string.Join(" / ", underClocks));
+                        return Fail();
+                    }
                     DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
                     bool UnloadedShown() => SmokeFind<TextBlock>(ContextSectionBody, t => t.Tag as string == "ContextUnloaded") is not null &&
                         SmokeFind<TextBlock>(CodeContextPin, t => t.Tag as string == "ContextUnloaded") is not null;

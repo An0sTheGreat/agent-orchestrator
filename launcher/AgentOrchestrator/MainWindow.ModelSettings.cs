@@ -1286,8 +1286,9 @@ public partial class MainWindow
         {
             ShowView(chat: false);
             await Task.Delay(400);
-            var header = (DockPanel)RunClocks.Parent; // no Conversation / Run output toggle: a run's output is in the conversation
-            if (CodeContextRing.Parent != header || header.Children.IndexOf(CodeContextRing) != header.Children.IndexOf(RunClocks) + 1)
+            // no Conversation / Run output toggle: a run's output is in the conversation. The Context button and the run clocks share
+            // one place at the header's right (the cards stack under the clocks: ContextSmoke).
+            if (RunClocks.Parent is not Grid { Parent: DockPanel } slot || CodeContextRing.Parent != slot)
                 return false;
             _chatBusy = true;
             _turn = _code;
