@@ -130,6 +130,7 @@ public partial class MainWindow
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
+        RefreshMultiModel();
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
@@ -233,6 +234,7 @@ public partial class MainWindow
             c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
+        MultiModelOptions.IsEnabled = !_chatBusy && !runActive; // the engine reads it when it starts
         ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && ModelsLoaded;
         CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
@@ -1088,10 +1090,15 @@ public partial class MainWindow
                     WorkerContextsCleared();
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
+                RecordLlamaPort(card, ev);
+                break;
+            case "unloading":
+                Toast($"Unloading {Str(ev, "model")} to make room", "#F7C873");
                 break;
             case "model":
                 EndChatBlock();
                 Activate(role, "Working");
+                RecordLlamaPort(card, ev);
                 card?.SetModel(ModelInfoFor(role, Str(ev, "id")));
                 SetChatStatus($"{name} is working…");
                 Log($"[{name}] {Str(ev, "id")}");
