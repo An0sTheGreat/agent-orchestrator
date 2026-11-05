@@ -492,7 +492,7 @@ public partial class MainWindow
             try
             {
                 _chatStopRequested = true;
-                p.Kill(entireProcessTree: true);
+                LauncherLogic.KillTreeExceptLlama(p); // the loaded models stay up until Unload model or app close
                 Log("Chat stop requested.");
             }
             catch (InvalidOperationException) { } // already gone

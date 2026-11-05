@@ -217,7 +217,7 @@ public partial class MainWindow : Window
         try
         {
             var activity = StopActivity();
-            p.Kill(entireProcessTree: true);
+            LauncherLogic.KillTreeExceptLlama(p); // the loaded models stay up until Unload model or app close
             _stopRequested = true;
             Log("Stop requested.");
             SetStatus("Stopping…", "#F7C873");
