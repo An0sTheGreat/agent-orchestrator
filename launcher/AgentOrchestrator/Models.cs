@@ -267,6 +267,7 @@ internal sealed class AppSettings
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
+    public List<string> RemoteFavorites { get; set; } = new(); // the Remote API page's starred models, "<service id>|<model id>", in the order starred
     // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port
     // when taken), signed in with the password whose RemoteAuth.HashPassword string is kept here (never the password).
     public bool RemoteAccess { get; set; }
