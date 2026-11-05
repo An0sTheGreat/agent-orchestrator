@@ -11,7 +11,8 @@ using System.Windows.Media;
 namespace AgentOrchestrator;
 
 // The selected worker tab's model settings (MainWindow.WorkerTabs.cs hosts them inline). Model, load, sampling and request
-// options (ModelOptions); a built-in role's remote API fields and optional chat system prompt; a custom worker's name, kind,
+// options (ModelOptions); a remote worker's summary (the Remote API page edits it); a built-in role's optional chat system
+// prompt; a custom worker's name, kind,
 // description, system prompt and removal. Built-in roles write config.json on Save; custom workers keep their options in the
 // launcher's settings and inherit what they leave empty from the Implementer.
 public partial class MainWindow
@@ -144,7 +145,7 @@ public partial class MainWindow
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
-        LauncherLogic.RemoteRole? remoteNow = null;
+        var remoteNow = card.IsCustom ? card.Config.Remote : null; // set on the Remote API page; Save keeps it as it is
         var followsMain = false; // COMPACTOR on MAIN's model: MAIN's settings show, and Save gives it its own only when they change
         if (!card.IsCustom)
         {
@@ -177,8 +178,8 @@ public partial class MainWindow
         var hasModel = startLoad?["model_path"] is not null;
         Dictionary<string, string>? meta = null;
         (long Model, long Vision) files = (0, 0);
-        RadioButton[]? modes = null;
-        var remoteMode = () => modes is null ? remoteNow is not null : modes[1].IsChecked == true;
+        var toLocal = false; // Switch to Local, until a Save writes it
+        var remoteMode = () => remoteNow is not null && !toLocal;
         Dictionary<string, string> Base() => remoteMode() ? new() : ModelOptions.Defaults(meta, hasModel, inherited);
         var shownAtStart = ModelOptions.Prefill(current, Base());
         var auto = ModelOptions.All.Where(o => current.GetValueOrDefault(o.Key, "").Trim().Length == 0).ToDictionary(o => o.Key, o => shownAtStart[o.Key]);
@@ -413,11 +414,8 @@ public partial class MainWindow
                 panel.Children.Add(part);
         }
 
-        // Built-in roles: Local (llama.cpp) or a remote OpenAI-compatible API.
-        TextBox[]? remoteBoxes = null;
         TextBox? chatPrompt = null;
         var promptEdits = new List<(string File, TextBox Box)>(); // the editable workflow prompts (PromptEditor)
-        StackPanel? remotePanel = null, source = null;
         if (!card.IsCustom)
         {
             // The Chat view: an optional prompt of the user's. The Code view: the role's fixed workflow prompts, read only
@@ -453,29 +451,38 @@ public partial class MainWindow
             };
             ShowPrompts();
             workflow.Children.Add(promptBody);
-            var panel = source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), Muted("Local loads the model on this computer; Remote API sends requests to an OpenAI-compatible endpoint.") } };
-            modes = new[] { "Local", "Remote API" }.Select((text, i) => new RadioButton
-            {
-                Content = text, GroupName = "ModelSource", IsChecked = (remoteNow is not null) == (i == 1), Margin = new Thickness(0, 0, 18, 0),
-            }).ToArray();
-            panel.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 10, 0, 0), Children = { modes[0], modes[1] } });
-            var remoteFields = new (string Label, string Hint, string Value)[]
-            {
-                ("Base URL", "e.g. https://openrouter.ai/api/v1", remoteNow?.BaseUrl ?? ""),
-                ("Model id", "as the API names it", remoteNow?.Model ?? ""),
-                ("API key variable", "environment variable holding the key", remoteNow?.KeyEnv ?? "OPENAI_API_KEY"),
-                ("Provider (optional)", "OpenRouter only: use these providers, in this order, with no fallback. Names as OpenRouter lists them, comma-separated; empty lets OpenRouter choose.", remoteNow?.Provider ?? ""),
-            };
-            remoteBoxes = remoteFields.Select(f => Box(f.Value, f.Label)).ToArray();
-            remotePanel = new StackPanel();
-            for (var i = 0; i < remoteFields.Length; i++)
-                remotePanel.Children.Add(new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label(remoteFields[i].Label), Muted(remoteFields[i].Hint), remoteBoxes[i] } });
-            remotePanel.Children.Add(fieldErrors["Remote"] = ErrorLine());
-            var note = Muted("The launcher never stores the key: set the variable in your environment before starting it. Remote roles are not loaded, unloaded or monitored.");
-            note.Margin = new Thickness(0, 8, 0, 0);
-            remotePanel.Children.Add(note);
-            panel.Children.Add(remotePanel);
         }
+
+        // Where the model runs. A remote role shows a summary (the Remote API page edits it) and Switch to Local; a local one
+        // the way to the page, this worker preselected.
+        Button SourceButton(string text, string tag, Action click)
+        {
+            var b = new Button { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0) };
+            b.Click += (_, _) => click();
+            return b;
+        }
+        var switchLocal = SourceButton("Switch to Local", "SwitchToLocal", () => { });
+        var remotePanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        if (remoteNow is not null)
+        {
+            var provider = remoteNow.Provider.Trim().Length > 0 ? remoteNow.Provider.Trim() : "any provider";
+            var summary = new TextBlock { Text = $"Remote: {remoteNow.Model} @ {provider}", Tag = "RemoteSummary", FontSize = 12, TextWrapping = TextWrapping.Wrap };
+            var hint = Muted("Edit it on the Remote API page");
+            hint.Margin = new Thickness(0, 2, 0, 0);
+            remotePanel.Children.Add(summary);
+            remotePanel.Children.Add(hint);
+            remotePanel.Children.Add(new WrapPanel
+            {
+                Margin = new Thickness(0, 8, 0, 0),
+                Children = { SourceButton("Edit in Remote API", "EditRemoteApi", () => OpenRemoteApi(card.Role, remoteNow)), switchLocal },
+            });
+        }
+        var localPanel = new StackPanel
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            Children = { Muted("Runs on this computer."), new WrapPanel { Margin = new Thickness(0, 8, 0, 0), Children = { SourceButton("Use a Remote API…", "UseRemoteApi", () => OpenRemoteApi(card.Role)) } } },
+        };
+        var source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), remotePanel, localPanel } };
 
         // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups
         // holding nothing else.
@@ -748,7 +755,8 @@ public partial class MainWindow
         void SyncMode()
         {
             var remote = remoteMode();
-            remotePanel?.SetValue(VisibilityProperty, remote ? Visibility.Visible : Visibility.Collapsed);
+            remotePanel.Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
+            localPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
                 hidden.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             modelBox.IsEnabled = !remote;
@@ -766,12 +774,6 @@ public partial class MainWindow
                     block.Visibility = Visibility.Visible;
             SyncMode();
         };
-        foreach (var mode in modes ?? [])
-            mode.Checked += (_, _) =>
-            {
-                SyncMode();
-                Rederive(); // a remote role shows no local defaults
-            };
         SyncMode();
 
         var error = ErrorLine();
@@ -872,6 +874,15 @@ public partial class MainWindow
         }
 
         save.Click += (_, _) => Save();
+        // As the Local radio and Save once did: a failed Save leaves the switch pending (Save again, or Revert).
+        switchLocal.Click += (_, _) =>
+        {
+            toLocal = true;
+            SyncMode();
+            Rederive(); // a local role shows the local defaults
+            Vram();
+            Save();
+        };
         bool Save()
         {
             var fields = editors.ToDictionary(p => p.Key, p => Value(p.Value));
@@ -890,13 +901,19 @@ public partial class MainWindow
                 var probe = new JsonObject();
                 if ((choice?.LoadPath ?? w.ModelPath) is { } modelPath)
                     probe["auto_load"] = new JsonObject { ["model_path"] = modelPath };
-                var errors = ModelOptions.Apply(probe, fields, includeLoad: true);
+                var errors = ModelOptions.Apply(probe, fields, includeLoad: !remoteMode());
                 var kind = (string)kinds!.First(r => r.IsChecked == true).Tag;
                 var title = nameBox!.Text.Trim();
                 if (title != card.Title && LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } titleProblem)
                     errors["Name"] = titleProblem;
                 if (ShowErrors(errors))
                     return false;
+                if (remoteNow is not null && !remoteMode()) // Switch to Local: back to its local model, if it had one
+                {
+                    w.Remote = null;
+                    (card.ModelId, card.ModelVariant) = (w.ModelExpected, null);
+                    card.SetModel(w.ModelExpected is { } local ? LauncherLogic.DescribeModel(local) : new("Not loaded", "—", "—"));
+                }
                 if (choice is not null)
                     AssignModel(card, choice);
                 w.Kind = kind;
@@ -922,20 +939,17 @@ public partial class MainWindow
                 return false;
             }
             // COMPACTOR on MAIN's model keeps following it until a model or option of its own is saved.
-            if (followsMain && choice is null && editors.Values.Concat<Control?>(remoteBoxes ?? []).Concat(modes ?? []).Select(StateOf)
-                    .SequenceEqual(clean.Take(editors.Count).Concat(clean.Skip(editors.Count + 4).Take((remoteBoxes?.Length ?? 0) + (modes?.Length ?? 0)))))
+            if (followsMain && choice is null && !toLocal && editors.Values.Select(StateOf).SequenceEqual(clean.Take(editors.Count)))
             {
                 Toast($"{card.Title}: settings saved");
                 HoldWorkerTab(saved);
                 return true;
             }
-            var remote = remoteMode() ? new LauncherLogic.RemoteRole(remoteBoxes![0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, "", remoteBoxes[3].Text) : null;
+            var remote = remoteMode() ? remoteNow : null; // its remote keys stay as the Remote API page wrote them
             var check = (JsonObject)role!.DeepClone(); // validate everything before any file is touched
             if (choice is not null && remote is null)
                 SetRoleModel(check, choice);
             var problems = ModelOptions.Apply(check, fields, includeLoad: remote is null);
-            if (remote is not null && LauncherLogic.ValidateRemoteRole(remote) is { } remoteProblem)
-                problems["Remote"] = remoteProblem;
             if (ShowErrors(problems))
                 return false;
             string? problem;
@@ -944,12 +958,18 @@ public partial class MainWindow
                 // path first (the window's config), then the worker config when path is a project's
                 problem = WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
                 {
-                    if ((remote is not null || remoteNow is not null) &&
-                        LauncherLogic.WriteRemoteRole(target, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
-                        return failed;
                     var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
                     if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
-                        GiveCompactorOwn(root);
+                    {
+                        GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
+                        WriteJson(target, root);
+                    }
+                    if (remote is null && remoteNow is not null)
+                    {
+                        if (LauncherLogic.WriteRemoteRole(target, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
+                            return failed;
+                        root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+                    }
                     var settings = root["roles"]![card.Role]!.AsObject();
                     if (choice is not null && remote is null)
                         SetRoleModel(settings, choice);
@@ -998,17 +1018,15 @@ public partial class MainWindow
         }
         ModelChoice? Picked() => modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice c } && c != initial ? c : null;
         static string? StateOf(Control? c) => c switch { TextBox t => t.Text, ComboBox b => b.SelectedItem as string, RadioButton r => r.IsChecked.ToString(), _ => "" };
-        List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(remoteBoxes ?? []).Concat(modes ?? []).Concat(kinds ?? [])
+        List<string?> State() => editors.Values.Concat(new Control?[] { nameBox, description, prompt, chatPrompt }).Concat(kinds ?? [])
             .Concat(promptEdits.Select(p => p.Box))
-            .Select(StateOf).Append((Picked() is not null).ToString()).ToList();
+            .Select(StateOf).Append((Picked() is not null).ToString()).Append(toLocal.ToString()).ToList();
         clean = State();
         foreach (var editor in editors.Values)
             if (editor is TextBox box)
                 box.TextChanged += (_, _) => Vram();
             else
                 ((ComboBox)editor).SelectionChanged += (_, _) => Vram();
-        foreach (var mode in modes ?? [])
-            mode.Checked += (_, _) => Vram();
         _gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes);
         _gpuMemory.ContinueWith(_ => Vram(), TaskScheduler.FromCurrentSynchronizationContext());
         Derive(startLoad, atOpen: true);
@@ -1127,15 +1145,67 @@ public partial class MainWindow
             if (asked.Count != 2 || _shownWorker != reviewer || !reviewer.IsSelected || implementer.IsSelected || !File.ReadAllBytes(config).SequenceEqual(bytes))
                 return Fail("unsaved change: Discard");
 
-            // Defaults fill the absent keys; a remote role shows none (providers may reject them), Local brings them back.
-            RadioButton Source(string label) => SmokeFind<RadioButton>(WorkerSettingsHost, r => r.Content as string == label)!;
+            // Defaults fill the absent keys. The model source (the Remote API page edits a remote role): a local role offers the
+            // page; a remote one shows its summary and no defaults (providers may reject them), keeps its remote keys through a
+            // Save of another field, opens the page on itself, and Switch to Local restores its local settings and the defaults.
             if (SmokeField("temperature").Text != "0.8" || SmokeField("top_p").Text != "0.95" || _workerDirty())
                 return Fail("defaults");
-            Source("Remote API").IsChecked = true;
-            var remoteShown = SmokeField("temperature").Text + SmokeField("top_p").Text;
-            Source("Local").IsChecked = true;
-            if (remoteShown != "" || SmokeField("temperature").Text != "0.8")
-                return Fail("remote defaults");
+            Button? SourceButton(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag);
+            TextBlock? Summary() => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Tag as string == "RemoteSummary");
+            bool Shown(FrameworkElement? e)
+            {
+                for (var f = e; f is not null && f != WorkerSettingsHost; f = f.Parent as FrameworkElement)
+                    if (f.Visibility != Visibility.Visible)
+                        return false;
+                return e is not null;
+            }
+            if (!Shown(SourceButton("UseRemoteApi")) || Summary() is not null || SourceButton("SwitchToLocal") is not null)
+                return Fail("local source");
+            var targets = WorkerConfigTargets().ToDictionary(t => t, File.ReadAllBytes);
+            var localReviewer = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["reviewer"]!;
+            var template = Path.Combine(_workflowRoot ?? "", "config.json");
+            if (LauncherLogic.WriteRemoteRole(config, "reviewer", new("http://127.0.0.1:9/v1", "vendor/model-x", "SMOKE_REMOTE_KEY", "", "b/y, a/x"), template) is { } wrote)
+                return Fail(wrote);
+            var remoteRead = LauncherLogic.ReadRemoteRole(config, "reviewer");
+            RefreshWorkerTab(force: true);
+            await Idle();
+            if (Summary()?.Text != "Remote: vendor/model-x @ b/y, a/x" || !Shown(Summary()) || !Shown(SourceButton("SwitchToLocal")) || Shown(SourceButton("UseRemoteApi")) ||
+                SmokeField("temperature").Text + SmokeField("top_p").Text != "")
+                return Fail("remote summary");
+            SmokeField("ChatSystemPrompt").Text = "remote smoke";
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            if (LauncherLogic.ReadRemoteRole(config, "reviewer") != remoteRead ||
+                (string?)JsonNode.Parse(File.ReadAllText(config))!["roles"]!["reviewer"]!["chat_system_prompt"] != "remote smoke")
+                return Fail("remote save");
+            var (http, helpShown, chatWas, last) = (_remoteHttp, _settings.RemoteHelpShown, ChatView.Visibility == Visibility.Visible, _remoteLast);
+            _remoteHttp = new System.Net.Http.HttpClient(new RemoteApiFakeHandler());
+            _settings.RemoteHelpShown = true;
+            try
+            {
+                SmokeClick(SourceButton("EditRemoteApi")!);
+                await Task.WhenAll(_remoteModelsTask, _remoteProvidersTask);
+                if (RemoteApiView.Visibility != Visibility.Visible ||
+                    SmokeFind<ComboBox>(RemoteApiView, c => c.Tag as string == "RemoteTarget")?.SelectedItem is not ComboBoxItem { Tag: RoleCard picked } || picked != reviewer ||
+                    SmokeFind<TextBox>(RemoteApiView, t => t.Tag as string == "RemoteModelId")?.Text != "vendor/model-x")
+                    return Fail("Edit in Remote API");
+            }
+            finally
+            {
+                ShowView(chat: chatWas);
+                (_remoteHttp, _settings.RemoteHelpShown, _remoteLast) = (http, helpShown, last); // the page's choice is the session's
+            }
+            SmokeClick(SourceButton("SwitchToLocal")!);
+            await Idle();
+            var restored = JsonNode.Parse(File.ReadAllText(config))!["roles"]!["reviewer"]!;
+            if (LauncherLogic.ReadRemoteRole(config, "reviewer") is not null || restored["auto_load"]?.ToJsonString() != localReviewer["auto_load"]?.ToJsonString() ||
+                restored["base_url"]?.ToJsonString() != localReviewer["base_url"]?.ToJsonString() || _workerDirty() || Summary() is not null ||
+                !Shown(SourceButton("UseRemoteApi")) || SmokeField("top_p").Text != "0.95")
+                return Fail("Switch to Local");
+            foreach (var (target, bytes0) in targets)
+                File.WriteAllBytes(target, bytes0);
+            RefreshWorkerTab(force: true);
+            await Idle();
 
             // Option presets: save on the Reviewer (with its chat system prompt), apply on the Implementer, delete.
             void Preset(string header, string? sub = null)
