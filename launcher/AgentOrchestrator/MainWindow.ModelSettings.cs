@@ -911,8 +911,9 @@ public partial class MainWindow
                 if (remoteNow is not null && !remoteMode()) // Switch to Local: back to its local model, if it had one
                 {
                     w.Remote = null;
-                    (card.ModelId, card.ModelVariant) = (w.ModelExpected, null);
-                    card.SetModel(w.ModelExpected is { } local ? LauncherLogic.DescribeModel(local) : new("Not loaded", "—", "—"));
+                    (card.ModelId, card.ModelVariant) = w.LocalModelId is not null ? (w.LocalModelId, w.LocalModelVariant) : (w.ModelExpected, null); // no stash: remote before it was kept
+                    (w.LocalModelId, w.LocalModelVariant) = (null, null);
+                    card.SetModel(card.ModelId is { } local ? LauncherLogic.DescribeModel(local, card.ModelVariant) : new("Not loaded", "—", "—"));
                 }
                 if (choice is not null)
                     AssignModel(card, choice);

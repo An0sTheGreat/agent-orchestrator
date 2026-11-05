@@ -362,10 +362,7 @@ public partial class MainWindow
             var name = ChatName(card, card.Role);
             if (card.IsCustom)
             {
-                card.Config.Remote = remote;
-                card.ModelId = remote.Model;
-                card.ModelVariant = null;
-                card.SetModel(LauncherLogic.RemoteModelInfo(remote.Model));
+                SetCustomRemote(card, remote);
                 SaveWorkers();
                 SyncCustomWorkers();
             }
@@ -508,6 +505,17 @@ public partial class MainWindow
             _settings.Save();
             ShowRemoteHelp(start.Id);
         }
+    }
+
+    // A custom worker on a remote model; its local model is kept (the first time) for Switch to Local.
+    private static void SetCustomRemote(RoleCard card, LauncherLogic.RemoteRole remote)
+    {
+        if (card.Config.Remote is null)
+            (card.Config.LocalModelId, card.Config.LocalModelVariant) = (card.ModelId, card.ModelVariant);
+        card.Config.Remote = remote;
+        card.ModelId = remote.Model;
+        card.ModelVariant = null;
+        card.SetModel(LauncherLogic.RemoteModelInfo(remote.Model));
     }
 
     private void CloseRemoteApi()

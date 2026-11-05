@@ -347,6 +347,9 @@ internal sealed class WorkerSetting
     public string? ModelExpected { get; set; }
     public string? GgufFile { get; set; } // auto_load.gguf_file: a llama.cpp model file outside the Hugging Face cache
     public LauncherLogic.RemoteRole? Remote { get; set; } // custom workers only: a remote API model (the Remote API page) instead of ModelPath
+    // Custom workers only, while Remote is set: the local ModelId and ModelVariant it had, which Switch to Local restores.
+    public string? LocalModelId { get; set; }
+    public string? LocalModelVariant { get; set; }
     public string Kind { get; set; } = "specialist"; // "specialist" | "reviewer"
     public string Description { get; set; } = "";
     public string SystemPrompt { get; set; } = "";

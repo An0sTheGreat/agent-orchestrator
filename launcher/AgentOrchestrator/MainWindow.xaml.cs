@@ -1437,8 +1437,10 @@ public partial class MainWindow : Window
                 return Fail();
             if (HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "UseRemoteApi"))
                 return Fail();
-            // A remote custom worker (set on the Remote API page) shows its summary; Switch to Local writes its local model back.
-            tester.Config.Remote = new("http://127.0.0.1:9/v1", "vendor/cw", "SMOKE_REMOTE_KEY", "", "");
+            // A remote custom worker (set on the Remote API page) shows its summary; Switch to Local writes its local model
+            // back exactly: its display id and quant.
+            tester.ModelVariant = "Q4_K_M";
+            SetCustomRemote(tester, new("http://127.0.0.1:9/v1", "vendor/cw", "SMOKE_REMOTE_KEY", "", ""));
             if (!SelectWorker(tester))
                 return Fail();
             await Settle();
@@ -1446,8 +1448,10 @@ public partial class MainWindow : Window
                 return Fail();
             FindIn<Button>(WorkerSettingsHost, b => b.Tag as string == "SwitchToLocal")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             await Settle();
-            if (tester.Config.Remote is not null || tester.ModelId != "M-GGUF" || HasTag(WorkerSettingsHost, "RemoteSummary") || !HasTag(WorkerSettingsHost, "UseRemoteApi") ||
-                (string?)JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]![0]!["auto_load"]?["model_path"] != "org/M-GGUF")
+            var local = JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]![0]!;
+            if (tester.Config.Remote is not null || tester.ModelId != "org/M-GGUF" || tester.ModelVariant != "Q4_K_M" || tester.Config.LocalModelId is not null ||
+                HasTag(WorkerSettingsHost, "RemoteSummary") || !HasTag(WorkerSettingsHost, "UseRemoteApi") ||
+                (string?)local["auto_load"]?["model_path"] != "org/M-GGUF" || (string?)local["auto_load"]?["gguf_variant"] != "Q4_K_M" || (string?)local["display_name"] != "org/M-GGUF")
                 return Fail();
             RemoveWorker(tester);
             if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
@@ -4239,6 +4243,7 @@ public partial class MainWindow : Window
         card.Config.ModelExpected = choice.Expected;
         card.Config.GgufFile = choice.File;
         card.Config.Remote = null; // a local model from here on
+        (card.Config.LocalModelId, card.Config.LocalModelVariant) = (null, null);
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
