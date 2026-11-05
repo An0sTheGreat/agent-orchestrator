@@ -450,6 +450,7 @@ public partial class MainWindow
         (_code.Summary, _code.SummaryCovers) = (saved.Summary, saved.SummaryCovers);
         RefreshCodeFolders();
         RefreshChatTarget();
+        ShowPreviousRunOutput(saved.Id);
     }
 
     // After a completed turn or an extra-folder change; the sidebar shows the new title and time.
