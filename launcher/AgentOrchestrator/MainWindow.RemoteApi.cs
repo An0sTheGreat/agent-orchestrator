@@ -1421,8 +1421,8 @@ public partial class MainWindow
                 !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
                 return Fail($"choosing the OpenRouter favorite: model id \"{Find<TextBox>("RemoteModelId").Text}\"");
 
-            if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New chat") is not { } newChat)
-                return Fail("no New chat in the sidebar");
+            if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New") is not { } newChat)
+                return Fail("no New in the sidebar");
             newChat.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Task.Delay(400);
             if (RemoteApiView.Visibility == Visibility.Visible || (CodeView.Visibility != Visibility.Visible && ChatView.Visibility != Visibility.Visible))

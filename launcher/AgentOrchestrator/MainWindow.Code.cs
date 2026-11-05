@@ -20,21 +20,28 @@ public partial class MainWindow
     private Task<bool> SendCode(string action = "chat", string? worker = null, QueuedMessage? queued = null)
     {
         var project = SelectedProjectPath();
-        if (project.Length == 0)
+        var folderless = !LauncherLogic.FolderUsable(project);
+        if (folderless && action != "chat")
         {
             SetStatus("Choose a folder", "#F7C873");
             Toast("Choose a folder first", "#F7C873");
             return Task.FromResult(false);
         }
-        if (RefuseWorkflowRoot(project) || !CodeEngineReady())
+        if (!folderless && (RefuseWorkflowRoot(project) || !CodeEngineReady()))
             return Task.FromResult(false);
         _turnImages = [];
         var text = action != "chat" ? null : queued is null ? ComposeMessage(_code, CodeInput.Text.Trim()) : ComposeMessage(_code, queued.Text, queued.Attachments);
         if (text is { Length: 0 } || !EnsureCodeConversation(project))
             return Task.FromResult(false);
-        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, role => CodeRequest(action, role, text, project),
-            LauncherLogic.BuildCodeStartInfo, $"Code ({action})", queued is not null);
+        var (request, startInfo) = CodeTurn(action, text, project);
+        return RunTurn(_code, text, worker ?? CodeTarget()!.Role, request, startInfo, folderless ? "Code (no folder)" : $"Code ({action})", queued is not null);
     }
+
+    // How a Code turn runs: with no usable folder (none yet, or gone) as a chat (--chat, no folder tools), else in the folder.
+    private (Func<string, string> Request, Func<string, string, string, string, System.Diagnostics.ProcessStartInfo> StartInfo) CodeTurn(string action, string? text, string project) =>
+        LauncherLogic.FolderUsable(project) ? (role => CodeRequest(action, role, text, project), LauncherLogic.BuildCodeStartInfo)
+            : (role => LauncherLogic.BuildChatRequest(role, _code.History.Append(new LauncherLogic.ChatMessage("user", text ?? "")), CurrentExtras(message: text) with { Images = _turnImages },
+                title: _code.History.Count == 0, effort: EffortFor(CardFor(role)), summary: _code.Summary ?? "", summaryCovers: _code.SummaryCovers), LauncherLogic.BuildChatStartInfo);
 
     // The request of a Code turn; text null: no user message.
     private string CodeRequest(string action, string role, string? text, string project) =>
@@ -111,23 +118,50 @@ public partial class MainWindow
         if (_codeConv is { } open && !SameFolder(shown, open.Folder))
             CloseCodeConversation();
         RefreshCodeFolders();
+        var usable = LauncherLogic.FolderUsable(shown);
         CodeFolderText.Text = shown.Length == 0 ? "No folder" : Path.GetFileName(shown.TrimEnd('\\', '/')) is { Length: > 0 } name ? name : shown;
         CodeFolderText.ToolTip = shown.Length == 0 ? null : shown;
+        CodeAddFolder.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        // a folder that is gone: the conversation still opens and chats without it until another is chosen
+        CodeFolderMissingText.Text = $"Folder not found: {shown}";
+        CodeFolderMissingBar.Visibility = shown.Length > 0 && !usable ? Visibility.Visible : Visibility.Collapsed;
         var hasMd = HasProjectMd();
-        (CodeEmptyTitle.Text, CodeEmptyText.Text) = shown.Length == 0
-            ? ("Choose a folder to start", "Choose the working folder; the worker can read, search and edit the files in it.")
+        (CodeEmptyTitle.Text, CodeEmptyText.Text) = !usable
+            ? ("New code conversation", "Chat as you would in Chat. Add a folder when the lead should read, search and edit its files.")
             : hasMd ? ("Start a conversation", "Message the lead below: it can work through PROJECT.md with you. Or press Start project for an autonomous run.")
             : ("Add a PROJECT.md to start the project", "Discuss the project with the lead, then say init-projMD: it writes PROJECT.md and you can " +
                 "ask it to begin work. Start project runs it autonomously instead.");
-        CodeEmptyChoose.Visibility = shown.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-        CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = shown.Length > 0 && !hasMd ? Visibility.Visible : Visibility.Collapsed;
+        CodeEmptyChoose.Visibility = !usable ? Visibility.Visible : Visibility.Collapsed;
+        CodeEmptyInit.Visibility = CodeEmptyAddMd.Visibility = CodeEmptyTemplate.Visibility = usable && !hasMd ? Visibility.Visible : Visibility.Collapsed;
         RefreshChatInput(); // the Project menu needs a folder; Start project needs PROJECT.md
     }
 
     // A cheap check, repeated on every refresh: the user may add or delete the file outside the app.
     private bool HasProjectMd() => SelectedProjectPath() is { Length: > 0 } folder && File.Exists(Path.Combine(folder, "PROJECT.md"));
 
-    private void CodeNew_Click(object sender, RoutedEventArgs e) => NewCodeConversation();
+    private void CodeChooseFolder_Click(object sender, RoutedEventArgs e) => ChooseCodeFolder();
+
+    // Add a folder (CodeAddFolder, the empty state's) or Choose a folder (CodeFolderMissing): the open conversation works
+    // in the picked folder from now on, with its tools, PROJECT.md and Start project.
+    private void ChooseCodeFolder()
+    {
+        if (!CodeBusy && PickFolder("Choose the folder to work in") is { } picked)
+            UseCodeFolder(picked);
+    }
+
+    private void UseCodeFolder(string picked)
+    {
+        var folder = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
+        if (CodeBusy || RefuseWorkflowRoot(folder) || !DiscardWorkerEdits())
+            return;
+        if (_codeConv is { } c) // before the switch, which would close a conversation of another folder
+        {
+            c.Folder = folder;
+            StoreDo(() => _store.Save(c));
+        }
+        ProjectPath = folder;
+        RefreshSidebarList();
+    }
 
     private void CodeEmptyAddMd_Click(object sender, RoutedEventArgs e) => UseProjectMd();
 
@@ -325,7 +359,7 @@ public partial class MainWindow
         }
         if (_codeConv?.Id != id && _store.Get(id) is { } conversation)
         {
-            if (!Path.IsPathFullyQualified(conversation.Folder)) // hand-edited or damaged: there is no folder to work in
+            if (conversation.Folder.Length > 0 && !Path.IsPathFullyQualified(conversation.Folder)) // hand-edited or damaged ("": no folder yet)
             {
                 Toast("This chat has no folder, so it can't be opened", "#FF667A");
                 RefreshSidebarList();
@@ -445,7 +479,12 @@ public partial class MainWindow
     private void AddCodeFolder_Click(object sender, RoutedEventArgs e)
     {
         var project = SelectedProjectPath();
-        if (_chatBusy || _process is not null || project.Length == 0 || RefuseWorkflowRoot(project) || PickFolder("Choose a folder the worker may use") is not { } picked)
+        if (!LauncherLogic.FolderUsable(project)) // no folder to add to: the first one becomes the conversation's
+        {
+            ChooseCodeFolder();
+            return;
+        }
+        if (_chatBusy || _process is not null || RefuseWorkflowRoot(project) || PickFolder("Choose a folder the worker may use") is not { } picked)
             return;
         var path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(picked));
         if (SamePath(path, project))

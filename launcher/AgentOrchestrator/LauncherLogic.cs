@@ -447,6 +447,20 @@ internal static class LauncherLogic
     // project folder is never IsTemp. Returns "Title: reason" for each custom worker left out.
     public sealed record ChatFolder(string Path, bool IsTemp);
 
+    // A folder that exists and can be listed; "", a removed one or one access is denied to is not.
+    public static bool FolderUsable(string path)
+    {
+        try
+        {
+            if (path.Length == 0 || !Directory.Exists(path))
+                return false;
+            using var entries = Directory.EnumerateFileSystemEntries(path).GetEnumerator();
+            entries.MoveNext();
+            return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException) { return false; }
+    }
+
     public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped, string? dataRoot = null)
     {
         skipped = [];

@@ -1097,7 +1097,7 @@
                     <Button x:Name="SidebarExpandButton" Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="SidebarToggle_Click" ToolTip="Expand sidebar (Ctrl+B)" AutomationProperties.Name="Expand sidebar (Ctrl+B)">
                         <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
-                    <Button Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="CodeNew_Click" ToolTip="New chat" AutomationProperties.Name="New chat">
+                    <Button Style="{StaticResource GhostButton}" Height="28" Margin="12,0,12,14" Padding="0" Click="RailNew_Click" ToolTip="New" AutomationProperties.Name="New">
                         <TextBlock Text="&#xE710;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
                     <ToggleButton Style="{StaticResource NavToggle}" Height="38" Padding="0" Margin="6,0,6,4" Tag="Chat" Click="Nav_Click" ToolTip="Chat (Ctrl+1)" AutomationProperties.Name="Chat (Ctrl+1)"
@@ -1147,6 +1147,9 @@
                     </StackPanel>
                     <TextBlock x:Name="CodeFolderText" Text="No folder" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"
                                Margin="12,0,0,0" MaxWidth="200" TextTrimming="CharacterEllipsis" />
+                    <!-- No folder yet (CODE's +): the conversation chats until one is added here (MainWindow.Code.cs ChooseCodeFolder) -->
+                    <Button x:Name="CodeAddFolder" Tag="CodeAddFolder" Style="{StaticResource GhostButton}" Content="Add a folder…" FontSize="11" Padding="9,3" Margin="10,0,0,0"
+                            VerticalAlignment="Center" Click="CodeChooseFolder_Click" Visibility="Collapsed" ToolTip="The lead can then read, search and edit the files in it" />
                     <Button x:Name="CodeProjectButton" Style="{StaticResource GhostButton}" Content="Project  &#x25BE;" FontSize="11" Padding="9,3" Margin="10,0,0,0"
                             VerticalAlignment="Center" Click="CodeProject_Click" IsEnabled="False" ToolTip="PROJECT.md, task limits, extra folders and run options for this folder" />
                     <!-- Project > Folders… shows this panel in a dialog (MainWindow.Code.cs RefreshCodeFolders builds the list) -->
@@ -1172,6 +1175,12 @@
                     <Button x:Name="CodeContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
+                <!-- The conversation's folder is gone or can't be opened: it chats without it until another is chosen -->
+                <StackPanel x:Name="CodeFolderMissingBar" Orientation="Horizontal" Margin="0,6,0,0" Visibility="Collapsed">
+                    <TextBlock x:Name="CodeFolderMissingText" Foreground="{DynamicResource Muted}" FontSize="12" VerticalAlignment="Center" MaxWidth="520" TextTrimming="CharacterEllipsis" />
+                    <Button x:Name="CodeFolderMissing" Tag="CodeFolderMissing" Style="{StaticResource GhostButton}" Content="Choose a folder" FontSize="11" Padding="9,3" Margin="10,0,0,0"
+                            VerticalAlignment="Center" Click="CodeChooseFolder_Click" />
+                </StackPanel>
                 <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
                 <Button x:Name="CodeUnloadButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="-6,6,0,0" Padding="6,3"
                         FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload model"
@@ -1197,7 +1206,7 @@
                             <TextBlock x:Name="CodeEmptyText" Text="Choose the working folder; the worker can read, search and edit the files in it." Foreground="{DynamicResource Muted}"
                                        HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" MaxWidth="460" />
                             <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,14,0,0">
-                                <Button x:Name="CodeEmptyChoose" Content="Choose a folder…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeNew_Click" />
+                                <Button x:Name="CodeEmptyChoose" Content="Add a folder…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeChooseFolder_Click" />
                                 <Button x:Name="CodeEmptyInit" Content="Create PROJECT.md with a model…" Style="{StaticResource PrimaryButton}" Padding="16,7" Click="CodeEmptyInit_Click"
                                         Visibility="Collapsed" ToolTip="Pick a worker (the Planner by default); it interviews you with the init-projMD skill and writes PROJECT.md" />
                                 <Button x:Name="CodeEmptyAddMd" Content="Add PROJECT.md…" Style="{StaticResource GhostButton}" Padding="16,7" Margin="8,0,0,0" Click="CodeEmptyAddMd_Click"

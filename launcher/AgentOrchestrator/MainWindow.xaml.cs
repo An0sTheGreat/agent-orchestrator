@@ -99,7 +99,7 @@ public partial class MainWindow : Window
         else
             HoldWorkerTab(() => // one build of the worker tab for all of this
             {
-                ProjectPath = _settings.LastProject.Length > 0 ? _settings.LastProject : _workflowRoot;
+                ProjectPath = StartupProject();
                 Log($"Workflow: {_workflowRoot}");
                 if (_settings.LoadFailed)
                     Log("settings.json could not be read; settings changed this session will not be saved.");
@@ -1906,8 +1906,8 @@ public partial class MainWindow : Window
                 RefreshChatInput();
                 if (_codeConv != first || ToastStack.Children.OfType<UIElement>().LastOrDefault() == lastToast)
                     return Fail();
-                // A chat with no usable folder is refused, and the open one stays.
-                var noFolder = _store.Create("")!;
+                // A chat with a damaged (relative) folder is refused, and the open one stays. ("": no folder yet, opens.)
+                var noFolder = _store.Create(@"relative\folder")!;
                 noFolder.Folders = [new(codeExtra, "read")];
                 _store.Save(noFolder);
                 OpenCodeConversation(noFolder.Id);
@@ -2004,13 +2004,79 @@ public partial class MainWindow : Window
                 AddFolder();
                 if (_codeConv is not null || CodeExtraFolders.Count != 0 || StatusText.Text != "Choose a project folder")
                     return Fail();
-                // No folder: only Choose a folder…, and Start project is off.
+                // No folder: only Add a folder…, and Start project is off.
                 var keptFolder = _projectPath;
                 ProjectPath = "";
                 var noFolderState = EmptyState();
                 ProjectPath = keptFolder;
-                if (noFolderState != "Choose a folder to start|Visible|Collapsed|Collapsed|Collapsed|False")
+                if (noFolderState != "New code conversation|Visible|Collapsed|Collapsed|Collapsed|False")
                     return Fail();
+
+                // CODE's +: a conversation with no folder, whether the last folder is here or gone. It chats (--chat, no folder
+                // tools), is saved and listed under CODE, reopens; Add a folder makes it work in one. A conversation whose folder
+                // is gone opens with a notice and chats until Choose a folder. A startup whose last folder is gone forgets it.
+                var gone = Path.Combine(codeProject, "gone");
+                async Task<bool> FakeTurn(string text)
+                {
+                    StartTurn(_code, text, "planner");
+                    _lines.Enqueue(Ev("""{"e":"code_reply","role":"planner","text":"Sure"}"""));
+                    DrainLines();
+                    await Settle();
+                    FinishChatTurn(0, false, null);
+                    return !_chatBusy;
+                }
+                bool ChatsOnly(string project) => CodeTurn("chat", "Hi", project) is var (request, start) && start.Method.Name == nameof(LauncherLogic.BuildChatStartInfo) &&
+                    JsonNode.Parse(request("planner"))!.AsObject() is var json && !json.ContainsKey("folders") && !json.ContainsKey("action");
+                foreach (var last in new[] { codeProject, gone })
+                {
+                    ProjectPath = last;
+                    if ((CodeFolderMissingBar.Visibility == Visibility.Visible) != (last == gone))
+                        return Fail();
+                    ClickHeader("+new:code");
+                    if (_codeConv is not null || SelectedProjectPath() != "" || _projectPath != "" || CodeFolderText.Text != "No folder" ||
+                        CodeAddFolder.Visibility != Visibility.Visible || CodeFolderMissingBar.Visibility == Visibility.Visible || CodeEmptyChoose.Visibility != Visibility.Visible ||
+                        !CodeChat.IsVisible || !ChatsOnly(SelectedProjectPath()))
+                        return Fail();
+                }
+                if (!EnsureCodeConversation(SelectedProjectPath()) || !await FakeTurn("Hello there"))
+                    return Fail();
+                var loose = _codeConv!;
+                if (_store.Get(loose.Id) is not { Kind: "code", Folder: "", Messages.Count: 2 } || !_store.View().Ungrouped.Any(e => e.Id == loose.Id && e.Kind == "code") ||
+                    !SidebarList.Children.Cast<UIElement>().Any(r => Main(r).Tag as string == loose.Id))
+                    return Fail();
+                CloseCodeConversation();
+                OpenCodeConversation(loose.Id);
+                if (_codeConv != loose || _code.History.Count != 2 || SelectedProjectPath() != "")
+                    return Fail();
+                UseCodeFolder(codeProject); // what Add a folder… does with the picked folder
+                if (_codeConv != loose || _store.Get(loose.Id)?.Folder != codeProject || SelectedProjectPath() != codeProject || CodeAddFolder.Visibility == Visibility.Visible ||
+                    ChatsOnly(codeProject) || JsonNode.Parse(CodeTurn("chat", "Hi", codeProject).Request("planner"))!["folders"]![0]!["path"]!.GetValue<string>() != codeProject)
+                    return Fail();
+                var vanished = _store.Create(gone)!;
+                vanished.Messages = [new("user", "Before"), new("assistant", "It was here")];
+                _store.Save(vanished);
+                var toastsBefore = ToastStack.Children.Count;
+                OpenCodeConversation(vanished.Id);
+                await Settle();
+                if (_codeConv != vanished || _code.History.Count != 2 || CodePanel.Children.Count != 2 || CodeFolderMissingBar.Visibility != Visibility.Visible ||
+                    CodeFolderMissingText.Text != $"Folder not found: {gone}" || !ChatsOnly(SelectedProjectPath()) || ToastStack.Children.Count != toastsBefore || !await FakeTurn("Still there?") ||
+                    _store.Get(vanished.Id) is not { Folder: var keptGone, Messages.Count: 4 } || keptGone != gone)
+                    return Fail();
+                pick = codeProject;
+                CodeFolderMissing.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                if (_codeConv != vanished || _store.Get(vanished.Id)?.Folder != codeProject || CodeFolderMissingBar.Visibility == Visibility.Visible)
+                    return Fail();
+                var keptLast = _settings.LastProject;
+                _settings.LastProject = gone;
+                var startGone = StartupProject();
+                var forgot = _settings.LastProject;
+                _settings.LastProject = codeProject;
+                var startKept = StartupProject();
+                _settings.LastProject = keptLast;
+                _settings.Save();
+                if (startGone != "" || forgot != "" || startKept != codeProject)
+                    return Fail();
+                ProjectPath = keptFolder;
 
                 // A mirror write that fails (a problem or an exception) is only a warning, shown as a toast: the save still
                 // counts as done. The first target failing is the caller's problem, and nothing is mirrored.
@@ -2045,11 +2111,11 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New chat, Work in a folder and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New chat,+Work in a folder,+Remote API,SECTION:CHAT,?,SECTION:CODE";
+                // New and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Remote API,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
-                if (Rows() != top + ",RECENTS:code,B,A" || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
+                if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
                     return Fail();
                 answer = "Renamed B";
                 ClickItem(chatB.Id, "Rename…");
@@ -3642,6 +3708,20 @@ public partial class MainWindow : Window
             });
             RefreshPrimary();
         }
+    }
+
+    // The folder the app starts in: the last project's, unless it is gone or can't be opened (then none, and it is forgotten).
+    private string StartupProject()
+    {
+        var last = _settings.LastProject;
+        if (last.Length == 0)
+            return _workflowRoot ?? "";
+        if (LauncherLogic.FolderUsable(last))
+            return last;
+        Log($"The last project folder is gone or can't be opened, so none is chosen: {last}");
+        _settings.LastProject = "";
+        _settings.Save();
+        return "";
     }
 
     private string SelectedProjectPath()
