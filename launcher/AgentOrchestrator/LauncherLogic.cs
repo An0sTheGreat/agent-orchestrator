@@ -1492,6 +1492,8 @@ internal static class LauncherLogic
     // CustomProblems. An empty description or system prompt is fine: the kind's default is written instead.
     public static string? CustomWorkerProblem(WorkerSetting w)
     {
+        if (w.Remote is { } remote)
+            return ValidateRemoteRole(remote);
         if (string.IsNullOrWhiteSpace(w.ModelPath))
             return string.IsNullOrWhiteSpace(w.ModelId) ? "no model assigned (Change model)" : "pick the model again (Change model)";
         return null;
@@ -1615,9 +1617,22 @@ internal static class LauncherLogic
             foreach (var key in new[] { "base_url", "api_key_env", "api_key" })
                 if (local?[key] is { } value)
                     entry[key] = value.DeepClone();
+            Inherit(entry, implementer, local);
+            if (w.Remote is { } remote) // as WriteRemoteRole writes a built-in role: a model id and no auto_load
+            {
+                entry.Remove("auto_load");
+                entry.Remove("api_key");
+                entry["base_url"] = remote.BaseUrl.Trim().TrimEnd('/');
+                entry["model"] = remote.Model.Trim();
+                entry["display_name"] = remote.Model.Trim();
+                entry["api_key_env"] = remote.KeyEnv.Trim();
+                SetProvider(entry, remote.Provider);
+                ModelOptions.Apply(entry, ModelOptions.Effective(w), includeLoad: false);
+                array.Add(entry);
+                continue;
+            }
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
             entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
-            Inherit(entry, implementer, local);
             var load = (JsonObject)entry["auto_load"]!;
             load["model_path"] = w.ModelPath;
             if (string.IsNullOrEmpty(w.ModelVariant))
@@ -2548,6 +2563,16 @@ internal static class LauncherLogic
                 (string?)Worker()["api_key_env"] != "LOCAL_KEY" || (int?)Worker()["auto_load"]?["n_batch"] != 7 ||
                 WriteCustomWorkers(cwConfig, [Ok("v1", "Docs")]) is not [var noLocal] || !noLocal.Contains("base_url"))
                 throw new InvalidOperationException($"Custom workers: a Remote implementer without saved settings should use the template's: {Worker().ToJsonString()}");
+            // A remote custom worker (the Remote API page): written as a remote role is, with its provider order; a bad one is skipped.
+            var cloud = Ok("v2", "Cloud");
+            (cloud.ModelPath, cloud.Remote) = (null, new RemoteRole("https://openrouter.ai/api/v1/", " vendor/m ", "OPENROUTER_API_KEY", "", "b/y, a/x"));
+            if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate).Length != 0 || !IsRemote(Worker()) || (string?)Worker()["base_url"] != "https://openrouter.ai/api/v1" ||
+                (string?)Worker()["model"] != "vendor/m" || (string?)Worker()["api_key_env"] != "OPENROUTER_API_KEY" || Worker()["expected_model_contains"] is not null ||
+                (int?)Worker()["timeout_seconds"] != 9 || string.Join(",", Worker()["sampling"]?["extra_body"]?["provider"]?["order"]?.AsArray().Select(n => (string?)n) ?? []) != "b/y,a/x")
+                throw new InvalidOperationException($"Custom workers: a remote worker was written wrong: {Worker().ToJsonString()}");
+            cloud.Remote = cloud.Remote with { BaseUrl = "ftp://x" };
+            if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate) is not [var badCloud] || !badCloud.Contains("Base URL"))
+                throw new InvalidOperationException("Custom workers: a remote worker with a bad base URL was written.");
             var peers = new[] { new WorkerSetting { Id = "a", Title = "Tester" }, new WorkerSetting { Id = "b", Title = "Other" } };
             if (TitleProblem("reviewer", "a", peers) is null || TitleProblem(" Planner ", "a", peers) is null || TitleProblem("IMPLEMENTER", "a", peers) is null ||
                 TitleProblem("TESTER", "b", peers) is null || TitleProblem("  ", "a", peers) is null || TitleProblem("tester", "a", peers) is not null || TitleProblem("Docs", "a", peers) is not null)

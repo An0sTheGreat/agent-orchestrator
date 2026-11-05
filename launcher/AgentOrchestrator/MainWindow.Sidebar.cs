@@ -38,6 +38,7 @@ public partial class MainWindow
         {
             SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
             SidebarList.Children.Add(SidebarAction("", "Work in a folder", () => NewCodeConversation()));
+            SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             AddSidebarSection(view, chat: true, "CHAT");
             AddSidebarSection(view, chat: false, "CODE");
         }

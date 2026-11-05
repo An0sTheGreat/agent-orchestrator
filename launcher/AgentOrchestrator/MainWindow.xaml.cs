@@ -2932,6 +2932,8 @@ public partial class MainWindow : Window
             return false;
         if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
             return false;
+        if (!await RemoteApiSmoke())
+            return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Flat" })
@@ -3745,7 +3747,9 @@ public partial class MainWindow : Window
         foreach (var w in order.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };
-            if (w.Custom && w.ModelId is not null)
+            if (w.Custom && w.Remote is not null)
+                card.SetModel(LauncherLogic.RemoteModelInfo(w.Remote.Model));
+            else if (w.Custom && w.ModelId is not null)
                 card.SetModel(LauncherLogic.DescribeModel(w.ModelId, w.ModelVariant));
             _cards.Add(card);
         }
@@ -4222,6 +4226,7 @@ public partial class MainWindow : Window
         card.Config.ModelPath = choice.LoadPath;
         card.Config.ModelExpected = choice.Expected;
         card.Config.GgufFile = choice.File;
+        card.Config.Remote = null; // a local model from here on
         Log($"{card.Title}: model set to {choice.Label}");
         Toast($"{card.Title}: {choice.Label}");
         SaveWorkers();
@@ -4273,6 +4278,7 @@ public partial class MainWindow : Window
     private void ShowView(bool chat = false)
     {
         var code = !chat;
+        CloseRemoteApi();
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         RefreshCardVisibility(); // the run output skips RefreshChatTarget below

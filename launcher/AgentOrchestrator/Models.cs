@@ -266,6 +266,7 @@ internal sealed class AppSettings
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
+    public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port
     // when taken), signed in with the password whose RemoteAuth.HashPassword string is kept here (never the password).
     public bool RemoteAccess { get; set; }
@@ -345,6 +346,7 @@ internal sealed class WorkerSetting
     public string? ModelPath { get; set; }
     public string? ModelExpected { get; set; }
     public string? GgufFile { get; set; } // auto_load.gguf_file: a llama.cpp model file outside the Hugging Face cache
+    public LauncherLogic.RemoteRole? Remote { get; set; } // custom workers only: a remote API model (the Remote API page) instead of ModelPath
     public string Kind { get; set; } = "specialist"; // "specialist" | "reviewer"
     public string Description { get; set; } = "";
     public string SystemPrompt { get; set; } = "";
