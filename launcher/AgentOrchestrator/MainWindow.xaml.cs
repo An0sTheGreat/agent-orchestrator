@@ -52,9 +52,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        if (AppSettings.Unified) // the test build: one conversation view (a chat until it works in a folder), no Chat/Code switch
+        if (AppSettings.Unified) // one conversation view (a chat until it works in a folder), no Chat/Code switch
         {
-            Title += " (Test)";
             NavSwitch.Visibility = Visibility.Collapsed;
         }
         LoadWorkers();
@@ -997,8 +996,8 @@ public partial class MainWindow : Window
             return Fail();
         // Dual by default (Lead + Reviewer): IMPLEMENTER is hidden and runs as LEAD (its activity lights LEAD), "+" adds only
         // custom workers; tri (Settings > Agents) shows it with its own config entry. The run's request carries the mode, and the
-        // cards go LEAD, IMPLEMENTER, REVIEWER, COMPACTOR, then the custom workers in the order added. (Code's cards: Chat
-        // shows LEAD and the agents added to it, checked below.)
+        // cards go ALWAYS ON (LEAD, COMPACTOR), then HELPERS (IMPLEMENTER, REVIEWER), then the custom workers in the order added.
+        // Chat shows the same cards (one set for every conversation, checked below).
         ShowView();
         {
             var main = CardFor("planner")!;
@@ -1014,22 +1013,20 @@ public partial class MainWindow : Window
             string? RunMode() => (string?)JsonNode.Parse(RunRequest(@"Y:\smoke"))!["workflow"];
             if (_settings.WorkflowMode != "dual" || WorkflowDualRadio.IsChecked != true || !implementer.Hidden || reviewer.Hidden || main.Hidden || TabShown(implementer) ||
                 Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
-                Order() != "LEAD,REVIEWER,COMPACTOR" || RunMode() != "dual")
+                Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
                 return Fail();
-            // Chat: LEAD alone by default; its "+" checks an agent to show it (Code's cards are unchanged), and back
+            // The group labels: ALWAYS ON over LEAD, HELPERS · WHEN NEEDED over the first helper shown
+            if (main.GroupLabel != "ALWAYS ON" || CardFor("compactor")!.GroupLabel != "" || reviewer.GroupLabel != "HELPERS · WHEN NEEDED")
+                return Fail();
+            // Chat shows Code's cards, and its "+" adds only custom workers (no Chat-only agent list)
             var chatCards = _settings.ChatCards.ToList();
             _settings.ChatCards.Clear();
             ShowView(chat: true);
-            var chatDefault = string.Join(",", _cards.Where(c => !c.Hidden).Select(c => c.Title));
-            var reviewerItem = BuildAddWorkerMenu(this).Items.OfType<MenuItem>().FirstOrDefault(i => i.Tag as string == "chat:reviewer");
-            if (reviewerItem is null || reviewerItem.IsChecked)
-                return Fail();
-            reviewerItem.IsChecked = true;
-            reviewerItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            var chatAdded = string.Join(",", _cards.Where(c => !c.Hidden).Select(c => c.Title));
+            var chatDefault = Order();
+            var chatPlus = Plus();
             _settings.ChatCards = chatCards;
             ShowView();
-            if (chatDefault != "LEAD" || chatAdded != "LEAD,REVIEWER" || Order() != "LEAD,REVIEWER,COMPACTOR")
+            if (chatDefault != "LEAD,COMPACTOR,REVIEWER" || chatPlus is not ["Custom worker…"] || Order() != "LEAD,COMPACTOR,REVIEWER")
                 return Fail();
             foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
                 _lines.Enqueue(LauncherLogic.EventPrefix + json);
@@ -1043,14 +1040,14 @@ public partial class MainWindow : Window
             await Settle();
             if (_settings.WorkflowMode != "tri" || AppSettings.Load().WorkflowMode != "tri" || implementer.Hidden || !Shown(implementer) || main.HasCovers ||
                 RoleConfig("implementer")?["same_as"] is not null || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,IMPLEMENTER,REVIEWER,COMPACTOR" || RunMode() != "tri")
+                Order() != "LEAD,COMPACTOR,IMPLEMENTER,REVIEWER" || RunMode() != "tri")
                 return Fail();
             SelectWorker(implementer);
             WorkflowDualRadio.IsChecked = true;
             await Settle();
             if (_settings.WorkflowMode != "dual" || !implementer.Hidden || TabShown(implementer) || ListedWorkers(_chat).Contains(implementer) || _shownWorker != main ||
                 (string?)RoleConfig("implementer")?["same_as"] != "planner" || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,REVIEWER,COMPACTOR" || RunMode() != "dual")
+                Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
                 return Fail();
             Snap("0-dual");
             // The checks below use all three built-ins. Saved workers with a custom one before COMPACTOR load in the fixed order.
@@ -1062,7 +1059,7 @@ public partial class MainWindow : Window
             var ordered = Order();
             Reload(savedWorkers);
             await Settle();
-            if (ordered != "LEAD,IMPLEMENTER,REVIEWER,COMPACTOR,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
+            if (ordered != "LEAD,COMPACTOR,IMPLEMENTER,REVIEWER,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
                 !TabShown(CardFor("reviewer")!) || CardFor("planner")!.HasCovers || _shownWorker != CardFor("planner"))
                 return Fail();
         }
@@ -1980,27 +1977,32 @@ public partial class MainWindow : Window
                 void ClickRow(string tag) => SidebarList.Children.Cast<UIElement>().Select(Main).First(m => (string)m.Tag == tag).RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 MenuItem SidebarItem(string id, string header) => _sidebarMenus[id]().Items.OfType<MenuItem>().Single(i => (string)i.Header == header);
                 void ClickItem(string id, string header) => SidebarItem(id, header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                // a section header's + and folder buttons ("+new:code", "+project:code")
+                void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
+                    .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                // New chat and Work in a folder, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New chat,+Work in a folder,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
-                if (Rows() != "+New chat,+New project,RECENTS,B,A" || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
+                if (Rows() != top + ",RECENTS:code,B,A" || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
                     return Fail();
                 answer = "Renamed B";
                 ClickItem(chatB.Id, "Rename…");
                 if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: DockPanel { Children: [TextBlock { Text: "" }, TextBlock { Text: "Renamed B" }] } })) // the Code braces, then the title
                     return Fail();
                 ClickItem(chatB.Id, "Move down");
-                if (Rows() != "+New chat,+New project,RECENTS,A,B" || SidebarItem(chatB.Id, "Move down").IsEnabled)
+                if (Rows() != top + ",RECENTS:code,A,B" || SidebarItem(chatB.Id, "Move down").IsEnabled)
                     return Fail();
                 ClickItem(chatB.Id, "Move up");
-                if (Rows() != "+New chat,+New project,RECENTS,B,A")
+                if (Rows() != top + ",RECENTS:code,B,A")
                     return Fail();
                 answer = "Smoke project";
-                ClickRow("+New project");
+                ClickHeader("+project:code");
                 ClickItem(chatA.Id, "Move to Smoke project");
-                if (Rows() != "+New chat,+New project,▾Smoke project,A,RECENTS,B")
+                if (Rows() != top + ",▾Smoke project,A,RECENTS:code,B")
                     return Fail();
                 ClickRow("▾Smoke project");
-                if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,B" || _store.View().Groups is not [{ Collapsed: true }])
+                if (Rows() != top + ",▸Smoke project,RECENTS:code,B" || _store.View().Groups is not [{ Collapsed: true }])
                     return Fail();
                 // An empty chat moved into a project, or archived, is kept on leaving it.
                 var emptyGrouped = _store.Create(codeProject)!;
@@ -2017,24 +2019,24 @@ public partial class MainWindow : Window
                 }
                 RefreshSidebarList();
                 ClickItem(chatB.Id, "Archive");
-                if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,▸ARCHIVED")
+                if (Rows() != top + ",▸Smoke project,RECENTS:code,▸ARCHIVED")
                     return Fail();
                 ClickRow("▸ARCHIVED");
-                if (Rows() != "+New chat,+New project,▸Smoke project,RECENTS,▾ARCHIVED,B")
+                if (Rows() != top + ",▸Smoke project,RECENTS:code,▾ARCHIVED,B")
                     return Fail();
                 _process = new Process(); // a run in another conversation leaves Delete on
                 var deleteOff = SidebarItem(chatB.Id, "Delete…").IsEnabled;
                 _process = null;
                 answer = "yes";
                 ClickItem(chatB.Id, "Delete…");
-                if (!deleteOff || Rows() != "+New chat,+New project,▸Smoke project,RECENTS" || _store.Get(chatB.Id) is not null ||
+                if (!deleteOff || Rows() != top + ",▸Smoke project,RECENTS:code" || _store.Get(chatB.Id) is not null ||
                     File.Exists(Path.Combine(AppSettings.DataRoot, "conversations", chatB.Id + ".json")))
                     return Fail();
                 ClickRow("▸Smoke project");
                 ClickRow(chatA.Id);
                 await Settle();
                 Snap("22-sidebar-open");
-                if (_codeConv != chatA || _code.History.Count != 2 || CodePanel.Children.Count != 2 || Rows() != "+New chat,+New project,▾Smoke project,A,RECENTS" ||
+                if (_codeConv != chatA || _code.History.Count != 2 || CodePanel.Children.Count != 2 || Rows() != top + ",▾Smoke project,A,RECENTS:code" ||
                     SidebarList.Children.Cast<UIElement>().Select(Main).Single(m => m is ToggleButton { IsChecked: true }).Tag as string != chatA.Id)
                     return Fail();
                 // A project's "+" opens a new Code chat in that project, in its chats' folder, without asking for one.
@@ -2054,15 +2056,14 @@ public partial class MainWindow : Window
                     ClickRow(chatA.Id);
                     if (_codeConv != chatA)
                         return Fail();
-                    // A project of Code chats stays out of the Chat view; an empty project shows only in the view it was made in.
+                    // A project of Code chats stays out of the CHAT section; an empty project shows only in the section it was made in.
                     var chatOnly = _store.CreateGroup("Chat only", "chat")!;
-                    ShowView(chat: true);
-                    var inChat = Rows();
-                    ShowView();
-                    var inCode = Rows();
+                    RefreshSidebarList();
+                    var sections = Rows().Split("SECTION:CODE");
+                    var (inChat, inCode) = (sections[0], sections[^1]);
                     _store.DeleteGroup(chatOnly);
                     RefreshSidebarList();
-                    if (inChat.Contains("Smoke project") || !inChat.Contains("Chat only") || !inCode.Contains("Smoke project") || inCode.Contains("Chat only"))
+                    if (sections.Length != 2 || inChat.Contains("Smoke project") || !inChat.Contains("Chat only") || !inCode.Contains("Smoke project") || inCode.Contains("Chat only"))
                     {
                         Console.Error.WriteLine($"ui-smoke: projects by view: chat [{inChat}] code [{inCode}]");
                         return Fail();
@@ -2076,7 +2077,7 @@ public partial class MainWindow : Window
                 chatC.Messages = [new("user", "Gamma question")];
                 _store.Save(chatC);
                 answer = "Second project";
-                ClickRow("+New project");
+                ClickHeader("+project:code");
                 var (secondGroup, smoke) = (_store.View().Groups[0].Id, _store.View().Groups[1].Id);
                 bool Drop(string target, string payload)
                 {
@@ -2088,11 +2089,20 @@ public partial class MainWindow : Window
                 string Items(int group) => string.Join(",", _store.View().Groups[group].Items.Select(e => e.Id == chatA.Id ? "A" : e.Id == chatC.Id ? "C" : "?"));
                 if (!Drop(secondGroup, "chat:" + chatC.Id) || Items(0) != "C" || !Drop(smoke, "project:" + secondGroup) || _store.View().Groups[0].Id != smoke ||
                     !Drop(chatA.Id, "chat:" + chatC.Id) || Items(0) != "C,A" || !Drop(chatC.Id, "chat:" + chatA.Id) || Items(0) != "A,C" ||
-                    !Drop(chatA.Id, "chat:" + chatC.Id) || Items(0) != "C,A" || !Drop("RECENTS", "chat:" + chatC.Id) || Items(0) != "A" ||
+                    !Drop(chatA.Id, "chat:" + chatC.Id) || Items(0) != "C,A" || !Drop("RECENTS:code", "chat:" + chatC.Id) || Items(0) != "A" ||
                     _store.View().Ungrouped is not [{ Id: var recent }] || recent != chatC.Id)
                     return Fail();
                 if (_sidebarDrops[chatA.Id]("chat:" + chatA.Id) is not null || _sidebarDrops[smoke]("project:" + smoke) is not null || _sidebarDrops[chatA.Id]("project:" + secondGroup) is not null ||
-                    _sidebarDrops["RECENTS"]("project:" + secondGroup) is not null || _sidebarDrops[chatA.Id]("junk") is not null || _sidebarDrops[chatA.Id](null) is not null)
+                    _sidebarDrops["RECENTS:code"]("project:" + secondGroup) is not null || _sidebarDrops[chatA.Id]("junk") is not null || _sidebarDrops[chatA.Id](null) is not null)
+                    return Fail();
+                // Deleting the open Code conversation opens a fresh chat, not the folder's empty Code view.
+                ClickRow(chatC.Id);
+                answer = "yes";
+                ClickItem(chatC.Id, "Delete…");
+                if (_store.Get(chatC.Id) is not null || _codeConv is not null || NavChat.IsChecked != true || _chatConv is not null || ChatPanel.Children.Count != 0)
+                    return Fail();
+                ClickRow(chatA.Id);
+                if (_codeConv != chatA || NavCode.IsChecked != true)
                     return Fail();
 
                 // Chat-view chats: a completed reply saves one (no folder; later replies update it) that lists with the Code
@@ -2304,8 +2314,8 @@ public partial class MainWindow : Window
                 NewChat_Click(ChatSend, new RoutedEventArgs());
                 if (_chatConv is not null || ChatPanel.Children.Count != 0 || _store.Get(savedChat.Id) is null || ChatContextRing.Tag is not null)
                     return Fail();
-                ShowView(); // the Code view lists only Code conversations; the Chat view lists the chat
-                if (Rows().Contains(savedChat.Id))
+                ShowView(); // the chat lists in the CHAT section, never the CODE one
+                if (Rows().Split("SECTION:CODE") is not [var chatRows, var codeRows] || !chatRows.Contains(savedChat.Id) || codeRows.Contains(savedChat.Id))
                     return Fail();
                 ShowView(chat: true);
                 ClickRow(savedChat.Id);
@@ -2641,7 +2651,7 @@ public partial class MainWindow : Window
                 Attach(_chat, Path.Combine(area, path));
             var composed = ComposeMessage(_chat, "Look");
             var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("planner", [new("user", composed)], CurrentExtras() with { Images = _turnImages }))!;
-            if (plusItems is not ["Add files or photos", "Add folder"] || ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
+            if (plusItems is not ["Add files or photos", "Add folder…"] || // the chat's asks: Work in it or Attach its files ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
                 !composed.StartsWith("Look" + AttachMarker) || !composed.Contains("remember the milk") || !composed.Contains("<file name=\"src/app.cs\">") ||
                 composed.Contains("junk") || composed.Contains("blob") || request["images"]!.AsArray().Count != 1 ||
                 BubbleText(composed) != "Look\n\n📎 notes.txt, photo.png, src/" || TypedText(composed) != "Look" || TypedText("Plain") != "Plain")

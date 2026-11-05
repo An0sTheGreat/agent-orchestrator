@@ -184,8 +184,6 @@ public partial class MainWindow
             SelectWorker(CardFor("planner"));
         // the Add agent card lines up with the cards (the test build's sit under their group labels)
         AddWorkerButton.Margin = new Thickness(AppSettings.Unified ? 4 : 0, AppSettings.Unified ? 17 : 0, 0, 8);
-        if (!AppSettings.Unified)
-            return;
         // The test build's groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the
         // workflow or the lead calls them. The first shown card of each group carries its label; the helpers start after a gap.
         var firstHelper = true;
