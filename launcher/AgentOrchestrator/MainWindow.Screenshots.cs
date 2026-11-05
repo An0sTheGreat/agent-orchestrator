@@ -134,7 +134,7 @@ public partial class MainWindow
         CloseSearch();
         // The Remote API page on the canned OpenRouter replies, a model chosen, two providers ticked, enough providers to scroll,
         // the table sorted by input price, Cheapest on and a max output price.
-        _remoteHttp = new HttpClient(new RemoteApiFakeHandler { ExtraProviders = 6 });
+        _remoteHttp = new HttpClient(new RemoteApiFakeHandler { ExtraProviders = 6, PricedModels = true }); // max out 0.5 below hides two models and the Extras
         _settings.RemoteHelpShown = true; // memory only: no first-use popup over the picture
         OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole("https://openrouter.ai/api/v1", "z-ai/glm-5.3-flash", "OPENROUTER_API_KEY", "", "relace/fp4, gmicloud/fp8", SortPrice: true, MaxOutput: "0.5"));
         await Task.WhenAll(_remoteModelsTask, _remoteProvidersTask);

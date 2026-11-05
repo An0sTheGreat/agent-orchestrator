@@ -13,7 +13,8 @@ internal static class RemoteCatalog
 {
     public sealed record Service(string Id, string Name, string BaseUrl, string KeyEnv, string KeyUrl, string KeySteps, bool ModelsNeedKey, bool HasProviders);
 
-    public sealed record ModelEntry(string Id, string Name, long ContextLength); // ContextLength 0 = unknown
+    // ContextLength 0 = unknown; prices $/M from OpenRouter's "pricing", null = unknown (variable, unlisted, another service).
+    public sealed record ModelEntry(string Id, string Name, long ContextLength, decimal? InputPerM = null, decimal? OutputPerM = null);
 
     public sealed record ProviderRow(string Name, string Tag, string Quantization, decimal? InputPerM, decimal? OutputPerM, decimal? CacheReadPerM,
         double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength);
@@ -62,7 +63,9 @@ internal static class RemoteCatalog
             if (id.StartsWith("models/", StringComparison.Ordinal)) // Gemini
                 id = id["models/".Length..];
             var context = m["context_length"] ?? m["context_window"] ?? m["max_model_len"] ?? (m["metadata"] as JsonObject)?["context_length"]; // the last: DeepInfra
-            models.Add(new ModelEntry(id, Str(m["name"]) is { Length: > 0 } name ? name : id, (long)(Num(context) ?? 0)));
+            var pricing = m["pricing"] as JsonObject;
+            models.Add(new ModelEntry(id, Str(m["name"]) is { Length: > 0 } name ? name : id, (long)(Num(context) ?? 0),
+                PerMillion(pricing?["prompt"]), PerMillion(pricing?["completion"])));
         }
         models.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Id, b.Id));
         return models;
@@ -170,6 +173,17 @@ internal static class RemoteCatalog
         Check(bare is [{ Id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", ContextLength: 131072 }], "bare array");
         var gemini = ParseModels("{\"object\":\"list\",\"data\":[{\"id\":\"models/gemini-2.0-flash\",\"object\":\"model\",\"owned_by\":\"google\"}]}");
         Check(gemini is [{ Id: "gemini-2.0-flash", Name: "gemini-2.0-flash", ContextLength: 0 }], "Gemini models/ prefix");
+        Check(openAi.All(m => m.InputPerM is null && m.OutputPerM is null) && bare[0].InputPerM is null && gemini[0].OutputPerM is null, "no pricing: no prices");
+        // OpenRouter's GET /models (trimmed, 2026-11-05): USD per token as strings; "-1" = variable (the auto router).
+        var priced = ParseModels("{\"data\":[{\"id\":\"google/gemini-omni-1.2-flash\",\"name\":\"Google: Gemini Omni 1.2 Flash\",\"context_length\":131072," +
+            "\"pricing\":{\"prompt\":\"0.0000015\",\"completion\":\"0.000009\",\"web_search\":\"0.014\"}}," +
+            "{\"id\":\"openrouter/auto\",\"name\":\"Auto Router\",\"context_length\":2000000,\"pricing\":{\"prompt\":\"-1\",\"completion\":\"-1\"}}," +
+            "{\"id\":\"stealth/crouton-alpha\",\"name\":\"Crouton Alpha\",\"context_length\":1048576,\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}}," +
+            "{\"id\":\"x/relace\",\"pricing\":{\"prompt\":\"0.0000000285\",\"completion\":\"junk\"}},{\"id\":\"x/half\",\"pricing\":{\"completion\":\"0.0000004\"}}]}");
+        Check(priced is [{ Id: "google/gemini-omni-1.2-flash", InputPerM: 1.5m, OutputPerM: 9m, ContextLength: 131072 },
+            { Id: "openrouter/auto", InputPerM: null, OutputPerM: null }, { Id: "stealth/crouton-alpha", InputPerM: 0m, OutputPerM: 0m },
+            { Id: "x/half", InputPerM: null, OutputPerM: 0.4m }, { Id: "x/relace", InputPerM: 0.0285m, OutputPerM: null }],
+            "OpenRouter model prices: " + string.Join(", ", priced));
         // The probe: .NET 8's JsonNode parses a duplicate key and throws only when the object is read (so the replies below reach the reader).
         var duplicate = JsonNode.Parse("{\"a\":1,\"a\":2}")!.AsObject();
         try { _ = duplicate["a"]; Check(false, "probe: JsonNode read a duplicate key"); }
