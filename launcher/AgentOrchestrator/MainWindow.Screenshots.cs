@@ -32,6 +32,27 @@ public partial class MainWindow
         encoder.Save(file);
     }
 
+    // A project run part-way through, as the events of a Start project run draw it: the Lead works an item, the Reviewer
+    // checks it, and a rule marks each switch from one model to the other.
+    private async Task RunPictureAsync(Func<Task> settle)
+    {
+        foreach (var json in new[]
+        {
+            """{"e":"model","role":"planner","id":"Qwen3.5-4B Q4_K_M"}""",
+            """{"e":"message","role":"planner","text":"Item 2 of 4: the forecast fetch. The page skeleton is in place, so I'll add `weather.js` and call it from `index.html`.","final":false}""",
+            """{"e":"tool","role":"planner","name":"write_file","args":"{\"path\":\"weather.js\"}","result":"Wrote weather.js (38 lines)"}""",
+            """{"e":"tool","role":"planner","name":"run_checks","args":"{}","result":"fetch test: passed (4 of 4)"}""",
+            """{"e":"message","role":"planner","text":"weather.js fetches the forecast, caches it for ten minutes and the fetch test passes. Item 2 is ready for review.","final":false}""",
+            """{"e":"model","role":"reviewer","id":"Qwen3.5-4B Q4_K_M"}""",
+            """{"e":"message","role":"reviewer","text":"PASS. The fetch is cached, errors fall back to the last forecast, and nothing outside weather.js changed.","final":false}""",
+            """{"e":"model","role":"planner","id":"Qwen3.5-4B Q4_K_M"}""",
+            """{"e":"message","role":"planner","text":"Item 2 is recorded in STATE.md. Item 3 of 4: the today card.","final":false}""",
+        })
+            _lines.Enqueue(LauncherLogic.EventPrefix + json);
+        DrainLines();
+        await settle();
+    }
+
     internal async Task RunScreenshotsAsync(string folder)
     {
         _settingsShow = window => { window.ShowActivated = false; window.Show(); };
@@ -68,7 +89,8 @@ public partial class MainWindow
         }
 
         await Settle();
-        foreach (var (theme, accent) in new[] { ("ParchmentDark", "Clay"), ("Parchment", "Clay"), ("Graphite", "Silver"), ("Oled", "Purple"), ("Glass", "LightBlue"), ("Gold", "Gold") })
+        // Graphite with its light-gray accent (the app's default look) comes first: chat-Graphite is the README's opening picture.
+        foreach (var (theme, accent) in new[] { ("Graphite", "Silver"), ("ParchmentDark", "Clay"), ("Parchment", "Clay"), ("Oled", "Purple"), ("Glass", "LightBlue"), ("Gold", "Gold") })
         {
             Look(theme, accent);
             if (chat is not null)
@@ -77,10 +99,12 @@ public partial class MainWindow
                 OpenChatConversation(chat.Id);
                 ShowView(chat: true);
                 await Settle();
+                ChatScroll.ScrollToTop(); // from the first message, headings and all
+                await Settle();
                 Snap("chat-" + theme);
             }
         }
-        Look("ParchmentDark", "Clay");
+        Look("Graphite", "Silver");
         if (code is not null)
         {
             ShowView();
@@ -88,6 +112,8 @@ public partial class MainWindow
             SetWorkerRail(true);
             await Settle();
             Snap("code");
+            await RunPictureAsync(Settle);
+            Snap("project");
             SetWorkerRail(false);
             SelectWorker(CardFor("planner"));
             await Settle();

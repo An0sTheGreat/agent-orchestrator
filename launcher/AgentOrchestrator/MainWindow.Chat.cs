@@ -108,6 +108,7 @@ public partial class MainWindow
         public string? Last, Pending; // stats of the last call; of a call whose text streamed into the answer, not yet shown
         public long TurnTokens;
         public string Stage = "answer", StageTitle = "";
+        public string? LastRole; // the model whose block was added last, to rule off the next model's
         public StreamBlock? Block;
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
         public RichTextBox? Rendered; // the answer as formatted Markdown, re-rendered as it streams
@@ -130,6 +131,7 @@ public partial class MainWindow
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
         ChatKeepToggle.IsChecked = _settings.ChatKeepLoaded;
+        RefreshMultiModel();
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
@@ -233,6 +235,7 @@ public partial class MainWindow
             c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
+        MultiModelOptions.IsEnabled = !_chatBusy && !runActive; // the engine reads it when it starts
         ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && ModelsLoaded;
         CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
@@ -490,7 +493,7 @@ public partial class MainWindow
             try
             {
                 _chatStopRequested = true;
-                p.Kill(entireProcessTree: true);
+                LauncherLogic.KillTreeExceptLlama(p); // the loaded models stay up until Unload model or app close
                 Log("Chat stop requested.");
             }
             catch (InvalidOperationException) { } // already gone
@@ -1088,10 +1091,15 @@ public partial class MainWindow
                     WorkerContextsCleared();
                 SetChatStatus($"Loading the {name} model…");
                 Log($"[{name}] loading {Str(ev, "path")} ...");
+                RecordLlamaPort(card, ev);
+                break;
+            case "unloading":
+                Toast($"Unloading {Str(ev, "model")} to make room", "#F7C873");
                 break;
             case "model":
                 EndChatBlock();
                 Activate(role, "Working");
+                RecordLlamaPort(card, ev);
                 card?.SetModel(ModelInfoFor(role, Str(ev, "id")));
                 SetChatStatus($"{name} is working…");
                 Log($"[{name}] {Str(ev, "id")}");
@@ -1273,6 +1281,9 @@ public partial class MainWindow
     private StreamBlock StartChatBlock(ChatReply r, string role, string kind)
     {
         var block = new StreamBlock { Role = role, Kind = kind };
+        if (r.LastRole is not null && r.LastRole != role) // another model takes over inside this reply
+            r.Content.Children.Add(ModelSwitchRule());
+        r.LastRole = role;
         if (kind == "text" && r.Stage == "answer")
         {
             block.Body = EnsureAnswer(r); // the answer streams straight into the prominent text, not a section

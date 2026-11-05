@@ -8,11 +8,20 @@ namespace AgentOrchestrator;
 // card shows both; a reply with nothing on screen yet shows the reading progress in its status line.
 public partial class MainWindow
 {
-    private (int Slot, long Processed, long Decoded, long Ms)? _llamaLast; // the previous poll, for the speeds
+    // Each card's previous poll, for the speeds (cards on different servers have their own slot 0).
+    private Dictionary<string, (int Slot, long Processed, long Decoded, long Ms)> _llamaLast = new();
+    // The port of each card's own llama-server, from the engine's loading / model events; cleared when the servers stop.
+    private Dictionary<string, int> _llamaPorts = new();
+
+    private void RecordLlamaPort(RoleCard? card, JsonElement ev)
+    {
+        if (card is not null && ev.TryGetProperty("port", out var port) && port.ValueKind == JsonValueKind.Number && port.TryGetInt32(out var number))
+            _llamaPorts[card.Role] = number;
+    }
 
     private async Task PollLlamaAsync(RoleCard card)
     {
-        if (LlamaPort() is not { } port)
+        if (LlamaPort(card.Role) is not { } port)
             return;
         using var response = await _http.GetAsync($"http://127.0.0.1:{port}/slots");
         if (!response.IsSuccessStatusCode)
@@ -29,7 +38,7 @@ public partial class MainWindow
                 ? Number(next[0], "n_decoded") : 0;
             var now = Environment.TickCount64;
             double? promptTps = null, decodeTps = null;
-            if (_llamaLast is { } last && last.Slot == id && now > last.Ms)
+            if (_llamaLast.TryGetValue(card.Role, out var last) && last.Slot == id && now > last.Ms)
             {
                 var seconds = (now - last.Ms) / 1000.0;
                 if (processed > last.Processed)
@@ -37,7 +46,7 @@ public partial class MainWindow
                 if (decoded > last.Decoded)
                     decodeTps = (decoded - last.Decoded) / seconds;
             }
-            _llamaLast = (id, processed, decoded, now);
+            _llamaLast[card.Role] = (id, processed, decoded, now);
             card.SetLive(prompt, decoded, decodeTps, promptTps);
             if (decoded == 0 && prompt > 0)
                 card.Status = $"Reading prompt {processed:N0} / {prompt:N0}";
@@ -66,12 +75,13 @@ public partial class MainWindow
         }
         if (!listener.IsListening)
             return Fail("no port");
-        var processed = 0;
+        var (processed, hits) = (0, 0);
         var serve = Task.Run(async () =>
         {
             while (listener.IsListening)
             {
                 var context = await listener.GetContextAsync();
+                Interlocked.Increment(ref hits);
                 processed = Math.Min(processed + 500, 2000);
                 var decoded = processed < 2000 ? 0 : 300;
                 var body = System.Text.Encoding.UTF8.GetBytes(
@@ -80,15 +90,15 @@ public partial class MainWindow
                 context.Response.Close();
             }
         });
-        var (state, chat, last, reply, busy) = (_llamaStateFile, _chatProcess, _llamaLast, _reply, _chatBusy);
+        var (state, chat, last, ports, reply, busy) = (_llamaStateFile, _chatProcess, _llamaLast, _llamaPorts, _reply, _chatBusy);
         var card = CardFor("planner")!;
         var status = card.Status;
         try
         {
             _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-poll.json");
-            File.WriteAllText(_llamaStateFile, $$"""{"pid": 1, "port": {{port}}}""");
+            File.WriteAllText(_llamaStateFile, $$"""{"pid": 1, "port": {{port}}}"""); // the older single-server record
             _chatProcess = System.Diagnostics.Process.GetCurrentProcess();
-            _llamaLast = null;
+            (_llamaLast, _llamaPorts) = (new(), new());
             (_reply, _chatBusy) = (new ChatReply { Status = new System.Windows.Controls.TextBlock() }, true);
             await PollLlamaAsync(card);
             await Task.Delay(200);
@@ -105,24 +115,43 @@ public partial class MainWindow
             await PollLlamaAsync(card);
             if (_reply.Status.Text != "Writing index.html… 22 characters")
                 return Fail("a streaming tool call's line was replaced: " + _reply.Status.Text);
+            // Several servers: a card polls its own (the port its model event named, RecordLlamaPort), another card the first
+            // recorded one, as does a card whose server is no longer recorded.
+            File.WriteAllText(_llamaStateFile, $$"""{"servers": [{"pid": 1, "port": 1}, {"pid": 2, "port": {{port}}}]}""");
+            (_llamaPorts["planner"], _llamaPorts["reviewer"]) = (port, 999);
+            if (LlamaPort("planner") != port || LlamaPort("reviewer") != 1 || LlamaPort("implementer") != 1)
+                return Fail($"ports by role: {LlamaPort("planner")} {LlamaPort("reviewer")}");
+            var before = hits;
+            try { await PollLlamaAsync(card); }
+            catch (System.Net.Http.HttpRequestException) { return Fail("polled the first server, not the card's own"); }
+            if (hits != before + 1)
+                return Fail("the card's own server was not polled");
             return true;
         }
         finally
         {
             listener.Stop();
             _toolArgs.Clear();
-            (_llamaStateFile, _chatProcess, _llamaLast, card.Status, _reply, _chatBusy) = (state, chat, last, status, reply, busy);
+            (_llamaStateFile, _chatProcess, _llamaLast, _llamaPorts, card.Status, _reply, _chatBusy) = (state, chat, last, ports, status, reply, busy);
         }
     }
 
-    // The engine's record of the llama-server it started: {"port": ...}.
-    private int? LlamaPort()
+    // The port of the card's own llama-server while the engine still records it, else the first recorded server's.
+    // The state file is {"servers": [{"port", ...}, ...]} or an older engine's single {"port", ...}.
+    private int? LlamaPort(string role)
     {
+        var ports = new List<int>();
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(_llamaStateFile));
-            return doc.RootElement.TryGetProperty("port", out var port) && port.ValueKind == JsonValueKind.Number ? port.GetInt32() : null;
+            var root = doc.RootElement;
+            var servers = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("servers", out var list) && list.ValueKind == JsonValueKind.Array
+                ? list.EnumerateArray().ToList() : [root];
+            foreach (var server in servers)
+                if (server.ValueKind == JsonValueKind.Object && server.TryGetProperty("port", out var port) && port.ValueKind == JsonValueKind.Number && port.TryGetInt32(out var number))
+                    ports.Add(number);
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        return _llamaPorts.TryGetValue(role, out var mine) && ports.Contains(mine) ? mine : ports.Count > 0 ? ports[0] : null;
     }
 }

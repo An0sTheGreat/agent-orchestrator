@@ -232,6 +232,9 @@ internal sealed class AppSettings
     public string ChatEffort { get; set; } = "";
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
     public bool ChatKeepLoaded { get; set; } = true;
+    // Several models at once (the engine's AGENT_ORCHESTRATOR_MULTI_MODEL): "never" (loading one unloads the other), "fit"
+    // (side by side while they fit in free GPU memory, the oldest unloaded first) or "always" (the rest spills into RAM).
+    public string MultiModel { get; set; } = "never";
     // Chat and Code conversations (messages and the message box) at a readable width in the middle of the column.
     public bool CenterChat { get; set; } = true;
     // Replies' and messages' text: "compact" (the denser layout), "comfortable" or "large" (ChatGPT-like spacing).

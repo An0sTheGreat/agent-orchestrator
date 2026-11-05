@@ -495,7 +495,9 @@ internal static class LauncherLogic
     public const string LlamaReleaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
     public static string LlamaFolder => Path.Combine(AppSettings.DataRoot, "llama.cpp");
     public static string LlamaServerPath => Path.Combine(LlamaFolder, "llama-server.exe");
-    // The engine keeps one llama-server and records it here: {"pid", "port", "signature", "model_file", "log"}.
+    // The engine records its llama-servers here (one per loaded model, Settings > Models > Several models at once):
+    // {"servers": [{"pid", "port", "signature", "args", "model_file", "log", "last_used"}, ...]}. Older engines wrote one
+    // server as the whole file: {"pid", "port", ...}.
     public static string LlamaStateFile => Path.Combine(Path.GetTempPath(), "agent-orchestrator-llama.json");
 
     // Tells an orchestrator process where llama-server and the models folder are (never values the launcher inherited).
@@ -725,50 +727,125 @@ internal static class LauncherLogic
         }
     }
 
-    // The pid in the engine's state file; null when the file is missing or unreadable.
-    public static int? ReadLlamaPid(string stateFile)
+    // The pids in the engine's state file (the server list or the older single server); empty when the file is missing or unreadable.
+    public static List<int> ReadLlamaPids(string stateFile)
     {
         try
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(stateFile));
-            return doc.RootElement.GetProperty("pid").GetInt32();
+            var root = doc.RootElement;
+            var servers = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("servers", out var list) ? list.EnumerateArray().ToList() : [root];
+            return servers.Select(s => s.GetProperty("pid").GetInt32()).ToList();
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or KeyNotFoundException or
-                                       InvalidOperationException or FormatException) { return null; }
+                                       InvalidOperationException or FormatException) { return []; }
     }
 
-    // The live llama-server the state file names, or null. A pid that is gone or now belongs to another program is never ours.
+    // The live llama-servers the state file names. A pid that is gone or now belongs to another program is never ours.
+    public static List<Process> RecordedLlamaServers(string stateFile)
+    {
+        var servers = new List<Process>();
+        foreach (var pid in ReadLlamaPids(stateFile))
+            try
+            {
+                var process = Process.GetProcessById(pid);
+                if (IsLlamaServer(process))
+                    servers.Add(process);
+                else
+                    process.Dispose();
+            }
+            catch (Exception e) when (e is ArgumentException or InvalidOperationException) { } // not running
+        return servers;
+    }
+
+    // The first live recorded llama-server, or null.
     public static Process? RecordedLlamaServer(string stateFile)
     {
-        if (ReadLlamaPid(stateFile) is not { } pid)
-            return null;
-        try
-        {
-            var process = Process.GetProcessById(pid);
-            if (IsLlamaServer(process))
-                return process;
-            process.Dispose();
-        }
-        catch (Exception e) when (e is ArgumentException or InvalidOperationException) { } // not running
-        return null;
+        var servers = RecordedLlamaServers(stateFile);
+        foreach (var extra in servers.Skip(1))
+            extra.Dispose();
+        return servers.FirstOrDefault();
     }
 
     private static bool IsLlamaServer(Process process) => string.Equals(process.ProcessName, "llama-server", StringComparison.OrdinalIgnoreCase);
 
-    // Kills the recorded llama-server (its whole tree) and deletes the state file; the file stays if the kill failed.
-    // True when a server was stopped.
+    // Kills every recorded llama-server (each one's whole tree) and deletes the state file; the file stays if a kill failed.
+    // True when any server was stopped.
     public static bool StopLlamaServer(string stateFile)
     {
-        var stopped = false;
-        if (RecordedLlamaServer(stateFile) is { } server)
+        var (stopped, failed) = (false, false);
+        foreach (var server in RecordedLlamaServers(stateFile))
             using (server)
             {
                 try { server.Kill(entireProcessTree: true); server.WaitForExit(10000); stopped = true; } // its files stay locked until it exits
-                catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return false; }
+                catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { failed = true; }
             }
-        try { File.Delete(stateFile); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        if (!failed)
+            try { File.Delete(stateFile); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
         return stopped;
     }
+
+    // Stop (a run or a reply): kills the engine and everything it started except its llama-servers (and what they started),
+    // which stay loaded until Unload model or app close (StopLlamaServer). A child must have started no earlier than its
+    // parent, as in Kill(entireProcessTree), so a reused parent pid never makes an unrelated process ours.
+    public static void KillTreeExceptLlama(Process engine)
+    {
+        var children = ParentPids().ToLookup(p => p.Parent, p => p.Pid);
+        var doomed = new List<Process>();
+        void Walk(Process parent)
+        {
+            foreach (var pid in children[parent.Id])
+            {
+                Process child;
+                try
+                {
+                    child = Process.GetProcessById(pid);
+                    if (child.StartTime < parent.StartTime || IsLlamaServer(child)) { child.Dispose(); continue; }
+                }
+                catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { continue; } // gone or not ours to read
+                doomed.Add(child);
+                Walk(child);
+            }
+        }
+        Walk(engine);
+        engine.Kill();
+        foreach (var process in doomed)
+            using (process)
+                try { process.Kill(); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // exited meanwhile
+    }
+
+    // Every running process's pid and parent pid (a Toolhelp snapshot).
+    internal static List<(int Pid, int Parent)> ParentPids()
+    {
+        var list = new List<(int, int)>();
+        var snapshot = CreateToolhelp32Snapshot(2 /* TH32CS_SNAPPROCESS */, 0);
+        if (snapshot == -1)
+            return list;
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessEntry32>() };
+            for (var more = Process32FirstW(snapshot, ref entry); more; more = Process32NextW(snapshot, ref entry))
+                list.Add(((int)entry.ProcessId, (int)entry.ParentProcessId));
+        }
+        finally { CloseHandle(snapshot); }
+        return list;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size, Usage, ProcessId;
+        public nint DefaultHeapId;
+        public uint ModuleId, Threads, ParentProcessId;
+        public int PriorityClassBase;
+        public uint Flags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 260)] public string ExeFile;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern nint CreateToolhelp32Snapshot(uint flags, uint processId);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] private static extern bool Process32FirstW(nint snapshot, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] private static extern bool Process32NextW(nint snapshot, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
 
     public sealed record ModelInfo(string Name, string Weights, string Quant);
 
@@ -1676,21 +1753,27 @@ internal static class LauncherLogic
         // settings.json from before llama.cpp was the only runtime (Runtime, an API key) still loads.
         if (JsonSerializer.Deserialize<AppSettings>("{\"Runtime\":\"llamacpp\",\"ApiKey\":\"k\",\"ModelsFolder\":\"Y:\\\\m\"}")?.ModelsFolder != @"Y:\m")
             throw new InvalidOperationException("An old settings.json did not load.");
+        if (JsonSerializer.Deserialize<AppSettings>("{}")?.MultiModel != "never" ||
+            JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(new AppSettings { MultiModel = "fit" }))?.MultiModel != "fit")
+            throw new InvalidOperationException("Several models at once must default to never and round-trip.");
 
         var area = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-llama-{Guid.NewGuid():N}");
         try
         {
             Directory.CreateDirectory(area);
             var state = Path.Combine(area, "state.json");
-            if (ReadLlamaPid(state) is not null)
+            if (ReadLlamaPids(state).Count != 0)
                 throw new InvalidOperationException("A missing state file must read as no server.");
             File.WriteAllText(state, """{"pid": 4242, "port": 8899, "signature": "s", "model_file": "m.gguf", "log": "l.txt"}""");
-            if (ReadLlamaPid(state) != 4242)
+            if (ReadLlamaPids(state) is not [4242])
                 throw new InvalidOperationException("State file parsing failed.");
-            foreach (var corrupt in new[] { "{\"pid\": 42", "{\"port\": 8899}", "{\"pid\": \"x\"}", "[]", "" })
+            File.WriteAllText(state, """{"servers": [{"pid": 4242, "port": 8899, "signature": "s", "args": [], "model_file": "a.gguf", "log": "l", "last_used": 1.5}, {"pid": 4343, "port": 8900}]}""");
+            if (ReadLlamaPids(state) is not [4242, 4343])
+                throw new InvalidOperationException("The server list was not read.");
+            foreach (var corrupt in new[] { "{\"pid\": 42", "{\"port\": 8899}", "{\"pid\": \"x\"}", "[]", "", "{\"servers\": 5}", "{\"servers\": [{\"port\": 1}]}" })
             {
                 File.WriteAllText(state, corrupt);
-                if (ReadLlamaPid(state) is not null)
+                if (ReadLlamaPids(state).Count != 0)
                     throw new InvalidOperationException($"A corrupt state file must read as no server: {corrupt}");
             }
 
@@ -1755,6 +1838,49 @@ internal static class LauncherLogic
             catch (IOException e) when (e.Message == "locked") { }
             if (File.ReadAllText(Path.Combine(target, "version.txt")) != "b6100\nCUDA 12.4" || !Directory.GetDirectories(area).Order().SequenceEqual(before))
                 throw new InvalidOperationException("A failed swap must roll back to the old install and leave no stray folders.");
+
+            // Stop keeps the models loaded: an engine (cmd) with a stand-in llama-server (ping under that name) and a plain
+            // ping as children; the engine and the ping die, the server lives.
+            var fakeServer = Path.Combine(area, "llama-server.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), fakeServer);
+            using var engine = Process.Start(new ProcessStartInfo("cmd.exe", $"/c start /b \"\" \"{fakeServer}\" -n 60 127.0.0.1 & ping -n 60 127.0.0.1")
+                { UseShellExecute = false, CreateNoWindow = true })!;
+            Process? server = null, plain = null;
+            Process? Child(string name)
+            {
+                foreach (var (pid, parent) in ParentPids().Where(p => p.Parent == engine.Id))
+                    try
+                    {
+                        var child = Process.GetProcessById(pid);
+                        if (string.Equals(child.ProcessName, name, StringComparison.OrdinalIgnoreCase))
+                            return child;
+                        child.Dispose();
+                    }
+                    catch (Exception e) when (e is ArgumentException or InvalidOperationException) { }
+                return null;
+            }
+            try
+            {
+                for (var tries = 0; tries < 100 && (server is null || plain is null); tries++)
+                {
+                    Thread.Sleep(50);
+                    server ??= Child("llama-server");
+                    plain ??= Child("PING");
+                }
+                if (server is null || plain is null)
+                    throw new InvalidOperationException("The stand-in engine did not start its children.");
+                KillTreeExceptLlama(engine);
+                if (!engine.WaitForExit(5000) || !plain.WaitForExit(5000) || server.HasExited)
+                    throw new InvalidOperationException("Stop must kill the engine and its other children but leave llama-server running.");
+            }
+            finally
+            {
+                foreach (var p in new[] { engine, plain, server })
+                    if (p is not null)
+                        try { p.Kill(); p.WaitForExit(5000); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                plain?.Dispose();
+                server?.Dispose();
+            }
         }
         finally { Directory.Delete(area, recursive: true); }
     }

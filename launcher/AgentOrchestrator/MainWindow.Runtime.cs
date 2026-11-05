@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 
 namespace AgentOrchestrator;
@@ -48,11 +49,28 @@ public partial class MainWindow
             info.Environment["AGENT_ORCHESTRATOR_PONYTAIL"] = _settings.Ponytail;
         else
             info.Environment.Remove("AGENT_ORCHESTRATOR_PONYTAIL");
+        info.Environment["AGENT_ORCHESTRATOR_MULTI_MODEL"] = _settings.MultiModel;
     }
 
-    // Kills the server the engine recorded (only if that pid is still a llama-server).
+    // Settings > Models > Several models at once shows the saved choice; a click saves it (the engine reads it at its start).
+    private void RefreshMultiModel()
+    {
+        foreach (var radio in MultiModelOptions.Children.OfType<RadioButton>())
+            radio.IsChecked = (string)radio.Tag == _settings.MultiModel;
+    }
+
+    private void MultiModel_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { Tag: string mode } || mode == _settings.MultiModel)
+            return;
+        _settings.MultiModel = mode;
+        _settings.Save();
+    }
+
+    // Kills every server the engine recorded (only pids that are still a llama-server).
     private void StopLocalServer()
     {
+        _llamaPorts.Clear();
         if (LauncherLogic.StopLlamaServer(_llamaStateFile))
             Log("Stopped the local llama-server.");
     }
