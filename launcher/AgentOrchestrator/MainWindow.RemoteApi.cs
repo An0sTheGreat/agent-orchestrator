@@ -36,6 +36,7 @@ public partial class MainWindow
     {
         CloseRemoteApi();
         var red = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
+        var amber = new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B));
         var custom = RemoteCatalog.Services[^1];
         TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 16, 0, 0) };
         TextBox Box(string tag) => new()
@@ -249,7 +250,14 @@ public partial class MainWindow
         void RenderProviders()
         {
             table.Children.Clear();
-            orderText.Text = order.Count == 0 ? "Any provider." : "Only, in this order: " + string.Join(" → ", order.Select(tag => rows.FirstOrDefault(r => r.Tag == tag)?.Name is { Length: > 0 } n ? $"{n} ({tag})" : tag));
+            orderText.Text = order.Count == 0 ? "Any provider." : "Only, in this order: ";
+            for (var i = 0; i < order.Count; i++)
+            {
+                var row = rows.FirstOrDefault(r => r.Tag == order[i]);
+                orderText.Inlines.Add((i > 0 ? " → " : "") + (row?.Name is { Length: > 0 } n ? $"{n} ({order[i]})" : order[i]));
+                if (rows.Count > 0 && row is null) // still applies: OpenRouter then refuses every request (no fallbacks)
+                    orderText.Inlines.Add(new Run(" (not offered for this model)") { Foreground = amber });
+            }
             clearOrder.Visibility = order.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (rows.Count == 0)
                 return;
@@ -495,6 +503,7 @@ public partial class MainWindow
             foreach (var row in list.Children.OfType<ToggleButton>())
                 row.IsChecked = ((RemoteCatalog.ModelEntry)row.Tag).Id == modelId.Text.Trim();
             _remoteLast = (Selected().Id, baseUrl.Text.Trim(), modelId.Text.Trim());
+            order.Clear(); // another model's provider tags (a preset's are set above, before this handler)
             LoadProviders();
         };
         visionOnly.Click += (_, _) => RenderProviders();
@@ -795,6 +804,12 @@ public partial class MainWindow
             if (worker.Config.Remote != ticked || worker.ModelId != Glm || AppSettings.Load().Workers.FirstOrDefault(w => w.Id == worker.Role)?.Remote != ticked)
                 return Fail($"Apply to a custom worker: {worker.Config.Remote}");
 
+            // Another model drops the ticked providers: their tags belong to the last model.
+            SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "qwen/qwen3-coder" })!);
+            await Loaded();
+            if (Find<TextBox>("RemoteModelId").Text != "qwen/qwen3-coder" || OrderText() != "Any provider.")
+                return Fail($"another model kept the order \"{OrderText()}\"");
+
             // Another service starts with no model and no providers.
             Service("openai");
             if (Find<TextBox>("RemoteModelId").Text.Length != 0 || OrderText() != "Any provider.")
@@ -825,10 +840,10 @@ public partial class MainWindow
             if (Find<TextBlock>("RemoteError").Text != LauncherLogic.ValidateRemoteRole(new("ftp://x", "m", Unset, "")) || !Unchanged())
                 return Fail($"Apply with a bad base URL: \"{Find<TextBlock>("RemoteError").Text}\"");
 
-            // A preset's provider OpenRouter does not list stays in the order until Clear.
+            // A preset's provider OpenRouter does not list stays in the order, marked, until Clear.
             OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "gone/x, relace/fp4"));
             await Loaded();
-            if (OrderText() != "Only, in this order: gone/x → Relace (relace/fp4)" || Tick("relace/fp4")?.Content as string != "2")
+            if (OrderText() != "Only, in this order: gone/x (not offered for this model) → Relace (relace/fp4)" || Tick("relace/fp4")?.Content as string != "2")
                 return Fail($"the preset's order shows \"{OrderText()}\"");
             SmokeClick(Find<Button>("RemoteClearOrder"));
             if (OrderText() != "Any provider." || Tick("relace/fp4")?.IsChecked != false || Find<Button>("RemoteClearOrder").Visibility == Visibility.Visible)
