@@ -1435,7 +1435,19 @@ public partial class MainWindow : Window
             await Settle();
             if (_shownWorker != tester || !HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "Description") || !SelectWorker(planner))
                 return Fail();
-            if (HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "Base URL"))
+            if (HasTag(WorkerSettingsHost, "SystemPrompt") || !HasTag(WorkerSettingsHost, "UseRemoteApi"))
+                return Fail();
+            // A remote custom worker (set on the Remote API page) shows its summary; Switch to Local writes its local model back.
+            tester.Config.Remote = new("http://127.0.0.1:9/v1", "vendor/cw", "SMOKE_REMOTE_KEY", "", "");
+            if (!SelectWorker(tester))
+                return Fail();
+            await Settle();
+            if (FindIn<TextBlock>(WorkerSettingsHost, t => t.Tag as string == "RemoteSummary")?.Text != "Remote: vendor/cw @ any provider")
+                return Fail();
+            FindIn<Button>(WorkerSettingsHost, b => b.Tag as string == "SwitchToLocal")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            await Settle();
+            if (tester.Config.Remote is not null || tester.ModelId != "M-GGUF" || HasTag(WorkerSettingsHost, "RemoteSummary") || !HasTag(WorkerSettingsHost, "UseRemoteApi") ||
+                (string?)JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]![0]!["auto_load"]?["model_path"] != "org/M-GGUF")
                 return Fail();
             RemoveWorker(tester);
             if (JsonNode.Parse(File.ReadAllText(presetConfig))!["custom_workers"]!.AsArray().Count != 0)
