@@ -108,6 +108,7 @@ public partial class MainWindow
         public string? Last, Pending; // stats of the last call; of a call whose text streamed into the answer, not yet shown
         public long TurnTokens;
         public string Stage = "answer", StageTitle = "";
+        public string? LastRole; // the model whose block was added last, to rule off the next model's
         public StreamBlock? Block;
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
         public RichTextBox? Rendered; // the answer as formatted Markdown, re-rendered as it streams
@@ -1280,6 +1281,9 @@ public partial class MainWindow
     private StreamBlock StartChatBlock(ChatReply r, string role, string kind)
     {
         var block = new StreamBlock { Role = role, Kind = kind };
+        if (r.LastRole is not null && r.LastRole != role) // another model takes over inside this reply
+            r.Content.Children.Add(ModelSwitchRule());
+        r.LastRole = role;
         if (kind == "text" && r.Stage == "answer")
         {
             block.Body = EnsureAnswer(r); // the answer streams straight into the prominent text, not a section

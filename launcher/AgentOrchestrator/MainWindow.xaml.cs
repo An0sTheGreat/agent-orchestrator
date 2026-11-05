@@ -565,6 +565,8 @@ public partial class MainWindow : Window
     {
         if (_blockRole == role)
             return;
+        if (_blockRole is not null) // another model takes over: a rule separates its output from the previous one's
+            AddBlock(ModelSwitchRule(), "\n----\n");
         _blockRole = role;
         var card = CardFor(role);
         var name = card?.ModelName ?? "";
@@ -802,6 +804,14 @@ public partial class MainWindow : Window
     private static Border CompactionRule()
     {
         var rule = new Border { Height = 1, Margin = new Thickness(0, 6, 0, 12), Tag = "compaction-rule" };
+        rule.SetResourceReference(Border.BackgroundProperty, "Border");
+        return rule;
+    }
+
+    // The rule drawn where one model's output ends and another's begins (the run's sections, a chat reply's delegations).
+    private static Border ModelSwitchRule()
+    {
+        var rule = new Border { Height = 1, Margin = new Thickness(0, 16, 0, 2), Tag = "model-switch-rule" };
         rule.SetResourceReference(Border.BackgroundProperty, "Border");
         return rule;
     }
@@ -1087,6 +1097,22 @@ public partial class MainWindow : Window
         if (!_transcript.ToString().Contains("[RESUMED  T0] Continuing at review round 2") || _llamaPorts.GetValueOrDefault("planner") != 51234)
             return Fail();
         _llamaPorts.Clear();
+
+        // A model switch is ruled off: none within the Lead's own output, one where the Reviewer takes over, none while it continues.
+        int Rules() => OutputPanel.Children.OfType<Border>().Count(b => b.Tag as string == "model-switch-rule");
+        // (the resume note above reset the run's current speaker, so the Lead speaks once more before the Reviewer)
+        foreach (var json in new[] { """{"e":"delta","role":"planner","kind":"text","text":"next "}""", """{"e":"done","role":"planner","final":false}""" })
+            _lines.Enqueue(LauncherLogic.EventPrefix + json);
+        DrainLines();
+        var rulesBefore = Rules();
+        foreach (var json in new[] { """{"e":"delta","role":"reviewer","kind":"text","text":"checked "}""", """{"e":"delta","role":"reviewer","kind":"text","text":"again"}""",
+                                     """{"e":"done","role":"reviewer","final":false}""" })
+            _lines.Enqueue(LauncherLogic.EventPrefix + json);
+        DrainLines();
+        await Settle();
+        var switchAt = OutputPanel.Children.OfType<UIElement>().ToList().FindLastIndex(c => c is Border { Tag: "model-switch-rule" });
+        if (Rules() != rulesBefore + 1 || switchAt < 0 || OutputPanel.Children[switchAt + 1] is not TextBlock { Text: var reviewerHeader } || !reviewerHeader.StartsWith(CardFor("reviewer")!.Title))
+            return Fail();
 
         var expanders = OutputPanel.Children.OfType<Expander>().ToList();
         if (expanders.Count < 3)
@@ -1528,7 +1554,8 @@ public partial class MainWindow : Window
             string SectionTitle(Expander e) => ((TextBlock)((StackPanel)e.Header).Children[0]).Text;
             if (!await Turn("Build it", delegated, "Reviewed result") || _chatHistory.Count != 4 || OutputPanel.Children.Count != outputCount ||
                 _reply!.Content.Children.OfType<Expander>().Select(SectionTitle).SequenceEqual(new[] { "THINKING  ·  IMPLEMENTER", "IMPLEMENTER" }) is false ||
-                _reply.Content.Children.OfType<TextBlock>().Any(t => t.Text == "FINAL ANSWER"))
+                _reply.Content.Children.OfType<TextBlock>().Any(t => t.Text == "FINAL ANSWER") ||
+                _reply.Content.Children.OfType<Border>().Count(b => b.Tag as string == "model-switch-rule") != 2) // reviewer -> implementer -> reviewer
                 return Fail();
             await Settle();
             Snap("16-chat-delegate");
