@@ -28,6 +28,7 @@ public partial class MainWindow
     // The providers table: 0 = the Provider column, which takes the width left over (at least 130).
     private const double ConnectionOneLine = 700, KeyEnvWidth = 210; // narrower: the connection settings take two lines; OPENROUTER_API_KEY fits
     private static readonly double[] ProviderColumns = [34, 0, 64, 76, 76, 82, 68, 56, 64, 52];
+    private const double ProviderRowHeight = 28;
     private static readonly string?[] HeadTips = [null, null, "Quantization", "Input, USD per million tokens", "Output, USD per million tokens",
         "Cached input read, USD per million tokens", "Median latency in seconds, last 30 minutes", "Median throughput in tokens per second, last 30 minutes",
         "Uptime in %, last 30 minutes", "Takes images"];
@@ -176,9 +177,21 @@ public partial class MainWindow
         var rows = new List<RemoteCatalog.ProviderRow>();
         var order = (preset?.Provider ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
         var (sortColumn, sortDescending) = (-1, false); // -1: as rows arrive, cheapest input first
-        var table = new StackPanel { Tag = "RemoteProviderRows", MinWidth = ProviderColumns.Sum() + 130 };
-        var tableScroll = new ScrollViewer { Content = table, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0) };
-        tableScroll.SizeChanged += (_, e) => table.Width = Math.Max(table.MinWidth, e.NewSize.Width); // the whole column; narrower scrolls
+        // The rows scroll (9 at most in view) under a header that stays put; header and rows scroll sideways together.
+        var table = new StackPanel { Tag = "RemoteProviderRows" };
+        var tableRows = new ScrollViewer
+        {
+            Tag = "RemoteProvidersScroll", Content = table, MaxHeight = 9 * ProviderRowHeight, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        var tableHead = new Border { Tag = "RemoteProvidersHeader", BorderThickness = new Thickness(0, 0, 0, 1), Margin = new Thickness(0, 0, 0, 2) }; // its bottom border is the rule
+        tableHead.SetResourceReference(Border.BorderBrushProperty, "Border");
+        KeepClearOfScrollBar(tableRows, tableHead);
+        var tableBox = new StackPanel { MinWidth = ProviderColumns.Sum() + 130 + SystemParameters.VerticalScrollBarWidth, Children = { tableHead, tableRows } };
+        var tableScroll = new ScrollViewer
+        {
+            Tag = "RemoteProvidersTable", Content = tableBox, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0),
+        };
+        tableScroll.SizeChanged += (_, e) => tableBox.Width = Math.Max(tableBox.MinWidth, e.NewSize.Width); // the whole column; narrower scrolls
         var providersNote = RemoteMuted("");
         providersNote.Tag = "RemoteProvidersNote";
         providersNote.Margin = new Thickness(0, 6, 0, 0);
@@ -347,11 +360,12 @@ public partial class MainWindow
                     orderText.Inlines.Add(new Run(" (not offered for this model)") { Foreground = amber });
             }
             clearOrder.Visibility = order.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            tableScroll.Visibility = rows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (rows.Count == 0)
                 return;
             Grid Line(params UIElement[] cells)
             {
-                var g = new Grid { MinHeight = 28 };
+                var g = new Grid { Height = ProviderRowHeight };
                 for (var i = 0; i < ProviderColumns.Length; i++)
                 {
                     g.ColumnDefinitions.Add(ProviderColumns[i] > 0 ? new ColumnDefinition { Width = new GridLength(ProviderColumns[i]) } : new ColumnDefinition { MinWidth = 130 });
@@ -394,11 +408,7 @@ public partial class MainWindow
                     };
                     return sort;
                 }).ToArray();
-            var header = Line(heads);
-            var rule = new Border { Height = 1, Margin = new Thickness(0, 0, 0, 2) };
-            rule.SetResourceReference(Border.BackgroundProperty, "Border");
-            table.Children.Add(header);
-            table.Children.Add(rule);
+            tableHead.Child = Line(heads);
             foreach (var r in SortProviders(rows, sortColumn, sortDescending).Where(r => visionOnly.IsChecked != true || r.Vision))
             {
                 var position = order.IndexOf(r.Tag);
@@ -956,7 +966,7 @@ public partial class MainWindow
                 Math.Abs(Cell(listHead, "name").Left - Cell(glm, "name").Left) > 1 || Math.Abs(Cell(listHead, "context").Right - Cell(glm, "context").Right) > 1 ||
                 SmokeFind<Border>(glm, b => b.Tag as string == "badge:Z") is null)
                 return Fail($"the model list header: name {Cell(listHead, "name")} / {Cell(glm, "name")}, context {Cell(listHead, "context")} / {Cell(glm, "context")}");
-            var head = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().FirstOrDefault();
+            var head = Find<Border>("RemoteProvidersHeader").Child as Grid; // outside the rows' scroll, so it stays put
             string[] wantRows = ["Untagged|—|<$0.0001|$0|—|—|—|—|", "Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
                 "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
             if (Find<StackPanel>("RemoteProviders").Visibility != Visibility.Visible ||
@@ -972,6 +982,31 @@ public partial class MainWindow
             if (Rows().Count != 5)
                 return Fail($"Vision only off left {Rows().Count} providers");
 
+            // The rows scroll under the header, 9 in view at most, the header's columns over theirs; 5 providers, 5 rows tall.
+            var tableScroll = Find<ScrollViewer>("RemoteProvidersTable");
+            var rowsScroll = Find<ScrollViewer>("RemoteProvidersScroll");
+            async Task ProvidersOf(string model, int extra)
+            {
+                fake.ExtraProviders = extra;
+                SmokeClick(SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry m && m.Id == model)!);
+                await Loaded();
+                tableScroll.Width = 900; // the window's own width varies from run to run
+                RemoteApiView.UpdateLayout();
+                RemoteApiView.UpdateLayout(); // the header's room for the scroll bar follows the first pass
+            }
+            double X(Grid g, int column) => g.TransformToAncestor(RemoteApiView).Transform(new Point(g.ColumnDefinitions[column].Offset + g.ColumnDefinitions[column].ActualWidth, 0)).X;
+            await ProvidersOf("qwen/qwen3-coder", 7);
+            var first = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().First();
+            head = Find<Border>("RemoteProvidersHeader").Child as Grid;
+            if (Rows().Count != 12 || Math.Abs(rowsScroll.ActualHeight - 9 * ProviderRowHeight) > 0.5 || rowsScroll.ScrollableHeight <= 0 || head is null || head.IsDescendantOf(rowsScroll) ||
+                Enumerable.Range(0, ProviderColumns.Length).Any(i => Math.Abs(X(head, i) - X(first, i)) > 1))
+                return Fail($"12 providers: {Rows().Count} rows, {rowsScroll.ActualHeight} tall, scrolls {rowsScroll.ScrollableHeight}, column ends " +
+                    string.Join(" ", Enumerable.Range(0, ProviderColumns.Length).Select(i => $"{X(head!, i):0.#}/{X(first, i):0.#}")));
+            await ProvidersOf(Glm, 0);
+            if (!Rows().SequenceEqual(wantRows) || Math.Abs(rowsScroll.ActualHeight - 5 * ProviderRowHeight) > 0.5 || rowsScroll.ScrollableHeight != 0)
+                return Fail($"5 providers: {rowsScroll.ActualHeight} tall, scrolls {rowsScroll.ScrollableHeight}");
+            tableScroll.Width = double.NaN;
+
             // Ticked providers keep the order ticked (not sorted), on the page and in what Apply writes.
             Toggle(Tick("relace/fp4")!);
             Toggle(Tick("open-inference/fp4")!);
@@ -981,7 +1016,7 @@ public partial class MainWindow
 
             // A header click sorts by its column: up, down, back to cheapest input first; unknowns last; ticks and Vision only hold.
             var tickOrder = OrderText();
-            Button SortBy(int column) => SmokeFind<Button>(Find<StackPanel>("RemoteProviderRows"), b => b.Tag as string == $"sort:{column}")!;
+            Button SortBy(int column) => SmokeFind<Button>(Find<Border>("RemoteProvidersHeader"), b => b.Tag as string == $"sort:{column}")!;
             string Uptime() => Said((TextBlock)SortBy(8).Content);
             SmokeClick(SortBy(8));
             if (RowTags() != "relace/fp4, gmicloud/fp8, open-inference/fp4, , mystery" || Uptime() != "Uptime ▲" || OrderText() != tickOrder ||
@@ -996,8 +1031,7 @@ public partial class MainWindow
             Toggle(Find<ToggleButton>("RemoteVisionOnly"));
             SmokeClick(SortBy(8));
             if (!Rows().SequenceEqual(wantRows) || Uptime() != "Uptime" || OrderText() != tickOrder)
-                return Fail($"a third click did not bring back cheapest first: {string.Join(" / ", Rows())}");
-            var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
+                return Fail($"a third click did not bring back cheapest first: {string.Join(" / ", Rows())}");            var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
             Apply();
             if (Wrote("reviewer", ticked) is { } wrong)
                 return Fail($"Apply to REVIEWER wrote {wrong}");
@@ -1172,6 +1206,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
     public List<(string Url, string? Auth)> Seen { get; } = [];
     public string? Body; // when set, the reply to every address
     public Exception? Failure; // when set, thrown for every address
+    public int ExtraProviders; // more providers after the five, Extra 1, 2, … ($1/M in, 90% up)
 
     private const string Models = "{\"data\":[" +
         "{\"id\":\"z-ai/glm-5.3-flash\",\"name\":\"Z.ai: GLM 5.3 Flash\",\"context_length\":1048576}," +
@@ -1199,7 +1234,9 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
             Seen.Add((url, request.Headers.Authorization?.ToString()));
         if (Failure is not null)
             throw Failure;
-        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? Endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null);
+        var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
+            $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
+        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null);
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
