@@ -1582,7 +1582,7 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { return new(); }
     }
 
-    // Rewrites the top-level custom_workers array (every other key stays). Each worker copies the Implementer's
+    // Rewrites the top-level custom_workers array (every other key stays). Each local worker copies the Implementer's
     // local connection settings and auto_load defaults (see LocalImplementer) and its sampling, then applies its own
     // model and settings.
     // Workers the orchestrator would ignore are not written; returns "Title: reason" for each.
@@ -1614,23 +1614,24 @@ internal static class LauncherLogic
                 ["description"] = string.IsNullOrWhiteSpace(w.Description) ? DefaultDescription(kind) : w.Description,
                 ["system_prompt"] = string.IsNullOrWhiteSpace(w.SystemPrompt) ? DefaultSystemPrompt(kind) : w.SystemPrompt,
             };
-            foreach (var key in new[] { "base_url", "api_key_env", "api_key" })
-                if (local?[key] is { } value)
-                    entry[key] = value.DeepClone();
-            Inherit(entry, implementer, local);
-            if (w.Remote is { } remote) // as WriteRemoteRole writes a built-in role: a model id and no auto_load
+            if (w.Remote is { } remote) // as WriteRemoteRole writes a built-in role: a model id, no auto_load, nothing of the local Implementer's
             {
-                entry.Remove("auto_load");
-                entry.Remove("api_key");
                 entry["base_url"] = remote.BaseUrl.Trim().TrimEnd('/');
                 entry["model"] = remote.Model.Trim();
                 entry["display_name"] = remote.Model.Trim();
                 entry["api_key_env"] = remote.KeyEnv.Trim();
+                if (long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var timeout))
+                    entry["timeout_seconds"] = timeout;
+                entry["sampling"] = new JsonObject();
                 SetProvider(entry, remote.Provider);
                 ModelOptions.Apply(entry, ModelOptions.Effective(w), includeLoad: false);
                 array.Add(entry);
                 continue;
             }
+            foreach (var key in new[] { "base_url", "api_key_env", "api_key" })
+                if (local?[key] is { } value)
+                    entry[key] = value.DeepClone();
+            Inherit(entry, implementer, local);
             entry["expected_model_contains"] = w.ModelExpected ?? w.ModelId ?? "";
             entry["display_name"] = w.ModelId ?? w.ModelExpected ?? "";
             var load = (JsonObject)entry["auto_load"]!;
@@ -2568,8 +2569,16 @@ internal static class LauncherLogic
             (cloud.ModelPath, cloud.Remote) = (null, new RemoteRole("https://openrouter.ai/api/v1/", " vendor/m ", "OPENROUTER_API_KEY", "", "b/y, a/x"));
             if (WriteCustomWorkers(cwConfig, [cloud], cwTemplate).Length != 0 || !IsRemote(Worker()) || (string?)Worker()["base_url"] != "https://openrouter.ai/api/v1" ||
                 (string?)Worker()["model"] != "vendor/m" || (string?)Worker()["api_key_env"] != "OPENROUTER_API_KEY" || Worker()["expected_model_contains"] is not null ||
-                (int?)Worker()["timeout_seconds"] != 9 || string.Join(",", Worker()["sampling"]?["extra_body"]?["provider"]?["order"]?.AsArray().Select(n => (string?)n) ?? []) != "b/y,a/x")
+                Worker()["timeout_seconds"] is not null || string.Join(",", Worker()["sampling"]?["extra_body"]?["provider"]?["order"]?.AsArray().Select(n => (string?)n) ?? []) != "b/y,a/x")
                 throw new InvalidOperationException($"Custom workers: a remote worker was written wrong: {Worker().ToJsonString()}");
+            // ... and nothing of a local Implementer's (llama-only sampling keys, timeout 600): its own timeout and options only.
+            File.WriteAllText(cwConfig, $"{{\"roles\":{rolesBefore}}}");
+            (cloud.Remote, cloud.ModelOptions) = (cloud.Remote with { Timeout = "45" }, new() { ["temperature"] = "0.3" });
+            var cloudSampling = WriteCustomWorkers(cwConfig, [cloud]).Length == 0 ? Worker()["sampling"]!.ToJsonString() : "";
+            if ((int?)Worker()["timeout_seconds"] != 45 || (double?)Worker()["sampling"]?["temperature"] != 0.3 || !cloudSampling.Contains("b/y") ||
+                new[] { "top_k", "repetition_penalty", "min_p", "top_p", "max_tokens" }.Any(cloudSampling.Contains))
+                throw new InvalidOperationException($"Custom workers: a remote worker took the local Implementer's settings: {Worker().ToJsonString()}");
+            (cloud.Remote, cloud.ModelOptions) = (cloud.Remote with { Timeout = "" }, new());
             if (WriteCustomWorkers(noUrlConfig, [cloud]).Length != 0 || JsonNode.Parse(File.ReadAllText(noUrlConfig))!["custom_workers"]!.AsArray().Count != 1)
                 throw new InvalidOperationException("Custom workers: a remote worker needs no implementer base_url.");
             cloud.Remote = cloud.Remote with { BaseUrl = "ftp://x" };
