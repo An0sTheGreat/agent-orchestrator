@@ -68,7 +68,15 @@ public partial class MainWindow
         var keyEnv = Box("RemoteKeyEnv");
         var keyStatus = new TextBlock { Tag = "RemoteKeyStatus", FontSize = 11.5, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 7) }; // level with the box beside it
         RemoteCatalog.Service Selected() => (RemoteCatalog.Service)((ComboBoxItem)service.SelectedItem).Tag;
-        string? Key() => keyEnv.Text.Trim() is { Length: > 0 } env && Environment.GetEnvironmentVariable(env) is { Length: > 0 } key ? key : null;
+        // The key goes only where the user confirmed: a known service's own host, or a Custom URL confirmed with Enter or
+        // Load models (a preset's URL counts). keyVar is the variable name committed with Enter or leaving the box, never a
+        // half-typed one that happens to name another variable.
+        var keyVar = "";
+        var urlConfirmed = preset is not null;
+        var loadModels = new Button { Content = "Load models", Tag = "RemoteLoadModels", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 4, 0, 0) };
+        DockPanel.SetDock(loadModels, Dock.Right);
+        string? EnvKey() => keyVar.Length > 0 && Environment.GetEnvironmentVariable(keyVar) is { Length: > 0 } key ? key : null;
+        string? Key() => (Selected() == custom ? urlConfirmed : RemoteCatalog.ServiceFor(baseUrl.Text) == Selected()) ? EnvKey() : null;
 
         // ---- models
         var models = new List<RemoteCatalog.ModelEntry>();
@@ -139,14 +147,21 @@ public partial class MainWindow
 
         void KeyStatus()
         {
-            var env = keyEnv.Text.Trim();
-            var set = Key() is not null;
+            var env = keyVar;
+            var set = EnvKey() is not null;
             keyStatus.Text = env.Length == 0 ? "No variable: requests go without a key." : set ? $"✓ {env} is set in your environment." : $"{env} is not set — see Key help.";
             if (set || env.Length == 0)
                 keyStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             else
                 keyStatus.Foreground = new SolidColorBrush(Color.FromRgb(0xF7, 0xC8, 0x73));
             keyNote.Visibility = set ? Visibility.Collapsed : Visibility.Visible;
+        }
+        bool CommitKeyEnv() // true if the variable changed
+        {
+            var was = keyVar;
+            keyVar = keyEnv.Text.Trim();
+            KeyStatus();
+            return keyVar != was;
         }
 
         void RenderModels()
@@ -195,6 +210,11 @@ public partial class MainWindow
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
             {
                 Note(modelsNote, "Enter the service's base URL (such as http://127.0.0.1:8080/v1) to list its models.");
+                return;
+            }
+            if (s == custom && !urlConfirmed) // nothing goes to a half-typed address
+            {
+                Note(modelsNote, "Press Enter or Load models to list this server's models.");
                 return;
             }
             if (s.ModelsNeedKey && s != custom && key is null)
@@ -353,7 +373,8 @@ public partial class MainWindow
                 Note(errorLine, "There is no worker to apply it to.", error: true);
                 return;
             }
-            var remote = new LauncherLogic.RemoteRole(baseUrl.Text.Trim().TrimEnd('/'), modelId.Text.Trim(), keyEnv.Text.Trim(), "", Selected().HasProviders ? string.Join(", ", order) : "");
+            CommitKeyEnv(); // what the box shows is what gets written
+            var remote = new LauncherLogic.RemoteRole(baseUrl.Text.Trim().TrimEnd('/'), modelId.Text.Trim(), keyVar, "",Selected().HasProviders ? string.Join(", ", order) : "");
             if (LauncherLogic.ValidateRemoteRole(remote) is { } problem)
             {
                 Note(errorLine, problem, error: true);
@@ -423,30 +444,52 @@ public partial class MainWindow
         service.SelectedItem = service.Items.OfType<ComboBoxItem>().First(i => Equals(i.Tag, start));
         baseUrl.Text = preset?.BaseUrl ?? (start == custom && _remoteLast is { } l ? l.BaseUrl : start.BaseUrl);
         baseUrl.IsReadOnly = start != custom;
+        loadModels.Visibility = start == custom ? Visibility.Visible : Visibility.Collapsed;
         keyEnv.Text = preset?.KeyEnv is { Length: > 0 } presetKey ? presetKey : start.KeyEnv;
         modelId.Text = preset?.Model ?? (_remoteLast is { } m && m.Service == start.Id ? m.Model : "");
-        KeyStatus();
+        CommitKeyEnv();
 
         service.SelectionChanged += (_, _) =>
         {
             var s = Selected();
             baseUrl.IsReadOnly = s != custom;
+            loadModels.Visibility = s == custom ? Visibility.Visible : Visibility.Collapsed;
             order.Clear(); // another service's model and providers mean nothing here
             modelId.Text = "";
-            if (s != custom)
-            {
-                baseUrl.Text = s.BaseUrl;
-                keyEnv.Text = s.KeyEnv;
-            }
+            keyEnv.Text = s.KeyEnv; // Custom's are empty: the last service's key variable and address must not carry over
+            CommitKeyEnv(); // before the address, whose TextChanged loads
+            baseUrl.Text = s.BaseUrl;
+            urlConfirmed = false;
             LoadModels();
             LoadProviders();
         };
-        baseUrl.TextChanged += (_, _) => LoadModels();
-        keyEnv.TextChanged += (_, _) =>
+        void ConfirmUrl()
         {
-            KeyStatus();
+            urlConfirmed = true;
+            LoadModels();
+        }
+        baseUrl.TextChanged += (_, _) =>
+        {
+            urlConfirmed = false;
             LoadModels();
         };
+        baseUrl.KeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+                ConfirmUrl();
+        };
+        loadModels.Click += (_, _) => ConfirmUrl();
+        void KeyEnvDone()
+        {
+            if (CommitKeyEnv())
+                LoadModels();
+        }
+        keyEnv.KeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+                KeyEnvDone();
+        };
+        keyEnv.LostFocus += (_, _) => KeyEnvDone();
         search.TextChanged += (_, _) => RenderModels();
         modelId.TextChanged += (_, _) =>
         {
@@ -480,7 +523,7 @@ public partial class MainWindow
             Children =
             {
                 new DockPanel { Children = { keyHelp, new StackPanel { Children = { title, intro } } } },
-                Columns(new StackPanel { Children = { Label("Service"), service } }, new StackPanel { Children = { Label("Base URL"), baseUrl } }),
+                Columns(new StackPanel { Children = { Label("Service"), service } }, new StackPanel { Children = { Label("Base URL"), new DockPanel { Children = { loadModels, baseUrl } } } }),
                 Columns(new StackPanel { Children = { Label("API key variable"), keyEnv } }, new StackPanel { VerticalAlignment = VerticalAlignment.Bottom, Children = { keyStatus } }),
                 new DockPanel { Margin = new Thickness(0, 18, 0, 0), Children = { searchBox, modelHead } },
                 listBox, modelsNote,
@@ -625,6 +668,20 @@ public partial class MainWindow
             .Select(g => string.Join("|", g.Children.OfType<TextBlock>().Select(t => t.Text)))];
         string OrderText() => Find<TextBlock>("RemoteOrder").Text;
         void Apply() => SmokeClick(Find<Button>("RemoteApply"));
+        void Type(string tag, string text) // a keystroke at a time, each raising TextChanged
+        {
+            var box = Find<TextBox>(tag);
+            box.Text = "";
+            for (var i = 1; i <= text.Length; i++)
+                box.Text = text[..i];
+        }
+        void KeyEnv(string name) // the box takes effect on Enter or leaving it, not per keystroke
+        {
+            var box = Find<TextBox>("RemoteKeyEnv");
+            box.Text = name;
+            box.RaiseEvent(new RoutedEventArgs(UIElement.LostFocusEvent));
+        }
+        const string KeyA = "AO_SMOKE_KEY_A", KeyB = "AO_SMOKE_KEY_B";
         void Reset()
         {
             for (var i = 0; i < targets.Length; i++)
@@ -649,7 +706,7 @@ public partial class MainWindow
                 return Fail("the first-use key help did not show (or was not saved as shown)");
             _remoteHelp.Close();
             if (SmokeFind<StackPanel>(RemoteApiView, p => p.Tag as string == "RemoteModels") is not { Children.Count: 3 } ||
-                !fake.Seen.Contains("https://openrouter.ai/api/v1/models"))
+                !fake.Seen.Any(r => r.Url == "https://openrouter.ai/api/v1/models"))
                 return Fail($"the model list: {string.Join(", ", fake.Seen)}");
 
             // The key help shows once by itself; Key help reopens it with the selected service first, and its links open outside.
@@ -671,7 +728,7 @@ public partial class MainWindow
             SaveWorkers();
             OpenRemoteApi("reviewer");
             Service("openrouter");
-            Find<TextBox>("RemoteKeyEnv").Text = Unset;
+            KeyEnv(Unset);
             await Loaded();
             Find<TextBox>("RemoteSearch").Text = "qwen";
             if (Find<StackPanel>("RemoteModels").Children is not { Count: 1 } found || ((RemoteCatalog.ModelEntry)((ToggleButton)found[0]).Tag).Id != "qwen/qwen3-coder" ||
@@ -682,7 +739,7 @@ public partial class MainWindow
                 return Fail("clearing the search did not bring the models back");
             SmokeClick(glm);
             await Loaded();
-            if (Find<TextBox>("RemoteModelId").Text != Glm || glm.IsChecked != true || !fake.Seen.Contains($"{OpenRouter}/models/{Glm}/endpoints"))
+            if (Find<TextBox>("RemoteModelId").Text != Glm || glm.IsChecked != true || !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
                 return Fail($"choosing a model: id {Find<TextBox>("RemoteModelId").Text}, asked {string.Join(", ", fake.Seen)}");
             var head = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().FirstOrDefault();
             string[] wantRows = ["Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
@@ -745,11 +802,11 @@ public partial class MainWindow
                 return Fail($"switching the service kept model \"{Find<TextBox>("RemoteModelId").Text}\", order \"{OrderText()}\"");
 
             // A service that lists models only with a key, without one: the note, no request, and a typed model id applies.
-            Find<TextBox>("RemoteKeyEnv").Text = Unset;
+            KeyEnv(Unset);
             await Loaded();
             if (Find<TextBlock>("RemoteModelsNote") is not { Visibility: Visibility.Visible } needsKey ||
                 needsKey.Text != "OpenAI lists its models only with an API key: set OPENAI_API_KEY (see Key help), or type the model id below." ||
-                fake.Seen.Any(u => u.Contains("api.openai.com", StringComparison.Ordinal)) || Find<TextBox>("RemoteModelId") is not { Visibility: Visibility.Visible, IsReadOnly: false } ||
+                fake.Seen.Any(r => r.Url.Contains("api.openai.com", StringComparison.Ordinal)) || Find<TextBox>("RemoteModelId") is not { Visibility: Visibility.Visible, IsReadOnly: false } ||
                 Find<StackPanel>("RemoteProviders").Visibility == Visibility.Visible)
                 return Fail("OpenAI without a key: no needs-a-key note, or the models were asked for");
             Reset();
@@ -778,6 +835,52 @@ public partial class MainWindow
             if (OrderText() != "Any provider." || Tick("relace/fp4")?.IsChecked != false || Find<Button>("RemoteClearOrder").Visibility == Visibility.Visible)
                 return Fail($"Clear left \"{OrderText()}\"");
 
+            // The key goes only where the user confirmed: Custom URL starts empty (no address, no key variable), asks nothing
+            // while its address is typed, and sends only the variable typed for it once Load models confirms the address.
+            Environment.SetEnvironmentVariable(KeyA, "secret-a");
+            Environment.SetEnvironmentVariable(KeyB, "secret-b");
+            string Asked(int from) => string.Join(", ", fake.Seen.Skip(from));
+            OpenRemoteApi("reviewer");
+            Service("openrouter");
+            KeyEnv(KeyA);
+            await Loaded();
+            if (!fake.Seen.Contains(($"{OpenRouter}/models", "Bearer secret-a")))
+                return Fail($"OpenRouter with {KeyA} asked [{Asked(0)}]");
+            var before = fake.Seen.Count;
+            Service("custom");
+            if (Find<TextBox>("RemoteBaseUrl").Text.Length != 0 || Find<TextBox>("RemoteKeyEnv").Text.Length != 0 || Find<TextBox>("RemoteModelId").Text.Length != 0 ||
+                Find<StackPanel>("RemoteModels").Children.Count != 0)
+                return Fail($"Custom URL kept \"{Find<TextBox>("RemoteBaseUrl").Text}\", key variable \"{Find<TextBox>("RemoteKeyEnv").Text}\"");
+            const string Lan = "http://192.168.1.5:8080/v1";
+            Type("RemoteBaseUrl", Lan);
+            await Loaded();
+            if (fake.Seen.Count != before || Find<TextBlock>("RemoteModelsNote").Text != "Press Enter or Load models to list this server's models.")
+                return Fail($"typing a Custom URL asked [{Asked(before)}], note \"{Find<TextBlock>("RemoteModelsNote").Text}\"");
+            Type("RemoteKeyEnv", KeyB);
+            KeyEnv(KeyB);
+            await Loaded();
+            if (fake.Seen.Count != before)
+                return Fail($"a key variable for an unconfirmed Custom URL asked [{Asked(before)}]");
+            SmokeClick(Find<Button>("RemoteLoadModels"));
+            await Loaded();
+            if (!fake.Seen.Skip(before).SequenceEqual([($"{Lan}/models", "Bearer secret-b")]))
+                return Fail($"Load models asked [{Asked(before)}]");
+
+            // A half-typed variable name that names another variable is neither looked up nor sent until it is committed.
+            before = fake.Seen.Count;
+            Type("RemoteKeyEnv", KeyA); // on its way to AO_SMOKE_KEY_AB, say
+            await Loaded();
+            if (fake.Seen.Count != before || Find<TextBlock>("RemoteKeyStatus").Text != $"✓ {KeyB} is set in your environment.")
+                return Fail($"a half-typed key variable asked [{Asked(before)}], status \"{Find<TextBlock>("RemoteKeyStatus").Text}\"");
+            Find<TextBox>("RemoteKeyEnv").Text = KeyB;
+            Find<TextBox>("RemoteModelId").Text = Glm;
+            Apply();
+            if (Wrote("reviewer", new(Lan, Glm, KeyB, "")) is { } lan)
+                return Fail($"Apply to the Custom URL wrote {lan}");
+            Reset();
+            if (fake.Seen.Where(r => r.Auth?.Contains("secret-a", StringComparison.Ordinal) == true && !r.Url.StartsWith(OpenRouter + "/", StringComparison.Ordinal)).Select(r => r.Url).FirstOrDefault() is { } leak)
+                return Fail($"{KeyA}'s value went to {leak}");
+
             if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New chat") is not { } newChat)
                 return Fail("no New chat in the sidebar");
             newChat.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -790,6 +893,8 @@ public partial class MainWindow
         {
             _remoteHelp?.Close();
             _chatBusy = false;
+            Environment.SetEnvironmentVariable(KeyA, null);
+            Environment.SetEnvironmentVariable(KeyB, null);
             if (_cards.Contains(worker))
                 RemoveWorker(worker);
             Reset();
@@ -800,10 +905,11 @@ public partial class MainWindow
 }
 
 // Canned OpenRouter replies for --ui-smoke and --screenshots: /models lists three models, /models/<id>/endpoints four
-// providers (one with latency and throughput, as with a key; one with an unknown price). Records every address asked.
+// providers (one with latency and throughput, as with a key; one with an unknown price). Records every address asked
+// with the Authorization header it carried (null: none).
 internal sealed class RemoteApiFakeHandler : HttpMessageHandler
 {
-    public List<string> Seen { get; } = [];
+    public List<(string Url, string? Auth)> Seen { get; } = [];
 
     private const string Models = "{\"data\":[" +
         "{\"id\":\"z-ai/glm-5.3-flash\",\"name\":\"Z.ai: GLM 5.3 Flash\",\"context_length\":1048576}," +
@@ -826,7 +932,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
     {
         var url = request.RequestUri!.ToString();
         lock (Seen)
-            Seen.Add(url);
+            Seen.Add((url, request.Headers.Authorization?.ToString()));
         var body = url.EndsWith("/endpoints", StringComparison.Ordinal) ? Endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? Models : null;
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
