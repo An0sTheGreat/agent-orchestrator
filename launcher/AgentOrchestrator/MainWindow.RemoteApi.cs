@@ -434,6 +434,8 @@ public partial class MainWindow
         {
             var s = Selected();
             baseUrl.IsReadOnly = s != custom;
+            order.Clear(); // another service's model and providers mean nothing here
+            modelId.Text = "";
             if (s != custom)
             {
                 baseUrl.Text = s.BaseUrl;
@@ -582,17 +584,51 @@ public partial class MainWindow
     }
 
     // --ui-smoke: the sidebar's Remote API opens the page (the first time with the key help) in place of Code and Chat,
-    // lists the (fake) service's models, and New chat leaves it.
+    // lists the (fake) service's models, filters them, shows a model's providers, writes the ticked order on Apply (to a
+    // built-in role, COMPACTOR and a custom worker), refuses bad input and a busy Apply, and New chat leaves it.
     private async Task<bool> RemoteApiSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote api: {what}"); return false; }
-        var (http, open, shown) = (_remoteHttp, _openExternal, _settings.RemoteHelpShown);
+        var (http, open, shown, last) = (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast);
         var fake = new RemoteApiFakeHandler();
         var opened = new List<string>();
         _remoteHttp = new HttpClient(fake);
         _openExternal = opened.Add;
+        var targets = WorkerConfigTargets();
+        var backup = targets.Select(File.ReadAllText).ToArray();
+        var worker = new RoleCard("smoke-remote", "SMOKE REMOTE", custom: true);
+        const string Unset = "AO_SMOKE_UNSET_KEY", OpenRouter = "https://openrouter.ai/api/v1", Glm = "z-ai/glm-5.3-flash";
+        T Find<T>(string tag) where T : FrameworkElement => SmokeFind<T>(RemoteApiView, e => e.Tag as string == tag)!;
+        Task Loaded() => Task.WhenAll(_remoteModelsTask, _remoteProvidersTask);
+        void Pick(string tag, Func<object, bool> match)
+        {
+            var box = Find<ComboBox>(tag);
+            box.SelectedItem = box.Items.OfType<ComboBoxItem>().First(i => match(i.Tag));
+        }
+        void Service(string id) => Pick("RemoteService", s => ((RemoteCatalog.Service)s).Id == id);
+        void Target(string role) => Pick("RemoteTarget", c => ((RoleCard)c).Role == role);
+        void Toggle(ToggleButton t)
+        {
+            t.IsChecked = t.IsChecked != true;
+            SmokeClick(t);
+        }
+        ToggleButton? Tick(string tag) => SmokeFind<ToggleButton>(RemoteApiView, t => t.Tag as string == "tick:" + tag);
+        List<string> Rows() => [.. Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().Where(g => g.Tag is RemoteCatalog.ProviderRow)
+            .Select(g => string.Join("|", g.Children.OfType<TextBlock>().Select(t => t.Text)))];
+        string OrderText() => Find<TextBlock>("RemoteOrder").Text;
+        void Apply() => SmokeClick(Find<Button>("RemoteApply"));
+        void Reset()
+        {
+            for (var i = 0; i < targets.Length; i++)
+                File.WriteAllText(targets[i], backup[i]);
+        }
+        bool Unchanged() => targets.Select(File.ReadAllText).SequenceEqual(backup);
+        string? Wrote(string role, LauncherLogic.RemoteRole want) => targets.Select(t => (t, LauncherLogic.ReadRemoteRole(t, role)))
+            .Where(p => p.Item2 is null || p.Item2 with { Timeout = "" } != want).Select(p => $"{p.t}: {p.Item2}").FirstOrDefault();
         try
         {
+            if (targets.Length == 0)
+                return Fail("no config to apply to");
             _settings.RemoteHelpShown = false;
             if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+Remote API") is not { } nav)
                 return Fail("no Remote API in the sidebar");
@@ -601,12 +637,139 @@ public partial class MainWindow
             await Task.Delay(400); // the views' fades
             if (RemoteApiView.Visibility != Visibility.Visible || CodeView.Visibility == Visibility.Visible || ChatView.Visibility == Visibility.Visible)
                 return Fail($"page {RemoteApiView.Visibility}, code {CodeView.Visibility}, chat {ChatView.Visibility}");
-            if (_remoteHelp is null || !_settings.RemoteHelpShown || SmokeFind<StackPanel>(_remoteHelp, p => p.Tag as string == "help:openrouter") is null)
-                return Fail("the first-use key help did not show");
+            if (_remoteHelp is null || !_settings.RemoteHelpShown || !AppSettings.Load().RemoteHelpShown || SmokeFind<StackPanel>(_remoteHelp, p => p.Tag as string == "help:openrouter") is null)
+                return Fail("the first-use key help did not show (or was not saved as shown)");
             _remoteHelp.Close();
             if (SmokeFind<StackPanel>(RemoteApiView, p => p.Tag as string == "RemoteModels") is not { Children.Count: 3 } ||
                 !fake.Seen.Contains("https://openrouter.ai/api/v1/models"))
                 return Fail($"the model list: {string.Join(", ", fake.Seen)}");
+
+            // The key help shows once by itself; Key help reopens it with the selected service first, and its links open outside.
+            OpenRemoteApi();
+            await Loaded();
+            if (_remoteHelp is not null)
+                return Fail("the key help showed a second time");
+            Service("groq");
+            SmokeClick(Find<Button>("RemoteKeyHelp"));
+            if (_remoteHelp is null || SmokeFind<StackPanel>(_remoteHelp, p => (p.Tag as string)?.StartsWith("help:", StringComparison.Ordinal) == true)?.Tag as string != "help:groq")
+                return Fail("Key help did not open on the selected service (Groq)");
+            SmokeFind<System.Windows.Documents.Hyperlink>(_remoteHelp, h => h.Tag as string == "link:groq")?.RaiseEvent(new RoutedEventArgs(System.Windows.Documents.Hyperlink.ClickEvent));
+            if (!opened.SequenceEqual([RemoteCatalog.Services.First(s => s.Id == "groq").KeyUrl]))
+                return Fail($"the Groq key link opened [{string.Join(", ", opened)}]");
+            _remoteHelp.Close();
+
+            // OpenRouter: search, a model's providers (columns, "—" for unknowns), Vision only.
+            _cards.Add(worker); // the Apply list is filled when the page opens
+            SaveWorkers();
+            OpenRemoteApi("reviewer");
+            Service("openrouter");
+            Find<TextBox>("RemoteKeyEnv").Text = Unset;
+            await Loaded();
+            Find<TextBox>("RemoteSearch").Text = "qwen";
+            if (Find<StackPanel>("RemoteModels").Children is not { Count: 1 } found || ((RemoteCatalog.ModelEntry)((ToggleButton)found[0]).Tag).Id != "qwen/qwen3-coder" ||
+                Find<TextBlock>("RemoteModelsNote").Text != "1 of 3 models")
+                return Fail("search did not narrow the models to Qwen3 Coder");
+            Find<TextBox>("RemoteSearch").Text = "";
+            if (SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: Glm }) is not { } glm)
+                return Fail("clearing the search did not bring the models back");
+            SmokeClick(glm);
+            await Loaded();
+            if (Find<TextBox>("RemoteModelId").Text != Glm || glm.IsChecked != true || !fake.Seen.Contains($"{OpenRouter}/models/{Glm}/endpoints"))
+                return Fail($"choosing a model: id {Find<TextBox>("RemoteModelId").Text}, asked {string.Join(", ", fake.Seen)}");
+            var head = Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().FirstOrDefault();
+            string[] wantRows = ["Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
+                "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
+            if (Find<StackPanel>("RemoteProviders").Visibility != Visibility.Visible ||
+                string.Join("|", head?.Children.OfType<TextBlock>().Select(t => t.Text) ?? []) != "|Provider|Quant.|In $/M|Out $/M|Cache $/M|Latency|tok/s|Uptime|Vision" ||
+                !Rows().SequenceEqual(wantRows))
+                return Fail($"the providers table: {string.Join(" / ", Rows())}");
+            Toggle(Find<ToggleButton>("RemoteVisionOnly"));
+            if (!Rows().SequenceEqual([wantRows[3]]))
+                return Fail($"Vision only left {string.Join(" / ", Rows())}");
+            Toggle(Find<ToggleButton>("RemoteVisionOnly"));
+            if (Rows().Count != 4)
+                return Fail($"Vision only off left {Rows().Count} providers");
+
+            // Ticked providers keep the order ticked (not sorted), on the page and in what Apply writes.
+            Toggle(Tick("relace/fp4")!);
+            Toggle(Tick("open-inference/fp4")!);
+            if (OrderText() != "Only, in this order: Relace (relace/fp4) → OpenInference (open-inference/fp4)" || Tick("relace/fp4")?.Content as string != "1" ||
+                Tick("open-inference/fp4")?.Content as string != "2")
+                return Fail($"the tick order shows \"{OrderText()}\"");
+            var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
+            Apply();
+            if (Wrote("reviewer", ticked) is { } wrong)
+                return Fail($"Apply to REVIEWER wrote {wrong}");
+
+            // Busy: refused, nothing written.
+            Reset();
+            ToastStack.Children.Clear();
+            _chatBusy = true;
+            Apply();
+            _chatBusy = false;
+            if (!Toasted("Wait for the reply or run to finish") || !Unchanged())
+                return Fail("Apply during a reply was not refused");
+
+            // COMPACTOR following MAIN gets its own roles.compactor, then the remote settings.
+            foreach (var t in targets)
+            {
+                var root = JsonNode.Parse(File.ReadAllText(t))!.AsObject();
+                root["roles"]![LauncherLogic.Compactor] = new JsonObject { ["same_as"] = "planner" };
+                File.WriteAllText(t, root.ToJsonString());
+            }
+            Target(LauncherLogic.Compactor);
+            Apply();
+            if (Wrote(LauncherLogic.Compactor, ticked) is { } compactor)
+                return Fail($"Apply to COMPACTOR wrote {compactor}");
+            if (targets.FirstOrDefault(t => !LauncherLogic.CompactorHasOwn(JsonNode.Parse(File.ReadAllText(t))!["roles"] as JsonObject)) is { } follows)
+                return Fail($"COMPACTOR still follows MAIN in {follows}");
+            Reset();
+
+            // A custom worker keeps its remote settings on the card (and in the saved workers).
+            Target(worker.Role);
+            Apply();
+            if (worker.Config.Remote != ticked || worker.ModelId != Glm || AppSettings.Load().Workers.FirstOrDefault(w => w.Id == worker.Role)?.Remote != ticked)
+                return Fail($"Apply to a custom worker: {worker.Config.Remote}");
+
+            // Another service starts with no model and no providers.
+            Service("openai");
+            if (Find<TextBox>("RemoteModelId").Text.Length != 0 || OrderText() != "Any provider.")
+                return Fail($"switching the service kept model \"{Find<TextBox>("RemoteModelId").Text}\", order \"{OrderText()}\"");
+
+            // A service that lists models only with a key, without one: the note, no request, and a typed model id applies.
+            Find<TextBox>("RemoteKeyEnv").Text = Unset;
+            await Loaded();
+            if (Find<TextBlock>("RemoteModelsNote") is not { Visibility: Visibility.Visible } needsKey ||
+                needsKey.Text != "OpenAI lists its models only with an API key: set OPENAI_API_KEY (see Key help), or type the model id below." ||
+                fake.Seen.Any(u => u.Contains("api.openai.com", StringComparison.Ordinal)) || Find<TextBox>("RemoteModelId") is not { Visibility: Visibility.Visible, IsReadOnly: false } ||
+                Find<StackPanel>("RemoteProviders").Visibility == Visibility.Visible)
+                return Fail("OpenAI without a key: no needs-a-key note, or the models were asked for");
+            Reset();
+            Target("reviewer");
+            var typed = new LauncherLogic.RemoteRole("https://api.openai.com/v1", "", Unset, "");
+            Apply();
+            if (Find<TextBlock>("RemoteError") is not { Visibility: Visibility.Visible } empty || empty.Text != LauncherLogic.ValidateRemoteRole(typed) || !Unchanged())
+                return Fail("Apply with no model id was not refused");
+            Find<TextBox>("RemoteModelId").Text = "gpt-4o-mini";
+            Apply();
+            if (Wrote("reviewer", typed with { Model = "gpt-4o-mini" }) is { } openai)
+                return Fail($"Apply of a typed model id wrote {openai}");
+            Reset();
+            Service("custom");
+            Find<TextBox>("RemoteBaseUrl").Text = "ftp://x";
+            Apply();
+            if (Find<TextBlock>("RemoteError").Text != LauncherLogic.ValidateRemoteRole(new("ftp://x", "m", Unset, "")) || !Unchanged())
+                return Fail($"Apply with a bad base URL: \"{Find<TextBlock>("RemoteError").Text}\"");
+
+            // A preset's provider OpenRouter does not list stays in the order until Clear.
+            OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "gone/x, relace/fp4"));
+            await Loaded();
+            if (OrderText() != "Only, in this order: gone/x → Relace (relace/fp4)" || Tick("relace/fp4")?.Content as string != "2")
+                return Fail($"the preset's order shows \"{OrderText()}\"");
+            SmokeClick(Find<Button>("RemoteClearOrder"));
+            if (OrderText() != "Any provider." || Tick("relace/fp4")?.IsChecked != false || Find<Button>("RemoteClearOrder").Visibility == Visibility.Visible)
+                return Fail($"Clear left \"{OrderText()}\"");
+
             if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New chat") is not { } newChat)
                 return Fail("no New chat in the sidebar");
             newChat.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -618,7 +781,12 @@ public partial class MainWindow
         finally
         {
             _remoteHelp?.Close();
-            (_remoteHttp, _openExternal, _settings.RemoteHelpShown) = (http, open, shown);
+            _chatBusy = false;
+            if (_cards.Contains(worker))
+                RemoveWorker(worker);
+            Reset();
+            PrefillCards();
+            (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast) = (http, open, shown, last);
         }
     }
 }
