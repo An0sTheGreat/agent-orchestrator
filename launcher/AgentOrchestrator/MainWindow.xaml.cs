@@ -1612,6 +1612,12 @@ public partial class MainWindow : Window
             if (ChatEffortChip.IsEnabled || (string)ChatEffortChip.ToolTip != "This model doesn't think" || SentEffort("implementer") != "" ||
                 !CodeEffortChip.IsEnabled) // Code's target is the lead, the Planner, which thinks
                 return Fail();
+            // A remote API role (a model name the name list does not know, z-ai/glm-5.3-flash) can always be given an effort.
+            effortRoot["roles"]!["reviewer"] = new JsonObject { ["base_url"] = "https://openrouter.ai/api/v1", ["model"] = "z-ai/glm-5.3-flash", ["api_key_env"] = "K" };
+            File.WriteAllText(effortConfig, effortRoot.ToJsonString());
+            PickChatWorker("reviewer");
+            if (!ChatEffortChip.IsEnabled || SentEffort("reviewer") != "high")
+                return Fail();
             _settings.ChatEffort = "";
             PickChatWorker("reviewer");
             RemoveWorker(visible);

@@ -151,6 +151,8 @@ public partial class MainWindow
             }
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
+        if (LauncherLogic.IsRemote(entry)) // a remote API decides for itself (and ignores a level its model lacks); names say little there
+            return true;
         var load = entry?["auto_load"] as JsonObject;
         return LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load,
             _settings.ModelsFolder ?? "");
