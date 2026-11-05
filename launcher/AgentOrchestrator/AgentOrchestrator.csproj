@@ -23,6 +23,8 @@
     <Resource Include="Assets\title.png" />
     <!-- Inter, Newsreader and JetBrains Mono (SIL Open Font License; the licenses are beside them in Fonts\) -->
     <Resource Include="Fonts\*.ttf" />
+    <!-- model makers' logos on the Remote API page (LobeHub icons, MIT; the notice is beside them) -->
+    <Resource Include="Assets\Vendors\*.png" />
     <None Remove="Assets\make_icon.py" />
     <EmbeddedResource Include="remote.html" LogicalName="remote.html" />
   </ItemGroup>

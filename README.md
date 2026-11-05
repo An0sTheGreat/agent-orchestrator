@@ -111,4 +111,6 @@ This project grows from what its users ask for, so tell us what you'd like to se
 
 The app ships with three open fonts, [Inter](https://rsms.me/inter/), [Newsreader](https://github.com/productiontype/Newsreader) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), under the SIL Open Font License (`launcher/AgentOrchestrator/Fonts`).
 
+The model makers' logos on the Remote API page come from [LobeHub Icons](https://github.com/lobehub/lobe-icons) (MIT); the logos belong to their owners and only identify a model's maker (`launcher/AgentOrchestrator/Assets/Vendors/NOTICE.md`).
+
 The screenshots in this README come from the app itself: `"Agent Orchestrator.exe" --screenshots <folder>` renders them off-screen from a seeded data folder (`AGENT_ORCHESTRATOR_DATA`).
