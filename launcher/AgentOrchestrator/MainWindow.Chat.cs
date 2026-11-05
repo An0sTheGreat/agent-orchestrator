@@ -163,6 +163,7 @@ public partial class MainWindow
         RefreshLeadChip();
         RefreshCardVisibility();
         RefreshEffort();
+        RefreshPresetButtons();
         RefreshVision();
     }
 
@@ -1058,6 +1059,7 @@ public partial class MainWindow
             _steering.Clear(); // never delivered: queued rows again, sent as the next turn (or back in the input) as usual
         RefreshQueue(_code); // Send now while a Pi Code turn runs
         AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
+        RefreshPresetButtons();
         foreach (var card in _cards)
             card.Editable = !busy;
         SetStatus(busy ? "Replying" : "Ready", busy ? "#8B7CFF" : "#667085");

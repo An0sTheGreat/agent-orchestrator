@@ -1310,6 +1310,8 @@
                     <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
                             Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
                             ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
+                    <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontSize="11" Padding="9,3"
+                            Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
                 </DockPanel>
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">

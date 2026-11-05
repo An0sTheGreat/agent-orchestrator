@@ -230,6 +230,8 @@ internal sealed class AppSettings
     public string ChatWorker { get; set; } = "planner";
     // Thinking effort sent with Chat and Code messages: "" (the model's default), off, low, medium, high or max.
     public string ChatEffort { get; set; } = "";
+    public string ActivePreset { get; set; } = "";     // the Code preset last applied or saved: "Save to current preset" overwrites it
+    public string ActiveChatPreset { get; set; } = ""; // the same for Chat's presets
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
     public bool ChatKeepLoaded { get; set; } = true;
     // Several models at once (the engine's AGENT_ORCHESTRATOR_MULTI_MODEL): "never" (loading one unloads the other), "fit"

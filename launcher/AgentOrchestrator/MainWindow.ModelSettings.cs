@@ -1502,6 +1502,18 @@ public partial class MainWindow
                 (string?)now[LauncherLogic.Compactor]?["same_as"] != "planner")
                 return Fail("the fresh preset");
             ApplyPreset(_settings.Presets.First(x => x.Name == "smoke-before"));
+            // "Save to current preset": the preset just applied is the current one; its header button names it and overwrites it in place
+            var before = _settings.Presets.First(x => x.Name == "smoke-before");
+            var count = _settings.Presets.Count;
+            if (SavePresetButton.Visibility != Visibility.Visible || SavePresetButton.Content as string != "Save to “smoke-before”" ||
+                BuildPresetsMenu().Items.OfType<MenuItem>().All(i => i.Header as string != "Save to current preset (smoke-before)"))
+                return Fail("the Save to current preset button");
+            SavePresetButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            if (_settings.Presets.Count != count || ReferenceEquals(_settings.Presets.First(x => x.Name == "smoke-before"), before) || _settings.ActivePreset != "smoke-before")
+                return Fail("Save to current preset did not overwrite the preset in place");
+            DeletePreset(_settings.Presets.First(x => x.Name == "smoke-before"));
+            if (SavePresetButton.Visibility != Visibility.Collapsed || _settings.ActivePreset.Length != 0)
+                return Fail("the Save button stayed after its preset was deleted");
             _settings.Presets.RemoveAll(x => x.Name.StartsWith("smoke-", StringComparison.Ordinal));
             _settings.Save();
             return true;

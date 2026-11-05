@@ -291,6 +291,7 @@ public partial class MainWindow : Window
     {
         AddWorkerButton.IsEnabled = !running;
         PresetsButton.IsEnabled = !running;
+        RefreshPresetButtons();
         foreach (var card in _cards)
             card.Editable = !running;
         if (running)
@@ -3918,6 +3919,36 @@ public partial class MainWindow : Window
     // Chat has its own presets (with the agents it shows); Code's are the workflow's.
     private List<WorkerPreset> PresetList => ChatShown ? _settings.ChatPresets : _settings.Presets;
 
+    // The preset the workers were last applied from or saved to (this list's): what "Save to current preset" overwrites.
+    private string ActivePresetName
+    {
+        get => ChatShown ? _settings.ActiveChatPreset : _settings.ActivePreset;
+        set { if (ChatShown) _settings.ActiveChatPreset = value; else _settings.ActivePreset = value; }
+    }
+
+    private WorkerPreset? ActivePreset => PresetList.FirstOrDefault(p => ActivePresetName.Length > 0 && SamePreset(p, ActivePresetName));
+
+    // The header's Save button names the current preset and shows only while there is one.
+    private void RefreshPresetButtons()
+    {
+        if (SavePresetButton is null)
+            return;
+        var active = ActivePreset;
+        SavePresetButton.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
+        if (active is not null)
+        {
+            SavePresetButton.Content = $"Save to “{(active.Name.Length > 18 ? active.Name[..17] + "…" : active.Name)}”";
+            SavePresetButton.ToolTip = $"Overwrite the preset \"{active.Name}\" with the workers and settings as they are now";
+        }
+        SavePresetButton.IsEnabled = PresetsButton.IsEnabled;
+    }
+
+    private void SavePreset_Click(object sender, RoutedEventArgs e)
+    {
+        if (_process is null && ActivePreset is { } active)
+            SavePreset(active.Name);
+    }
+
     private ContextMenu BuildPresetsMenu()
     {
         var menu = NewPresetMenu();
@@ -3928,6 +3959,8 @@ public partial class MainWindow : Window
         if (PresetList.Count == 0)
             menu.Items.Add(PresetItem("No saved presets", () => { }, enabled: false));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        if (ActivePreset is { } current)
+            menu.Items.Add(PresetItem($"Save to current preset ({current.Name})", () => SavePreset(current.Name)));
         menu.Items.Add(PresetItem("Save current as preset…", SavePresetPrompt));
         menu.Items.Add(PresetItem("Delete preset…", () => Dispatcher.InvokeAsync(DeletePresetMenu, DispatcherPriority.Background), PresetList.Count > 0));
         return menu;
@@ -4067,7 +4100,9 @@ public partial class MainWindow : Window
             PresetList[index] = preset;
         else
             PresetList.Add(preset);
+        ActivePresetName = PresetList[index >= 0 ? index : PresetList.Count - 1].Name;
         _settings.Save();
+        RefreshPresetButtons();
         Log($"Preset saved: {name}");
         Toast($"Preset saved: {name}");
     }
@@ -4093,6 +4128,9 @@ public partial class MainWindow : Window
             return;
         }
         _settings.Workers = preset.Workers;
+        ActivePresetName = preset.Name;
+        _settings.Save();
+        RefreshPresetButtons();
         if (preset.ChatCards is { } chatCards) // a Chat preset: the agents Chat shows
             _settings.ChatCards = chatCards.ToList();
         HoldWorkerTab(() => // one build of the tab, not one per step
@@ -4118,7 +4156,10 @@ public partial class MainWindow : Window
     private void DeletePreset(WorkerPreset preset)
     {
         PresetList.Remove(preset);
+        if (ActivePresetName.Length > 0 && SamePreset(preset, ActivePresetName))
+            ActivePresetName = "";
         _settings.Save();
+        RefreshPresetButtons();
         Log($"Preset deleted: {preset.Name}");
         Toast($"Preset deleted: {preset.Name}");
     }

@@ -118,7 +118,13 @@ public partial class MainWindow
         var searchHint = RemoteMuted("Search models");
         searchHint.IsHitTestVisible = false;
         searchHint.VerticalAlignment = VerticalAlignment.Center;
-        searchHint.Margin = new Thickness(12, 4, 0, 0);
+        searchHint.Margin = new Thickness(22, 4, 0, 0);
+        // the hint starts where the box's own text (and its caret) starts: read that from the template, so a theme change cannot misalign them
+        search.Loaded += (_, _) =>
+        {
+            if (search.Template.FindName("PART_ContentHost", search) is FrameworkElement host && host.TranslatePoint(new Point(), search).X is var x and > 0)
+                searchHint.Margin = new Thickness(x, 4, 0, 0);
+        };
         search.TextChanged += (_, _) => searchHint.Visibility = search.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         var list = new StackPanel { Tag = "RemoteModels" };
         var listScroll = new ScrollViewer
@@ -1110,6 +1116,13 @@ public partial class MainWindow
             Service("openrouter");
             KeyEnv(Unset);
             await Loaded();
+            await Task.Delay(400);
+            // the empty search box's hint starts where its own text (and caret) starts
+            var searchBox = Find<TextBox>("RemoteSearch");
+            var searchHint = SmokeFind<TextBlock>(RemoteApiView, t => t.Text == "Search models")!;
+            if (searchBox.Template.FindName("PART_ContentHost", searchBox) is not FrameworkElement textHost ||
+                Math.Abs(searchHint.TranslatePoint(new Point(), RemoteApiView).X - textHost.TranslatePoint(new Point(), RemoteApiView).X) > 1.5)
+                return Fail("the search hint is not where the search box's text starts");
             Find<TextBox>("RemoteSearch").Text = "qwen";
             if (Find<StackPanel>("RemoteModels").Children is not { Count: 1 } found || ((RemoteCatalog.ModelEntry)((ToggleButton)found[0]).Tag).Id != "qwen/qwen3-coder" ||
                 Find<TextBlock>("RemoteModelsNote").Text != "1 of 3 models")
