@@ -10,6 +10,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace AgentOrchestrator;
 
@@ -793,9 +794,24 @@ public partial class MainWindow
         return g;
     }
 
-    // A model maker's badge (RemoteVendorBadge): its initials on its colour.
+    // A model maker's badge: its logo (RemoteVendorIcon) on a neutral tile from the theme, a "-color" logo in its own colours,
+    // any other in the theme's text colour; a maker with no logo gets its initials on its colour (RemoteVendorBadge).
     private static Border RemoteBadge(string modelId)
     {
+        if (RemoteVendorIcon(modelId) is { } icon && VendorIconImage(icon) is { } image)
+        {
+            FrameworkElement logo = new Image { Source = image };
+            if (!icon.EndsWith("-color", StringComparison.Ordinal))
+            {
+                var shape = new System.Windows.Shapes.Rectangle { OpacityMask = new ImageBrush(image) };
+                shape.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "TextPrimary");
+                logo = shape;
+            }
+            var tile = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(5), Padding = new Thickness(3), Tag = "icon:" + icon, Child = logo };
+            tile.SetResourceReference(Border.BackgroundProperty, "Border");
+            RenderOptions.SetBitmapScalingMode(tile, BitmapScalingMode.HighQuality);
+            return tile;
+        }
         var (initials, rgb) = RemoteVendorBadge(modelId);
         return new Border
         {
@@ -843,6 +859,54 @@ public partial class MainWindow
     internal static (string Text, uint Rgb) RemoteVendorBadge(string modelId) =>
         modelId.IndexOf('/') is > 0 and var slash && Vendors.TryGetValue(modelId[..slash], out var v) ? v
         : (modelId.Length > 0 ? char.ToUpperInvariant(modelId[0]).ToString() : "?", VendorGrey);
+
+    // A model maker's logo, keyed like Vendors by the id's prefix (aliases: the same maker under the names services use):
+    // the name of a 64 px PNG in Assets\Vendors (LobeHub icons, MIT; see NOTICE.md there). "accounts" is Fireworks'
+    // own ids (accounts/fireworks/models/…).
+    private static readonly Dictionary<string, string> VendorIcons = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["openai"] = "openai", ["anthropic"] = "anthropic", ["google"] = "google-color", ["meta-llama"] = "meta-color", ["meta"] = "meta-color",
+        ["mistralai"] = "mistral-color", ["mistral"] = "mistral-color", ["deepseek"] = "deepseek-color", ["deepseek-ai"] = "deepseek-color",
+        ["qwen"] = "qwen-color", ["z-ai"] = "zai", ["zai-org"] = "zai", ["thudm"] = "zhipu-color", ["x-ai"] = "xai", ["xai"] = "xai",
+        ["nvidia"] = "nvidia-color", ["cohere"] = "cohere-color", ["microsoft"] = "microsoft-color", ["amazon"] = "aws",
+        ["perplexity"] = "perplexity-color", ["moonshotai"] = "moonshot", ["minimax"] = "minimax-color", ["nousresearch"] = "nousresearch",
+        ["ai21"] = "ai21", ["allenai"] = "ai2-color", ["baidu"] = "baidu-color", ["bytedance"] = "bytedance-color", ["bytedance-seed"] = "bytedance-color",
+        ["tencent"] = "tencent-color", ["inflection"] = "inflection", ["liquid"] = "liquid", ["upstage"] = "upstage-color", ["01-ai"] = "zeroone",
+        ["stepfun-ai"] = "stepfun-color", ["stepfun"] = "stepfun-color", ["inception"] = "inception", ["relace"] = "relace", ["arcee-ai"] = "arcee-color",
+        ["openchat"] = "openchat-color", ["ibm-granite"] = "ibm", ["ibm"] = "ibm", ["alibaba"] = "alibaba-color", ["cognitivecomputations"] = "dolphin",
+        ["huggingfaceh4"] = "huggingface-color", ["morph"] = "morph-color", ["deepcogito"] = "deepcogito-color", ["meituan"] = "longcat-color",
+        ["xiaomi"] = "xiaomimimo", ["inclusionai"] = "ling-color", ["kwaipilot"] = "kwaipilot", ["essentialai"] = "essentialai-color",
+        ["aion-labs"] = "aionlabs-color", ["poolside"] = "poolside-color", ["openrouter"] = "openrouter-color", ["groq"] = "groq",
+        ["together"] = "together-color", ["togethercomputer"] = "together-color", ["fireworks"] = "fireworks-color", ["accounts"] = "fireworks-color",
+        ["deepinfra"] = "deepinfra-color", ["cerebras"] = "cerebras-color",
+    };
+
+    internal static string? RemoteVendorIcon(string modelId) =>
+        modelId.IndexOf('/') is > 0 and var slash && VendorIcons.TryGetValue(modelId[..slash], out var icon) ? icon : null;
+
+    // The logo from the app's resources, loaded once (frozen); null if there is no such resource.
+    private static readonly Dictionary<string, BitmapImage?> VendorIconImages = [];
+    private static BitmapImage? VendorIconImage(string icon)
+    {
+        if (!VendorIconImages.TryGetValue(icon, out var image))
+        {
+            try
+            {
+                image = new BitmapImage();
+                image.BeginInit();
+                image.UriSource = new Uri($"pack://application:,,,/Assets/Vendors/{icon}.png");
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.EndInit();
+                image.Freeze();
+            }
+            catch (IOException)
+            {
+                image = null;
+            }
+            VendorIconImages[icon] = image;
+        }
+        return image;
+    }
 
     private static TextBlock RemoteMuted(string text)
     {
@@ -900,6 +964,13 @@ public partial class MainWindow
         Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
             RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
             RemoteVendorBadge("").Text == "?" && Vendors.Values.Select(v => v.Rgb).Append(VendorGrey).Distinct().Count() == Vendors.Count + 1, "vendor badges");
+        Check(RemoteVendorIcon("openai/gpt-4o-mini") == "openai" && RemoteVendorIcon("z-ai/glm-5.3-flash") == "zai" && RemoteVendorIcon("zai-org/GLM-4.6") == "zai" &&
+            RemoteVendorIcon("Meta-Llama/llama-4") == "meta-color" && RemoteVendorIcon("meta/llama-3.1-8b-instruct") == "meta-color" &&
+            RemoteVendorIcon("QWEN/qwen3-coder") == "qwen-color" && RemoteVendorIcon("google/gemma-3-27b-it") == "google-color" &&
+            RemoteVendorIcon("llama3.1:8b") is null && RemoteVendorIcon("acme/x") is null && RemoteVendorIcon("/x") is null && RemoteVendorIcon("") is null &&
+            Vendors.Keys.All(k => RemoteVendorIcon(k + "/m") is not null), "vendor icons");
+        var missing = VendorIcons.Values.Distinct().Where(i => VendorIconImage(i) is null).ToList();
+        Check(missing.Count == 0, "vendor icons not in the app's resources: " + string.Join(", ", missing));
         RemoteCatalog.ProviderRow[] p =
         [
             new("A", "a", "fp8", 1m, 1m, null, null, null, 90, false, 0), new("b", "b", "", null, 2m, null, null, null, null, false, 0),
@@ -1060,8 +1131,10 @@ public partial class MainWindow
             Rect Cell(FrameworkElement root, string tag) => In(SmokeFind<TextBlock>(root, t => t.Tag as string == tag)!);
             if (!listHead.IsVisible || listHead.IsDescendantOf(listScroll) || listScroll.MaxHeight != 9 * ModelRow ||
                 Math.Abs(Cell(listHead, "name").Left - Cell(glm, "name").Left) > 1 || Math.Abs(Cell(listHead, "context").Right - Cell(glm, "context").Right) > 1 ||
-                SmokeFind<Border>(glm, b => b.Tag as string == "badge:Z") is null)
-                return Fail($"the model list header: name {Cell(listHead, "name")} / {Cell(glm, "name")}, context {Cell(listHead, "context")} / {Cell(glm, "context")}");
+                SmokeFind<Border>(glm, b => b.Tag as string == "icon:zai") is not { Child: System.Windows.Shapes.Rectangle } ||
+                SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "qwen/qwen3-coder" }) is not { } qwenRow ||
+                SmokeFind<Border>(qwenRow, b => b.Tag as string == "icon:qwen-color") is not { Child: Image } || RemoteBadge("acme/x").Tag as string != "badge:A")
+                return Fail($"the model list header: name {Cell(listHead, "name")} / {Cell(glm, "name")}, context {Cell(listHead, "context")} / {Cell(glm, "context")}, or the vendor logos");
             var head = Find<Border>("RemoteProvidersHeader").Child as Grid; // outside the rows' scroll, so it stays put
             string[] wantRows = ["Untagged|—|<$0.0001|$0|—|—|—|—|", "Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
                 "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
@@ -1283,7 +1356,7 @@ public partial class MainWindow
             Button? Star(string favorite) => SmokeFind<Button>(Find<StackPanel>("RemoteModels"), b => b.Tag as string == "fav:" + favorite);
             var favorites = Find<ComboBox>("RemoteFavorites");
             var favoritesBox = (FrameworkElement)favorites.Parent;
-            List<string> Listed() => [.. favorites.Items.OfType<ComboBoxItem>().Select(i => string.Join("", SmokeFind<TextBlock>(i, t => t.Parent is StackPanel)?.Text, "/", SmokeFind<Border>(i, b => (b.Tag as string)?.StartsWith("badge:", StringComparison.Ordinal) == true)?.Tag))];
+            List<string> Listed() => [.. favorites.Items.OfType<ComboBoxItem>().Select(i => string.Join("", SmokeFind<TextBlock>(i, t => t.Parent is StackPanel)?.Text, "/", SmokeFind<Border>(i, b => b.Tag is string t && (t.StartsWith("badge:", StringComparison.Ordinal) || t.StartsWith("icon:", StringComparison.Ordinal)))?.Tag))];
             const string GlmFav = "openrouter|" + Glm, OpenAiFav = "openai|openai/gpt-4o-mini";
             if (favoritesBox.Visibility != Visibility.Collapsed || Star(GlmFav) is not { Content: "☆" } star || Find<TextBox>("RemoteModelId").Text.Length != 0)
                 return Fail("before any star: the Favorites dropdown shows, or GLM has no empty star");
@@ -1296,7 +1369,7 @@ public partial class MainWindow
                 e.Width = 500; // the window's own width varies from run to run
             RemoteApiView.UpdateLayout();
             if (favoritesBox.Visibility != Visibility.Visible || !(In(Find<Border>("RemoteModelsBox")).Bottom <= In(favorites).Top && In(favorites).Bottom <= In(modelIdBox).Top) ||
-                !Listed().SequenceEqual([$"OpenRouter · {Glm}/badge:Z"]))
+                !Listed().SequenceEqual([$"OpenRouter · {Glm}/icon:zai"]))
                 return Fail($"the Favorites dropdown: {favoritesBox.Visibility}, list {In(Find<Border>("RemoteModelsBox"))}, it {In(favorites)}, model id {In(modelIdBox)}, [{string.Join(", ", Listed())}]");
             SmokeClick(star);
             if (AppSettings.Load().RemoteFavorites.Count != 0 || star.Content as string != "☆" || favoritesBox.Visibility != Visibility.Collapsed)
@@ -1315,7 +1388,7 @@ public partial class MainWindow
             Service("openrouter");
             KeyEnv(KeyA);
             await Loaded();
-            if (!Listed().SequenceEqual([$"OpenRouter · {Glm}/badge:Z", "OpenAI · openai/gpt-4o-mini/badge:OA"]) || !AppSettings.Load().RemoteFavorites.SequenceEqual([GlmFav, OpenAiFav]) ||
+            if (!Listed().SequenceEqual([$"OpenRouter · {Glm}/icon:zai", "OpenAI · openai/gpt-4o-mini/icon:openai"]) || !AppSettings.Load().RemoteFavorites.SequenceEqual([GlmFav, OpenAiFav]) ||
                 Star(GlmFav)?.Content as string != "★" || Star("openrouter|qwen/qwen3-coder")?.Content as string != "☆")
                 return Fail($"two favorites listed [{string.Join(", ", Listed())}], or the rebuilt rows' stars do not show them");
             before = fake.Seen.Count;
