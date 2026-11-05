@@ -1115,7 +1115,9 @@ internal static class LauncherLogic
 
     // A role on a remote OpenAI-compatible API: config.json gives its model id and no auto_load, so the
     // orchestrator neither loads nor monitors it. The key itself stays in the environment variable KeyEnv.
-    public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout);
+    // Provider: OpenRouter provider names, comma-separated ("" = let the API choose). Sent as sampling.extra_body.provider
+    // {"order": [...], "allow_fallbacks": false}, which OpenRouter reads and other OpenAI-compatible APIs ignore.
+    public sealed record RemoteRole(string BaseUrl, string Model, string KeyEnv, string Timeout, string Provider = "");
 
     // The local (llama.cpp) keys a switch to Remote moves into roles.<role>.local_settings, and a switch back to Local restores.
     private static readonly string[] LocalKeys = ["base_url", "api_key_env", "api_key", "expected_model_contains", "auto_load", "display_name", "timeout_seconds"];
@@ -1128,7 +1130,8 @@ internal static class LauncherLogic
     {
         var settings = JsonNode.Parse(File.ReadAllText(configPath))!["roles"]![role];
         return IsRemote(settings)
-            ? new RemoteRole((string?)settings!["base_url"] ?? "", (string?)settings["model"] ?? "", (string?)settings["api_key_env"] ?? "", settings["timeout_seconds"]?.ToJsonString() ?? "")
+            ? new RemoteRole((string?)settings!["base_url"] ?? "", (string?)settings["model"] ?? "", (string?)settings["api_key_env"] ?? "", settings["timeout_seconds"]?.ToJsonString() ?? "",
+                string.Join(", ", (settings["sampling"]?["extra_body"]?["provider"]?["order"] as JsonArray ?? []).Select(p => (string?)p ?? "")))
             : null;
     }
 
@@ -1171,6 +1174,7 @@ internal static class LauncherLogic
             settings["api_key_env"] = remote.KeyEnv.Trim();
             if (long.TryParse(remote.Timeout.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var timeout))
                 settings["timeout_seconds"] = timeout;
+            SetProvider(settings, remote.Provider);
         }
         else if (IsRemote(settings))
         {
@@ -1184,12 +1188,28 @@ internal static class LauncherLogic
                 else
                     settings.Remove(key);
             settings.Remove("local_settings");
+            SetProvider(settings, "");
         }
         File.WriteAllText(configPath, root.ToJsonString(new JsonSerializerOptions
         {
             WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         }));
         return null;
+    }
+
+    // The role's OpenRouter provider choice in sampling.extra_body.provider; empty names remove it.
+    private static void SetProvider(JsonObject settings, string names)
+    {
+        var order = names.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        var extra = (settings["sampling"] as JsonObject)?["extra_body"] as JsonObject;
+        if (order.Length == 0)
+        {
+            extra?.Remove("provider");
+            return;
+        }
+        var sampling = settings["sampling"] as JsonObject ?? (settings["sampling"] = new JsonObject()).AsObject();
+        extra ??= (sampling["extra_body"] = new JsonObject()).AsObject();
+        extra["provider"] = new JsonObject { ["order"] = new JsonArray(order.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()), ["allow_fallbacks"] = false };
     }
 
     // A GGUF the llama.cpp runtime can load. Repo "org/name" for a Hugging Face cache file (the engine finds it by repo and
@@ -2322,6 +2342,19 @@ internal static class LauncherLogic
                 (string?)Planner()["local_settings"]?["api_key"] != "sk-local" || WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
                 !JsonNode.DeepEquals(Planner(), JsonNode.Parse(keyedPlanner)))
                 throw new InvalidOperationException($"Remote role: api_key was not moved aside and restored: {Planner().ToJsonString()}");
+            // Provider: names become sampling.extra_body.provider {order, allow_fallbacks:false} beside the other extra_body keys;
+            // empty, or switching back to Local, removes it.
+            File.WriteAllText(remoteConfig, "{\"roles\":{\"planner\":{\"sampling\":{\"temperature\":0.6,\"extra_body\":{\"top_k\":20}}}}}");
+            var viaProvider = remote with { Provider = " Sail Research , DeepInfra," };
+            var providerJson = () => Planner()["sampling"]!["extra_body"]!.AsObject();
+            if (WriteRemoteRole(remoteConfig, "planner", viaProvider, remoteTemplate) is not null ||
+                providerJson()["provider"]!["order"]!.ToJsonString() != "[\"Sail Research\",\"DeepInfra\"]" || (bool?)providerJson()["provider"]!["allow_fallbacks"] != false ||
+                (int?)providerJson()["top_k"] != 20 || ReadRemoteRole(remoteConfig, "planner")?.Provider != "Sail Research, DeepInfra")
+                throw new InvalidOperationException($"Remote role: the provider was not saved: {Planner().ToJsonString()}");
+            if (WriteRemoteRole(remoteConfig, "planner", remote, remoteTemplate) is not null || providerJson().ContainsKey("provider") || (int?)providerJson()["top_k"] != 20 ||
+                WriteRemoteRole(remoteConfig, "planner", viaProvider, remoteTemplate) is not null || WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null ||
+                (Planner()["sampling"]?["extra_body"] as JsonObject)?.ContainsKey("provider") == true)
+                throw new InvalidOperationException($"Remote role: the provider was not removed: {Planner().ToJsonString()}");
             // Presets: capture from config A, apply to config B; B keeps its own project keys.
             var configA = Path.Combine(testArea, "preset-a.json");
             var configB = Path.Combine(testArea, "preset-b.json");

@@ -112,6 +112,8 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 
 `model` is sent as the request's model id as is (no `/models` check), and the role is never loaded, unloaded or monitored. The key is read from the named environment variable and never written to config, logs or prompts; set it before starting the launcher. Errors name the role and URL (for example `planner: API 401 from https://…/chat/completions (check the key in OPENROUTER_API_KEY)`). Keep `sampling` to parameters the API accepts: some reject llama.cpp extras such as `top_k` or `enable_thinking`. In the launcher, a role's **Settings** has a **Remote API** mode that writes these keys and keeps the local settings in `local_settings`; switching back to **Local** restores them.
 
+**Choosing an OpenRouter provider.** In Settings > Agents > Model source > Remote API, the optional **Provider** field takes OpenRouter provider names, comma-separated (e.g. `Sail Research, DeepInfra`). The launcher saves them as `sampling.extra_body.provider` = `{"order": [...], "allow_fallbacks": false}`, so OpenRouter uses only those providers, in that order, and fails the request instead of falling back. Leave it empty to let OpenRouter choose; other APIs ignore the field.
+
 ## Chat mode
 
 Role fallback: only the `planner` role (the base model) is required in `config.json`. An `implementer` or `reviewer` that is missing from `roles`, or set to `{"same_as": "planner"}`, uses the planner's settings (model, sampling, `auto_load`) everywhere, the project run included; the same model is not reloaded.

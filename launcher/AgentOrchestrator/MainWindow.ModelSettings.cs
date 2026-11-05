@@ -464,6 +464,7 @@ public partial class MainWindow
                 ("Base URL", "e.g. https://openrouter.ai/api/v1", remoteNow?.BaseUrl ?? ""),
                 ("Model id", "as the API names it", remoteNow?.Model ?? ""),
                 ("API key variable", "environment variable holding the key", remoteNow?.KeyEnv ?? "OPENAI_API_KEY"),
+                ("Provider (optional)", "OpenRouter only: use these providers, in this order, with no fallback. Names as OpenRouter lists them, comma-separated; empty lets OpenRouter choose.", remoteNow?.Provider ?? ""),
             };
             remoteBoxes = remoteFields.Select(f => Box(f.Value, f.Label)).ToArray();
             remotePanel = new StackPanel();
@@ -928,7 +929,7 @@ public partial class MainWindow
                 HoldWorkerTab(saved);
                 return true;
             }
-            var remote = remoteMode() ? new LauncherLogic.RemoteRole(remoteBoxes![0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, "") : null;
+            var remote = remoteMode() ? new LauncherLogic.RemoteRole(remoteBoxes![0].Text, remoteBoxes[1].Text, remoteBoxes[2].Text, "", remoteBoxes[3].Text) : null;
             var check = (JsonObject)role!.DeepClone(); // validate everything before any file is touched
             if (choice is not null && remote is null)
                 SetRoleModel(check, choice);
