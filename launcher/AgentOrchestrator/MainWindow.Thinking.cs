@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -43,6 +44,20 @@ public partial class MainWindow
             foreach (var root in panel.Children.OfType<FrameworkElement>())
                 if (root.Tag is ChatReply reply)
                     Regroup(reply.Content);
+                else if (root is StackPanel { Tag: RunOutput } run)
+                    Regroup(run, inRun: true);
+    }
+
+    private const string RunOutput = "run-output"; // a project run's OutputPanel (each run's stays in the Code conversation)
+
+    // A project run's working steps: its THINKING and TOOL sections and live stats lines; not its responses, nor the
+    // block still streaming (it folds once it ends, so no text goes out of sight mid-stream).
+    private bool IsRunWork(UIElement e)
+    {
+        if (e == _stream?.Expander)
+            return false;
+        return e is TextBlock { Tag: "stats" } ||
+               e is Expander { Tag: not WorkGroup, Header: StackPanel header } && header.Children[0] is TextBlock { Text: not ("RESPONSE" or "FINAL RESPONSE") };
     }
 
     // The muted line that says the context was compacted. Not a working step (no "stats" tag): it shows with View thinking off too.
@@ -56,8 +71,9 @@ public partial class MainWindow
     // A reply's working steps; its answers, notes and rules are not.
     private static bool IsWork(UIElement e) => e is Expander { Tag: not WorkGroup } or TextBlock { Tag: "stats" } or WrapPanel;
 
-    private void Regroup(StackPanel content)
+    private void Regroup(StackPanel content, bool inRun = false)
     {
+        Func<UIElement, bool> isWork = inRun ? IsRunWork : IsWork;
         var rows = content.Children.OfType<Expander>().Where(x => x.Tag as string == WorkGroup).ToList();
         var steps = content.Children.OfType<UIElement>().Where(e => !rows.Contains(e)).ToList();
         foreach (var step in steps.Where(_hiddenWork.Contains))
@@ -66,15 +82,17 @@ public partial class MainWindow
             _hiddenWork.Remove(step);
         }
         var runs = new List<List<UIElement>>();
-        var shown = steps.Where(s => s.Visibility == Visibility.Visible || IsWork(s)).ToList(); // a hidden raw answer box splits nothing
+        var shown = steps.Where(s => s.Visibility == Visibility.Visible || isWork(s)).ToList(); // a hidden raw answer box splits nothing
         if (!_settings.ViewThinking)
             for (var i = 0; i < shown.Count; i++)
-                if (IsWork(shown[i]))
+                if (isWork(shown[i]))
                 {
-                    if (i == 0 || !IsWork(shown[i - 1]))
+                    if (i == 0 || !isWork(shown[i - 1]))
                         runs.Add([]);
                     runs[^1].Add(shown[i]);
                 }
+        if (inRun) // a lone live line (under a streaming block) is no working row
+            runs.RemoveAll(r => !r.OfType<Expander>().Any());
         var kept = new HashSet<Expander>();
         foreach (var run in runs)
         {
@@ -83,8 +101,8 @@ public partial class MainWindow
                 row = BuildExpander("THINKING", "", new StackPanel(), out _);
                 row.Tag = WorkGroup;
                 row.Margin = new Thickness(0, 2, 0, 2);
-                row.Expanded += (_, _) => Regroup(content);
-                row.Collapsed += (_, _) => Regroup(content);
+                row.Expanded += (_, _) => Regroup(content, inRun);
+                row.Collapsed += (_, _) => Regroup(content, inRun);
                 _workRows[run[0]] = row;
             }
             kept.Add(row);
@@ -112,7 +130,10 @@ public partial class MainWindow
         var counts = new Dictionary<string, int>();
         foreach (var step in run.OfType<Expander>())
         {
-            var kind = (step.Header as StackPanel)?.Children.OfType<TextBlock>().FirstOrDefault()?.Text ?? "";
+            var texts = (step.Header as StackPanel)?.Children.OfType<TextBlock>().ToList() ?? [];
+            var kind = texts.FirstOrDefault()?.Text ?? "";
+            if (kind == "TOOL") // a run's tool section: its preview starts with the tool's name
+                kind = texts.ElementAtOrDefault(1)?.Text.Split(' ')[0] ?? "";
             var key = kind.StartsWith("THINKING", StringComparison.OrdinalIgnoreCase) ? "thought" : kind.ToLowerInvariant() switch
             {
                 "read" or "read_file" => "read",
@@ -191,6 +212,95 @@ public partial class MainWindow
             _settings.ViewThinking = view;
             ClearConversation(_chat);
             (_turn, _reply) = (turn, reply);
+        }
+    }
+
+    // --ui-smoke: a project run folds the same way, live: each run of THINKING and TOOL sections becomes one row between the
+    // role headers and responses; a block still streaming stays in view until it ends; a new run leaves the old rows alone.
+    private async Task<bool> RunThinkingSmoke(Action<string, FrameworkElement?> snap)
+    {
+        static bool Fail([CallerLineNumber] int line = 0) { Console.Error.WriteLine($"ui-smoke: check failed at MainWindow.Thinking.cs:{line}"); return false; }
+        async Task Run(params string[] events)
+        {
+            foreach (var json in events)
+                _lines.Enqueue(LauncherLogic.EventPrefix + json);
+            DrainLines();
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle); // the queued regroup runs first
+        }
+        static List<Expander> Rows(Panel p) => p.Children.OfType<Expander>().Where(x => x.Tag as string == WorkGroup).ToList();
+        static string Text(Expander x, int i) => ((TextBlock)((StackPanel)x.Header).Children[i]).Text;
+        var (view, chatShown) = (_settings.ViewThinking, NavChat.IsChecked == true);
+        StackPanel? first = null, second = null;
+        try
+        {
+            ShowView(); // Code, where a run's output shows
+            _settings.ViewThinking = false;
+            ResetRunView();
+            first = OutputPanel;
+            await Run("""{"e":"delta","role":"planner","kind":"thinking","text":"planning the page"}""",
+                """{"e":"delta","role":"planner","kind":"tool","index":0,"name":"read_file","text":"{\"path\":\"a.js\"}"}""",
+                """{"e":"done","role":"planner","final":false}""",
+                """{"e":"tool","role":"planner","name":"read_file","args":"{\"path\":\"a.js\"}","result":"OK"}""",
+                """{"e":"tool","role":"planner","name":"run_command","args":"{\"command\":\"npm test\"}","result":"passed"}""",
+                """{"e":"delta","role":"planner","kind":"text","text":"Built it."}""",
+                """{"e":"done","role":"planner","final":true}""",
+                """{"e":"delta","role":"reviewer","kind":"thinking","text":"checking"}""",
+                """{"e":"delta","role":"reviewer","kind":"text","text":"Looks right."}""",
+                """{"e":"done","role":"reviewer","final":false}""");
+            var rows = Rows(first);
+            var responses = first.Children.OfType<Expander>().Where(x => Text(x, 0) is "RESPONSE" or "FINAL RESPONSE").ToList();
+            var headers = first.Children.OfType<TextBlock>().Where(t => t.Tag is null).ToList();
+            var work = first.Children.OfType<UIElement>().Where(IsRunWork).ToList();
+            if (rows.Count != 2 || Text(rows[0], 1) != "1 thought · read 1 file · ran 1 command" || Text(rows[1], 1) != "1 thought" ||
+                responses.Count != 2 || headers.Count != 2 || responses.Concat<UIElement>(headers).Any(e => e.Visibility != Visibility.Visible) ||
+                work.Count != 4 || work.Any(e => e.Visibility != Visibility.Collapsed) ||
+                first.Children.IndexOf(rows[0]) != first.Children.IndexOf(headers[0]) + 1 || first.Children.IndexOf(rows[1]) != first.Children.IndexOf(headers[1]) + 1)
+                return Fail();
+            await Task.Delay(400);
+            snap("41-run-thinking-off", null);
+            rows[0].IsExpanded = true; // its steps show, the reviewer's stay folded, and it stays open through a regroup
+            RegroupAll();
+            if (work.Take(3).Any(e => e.Visibility != Visibility.Visible) || work[3].Visibility != Visibility.Collapsed || Rows(first).Count != 2 ||
+                responses.Any(e => e.Visibility != Visibility.Visible))
+                return Fail();
+            rows[0].IsExpanded = false;
+            if (work.Any(e => e.Visibility != Visibility.Collapsed) || responses.Any(e => e.Visibility != Visibility.Visible))
+                return Fail();
+            _settings.ViewThinking = true;
+            RegroupAll();
+            if (Rows(first).Count != 0 || first.Children.OfType<UIElement>().Any(e => e.Visibility != Visibility.Visible))
+                return Fail();
+            // Off mid-stream: the open block keeps its text in view and grows; once it ends it folds into a row of its own.
+            await Run("""{"e":"delta","role":"reviewer","kind":"thinking","text":"one more"}""");
+            var open = _stream?.Expander;
+            _settings.ViewThinking = false;
+            RegroupAll();
+            if (open is null || open.Visibility != Visibility.Visible || Rows(first).Count != 2)
+                return Fail();
+            await Run("""{"e":"delta","role":"reviewer","kind":"thinking","text":" look"}""");
+            if (open.Visibility != Visibility.Visible || !_stream!.Text.ToString().Contains("one more look"))
+                return Fail();
+            await Run("""{"e":"done","role":"reviewer","final":false}""");
+            if (open.Visibility != Visibility.Collapsed || Rows(first).Count != 3 || Text(Rows(first)[2], 1) != "1 thought")
+                return Fail();
+            // The next run's panel folds on its own; the last run's rows are not duplicated.
+            ResetRunView();
+            second = OutputPanel;
+            await Run("""{"e":"delta","role":"planner","kind":"thinking","text":"again"}""", """{"e":"done","role":"planner","final":false}""",
+                """{"e":"delta","role":"planner","kind":"text","text":"Done again."}""", """{"e":"done","role":"planner","final":true}""");
+            if (second == first || second.Parent != CodePanel || first.Parent != CodePanel || Rows(first).Count != 3 || Rows(second).Count != 1)
+                return Fail();
+            return true;
+        }
+        finally
+        {
+            _settings.ViewThinking = view;
+            RegroupAll();
+            ResetRunView();
+            StopClocks();
+            CodePanel.Children.Remove(first);
+            CodePanel.Children.Remove(second);
+            ShowView(chat: chatShown);
         }
     }
 }
