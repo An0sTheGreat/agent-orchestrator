@@ -175,6 +175,7 @@ public partial class MainWindow
         // ---- providers (OpenRouter)
         var rows = new List<RemoteCatalog.ProviderRow>();
         var order = (preset?.Provider ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+        var (sortColumn, sortDescending) = (-1, false); // -1: as rows arrive, cheapest input first
         var table = new StackPanel { Tag = "RemoteProviderRows", MinWidth = ProviderColumns.Sum() + 130 };
         var tableScroll = new ScrollViewer { Content = table, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0) };
         tableScroll.SizeChanged += (_, e) => table.Width = Math.Max(table.MinWidth, e.NewSize.Width); // the whole column; narrower scrolls
@@ -370,24 +371,35 @@ public partial class MainWindow
                     t.FontFamily = AppFonts.Mono;
                 return t;
             }
+            // A header click sorts by its column: ascending, then descending, then back to cheapest input first.
             var heads = new[] { "", "Provider", "Quant.", "In $/M", "Out $/M", "Cache $/M", "Latency", "tok/s", "Uptime", "Vision" }
                 .Select((h, i) =>
                 {
                     var t = RemoteMuted(h);
-                    t.ToolTip = HeadTips[i];
                     t.TextWrapping = TextWrapping.NoWrap;
                     t.FontWeight = FontWeights.SemiBold;
                     t.VerticalAlignment = VerticalAlignment.Bottom;
-                    t.Margin = new Thickness(0, 0, 12, 4);
+                    t.Margin = new Thickness(0, 0, i == sortColumn ? 2 : 12, 4); // the arrow hangs in the gap, the label stays over its figures
                     t.TextAlignment = i >= 3 ? TextAlignment.Right : TextAlignment.Left;
-                    return (UIElement)t;
+                    if (i == 0)
+                        return (UIElement)t;
+                    if (i == sortColumn)
+                        t.Inlines.Add(new Run(sortDescending ? " ▼" : " ▲") { FontSize = 8 });
+                    var sort = new Button { Content = t, Tag = $"sort:{i}", ToolTip = HeadTips[i] ?? "Sort by " + h.ToLowerInvariant() };
+                    sort.SetResourceReference(StyleProperty, "BareButton");
+                    sort.Click += (_, _) =>
+                    {
+                        (sortColumn, sortDescending) = sortColumn != i ? (i, false) : !sortDescending ? (i, true) : (-1, false);
+                        RenderProviders();
+                    };
+                    return sort;
                 }).ToArray();
             var header = Line(heads);
             var rule = new Border { Height = 1, Margin = new Thickness(0, 0, 0, 2) };
             rule.SetResourceReference(Border.BackgroundProperty, "Border");
             table.Children.Add(header);
             table.Children.Add(rule);
-            foreach (var r in rows.Where(r => visionOnly.IsChecked != true || r.Vision))
+            foreach (var r in SortProviders(rows, sortColumn, sortDescending).Where(r => visionOnly.IsChecked != true || r.Vision))
             {
                 var position = order.IndexOf(r.Tag);
                 var tick = new ToggleButton
@@ -752,6 +764,24 @@ public partial class MainWindow
         { } v => "$" + v.ToString("0.00##", CultureInfo.InvariantCulture),
     };
 
+    // The providers table by a column (1 Provider … 9 Vision, as the header), unknowns last either way, ties as they came;
+    // column -1: as they came (RemoteCatalog's cheapest input first).
+    internal static List<RemoteCatalog.ProviderRow> SortProviders(IEnumerable<RemoteCatalog.ProviderRow> rows, int column, bool descending)
+    {
+        if (column < 1)
+            return [.. rows];
+        IComparable? Key(RemoteCatalog.ProviderRow r) => column switch
+        {
+            1 => r.Name.Length > 0 ? r.Name : r.Tag,
+            2 => r.Quantization is { Length: > 0 } and not "unknown" ? r.Quantization : null,
+            3 => r.InputPerM, 4 => r.OutputPerM, 5 => r.CacheReadPerM, 6 => r.LatencySeconds, 7 => r.ThroughputTps, 8 => r.Uptime,
+            _ => r.Vision,
+        };
+        var by = Comparer<IComparable?>.Create((a, b) => a is string x && b is string y ? StringComparer.OrdinalIgnoreCase.Compare(x, y) : System.Collections.Comparer.Default.Compare(a, b));
+        var known = rows.OrderBy(r => Key(r) is null);
+        return [.. descending ? known.ThenByDescending(Key, by) : known.ThenBy(Key, by)];
+    }
+
     private static string RemoteFigure(double? value, string format) => value is { } v ? v.ToString(format, CultureInfo.InvariantCulture) : "—";
 
     // A context length in tokens: 262K, 1.05M; "" unknown.
@@ -774,6 +804,17 @@ public partial class MainWindow
         Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
             RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
             RemoteVendorBadge("").Text == "?" && Vendors.Values.Select(v => v.Rgb).Append(VendorGrey).Distinct().Count() == Vendors.Count + 1, "vendor badges");
+        RemoteCatalog.ProviderRow[] p =
+        [
+            new("A", "a", "fp8", 1m, 1m, null, null, null, 90, false, 0), new("b", "b", "", null, 2m, null, null, null, null, false, 0),
+            new("C", "c", "fp4", 2m, 1m, null, null, null, 90, true, 0), new("D", "d", "unknown", 0.5m, 3m, null, null, null, 99, false, 0),
+        ];
+        string Sorted(int column, bool descending) => string.Concat(SortProviders(p, column, descending).Select(r => r.Tag));
+        Check(Sorted(-1, false) == "abcd" && Sorted(-1, true) == "abcd", "providers: the default order is as they came");
+        Check(Sorted(8, false) == "acdb" && Sorted(8, true) == "dacb", "providers by uptime: ties as they came, unknown last both ways");
+        Check(Sorted(3, false) == "dacb" && Sorted(3, true) == "cadb", "providers by input price");
+        Check(Sorted(2, false) == "cabd" && Sorted(2, true) == "acbd", "providers by quantization: empty and unknown last");
+        Check(Sorted(1, false) == "abcd" && Sorted(1, true) == "dcba" && Sorted(4, true) == "dbac" && Sorted(9, true) == "cabd", "providers by name, output, vision");
     }
 
     // --ui-smoke: the sidebar's Remote API opens the page (the first time with the key help) in place of Code and Chat,
@@ -808,6 +849,9 @@ public partial class MainWindow
         ToggleButton? Tick(string tag) => SmokeFind<ToggleButton>(RemoteApiView, t => t.Tag as string == "tick:" + tag);
         List<string> Rows() => [.. Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().Where(g => g.Tag is RemoteCatalog.ProviderRow)
             .Select(g => string.Join("|", g.Children.OfType<TextBlock>().Select(t => t.Text)))];
+        string RowTags() => string.Join(", ", Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().Select(g => (g.Tag as RemoteCatalog.ProviderRow)?.Tag).OfType<string>());
+        static string Said(TextBlock t) => new TextRange(t.ContentStart, t.ContentEnd).Text; // Text leaves out the sort arrow's Run
+        string Heads(Grid? head) => string.Join("|", head?.Children.OfType<FrameworkElement>().Select(e => Said(e as TextBlock ?? (TextBlock)((Button)e).Content)) ?? []);
         string OrderText() => Find<TextBlock>("RemoteOrder").Text;
         void Apply() => SmokeClick(Find<Button>("RemoteApply"));
         void Type(string tag, string text) // a keystroke at a time, each raising TextChanged
@@ -916,7 +960,7 @@ public partial class MainWindow
             string[] wantRows = ["Untagged|—|<$0.0001|$0|—|—|—|—|", "Relace|fp4|$0.0285|$0.0923|$0.0285|—|—|93.3|", "OpenInference|fp4|$0.03|$0.22|$0.02|0.45|86|100|",
                 "GMICloud|fp8|$0.06|$0.44|—|—|—|99.5|", "Mystery|—|—|—|—|—|—|—|✓"];
             if (Find<StackPanel>("RemoteProviders").Visibility != Visibility.Visible ||
-                string.Join("|", head?.Children.OfType<TextBlock>().Select(t => t.Text) ?? []) != "|Provider|Quant.|In $/M|Out $/M|Cache $/M|Latency|tok/s|Uptime|Vision" ||
+                Heads(head) != "|Provider|Quant.|In $/M|Out $/M|Cache $/M|Latency|tok/s|Uptime|Vision" ||
                 !Rows().SequenceEqual(wantRows))
                 return Fail($"the providers table: {string.Join(" / ", Rows())}");
             if (Tick("") is not { IsEnabled: false } || Tick("relace/fp4") is not { IsEnabled: true }) // no tag: nothing to put in the order
@@ -934,6 +978,25 @@ public partial class MainWindow
             if (OrderText() != "Only, in this order: Relace (relace/fp4) → OpenInference (open-inference/fp4)" || Tick("relace/fp4")?.Content as string != "1" ||
                 Tick("open-inference/fp4")?.Content as string != "2")
                 return Fail($"the tick order shows \"{OrderText()}\"");
+
+            // A header click sorts by its column: up, down, back to cheapest input first; unknowns last; ticks and Vision only hold.
+            var tickOrder = OrderText();
+            Button SortBy(int column) => SmokeFind<Button>(Find<StackPanel>("RemoteProviderRows"), b => b.Tag as string == $"sort:{column}")!;
+            string Uptime() => Said((TextBlock)SortBy(8).Content);
+            SmokeClick(SortBy(8));
+            if (RowTags() != "relace/fp4, gmicloud/fp8, open-inference/fp4, , mystery" || Uptime() != "Uptime ▲" || OrderText() != tickOrder ||
+                Tick("relace/fp4")?.Content as string != "1" || Tick("open-inference/fp4")?.Content as string != "2" || Tick("") is null)
+                return Fail($"sorted by uptime: [{RowTags()}], header {Uptime()}, \"{OrderText()}\"");
+            SmokeClick(SortBy(8));
+            if (RowTags() != "open-inference/fp4, gmicloud/fp8, relace/fp4, , mystery" || Uptime() != "Uptime ▼" || OrderText() != tickOrder)
+                return Fail($"sorted by uptime, down: [{RowTags()}], header {Uptime()}, \"{OrderText()}\"");
+            Toggle(Find<ToggleButton>("RemoteVisionOnly"));
+            if (!Rows().SequenceEqual([wantRows[4]]))
+                return Fail($"sorted, Vision only left {string.Join(" / ", Rows())}");
+            Toggle(Find<ToggleButton>("RemoteVisionOnly"));
+            SmokeClick(SortBy(8));
+            if (!Rows().SequenceEqual(wantRows) || Uptime() != "Uptime" || OrderText() != tickOrder)
+                return Fail($"a third click did not bring back cheapest first: {string.Join(" / ", Rows())}");
             var ticked = new LauncherLogic.RemoteRole(OpenRouter, Glm, Unset, "", "relace/fp4, open-inference/fp4");
             Apply();
             if (Wrote("reviewer", ticked) is { } wrong)
