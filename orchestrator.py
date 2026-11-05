@@ -285,9 +285,10 @@ class ApiClient:
         self.key_source = key_env or "api_key"
         self.model = str(settings.get("model") or "").strip()  # request model id as given (remote APIs); skips /models
         self.timeout = int(settings.get("timeout_seconds", 600))
-        # A streamed reply that carries no text, thinking or tool call for this long is a stalled one (a queued free model keeps
-        # the connection open with keep-alive comments, so the read timeout never fires): config "stall_seconds" overrides.
-        self.stall = int(settings.get("stall_seconds", min(self.timeout, 240)))
+        # A streamed reply that does not start, or carries no text, thinking or tool call, for this long is a stalled one (a
+        # queued free model is held before its headers, or keeps the stream open with keep-alive comments): config
+        # "stall_seconds" overrides.
+        self.stall = int(settings.get("stall_seconds", min(self.timeout, 120)))
         self.auto_load = settings.get("auto_load")
         # A remote API role (as the launcher writes it): a model id and no auto_load (local roles run on llama-server).
         self.remote = bool(self.model) and not self.auto_load
@@ -522,7 +523,7 @@ class ApiClient:
             emit("delta", role=self.role, kind=kind, text=text)
 
         try:
-            with urlopen(request, timeout=self.timeout) as response:
+            with urlopen(request, timeout=self.stall) as response:  # also the longest silence between two reads
                 if response.headers.get_content_type() != "text/event-stream":
                     return json.loads(response.read().decode("utf-8"))  # server ignored stream=true
                 quiet_since = time.time()
@@ -565,6 +566,9 @@ class ApiClient:
         except HTTPError as exc:
             raise self._http_error(exc, f"{self.base_url}/chat/completions") from exc
         except (URLError, TimeoutError) as exc:
+            if isinstance(exc, TimeoutError) or isinstance(getattr(exc, "reason", None), TimeoutError):
+                raise WorkflowError(f"{self._who()}no reply from the model in {self.stall}s: the provider may be queued or overloaded "
+                                    "(free models often are). Try again, or pick another model or provider.") from exc
             raise WorkflowError(f"{self._who()}Cannot reach {self.base_url}: {exc}") from exc
         for kind, text in splitter.flush():
             put(kind, text)

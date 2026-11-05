@@ -4999,6 +4999,22 @@ class RemoteRoleTests(unittest.TestCase):
                 orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
         self.assertLessEqual(clock[0] - 1000, 120)  # it gave up at the stall limit (the role's 30 s timeout here; 240 s by default), not never
 
+    def test_a_request_held_before_its_headers_stalls_out_with_the_stall_limit_as_its_timeout(self):
+        from urllib.error import URLError
+
+        seen = []
+
+        def held(request, timeout=None):  # OpenRouter holding a queued free model: no headers until the socket times out
+            if request.data is None:
+                return self.response({"data": []})
+            seen.append(timeout)
+            raise URLError(TimeoutError("timed out"))
+
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"),                 patch.object(orchestrator, "urlopen", side_effect=held), contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "no reply from the model in 30s"):
+                orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
+        self.assertEqual(seen, [30])  # the role's 30 s timeout here; 120 s by default (stall_seconds overrides)
+
     def test_remote_body_omits_local_only_fields_unless_send_extra_body(self):
         sent = []
 
