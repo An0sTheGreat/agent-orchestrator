@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -124,6 +125,14 @@ public partial class MainWindow
             CloseBrowser();
             SetWorkerRail(true);
         }
+        // The Remote API page on the canned OpenRouter replies, a model chosen and two providers ticked.
+        _remoteHttp = new HttpClient(new RemoteApiFakeHandler());
+        _settings.RemoteHelpShown = true; // memory only: no first-use popup over the picture
+        OpenRemoteApi("reviewer", new LauncherLogic.RemoteRole("https://openrouter.ai/api/v1", "z-ai/glm-5.3-flash", "OPENROUTER_API_KEY", "", "relace/fp4, gmicloud/fp8"));
+        await Task.WhenAll(_remoteModelsTask, _remoteProvidersTask);
+        await Settle();
+        Snap("remote-api");
+        ShowView();
         OpenSettings();
         await Settle();
         if (_settingsWindow is { } settings)

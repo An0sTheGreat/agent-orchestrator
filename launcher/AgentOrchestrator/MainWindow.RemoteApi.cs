@@ -25,7 +25,11 @@ public partial class MainWindow
     private CancellationTokenSource? _remoteModelsCts, _remoteProvidersCts;
     private Task _remoteModelsTask = Task.CompletedTask, _remoteProvidersTask = Task.CompletedTask; // smokes await them
 
-    private static readonly double[] ProviderColumns = [34, 180, 64, 70, 74, 74, 64, 80, 64, 46];
+    // The providers table: 0 = the Provider column, which takes the width left over (at least 130).
+    private static readonly double[] ProviderColumns = [34, 0, 64, 76, 76, 82, 68, 56, 64, 52];
+    private static readonly string?[] HeadTips = [null, null, "Quantization", "Input, USD per million tokens", "Output, USD per million tokens",
+        "Cached input read, USD per million tokens", "Median latency in seconds, last 30 minutes", "Median throughput in tokens per second, last 30 minutes",
+        "Uptime in %, last 30 minutes", "Takes images"];
 
     // role: the worker Apply to starts on; preset: its current remote settings (service, model, provider order).
     private void OpenRemoteApi(string? role = null, LauncherLogic.RemoteRole? preset = null)
@@ -62,7 +66,7 @@ public partial class MainWindow
             service.Items.Add(new ComboBoxItem { Content = s.Name, Tag = s });
         var baseUrl = Box("RemoteBaseUrl");
         var keyEnv = Box("RemoteKeyEnv");
-        var keyStatus = new TextBlock { Tag = "RemoteKeyStatus", FontSize = 11.5, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 4, 0, 0) };
+        var keyStatus = new TextBlock { Tag = "RemoteKeyStatus", FontSize = 11.5, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 0, 7) }; // level with the box beside it
         RemoteCatalog.Service Selected() => (RemoteCatalog.Service)((ComboBoxItem)service.SelectedItem).Tag;
         string? Key() => keyEnv.Text.Trim() is { Length: > 0 } env && Environment.GetEnvironmentVariable(env) is { Length: > 0 } key ? key : null;
 
@@ -91,7 +95,9 @@ public partial class MainWindow
         // ---- providers (OpenRouter)
         var rows = new List<RemoteCatalog.ProviderRow>();
         var order = (preset?.Provider ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
-        var table = new StackPanel { Tag = "RemoteProviderRows" };
+        var table = new StackPanel { Tag = "RemoteProviderRows", MinWidth = ProviderColumns.Sum() + 130 };
+        var tableScroll = new ScrollViewer { Content = table, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0) };
+        tableScroll.SizeChanged += (_, e) => table.Width = Math.Max(table.MinWidth, e.NewSize.Width); // the whole column; narrower scrolls
         var providersNote = RemoteMuted("");
         providersNote.Margin = new Thickness(0, 6, 0, 0);
         var keyNote = RemoteMuted("Latency and throughput show only with an OpenRouter key in the environment.");
@@ -116,7 +122,7 @@ public partial class MainWindow
                 providersHead,
                 RemoteMuted("Tick providers to use only those, in the order ticked (no fallbacks). Nothing ticked: OpenRouter picks any provider."),
                 keyNote, providersNote,
-                new ScrollViewer { Content = table, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(0, 8, 0, 0) },
+                tableScroll,
                 new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { clearOrder, orderText } },
             },
         };
@@ -232,7 +238,7 @@ public partial class MainWindow
                 var g = new Grid { MinHeight = 28 };
                 for (var i = 0; i < ProviderColumns.Length; i++)
                 {
-                    g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(ProviderColumns[i]) });
+                    g.ColumnDefinitions.Add(ProviderColumns[i] > 0 ? new ColumnDefinition { Width = new GridLength(ProviderColumns[i]) } : new ColumnDefinition { MinWidth = 130 });
                     Grid.SetColumn(cells[i], i);
                     g.Children.Add(cells[i]);
                 }
@@ -249,10 +255,12 @@ public partial class MainWindow
                     t.FontFamily = AppFonts.Mono;
                 return t;
             }
-            var heads = new[] { "", "Provider", "Quant.", "Input/M", "Output/M", "Cache read/M", "Latency s", "Throughput tok/s", "Uptime %", "Vision" }
+            var heads = new[] { "", "Provider", "Quant.", "In $/M", "Out $/M", "Cache $/M", "Latency", "tok/s", "Uptime", "Vision" }
                 .Select((h, i) =>
                 {
                     var t = RemoteMuted(h);
+                    t.ToolTip = HeadTips[i];
+                    t.TextWrapping = TextWrapping.NoWrap;
                     t.FontWeight = FontWeights.SemiBold;
                     t.VerticalAlignment = VerticalAlignment.Bottom;
                     t.Margin = new Thickness(0, 0, 12, 4);
@@ -466,7 +474,7 @@ public partial class MainWindow
         divider.SetResourceReference(Border.BackgroundProperty, "Border");
         var searchBox = new Grid { Width = 260, HorizontalAlignment = HorizontalAlignment.Right, Children = { search, searchHint } };
         DockPanel.SetDock(searchBox, Dock.Right);
-        var modelHead = new TextBlock { Text = "Model", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom };
+        var modelHead = new TextBlock { Text = "Model", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
         var page = new StackPanel
         {
             MaxWidth = 860, Margin = new Thickness(36, 28, 36, 36),
@@ -518,6 +526,7 @@ public partial class MainWindow
         }
         var sections = new StackPanel
         {
+            Margin = new Thickness(0, 0, 16, 0), // clear of the scroll bar
             Children = { RemoteMuted("The app never stores a key: it reads the environment variable named on the Remote API page. Where to get one:") },
         };
         foreach (var s in RemoteCatalog.Services.Where(s => s.KeyUrl.Length > 0).OrderBy(s => s.Id != first))
@@ -544,7 +553,7 @@ public partial class MainWindow
 
     private static TextBlock RemoteMuted(string text)
     {
-        var t = new TextBlock { Text = text, FontSize = 11, TextWrapping = TextWrapping.Wrap };
+        var t = new TextBlock { Text = text, FontSize = 12, TextWrapping = TextWrapping.Wrap };
         t.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         return t;
     }
