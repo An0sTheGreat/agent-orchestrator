@@ -36,7 +36,8 @@ public partial class MainWindow
     private void OpenRemoteApi(string? role = null, LauncherLogic.RemoteRole? preset = null)
     {
         CloseRemoteApi();
-        var red = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
+        _settings.RemoteFavorites = RemoteFavoritesKnown(_settings.RemoteFavorites); // saved with the next star
+        var red =new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
         var amber = new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B));
         var custom = RemoteCatalog.Services[^1];
         TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 16, 0, 0) };
@@ -135,7 +136,7 @@ public partial class MainWindow
         DockPanel.SetDock(listHead, Dock.Top);
         var listBox = new Border
         {
-            Padding = new Thickness(4), Margin = new Thickness(0, 6, 0, 0), BorderThickness = new Thickness(1),
+            Tag = "RemoteModelsBox", Padding = new Thickness(4), Margin = new Thickness(0, 6, 0, 0), BorderThickness = new Thickness(1),
             Child = new DockPanel { Children = { listHead, listScroll } }, // the header stays put while the list scrolls
         };
         listBox.SetResourceReference(Border.BackgroundProperty, "Card");
@@ -165,6 +166,9 @@ public partial class MainWindow
             modelId.Text = manual.Text;
         };
         var manualBox = new Grid { Margin = new Thickness(0, 6, 0, 0), Children = { manual, manualHint } };
+        // Starred models of every known service; choosing one switches to its service and picks it. Shown once one is starred.
+        var favorites = new ComboBox { Tag = "RemoteFavorites", Margin = new Thickness(0, 4, 0, 0) };
+        var favoritesBox = new StackPanel { Children = { Label("Favorites"), favorites } };
         void Manual(bool on) // the list cannot be had: type the id instead
         {
             if (on)
@@ -247,18 +251,7 @@ public partial class MainWindow
             {
                 var context = RemoteMuted(RemoteContext(m.ContextLength));
                 context.Tag = "context";
-                var (initials, rgb) = RemoteVendorBadge(m.Id);
-                var badge = new Border
-                {
-                    Width = 22, Height = 22, CornerRadius = new CornerRadius(5), Tag = "badge:" + initials,
-                    Background = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)),
-                    Child = new TextBlock
-                    {
-                        Text = initials, Foreground = Brushes.White, FontWeight = FontWeights.Bold, FontSize = initials.Length > 1 ? 9.5 : 11,
-                        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
-                    },
-                };
-                var name = new TextBlock { Tag = "name", TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = m.Id };
+                var name =new TextBlock { Tag = "name", TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = m.Id };
                 name.Inlines.Add(new Run(m.Name));
                 if (m.Name != m.Id)
                 {
@@ -266,9 +259,33 @@ public partial class MainWindow
                     id.SetResourceReference(TextElement.ForegroundProperty, "Muted");
                     name.Inlines.Add(id);
                 }
+                Button? star = null;
+                if (Selected() != custom) // a Custom URL is the user's own address: nothing to come back to by name
+                {
+                    var favorite = RemoteFavorite(Selected().Id, m.Id);
+                    star = new Button { Tag = "fav:" + favorite, Style = (Style)FindResource("GhostButton"), Width = 24, Height = 22, Padding = new Thickness(0), FontSize = 14 };
+                    void Star()
+                    {
+                        var on = _settings.RemoteFavorites.Contains(favorite);
+                        (star.Content, star.ToolTip) = on ? ("★", "Remove from favorites") : ("☆", "Add to favorites");
+                        if (on)
+                            star.Foreground = amber;
+                        else
+                            star.ClearValue(ForegroundProperty);
+                    }
+                    Star();
+                    star.Click += (_, e) =>
+                    {
+                        e.Handled = true; // starring does not choose the row
+                        _settings.RemoteFavorites = RemoteFavoritesWith(_settings.RemoteFavorites, favorite, !_settings.RemoteFavorites.Contains(favorite));
+                        _settings.Save();
+                        Star();
+                        RenderFavorites();
+                    };
+                }
                 var row = new ToggleButton
                 {
-                    Content = ModelColumns(badge, name, context), Tag = m, IsChecked = m.Id == modelId.Text.Trim(),
+                    Content = ModelColumns(RemoteBadge(m.Id), name, context, star), Tag = m, IsChecked = m.Id == modelId.Text.Trim(),
                     Height = ModelRow - 1, Padding = new Thickness(ModelRowSide, 0, ModelRowSide, 0), Margin = new Thickness(0, 0, 0, 1),
                 };
                 row.SetResourceReference(StyleProperty, "NavToggle");
@@ -278,6 +295,24 @@ public partial class MainWindow
             listBox.Visibility = shown.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
             if (models.Count > 0)
                 Note(modelsNote, shown.Count > 200 ? $"Showing 200 of {shown.Count} models: search to narrow." : q.Length > 0 ? $"{shown.Count} of {models.Count} models" : $"{models.Count} models");
+        }
+
+        void RenderFavorites()
+        {
+            favorites.Items.Clear();
+            foreach (var f in _settings.RemoteFavorites)
+            {
+                var (sid, mid) = RemoteFavoriteParts(f)!.Value; // RemoteFavoritesKnown kept well-formed ones only
+                var label = new TextBlock { Text = $"{RemoteCatalog.Services.First(s => s.Id == sid).Name} · {mid}", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
+                favorites.Items.Add(new ComboBoxItem { Tag = f, Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { RemoteBadge(mid), label } } });
+            }
+            FavoriteShown();
+            favoritesBox.Visibility = favorites.Items.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        }
+        void FavoriteShown() // the dropdown shows the model chosen when it is a favorite, else nothing
+        {
+            var now = RemoteFavorite(Selected().Id, modelId.Text.Trim());
+            favorites.SelectedItem = favorites.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == now);
         }
 
         void LoadModels()
@@ -592,6 +627,18 @@ public partial class MainWindow
             _remoteLast = (Selected().Id, baseUrl.Text.Trim(), modelId.Text.Trim());
             order.Clear(); // another model's provider tags (a preset's are set above, before this handler)
             LoadProviders();
+            FavoriteShown();
+        };
+        favorites.SelectionChanged += (_, _) =>
+        {
+            if (favorites.SelectedItem is not ComboBoxItem { Tag: string f } || f == RemoteFavorite(Selected().Id, modelId.Text.Trim()) || RemoteFavoriteParts(f) is not { } chosen)
+                return;
+            if (Selected().Id != chosen.Service) // as the Service dropdown: no model or providers carried over, its own key variable and address
+                service.SelectedItem = service.Items.OfType<ComboBoxItem>().First(i => ((RemoteCatalog.Service)i.Tag).Id == chosen.Service);
+            if (manualBox.Visibility == Visibility.Visible) // the service cannot list its models (yet): the id goes in the box
+                manual.Text = chosen.Model;
+            else
+                modelId.Text = chosen.Model; // marks the row (now or once the list loads) and loads the providers
         };
         visionOnly.Click += (_, _) => RenderProviders();
         clearOrder.Click += (_, _) =>
@@ -620,7 +667,7 @@ public partial class MainWindow
                 new DockPanel { Children = { keyHelp, new StackPanel { Children = { title, intro } } } },
                 connection,
                 new DockPanel { Margin = new Thickness(0, 18, 0, 0), Children = { searchBox, modelHead } },
-                listBox, modelsNote, manualBox,
+                listBox, modelsNote, manualBox, favoritesBox,
                 Label("Model id"), RemoteMuted("What the worker's config gets: the model picked or entered above."), new DockPanel { Children = { copyId, modelId } },
                 providers,
                 divider,
@@ -636,6 +683,7 @@ public partial class MainWindow
         Reveal(RemoteApiView, true);
         LoadModels();
         LoadProviders();
+        RenderFavorites();
         if (!_settings.RemoteHelpShown)
         {
             _settings.RemoteHelpShown = true;
@@ -700,19 +748,57 @@ public partial class MainWindow
 
     private const double ModelRow = 31, ModelRowSide = 10; // a model row's height with its 1 px gap; its side padding
 
-    // The model list's columns, shared by its header and rows so they line up: badge, name, context.
-    private static Grid ModelColumns(FrameworkElement badge, FrameworkElement name, TextBlock context)
+    // The model list's columns, shared by its header and rows so they line up: badge, name, context, the row's star.
+    private static Grid ModelColumns(FrameworkElement badge, FrameworkElement name, TextBlock context, FrameworkElement? star = null)
     {
         (context.TextAlignment, context.VerticalAlignment, name.VerticalAlignment) = (TextAlignment.Right, VerticalAlignment.Center, VerticalAlignment.Center);
-        var g = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(30) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(72) } } };
+        var g = new Grid
+        {
+            ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(30) }, new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(72) }, new ColumnDefinition { Width = new GridLength(34) } },
+        };
         badge.HorizontalAlignment = HorizontalAlignment.Left;
         Grid.SetColumn(name, 1);
         Grid.SetColumn(context, 2);
         g.Children.Add(badge);
         g.Children.Add(name);
         g.Children.Add(context);
+        if (star is not null)
+        {
+            (star.HorizontalAlignment, star.VerticalAlignment) = (HorizontalAlignment.Right, VerticalAlignment.Center);
+            Grid.SetColumn(star, 3);
+            g.Children.Add(star);
+        }
         return g;
     }
+
+    // A model maker's badge (RemoteVendorBadge): its initials on its colour.
+    private static Border RemoteBadge(string modelId)
+    {
+        var (initials, rgb) = RemoteVendorBadge(modelId);
+        return new Border
+        {
+            Width = 22, Height = 22, CornerRadius = new CornerRadius(5), Tag = "badge:" + initials,
+            Background = new SolidColorBrush(Color.FromRgb((byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb)),
+            Child = new TextBlock
+            {
+                Text = initials, Foreground = Brushes.White, FontWeight = FontWeights.Bold, FontSize = initials.Length > 1 ? 9.5 : 11,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            },
+        };
+    }
+
+    // A favorite model: "<service id>|<model id>" (no service id holds "|"); null for anything else.
+    internal static string RemoteFavorite(string service, string model) => service + "|" + model;
+    internal static (string Service, string Model)? RemoteFavoriteParts(string favorite) =>
+        favorite.IndexOf('|') is > 0 and var bar && bar < favorite.Length - 1 ? (favorite[..bar], favorite[(bar + 1)..]) : null;
+
+    // Starred or not, once each, in the order starred.
+    internal static List<string> RemoteFavoritesWith(List<string> favorites, string favorite, bool on) =>
+        on ? favorites.Contains(favorite) ? [.. favorites] : [.. favorites, favorite] : [.. favorites.Where(f => f != favorite)];
+
+    // The saved favorites the page offers: well-formed, once each, on a service the catalog still has other than Custom URL.
+    internal static List<string> RemoteFavoritesKnown(IEnumerable<string?>? favorites) =>
+        [.. (favorites ?? []).OfType<string>().Where(f => RemoteFavoriteParts(f) is { } p && RemoteCatalog.Services.SkipLast(1).Any(s => s.Id == p.Service)).Distinct()];
 
     // A sticky header over a scrolling list keeps its columns over the rows: it leaves room for the list's scroll bar.
     private static void KeepClearOfScrollBar(ScrollViewer rows, FrameworkElement head)
@@ -774,6 +860,15 @@ public partial class MainWindow
         Check(RemoteVendorBadge("openai/gpt-4o-mini") == ("OA", 0x10806A) && RemoteVendorBadge("z-ai/glm-5.3-flash").Text == "Z" && RemoteVendorBadge("Meta-Llama/llama-4").Text == "M" &&
             RemoteVendorBadge("llama3.1:8b") == ("L", VendorGrey) && RemoteVendorBadge("acme/x") == ("A", VendorGrey) && RemoteVendorBadge("/x").Text == "/" &&
             RemoteVendorBadge("").Text == "?" && Vendors.Values.Select(v => v.Rgb).Append(VendorGrey).Distinct().Count() == Vendors.Count + 1, "vendor badges");
+        Check(RemoteFavorite("openrouter", "z-ai/glm-5.3-flash") == "openrouter|z-ai/glm-5.3-flash" && RemoteFavoriteParts("ollama|llama3.1:8b") == ("ollama", "llama3.1:8b") &&
+            RemoteFavoriteParts("openrouter|a|b") == ("openrouter", "a|b") && RemoteFavoriteParts("|x") is null && RemoteFavoriteParts("openrouter|") is null &&
+            RemoteFavoriteParts("openrouter") is null, "favorite keys");
+        List<string> favs = ["openrouter|a", "openai|b"];
+        Check(RemoteFavoritesWith(favs, "groq|c", true).SequenceEqual(["openrouter|a", "openai|b", "groq|c"]) && RemoteFavoritesWith(favs, "openrouter|a", true).SequenceEqual(favs) &&
+            RemoteFavoritesWith(favs, "openrouter|a", false).SequenceEqual(["openai|b"]) && RemoteFavoritesWith(favs, "groq|c", false).SequenceEqual(favs) &&
+            favs.SequenceEqual(["openrouter|a", "openai|b"]), "favorites add and remove");
+        Check(RemoteFavoritesKnown(["openai|b", "gone|x", "custom|m", "openrouter|a", "openai|b", null, "bad"]).SequenceEqual(["openai|b", "openrouter|a"]) &&
+            RemoteFavoritesKnown(null).Count == 0 && RemoteCatalog.Services[^1].Id == "custom", "favorites on known services");
     }
 
     // --ui-smoke: the sidebar's Remote API opens the page (the first time with the key help) in place of Code and Chat,
@@ -783,6 +878,7 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote api: {what}"); return false; }
         var (http, open, shown, last) = (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast);
+        var favoritesWere = _settings.RemoteFavorites;
         var fake = new RemoteApiFakeHandler();
         var opened = new List<string>();
         _remoteHttp = new HttpClient(fake);
@@ -1078,6 +1174,70 @@ public partial class MainWindow
             if (fake.Seen.Where(r => r.Auth?.Contains("secret-a", StringComparison.Ordinal) == true && !r.Url.StartsWith(OpenRouter + "/", StringComparison.Ordinal)).Select(r => r.Url).FirstOrDefault() is { } leak)
                 return Fail($"{KeyA}'s value went to {leak}");
 
+            // Favorites: a star saves the model without choosing it; the Favorites dropdown, under the list and over the model
+            // id, shows once one is starred, lists every service's, and switches to the one chosen, a key going only to its own host.
+            if (JsonSerializer.Deserialize<AppSettings>("{\"Theme\":\"Graphite\",\"RemoteHelpShown\":true}") is not { RemoteFavorites.Count: 0 })
+                return Fail("settings saved before favorites did not load an empty list");
+            _settings.RemoteFavorites = [];
+            OpenRemoteApi("reviewer");
+            Service("openrouter");
+            KeyEnv(KeyA);
+            await Loaded();
+            Button? Star(string favorite) => SmokeFind<Button>(Find<StackPanel>("RemoteModels"), b => b.Tag as string == "fav:" + favorite);
+            var favorites = Find<ComboBox>("RemoteFavorites");
+            var favoritesBox = (FrameworkElement)favorites.Parent;
+            List<string> Listed() => [.. favorites.Items.OfType<ComboBoxItem>().Select(i => string.Join("", SmokeFind<TextBlock>(i, t => t.Parent is StackPanel)?.Text, "/", SmokeFind<Border>(i, b => (b.Tag as string)?.StartsWith("badge:", StringComparison.Ordinal) == true)?.Tag))];
+            const string GlmFav = "openrouter|" + Glm, OpenAiFav = "openai|openai/gpt-4o-mini";
+            if (favoritesBox.Visibility != Visibility.Collapsed || Star(GlmFav) is not { Content: "☆" } star || Find<TextBox>("RemoteModelId").Text.Length != 0)
+                return Fail("before any star: the Favorites dropdown shows, or GLM has no empty star");
+            SmokeClick(star);
+            var glmRow = SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: Glm })!;
+            if (!AppSettings.Load().RemoteFavorites.SequenceEqual([GlmFav]) || star.Content as string != "★" || glmRow.IsChecked == true || Find<TextBox>("RemoteModelId").Text.Length != 0)
+                return Fail($"starring GLM: saved [{string.Join(", ", AppSettings.Load().RemoteFavorites)}], star {star.Content}, model id \"{Find<TextBox>("RemoteModelId").Text}\"");
+            var modelIdBox = Find<TextBox>("RemoteModelId");
+            foreach (var e in new FrameworkElement[] { favorites, modelIdBox, Find<Border>("RemoteModelsBox") })
+                e.Width = 500; // the window's own width varies from run to run
+            RemoteApiView.UpdateLayout();
+            if (favoritesBox.Visibility != Visibility.Visible || !(In(Find<Border>("RemoteModelsBox")).Bottom <= In(favorites).Top && In(favorites).Bottom <= In(modelIdBox).Top) ||
+                !Listed().SequenceEqual([$"OpenRouter · {Glm}/badge:Z"]))
+                return Fail($"the Favorites dropdown: {favoritesBox.Visibility}, list {In(Find<Border>("RemoteModelsBox"))}, it {In(favorites)}, model id {In(modelIdBox)}, [{string.Join(", ", Listed())}]");
+            SmokeClick(star);
+            if (AppSettings.Load().RemoteFavorites.Count != 0 || star.Content as string != "☆" || favoritesBox.Visibility != Visibility.Collapsed)
+                return Fail("un-starring GLM left it saved or the dropdown shown");
+            SmokeClick(star);
+            Service("openai");
+            KeyEnv(KeyB);
+            await Loaded();
+            SmokeClick(Star(OpenAiFav)!);
+            Service("custom");
+            Type("RemoteBaseUrl", Lan);
+            SmokeClick(Find<Button>("RemoteLoadModels"));
+            await Loaded();
+            if (Find<StackPanel>("RemoteModels").Children.Count == 0 || SmokeFind<Button>(Find<StackPanel>("RemoteModels"), b => (b.Tag as string)?.StartsWith("fav:", StringComparison.Ordinal) == true) is not null)
+                return Fail("a Custom URL model has a star (or the server listed none)");
+            Service("openrouter");
+            KeyEnv(KeyA);
+            await Loaded();
+            if (!Listed().SequenceEqual([$"OpenRouter · {Glm}/badge:Z", "OpenAI · openai/gpt-4o-mini/badge:OA"]) || !AppSettings.Load().RemoteFavorites.SequenceEqual([GlmFav, OpenAiFav]) ||
+                Star(GlmFav)?.Content as string != "★" || Star("openrouter|qwen/qwen3-coder")?.Content as string != "☆")
+                return Fail($"two favorites listed [{string.Join(", ", Listed())}], or the rebuilt rows' stars do not show them");
+            before = fake.Seen.Count;
+            favorites.SelectedItem = favorites.Items.OfType<ComboBoxItem>().First(i => (string)i.Tag == OpenAiFav);
+            await Loaded();
+            if ((Find<ComboBox>("RemoteService").SelectedItem as ComboBoxItem)?.Tag is not RemoteCatalog.Service { Id: "openai" } || Find<TextBox>("RemoteModelId").Text != "openai/gpt-4o-mini" ||
+                fake.Seen.Skip(before).Any(r => r.Auth?.Contains("secret-a", StringComparison.Ordinal) == true) || favorites.SelectedItem is not ComboBoxItem { Tag: OpenAiFav })
+                return Fail($"choosing the OpenAI favorite: service {Find<ComboBox>("RemoteService").Text}, model id \"{Find<TextBox>("RemoteModelId").Text}\", asked [{Asked(before)}]");
+            KeyEnv(KeyB);
+            await Loaded();
+            if (SmokeFind<ToggleButton>(Find<StackPanel>("RemoteModels"), t => t.Tag is RemoteCatalog.ModelEntry { Id: "openai/gpt-4o-mini" }) is not { IsChecked: true } ||
+                !fake.Seen.Skip(before).All(r => r.Auth is null || r.Auth != "Bearer secret-a" && r.Url.StartsWith("https://api.openai.com/", StringComparison.Ordinal)))
+                return Fail($"the OpenAI favorite's row is not chosen once listed, or a key went astray: [{Asked(before)}]");
+            favorites.SelectedItem = favorites.Items.OfType<ComboBoxItem>().First(i => (string)i.Tag == GlmFav);
+            await Loaded();
+            if ((Find<ComboBox>("RemoteService").SelectedItem as ComboBoxItem)?.Tag is not RemoteCatalog.Service { Id: "openrouter" } || Find<TextBox>("RemoteModelId").Text != Glm ||
+                !fake.Seen.Any(r => r.Url == $"{OpenRouter}/models/{Glm}/endpoints"))
+                return Fail($"choosing the OpenRouter favorite: model id \"{Find<TextBox>("RemoteModelId").Text}\"");
+
             if (SmokeFind<Button>(SidebarList, b => b.Tag as string == "+New chat") is not { } newChat)
                 return Fail("no New chat in the sidebar");
             newChat.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
@@ -1096,7 +1256,8 @@ public partial class MainWindow
                 RemoveWorker(worker);
             Reset();
             PrefillCards();
-            (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast) = (http, open, shown, last);
+            (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast, _settings.RemoteFavorites) = (http, open, shown, last, favoritesWere);
+            _settings.Save(); // the stars the smoke saved
         }
     }
 }
