@@ -525,7 +525,7 @@ internal sealed class ConversationStore
             s.Delete(edited);
             s.Delete(c.Id);
 
-            // A chat that works in a folder (the test build's Work in a folder): a Code conversation there, its messages
+            // A chat that works in a folder (the chat's Add folder… > Work in it): a Code conversation there, its messages
             // kept, at the top of the ungrouped list and out of its Chat project; once only. Each section's archived state is
             // its own.
             var talk = s.Create("", "chat")!;

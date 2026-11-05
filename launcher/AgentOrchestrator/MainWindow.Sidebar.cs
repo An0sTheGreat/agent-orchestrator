@@ -36,8 +36,7 @@ public partial class MainWindow
         var view = _store.View();
         if (AppSettings.Unified) // the test build: no Chat/Code switch; Chat's section on top, Code's below, each with its own lists
         {
-            SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
-            SidebarList.Children.Add(SidebarAction("", "Work in a folder", () => NewCodeConversation()));
+            SidebarList.Children.Add(SidebarAction("", "New", NewSidebarChat)); // a chat; the CODE section's + starts a Code one
             SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             AddSidebarSection(view, chat: true, "CHAT");
             AddSidebarSection(view, chat: false, "CODE");
@@ -108,7 +107,7 @@ public partial class MainWindow
         }
         else if (title is not null)
         {
-            var empty = new TextBlock { Text = chat ? "No chats yet" : "No folder conversations yet", FontSize = 11, Margin = new Thickness(10, 6, 0, 4) };
+            var empty = new TextBlock { Text = chat ? "No chats yet" : "No code conversations yet", FontSize = 11, Margin = new Thickness(10, 6, 0, 4) };
             empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             SidebarList.Children.Add(empty);
         }
@@ -212,6 +211,8 @@ public partial class MainWindow
             OpenCodeConversation(entry.Id);
     }
 
+    private void RailNew_Click(object sender, RoutedEventArgs e) => NewSidebarChat(); // the collapsed sidebar's +, as New
+
     // A new conversation is a chat until it works in a folder.
     private void NewSidebarChat()
     {
@@ -221,8 +222,8 @@ public partial class MainWindow
 
     // A project header's "+": a new chat already in that project. In Code it works in the folder of the project's latest
     // Code chat, without asking; only a project with no Code chat in an existing folder asks for one.
-    // The Code section's +: a new Code conversation without asking for a folder. The Code view shows its empty state: the
-    // current folder's (its PROJECT.md message), or choose a folder when there is none.
+    // The Code section's +: a new Code conversation with no folder (never the last one): it chats as Chat does until a
+    // folder is added (ChooseCodeFolder).
     private void NewCodeChat()
     {
         if (CodeBusy)
@@ -234,6 +235,7 @@ public partial class MainWindow
             return;
         CloseCodeConversation();
         ShowView();
+        ProjectPath = "";
         RefreshCodeFolder();
         RefreshSidebarList();
         CodeInput.Focus();
