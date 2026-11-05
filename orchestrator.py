@@ -285,6 +285,9 @@ class ApiClient:
         self.key_source = key_env or "api_key"
         self.model = str(settings.get("model") or "").strip()  # request model id as given (remote APIs); skips /models
         self.timeout = int(settings.get("timeout_seconds", 600))
+        # A streamed reply that carries no text, thinking or tool call for this long is a stalled one (a queued free model keeps
+        # the connection open with keep-alive comments, so the read timeout never fires): config "stall_seconds" overrides.
+        self.stall = int(settings.get("stall_seconds", min(self.timeout, 240)))
         self.auto_load = settings.get("auto_load")
         # A remote API role (as the launcher writes it): a model id and no auto_load (local roles run on llama-server).
         self.remote = bool(self.model) and not self.auto_load
@@ -522,7 +525,11 @@ class ApiClient:
             with urlopen(request, timeout=self.timeout) as response:
                 if response.headers.get_content_type() != "text/event-stream":
                     return json.loads(response.read().decode("utf-8"))  # server ignored stream=true
+                quiet_since = time.time()
                 for raw in response:
+                    if time.time() - quiet_since > self.stall:
+                        raise WorkflowError(f"{self._who()}no reply from the model in {self.stall}s: the provider may be queued or overloaded "
+                                            "(free models often are). Try again, or pick another model or provider.")
                     line = raw.decode("utf-8", errors="replace").strip()
                     if not line.startswith("data:"):
                         continue
@@ -536,6 +543,8 @@ class ApiClient:
                     for choice in chunk.get("choices") or []:
                         finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
+                        if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning") or delta.get("tool_calls"):
+                            quiet_since = time.time()
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
                         text = delta.get("content") or ""
                         if thought:

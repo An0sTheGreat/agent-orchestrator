@@ -4972,6 +4972,33 @@ class RemoteRoleTests(unittest.TestCase):
             orchestrator.ask_once(other, "planner", "sys", "user", False)
         self.assertNotIn("reasoning", sent[0])
 
+    def test_a_stream_of_only_keep_alive_comments_stalls_out_instead_of_waiting_forever(self):
+        clock = [1000.0]
+
+        class Quiet:  # a queued free model: the connection stays open and only keep-alive comments arrive
+            headers = type("H", (), {"get_content_type": lambda self: "text/event-stream"})()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def __iter__(self):
+                for _ in range(50):  # bounded, so a missing stall limit fails the test instead of hanging it
+                    clock[0] += 60
+                    yield b": OPENROUTER PROCESSING\n"
+
+        def fake(request, timeout=None):
+            if request.data is None:
+                return self.response({"data": []})
+            return Quiet()
+
+        with patch.dict(os.environ, {"REMOTE_TEST_KEY": self.KEY}), patch.object(orchestrator, "EVENTS", True), patch.object(orchestrator, "emit"),                 patch.object(orchestrator, "urlopen", side_effect=fake), patch.object(orchestrator.time, "time", lambda: clock[0]),                 contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "no reply from the model in 30s"):
+                orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
+        self.assertLessEqual(clock[0] - 1000, 120)  # it gave up at the stall limit (the role's 30 s timeout here; 240 s by default), not never
+
     def test_remote_body_omits_local_only_fields_unless_send_extra_body(self):
         sent = []
 
