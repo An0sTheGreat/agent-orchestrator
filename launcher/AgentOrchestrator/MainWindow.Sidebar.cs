@@ -231,6 +231,7 @@ public partial class MainWindow
         if (CodeBusy)
         {
             Toast("Wait for the reply or run to finish", "#F7C873");
+            ShowView(); // the working conversation, never a dead end
             return;
         }
         if (!DiscardWorkerEdits())

@@ -1903,6 +1903,18 @@ public partial class MainWindow : Window
                 OpenCodeConversation(third.Id);
                 var lastToast = ToastStack.Children.OfType<UIElement>().LastOrDefault();
                 NewCodeConversation(); // refused with the same toast
+                // The working conversation's row always shows it again (the user left it for a new chat), and a repeated
+                // refusal is one toast, not a stack.
+                ShowView(chat: true);
+                ToastStack.Children.Clear();
+                for (var i = 0; i < 10; i++)
+                    OpenCodeConversation(first.Id);
+                if (NavCode.IsChecked != true || _codeConv != first || ToastStack.Children.Count != 0 || CodePanel.Children.Count != 2)
+                    return Fail();
+                for (var i = 0; i < 10; i++)
+                    NewCodeChat();
+                if (ToastStack.Children.Count != 1 || _codeConv != first || NavCode.IsChecked != true)
+                    return Fail();
                 _process = null;
                 RefreshChatInput();
                 if (_codeConv != first || ToastStack.Children.OfType<UIElement>().LastOrDefault() == lastToast)
@@ -3360,7 +3372,9 @@ public partial class MainWindow : Window
 
     // --ui-smoke, local runtime: the status follows the data folder, a turn without llama-server is refused, and stopping
     // the recorded server kills a llama-server but never another process.
-    private bool Toasted(string text) => ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text);
+    private bool Toasted(string text) => ToastsOf(text).Any();
+
+    private List<Border> ToastsOf(string text) => ToastStack.Children.OfType<Border>().Where(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text == text).ToList();
 
     private async Task<bool> LocalRuntimeSmoke()
     {
@@ -3794,9 +3808,12 @@ public partial class MainWindow : Window
     }
 
     // Bottom-right toasts slide and fade in and leave after about three seconds (hovering one holds it).
-    // At most four are on screen; a fifth pushes out the oldest. No colour means the theme accent.
+    // At most four are on screen; a fifth pushes out the oldest. No colour means the theme accent. The same text again
+    // replaces the one shown, so repeated clicks show one toast rather than a stack.
     private void Toast(string text, string? color = null)
     {
+        foreach (var same in ToastsOf(text))
+            ToastStack.Children.Remove(same);
         while (ToastStack.Children.Count >= 4)
             ToastStack.Children.RemoveAt(0);
         var dot = new System.Windows.Shapes.Ellipse { Width = 8, Height = 8, Margin = new Thickness(0, 0, 9, 0), VerticalAlignment = VerticalAlignment.Center };
