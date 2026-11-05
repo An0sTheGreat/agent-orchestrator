@@ -785,6 +785,68 @@ internal static class LauncherLogic
         return stopped;
     }
 
+    // Stop (a run or a reply): kills the engine and everything it started except its llama-servers (and what they started),
+    // which stay loaded until Unload model or app close (StopLlamaServer). A child must have started no earlier than its
+    // parent, as in Kill(entireProcessTree), so a reused parent pid never makes an unrelated process ours.
+    public static void KillTreeExceptLlama(Process engine)
+    {
+        var children = ParentPids().ToLookup(p => p.Parent, p => p.Pid);
+        var doomed = new List<Process>();
+        void Walk(Process parent)
+        {
+            foreach (var pid in children[parent.Id])
+            {
+                Process child;
+                try
+                {
+                    child = Process.GetProcessById(pid);
+                    if (child.StartTime < parent.StartTime || IsLlamaServer(child)) { child.Dispose(); continue; }
+                }
+                catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception) { continue; } // gone or not ours to read
+                doomed.Add(child);
+                Walk(child);
+            }
+        }
+        Walk(engine);
+        engine.Kill();
+        foreach (var process in doomed)
+            using (process)
+                try { process.Kill(); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { } // exited meanwhile
+    }
+
+    // Every running process's pid and parent pid (a Toolhelp snapshot).
+    internal static List<(int Pid, int Parent)> ParentPids()
+    {
+        var list = new List<(int, int)>();
+        var snapshot = CreateToolhelp32Snapshot(2 /* TH32CS_SNAPPROCESS */, 0);
+        if (snapshot == -1)
+            return list;
+        try
+        {
+            var entry = new ProcessEntry32 { Size = (uint)System.Runtime.InteropServices.Marshal.SizeOf<ProcessEntry32>() };
+            for (var more = Process32FirstW(snapshot, ref entry); more; more = Process32NextW(snapshot, ref entry))
+                list.Add(((int)entry.ProcessId, (int)entry.ParentProcessId));
+        }
+        finally { CloseHandle(snapshot); }
+        return list;
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private struct ProcessEntry32
+    {
+        public uint Size, Usage, ProcessId;
+        public nint DefaultHeapId;
+        public uint ModuleId, Threads, ParentProcessId;
+        public int PriorityClassBase;
+        public uint Flags;
+        [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValTStr, SizeConst = 260)] public string ExeFile;
+    }
+
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern nint CreateToolhelp32Snapshot(uint flags, uint processId);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] private static extern bool Process32FirstW(nint snapshot, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] private static extern bool Process32NextW(nint snapshot, ref ProcessEntry32 entry);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern bool CloseHandle(nint handle);
+
     public sealed record ModelInfo(string Name, string Weights, string Quant);
 
     // Display-only parsing of a model id or GGUF path; ggufVariant (from config.json) wins when present.
@@ -1776,6 +1838,49 @@ internal static class LauncherLogic
             catch (IOException e) when (e.Message == "locked") { }
             if (File.ReadAllText(Path.Combine(target, "version.txt")) != "b6100\nCUDA 12.4" || !Directory.GetDirectories(area).Order().SequenceEqual(before))
                 throw new InvalidOperationException("A failed swap must roll back to the old install and leave no stray folders.");
+
+            // Stop keeps the models loaded: an engine (cmd) with a stand-in llama-server (ping under that name) and a plain
+            // ping as children; the engine and the ping die, the server lives.
+            var fakeServer = Path.Combine(area, "llama-server.exe");
+            File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), fakeServer);
+            using var engine = Process.Start(new ProcessStartInfo("cmd.exe", $"/c start /b \"\" \"{fakeServer}\" -n 60 127.0.0.1 & ping -n 60 127.0.0.1")
+                { UseShellExecute = false, CreateNoWindow = true })!;
+            Process? server = null, plain = null;
+            Process? Child(string name)
+            {
+                foreach (var (pid, parent) in ParentPids().Where(p => p.Parent == engine.Id))
+                    try
+                    {
+                        var child = Process.GetProcessById(pid);
+                        if (string.Equals(child.ProcessName, name, StringComparison.OrdinalIgnoreCase))
+                            return child;
+                        child.Dispose();
+                    }
+                    catch (Exception e) when (e is ArgumentException or InvalidOperationException) { }
+                return null;
+            }
+            try
+            {
+                for (var tries = 0; tries < 100 && (server is null || plain is null); tries++)
+                {
+                    Thread.Sleep(50);
+                    server ??= Child("llama-server");
+                    plain ??= Child("PING");
+                }
+                if (server is null || plain is null)
+                    throw new InvalidOperationException("The stand-in engine did not start its children.");
+                KillTreeExceptLlama(engine);
+                if (!engine.WaitForExit(5000) || !plain.WaitForExit(5000) || server.HasExited)
+                    throw new InvalidOperationException("Stop must kill the engine and its other children but leave llama-server running.");
+            }
+            finally
+            {
+                foreach (var p in new[] { engine, plain, server })
+                    if (p is not null)
+                        try { p.Kill(); p.WaitForExit(5000); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                plain?.Dispose();
+                server?.Dispose();
+            }
         }
         finally { Directory.Delete(area, recursive: true); }
     }
