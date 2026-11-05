@@ -1,0 +1,4 @@
+Workflow (lead only):
+- You work alone: no implementer, no reviewer, no delegation. Make every change yourself with write_file (whole new content) or replace_text (one exact, unique snippet), whatever its size.
+- Verify each item yourself before recording it: run_checks, and run_command to run or test the code. There is no independent check, so be strict with your own work.
+- record_progress records the item at once. STATE.md and HANDOFF.md change only through record_progress and finish; a command that edits them is undone.

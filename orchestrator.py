@@ -4606,6 +4606,18 @@ REVIEW_BRIEF = ("Check one PROJECT.md item the lead says is finished, before it 
                 "line VERDICT: PASS or VERDICT: FAIL, then the defects (file and evidence for each) or, on PASS, what you checked.")
 REVIEW_VERDICT = re.compile(r"\bVERDICT\b[\s:*`_-]*(PASS|FAIL)\b", re.I)
 REVIEW_DIFF_LIMIT, REVIEW_FILE_LIMIT = 12_000, 200_000
+CHECK_FAILED = re.compile(r"^(?:(?:SYNTAX|CODE|BEHAVIOUR) CHECK|VALIDATION .+?): FAILED", re.M)
+REVIEW_SKIP_LINES, REVIEW_SKIP_FILES = 40, 2  # a clean-checks change this small is recorded without the reviewer
+
+
+def small_change(before: dict[str, str | None], after: dict[str, str | None], max_lines: int) -> bool:
+    """True when the change is non-empty, adds no file, touches at most REVIEW_SKIP_FILES files and at most max_lines
+    added or removed lines (0 turns the skip off). An empty diff (work from before a resume) is never small."""
+    changed = [n for n in set(before) | set(after) if before.get(n) != after.get(n)]
+    if not (0 < max_lines and changed and len(changed) <= REVIEW_SKIP_FILES) or any(before.get(n) is None for n in changed):
+        return False
+    lines = [l for l in make_diff(before, after).splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---")]
+    return len(lines) <= max_lines
 
 
 def project_texts(folders: list[dict[str, str]]) -> dict[str, str | None]:
@@ -4633,6 +4645,9 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     finished item (record_progress) until finish, max_lead_steps model calls (default 200) or, with `once`, the first
     recorded item. `request` is a Code request (--request): its extra folders, extras, sandbox, session and effort; the
     project root is always folders[0]. The input carries STATE.md, so a new run resumes after the recorded items.
+    "solo" (Lead only) has no workers and no gate: record_progress records at once. In the other workflows run_checks runs
+    first and a failing check records nothing; a change of at most `review_skip_lines` (config, default 40; 0 = never)
+    added/removed lines in at most 2 existing files with clean checks is recorded without the reviewer.
     The request's "workflow": "dual" (the default, Lead + Reviewer: the lead cannot delegate to the implementer) gates
     record_progress on a reviewer delegation (the item, the outcome, PROJECT.md, the file diff since the run started or the
     last recorded item; outside the delegation cap) whose report must give VERDICT: PASS, else nothing is recorded and the
@@ -4647,7 +4662,7 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     folders = request_folders([{"path": str(project_root), "access": "write"}, *extra[1:]])
     config = with_effort(config, request)
     title, state = display_name(config, "planner"), project_root / "STATE.md"
-    workflow = request.get("workflow") if request.get("workflow") in ("dual", "tri") else "dual"
+    workflow = request.get("workflow") if request.get("workflow") in ("dual", "tri", "solo") else "dual"
 
     def records() -> dict[str, bytes | None]:
         """STATE.md and HANDOFF.md as the engine last left them (None: missing)."""
@@ -4661,7 +4676,22 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
         if not name:
             raise WorkflowError("item is empty")
         rounds = done["rounds"][name] = done["rounds"].get(name, 0) + 1
-        diff = make_diff(done["files"], project_texts(folders))
+        now = project_texts(folders)
+        if workflow == "solo":  # Lead only: no reviewer, the lead's own run_checks and judgement stand
+            done["progress"] += 1
+            result = record_progress(project_root, name, outcome)
+            done["files"], done["records"] = now, records()
+            return result
+        checks = handlers["run_checks"]()  # cheap automated checks decide first: a failure never reaches the reviewer
+        if CHECK_FAILED.search(checks):
+            return f"NOT RECORDED: the automated checks failed. Fix them, verify, and call record_progress again.\n\n{checks}"
+        if small_change(done["files"], now, int(config.get("review_skip_lines", REVIEW_SKIP_LINES))):
+            print(f"[review] skipped for '{name}': checks clean, small change")
+            done["progress"] += 1
+            result = record_progress(project_root, name, f"{outcome} Review: skipped (checks clean, small change).")
+            done["files"], done["records"] = now, records()
+            return result
+        diff = make_diff(done["files"], now)
         report = review(worker="reviewer", brief=REVIEW_BRIEF, context=(
             f"ITEM\n{name}\n\nLEAD'S OUTCOME\n{outcome}\n\nPROJECT.md\n{clip(load_text(project_root / 'PROJECT.md').strip(), 6000)}"
             f"\n\nCHANGES SINCE THIS RUN STARTED OR THE LAST RECORDED ITEM\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
@@ -4692,8 +4722,9 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     review, lead_delegate, command = handlers["delegate"].uncounted, handlers["delegate"], handlers["run_command"]
 
     def delegate(worker: str, **rest: Any) -> str:
-        if workflow == "dual" and worker == "implementer":
-            raise WorkflowError("the implementer is not in this workflow (Lead + Reviewer); make the change yourself")
+        if workflow == "solo" or (workflow == "dual" and worker == "implementer"):
+            raise WorkflowError("the implementer is not in this workflow (Lead + Reviewer); make the change yourself"
+                                if workflow == "dual" else "there are no workers in this workflow (Lead only); do the work yourself")
         return lead_delegate(worker=worker, **rest)
 
     def run_command(**arguments: Any) -> str:
@@ -4714,8 +4745,8 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
     handlers.update(record_progress=progress, finish=finish, delegate=delegate, run_command=run_command)
     if workflow == "tri":  # the implementer (delegate) makes every change
         del handlers["write_file"], handlers["replace_text"]
-    delegate_tool = DELEGATE_TOOL if workflow == "tri" else REVIEWER_DELEGATE_TOOL
-    tools = ((CODE_TOOLS if workflow == "dual" else CODE_TOOLS[:3]) + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, delegate_tool]
+    delegate_tool = [] if workflow == "solo" else [DELEGATE_TOOL if workflow == "tri" else REVIEWER_DELEGATE_TOOL]
+    tools = ((CODE_TOOLS if workflow != "tri" else CODE_TOOLS[:3]) + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL] + delegate_tool
              + extras + [PROGRESS_TOOL, FINISH_TOOL])
     system = (f"{prompt_text('lead_project.txt').strip()}\n\n{prompt_text(f'lead_project_{workflow}.txt').strip()}"
               f"{note}\n\n{folders_context(folders)}")

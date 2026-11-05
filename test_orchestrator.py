@@ -4212,7 +4212,8 @@ class LeadRunTests(unittest.TestCase):
         self.root = Path(tmp.name).resolve()
         (self.root / "PROJECT.md").write_text("# Project\n\n## Project Goal\n\nA greeting script.\n", encoding="utf-8")
         (self.root / "STATE.md").write_text(self.STATE, encoding="utf-8")
-        self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES}}
+        self.config = {"roles": {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model"} for r in orchestrator.BUILTIN_ROLES},
+                       "review_skip_lines": 0}  # the review gate tests below review every item; the skip has its own tests
 
     def run_project(self, replies, once=False, request=None):
         replies = {k: list(v) for k, v in replies.items()}
@@ -4371,6 +4372,48 @@ class LeadRunTests(unittest.TestCase):
         stages = [(d["role"], d["stage"]) for e, d in events if e == "chat_stage"]
         self.assertEqual(stages, [("planner", "lead")] + [("reviewer", "delegate"), ("planner", "lead")] * 2)
         self.assertEqual([d["id"] for e, d in events if e == "task"], ["Greeting"])
+
+    def test_a_failing_check_records_nothing_and_never_reaches_the_reviewer(self):
+        (self.root / "bad.py").write_text("def (:\n", encoding="utf-8")
+        replies = {"planner": [tool_call("record_progress", item="A", outcome="ok"), tool_call("finish", summary="done")]}
+        code, log, events = self.run_project(replies)
+        self.assertEqual(code, 0)
+        self.assertIn("NOT RECORDED: the automated checks failed", self.results(events, "record_progress")[0])
+        self.assertIn("SYNTAX CHECK: FAILED", self.results(events, "record_progress")[0])
+        self.assertFalse([l for l in log if l["role"] == "reviewer"])
+        self.assertNotIn("## Done", self.text("STATE.md"))
+
+    def test_a_small_change_with_clean_checks_skips_the_reviewer_but_a_big_or_new_file_does_not(self):
+        self.config.pop("review_skip_lines")
+        (self.root / "hello.py").write_text("print('bye')\n", encoding="utf-8")
+        replies = {"planner": [tool_call("replace_text", path="hello.py", old="bye", new="hi"),
+                               tool_call("record_progress", item="Small", outcome="prints hi"),
+                               tool_call("write_file", path="new.py", content="print(1)\n"),
+                               tool_call("record_progress", item="NewFile", outcome="adds new.py"),
+                               tool_call("write_file", path="hello.py", content="".join(f"print({i})\n" for i in range(60))),
+                               tool_call("record_progress", item="Big", outcome="rewrites hello.py"),
+                               tool_call("finish", summary="done")],
+                   "reviewer": ["VERDICT: PASS\nok", "VERDICT: PASS\nok"]}
+        code, log, events = self.run_project(replies)
+        self.assertEqual(code, 0)
+        self.assertEqual([d["id"] for e, d in events if e == "verdict"], ["NewFile", "Big"])
+        self.assertIn("Review: skipped (checks clean, small change).", self.text("STATE.md"))
+        self.assertEqual(self.text("STATE.md").count("## Done:"), 3)
+
+    def test_solo_has_no_workers_or_gate(self):
+        """Lead only: write tools, no delegate, record_progress records at once; a delegate call is refused."""
+        replies = {"planner": [tool_call("write_file", path="hello.py", content="print('hi')"),
+                               tool_call("delegate", worker="reviewer", brief="x"),
+                               tool_call("record_progress", item="Greeting", outcome="hello.py prints hi"), tool_call("finish", summary="done")]}
+        code, log, events = self.run_project(replies, request={"workflow": "solo"})
+        self.assertEqual(code, 0)
+        names = [t["function"]["name"] for t in log[0]["tools"]]
+        self.assertTrue({"write_file", "replace_text", "run_checks"} <= set(names))
+        self.assertNotIn("delegate", names)
+        self.assertIn(orchestrator.prompt_text("lead_project_solo.txt").strip(), log[0]["system"])
+        self.assertIn("there are no workers", self.results(events, "delegate")[0])
+        self.assertTrue(self.results(events, "record_progress")[0].startswith("OK: recorded 'Greeting'"))
+        self.assertEqual(len(log), 4)  # the lead's calls only
 
     def test_an_unreadable_verdict_records_nothing(self):
         replies = {"planner": [tool_call("record_progress", item="A", outcome="ok"), tool_call("record_progress", item="A", outcome="ok"),
