@@ -206,7 +206,7 @@ public partial class MainWindow : Window
     private string RunRequest(string project)
     {
         var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
-            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions))!;
+            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess))!;
         request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }

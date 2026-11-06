@@ -3607,6 +3607,22 @@ class RunCommandTests(unittest.TestCase):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "stay in the sandbox"):
             reviewer("echo", shell="cmd", outside_sandbox=True)
 
+    def test_full_access_runs_every_command_outside_the_sandbox_and_the_mode_decides_asking(self):
+        asked, full = [], {"sandbox": {**self.request["sandbox"], "full_access": True}}
+        with patch.object(sandbox, "run", lambda *a, **kw: self.fail("the sandbox ran a command")), \
+                patch.object(sandbox, "environment_protected", return_value=False), \
+                patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or False):
+            for mode in ("safe", "all"):  # no sandbox left to ask about: they run unasked (and need no sandbox setup)
+                run = orchestrator.command_runner(self.folders, {**self.request, **full, "permissions": mode})
+                self.assertTrue(run("echo hi", shell="cmd").startswith("EXIT 0 (outside the sandbox)\nhi"))
+            self.assertEqual(asked, [])
+            ask = orchestrator.command_runner(self.folders, {**self.request, **full, "permissions": "ask"})
+            self.assertIn("DENIED", ask("echo hi", shell="cmd"))  # "ask" still asks before every command
+            self.assertEqual(asked, [("unsandboxed", "echo")])
+            reviewer = orchestrator.command_runner(self.folders, {**self.request, **full}, read_only=True)
+            with patch.object(sandbox, "environment_protected", return_value=True), self.assertRaises(AssertionError):
+                reviewer("echo hi", shell="cmd")  # read-only roles stay in the sandbox (here: its run, which fails the test)
+
     def test_every_mode_grants_the_skills_folder_read_only_and_never_for_writing(self):
         skills = self.cfg / "skills"  # <data>\skills beside the sandbox home <data>\sb
         skills.mkdir()

@@ -4324,7 +4324,7 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     """The run_command handler for one turn. Every command runs in the conversation's AppContainer (the request's
     "session"; read_only roles get their own, granted every folder read-only, and cannot ask for more) whose grants are
     synced to the turn's folders on first use, plus a private temp folder. The request's "sandbox" holds {"network":
-    bool, "home": folder}. The request's "permissions" (the launcher's command permissions): "safe" (default) runs
+    bool, "home": folder, "full_access": bool (commands then run as the user, outside the sandbox, except read_only roles')}. The request's "permissions" (the launcher's command permissions): "safe" (default) runs
     commands without asking and asks before the network or more write folders; "ask" also asks before every command;
     "all" grants network and write-folder requests without asking (grantable still refuses what it always refuses, and a
     risky git repository still asks). An approval widens the sandbox for that command only. Output that looks like a
@@ -4361,13 +4361,15 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
         if shell not in ("", "powershell", "cmd"):
             raise WorkflowError("shell must be 'powershell' or 'cmd'")
         timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
-        if outside_sandbox is True:
+        full = settings.get("full_access") is True and not read_only  # the user's Full access setting: no sandbox for these roles
+        if outside_sandbox is True or full:
             if read_only:
                 raise WorkflowError("these commands are read-only and stay in the sandbox: leave it to the lead or the implementer")
             key = command_key(command)  # a shell or interpreter runs anything: no Allow similar for those
-            # asked every time, in every permission mode (even "all"): this is the one request that leaves the sandbox
-            if not ask_user("unsandboxed", command, reason, "" if key in SHELL_KEYS else key):
-                return "DENIED: the user did not allow this command outside the sandbox."
+            # one command's request to leave the sandbox is asked every time, in every permission mode (even "all");
+            # with Full access on there is no sandbox left to ask about, so only "ask" asks (before every command)
+            if (mode == "ask" or not full) and not ask_user("unsandboxed", command, reason, "" if key in SHELL_KEYS else key):
+                return "DENIED: the user did not allow this command" + ("" if full else " outside the sandbox") + "."
             with RUN_LOCK:
                 code, output = run_unsandboxed(command, shell or "powershell", folders[0]["path"], timeout)
             output = sandbox.redact(output, secrets)

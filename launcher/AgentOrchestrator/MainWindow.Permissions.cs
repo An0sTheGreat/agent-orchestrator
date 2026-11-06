@@ -18,6 +18,7 @@ public partial class MainWindow
     private static string PermissionsTip =>
         "Command permissions: when the model's commands and scripts need your OK.\n\n" +
         string.Join("\n\n", PermissionModes.Select(m => $"{m.Label}: {m.Help}")) +
+        "\n\nWith Full access on (Settings > Command sandbox) there is no sandbox: Always Ask still asks before every command; Allow Safe and Allow All run them without asking." +
         "\n\nIn a request popup, Allow similar commands for this session allows the same program again in that chat until the app closes.";
 
     private void RefreshPermissions()
