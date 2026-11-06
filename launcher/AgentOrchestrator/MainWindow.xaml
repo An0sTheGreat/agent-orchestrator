@@ -1130,6 +1130,8 @@
 
             <!-- The Remote API page (the sidebar's Remote API), built by MainWindow.RemoteApi.cs; in place of Code and Chat while open -->
             <Grid x:Name="RemoteApiView" Grid.Column="1" Visibility="Collapsed" />
+            <!-- The Models Hub page (the sidebar's Models Hub), built by MainWindow.ModelHub.cs; in place of Code and Chat while open -->
+            <Grid x:Name="ModelHubView" Grid.Column="1" Visibility="Collapsed" />
 
             <!-- Code: a conversation with a worker about a folder (MainWindow.Code.cs), or the project run's output (ShowCodeRun) -->
             <Grid x:Name="CodeView" Grid.Column="1">

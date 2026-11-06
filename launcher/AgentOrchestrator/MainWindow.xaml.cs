@@ -3119,6 +3119,8 @@ public partial class MainWindow : Window
             return false;
         if (!await RemoteApiSmoke())
             return false;
+        if (!await ModelHubSmoke(Snap))
+            return false;
         if (!await SearchSmoke())
             return false;
         if (!await RunLogSmoke(Snap))
@@ -4529,6 +4531,7 @@ public partial class MainWindow : Window
     {
         var code = !chat;
         CloseRemoteApi();
+        CloseModelHub();
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         RefreshCardVisibility(); // the run output skips RefreshChatTarget below
