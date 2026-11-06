@@ -51,6 +51,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        ApiKeys.ApplyAll(); // keys typed into the app, before anything reads a key variable
         InitializeComponent();
         if (AppSettings.Unified) // one conversation view (a chat until it works in a folder), no Chat/Code switch
         {
@@ -206,7 +207,7 @@ public partial class MainWindow : Window
     private string RunRequest(string project)
     {
         var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
-            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions))!;
+            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess))!;
         request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
@@ -3366,7 +3367,10 @@ public partial class MainWindow : Window
         {
             _chatProcess = child;
             StartTurn(_code, "Fix it", "planner");
-            _codeQueue.AddRange([new("Also this", []), new("And that", []), new("/compact keep it", [])]);
+            var photo = Path.Combine(AppSettings.DataRoot, "smoke-steer.png"); // a real 1x1 picture: the steered message shows it as a thumbnail
+            Directory.CreateDirectory(AppSettings.DataRoot);
+            File.WriteAllBytes(photo, Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="));
+            _codeQueue.AddRange([new("Also this", [photo]), new("And that", []), new("/compact keep it", [])]);
             RefreshQueue(_code);
             if (SendNow(0) is not { IsEnabled: true } now || SendNow(1) is null || SendNow(2) is not null) // a command is no message
                 return Fail();
@@ -3378,7 +3382,7 @@ public partial class MainWindow : Window
             now.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             var line = await Written();
             var key = line is null ? "" : JsonNode.Parse(line)!["key"]?.GetValue<string>() ?? "";
-            if (line is null || (string)JsonNode.Parse(line)!["steer"]! != "Also this" || key.Length == 0 || Label(0) != "Steering…" || SendNow(0)!.IsEnabled)
+            if (line is null || TypedText((string)JsonNode.Parse(line)!["steer"]!) != "Also this" || JsonNode.Parse(line)!["images"]!.AsArray().Count != 1 || key.Length == 0 || Label(0) != "Steering…" || SendNow(0)!.IsEnabled)
                 return Fail();
             string Ev(string json) => LauncherLogic.EventPrefix + json;
             _lines.Enqueue(Ev($$"""{"e":"steered","role":"planner","key":"{{key}}"}"""));
@@ -3386,12 +3390,17 @@ public partial class MainWindow : Window
             DrainLines();
             if (_codeQueue.Select(q => q.Text).SequenceEqual(["And that", "/compact keep it"]) is false || CodeQueueList.Children.Count != 2 || Label(0) != "Queued")
                 return Fail();
+            // the steered message's bubble shows its photo (not just "📎 name"), and the history keeps it
+            var steeredBubble = CodePanel.Children.OfType<StackPanel>().FirstOrDefault(p => p.Children.OfType<WrapPanel>().Any());
+            if (steeredBubble is null || !_steered.Single().Images.SequenceEqual([photo]))
+                return Fail();
             SendNow(0)!.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent)); // the engine never delivers this one
             if (await Written() is null || Label(0) != "Steering…")
                 return Fail();
             FinishChatTurn(0, false, null);
-            if (_code.History.Select(m => (m.Role, m.Content)).SequenceEqual([("user", "Fix it"), ("assistant", SteeredReply), ("user", "Also this"),
-                    ("assistant", "Both done")]) is false || _codeQueue.Count != 2 || Label(0) != "Queued" || SendNow(0) is not null)
+            if (_code.History.Select(m => (m.Role, Content: TypedText(m.Content))).SequenceEqual([("user", "Fix it"), ("assistant", SteeredReply), ("user", "Also this"),
+                    ("assistant", "Both done")]) is false || _codeQueue.Count != 2 || Label(0) != "Queued" || SendNow(0) is not null ||
+                !(_code.History[2].Images?.SequenceEqual([photo]) ?? false))
                 return Fail();
         }
         finally

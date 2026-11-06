@@ -3583,6 +3583,64 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual([orchestrator.command_key(c) for c in ("python -m pytest", '"C:\\Program Files\\x\\tool.exe" a', ".\\build.ps1", "")],
                          ["python", "tool", "build", ""])
 
+    def test_outside_sandbox_asks_every_time_and_runs_as_the_user(self):
+        asked = []
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or False):
+            for mode in ("safe", "ask", "all"):
+                run = orchestrator.command_runner(self.folders, {**self.request, "permissions": mode})
+                self.assertIn("DENIED", run("echo no", shell="cmd", outside_sandbox=True))  # asked even when "all"
+        self.assertEqual(asked, [("unsandboxed", "echo")] * 3)
+        asked.clear()
+        run = orchestrator.command_runner(self.folders, self.request)
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or True), \
+                patch.dict(os.environ, {"AO_TEST_API_KEY": "sk-secret-value-123"}):
+            ok = run("echo [%AO_TEST_API_KEY%] & cd", shell="cmd", outside_sandbox=True)
+            run("npm -v", shell="cmd", outside_sandbox=True)
+            run("powershell -c 1", shell="cmd", outside_sandbox=True)
+            slow = run("ping -n 20 127.0.0.1", shell="cmd", outside_sandbox=True, timeout_seconds=1)
+        self.assertTrue(ok.startswith("EXIT 0 (outside the sandbox)"), ok)
+        self.assertIn("[%AO_TEST_API_KEY%]", ok)  # secret-named variables are not in its environment
+        self.assertIn(str(self.root), ok)  # started in the project folder
+        self.assertEqual(asked[1:3], [("unsandboxed", "npm"), ("unsandboxed", "")])  # no Allow similar for a shell
+        self.assertTrue(slow.startswith("TIMED OUT after 1s"), slow)
+        reviewer = orchestrator.command_runner(self.folders, self.request, read_only=True)
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "stay in the sandbox"):
+            reviewer("echo", shell="cmd", outside_sandbox=True)
+
+    def test_full_access_runs_every_command_outside_the_sandbox_and_the_mode_decides_asking(self):
+        asked, full = [], {"sandbox": {**self.request["sandbox"], "full_access": True}}
+        with patch.object(sandbox, "run", lambda *a, **kw: self.fail("the sandbox ran a command")), \
+                patch.object(sandbox, "environment_protected", return_value=False), \
+                patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or False):
+            for mode in ("safe", "all"):  # no sandbox left to ask about: they run unasked (and need no sandbox setup)
+                run = orchestrator.command_runner(self.folders, {**self.request, **full, "permissions": mode})
+                self.assertTrue(run("echo hi", shell="cmd").startswith("EXIT 0 (outside the sandbox)\nhi"))
+            self.assertEqual(asked, [])
+            ask = orchestrator.command_runner(self.folders, {**self.request, **full, "permissions": "ask"})
+            self.assertIn("DENIED", ask("echo hi", shell="cmd"))  # "ask" still asks before every command
+            self.assertEqual(asked, [("unsandboxed", "echo")])
+            reviewer = orchestrator.command_runner(self.folders, {**self.request, **full}, read_only=True)
+            with patch.object(sandbox, "environment_protected", return_value=True), self.assertRaises(AssertionError):
+                reviewer("echo hi", shell="cmd")  # read-only roles stay in the sandbox (here: its run, which fails the test)
+
+    def test_a_mode_change_from_the_launcher_reaches_the_running_turn(self):
+        full_ask = {**self.request, "sandbox": {**self.request["sandbox"], "full_access": True}, "permissions": "ask"}
+        run = orchestrator.command_runner(self.folders, full_ask)  # the turn started in Always Ask
+        with patch.object(orchestrator, "PERMISSIONS_LIVE", None), patch.object(orchestrator, "STDIN_READER", None), \
+                patch.object(orchestrator, "ask_user", lambda *a, **kw: False):
+            self.assertIn("DENIED", run("echo hi", shell="cmd"))
+            # the launcher writes {"permissions": ...} on stdin; junk and unknown modes are ignored
+            lines = io.StringIO('{"permissions": "bogus"}\nnot json\n{"permissions": "all"}\n')
+            with patch.object(sys, "stdin", lines):
+                queue_ = orchestrator.stdin_lines()
+                deadline = time.time() + 5
+                while orchestrator.PERMISSIONS_LIVE != "all" and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual(orchestrator.PERMISSIONS_LIVE, "all")
+                self.assertEqual([queue_.get(timeout=5), queue_.get(timeout=5)],  # other lines still reach launcher_call
+                                 ['{"permissions": "bogus"}\n', "not json\n"])
+            self.assertTrue(run("echo hi", shell="cmd").startswith("EXIT 0 (outside the sandbox)\nhi"))  # no question now
+
     def test_every_mode_grants_the_skills_folder_read_only_and_never_for_writing(self):
         skills = self.cfg / "skills"  # <data>\skills beside the sandbox home <data>\sb
         skills.mkdir()

@@ -40,8 +40,7 @@ internal static class RemoteCatalog
     private static Service S(string id, string name, string baseUrl, string keyEnv, string keyUrl, string site, bool modelsNeedKey, bool hasProviders = false) =>
         new(id, name, baseUrl, keyEnv, keyUrl,
             $"Sign in or sign up at {site}, open the API keys page, then create a new key and copy it. " +
-            $"Set the environment variable {keyEnv} to the key (Windows: Settings > System > About > Advanced system settings > Environment Variables > New, " +
-            $"or run setx {keyEnv} \"your-key\" in a terminal), then restart Agent Orchestrator.",
+            $"Paste the key into the API key box on the Remote API page. (Or set the environment variable {keyEnv} yourself, then restart Agent Orchestrator.)",
             modelsNeedKey, hasProviders);
 
     // The service whose host the address uses (scheme, path, trailing slash and case ignored); null = a custom URL.

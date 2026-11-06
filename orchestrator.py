@@ -4062,11 +4062,15 @@ RUN_COMMAND_TOOL = function_tool(
     "run scripts, use git. It can write the granted write folders and read the read-only ones; the rest of the disk is "
     "read-only or hidden, API keys are absent and the network is off unless the user allowed it. Returns the exit code and "
     "the output. If the sandbox blocks something the task really needs, call again with request_network, or request_write "
-    "listing the folders, and a reason: the user is asked, and an approval holds for that one command.",
+    "listing the folders, and a reason: the user is asked, and an approval holds for that one command. If a command "
+    "hangs or fails only because of the sandbox (a build tool, a native binary), call again with outside_sandbox: the user "
+    "is asked every time, and it then runs as the user, in the project folder, without the sandbox.",
     {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["powershell", "cmd"],
                                              "description": "Default: PowerShell when the sandbox is set up for it, else cmd."},
      "timeout_seconds": {"type": "integer", "description": "Default 120, at most 1800."},
      "request_network": {"type": "boolean"}, "request_write": {"type": "array", "items": {"type": "string"}},
+     "outside_sandbox": {"type": "boolean", "description": "Run this one command outside the sandbox, with the user's rights "
+                         "(the user is asked first, every time). Only when the sandbox itself is the problem."},
      "reason": {"type": "string", "description": "Why the request is needed (shown to the user)."}}, ["command"])
 APPROVAL_LOCK = threading.Lock()
 COMMAND_MAX_TIMEOUT = 1800
@@ -4108,6 +4112,7 @@ def launcher_call(event: str, **data: Any) -> dict[str, Any] | None:
         return None
 
 
+PERMISSIONS_LIVE: str | None = None  # "ask", "safe" or "all" once the launcher sent a change; wins over the request's
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
 STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
@@ -4129,6 +4134,10 @@ def stdin_lines() -> queue.Queue:
                         message = json.loads(line)
                     except ValueError:
                         message = None
+                    if isinstance(message, dict) and message.get("permissions") in ("ask", "safe", "all") and "id" not in message:
+                        global PERMISSIONS_LIVE
+                        PERMISSIONS_LIVE = message["permissions"]  # the user changed the Code composer's mode mid-turn
+                        continue
                     if not (isinstance(message, dict) and "steer" in message):
                         lines.put(line)
                         continue
@@ -4292,19 +4301,43 @@ def grantable(raw: Any, request: dict[str, Any]) -> str:
 
 
 RUN_LOCK = threading.Lock()  # one sandboxed command at a time: an approval widens the container for that command alone
+SHELL_KEYS = {"powershell", "pwsh", "cmd", "python", "py", "node", "bash", "sh", "wsl", "wscript", "cscript", "mshta", "rundll32"}
+
+
+def run_unsandboxed(command: str, shell: str, cwd: str, timeout: float) -> tuple[int | None, str]:
+    """Runs `command` as the user, outside the sandbox (the user approved this one command), in `cwd`; returns (exit
+    code, or None on timeout, combined output clipped like sandbox.run). Secret-named environment variables are left out
+    and stdin is empty; on timeout the command's whole process tree is killed."""
+    argv = ["cmd", "/d", "/c", command] if shell == "cmd" else ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+    env = {k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    try:
+        raw, _ = proc.communicate(timeout=timeout)
+        code: int | None = proc.returncode
+    except subprocess.TimeoutExpired:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        raw, _ = proc.communicate()
+        code = None
+    output = raw.decode("utf-8", errors="replace")
+    if len(output) > sandbox.OUTPUT_LIMIT:
+        output = output[:sandbox.OUTPUT_LIMIT // 3] + f"\n... {len(output) - sandbox.OUTPUT_LIMIT} characters cut ...\n" + output[-2 * sandbox.OUTPUT_LIMIT // 3:]
+    return code, output
 
 
 def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_only: bool = False):
     """The run_command handler for one turn. Every command runs in the conversation's AppContainer (the request's
     "session"; read_only roles get their own, granted every folder read-only, and cannot ask for more) whose grants are
     synced to the turn's folders on first use, plus a private temp folder. The request's "sandbox" holds {"network":
-    bool, "home": folder}. The request's "permissions" (the launcher's command permissions): "safe" (default) runs
+    bool, "home": folder, "full_access": bool (commands then run as the user, outside the sandbox, except read_only roles')}. The request's "permissions" (the launcher's command permissions): "safe" (default) runs
     commands without asking and asks before the network or more write folders; "ask" also asks before every command;
     "all" grants network and write-folder requests without asking (grantable still refuses what it always refuses, and a
     risky git repository still asks). An approval widens the sandbox for that command only. Output that looks like a
     blocked network call asks once whether to retry with the network. Known secrets are removed from the output."""
     settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
-    mode = request.get("permissions") if request.get("permissions") in ("ask", "safe", "all") else "safe"
+    start_mode = request.get("permissions") if request.get("permissions") in ("ask", "safe", "all") else "safe"
+    if EVENTS:
+        stdin_lines()  # read the launcher's lines from the start, so a mode change reaches this turn before its first question
     home = Path(str(settings.get("home") or Path(tempfile.gettempdir()) / "agent-orchestrator-sandbox"))
     name = sandbox.container_name(f"{request.get('session') or 'default'}{'.ro' if read_only else ''}")
     temp, state = home / "tmp" / name, home / "grants"
@@ -4328,13 +4361,28 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
         return synced[0]
 
     def run_command(command: str, shell: str = "", timeout_seconds: Any = 120, request_network: bool = False,
-                    request_write: Any = None, reason: str = "") -> str:
+                    request_write: Any = None, reason: str = "", outside_sandbox: bool = False) -> str:
         command = str(command or "").strip()
         if not command:
             raise WorkflowError("the command is empty")
         if shell not in ("", "powershell", "cmd"):
             raise WorkflowError("shell must be 'powershell' or 'cmd'")
         timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
+        mode = PERMISSIONS_LIVE or start_mode  # the launcher may have changed it since the turn started
+        full = settings.get("full_access") is True and not read_only  # the user's Full access setting: no sandbox for these roles
+        if outside_sandbox is True or full:
+            if read_only:
+                raise WorkflowError("these commands are read-only and stay in the sandbox: leave it to the lead or the implementer")
+            key = command_key(command)  # a shell or interpreter runs anything: no Allow similar for those
+            # one command's request to leave the sandbox is asked every time, in every permission mode (even "all");
+            # with Full access on there is no sandbox left to ask about, so only "ask" asks (before every command)
+            if (mode == "ask" or not full) and not ask_user("unsandboxed", command, reason, "" if key in SHELL_KEYS else key):
+                return "DENIED: the user did not allow this command" + ("" if full else " outside the sandbox") + "."
+            with RUN_LOCK:
+                code, output = run_unsandboxed(command, shell or "powershell", folders[0]["path"], timeout)
+            output = sandbox.redact(output, secrets)
+            head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
+            return f"{head} (outside the sandbox)\n{output.strip() or '(no output)'}"
         if folders[0]["path"] not in grants:
             raise WorkflowError("the project folder overlaps the Agent Orchestrator folder, so commands cannot run in it")
         wanted = request_write if isinstance(request_write, list) else [request_write] if request_write else []
@@ -4385,7 +4433,10 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
         head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
         note = ("\nNOTE: this looks blocked by the sandbox. If the task really needs it, call run_command again with "
                 "request_write (the folders) or request_network and a reason; the user will be asked."
-                if code != 0 and not read_only and sandbox.BLOCKED.search(output) else "")
+                if code != 0 and not read_only and sandbox.BLOCKED.search(output) else
+                "\nNOTE: if this hangs only in the sandbox (the same command works for the user), call run_command again with "
+                "outside_sandbox true and a reason; the user will be asked."
+                if code is None and not read_only else "")
         moved = "".join(f"\nNOTE: the user did not accept the repository it made; it was renamed to {q}" for q in quarantined)
         return f"{head}{' (network allowed)' if network else ''}\n{output.strip() or '(no output)'}{note}{moved}"
 

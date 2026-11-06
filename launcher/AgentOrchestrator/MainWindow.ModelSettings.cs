@@ -1033,7 +1033,7 @@ public partial class MainWindow
                 ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
             Log($"{card.Title}: model settings saved{(remote is null ? "" : $" (remote API {remote.BaseUrl.Trim()}, model {remote.Model.Trim()})")}");
             if (remote is not null && Environment.GetEnvironmentVariable(remote.KeyEnv.Trim()) is null)
-                Toast($"{card.Title}: set {remote.KeyEnv.Trim()} in your environment, then restart the launcher", "#F7C873");
+                Toast($"{card.Title}: no key for {remote.KeyEnv.Trim()} yet; paste it on the Remote API page", "#F7C873");
             else
                 Toast($"{card.Title}: settings saved");
             HoldWorkerTab(() =>

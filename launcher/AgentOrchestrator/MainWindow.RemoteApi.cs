@@ -285,13 +285,27 @@ public partial class MainWindow
         var errorLine = new TextBlock { Tag = "RemoteError", Foreground = red, FontSize = 11.5, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
         var keyHelp = new Button { Content = "Key help", Tag = "RemoteKeyHelp", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), VerticalAlignment = VerticalAlignment.Top };
         DockPanel.SetDock(keyHelp, Dock.Right);
+        // The key typed here: encrypted for this Windows user (ApiKeys) and put in the environment under the variable's name.
+        var keyInput = new PasswordBox { Tag = "RemoteKeyInput", Height = 30, Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetName(keyInput, "API key");
+        Button KeyButton(string text, string tag) => new() { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 4, 0, 0) };
+        var saveKey = KeyButton("Save key", "RemoteKeySave");
+        var removeKey = KeyButton("Remove", "RemoteKeyRemove");
+        DockPanel.SetDock(saveKey, Dock.Right);
+        DockPanel.SetDock(removeKey, Dock.Right);
+        var keyRowNote = RemoteMuted("Paste the key here: it is kept encrypted for your Windows account in the app's data folder and sent only to the selected service. " +
+                                     "Or set the variable yourself; a key saved here wins.");
+        keyRowNote.Margin = new Thickness(0, 2, 0, 0);
+        var keyRow = new StackPanel { Children = { Label("API key"), keyRowNote, new DockPanel { Children = { removeKey, saveKey, keyInput } } } };
 
         void KeyStatus()
         {
             var env = keyVar;
             var set = EnvKey() is not null;
+            var saved = env.Length > 0 && ApiKeys.Has(env);
+            removeKey.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
             keyStatus.Text = env.Length == 0 ? "No key variable" : set ? "✓ Key set" : "✗ Key not set — see Key help";
-            keyStatus.ToolTip = env.Length == 0 ? "No variable: requests go without a key." : set ? $"{env} is set in your environment." : $"{env} is not set in your environment — see Key help.";
+            keyStatus.ToolTip = env.Length == 0 ? "No variable: requests go without a key." : saved ? $"A key is saved in the app for {env}." : set ? $"{env} is set in your environment." : $"{env} is not set: paste the key into the API key box below, or see Key help.";
             if (set || env.Length == 0)
                 keyStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             else
@@ -666,7 +680,7 @@ public partial class MainWindow
             }
             Log($"{name}: remote API {remote.BaseUrl}, model {remote.Model}{(remote.Provider.Length > 0 ? $", providers {remote.Provider}" : "")}");
             if (Environment.GetEnvironmentVariable(remote.KeyEnv) is not { Length: > 0 })
-                Toast($"Applied to {name}: set {remote.KeyEnv} in your environment, then restart the launcher", "#F7C873");
+                Toast($"Applied to {name}: paste the {remote.KeyEnv} key into the API key box on this page", "#F7C873");
             else
                 Toast($"Applied to {name}");
             HoldWorkerTab(() =>
@@ -777,10 +791,40 @@ public partial class MainWindow
         };
         apply.Click += (_, _) => Apply();
         keyHelp.Click += (_, _) => ShowRemoteHelp(Selected().Id);
+        void SaveKey()
+        {
+            CommitKeyEnv();
+            try
+            {
+                ApiKeys.Save(keyVar, keyInput.Password);
+            }
+            catch (Exception x) when (x is ArgumentException or IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
+            {
+                Note(errorLine, x.Message, error: true);
+                return;
+            }
+            keyInput.Clear();
+            Note(errorLine, "");
+            Log($"API key saved in the app for {keyVar}");
+            KeyStatus();
+            LoadModels(); // the list may need the key
+        }
+        saveKey.Click += (_, _) => SaveKey();
+        keyInput.KeyDown += (_, e) =>
+        {
+            if (e.Key == System.Windows.Input.Key.Enter)
+                SaveKey();
+        };
+        removeKey.Click += (_, _) =>
+        {
+            ApiKeys.Remove(keyVar);
+            Log($"API key removed from the app for {keyVar}");
+            KeyStatus();
+        };
 
         // ---- the page
         var title = new TextBlock { Text = "Remote API", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold };
-        var intro = RemoteMuted("Run a worker on an OpenAI-compatible service instead of this computer. The API key stays in an environment variable: the app never stores it.");
+        var intro = RemoteMuted("Run a worker on an OpenAI-compatible service instead of this computer. Paste the API key below (kept encrypted for your Windows account) or set it as an environment variable.");
         intro.FontSize = 12;
         intro.Margin = new Thickness(0, 4, 0, 0);
         var divider = new Border { Height = 1, Margin = new Thickness(0, 22, 0, 0) };
@@ -795,6 +839,7 @@ public partial class MainWindow
             {
                 new DockPanel { Children = { keyHelp, new StackPanel { Children = { title, intro } } } },
                 connection,
+                keyRow,
                 new DockPanel { Margin = new Thickness(0, 18, 0, 0), Children = { searchBox, modelHead } },
                 listBox, modelsNote, manualBox, favoritesBox,
                 Label("Model id"), RemoteMuted("What the worker's config gets: the model picked or entered above."), new DockPanel { Children = { copyId, modelId } },
@@ -851,7 +896,7 @@ public partial class MainWindow
         var sections = new StackPanel
         {
             Margin = new Thickness(0, 0, 16, 0), // clear of the scroll bar
-            Children = { RemoteMuted("The app never stores a key: it reads the environment variable named on the Remote API page. Where to get one:") },
+            Children = { RemoteMuted("Paste the key into the API key box on the Remote API page (kept encrypted for your Windows account), or set the environment variable named there. Where to get one:") },
         };
         foreach (var s in RemoteCatalog.Services.Where(s => s.KeyUrl.Length > 0).OrderBy(s => s.Id != first))
         {
@@ -1536,6 +1581,30 @@ public partial class MainWindow
             await Loaded();
             if (!fake.Seen.Skip(before).SequenceEqual([($"{Lan}/models", "Bearer secret-b")]))
                 return Fail($"Load models asked [{Asked(before)}]");
+
+            // A key pasted into the page: saved encrypted (not in settings), set for this process, shown as set, sent to the
+            // confirmed host with the list request; Remove forgets it. A name that is not key-like is refused.
+            const string KeyC = "AO_SMOKE_KEY_C";
+            before = fake.Seen.Count;
+            KeyEnv(KeyC);
+            await Loaded();
+            Find<PasswordBox>("RemoteKeyInput").Password = "secret-c";
+            SmokeClick(Find<Button>("RemoteKeySave"));
+            await Loaded();
+            if (Environment.GetEnvironmentVariable(KeyC) != "secret-c" || !ApiKeys.Has(KeyC) || Find<PasswordBox>("RemoteKeyInput").Password.Length != 0 ||
+                Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set", ToolTip: string savedTip } || !savedTip.StartsWith("A key is saved", StringComparison.Ordinal) ||
+                !fake.Seen.Skip(before).Contains(($"{Lan}/models", "Bearer secret-c")) || File.ReadAllText(Path.Combine(AppSettings.DataRoot, "keys.json")).Contains("secret-c", StringComparison.Ordinal))
+                return Fail($"a pasted key: env \"{Environment.GetEnvironmentVariable(KeyC)}\", saved {ApiKeys.Has(KeyC)}, asked [{Asked(before)}]");
+            SmokeClick(Find<Button>("RemoteKeyRemove"));
+            if (ApiKeys.Has(KeyC) || Environment.GetEnvironmentVariable(KeyC) is not null || Find<TextBlock>("RemoteKeyStatus").Text != "✗ Key not set — see Key help")
+                return Fail("Remove left the pasted key");
+            KeyEnv("PATH");
+            Find<PasswordBox>("RemoteKeyInput").Password = "x";
+            SmokeClick(Find<Button>("RemoteKeySave"));
+            if (Find<TextBlock>("RemoteError") is not { Visibility: Visibility.Visible } || ApiKeys.Has("PATH"))
+                return Fail("a key for a variable named PATH was saved");
+            KeyEnv(KeyB);
+            await Loaded();
 
             // A half-typed variable name that names another variable is neither looked up nor sent until it is committed.
             before = fake.Seen.Count;

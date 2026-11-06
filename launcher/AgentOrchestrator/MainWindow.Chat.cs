@@ -773,7 +773,7 @@ public partial class MainWindow
     // The user's message (none for a Code action) and an empty reply appear, and the GPU-sharing lock goes on.
     private string? _pendingUser;
     private DateTimeOffset _pendingUserTime;
-    private readonly List<(string Said, string Text, DateTimeOffset Time)> _steered = new(); // this turn's delivered steers, and the reply before each
+    private readonly List<(string Said, string Text, DateTimeOffset Time, List<string> Images)> _steered = new(); // this turn's delivered steers, and the reply before each
 
     private void StartChatTurn(string text) => StartTurn(_chat, text, ChatTarget()?.Role ?? "");
 
@@ -1045,10 +1045,10 @@ public partial class MainWindow
     private IEnumerable<LauncherLogic.ChatMessage> TurnMessages(string user)
     {
         yield return new("user", user, _pendingUserTime, _turnUserImages.Count > 0 ? _turnUserImages : null);
-        foreach (var (said, text, time) in _steered)
+        foreach (var (said, text, time, images) in _steered)
         {
             yield return new("assistant", said.Trim().Length > 0 ? said.TrimEnd() : SteeredReply, time);
-            yield return new("user", text, time);
+            yield return new("user", text, time, images.Count > 0 ? images : null);
         }
     }
 
@@ -1146,8 +1146,8 @@ public partial class MainWindow
                 var before = _reply;
                 if (before is not null)
                     before.Status.Visibility = Visibility.Collapsed;
-                _steered.Add((before?.Final ?? before?.AnswerText.ToString() ?? "", steered.Text, Now()));
-                AddUserBubble(steered.Text, Now());
+                _steered.Add((before?.Final ?? before?.AnswerText.ToString() ?? "", steered.Text, Now(), steered.Images));
+                AddUserBubble(steered.Text, Now(), steered.Images);
                 _reply = AddReply(role);
                 _reply.TurnTokens = before?.TurnTokens ?? 0;
                 if (_pendingUser is { } steeredUser && _turn != _parked)
@@ -1192,6 +1192,7 @@ public partial class MainWindow
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 SetChatStatus("Waiting for your approval…");
                 AnswerApproval(ev);
+                SetChatStatus($"{name} is running a command…"); // answered (or allowed earlier): no longer waiting
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 SetChatStatus("Looking at the page in the browser…");

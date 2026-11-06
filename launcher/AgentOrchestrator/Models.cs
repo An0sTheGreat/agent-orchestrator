@@ -268,6 +268,8 @@ internal sealed class AppSettings
     public string CodeEngine { get; set; } = "";
     // Whether sandboxed model commands (run_command) may use the network without asking; off: each use is approved.
     public bool SandboxNetwork { get; set; }
+    // Full access: model commands (run_command) run as the user with no sandbox; CommandPermissions still decides when they ask.
+    public bool FullAccess { get; set; }
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     public string HubSort { get; set; } = "trending"; // the Models Hub's sort (HubLogic.Sorts id)
     public bool HubOnlyFit { get; set; } // the Models Hub shows only models that fit this computer

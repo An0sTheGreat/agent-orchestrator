@@ -22,6 +22,7 @@ public partial class App : Application
             AgentOrchestrator.HubDownloader.HubDownloadSelfTest();
             RemoteServer.SelfTest();
             RemoteTunnel.SelfTest();
+            ApiKeys.SelfTest();
             Shutdown(0);
             return;
         }

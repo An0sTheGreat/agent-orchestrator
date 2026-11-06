@@ -16,7 +16,7 @@ public partial class MainWindow
     private readonly List<QueuedMessage> _chatQueue = new(), _codeQueue = new();
 
     private bool _turnSteers; // the running turn is a Pi Code turn with a user message: it takes steered messages
-    private readonly Dictionary<string, (QueuedMessage Item, string Text)> _steering = new(); // by key: written, not delivered yet
+    private readonly Dictionary<string, (QueuedMessage Item, string Text, List<string> Images)> _steering = new(); // by key: written, not delivered yet
 
     private List<QueuedMessage> QueueOf(Conversation c) => c.IsCode ? _codeQueue : _chatQueue;
 
@@ -105,7 +105,7 @@ public partial class MainWindow
         var key = Guid.NewGuid().ToString("N");
         var text = ComposeMessage(_code, item.Text, item.Attachments);
         ToTurn(process, JsonSerializer.Serialize(new { steer = text, images = _turnImages, key })); // a failed write: the turn ended, which reverts the row
-        _steering[key] = (item, text);
+        _steering[key] = (item, text, _turnImages.ToList()); // its photos show (and are saved) with the steered message
         RefreshQueue(_code);
     }
 
