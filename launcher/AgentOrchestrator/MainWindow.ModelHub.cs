@@ -460,7 +460,7 @@ public partial class MainWindow
     private const HubKind HubAllKinds = HubKind.Text | HubKind.Audio | HubKind.Image | HubKind.Video;
     private static readonly (HubKind Kind, string Label, string Short)[] HubKindNames =
         [(HubKind.Text, "Text & vision", "Text"), (HubKind.Audio, "Audio", "Audio"), (HubKind.Image, "Image generation", "Image"), (HubKind.Video, "Video", "Video")];
-    private const double HubMenuRow = 32; // a filter menu's row; the brand menu shows 9 at a time
+    private const double HubMenuRow = 32; // a filter menu's row; PinnedHeaderMenu's list shows 9 (MaxHeight 288)
 
     private HubKind HubKinds => (HubKind)_settings.HubKinds & HubAllKinds;
 
@@ -484,11 +484,13 @@ public partial class MainWindow
         HubSearch();
     }
 
-    // "Select All" (or "Deselect All" when every entry is on), a line, then a checkable item per entry (Tag <tag>:<key>,
-    // <tag>:all for the first). Toggling keeps the menu open and saves the keys that are on.
+    // "Select All" (or "Deselect All" when every entry is on) and a line, pinned (PinnedHeaderMenu: the menu's Tag), then a
+    // checkable item per entry, 9 showing (Tag <tag>:<key>, <tag>:all for the first). Toggling keeps the menu open and saves
+    // the keys that are on.
     private ContextMenu HubCheckMenu(UIElement anchor, string tag, List<(string Key, object Header)> entries, HashSet<string> on, Action<HashSet<string>> save)
     {
         var menu = NewPresetMenu(anchor);
+        menu.Style = (Style)FindResource("PinnedHeaderMenu");
         MenuItem Item(object header, string key) => new() { Header = header, Tag = tag + ":" + key, Style = (Style)FindResource(typeof(MenuItem)), StaysOpenOnClick = true, Height = HubMenuRow };
         var all = Item("", "all");
         var items = entries.Select(e => (e.Key, Item: Item(e.Header, e.Key))).ToList();
@@ -519,8 +521,7 @@ public partial class MainWindow
                 Toggled();
             };
         Sync();
-        menu.Items.Add(all);
-        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        menu.Tag = new StackPanel { Children = { all, new Separator { Style = (Style)FindResource("MenuSeparator") } } };
         foreach (var (_, item) in items)
             menu.Items.Add(item);
         return menu;
@@ -535,7 +536,7 @@ public partial class MainWindow
                 HubFiltersChanged();
             });
 
-    // The brands of the picked types (logo and name) and Other; 9 rows show, the rest scroll.
+    // The brands of the picked types (logo and name) and Other.
     private ContextMenu BuildHubBrandMenu(UIElement anchor)
     {
         static object Header(Border badge, string label)
@@ -544,13 +545,11 @@ public partial class MainWindow
             return new StackPanel { Orientation = Orientation.Horizontal, Children = { badge, new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center } } };
         }
         var entries = HubLogic.BrandsFor(HubKinds).Select(b => (b.Key, Header(RemoteBadge(b.Label, b.IconKey), b.Label))).Append(("other", Header(RemoteBadge("?"), "Other"))).ToList();
-        var menu = HubCheckMenu(anchor, "hubbrand", entries, [.. _settings.HubBrands], on =>
+        return HubCheckMenu(anchor, "hubbrand", entries, [.. _settings.HubBrands], on =>
         {
             _settings.HubBrands = [.. on];
             HubFiltersChanged();
         });
-        menu.MaxHeight = 2 * (1 + 5) + 9 + 10 * HubMenuRow; // the menu's border and padding, the line, Select All and 9 brands
-        return menu;
     }
 
     // ---- search, paging, cache
@@ -1310,7 +1309,7 @@ public partial class MainWindow
         var opened = new List<string>();
         var cache = Path.Combine(AppSettings.DataRoot, "hub-smoke-cache");
         var (saveDir, modelsDir) = (Path.Combine(AppSettings.DataRoot, "hub-smoke-saveto"), Path.Combine(AppSettings.DataRoot, "hub-smoke-models"));
-        string Url(string query, string sort) => HubLogic.SearchUrl(query, sort).AbsoluteUri;
+        string Url(string query, string sort, string? pipelineTag = null) => HubLogic.SearchUrl(query, sort, pipelineTag: pipelineTag).AbsoluteUri;
         string Rows() => string.Join(", ", HubRows().Select(r => ((HubModel)r.DataContext).Id));
         T? Find<T>(string tag) where T : FrameworkElement => SmokeFind<T>(ModelHubView, e => e.Tag as string == tag);
         async Task Settled()
@@ -1457,6 +1456,86 @@ public partial class MainWindow
             await Settled();
             if (_hubSearch.Text != "" || Rows() != $"{Qwen}, {Tiny}" || fake.Seen.Count != asked)
                 return Fail($"clear: \"{_hubSearch.Text}\", rows [{Rows()}], {fake.Seen.Count - asked} requests (the first page is cached)");
+
+            // makers' logos from the repo name (DeepSeek and Qwen uploaded by others, LiquidAI's account has none); the detail's too
+            fake.BrandRows = true;
+            _hubPageCache.Clear();
+            HubSearch();
+            await Settled();
+            foreach (var (id, icon) in new[] { (HubFakeHandler.DeepSeek, "deepseek-color"), (HubFakeHandler.Huihui, "qwen-color"), (HubFakeHandler.Liquid, "liquid") })
+                if (Row(id) is not { } brandRow || SmokeFind<Border>(brandRow, b => b.Tag as string == "icon:" + icon) is null)
+                    return Fail($"{id}: no {icon} logo in [{Rows()}]");
+            SmokeClick(Row(HubFakeHandler.DeepSeek)!);
+            await Task.Delay(200);
+            if (SmokeFind<Border>(_hubDetail, b => b.Tag as string == "icon:deepseek-color") is null)
+                return Fail("no DeepSeek logo in the detail");
+
+            // the filter menus: Select All / Deselect All and its line pinned above the items (the menu's Tag)
+            async Task Toggle(ContextMenu menu, string tag)
+            {
+                menu.Items.OfType<MenuItem>().Concat(((Panel)menu.Tag).Children.OfType<MenuItem>()).First(i => i.Tag as string == tag)
+                    .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                await Settled();
+            }
+            string? AllHeader(ContextMenu menu) => ((Panel)menu.Tag).Children.OfType<MenuItem>().Single().Header as string;
+            string? KindsLabel() => Find<TextBlock>("HubKindsLabel")?.Text;
+
+            // the type pill: Text & vision; Image adds the diffusion repo, asked with its pipeline_tag; All types; none
+            if (KindsLabel() != "Text & vision  ▾" || Rows().Contains("art/flux-gguf"))
+                return Fail($"type pill \"{KindsLabel()}\", rows [{Rows()}]");
+            await Toggle(BuildHubKindsMenu(this), "hubkind:Image");
+            if (KindsLabel() != "Text, Image  ▾" || !Rows().Contains("art/flux-gguf") || !fake.Seen.Contains(Url("", "trending", "text-to-image")) ||
+                AppSettings.Load().HubKinds != (int)(HubKind.Text | HubKind.Image))
+                return Fail($"Image: \"{KindsLabel()}\", rows [{Rows()}], saved {AppSettings.Load().HubKinds}");
+            await Toggle(BuildHubKindsMenu(this), "hubkind:all");
+            var kindsMenu = BuildHubKindsMenu(this);
+            if (KindsLabel() != "All types  ▾" || AllHeader(kindsMenu) != "Deselect All" || AppSettings.Load().HubKinds != (int)HubAllKinds)
+                return Fail($"all types: \"{KindsLabel()}\", \"{AllHeader(kindsMenu)}\", saved {AppSettings.Load().HubKinds}");
+            kindsMenu.IsOpen = true;
+            await Task.Delay(400);
+            snap("20a-hub-type-menu", kindsMenu);
+            kindsMenu.IsOpen = false;
+            await Toggle(kindsMenu, "hubkind:all");
+            if (Rows() != "" || !Status().Contains("Pick at least one model type") || AppSettings.Load().HubKinds != 0)
+                return Fail($"no type: rows [{Rows()}], \"{Status()}\", saved {AppSettings.Load().HubKinds}");
+            await Toggle(BuildHubKindsMenu(this), "hubkind:Text");
+
+            // the maker menu: the brands of the picked types and Other, 9 rows showing under the pinned Select All
+            var brandMenu = BuildHubBrandMenu(this);
+            var brandTags = brandMenu.Items.OfType<MenuItem>().Select(i => i.Tag as string).ToList();
+            if (!brandTags.SequenceEqual(HubLogic.BrandsFor(HubKind.Text).Select(b => "hubbrand:" + b.Key).Append("hubbrand:other")) || AllHeader(brandMenu) != "Select All")
+                return Fail($"maker menu: {string.Join(", ", brandTags)}");
+            brandMenu.IsOpen = true;
+            await Task.Delay(400);
+            var list = brandMenu.Template.FindName("Rows", brandMenu) as ScrollViewer;
+            var allItem = ((Panel)brandMenu.Tag).Children.OfType<MenuItem>().Single();
+            if (list is null || list.ViewportHeight != 9 * HubMenuRow || list.ExtentHeight <= list.ViewportHeight || !allItem.IsVisible || allItem.IsDescendantOf(list) ||
+                !SmokeVisuals(list).OfType<System.Windows.Controls.Primitives.ScrollBar>().Any(b => b.Orientation == Orientation.Vertical && b.IsVisible))
+                return Fail($"maker menu: {list?.ViewportHeight / HubMenuRow:0.##} rows showing of {list?.ExtentHeight / HubMenuRow:0.##}, Select All pinned {allItem.IsVisible && list is not null && !allItem.IsDescendantOf(list)}");
+            snap("20b-hub-maker-menu", brandMenu);            brandMenu.IsOpen = false;
+
+            // a maker keeps its rows, asked for by its word, and dots the filter button; a maker with none says so
+            await Toggle(BuildHubBrandMenu(this), "hubbrand:deepseek");
+            if (Rows() != HubFakeHandler.DeepSeek || !fake.Seen.Contains(Url("deepseek", "trending")) || Find<System.Windows.Shapes.Ellipse>("HubBrandDot")?.Visibility != Visibility.Visible ||
+                !AppSettings.Load().HubBrands.SequenceEqual(["deepseek"]))
+                return Fail($"DeepSeek: rows [{Rows()}], dot {Find<System.Windows.Shapes.Ellipse>("HubBrandDot")?.Visibility}, saved [{string.Join(", ", AppSettings.Load().HubBrands)}]");
+            snap("20c-hub-maker-filtered", null);
+            await Toggle(BuildHubBrandMenu(this), "hubbrand:deepseek");
+            await Toggle(BuildHubBrandMenu(this), "hubbrand:kimi");
+            if (Rows() != "" || !Status().Contains("No models match these filters") || !AppSettings.Load().HubBrands.SequenceEqual(["kimi"]))
+                return Fail($"Kimi: rows [{Rows()}], \"{Status()}\"");
+            SmokeVisuals(_hubStatus).OfType<TextBlock>().SelectMany(t => t.Inlines.OfType<Hyperlink>()).First(h => h.Tag as string == "HubClearFilters")
+                .RaiseEvent(new RoutedEventArgs(Hyperlink.ClickEvent));
+            await Settled();
+            if (Find<System.Windows.Shapes.Ellipse>("HubBrandDot")?.Visibility == Visibility.Visible || KindsLabel() != "Text & vision  ▾" ||
+                AppSettings.Load() is not { HubBrands.Count: 0, HubKinds: (int)HubKind.Text } || Row(HubFakeHandler.DeepSeek) is null)
+                return Fail($"clear filters: rows [{Rows()}], \"{KindsLabel()}\"");
+            fake.BrandRows = false;
+            _hubPageCache.Clear();
+            HubSearch();
+            await Settled();
+            if (Rows() != $"{Qwen}, {Tiny}")
+                return Fail($"after the filters: rows [{Rows()}]");
 
             // each sort asks HF for its own order (Latest: newest and trending), is checked, labelled and saved
             foreach (var sort in HubLogic.Sorts)

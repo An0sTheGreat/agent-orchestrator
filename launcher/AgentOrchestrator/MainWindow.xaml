@@ -423,6 +423,24 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- A filter menu (Models Hub): the Tag (Select All and its line) stays at the top; only the items scroll, 9 rows of 32 -->
+        <Style x:Key="PinnedHeaderMenu" TargetType="ContextMenu" BasedOn="{StaticResource {x:Type ContextMenu}}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ContextMenu">
+                        <Border Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}" BorderThickness="1"
+                                CornerRadius="{DynamicResource SmallRadius}" Padding="5">
+                            <DockPanel>
+                                <ContentPresenter DockPanel.Dock="Top" Content="{TemplateBinding Tag}" />
+                                <ScrollViewer x:Name="Rows" MaxHeight="288" VerticalScrollBarVisibility="Auto">
+                                    <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
+                                </ScrollViewer>
+                            </DockPanel>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="MenuSeparator" TargetType="Separator">
             <Setter Property="Template">
                 <Setter.Value>
