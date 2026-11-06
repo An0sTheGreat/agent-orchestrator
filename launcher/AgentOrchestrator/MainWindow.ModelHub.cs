@@ -9,7 +9,9 @@ using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Fit = AgentOrchestrator.HubLogic.Fit;
 using HubModel = AgentOrchestrator.HubLogic.HubModel;
+using HubVariant = AgentOrchestrator.HubLogic.HubVariant;
 
 namespace AgentOrchestrator;
 
@@ -20,7 +22,7 @@ public partial class MainWindow
 {
     // --ui-smoke and --screenshots put a fake handler here (no live network in any test); null: the real one.
     internal static Func<HttpMessageHandler>? HubHttpHandlerFactory;
-    internal static double? HubVramGiBOverride; // --ui-smoke: the GPU memory the fit filter assumes
+    internal static double? HubVramGiBOverride, HubRamGiBOverride; // --ui-smoke: the GPU memory and RAM the fit checks assume
 
     private sealed record HubMachine(double? VramGiB, double RamGiB, HashSet<string> Cached);
 
@@ -45,6 +47,20 @@ public partial class MainWindow
     private StackPanel _hubList = new(), _hubStatus = new();
     private TextBlock _hubFooter = new(), _hubSortLabel = new();
     private Border _hubDetail = new();
+    private ScrollViewer _hubDetailScroll = new();
+    // The selected model's detail: its loads (cancelled when another row is selected), their replies cached by address
+    // (null: 404), the weights picked for Download and the variants in fit order.
+    private CancellationTokenSource? _hubDetailCts;
+    private Task _hubDetailTask = Task.CompletedTask; // smokes await it
+    private readonly Dictionary<string, (DateTime At, string? Text)> _hubTextCache = new();
+    private HubVariant? _hubVariant;
+    private List<HubVariant> _hubVariantList = [];
+    private string _hubSha = "";
+    private (double? Vram, double? Ram) _hubFitFor;
+    private WrapPanel _hubChips = new();
+    private Border _hubWeights = new(), _hubReadme = new();
+    private TextBlock _hubFacts = new();
+    private Button _hubDownloadButton = new();
 
     private static HttpClient NewHubHttp()
     {
@@ -136,15 +152,15 @@ public partial class MainWindow
         _hubDetail = HubCard(HubEmptyDetail(), new Thickness(22, 20, 22, 22));
         _hubDetail.Tag = "HubDetailHost";
         _hubDetail.VerticalAlignment = VerticalAlignment.Top;
-        var detailScroll = new ScrollViewer { Content = _hubDetail, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        _hubDetailScroll = new ScrollViewer { Content = _hubDetail, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         var body = new Grid
         {
             Margin = new Thickness(0, 16, 0, 0),
             ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(4, GridUnitType.Star), MinWidth = 300 }, new ColumnDefinition { Width = new GridLength(16) }, new ColumnDefinition { Width = new GridLength(6, GridUnitType.Star) } },
         };
-        Grid.SetColumn(detailScroll, 2);
+        Grid.SetColumn(_hubDetailScroll, 2);
         body.Children.Add(results);
-        body.Children.Add(detailScroll);
+        body.Children.Add(_hubDetailScroll);
 
         var page = new Grid
         {
@@ -173,6 +189,7 @@ public partial class MainWindow
     private void CloseModelHub()
     {
         _hubCts?.Cancel();
+        _hubDetailCts?.Cancel();
         _hubDebounce?.Stop();
         Reveal(ModelHubView, false);
     }
@@ -183,7 +200,7 @@ public partial class MainWindow
         double? vram = HubVramGiBOverride;
         if (vram is null && await (_gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes)) is { } bytes and > 0)
             vram = bytes / HubGiB;
-        var ram = GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / HubGiB;
+        var ram = HubRamGiBOverride ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / HubGiB;
         var cached = await Task.Run(() =>
         {
             try
@@ -402,22 +419,29 @@ public partial class MainWindow
 
     private void HubError(Exception e)
     {
-        var text = e switch
-        {
-            HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests } => "Hugging Face is rate limiting; wait a moment, then retry.",
-            HttpRequestException { StatusCode: { } code } => $"Hugging Face answered {(int)code} ({code}).",
-            TaskCanceledException => "Hugging Face did not answer within 15 seconds.",
-            JsonException => "Hugging Face sent a reply that could not be read.",
-            _ => "Could not reach Hugging Face: " + e.Message,
-        };
-        var message = new TextBlock { Text = text, Tag = "HubError", FontSize = 12, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
-            Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)) };
-        var retry = new Button { Content = "Retry", Tag = "HubRetry", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(10, 0, 0, 0) };
-        retry.Click += (_, _) => HubSearch(fresh: true);
-        DockPanel.SetDock(retry, Dock.Right);
         _hubStatus.Children.Clear();
-        _hubStatus.Children.Add(new DockPanel { Children = { retry, message } });
+        _hubStatus.Children.Add(HubNotice(HubErrorText(e), "Hub", () => HubSearch(fresh: true)));
         _hubStatus.Visibility = Visibility.Visible;
+    }
+
+    private static string HubErrorText(Exception e, int timeoutSeconds = 15) => e switch
+    {
+        HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests } => "Hugging Face is rate limiting; wait a moment, then retry.",
+        HttpRequestException { StatusCode: { } code } => $"Hugging Face answered {(int)code} ({code}).",
+        OperationCanceledException => $"Hugging Face did not answer within {timeoutSeconds} seconds.",
+        JsonException => "Hugging Face sent a reply that could not be read.",
+        _ => "Could not reach Hugging Face: " + e.Message,
+    };
+
+    // A red message with Retry on its right; tagged <tag>Error and <tag>Retry.
+    private DockPanel HubNotice(string text, string tag, Action retry)
+    {
+        var message = new TextBlock { Text = text, Tag = tag + "Error", FontSize = 12, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)) };
+        var button = new Button { Content = "Retry", Tag = tag + "Retry", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 3, 12, 3), Margin = new Thickness(10, 0, 0, 0) };
+        button.Click += (_, _) => retry();
+        DockPanel.SetDock(button, Dock.Right);
+        return new DockPanel { Children = { button, message } };
     }
 
     // ---- rows
@@ -500,7 +524,10 @@ public partial class MainWindow
     {
         HubCursor(row);
         _hubSelected = (HubModel)row.DataContext;
-        _hubDetail.Child = BuildHubDetail(_hubSelected);
+        _hubDetailCts?.Cancel();
+        _hubDetailCts = new CancellationTokenSource();
+        _hubDetail.Child = BuildHubDetail(_hubSelected, _hubDetailCts.Token);
+        _hubDetailScroll.ScrollToTop();
     }
 
     // Up/Down move the checked row, Enter shows it (in the search box: searches now). Up from the first row goes to the box.
@@ -556,38 +583,230 @@ public partial class MainWindow
         return pill;
     }
 
-    // The selected model's header: logo, name, owner, tags, counts and its Hugging Face page.
-    // The download step replaces this with the full pane (model card, weights and downloads).
-    private FrameworkElement BuildHubDetail(HubModel model)
+    private static TextBlock HubNote(string text, string tag)
+    {
+        var t = RemoteMuted(text);
+        (t.Tag, t.Margin, t.VerticalAlignment) = (tag, new Thickness(10, 8, 10, 8), VerticalAlignment.Center);
+        return t;
+    }
+
+    private static readonly FontFamily HubIconFont = new("Segoe Fluent Icons, Segoe MDL2 Assets");
+
+    // Green fits, amber marginal, sky partial, rose too big, grey unknown.
+    internal static Color? HubFitColor(Fit fit) => fit switch
+    {
+        Fit.Fits => Color.FromRgb(0x4A, 0xDE, 0x80),
+        Fit.Marginal => Color.FromRgb(0xF5, 0xB9, 0x42),
+        Fit.Partial => Color.FromRgb(0x38, 0xBD, 0xF8),
+        Fit.Oom => Color.FromRgb(0xFB, 0x71, 0x85),
+        _ => null,
+    };
+
+    private static TextBlock HubFitIcon(Fit fit)
+    {
+        var icon = new TextBlock { Text = "", FontFamily = HubIconFont, FontSize = 13, Tag = "hubfit:" + fit, ToolTip = HubLogic.FitTip(fit), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        if (HubFitColor(fit) is { } c)
+            icon.Foreground = new SolidColorBrush(c);
+        else
+            icon.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        return icon;
+    }
+
+    private Fit HubFitOf(HubVariant v) => HubLogic.FitOf(v.DownloadBytes, _hubFitFor.Vram, _hubFitFor.Ram);
+
+    // The selected model: logo, name, owner, copy id and its Hugging Face page; chips; the download card (weights picker and
+    // Download); facts; the README. The weights and README load in the background, cancelled by ct (another row selected).
+    private FrameworkElement BuildHubDetail(HubModel model, CancellationToken ct)
     {
         var name = new TextBlock { Text = model.Name, Tag = "HubDetailName", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 20, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap };
         var owner = RemoteMuted(model.Owner);
+        owner.VerticalAlignment = VerticalAlignment.Center;
         var badge = new Viewbox { Width = 40, Height = 40, Margin = new Thickness(0, 2, 14, 0), VerticalAlignment = VerticalAlignment.Top, Child = HubBadge(model) };
         DockPanel.SetDock(badge, Dock.Left);
-        var tags = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
-        if (model.PipelineTag is { Length: > 0 } pipeline)
-            tags.Children.Add(HubPill(pipeline));
-        tags.Children.Add(HubPill("GGUF"));
-        if (model.Gated)
-            tags.Children.Add(HubPill("Gated", new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B))));
-        var counts = RemoteMuted($"♡ {HubLogic.FormatCount(model.Likes)} likes     ↓ {HubLogic.FormatCount(model.Downloads)} downloads"
-            + (model.LastModified is null ? "" : "     Updated " + HubLogic.FormatAge(model.LastModified, DateTimeOffset.UtcNow)));
-        counts.Tag = "HubDetailCounts";
         var url = "https://huggingface.co/" + model.Id;
         var link = new Hyperlink(new Run("Open on Hugging Face")) { Tag = "HubOpenHf", ToolTip = url };
         link.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
         link.Click += (_, _) => _openExternal(url);
+        var copy = new Button { Content = "Copy id", Tag = "HubCopyId", ToolTip = "Copy " + model.Id, Style = (Style)FindResource("GhostButton"), FontSize = 11.5, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(14, 0, 0, 0) };
+        copy.Click += (_, _) =>
+        {
+            try { Clipboard.SetText(model.Id); }
+            catch (System.Runtime.InteropServices.COMException) { } // another app holds the clipboard
+        };
+        var actions = new WrapPanel { Margin = new Thickness(0, 4, 0, 0), Children = { owner, new TextBlock { Margin = new Thickness(14, 0, 0, 0), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center, Inlines = { link } }, copy } };
+
+        _hubChips = new WrapPanel { Margin = new Thickness(0, 14, 0, 0) };
+        if (model.PipelineTag is { Length: > 0 } pipeline)
+            _hubChips.Children.Add(HubPill(pipeline));
+        if (model.Gated)
+            _hubChips.Children.Add(HubPill("Gated", new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B))));
+        _hubWeights = new Border { Tag = "HubWeightsCard", CornerRadius = new CornerRadius(14), Padding = new Thickness(6), Margin = new Thickness(0, 8, 0, 0), MinHeight = 46 };
+        _hubWeights.SetResourceReference(Border.BackgroundProperty, "Hover");
+        _hubFacts = RemoteMuted("");
+        (_hubFacts.Tag, _hubFacts.Margin) = ("HubDetailCounts", new Thickness(4, 10, 0, 0));
+        _hubReadme = new Border { Tag = "HubReadmeHost", Margin = new Thickness(0, 22, 0, 0) };
+        (_hubVariant, _hubVariantList, _hubSha) = (null, [], "");
+        HubFacts();
+        _hubDetailTask = Task.WhenAll(HubLoadWeightsAsync(model, ct), HubLoadReadmeAsync(model, ct));
         return new StackPanel
         {
             Tag = "HubDetail:" + model.Id,
-            Children =
-            {
-                new DockPanel { Children = { badge, new StackPanel { Children = { name, owner } } } },
-                tags,
-                counts,
-                new TextBlock { Margin = new Thickness(0, 12, 0, 0), FontSize = 12.5, Inlines = { link } },
-            },
+            Children = { new DockPanel { Children = { badge, new StackPanel { Children = { name, actions } } } }, _hubChips, _hubWeights, _hubFacts, _hubReadme },
         };
+    }
+
+    // Updated, the chosen weights' download, downloads, likes, parameters.
+    private void HubFacts()
+    {
+        if (_hubSelected is not { } m)
+            return;
+        var facts = new List<string>();
+        if (m.LastModified is not null)
+            facts.Add("Updated " + HubLogic.FormatAge(m.LastModified, DateTimeOffset.UtcNow));
+        if (_hubVariant is { } v)
+            facts.Add(HubLogic.FormatSize(v.DownloadBytes) + " download");
+        facts.Add($"↓ {HubLogic.FormatCount(m.Downloads)} downloads");
+        facts.Add($"♡ {HubLogic.FormatCount(m.Likes)} likes");
+        if (m.ParamCount is { } p)
+            facts.Add(HubLogic.FormatCount(p) + " params");
+        _hubFacts.Text = string.Join("   ·   ", facts);
+    }
+
+    // GET through the page's client, cached 5 minutes by address; 404 gives (and caches) null; other failures throw.
+    private async Task<string?> HubGetTextAsync(string url, TimeSpan timeout, CancellationToken ct)
+    {
+        if (_hubTextCache.TryGetValue(url, out var hit) && DateTime.UtcNow - hit.At < HubCacheFor)
+            return hit.Text;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(timeout);
+        using var response = await HubHttp.GetAsync(url, cts.Token);
+        var text = response.StatusCode == HttpStatusCode.NotFound ? null : await response.EnsureSuccessStatusCode().Content.ReadAsStringAsync(cts.Token);
+        _hubTextCache[url] = (DateTime.UtcNow, text);
+        return text;
+    }
+
+    // The repo's GGUF variants (?blobs=true for sizes) in fit order; the first is picked. mmproj: the Vision chip.
+    private async Task HubLoadWeightsAsync(HubModel model, CancellationToken ct)
+    {
+        _hubWeights.Child = HubNote("Loading weights…", "HubWeightsLoading");
+        try
+        {
+            var json = await HubGetTextAsync($"https://huggingface.co/api/models/{model.Id}?blobs=true", TimeSpan.FromSeconds(15), ct)
+                ?? throw new HttpRequestException("Not found", null, HttpStatusCode.NotFound);
+            var variants = await Task.Run(() => HubLogic.ParseVariants(json), ct);
+            var machine = await _hubMachine;
+            ct.ThrowIfCancellationRequested(); // another row was selected meanwhile
+            _hubFitFor = (machine.VramGiB, machine.RamGiB > 0 ? machine.RamGiB : null);
+            _hubVariantList = HubLogic.OrderByFit(variants.Variants, _hubFitFor.Vram, _hubFitFor.Ram);
+            (_hubSha, _hubVariant) = (variants.Sha, _hubVariantList.FirstOrDefault());
+            if (variants.HasVision)
+                _hubChips.Children.Insert(model.PipelineTag is { Length: > 0 } ? 1 : 0, HubPill("Vision"));
+            HubShowVariant();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException or JsonException)
+        {
+            _hubWeights.Child = HubNotice(HubErrorText(e), "HubWeights", () => _hubDetailTask = HubLoadWeightsAsync(model, ct));
+        }
+    }
+
+    // The download card: the chosen weights (fit, quant, GGUF, size, chevron: opens the variants) and Download.
+    private void HubShowVariant()
+    {
+        HubFacts();
+        if (_hubVariant is not { } v)
+        {
+            _hubWeights.Child = HubNote("No GGUF files in this repository", "HubNoGguf");
+            return;
+        }
+        var label = new TextBlock { Text = v.Label, Tag = "HubWeightsLabel", FontSize = 13.5, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+        var gguf = HubPill("GGUF");
+        (gguf.Margin, gguf.VerticalAlignment) = (new Thickness(10, 0, 0, 0), VerticalAlignment.Center);
+        var size = RemoteMuted(HubLogic.FormatSize(v.SizeBytes));
+        (size.Tag, size.Margin, size.VerticalAlignment) = ("HubWeightsSize", new Thickness(10, 0, 0, 0), VerticalAlignment.Center);
+        var chevron = new TextBlock { Text = "", FontFamily = HubIconFont, FontSize = 10, Margin = new Thickness(12, 1, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        chevron.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var selector = new Button
+        {
+            Tag = "HubWeights", ToolTip = "Choose the weights", Style = (Style)FindResource("GhostButton"), HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(12, 6, 12, 6),
+            Content = new StackPanel { Orientation = Orientation.Horizontal, Children = { HubFitIcon(HubFitOf(v)), label, gguf, size, chevron } },
+        };
+        selector.Click += (_, _) => BuildHubVariantMenu(selector).IsOpen = true;
+        _hubDownloadButton = new Button { Content = "Download", Tag = "HubDownload", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(22, 7, 22, 7), VerticalAlignment = VerticalAlignment.Center };
+        _hubDownloadButton.Click += (_, _) =>
+        {
+            if (_hubSelected is { } m && _hubVariant is { } chosen)
+                HubStartDownload(m, _hubSha, chosen);
+        };
+        DockPanel.SetDock(_hubDownloadButton, Dock.Right);
+        _hubWeights.Child = new DockPanel { Children = { _hubDownloadButton, selector } };
+        UpdateHubDownloadButton();
+    }
+
+    // Every variant in fit order: fit icon (its tip says why), quant, size on the right; the chosen one checked.
+    // --ui-smoke clicks its items without opening it.
+    private ContextMenu BuildHubVariantMenu(UIElement anchor)
+    {
+        var menu = NewPresetMenu(anchor);
+        foreach (var v in _hubVariantList)
+        {
+            var item = PresetItem(v.Label, () =>
+            {
+                _hubVariant = v;
+                HubShowVariant();
+            });
+            item.Header = new StackPanel { Orientation = Orientation.Horizontal, Children = { HubFitIcon(HubFitOf(v)), new TextBlock { Text = v.Label, VerticalAlignment = VerticalAlignment.Center } } };
+            (item.IsChecked, item.Tag, item.InputGestureText) = (ReferenceEquals(v, _hubVariant), "hubvariant:" + v.Label, HubLogic.FormatSize(v.SizeBytes));
+            menu.Items.Add(item);
+        }
+        return menu;
+    }
+
+    // The downloads step extends this (progress, cancel, already downloaded).
+    private void UpdateHubDownloadButton()
+    {
+        _hubDownloadButton.IsEnabled = _hubVariant is not null;
+        _hubDownloadButton.ToolTip = _hubVariant is { } v ? $"Download {v.Label} ({HubLogic.FormatSize(v.DownloadBytes)})" : null;
+    }
+
+    private void HubStartDownload(HubModel model, string sha, HubVariant variant)
+    {
+        // implemented in the downloads step
+    }
+
+    // README.md from the repo, cleaned (HubLogic.CleanReadme) and rendered; the wheel scrolls the detail pane.
+    private async Task HubLoadReadmeAsync(HubModel model, CancellationToken ct)
+    {
+        _hubReadme.Child = HubNote("Loading README…", "HubReadmeLoading");
+        try
+        {
+            var md = await HubGetTextAsync($"https://huggingface.co/{model.Id}/resolve/main/README.md", TimeSpan.FromSeconds(10), ct);
+            var clean = md is null ? "" : await Task.Run(() => HubLogic.CleanReadme(md), ct);
+            ct.ThrowIfCancellationRequested();
+            if (clean.Trim().Length == 0)
+            {
+                _hubReadme.Child = HubNote("No README", "HubNoReadme");
+                return;
+            }
+            var view = new RichTextBox
+            {
+                IsReadOnly = true, IsDocumentEnabled = true, Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(0),
+                FontFamily = FontFamily, Cursor = Cursors.IBeam, Tag = "HubReadme", Document = Markdown.ToDocument(clean, 13),
+            };
+            Markdown.NoTopMargin(view.Document.Blocks.FirstBlock);
+            view.SetResourceReference(TextBoxBase.SelectionBrushProperty, "AccentLight");
+            view.PreviewMouseWheel += (_, e) =>
+            {
+                e.Handled = true;
+                _hubDetailScroll.ScrollToVerticalOffset(_hubDetailScroll.VerticalOffset - e.Delta);
+            };
+            _hubReadme.Child = view;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception e) when (e is HttpRequestException or OperationCanceledException)
+        {
+            _hubReadme.Child = HubNotice(HubErrorText(e, 10), "HubReadme", () => _hubDetailTask = HubLoadReadmeAsync(model, ct));
+        }
     }
 
     // ---- --ui-smoke
@@ -600,7 +819,7 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: model hub: {what}"); return false; }
         var fake = new HubFakeHandler();
-        var (factory, vramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, _openExternal, _settings.HubSort, _settings.HubOnlyFit, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
+        var (factory, vramWas, ramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _settings.HubSort, _settings.HubOnlyFit, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
         var (remoteHttp, helpShown) = (_remoteHttp, _settings.RemoteHelpShown);
         var opened = new List<string>();
         var cache = Path.Combine(AppSettings.DataRoot, "hub-smoke-cache");
@@ -645,6 +864,8 @@ public partial class MainWindow
             _hubHttp = null;
             _hubPageCache.Clear();
             HubVramGiBOverride = 4;
+            HubRamGiBOverride = 16;
+            _hubTextCache.Clear();
             _openExternal = opened.Add;
             Environment.SetEnvironmentVariable("HF_HUB_CACHE", cache);
             (_settings.HubSort, _settings.HubOnlyFit) = ("trending", false);
@@ -665,11 +886,41 @@ public partial class MainWindow
 
             // a row fills the detail; Down moves the checked row, Enter shows it
             SmokeClick(HubRows()[0]);
+            await _hubDetailTask;
             await Task.Delay(200);
-            if (SmokeFind<StackPanel>(_hubDetail, p => p.Tag as string == "HubDetail:" + Qwen) is null || SmokeFind<TextBlock>(_hubDetail, t => t.Tag as string == "HubDetailName")?.Text != "Qwen3.8-480B-GGUF" ||
-                SmokeFind<Border>(_hubDetail, b => b.Tag as string == "HubTag:Gated") is null || SmokeFind<Border>(_hubDetail, b => b.Tag as string == "HubTag:text-generation") is null ||
-                SmokeFind<TextBlock>(_hubDetail, t => t.Tag as string == "HubDetailCounts")?.Text.StartsWith("♡ 1.4K likes", StringComparison.Ordinal) != true)
-                return Fail("the detail of the clicked row");
+            string? Text(string tag) => SmokeFind<TextBlock>(_hubDetail, t => t.Tag as string == tag)?.Text;
+            string Chips() => string.Join(",", _hubChips.Children.OfType<Border>().Select(b => b.Tag as string));
+            if (SmokeFind<StackPanel>(_hubDetail, p => p.Tag as string == "HubDetail:" + Qwen) is null || Text("HubDetailName") != "Qwen3.8-480B-GGUF" ||
+                Chips() != "HubTag:text-generation,HubTag:Vision,HubTag:Gated" || Text("HubDetailCounts")?.Contains("♡ 1.4K likes", StringComparison.Ordinal) != true)
+                return Fail($"the detail of the clicked row: chips {Chips()}, facts {Text("HubDetailCounts")}");
+            // the weights: the biggest that fits 4 GB (RAM 16 GB) is picked; the menu lists them in fit order with sizes
+            if (_hubVariant?.Label != "Q2_K" || Text("HubWeightsLabel") != "Q2_K" || Text("HubWeightsSize") != "1.5 GB" || _hubSha != "qwensha" ||
+                SmokeFind<TextBlock>(_hubDetail, t => t.Tag as string == "hubfit:Fits") is null || Text("HubDetailCounts")?.Contains("2.1 GB download", StringComparison.Ordinal) != true ||
+                Find<Button>("HubDownload") is not { IsEnabled: true })
+                return Fail($"default weights {_hubVariant?.Label}: {Text("HubWeightsLabel")} {Text("HubWeightsSize")} {Text("HubDetailCounts")}");
+            var variantItems = BuildHubVariantMenu(this).Items.OfType<MenuItem>().ToList();
+            string Item(MenuItem i)
+            {
+                var icon = ((Panel)i.Header).Children.OfType<TextBlock>().First();
+                var tipOk = Equals(icon.ToolTip, HubLogic.FitTip(Enum.Parse<Fit>(((string)icon.Tag)["hubfit:".Length..])));
+                return $"{i.Tag} {i.InputGestureText} {icon.Tag} {((SolidColorBrush)icon.Foreground).Color} {tipOk} {i.IsChecked}";
+            }
+            var wantItems = string.Join(" | ",
+                $"hubvariant:Q2_K 1.5 GB hubfit:Fits {HubFitColor(Fit.Fits)} True True", $"hubvariant:Q3_K_M 2.1 GB hubfit:Marginal {HubFitColor(Fit.Marginal)} True False",
+                $"hubvariant:UD-Q4_K_XL 5.0 GB hubfit:Partial {HubFitColor(Fit.Partial)} True False", $"hubvariant:BF16 20 GB hubfit:Oom {HubFitColor(Fit.Oom)} True False");
+            if (string.Join(" | ", variantItems.Select(Item)) != wantItems)
+                return Fail("weights menu: " + string.Join(" | ", variantItems.Select(Item)));
+            variantItems[2].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            if (_hubVariant?.Label != "UD-Q4_K_XL" || _hubVariant.Files.Count != 2 || Text("HubWeightsLabel") != "UD-Q4_K_XL" || Text("HubWeightsSize") != "5.0 GB" ||
+                SmokeFind<TextBlock>(_hubDetail, t => t.Tag as string == "hubfit:Partial") is null || Text("HubDetailCounts")?.Contains("5.6 GB download", StringComparison.Ordinal) != true ||
+                BuildHubVariantMenu(this).Items.OfType<MenuItem>().Single(i => i.IsChecked).Tag as string != "hubvariant:UD-Q4_K_XL")
+                return Fail($"switching weights: {_hubVariant?.Label} {Text("HubWeightsLabel")} {Text("HubWeightsSize")} {Text("HubDetailCounts")}");
+            // the README: front matter and the HTML block gone, heading and paragraph rendered
+            var readme = SmokeFind<RichTextBox>(_hubDetail, r => r.Tag as string == "HubReadme");
+            var blocks = readme?.Document.Blocks.OfType<Paragraph>().Select(p => new TextRange(p.ContentStart, p.ContentEnd).Text).ToList() ?? [];
+            if (blocks.Count != 2 || blocks[0] != "Qwen3.8 480B" || blocks[1] != "Run it with llama.cpp on your own machine.")
+                return Fail("README: " + string.Join(" / ", blocks));
+            await Task.Delay(200); // the switched card's layout
             snap("20-model-hub", null);
             SmokeFind<Hyperlink>(_hubDetail, h => h.Tag as string == "HubOpenHf")?.RaiseEvent(new RoutedEventArgs(Hyperlink.ClickEvent));
             if (!opened.SequenceEqual(["https://huggingface.co/" + Qwen]))
@@ -678,6 +929,28 @@ public partial class MainWindow
                 return Fail("Down did not move to the next row (or changed the detail)");
             if (!HubKey(Key.Enter, false) || _hubSelected?.Id != Tiny || SmokeFind<StackPanel>(_hubDetail, p => p.Tag as string == "HubDetail:" + Tiny) is null)
                 return Fail("Enter did not show the row");
+            await _hubDetailTask;
+            if (Text("HubNoReadme") != "No README" || _hubVariant?.Label != "Q8_0" || Chips() != "HubTag:text-generation")
+                return Fail($"Tiny: README {Text("HubNoReadme")}, weights {_hubVariant?.Label}, chips {Chips()}");
+
+            // another row selected while the first one's weights are still loading: only the new model shows, even when the
+            // old reply lands afterwards
+            _hubTextCache.Clear();
+            fake.Hold = new TaskCompletionSource();
+            SmokeClick(HubRows()[0]);
+            var stale = _hubDetailTask;
+            await Task.Delay(100);
+            if (Find<TextBlock>("HubWeightsLoading")?.Text != "Loading weights…")
+                return Fail("no skeleton while the weights load");
+            SmokeClick(HubRows()[1]);
+            await _hubDetailTask;
+            fake.Hold.SetResult();
+            fake.Hold = null;
+            await stale;
+            await Task.Delay(100);
+            if (_hubSelected?.Id != Tiny || SmokeFind<StackPanel>(_hubDetail, p => p.Tag as string == "HubDetail:" + Tiny) is null || _hubVariant?.Label != "Q8_0" ||
+                Text("HubWeightsLabel") != "Q8_0" || _hubSha != "tinysha" || Chips() != "HubTag:text-generation" || Text("HubNoReadme") != "No README")
+                return Fail($"a stale load showed: {_hubSelected?.Id}, weights {_hubVariant?.Label} {Text("HubWeightsLabel")}, sha {_hubSha}, chips {Chips()}");
 
             // a typo finds its model (the query's variants asked in turn); no match says so; the clear button
             await Type("qwn 3.8");
@@ -725,6 +998,23 @@ public partial class MainWindow
             if (Rows() != $"{Qwen}, {Tiny}, {HubFakeHandler.PageTwo}" || !fake.Seen.Contains(HubFakeHandler.NextUrl))
                 return Fail($"paging: rows [{Rows()}]");
 
+            // a repo without GGUF files says so; a failing load shows a red notice and Retry loads it
+            SmokeClick(HubRows()[2]);
+            await _hubDetailTask;
+            if (Text("HubNoGguf") != "No GGUF files in this repository" || Find<Button>("HubDownload") is not null || _hubVariant is not null)
+                return Fail("no-GGUF repo: " + Text("HubNoGguf"));
+            _hubTextCache.Clear();
+            fake.Status = HttpStatusCode.InternalServerError;
+            SmokeClick(HubRows()[0]);
+            await _hubDetailTask;
+            fake.Status = HttpStatusCode.OK;
+            if (Text("HubWeightsError") != "Hugging Face answered 500 (InternalServerError)." || Find<Button>("HubWeightsRetry") is not { } weightsRetry || Find<Button>("HubDownload") is not null)
+                return Fail("failed weights: " + Text("HubWeightsError"));
+            SmokeClick(weightsRetry);
+            await _hubDetailTask;
+            if (_hubVariant?.Label != "Q2_K" || Text("HubWeightsError") is not null || Find<Button>("HubDownload") is null)
+                return Fail($"weights Retry: {_hubVariant?.Label}, {Text("HubWeightsError")}");
+
             // HTTP 429: a readable error with Retry
             fake.Status = HttpStatusCode.TooManyRequests;
             await Type("tiny");
@@ -756,7 +1046,8 @@ public partial class MainWindow
         finally
         {
             CloseModelHub();
-            (HubHttpHandlerFactory, HubVramGiBOverride, _openExternal, _hubHttp) = (factory, vramWas, open, null);
+            (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp) = (factory, vramWas, ramWas, open, null);
+            _hubTextCache.Clear();
             (_settings.HubSort, _settings.HubOnlyFit, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
             _settings.Save();
             _hubPageCache.Clear();
@@ -780,17 +1071,41 @@ internal sealed class HubFakeHandler : HttpMessageHandler
     private const string Models = "[" + QwenJson + """,{"id":"zyxlab/Tiny-1B-GGUF","downloads":1300000,"likes":12,"lastModified":"2026-10-01T00:00:00.000Z","createdAt":"2026-09-01T00:00:00.000Z","trendingScore":3,"gguf":{"total":1000000000},"pipeline_tag":"text-generation","tags":["gguf"]},{"id":"art/flux-gguf","library_name":"diffusers","pipeline_tag":"text-to-image","tags":["gguf"],"downloads":5,"likes":1}]""";
     private const string SecondPage = "[" + QwenJson + """,{"id":"zyxlab/Page-Two-GGUF","downloads":10,"likes":1,"lastModified":"2026-08-01T00:00:00.000Z","gguf":{"total":2000000000},"tags":["gguf"]}]""";
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    // One repo's files (?blobs=true): Qwen has a sharded variant, three plain ones and an mmproj; Tiny one plain variant;
+    // Page-Two no GGUF at all. Only Qwen has a README (with front matter and HTML to clean); the others 404.
+    public const string QwenBlobs = """{"sha":"qwensha","siblings":[{"rfilename":"README.md","size":900},{"rfilename":"UD-Q4_K_XL/Qwen3.8-480B-UD-Q4_K_XL-00001-of-00002.gguf","size":3000000000},{"rfilename":"UD-Q4_K_XL/Qwen3.8-480B-UD-Q4_K_XL-00002-of-00002.gguf","size":2000000000},{"rfilename":"Qwen3.8-480B-Q2_K.gguf","size":1500000000},{"rfilename":"Qwen3.8-480B-Q3_K_M.gguf","size":2100000000},{"rfilename":"Qwen3.8-480B-BF16.gguf","size":20000000000},{"rfilename":"mmproj-BF16.gguf","size":600000000}]}""";
+    private const string TinyBlobs = """{"sha":"tinysha","siblings":[{"rfilename":"Tiny-1B-Q8_0.gguf","size":1100000000}]}""";
+    private const string NoGgufBlobs = """{"sha":"p2","siblings":[{"rfilename":"README.md","size":10},{"rfilename":"model.safetensors","size":2000000000}]}""";
+    public const string QwenReadme = "---\nlicense: apache-2.0\ntags: [gguf]\n---\n<div align=\"center\">\n<img src=\"logo.png\">\n</div>\n\n# Qwen3.8 480B\n\nRun it with **llama.cpp** on your own machine.\n";
+    // Set: Qwen's ?blobs=true reply waits for it, ignoring cancellation (a reply already on its way).
+    public TaskCompletionSource? Hold;
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var url = request.RequestUri!.AbsoluteUri;
         lock (Seen)
             Seen.Add(url);
         if (Status != HttpStatusCode.OK)
-            return Task.FromResult(new HttpResponseMessage(Status) { Content = new StringContent("") });
+            return new HttpResponseMessage(Status) { Content = new StringContent("") };
+        var path = request.RequestUri.AbsolutePath;
+        if (path.StartsWith("/api/models/", StringComparison.Ordinal) || path.EndsWith("/resolve/main/README.md", StringComparison.Ordinal))
+        {
+            if (Hold is { } hold && path == "/api/models/" + Qwen)
+                await hold.Task;
+            var body = path switch
+            {
+                "/api/models/" + Qwen => QwenBlobs,
+                "/api/models/" + Tiny => TinyBlobs,
+                "/api/models/" + PageTwo => NoGgufBlobs,
+                "/" + Qwen + "/resolve/main/README.md" => QwenReadme,
+                _ => null,
+            };
+            return new HttpResponseMessage(body is null ? HttpStatusCode.NotFound : HttpStatusCode.OK) { Content = new StringContent(body ?? "") };
+        }
         var second = url == NextUrl;
         var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(second ? SecondPage : Models) };
         if (Paged && !second)
             response.Headers.TryAddWithoutValidation("Link", $"<{NextUrl}>; rel=\"next\"");
-        return Task.FromResult(response);
+        return response;
     }
 }

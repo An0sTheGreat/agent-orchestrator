@@ -324,6 +324,55 @@ internal static class HubLogic
             : $"{(int)(age.TotalDays / 365)}y ago";
     }
 
+    // ---- README ----
+
+    // A line opening a raw HTML block: a comment, a block-level tag, or nothing but tags (an autolink like <https://x> is not a tag).
+    private static readonly Regex HtmlBlockRx = new(
+        @"^\s*(<!--|</?(address|article|aside|blockquote|center|details|div|dl|figure|footer|h[1-6]|header|hr|li|nav|ol|p|picture|section|summary|table|tbody|td|th|thead|tr|ul)(\s|/?>|$)|(</?[a-z][a-z0-9-]*(\s[^>]*)?/?>\s*)+$)",
+        RegexOptions.IgnoreCase);
+
+    // The README as our Markdown renderer can show it: no YAML front matter, no raw HTML blocks (from the opening line through
+    // the next blank line, a comment through its end), code fences untouched. ponytail: CommonMark's HTML block rules, roughly.
+    public static string CleanReadme(string md)
+    {
+        var lines = md.Replace("\r\n", "\n").Split('\n');
+        var at = 0;
+        if (lines[0].TrimEnd() == "---" && Array.FindIndex(lines, 1, l => l.TrimEnd() is "---" or "...") is var end and > 0)
+            at = end + 1;
+        var kept = new List<string>();
+        bool fence = false, html = false, comment = false;
+        for (; at < lines.Length; at++)
+        {
+            var line = lines[at];
+            var t = line.Trim();
+            if (comment)
+            {
+                comment = !line.Contains("-->", StringComparison.Ordinal);
+                continue;
+            }
+            if (html && t.Length > 0)
+                continue;
+            if (html)
+            {
+                html = false;
+                if (kept.Count == 0 || kept[^1].Trim().Length == 0)
+                    continue;
+            }
+            else if (!fence && HtmlBlockRx.IsMatch(line))
+            {
+                if (t.StartsWith("<!--", StringComparison.Ordinal))
+                    comment = !t[4..].Contains("-->", StringComparison.Ordinal);
+                else
+                    html = true;
+                continue;
+            }
+            if (t.StartsWith("```", StringComparison.Ordinal) || t.StartsWith("~~~", StringComparison.Ordinal))
+                fence = !fence;
+            kept.Add(line);
+        }
+        return string.Join("\n", kept).Trim('\n');
+    }
+
     // ---- self-test (no network) ----
 
     internal static void HubLogicSelfTest()
@@ -447,5 +496,18 @@ internal static class HubLogic
         Check(FormatCount(1400) == "1.4K" && FormatCount(6_100_000) == "6.1M" && FormatCount(999) == "999" && FormatCount(27_300) == "27K", "FormatCount");
         Check(FormatAge(now.AddDays(-1), now) == "1d ago" && FormatAge(now.AddDays(-60), now) == "2mo ago" && FormatAge(now.AddDays(-27), now) == "27d ago"
               && FormatAge(null, now) == "" && FormatAge(now.AddHours(-3), now) == "3h ago", "FormatAge");
+
+        // README
+        void Readme(string md, string want, string what) => Check(CleanReadme(md) == want, $"CleanReadme {what}: [{CleanReadme(md)}]");
+        Readme("---\r\nlicense: mit\r\ntags: [gguf]\r\n---\r\n# Title\r\n\r\nBody", "# Title\n\nBody", "front matter");
+        Readme("---\nno end", "---\nno end", "unclosed front matter");
+        Readme("# A\n\n---\n\nB", "# A\n\n---\n\nB", "a rule is not front matter");
+        Readme("<div align=\"center\">\n<img src=\"a.png\">\n</div>\n\n# T", "# T", "HTML block");
+        Readme("A\n\n<p align=\"center\">centred <b>x</b>\nmore</p>\n\nB", "A\n\nB", "block tag with text");
+        Readme("A\n\n<img src=\"x.png\" />\n\nB", "A\n\nB", "tags-only line");
+        Readme("<!-- note\n\nstill -->\nText", "Text", "comment over a blank line");
+        Readme("<!-- one line -->\nText", "Text", "one-line comment");
+        Readme("```html\n<div>x</div>\n```", "```html\n<div>x</div>\n```", "HTML in a fence");
+        Readme("See <b>bold</b> here\n<https://x.y>", "See <b>bold</b> here\n<https://x.y>", "inline tags and autolinks");
     }
 }
