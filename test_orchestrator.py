@@ -3623,6 +3623,24 @@ class RunCommandTests(unittest.TestCase):
             with patch.object(sandbox, "environment_protected", return_value=True), self.assertRaises(AssertionError):
                 reviewer("echo hi", shell="cmd")  # read-only roles stay in the sandbox (here: its run, which fails the test)
 
+    def test_a_mode_change_from_the_launcher_reaches_the_running_turn(self):
+        full_ask = {**self.request, "sandbox": {**self.request["sandbox"], "full_access": True}, "permissions": "ask"}
+        run = orchestrator.command_runner(self.folders, full_ask)  # the turn started in Always Ask
+        with patch.object(orchestrator, "PERMISSIONS_LIVE", None), patch.object(orchestrator, "STDIN_READER", None), \
+                patch.object(orchestrator, "ask_user", lambda *a, **kw: False):
+            self.assertIn("DENIED", run("echo hi", shell="cmd"))
+            # the launcher writes {"permissions": ...} on stdin; junk and unknown modes are ignored
+            lines = io.StringIO('{"permissions": "bogus"}\nnot json\n{"permissions": "all"}\n')
+            with patch.object(sys, "stdin", lines):
+                queue_ = orchestrator.stdin_lines()
+                deadline = time.time() + 5
+                while orchestrator.PERMISSIONS_LIVE != "all" and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertEqual(orchestrator.PERMISSIONS_LIVE, "all")
+                self.assertEqual([queue_.get(timeout=5), queue_.get(timeout=5)],  # other lines still reach launcher_call
+                                 ['{"permissions": "bogus"}\n', "not json\n"])
+            self.assertTrue(run("echo hi", shell="cmd").startswith("EXIT 0 (outside the sandbox)\nhi"))  # no question now
+
     def test_every_mode_grants_the_skills_folder_read_only_and_never_for_writing(self):
         skills = self.cfg / "skills"  # <data>\skills beside the sandbox home <data>\sb
         skills.mkdir()

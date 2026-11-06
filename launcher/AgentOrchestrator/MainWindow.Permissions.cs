@@ -51,5 +51,7 @@ public partial class MainWindow
         _settings.CommandPermissions = value;
         _settings.Save();
         RefreshPermissions();
+        // a running turn read its mode when it started: tell it the change (orchestrator.py stdin_lines)
+        ToTurn(_chatProcess ?? _process, System.Text.Json.JsonSerializer.Serialize(new { permissions = value }));
     }
 }

@@ -4112,6 +4112,7 @@ def launcher_call(event: str, **data: Any) -> dict[str, Any] | None:
         return None
 
 
+PERMISSIONS_LIVE: str | None = None  # "ask", "safe" or "all" once the launcher sent a change; wins over the request's
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
 STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
@@ -4133,6 +4134,10 @@ def stdin_lines() -> queue.Queue:
                         message = json.loads(line)
                     except ValueError:
                         message = None
+                    if isinstance(message, dict) and message.get("permissions") in ("ask", "safe", "all") and "id" not in message:
+                        global PERMISSIONS_LIVE
+                        PERMISSIONS_LIVE = message["permissions"]  # the user changed the Code composer's mode mid-turn
+                        continue
                     if not (isinstance(message, dict) and "steer" in message):
                         lines.put(line)
                         continue
@@ -4330,7 +4335,9 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     risky git repository still asks). An approval widens the sandbox for that command only. Output that looks like a
     blocked network call asks once whether to retry with the network. Known secrets are removed from the output."""
     settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
-    mode = request.get("permissions") if request.get("permissions") in ("ask", "safe", "all") else "safe"
+    start_mode = request.get("permissions") if request.get("permissions") in ("ask", "safe", "all") else "safe"
+    if EVENTS:
+        stdin_lines()  # read the launcher's lines from the start, so a mode change reaches this turn before its first question
     home = Path(str(settings.get("home") or Path(tempfile.gettempdir()) / "agent-orchestrator-sandbox"))
     name = sandbox.container_name(f"{request.get('session') or 'default'}{'.ro' if read_only else ''}")
     temp, state = home / "tmp" / name, home / "grants"
@@ -4361,6 +4368,7 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
         if shell not in ("", "powershell", "cmd"):
             raise WorkflowError("shell must be 'powershell' or 'cmd'")
         timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
+        mode = PERMISSIONS_LIVE or start_mode  # the launcher may have changed it since the turn started
         full = settings.get("full_access") is True and not read_only  # the user's Full access setting: no sandbox for these roles
         if outside_sandbox is True or full:
             if read_only:
