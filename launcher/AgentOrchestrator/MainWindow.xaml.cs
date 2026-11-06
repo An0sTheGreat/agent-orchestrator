@@ -51,6 +51,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        ApiKeys.ApplyAll(); // keys typed into the app, before anything reads a key variable
         InitializeComponent();
         if (AppSettings.Unified) // one conversation view (a chat until it works in a folder), no Chat/Code switch
         {
