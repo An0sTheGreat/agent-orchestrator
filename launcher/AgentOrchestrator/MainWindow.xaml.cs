@@ -4837,6 +4837,7 @@ public partial class MainWindow : Window
         }
         _tunnel.Stop();
         StopRemoteServer();
+        _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))
             (_settings.WindowLeft, _settings.WindowTop, _settings.WindowWidth, _settings.WindowHeight) = (bounds.Left, bounds.Top, bounds.Width, bounds.Height);

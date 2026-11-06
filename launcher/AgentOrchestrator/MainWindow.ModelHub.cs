@@ -24,7 +24,24 @@ public partial class MainWindow
     internal static Func<HttpMessageHandler>? HubHttpHandlerFactory;
     internal static double? HubVramGiBOverride, HubRamGiBOverride; // --ui-smoke: the GPU memory and RAM the fit checks assume
 
-    private sealed record HubMachine(double? VramGiB, double RamGiB, HashSet<string> Cached);
+    // Cached: every repo folder in the hub cache (the fit filter keeps them). Downloaded: those whose snapshots hold a GGUF
+    // (the rows' Downloaded badge), plus the downloads finished since.
+    private sealed record HubMachine(double? VramGiB, double RamGiB, HashSet<string> Cached, HashSet<string> Downloaded);
+
+    // The page's one download: its repo and weights, the last progress, and how it ended. Cancelled: back to null.
+    private enum HubDlState { Running, Failed, Done }
+    private sealed record HubDl(string Repo, string Label, HubProgress? Progress, HubDlState State, string Error = "");
+    private HubDl? _hubDl;
+    private CancellationTokenSource? _hubDlCts; // OnClosing cancels it; leaving the page or switching rows does not
+    private Task _hubDlTask = Task.CompletedTask; // smokes await it
+    // Downloads must not follow redirects themselves (HubDownloader reads the hub's redirect) and may take hours.
+    private static HttpClient? _hubDlHttp;
+    private static HttpClient HubDlHttp => _hubDlHttp ??= NewHubDlHttp();
+    private Border _hubStrip = new(), _hubDlSlot = new(), _hubDlNotice = new();
+    private TextBlock _hubStripText = new(), _hubDlText = new();
+    private Border _hubDlFill = new();
+    // Bumped when the GGUFs on disk change (a download finished, the models folder changed): the model pickers rescan.
+    internal int _localModelsVersion;
 
     private const double HubGiB = 1024.0 * 1024 * 1024;
     private const int HubMaxPages = 10, HubEnoughRows = 8;
@@ -33,7 +50,7 @@ public partial class MainWindow
     private HttpClient? _hubHttp;
     private HttpClient HubHttp => _hubHttp ??= NewHubHttp();
     private readonly Dictionary<(string Query, string Sort), (DateTime At, List<HubModel> Rows, Uri? Next)> _hubPageCache = new();
-    private Task<HubMachine> _hubMachine = Task.FromResult(new HubMachine(null, 0, []));
+    private Task<HubMachine> _hubMachine = Task.FromResult(new HubMachine(null, 0, [], []));
     private CancellationTokenSource? _hubCts;
     private Task _hubTask = Task.CompletedTask; // smokes await it
     private DispatcherTimer? _hubDebounce;
@@ -68,6 +85,16 @@ public partial class MainWindow
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
         return http;
     }
+
+    private static HttpClient NewHubDlHttp()
+    {
+        var http = new HttpClient(HubHttpHandlerFactory?.Invoke() ?? new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
+        return http;
+    }
+
+    // Where downloads go. The folder-choice step makes this a setting.
+    private static (string Root, HubLayout Layout) HubTarget() => (LauncherLogic.HubCache(), HubLayout.HfCache);
 
     private void OpenModelHub()
     {
@@ -133,6 +160,20 @@ public partial class MainWindow
         DockPanel.SetDock(sortButton, Dock.Right);
         var searchRow = new DockPanel { Margin = new Thickness(0, 20, 0, 0), Children = { sortButton, new Grid { Children = { _hubSearch, glass, hint, clear } } } };
 
+        // ---- the running download, whichever row is shown
+        _hubStripText = new TextBlock { Tag = "HubStripText", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        _hubStripText.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        var stripCancel = new Button { Content = "Cancel", Tag = "HubStripCancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 2, 12, 2), FontSize = 11.5 };
+        stripCancel.Click += (_, _) => _hubDlCts?.Cancel();
+        DockPanel.SetDock(stripCancel, Dock.Right);
+        _hubStrip = new Border
+        {
+            Tag = "HubStrip", Margin = new Thickness(0, 16, 0, 0), Padding = new Thickness(14, 3, 4, 3), CornerRadius = new CornerRadius(10), Visibility = Visibility.Collapsed,
+            Child = new DockPanel { Children = { stripCancel, _hubStripText } },
+        };
+        _hubStrip.SetResourceReference(Border.BackgroundProperty, "Card");
+        var top = new StackPanel { Children = { _hubStrip, searchRow } };
+
         // ---- results (left) and detail (right)
         _hubStatus = new StackPanel { Tag = "HubStatus", Margin = new Thickness(10, 8, 10, 8), Visibility = Visibility.Collapsed };
         _hubList = new StackPanel { Tag = "HubRows" };
@@ -168,10 +209,10 @@ public partial class MainWindow
             RowDefinitions = { new RowDefinition { Height = GridLength.Auto }, new RowDefinition { Height = GridLength.Auto }, new RowDefinition() },
         };
         var header = new DockPanel { Children = { chips, new StackPanel { Children = { title, intro } } } };
-        Grid.SetRow(searchRow, 1);
+        Grid.SetRow(top, 1);
         Grid.SetRow(body, 2);
         page.Children.Add(header);
-        page.Children.Add(searchRow);
+        page.Children.Add(top);
         page.Children.Add(body);
         page.PreviewKeyDown += (_, e) =>
         {
@@ -183,6 +224,7 @@ public partial class MainWindow
         Reveal(CodeView, false);
         Reveal(ChatView, false);
         Reveal(ModelHubView, true);
+        HubDlShowProgress();
         HubSearch();
     }
 
@@ -201,16 +243,20 @@ public partial class MainWindow
         if (vram is null && await (_gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes)) is { } bytes and > 0)
             vram = bytes / HubGiB;
         var ram = HubRamGiBOverride ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / HubGiB;
-        var cached = await Task.Run(() =>
+        var (cached, downloaded) = await Task.Run(() =>
         {
+            (HashSet<string>, HashSet<string>) none = ([], []);
             try
             {
-                return Directory.EnumerateDirectories(LauncherLogic.HubCache(), "models--*")
-                    .Select(d => Path.GetFileName(d)["models--".Length..].Replace("--", "/")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var dirs = Directory.EnumerateDirectories(LauncherLogic.HubCache(), "models--*").ToList();
+                static string Repo(string d) => Path.GetFileName(d)["models--".Length..].Replace("--", "/");
+                static bool HasGguf(string d) => Path.Combine(d, "snapshots") is var s && Directory.Exists(s)
+                    && Directory.EnumerateFiles(s, "*.gguf", SearchOption.AllDirectories).Any();
+                return (dirs.Select(Repo).ToHashSet(StringComparer.OrdinalIgnoreCase), dirs.Where(HasGguf).Select(Repo).ToHashSet(StringComparer.OrdinalIgnoreCase));
             }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return new HashSet<string>(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return none; }
         });
-        return new HubMachine(vram, ram, cached);
+        return new HubMachine(vram, ram, cached, downloaded);
     }
 
     // "C:\Users\me\.cache\huggingface\hub" -> "…\huggingface\hub"
@@ -493,7 +539,12 @@ public partial class MainWindow
         var age = Line(HubLogic.FormatAge(m.LastModified, now));
         var right = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { stats, age } };
         (stats.HorizontalAlignment, age.HorizontalAlignment) = (HorizontalAlignment.Right, HorizontalAlignment.Right);
-        var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { Line(m.Name, strong: true), Line(m.Owner) } };
+        var done = HubPill("Downloaded");
+        (done.Tag, done.Margin, done.Padding, done.VerticalAlignment) = ("HubRowDownloaded", new Thickness(8, 0, 0, 0), new Thickness(7, 0, 7, 1), VerticalAlignment.Center);
+        done.Visibility = _hubMachine.IsCompletedSuccessfully && _hubMachine.Result.Downloaded.Contains(m.Id) ? Visibility.Visible : Visibility.Collapsed;
+        var nameLine = new DockPanel { Children = { done, Line(m.Name, strong: true) } };
+        DockPanel.SetDock(done, Dock.Right);
+        var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { nameLine, Line(m.Owner) } };
         var grid = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
         Grid.SetColumn(names, 1);
         Grid.SetColumn(right, 2);
@@ -645,13 +696,14 @@ public partial class MainWindow
         _hubFacts = RemoteMuted("");
         (_hubFacts.Tag, _hubFacts.Margin) = ("HubDetailCounts", new Thickness(4, 10, 0, 0));
         _hubReadme = new Border { Tag = "HubReadmeHost", Margin = new Thickness(0, 22, 0, 0) };
+        _hubDlNotice = new Border { Tag = "HubDownloadNotice", Margin = new Thickness(4, 8, 0, 0), Visibility = Visibility.Collapsed };
         (_hubVariant, _hubVariantList, _hubSha) = (null, [], "");
         HubFacts();
         _hubDetailTask = Task.WhenAll(HubLoadWeightsAsync(model, ct), HubLoadReadmeAsync(model, ct));
         return new StackPanel
         {
             Tag = "HubDetail:" + model.Id,
-            Children = { new DockPanel { Children = { badge, new StackPanel { Children = { name, actions } } } }, _hubChips, _hubWeights, _hubFacts, _hubReadme },
+            Children = { new DockPanel { Children = { badge, new StackPanel { Children = { name, actions } } } }, _hubChips, _hubWeights, _hubDlNotice, _hubFacts, _hubReadme },
         };
     }
 
@@ -697,7 +749,7 @@ public partial class MainWindow
             var machine = await _hubMachine;
             ct.ThrowIfCancellationRequested(); // another row was selected meanwhile
             _hubFitFor = (machine.VramGiB, machine.RamGiB > 0 ? machine.RamGiB : null);
-            _hubVariantList = HubLogic.OrderByFit(variants.Variants, _hubFitFor.Vram, _hubFitFor.Ram);
+            _hubVariantList = HubLogic.OrderByFit(variants.Variants, _hubFitFor.Vram, _hubFitFor.Ram, v => HubIsDownloaded(model.Id, v));
             (_hubSha, _hubVariant) = (variants.Sha, _hubVariantList.FirstOrDefault());
             if (variants.HasVision)
                 _hubChips.Children.Insert(model.PipelineTag is { Length: > 0 } ? 1 : 0, HubPill("Vision"));
@@ -720,6 +772,7 @@ public partial class MainWindow
             return;
         }
         var label = new TextBlock { Text = v.Label, Tag = "HubWeightsLabel", FontSize = 13.5, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+        label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary"); // not the ghost button's muted text
         var gguf = HubPill("GGUF");
         (gguf.Margin, gguf.VerticalAlignment) = (new Thickness(10, 0, 0, 0), VerticalAlignment.Center);
         var size = RemoteMuted(HubLogic.FormatSize(v.SizeBytes));
@@ -738,8 +791,9 @@ public partial class MainWindow
             if (_hubSelected is { } m && _hubVariant is { } chosen)
                 HubStartDownload(m, _hubSha, chosen);
         };
-        DockPanel.SetDock(_hubDownloadButton, Dock.Right);
-        _hubWeights.Child = new DockPanel { Children = { _hubDownloadButton, selector } };
+        _hubDlSlot = new Border { VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(_hubDlSlot, Dock.Right);
+        _hubWeights.Child = new DockPanel { Children = { _hubDlSlot, selector } };
         UpdateHubDownloadButton();
     }
 
@@ -755,24 +809,178 @@ public partial class MainWindow
                 _hubVariant = v;
                 HubShowVariant();
             });
-            item.Header = new StackPanel { Orientation = Orientation.Horizontal, Children = { HubFitIcon(HubFitOf(v)), new TextBlock { Text = v.Label, VerticalAlignment = VerticalAlignment.Center } } };
+            var downloaded = _hubSelected is { } m && HubIsDownloaded(m.Id, v);
+            item.Header = new StackPanel { Orientation = Orientation.Horizontal, Children = { HubFitIcon(HubFitOf(v)), new TextBlock { Text = v.Label + (downloaded ? "  ✓" : ""), Tag = downloaded ? "hubdownloaded" : null, VerticalAlignment = VerticalAlignment.Center } } };
             (item.IsChecked, item.Tag, item.InputGestureText) = (ReferenceEquals(v, _hubVariant), "hubvariant:" + v.Label, HubLogic.FormatSize(v.SizeBytes));
             menu.Items.Add(item);
         }
         return menu;
     }
 
-    // The downloads step extends this (progress, cancel, already downloaded).
-    private void UpdateHubDownloadButton()
+    private static bool HubIsDownloaded(string repo, HubVariant v)
     {
-        _hubDownloadButton.IsEnabled = _hubVariant is not null;
-        _hubDownloadButton.ToolTip = _hubVariant is { } v ? $"Download {v.Label} ({HubLogic.FormatSize(v.DownloadBytes)})" : null;
+        var (root, layout) = HubTarget();
+        return v.Files.Concat(v.Companions).All(f => HubDownloader.IsDownloaded(root, layout, repo, f.Name));
     }
 
+    // ponytail: any *.incomplete blob of the repo counts, whichever weights it belongs to; HfCache layout only.
+    private static bool HubHasPartial(string repo)
+    {
+        var blobs = Path.Combine(HubDownloader.RepoFolder(HubTarget().Root, repo), "blobs");
+        return Directory.Exists(blobs) && Directory.EnumerateFiles(blobs, "*.incomplete").Any();
+    }
+
+    // The card's right side: the progress pill (this model's download running), "Downloaded ✓", "Resume" (a partial file
+    // left by a cancel or a failure) or "Download"; under the card, the failed download's notice with Retry.
+    private void UpdateHubDownloadButton()
+    {
+        if (_hubSelected is not { } m || _hubVariant is not { } v)
+        {
+            _hubDownloadButton.IsEnabled = false;
+            return;
+        }
+        var dl = _hubDl is { } d && d.Repo == m.Id ? d : null;
+        if (dl is { State: HubDlState.Running })
+            _hubDlSlot.Child = HubProgressPill();
+        else
+        {
+            var done = HubIsDownloaded(m.Id, v);
+            (_hubDownloadButton.Content, _hubDownloadButton.IsEnabled) = done ? ("Downloaded ✓", false) : (HubHasPartial(m.Id) ? "Resume" : "Download", true);
+            _hubDownloadButton.ToolTip = done ? null : $"Download {v.Label} ({HubLogic.FormatSize(v.DownloadBytes)})";
+            _hubDlSlot.Child = _hubDownloadButton;
+        }
+        _hubDlNotice.Child = dl is { State: HubDlState.Failed } ? HubNotice(dl.Error, "HubDownload", () =>
+        {
+            if (_hubSelected is { } sm && _hubVariant is { } sv)
+                HubStartDownload(sm, _hubSha, sv);
+        }) : null;
+        _hubDlNotice.Visibility = _hubDlNotice.Child is null ? Visibility.Collapsed : Visibility.Visible;
+        HubDlShowProgress();
+    }
+
+    // Bar, "42%  ·  1.2 / 2.9 GB  ·  12 MB/s  ·  2m left", Cancel; HubDlShowProgress fills it in.
+    private Border HubProgressPill()
+    {
+        _hubDlFill = new Border { Width = 0, HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(2) };
+        _hubDlFill.SetResourceReference(Border.BackgroundProperty, "Accent");
+        var track = new Border { Width = 90, Height = 4, CornerRadius = new CornerRadius(2), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 10, 0), Child = _hubDlFill };
+        track.SetResourceReference(Border.BackgroundProperty, "Hover");
+        _hubDlText = new TextBlock { Tag = "HubDownloadProgress", FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        _hubDlText.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        var cancel = new Button { Content = "✕", Tag = "HubDownloadCancel", ToolTip = "Cancel the download", Style = (Style)FindResource("GhostButton"), Width = 26, Height = 26, Padding = new Thickness(0), FontSize = 11, Margin = new Thickness(6, 0, 0, 0) };
+        cancel.Click += (_, _) => _hubDlCts?.Cancel();
+        var pill = new Border
+        {
+            Tag = "HubDownloadPill", Padding = new Thickness(14, 3, 4, 3), CornerRadius = new CornerRadius(10),
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { track, _hubDlText, cancel } },
+        };
+        pill.SetResourceReference(Border.BackgroundProperty, "Card");
+        return pill;
+    }
+
+    // The strip (any row) and the pill (the downloading model's detail) from _hubDl.
+    private void HubDlShowProgress()
+    {
+        var running = _hubDl is { State: HubDlState.Running } dl ? dl : null;
+        _hubStrip.Visibility = running is null ? Visibility.Collapsed : Visibility.Visible;
+        if (running is null)
+            return;
+        var p = running.Progress;
+        var percent = p is { TotalBytes: > 0 } ? (int)(p.DoneBytes * 100 / p.TotalBytes) : 0;
+        _hubStripText.Text = $"Downloading {running.Repo} {running.Label}: {percent}%";
+        var parts = new List<string> { percent + "%" };
+        if (p is not null)
+        {
+            parts.Add($"{p.DoneBytes / 1e9:0.0} / {p.TotalBytes / 1e9:0.0} GB");
+            if (HubLogic.FormatSpeed(p.BytesPerSecond) is { Length: > 0 } speed)
+                parts.Add(speed);
+            if (HubLogic.FormatEta(p.TotalBytes - p.DoneBytes, p.BytesPerSecond) is { Length: > 0 } eta)
+                parts.Add(eta + " left");
+        }
+        _hubDlText.Text = string.Join("  ·  ", parts);
+        _hubDlFill.Width = 90 * percent / 100.0;
+    }
+
+    // One download at a time, off the UI thread, with its own cancel (only Cancel and closing the app stop it). The token
+    // comes from the environment only (HF_TOKEN), never stored or shown.
     private void HubStartDownload(HubModel model, string sha, HubVariant variant)
     {
-        // implemented in the downloads step
+        if (_hubDl is { State: HubDlState.Running })
+        {
+            Toast("A download is running", "#F7C873");
+            return;
+        }
+        var (root, layout) = HubTarget();
+        var files = variant.Files.Concat(variant.Companions).Select(f => new HubDownloadFile(f.Name, f.Size)).ToList();
+        var missing = files.Where(f => !HubDownloader.IsDownloaded(root, layout, model.Id, f.Name)).Sum(f => f.Size);
+        if (HubDownloader.CheckDiskSpace(root, missing) is { } full)
+        {
+            _hubDl = new HubDl(model.Id, variant.Label, null, HubDlState.Failed, full);
+            UpdateHubDownloadButton();
+            return;
+        }
+        _hubDlCts?.Dispose();
+        _hubDlCts = new CancellationTokenSource();
+        _hubDl = new HubDl(model.Id, variant.Label, null, HubDlState.Running);
+        _hubDlTask = HubDownloadAsync(model.Id, sha, variant.Label, files, _hubDlCts.Token);
+        UpdateHubDownloadButton();
     }
+
+    private async Task HubDownloadAsync(string repo, string sha, string label, List<HubDownloadFile> files, CancellationToken ct)
+    {
+        var (root, layout) = HubTarget();
+        var progress = new Progress<HubProgress>(p =>
+        {
+            if (_hubDl is { State: HubDlState.Running } dl && dl.Repo == repo)
+            {
+                _hubDl = dl with { Progress = p };
+                HubDlShowProgress();
+            }
+        });
+        var downloader = new HubDownloader(HubDlHttp, root, layout, HubDownloader.EnvToken());
+        try
+        {
+            await Task.Run(() => downloader.DownloadAsync(repo, sha, files, progress, ct), ct);
+            _hubDl = new HubDl(repo, label, _hubDl?.Progress, HubDlState.Done);
+            if (_hubMachine.IsCompletedSuccessfully)
+                _hubMachine.Result.Downloaded.Add(repo);
+            _localModelsVersion++;
+            Toast($"{repo} {label} downloaded");
+            foreach (var row in HubRows().Where(r => ((HubModel)r.DataContext).Id == repo))
+                if (SmokeFind<Border>(row, b => b.Tag as string == "HubRowDownloaded") is { } badge)
+                    badge.Visibility = Visibility.Visible;
+            if (_hubSelected?.Id == repo && _hubVariantList.Count > 0)
+            {
+                _hubVariantList = HubLogic.OrderByFit(_hubVariantList, _hubFitFor.Vram, _hubFitFor.Ram, v => HubIsDownloaded(repo, v));
+                HubShowVariant();
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            _hubDl = null; // the partial file stays: Resume
+        }
+        catch (Exception e)
+        {
+            _hubDl = new HubDl(repo, label, null, HubDlState.Failed, HubDownloadErrorText(e));
+        }
+        if (_hubSelected?.Id == repo && _hubVariant is not null)
+            UpdateHubDownloadButton();
+        else
+            HubDlShowProgress();
+    }
+
+    private static string HubDownloadErrorText(Exception e) => e switch
+    {
+        HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden } =>
+            e.Message + ". Set the HF_TOKEN environment variable and restart the app.",
+        HttpRequestException { StatusCode: HttpStatusCode.NotFound } => "File not found on Hugging Face.",
+        HttpRequestException { StatusCode: not null } => e.Message + ".",
+        HttpRequestException => "Could not reach Hugging Face: " + e.Message,
+        OperationCanceledException => "Hugging Face stopped sending data. Retry resumes the download.",
+        IOException or UnauthorizedAccessException => "Could not write the download: " + e.Message,
+        _ => "The download failed: " + e.Message,
+    };
 
     // README.md from the repo, cleaned (HubLogic.CleanReadme) and rendered; the wheel scrolls the detail pane.
     private async Task HubLoadReadmeAsync(HubModel model, CancellationToken ct)

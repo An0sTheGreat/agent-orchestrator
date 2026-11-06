@@ -712,7 +712,7 @@ public partial class MainWindow
         // The picker (MainWindow.ModelPicker.cs) opens instead of the box's own list; the box shows the current model or the
         // pick. The list loads the first time it opens (never at startup); the body stays usable meanwhile.
         ModelChoice? initial = null;
-        var requested = false;
+        int? scannedAt = null; // the _localModelsVersion the list was scanned at: a download or a new models folder rescans
         var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, choice =>
         {
             var old = modelBox.SelectedItem;
@@ -726,9 +726,11 @@ public partial class MainWindow
             if (!modelBox.IsEnabled)
                 return;
             picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
-            if (!requested)
+            if (scannedAt != _localModelsVersion)
+            {
+                scannedAt = _localModelsVersion;
                 LoadModels();
-            requested = true;
+            }
         }
         // Opened on the release: opened on the press, the release would count as a click outside and close it. A click
         // while it is open closes it (the press already did, StaysOpen being false).
@@ -778,7 +780,7 @@ public partial class MainWindow
                 modelStatus.Text = $"Could not list models ({exception.Message}); the current model is kept.";
                 modelStatus.Foreground = red;
                 picker.SetEntries([], modelStatus.Text);
-                requested = false; // the next open tries again
+                scannedAt = null; // the next open tries again
             }
         }
 

@@ -172,6 +172,7 @@ public partial class MainWindow
             return;
         _settings.ModelsFolder = dialog.FolderName;
         _settings.Save();
+        _localModelsVersion++;
         ShowModelsFolder();
     }
 
@@ -179,6 +180,7 @@ public partial class MainWindow
     {
         _settings.ModelsFolder = "";
         _settings.Save();
+        _localModelsVersion++;
         ShowModelsFolder();
     }
 

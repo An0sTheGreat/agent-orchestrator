@@ -312,6 +312,19 @@ internal static class HubLogic
 
     public static string FormatCount(long n) => n < 1000 ? n.ToString(CultureInfo.InvariantCulture) : Scaled(n, ["", "K", "M", "B"], 1000);
 
+    // A download's speed: "12.3 MB/s" (decimal, like FormatSize); "" before the first measure.
+    public static string FormatSpeed(double bytesPerSecond) =>
+        bytesPerSecond > 0 ? (bytesPerSecond / 1e6).ToString(bytesPerSecond < 1e7 ? "0.0" : "0", CultureInfo.InvariantCulture) + " MB/s" : "";
+
+    // The time left at this speed: "45s", "12m", "1h 05m"; "" when unknown (no speed yet).
+    public static string FormatEta(long remainingBytes, double bytesPerSecond)
+    {
+        if (bytesPerSecond <= 0 || remainingBytes < 0)
+            return "";
+        var s = (long)Math.Ceiling(remainingBytes / bytesPerSecond);
+        return s < 60 ? s + "s" : s < 3600 ? (s + 59) / 60 + "m" : $"{s / 3600}h {s % 3600 / 60:00}m";
+    }
+
     public static string FormatAge(DateTimeOffset? t, DateTimeOffset now)
     {
         if (t is not { } time)
@@ -496,6 +509,9 @@ internal static class HubLogic
         Check(FormatCount(1400) == "1.4K" && FormatCount(6_100_000) == "6.1M" && FormatCount(999) == "999" && FormatCount(27_300) == "27K", "FormatCount");
         Check(FormatAge(now.AddDays(-1), now) == "1d ago" && FormatAge(now.AddDays(-60), now) == "2mo ago" && FormatAge(now.AddDays(-27), now) == "27d ago"
               && FormatAge(null, now) == "" && FormatAge(now.AddHours(-3), now) == "3h ago", "FormatAge");
+        Check(FormatSpeed(12_340_000) == "12 MB/s" && FormatSpeed(2_350_000) == "2.4 MB/s" && FormatSpeed(0) == "", "FormatSpeed: " + FormatSpeed(2_350_000));
+        Check(FormatEta(45_000_000, 1_000_000) == "45s" && FormatEta(61_000_000, 1_000_000) == "2m" && FormatEta(3_900_000_000, 1_000_000) == "1h 05m"
+              && FormatEta(10, 0) == "" && FormatEta(0, 5) == "0s", "FormatEta: " + FormatEta(3_900_000_000, 1_000_000));
 
         // README
         void Readme(string md, string want, string what) => Check(CleanReadme(md) == want, $"CleanReadme {what}: [{CleanReadme(md)}]");
