@@ -19,6 +19,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.SkillCompleteSelfTest();
             AgentOrchestrator.MainWindow.RunLogSelfTest();
             AgentOrchestrator.HubLogic.HubLogicSelfTest();
+            AgentOrchestrator.HubDownloader.HubDownloadSelfTest();
             RemoteServer.SelfTest();
             RemoteTunnel.SelfTest();
             Shutdown(0);
