@@ -2162,8 +2162,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New, Search and Remote API, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New,+Search,+Remote API,SECTION:CHAT,?,SECTION:CODE";
+                // New, Search, Remote API and Models Hub, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Search,+Remote API,+Models Hub,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
