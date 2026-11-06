@@ -29,14 +29,35 @@ public partial class MainWindow
     }
 
     // A built-in worker's editable prompts (prompts/<file>, overridden in <data>\prompts\<file>; orchestrator.prompt_text).
-    private static (string Label, string File)[] RolePromptFiles(string role) => role switch
+    // Used: whether the current settings use the prompt. An unused prompt is hidden unless the user edited it (then it says so).
+    private (string Label, string File, Func<bool> Used)[] RolePromptFiles(string role)
     {
-        "planner" => [("Code", "lead.txt"), ("Code with Pi", "lead_pi.txt"), ("Start project", "lead_project.txt"), ("Step-by-step pipeline", "planner.txt")],
-        "implementer" => [("Delegated tasks", "sub_implementer.txt"), ("Step-by-step pipeline", "implementer.txt")],
-        "reviewer" => [("Delegated reviews", "sub_reviewer.txt"), ("Step-by-step pipeline", "reviewer.txt")],
-        "compactor" => [("Summaries", "compactor.txt")],
-        _ => [],
-    };
+        Func<bool> always = () => true;
+        return role switch
+        {
+            "planner" => [("Code", "lead.txt", () => !PiEngine), ("Code with Pi", "lead_pi.txt", () => PiEngine), ("Start project", "lead_project.txt", always),
+                          ("Start project: Lead + Reviewer", "lead_project_dual.txt", () => _settings.WorkflowMode is not ("tri" or "solo")),
+                          ("Start project: Lead + Implementer + Reviewer", "lead_project_tri.txt", () => _settings.WorkflowMode == "tri"),
+                          ("Start project: Lead only", "lead_project_solo.txt", () => _settings.WorkflowMode == "solo"),
+                          ("Step-by-step pipeline", "planner.txt", always)],
+            "implementer" => [("Delegated tasks", "sub_implementer.txt", always), ("Step-by-step pipeline", "implementer.txt", always)],
+            "reviewer" => [("Delegated reviews", "sub_reviewer.txt", always), ("Step-by-step pipeline", "reviewer.txt", always)],
+            "compactor" => [("Summaries", "compactor.txt", always)],
+            _ => [],
+        };
+    }
+
+    // Re-evaluates every prompt editor's visibility (engine and workflow mode changes call this).
+    private void RefreshPromptUsage()
+    {
+        if (WorkerSettingsHost.Child is not Panel root)
+            return;
+        foreach (var element in LogicalTreeHelper.GetChildren(root).OfType<FrameworkElement>().SelectMany(Flatten))
+            if (element.Tag is Action refresh)
+                refresh();
+        static IEnumerable<FrameworkElement> Flatten(FrameworkElement e) =>
+            LogicalTreeHelper.GetChildren(e).OfType<FrameworkElement>().SelectMany(Flatten).Prepend(e);
+    }
 
     private static string PromptOverridePath(string file) => Path.Combine(AppSettings.DataRoot, "prompts", file);
 
@@ -54,7 +75,7 @@ public partial class MainWindow
 
     // One prompt: its label (", edited" while it differs from the default) with the edit and reset buttons at the right, over
     // the box's top-right corner; the text is read-only until edit unlocks it.
-    private FrameworkElement PromptEditor(string label, string file, List<(string File, TextBox Box)> edits)
+    private FrameworkElement PromptEditor(string label, string file, Func<bool> used, List<(string File, TextBox Box)> edits)
     {
         var fallback = DefaultPromptText(file);
         var box = new TextBox
@@ -65,7 +86,14 @@ public partial class MainWindow
         };
         box.SetResourceReference(ForegroundProperty, "Muted");
         var title = new TextBlock { FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Bottom, ToolTip = $"prompts/{file}" };
-        void Title() => title.Text = label + (box.Text.Trim() == fallback ? "" : "  ·  edited");
+        StackPanel? panel = null;
+        void Title()
+        {
+            var edited = box.Text.Trim() != fallback;
+            title.Text = label + (edited ? "  ·  edited" : "") + (used() ? "" : "  ·  not used by the current settings");
+            if (panel is not null)
+                panel.Visibility = used() || edited ? Visibility.Visible : Visibility.Collapsed; // an unused prompt shows only while edited
+        }
         Button Icon(string glyph, string tag, string tip)
         {
             var b = new Button
@@ -100,7 +128,10 @@ public partial class MainWindow
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, Children = { editButton, reset } };
         DockPanel.SetDock(buttons, Dock.Right);
         // the buttons sit over the box's top-right corner, on the title's line, so they never cover its text
-        return new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { new DockPanel { Children = { buttons, title } }, box } };
+        panel = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { new DockPanel { Children = { buttons, title } }, box } };
+        panel.Tag = (Action)Title;
+        Title();
+        return panel;
     }
 
     // Writes each edited prompt to <data>\prompts (one back at its default removes its file); false when a write failed.
@@ -435,8 +466,8 @@ public partial class MainWindow
             // Collapsed until its header is clicked (the prompts are long); the choice is kept (PromptsExpanded).
             var promptBody = new StackPanel { Tag = "PromptBody", Visibility = _settings.PromptsExpanded ? Visibility.Visible : Visibility.Collapsed };
             promptBody.Children.Add(Muted("The edit button unlocks a prompt and the reset button restores the default; Save keeps the change, for every project."));
-            foreach (var (label, file) in RolePromptFiles(card.Role))
-                promptBody.Children.Add(PromptEditor(label, file, promptEdits));
+            foreach (var (label, file, used) in RolePromptFiles(card.Role))
+                promptBody.Children.Add(PromptEditor(label, file, used, promptEdits));
             var promptHeader = (TextBlock)workflow.Children[0];
             var promptTitle = promptHeader.Text;
             void ShowPrompts() => promptHeader.Text = (promptBody.Visibility == Visibility.Visible ? "▾  " : "▸  ") + promptTitle;
@@ -1516,6 +1547,18 @@ public partial class MainWindow
                 return Fail("the Save button stayed after its preset was deleted");
             _settings.Presets.RemoveAll(x => x.Name.StartsWith("smoke-", StringComparison.Ordinal));
             _settings.Save();
+            // LEAD's prompts: only the ones the engine and workflow mode use are listed
+            var (engine, flow) = (_settings.CodeEngine, _settings.WorkflowMode);
+            string Used(string e, string w)
+            {
+                (_settings.CodeEngine, _settings.WorkflowMode) = (e, w);
+                return string.Join(",", RolePromptFiles("planner").Where(f => f.Used()).Select(f => f.File[..^4]));
+            }
+            var (builtinDual, piSolo, builtinTri) = (Used("", "dual"), Used("pi", "solo"), Used("", "tri"));
+            (_settings.CodeEngine, _settings.WorkflowMode) = (engine, flow);
+            if (builtinDual != "lead,lead_project,lead_project_dual,planner" || piSolo != "lead_pi,lead_project,lead_project_solo,planner" ||
+                builtinTri != "lead,lead_project,lead_project_tri,planner")
+                return Fail($"the lead prompts used: {builtinDual} | {piSolo} | {builtinTri}");
             return true;
         }
         finally

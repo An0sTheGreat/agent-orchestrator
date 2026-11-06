@@ -4430,6 +4430,7 @@ public partial class MainWindow : Window
         _settings.WorkflowMode = mode;
         _settings.Save();
         ShowWorkflowMode();
+        RefreshPromptUsage();
         HoldWorkerTab(() =>
         {
             SyncCustomWorkers(removedRoles: mode switch { "tri" => [], "solo" => ["implementer", "reviewer"], _ => ["implementer"] });

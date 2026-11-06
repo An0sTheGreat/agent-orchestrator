@@ -36,6 +36,7 @@ public partial class MainWindow
         _settings.CodeEngine = engine;
         _settings.Save();
         RefreshPiStatus();
+        RefreshPromptUsage();
     }
 
     private void RefreshPiStatus()
