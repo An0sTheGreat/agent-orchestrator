@@ -3583,6 +3583,30 @@ class RunCommandTests(unittest.TestCase):
         self.assertEqual([orchestrator.command_key(c) for c in ("python -m pytest", '"C:\\Program Files\\x\\tool.exe" a', ".\\build.ps1", "")],
                          ["python", "tool", "build", ""])
 
+    def test_outside_sandbox_asks_every_time_and_runs_as_the_user(self):
+        asked = []
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or False):
+            for mode in ("safe", "ask", "all"):
+                run = orchestrator.command_runner(self.folders, {**self.request, "permissions": mode})
+                self.assertIn("DENIED", run("echo no", shell="cmd", outside_sandbox=True))  # asked even when "all"
+        self.assertEqual(asked, [("unsandboxed", "echo")] * 3)
+        asked.clear()
+        run = orchestrator.command_runner(self.folders, self.request)
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append((kind, key)) or True), \
+                patch.dict(os.environ, {"AO_TEST_API_KEY": "sk-secret-value-123"}):
+            ok = run("echo [%AO_TEST_API_KEY%] & cd", shell="cmd", outside_sandbox=True)
+            run("npm -v", shell="cmd", outside_sandbox=True)
+            run("powershell -c 1", shell="cmd", outside_sandbox=True)
+            slow = run("ping -n 20 127.0.0.1", shell="cmd", outside_sandbox=True, timeout_seconds=1)
+        self.assertTrue(ok.startswith("EXIT 0 (outside the sandbox)"), ok)
+        self.assertIn("[%AO_TEST_API_KEY%]", ok)  # secret-named variables are not in its environment
+        self.assertIn(str(self.root), ok)  # started in the project folder
+        self.assertEqual(asked[1:3], [("unsandboxed", "npm"), ("unsandboxed", "")])  # no Allow similar for a shell
+        self.assertTrue(slow.startswith("TIMED OUT after 1s"), slow)
+        reviewer = orchestrator.command_runner(self.folders, self.request, read_only=True)
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "stay in the sandbox"):
+            reviewer("echo", shell="cmd", outside_sandbox=True)
+
     def test_every_mode_grants_the_skills_folder_read_only_and_never_for_writing(self):
         skills = self.cfg / "skills"  # <data>\skills beside the sandbox home <data>\sb
         skills.mkdir()

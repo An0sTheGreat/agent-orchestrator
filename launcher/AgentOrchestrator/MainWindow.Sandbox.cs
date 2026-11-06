@@ -35,11 +35,14 @@ public partial class MainWindow
             {
                 "command" => ("Allow this command?", "The model wants to run this command (in the sandbox):", "Allow once", "Deny"),
                 "network" => ("Allow network access?", "The model wants to use the network (internet) for this command:", "Allow once", "Deny"),
+                "unsandboxed" => ("Run this command OUTSIDE the sandbox?", "The model wants to run this command as you, with your full rights and no sandbox " +
+                    "(it can read and change anything you can):", "Run it", "Deny"),
                 "git" => ("Keep this git repository?", "A command made a git repository that git could run programs from, as you:", "Keep it", "Quarantine it"),
                 _ => ("Allow writing in other folders?", "The model wants to write in these folders for this command " +
                     "(programs or settings kept there could later run with your rights):", "Allow once", "Deny"),
             };
             var after = kind == "git" ? "Quarantine renames its .git, so git ignores it; you can inspect it."
+                : kind == "unsandboxed" ? "Run it once? Only API keys and similar secret-named variables are left out of its environment."
                 : "Allow it once? The command still runs in the sandbox; only this access is added, for this command only.";
             if (similar)
                 after += "\n\nAllow similar commands for this session: " + (kind == "write" ? "writing in these folders" : $"{kind switch

@@ -1192,6 +1192,7 @@ public partial class MainWindow
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 SetChatStatus("Waiting for your approval…");
                 AnswerApproval(ev);
+                SetChatStatus($"{name} is running a command…"); // answered (or allowed earlier): no longer waiting
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 SetChatStatus("Looking at the page in the browser…");
