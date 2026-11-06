@@ -75,7 +75,7 @@ public partial class MainWindow
     private string _hubSha = "";
     private (double? Vram, double? Ram) _hubFitFor;
     private WrapPanel _hubChips = new();
-    private Border _hubWeights = new(), _hubReadme = new();
+    private Border _hubWeights = new(), _hubReadme = new(), _hubSaveTo = new(), _hubFolderChip = new() { Tag = new TextBlock() };
     private TextBlock _hubFacts = new();
     private Button _hubDownloadButton = new();
 
@@ -93,8 +93,124 @@ public partial class MainWindow
         return http;
     }
 
-    // Where downloads go. The folder-choice step makes this a setting.
-    private static (string Root, HubLayout Layout) HubTarget() => (LauncherLogic.HubCache(), HubLayout.HfCache);
+    // Where downloads go: the chosen folder (flat: folder\<repo name>\<file>) when it exists or can be created, else the cache.
+    private (string Root, HubLayout Layout) HubTarget()
+    {
+        if (_settings.HubDownloadFolder is { Length: > 0 } folder)
+            try
+            {
+                Directory.CreateDirectory(folder);
+                return (folder, HubLayout.Flat);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { }
+        return (LauncherLogic.HubCache(), HubLayout.HfCache);
+    }
+
+    // The Downloaded set's key for a repo: its id in the cache, its folder name (the part after the slash) in a flat folder.
+    private static string HubDownloadedKey(string repo, HubLayout layout) => layout == HubLayout.Flat ? repo.Split('/')[^1] : repo;
+
+    private bool HubRowIsDownloaded(string repo) =>
+        _hubMachine.IsCompletedSuccessfully && _hubMachine.Result.Downloaded.Contains(HubDownloadedKey(repo, HubTarget().Layout));
+
+    // The repos holding a GGUF at the target (as HubDownloadedKey names them).
+    private static HashSet<string> HubDownloadedAt(string root, HubLayout layout)
+    {
+        static bool HasGguf(string dir) => Directory.Exists(dir) && Directory.EnumerateFiles(dir, "*.gguf", SearchOption.AllDirectories).Any();
+        try
+        {
+            return layout == HubLayout.Flat
+                ? Directory.EnumerateDirectories(root).Where(HasGguf).Select(d => Path.GetFileName(d)).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : Directory.EnumerateDirectories(root, "models--*").Where(d => HasGguf(Path.Combine(d, "snapshots"))).Select(HubCacheRepo).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return []; }
+    }
+
+    private static string HubCacheRepo(string dir) => Path.GetFileName(dir)["models--".Length..].Replace("--", "/");
+
+    // Save to: the folder chosen ("" or the cache itself: the cache), then everything that depends on it.
+    private void HubSetFolder(string folder)
+    {
+        if (folder.Length > 0 && string.Equals(Path.GetFullPath(folder).TrimEnd('\\'), Path.GetFullPath(LauncherLogic.HubCache()).TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
+            folder = "";
+        _settings.HubDownloadFolder = folder;
+        _settings.Save();
+        var (root, layout) = HubTarget();
+        _hubMachine = _hubMachine.IsCompletedSuccessfully
+            ? Task.FromResult(_hubMachine.Result with { Downloaded = HubDownloadedAt(root, layout) })
+            : HubReadMachineAsync((root, layout)); // still reading the machine: read it again for this target
+        ((TextBlock)_hubFolderChip.Tag).Text = HubShortPath(root);
+        _hubFolderChip.ToolTip = "Downloads go to " + root;
+        foreach (var row in HubRows())
+            if (SmokeFind<Border>(row, b => b.Tag as string == "HubRowDownloaded") is { } badge)
+                badge.Visibility = HubRowIsDownloaded(((HubModel)row.DataContext).Id) ? Visibility.Visible : Visibility.Collapsed;
+        HubShowSaveTo();
+        UpdateHubDownloadButton();
+    }
+
+    // "Save to <folder>  Change…  Reset" over the download card; under it, when the model picker would not see the chosen
+    // folder, the offer to make it the Models folder. Disabled while a download runs (it keeps the folder it started with).
+    private void HubShowSaveTo()
+    {
+        var root = HubTarget().Root;
+        var label = RemoteMuted("Save to");
+        label.VerticalAlignment = VerticalAlignment.Center;
+        DockPanel.SetDock(label, Dock.Left);
+        var path = new TextBlock { Text = HubShortPath(root), Tag = "HubSaveToPath", ToolTip = root, FontSize = 12.5, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        path.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        var change = new Button { Content = "Change…", Tag = "HubSaveToChange", ToolTip = "Choose where to save models", Style = (Style)FindResource("GhostButton"), FontSize = 11.5, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(10, 0, 0, 0) };
+        change.Click += (_, _) =>
+        {
+            if (PickFolder("Choose where to save models", root) is { } picked)
+                HubSetFolder(picked);
+        };
+        DockPanel.SetDock(change, Dock.Right);
+        var line = new DockPanel();
+        var custom = _settings.HubDownloadFolder;
+        if (custom.Length > 0)
+        {
+            var reset = new Hyperlink(new Run("Reset")) { Tag = "HubSaveToReset", ToolTip = "Save to the Hugging Face cache" };
+            reset.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
+            reset.Click += (_, _) => HubSetFolder("");
+            var resetText = new TextBlock { Margin = new Thickness(10, 0, 4, 0), FontSize = 12.5, VerticalAlignment = VerticalAlignment.Center, Inlines = { reset } };
+            DockPanel.SetDock(resetText, Dock.Right);
+            line.Children.Add(resetText);
+        }
+        foreach (var e in new UIElement[] { change, label, path })
+            line.Children.Add(e);
+        var panel = new StackPanel { Children = { line } };
+        if (custom.Length > 0 && !HubInside(root, _settings.ModelsFolder))
+        {
+            var where = RemoteMuted($"The model picker looks in {(_settings.ModelsFolder.Length > 0 ? _settings.ModelsFolder : "the Hugging Face cache")}.");
+            (where.VerticalAlignment, where.TextWrapping) = (VerticalAlignment.Center, TextWrapping.Wrap);
+            var use = new Button { Content = "Use this folder as the Models folder", Tag = "HubUseAsModels", Style = (Style)FindResource("GhostButton"), FontSize = 11.5, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            use.SetResourceReference(BackgroundProperty, "Panel");
+            use.Click += (_, _) => HubUseAsModelsFolder(root);
+            DockPanel.SetDock(use, Dock.Right);
+            panel.Children.Add(new DockPanel { Tag = "HubModelsNotice", Margin = new Thickness(0, 6, 0, 0), Children = { use, where } });
+        }
+        _hubSaveTo.Child = panel;
+        _hubSaveTo.IsEnabled = _hubDl is not { State: HubDlState.Running };
+    }
+
+    // folder is models or inside it (full paths, any case)
+    private static bool HubInside(string folder, string models)
+    {
+        static string Full(string p) => Path.GetFullPath(p).TrimEnd('\\') + "\\";
+        return models.Length > 0 && Full(folder).StartsWith(Full(models), StringComparison.OrdinalIgnoreCase);
+    }
+
+    // The model picker scans the Models folder: point it here (asking before replacing another one).
+    private void HubUseAsModelsFolder(string folder)
+    {
+        if (_settings.ModelsFolder.Length > 0 && Choose("Replace the Models folder?",
+                $"The model picker looks in {_settings.ModelsFolder}. Look in {folder} instead?", ("Use " + HubShortPath(folder), "replace")) != "replace")
+            return;
+        _settings.ModelsFolder = folder;
+        _settings.Save();
+        _localModelsVersion++;
+        ShowModelsFolder();
+        HubShowSaveTo();
+    }
 
     private void OpenModelHub()
     {
@@ -102,7 +218,7 @@ public partial class MainWindow
         CloseModelHub();
         if (!HubLogic.Sorts.Any(s => s.Id == _settings.HubSort))
             _settings.HubSort = "trending";
-        _hubMachine = HubReadMachineAsync();
+        _hubMachine = HubReadMachineAsync(HubTarget());
         _hubSelected = null;
 
         // ---- header: title, subtitle, this machine
@@ -112,9 +228,10 @@ public partial class MainWindow
         var vram = HubChip("VRAM", "…", "GPU memory");
         var ram = HubChip("RAM", "…", "System memory");
         var cpu = HubChip("CPU", Environment.ProcessorCount + " threads", "Logical processors");
-        var folder = LauncherLogic.HubCache();
+        var folder = HubTarget().Root;
+        _hubFolderChip = HubChip("Folder", HubShortPath(folder), "Downloads go to " + folder);
         var chips = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(16, 2, 0, 0) };
-        foreach (var chip in new[] { vram, ram, cpu, HubChip("Folder", HubShortPath(folder), "Downloads go to " + folder) })
+        foreach (var chip in new[] { vram, ram, cpu, _hubFolderChip })
             chips.Children.Add(chip);
         DockPanel.SetDock(chips, Dock.Right);
         _hubMachine.ContinueWith(t =>
@@ -236,8 +353,9 @@ public partial class MainWindow
         Reveal(ModelHubView, false);
     }
 
-    // VRAM (the override, else the first GPU's, read once per run off the UI thread), RAM, and the repos already in the cache.
-    private static async Task<HubMachine> HubReadMachineAsync()
+    // VRAM (the override, else the first GPU's, read once per run off the UI thread), RAM, the repos already in the cache and
+    // those downloaded at the target.
+    private static async Task<HubMachine> HubReadMachineAsync((string Root, HubLayout Layout) target)
     {
         double? vram = HubVramGiBOverride;
         if (vram is null && await (_gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes)) is { } bytes and > 0)
@@ -245,16 +363,10 @@ public partial class MainWindow
         var ram = HubRamGiBOverride ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / HubGiB;
         var (cached, downloaded) = await Task.Run(() =>
         {
-            (HashSet<string>, HashSet<string>) none = ([], []);
-            try
-            {
-                var dirs = Directory.EnumerateDirectories(LauncherLogic.HubCache(), "models--*").ToList();
-                static string Repo(string d) => Path.GetFileName(d)["models--".Length..].Replace("--", "/");
-                static bool HasGguf(string d) => Path.Combine(d, "snapshots") is var s && Directory.Exists(s)
-                    && Directory.EnumerateFiles(s, "*.gguf", SearchOption.AllDirectories).Any();
-                return (dirs.Select(Repo).ToHashSet(StringComparer.OrdinalIgnoreCase), dirs.Where(HasGguf).Select(Repo).ToHashSet(StringComparer.OrdinalIgnoreCase));
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return none; }
+            HashSet<string> cached = [];
+            try { cached = Directory.EnumerateDirectories(LauncherLogic.HubCache(), "models--*").Select(HubCacheRepo).ToHashSet(StringComparer.OrdinalIgnoreCase); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
+            return (cached, HubDownloadedAt(target.Root, target.Layout));
         });
         return new HubMachine(vram, ram, cached, downloaded);
     }
@@ -541,7 +653,7 @@ public partial class MainWindow
         (stats.HorizontalAlignment, age.HorizontalAlignment) = (HorizontalAlignment.Right, HorizontalAlignment.Right);
         var done = HubPill("Downloaded");
         (done.Tag, done.Margin, done.Padding, done.VerticalAlignment) = ("HubRowDownloaded", new Thickness(8, 0, 0, 0), new Thickness(7, 0, 7, 1), VerticalAlignment.Center);
-        done.Visibility = _hubMachine.IsCompletedSuccessfully && _hubMachine.Result.Downloaded.Contains(m.Id) ? Visibility.Visible : Visibility.Collapsed;
+        done.Visibility = HubRowIsDownloaded(m.Id) ? Visibility.Visible : Visibility.Collapsed;
         var nameLine = new DockPanel { Children = { done, Line(m.Name, strong: true) } };
         DockPanel.SetDock(done, Dock.Right);
         var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { nameLine, Line(m.Owner) } };
@@ -697,13 +809,15 @@ public partial class MainWindow
         (_hubFacts.Tag, _hubFacts.Margin) = ("HubDetailCounts", new Thickness(4, 10, 0, 0));
         _hubReadme = new Border { Tag = "HubReadmeHost", Margin = new Thickness(0, 22, 0, 0) };
         _hubDlNotice = new Border { Tag = "HubDownloadNotice", Margin = new Thickness(4, 8, 0, 0), Visibility = Visibility.Collapsed };
+        _hubSaveTo = new Border { Tag = "HubSaveTo", Margin = new Thickness(4, 14, 0, 0) };
+        HubShowSaveTo();
         (_hubVariant, _hubVariantList, _hubSha) = (null, [], "");
         HubFacts();
         _hubDetailTask = Task.WhenAll(HubLoadWeightsAsync(model, ct), HubLoadReadmeAsync(model, ct));
         return new StackPanel
         {
             Tag = "HubDetail:" + model.Id,
-            Children = { new DockPanel { Children = { badge, new StackPanel { Children = { name, actions } } } }, _hubChips, _hubWeights, _hubDlNotice, _hubFacts, _hubReadme },
+            Children = { new DockPanel { Children = { badge, new StackPanel { Children = { name, actions } } } }, _hubChips, _hubSaveTo, _hubWeights, _hubDlNotice, _hubFacts, _hubReadme },
         };
     }
 
@@ -817,17 +931,18 @@ public partial class MainWindow
         return menu;
     }
 
-    private static bool HubIsDownloaded(string repo, HubVariant v)
+    private bool HubIsDownloaded(string repo, HubVariant v)
     {
         var (root, layout) = HubTarget();
         return v.Files.Concat(v.Companions).All(f => HubDownloader.IsDownloaded(root, layout, repo, f.Name));
     }
 
-    // ponytail: any *.incomplete blob of the repo counts, whichever weights it belongs to; HfCache layout only.
-    private static bool HubHasPartial(string repo)
+    // ponytail: any *.incomplete file of the repo counts, whichever weights it belongs to.
+    private bool HubHasPartial(string repo)
     {
-        var blobs = Path.Combine(HubDownloader.RepoFolder(HubTarget().Root, repo), "blobs");
-        return Directory.Exists(blobs) && Directory.EnumerateFiles(blobs, "*.incomplete").Any();
+        var (root, layout) = HubTarget();
+        var dir = layout == HubLayout.Flat ? Path.Combine(root, HubDownloadedKey(repo, layout)) : Path.Combine(HubDownloader.RepoFolder(root, repo), "blobs");
+        return Directory.Exists(dir) && Directory.EnumerateFiles(dir, "*.incomplete", SearchOption.AllDirectories).Any();
     }
 
     // The card's right side: the progress pill (this model's download running), "Downloaded ✓", "Resume" (a partial file
@@ -885,6 +1000,7 @@ public partial class MainWindow
     {
         var running = _hubDl is { State: HubDlState.Running } dl ? dl : null;
         _hubStrip.Visibility = running is null ? Visibility.Collapsed : Visibility.Visible;
+        _hubSaveTo.IsEnabled = running is null;
         if (running is null)
             return;
         var p = running.Progress;
@@ -924,13 +1040,12 @@ public partial class MainWindow
         _hubDlCts?.Dispose();
         _hubDlCts = new CancellationTokenSource();
         _hubDl = new HubDl(model.Id, variant.Label, null, HubDlState.Running);
-        _hubDlTask = HubDownloadAsync(model.Id, sha, variant.Label, files, _hubDlCts.Token);
+        _hubDlTask = HubDownloadAsync(model.Id, sha, variant.Label, files, root, layout, _hubDlCts.Token);
         UpdateHubDownloadButton();
     }
 
-    private async Task HubDownloadAsync(string repo, string sha, string label, List<HubDownloadFile> files, CancellationToken ct)
+    private async Task HubDownloadAsync(string repo, string sha, string label, List<HubDownloadFile> files, string root, HubLayout layout, CancellationToken ct)
     {
-        var (root, layout) = HubTarget();
         var progress = new Progress<HubProgress>(p =>
         {
             if (_hubDl is { State: HubDlState.Running } dl && dl.Repo == repo)
@@ -945,7 +1060,7 @@ public partial class MainWindow
             await Task.Run(() => downloader.DownloadAsync(repo, sha, files, progress, ct), ct);
             _hubDl = new HubDl(repo, label, _hubDl?.Progress, HubDlState.Done);
             if (_hubMachine.IsCompletedSuccessfully)
-                _hubMachine.Result.Downloaded.Add(repo);
+                _hubMachine.Result.Downloaded.Add(HubDownloadedKey(repo, layout));
             _localModelsVersion++;
             Toast($"{repo} {label} downloaded");
             foreach (var row in HubRows().Where(r => ((HubModel)r.DataContext).Id == repo))
@@ -1031,8 +1146,10 @@ public partial class MainWindow
         var fake = new HubFakeHandler();
         var (factory, vramWas, ramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _settings.HubSort, _settings.HubOnlyFit, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
         var (remoteHttp, helpShown) = (_remoteHttp, _settings.RemoteHelpShown);
+        var (hubFolderWas, modelsWas, pickWas, choiceWas) = (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice);
         var opened = new List<string>();
         var cache = Path.Combine(AppSettings.DataRoot, "hub-smoke-cache");
+        var (saveDir, modelsDir) = (Path.Combine(AppSettings.DataRoot, "hub-smoke-saveto"), Path.Combine(AppSettings.DataRoot, "hub-smoke-models"));
         string Url(string query, string sort) => HubLogic.SearchUrl(query, sort).AbsoluteUri;
         string Rows() => string.Join(", ", HubRows().Select(r => ((HubModel)r.DataContext).Id));
         T? Find<T>(string tag) where T : FrameworkElement => SmokeFind<T>(ModelHubView, e => e.Tag as string == tag);
@@ -1078,7 +1195,7 @@ public partial class MainWindow
             _hubTextCache.Clear();
             _openExternal = opened.Add;
             Environment.SetEnvironmentVariable("HF_HUB_CACHE", cache);
-            (_settings.HubSort, _settings.HubOnlyFit) = ("trending", false);
+            (_settings.HubSort, _settings.HubOnlyFit, _settings.HubDownloadFolder) = ("trending", false, "");
 
             if (!await OpenFromSidebar())
                 return Fail("no Models Hub right under Remote API in the sidebar");
@@ -1325,6 +1442,62 @@ public partial class MainWindow
             if (Find<TextBlock>("HubDownloadError")?.Text.Contains("Set the HF_TOKEN environment variable", StringComparison.Ordinal) != true || Find<Button>("HubDownloadRetry") is null)
                 return Fail("401: " + Find<TextBlock>("HubDownloadError")?.Text);
             snap("23-hub-download-refused", null);
+
+            // Save to: the cache by default; a chosen folder is flat (folder\Mini-GGUF\<file>) and moves the chip, the badge,
+            // the menu's check and the button with it
+            foreach (var dir in new[] { saveDir, modelsDir })
+                if (Directory.Exists(dir))
+                    Directory.Delete(dir, recursive: true);
+            await Show(Mini);
+            string? Chip() => Find<TextBlock>("HubChip:Folder")?.Text;
+            string? SaveTo() => Find<TextBlock>("HubSaveToPath")?.ToolTip as string;
+            Hyperlink? Reset() => SmokeFind<Hyperlink>(_hubDetail, h => h.Tag as string == "HubSaveToReset");
+            bool Badge() => SmokeFind<Border>(Row(Mini)!, b => b.Tag as string == "HubRowDownloaded") is { Visibility: Visibility.Visible };
+            string Marks() => string.Join(",", BuildHubVariantMenu(this).Items.OfType<MenuItem>().Where(i => ((Panel)i.Header).Children.OfType<TextBlock>().Any(t => t.Tag as string == "hubdownloaded")).Select(i => i.Tag as string));
+            if (HubTarget() != (cache, HubLayout.HfCache) || SaveTo() != cache || Chip() != HubShortPath(cache) || Reset() is not null || Find<DockPanel>("HubModelsNotice") is not null)
+                return Fail($"default Save to: target {HubTarget()}, line {SaveTo()}, chip {Chip()}, reset {Reset() is not null}");
+            var replaceAsked = new List<string>();
+            (_codeFolderPick, _codeChoice, _settings.ModelsFolder) = (() => saveDir, title => { replaceAsked.Add(title); return replaceAsked.Count == 1 ? null : "replace"; }, modelsDir);
+            SmokeClick(Find<Button>("HubSaveToChange")!);
+            if (HubTarget() != (saveDir, HubLayout.Flat) || SaveTo() != saveDir || Chip() != HubShortPath(saveDir) || _hubFolderChip.ToolTip as string != "Downloads go to " + saveDir ||
+                Reset() is null || Badge() || Marks() != "" || Button() != "Download True" || AppSettings.Load().HubDownloadFolder != saveDir)
+                return Fail($"chosen folder: target {HubTarget()}, line {SaveTo()}, chip {Chip()} ({_hubFolderChip.ToolTip}), badge {Badge()}, marks [{Marks()}], button {Button()}");
+            var notice = Find<DockPanel>("HubModelsNotice");
+            if (notice?.Children.OfType<TextBlock>().FirstOrDefault()?.Text != $"The model picker looks in {modelsDir}." || Find<Button>("HubUseAsModels") is null)
+                return Fail("no Models-folder notice for a folder outside it");
+            await Task.Delay(300); // the layout pass the snapshot draws
+            snap("24-hub-save-to", null);
+            BuildHubVariantMenu(this).Items.OfType<MenuItem>().First(i => i.Tag as string == "hubvariant:Q4_K_M").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            SmokeClick(Find<Button>("HubDownload")!);
+            if (_hubSaveTo.IsEnabled)
+                return Fail("Save to stays enabled while downloading");
+            await _hubDlTask.WaitAsync(TimeSpan.FromSeconds(20));
+            await Task.Delay(100);
+            foreach (var file in new[] { "Mini-Q4_K_M.gguf", "mmproj-F16.gguf" })
+                if (Path.Combine(saveDir, "Mini-GGUF", file) is var at && (!File.Exists(at) || !File.ReadAllBytes(at).AsSpan().SequenceEqual(HubFakeHandler.MiniFiles[file])))
+                    return Fail($"flat download {file}: missing or different");
+            if (!_hubSaveTo.IsEnabled || !Badge() || Marks() != "hubvariant:Q4_K_M" || Button() != "Downloaded ✓ False")
+                return Fail($"flat downloaded: save to {_hubSaveTo.IsEnabled}, badge {Badge()}, marks [{Marks()}], button {Button()}");
+            // the notice: replacing another Models folder asks first (cancelled: nothing changes), then takes it
+            var modelsVersion = _localModelsVersion;
+            SmokeClick(Find<Button>("HubUseAsModels")!);
+            if (replaceAsked.FirstOrDefault() != "Replace the Models folder?" || _settings.ModelsFolder != modelsDir || _localModelsVersion != modelsVersion || Find<DockPanel>("HubModelsNotice") is null)
+                return Fail($"cancelled replacing the Models folder: replaceAsked [{string.Join(", ", replaceAsked)}], folder {_settings.ModelsFolder}");
+            SmokeClick(Find<Button>("HubUseAsModels")!);
+            if (_settings.ModelsFolder != saveDir || _localModelsVersion <= modelsVersion || Find<DockPanel>("HubModelsNotice") is not null ||
+                !LauncherLogic.FindLocalGgufs(saveDir, cache).Any(g => g.File == Path.Combine(saveDir, "Mini-GGUF", "Mini-Q4_K_M.gguf")))
+                return Fail($"accepted the Models folder: folder {_settings.ModelsFolder}, version {_localModelsVersion} (was {modelsVersion}), notice {Find<DockPanel>("HubModelsNotice") is not null}");
+            // a folder inside the Models folder needs no notice
+            var inside = Path.Combine(modelsDir, "hub");
+            (_codeFolderPick, _settings.ModelsFolder) = (() => inside, modelsDir);
+            SmokeClick(Find<Button>("HubSaveToChange")!);
+            if (HubTarget() != (inside, HubLayout.Flat) || Find<DockPanel>("HubModelsNotice") is not null)
+                return Fail($"inside the Models folder: target {HubTarget()}, notice {Find<DockPanel>("HubModelsNotice") is not null}");
+            // Reset: the cache again, where Mini is downloaded too
+            Reset()!.RaiseEvent(new RoutedEventArgs(Hyperlink.ClickEvent));
+            if (HubTarget() != (cache, HubLayout.HfCache) || SaveTo() != cache || Chip() != HubShortPath(cache) || Reset() is not null || !Badge() || Button() != "Downloaded ✓ False" ||
+                AppSettings.Load().HubDownloadFolder != "")
+                return Fail($"reset: target {HubTarget()}, line {SaveTo()}, chip {Chip()}, badge {Badge()}, button {Button()}");
             fake.Downloads = false;
 
             // Remote API takes its place (and back); New chat leaves it
@@ -1351,7 +1524,11 @@ public partial class MainWindow
             (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp, _hubDlHttp) = (factory, vramWas, ramWas, open, null, null);
             _hubTextCache.Clear();
             (_settings.HubSort, _settings.HubOnlyFit, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
+            (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice) = (hubFolderWas, modelsWas, pickWas, choiceWas);
             _settings.Save();
+            foreach (var dir in new[] { saveDir, modelsDir })
+                try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+                catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             _hubPageCache.Clear();
             Environment.SetEnvironmentVariable("HF_HUB_CACHE", cacheWas);
         }

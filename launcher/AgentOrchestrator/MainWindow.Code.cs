@@ -345,11 +345,11 @@ public partial class MainWindow
     private Func<string?>? _codeFolderPick;
     private Func<string, string?>? _codeChoice;
 
-    private string? PickFolder(string title)
+    private string? PickFolder(string title, string? initial = null)
     {
         if (_codeFolderPick is { } pick)
             return pick();
-        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = title, InitialDirectory = Directory.Exists(ProjectPath) ? ProjectPath : _workflowRoot };
+        var dialog = new Microsoft.Win32.OpenFolderDialog { Title = title, InitialDirectory = initial ?? (Directory.Exists(ProjectPath) ? ProjectPath : _workflowRoot) };
         return dialog.ShowDialog(this) == true ? dialog.FolderName : null;
     }
 
