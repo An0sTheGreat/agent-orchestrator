@@ -692,7 +692,7 @@ public partial class MainWindow
         if (model.Gated)
             _hubChips.Children.Add(HubPill("Gated", new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B))));
         _hubWeights = new Border { Tag = "HubWeightsCard", CornerRadius = new CornerRadius(14), Padding = new Thickness(6), Margin = new Thickness(0, 8, 0, 0), MinHeight = 46 };
-        _hubWeights.SetResourceReference(Border.BackgroundProperty, "Hover");
+        _hubWeights.SetResourceReference(Border.BackgroundProperty, "Panel"); // Hover barely differs from the Card around it
         _hubFacts = RemoteMuted("");
         (_hubFacts.Tag, _hubFacts.Margin) = ("HubDetailCounts", new Thickness(4, 10, 0, 0));
         _hubReadme = new Border { Tag = "HubReadmeHost", Margin = new Thickness(0, 22, 0, 0) };
@@ -840,6 +840,8 @@ public partial class MainWindow
             return;
         }
         var dl = _hubDl is { } d && d.Repo == m.Id ? d : null;
+        // the pill under the weights (beside them it squeezed the selector), the button beside them
+        DockPanel.SetDock(_hubDlSlot, dl is { State: HubDlState.Running } ? Dock.Bottom : Dock.Right);
         if (dl is { State: HubDlState.Running })
             _hubDlSlot.Child = HubProgressPill();
         else
@@ -858,7 +860,7 @@ public partial class MainWindow
         HubDlShowProgress();
     }
 
-    // Bar, "42%  ·  1.2 / 2.9 GB  ·  12 MB/s  ·  2m left", Cancel; HubDlShowProgress fills it in.
+    // Bar, "42%  ·  1.2 GB / 2.9 GB  ·  12 MB/s  ·  2m left", Cancel; HubDlShowProgress fills it in.
     private Border HubProgressPill()
     {
         _hubDlFill = new Border { Width = 0, HorizontalAlignment = HorizontalAlignment.Left, CornerRadius = new CornerRadius(2) };
@@ -871,7 +873,7 @@ public partial class MainWindow
         cancel.Click += (_, _) => _hubDlCts?.Cancel();
         var pill = new Border
         {
-            Tag = "HubDownloadPill", Padding = new Thickness(14, 3, 4, 3), CornerRadius = new CornerRadius(10),
+            Tag = "HubDownloadPill", Padding = new Thickness(14, 3, 4, 3), CornerRadius = new CornerRadius(10), Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Right,
             Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { track, _hubDlText, cancel } },
         };
         pill.SetResourceReference(Border.BackgroundProperty, "Card");
@@ -891,7 +893,7 @@ public partial class MainWindow
         var parts = new List<string> { percent + "%" };
         if (p is not null)
         {
-            parts.Add($"{p.DoneBytes / 1e9:0.0} / {p.TotalBytes / 1e9:0.0} GB");
+            parts.Add($"{HubLogic.FormatSize(p.DoneBytes)} / {HubLogic.FormatSize(p.TotalBytes)}"); // "0.0 / 0.0 GB" under 50 MB
             if (HubLogic.FormatSpeed(p.BytesPerSecond) is { Length: > 0 } speed)
                 parts.Add(speed);
             if (HubLogic.FormatEta(p.TotalBytes - p.DoneBytes, p.BytesPerSecond) is { Length: > 0 } eta)
@@ -1234,6 +1236,97 @@ public partial class MainWindow
             if (Rows() != Tiny || Find<TextBlock>("HubError") is not null)
                 return Fail($"Retry: rows [{Rows()}], {Status()}");
 
+            // downloads: Mini's Q4_K_M (with its mmproj) stops half-way; the pill and the strip show it
+            const string Mini = HubFakeHandler.Mini, Locked = HubFakeHandler.Locked;
+            var repo = HubDownloader.RepoFolder(cache, Mini);
+            if (Directory.Exists(repo))
+                Directory.Delete(repo, recursive: true);
+            (fake.Downloads, _hubDlHttp, fake.Gate) = (true, null, new TaskCompletionSource());
+            _hubPageCache.Clear();
+            await Type("");
+            ToggleButton? Row(string id) => HubRows().FirstOrDefault(r => r.Tag as string == "hubrow:" + id);
+            async Task Show(string id)
+            {
+                SmokeClick(Row(id)!);
+                await _hubDetailTask;
+                await Task.Delay(100);
+            }
+            string Button() => $"{Find<Button>("HubDownload")?.Content} {Find<Button>("HubDownload")?.IsEnabled}";
+            if (Row(Mini) is null || Row(Locked) is null)
+                return Fail($"download rows: [{Rows()}]");
+            await Show(Mini);
+            if (_hubVariant?.Label != "Q4_K_M" || Button() != "Download True")
+                return Fail($"Mini: weights {_hubVariant?.Label}, button {Button()}");
+            var versionWas = _localModelsVersion;
+            SmokeClick(Find<Button>("HubDownload")!);
+            await fake.AtGate.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            await Task.Delay(400); // the last progress report
+            var pill = Find<TextBlock>("HubDownloadProgress")?.Text ?? "";
+            if (!System.Text.RegularExpressions.Regex.IsMatch(pill, @"^\d+%  ·  [\d.]+ [KM]B / 3\.5 MB  ·  [\d.]+ MB/s") || _hubStrip.Visibility != Visibility.Visible ||
+                !_hubStripText.Text.StartsWith("Downloading zyxlab/Mini-GGUF Q4_K_M", StringComparison.Ordinal))
+                return Fail($"while downloading: pill \"{pill}\", strip {_hubStrip.Visibility} \"{_hubStripText.Text}\"");
+            snap("21-hub-downloading", null);
+            // another row keeps the strip; a second download is refused; back on Mini the pill is there
+            await Show(Tiny);
+            SmokeClick(Find<Button>("HubDownload")!);
+            if (_hubStrip.Visibility != Visibility.Visible || _hubDl?.Repo != Mini || !ToastsOf("A download is running").Any())
+                return Fail($"another row while downloading: strip {_hubStrip.Visibility}, download {_hubDl?.Repo}");
+            await Show(Mini);
+            if (Find<Border>("HubDownloadPill") is null)
+                return Fail("no progress pill back on the downloading row");
+            // closing the page does not stop it: the strip is back on reopening
+            CloseModelHub();
+            await Task.Delay(300);
+            if (_hubDlTask.IsCompleted || _hubDlCts?.IsCancellationRequested != false)
+                return Fail("closing the page stopped the download");
+            await OpenFromSidebar();
+            if (_hubStrip.Visibility != Visibility.Visible || !_hubStripText.Text.StartsWith("Downloading zyxlab/Mini-GGUF", StringComparison.Ordinal))
+                return Fail($"reopened: strip {_hubStrip.Visibility} \"{_hubStripText.Text}\"");
+            // cancel mid-file: Resume asks for the rest (Range) and the bytes match
+            await Show(Mini);
+            SmokeClick(Find<Button>("HubDownloadCancel")!);
+            await _hubDlTask.WaitAsync(TimeSpan.FromSeconds(10));
+            if (Button() != "Resume True" || _hubDl is not null || _hubStrip.Visibility == Visibility.Visible)
+                return Fail($"cancelled: button {Button()}, download {_hubDl?.State}, strip {_hubStrip.Visibility}");
+            fake.Gate = null;
+            lock (fake.Seen)
+                fake.Seen.Clear();
+            SmokeClick(Find<Button>("HubDownload")!);
+            await _hubDlTask.WaitAsync(TimeSpan.FromSeconds(20));
+            await Task.Delay(100);
+            if (!fake.Seen.Any(s => System.Text.RegularExpressions.Regex.IsMatch(s, @"^Range: bytes=[1-9]\d*-$")))
+                return Fail("Resume sent no Range: " + string.Join(", ", fake.Seen));
+            var snapshot = Path.Combine(repo, "snapshots", "minisha");
+            foreach (var file in new[] { "Mini-Q4_K_M.gguf", "mmproj-F16.gguf" })
+            {
+                var bytes = HubFakeHandler.MiniFiles[file];
+                var blob = Path.Combine(repo, "blobs", HubFakeHandler.Sha256(bytes));
+                if (!File.Exists(blob) && !File.Exists(Path.Combine(snapshot, file)) || !File.ReadAllBytes(Path.Combine(snapshot, file)).AsSpan().SequenceEqual(bytes))
+                    return Fail($"downloaded {file}: blob or snapshot missing or different");
+            }
+            if (File.Exists(Path.Combine(snapshot, "Mini-Q2_K.gguf")) || !File.Exists(Path.Combine(repo, "refs", "main")) || File.ReadAllText(Path.Combine(repo, "refs", "main")) != "minisha")
+                return Fail("the cache layout: refs/main or an extra file");
+            // done: the toast, "Downloaded ✓", the menu's check, the row's badge, the pickers' rescan
+            var checkedItems = BuildHubVariantMenu(this).Items.OfType<MenuItem>().Where(i => ((Panel)i.Header).Children.OfType<TextBlock>().Any(t => t.Tag as string == "hubdownloaded")).Select(i => i.Tag as string);
+            if (!ToastsOf("zyxlab/Mini-GGUF Q4_K_M downloaded").Any() || Button() != "Downloaded ✓ False" || string.Join(",", checkedItems) != "hubvariant:Q4_K_M" ||
+                SmokeFind<Border>(Row(Mini)!, b => b.Tag as string == "HubRowDownloaded") is not { Visibility: Visibility.Visible } || _localModelsVersion <= versionWas ||
+                !LauncherLogic.FindLocalGgufs("", cache).Any(g => g.File == Path.Combine(snapshot, "Mini-Q4_K_M.gguf")) || _hubStrip.Visibility == Visibility.Visible)
+                return Fail($"downloaded: button {Button()}, menu ✓ [{string.Join(",", checkedItems)}], models version {_localModelsVersion} (was {versionWas})");
+            snap("22-hub-downloaded", null);
+            // a file Hugging Face does not have; a repo that refuses without a token
+            BuildHubVariantMenu(this).Items.OfType<MenuItem>().First(i => i.Tag as string == "hubvariant:Q3_K_S").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            SmokeClick(Find<Button>("HubDownload")!);
+            await _hubDlTask.WaitAsync(TimeSpan.FromSeconds(10));
+            if (Find<TextBlock>("HubDownloadError")?.Text != "File not found on Hugging Face." || Find<Button>("HubDownloadRetry") is null)
+                return Fail("404: " + Find<TextBlock>("HubDownloadError")?.Text);
+            await Show(Locked);
+            SmokeClick(Find<Button>("HubDownload")!);
+            await _hubDlTask.WaitAsync(TimeSpan.FromSeconds(10));
+            if (Find<TextBlock>("HubDownloadError")?.Text.Contains("Set the HF_TOKEN environment variable", StringComparison.Ordinal) != true || Find<Button>("HubDownloadRetry") is null)
+                return Fail("401: " + Find<TextBlock>("HubDownloadError")?.Text);
+            snap("23-hub-download-refused", null);
+            fake.Downloads = false;
+
             // Remote API takes its place (and back); New chat leaves it
             _remoteHttp = new HttpClient(new RemoteApiFakeHandler());
             _settings.RemoteHelpShown = true;
@@ -1254,7 +1347,8 @@ public partial class MainWindow
         finally
         {
             CloseModelHub();
-            (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp) = (factory, vramWas, ramWas, open, null);
+            _hubDlCts?.Cancel();
+            (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp, _hubDlHttp) = (factory, vramWas, ramWas, open, null, null);
             _hubTextCache.Clear();
             (_settings.HubSort, _settings.HubOnlyFit, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
             _settings.Save();
@@ -1288,14 +1382,63 @@ internal sealed class HubFakeHandler : HttpMessageHandler
     // Set: Qwen's ?blobs=true reply waits for it, ignoring cancellation (a reply already on its way).
     public TaskCompletionSource? Hold;
 
+    // Downloads: the listing adds Mini (Q4_K_M, Q2_K, an mmproj, and a Q3_K_S whose file 404s) and Locked (401). The hub
+    // answers like huggingface.co (302 to cdn.test with X-Linked-Etag); cdn.test serves the bytes slowly, with Range. Gate set:
+    // a file stops half-way (AtGate completes) until the gate opens or the read is cancelled.
+    public const string Mini = "zyxlab/Mini-GGUF", Locked = "zyxlab/Locked-GGUF";
+    public bool Downloads;
+    public TaskCompletionSource? Gate;
+    public readonly TaskCompletionSource AtGate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public static readonly Dictionary<string, byte[]> MiniFiles = new()
+    {
+        ["Mini-Q4_K_M.gguf"] = SeededBytes(3_000_000, 1), ["Mini-Q2_K.gguf"] = SeededBytes(1_000_000, 2), ["mmproj-F16.gguf"] = SeededBytes(500_000, 3),
+    };
+    private static readonly Dictionary<string, byte[]> Cdn = MiniFiles.Values.ToDictionary(Sha256);
+    private const string DownloadRows = """,{"id":"zyxlab/Mini-GGUF","downloads":50,"likes":2,"lastModified":"2026-07-01T00:00:00.000Z","gguf":{"total":3000000},"pipeline_tag":"text-generation","tags":["gguf"]},{"id":"zyxlab/Locked-GGUF","downloads":40,"likes":1,"lastModified":"2026-07-01T00:00:00.000Z","gguf":{"total":1000},"gated":"manual","pipeline_tag":"text-generation","tags":["gguf"]}]""";
+    private static readonly string MiniBlobs = """{"sha":"minisha","siblings":[""" + string.Join(",", MiniFiles.Select(f => $$"""{"rfilename":"{{f.Key}}","size":{{f.Value.Length}}}"""))
+        + """,{"rfilename":"Mini-Q3_K_S.gguf","size":800000}]}""";
+    private const string LockedBlobs = """{"sha":"lockedsha","siblings":[{"rfilename":"Locked-Q4_0.gguf","size":1000}]}""";
+
+    public static string Sha256(byte[] data) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
+    private static byte[] SeededBytes(int size, int seed)
+    {
+        var bytes = new byte[size];
+        new Random(seed).NextBytes(bytes);
+        return bytes;
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var url = request.RequestUri!.AbsoluteUri;
         lock (Seen)
+        {
             Seen.Add(url);
+            if (request.Headers.Range is { } range)
+                Seen.Add("Range: " + range);
+        }
         if (Status != HttpStatusCode.OK)
             return new HttpResponseMessage(Status) { Content = new StringContent("") };
         var path = request.RequestUri.AbsolutePath;
+        if (request.RequestUri.Host == "cdn.test")
+        {
+            var data = Cdn[path[1..]];
+            var from = (int)(request.Headers.Range?.Ranges.First().From ?? 0);
+            var ok = new HttpResponseMessage(from > 0 ? HttpStatusCode.PartialContent : HttpStatusCode.OK) { Content = new StreamContent(new Slow(this, data[from..], from, data.Length / 2)) };
+            if (from > 0)
+                ok.Content.Headers.ContentRange = new System.Net.Http.Headers.ContentRangeHeaderValue(from, data.Length - 1, data.Length);
+            return ok;
+        }
+        if (path.Contains("/resolve/", StringComparison.Ordinal) && !path.EndsWith("/resolve/main/README.md", StringComparison.Ordinal))
+        {
+            if (path.StartsWith("/" + Locked + "/", StringComparison.Ordinal))
+                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+            if (!MiniFiles.TryGetValue(Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]), out var file))
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
+            var moved = new HttpResponseMessage(HttpStatusCode.Found);
+            moved.Headers.Location = new Uri("https://cdn.test/" + Sha256(file));
+            moved.Headers.Add("X-Linked-Etag", $"\"{Sha256(file)}\"");
+            return moved;
+        }
         if (path.StartsWith("/api/models/", StringComparison.Ordinal) || path.EndsWith("/resolve/main/README.md", StringComparison.Ordinal))
         {
             if (Hold is { } hold && path == "/api/models/" + Qwen)
@@ -1305,15 +1448,35 @@ internal sealed class HubFakeHandler : HttpMessageHandler
                 "/api/models/" + Qwen => QwenBlobs,
                 "/api/models/" + Tiny => TinyBlobs,
                 "/api/models/" + PageTwo => NoGgufBlobs,
+                "/api/models/" + Mini => MiniBlobs,
+                "/api/models/" + Locked => LockedBlobs,
                 "/" + Qwen + "/resolve/main/README.md" => QwenReadme,
                 _ => null,
             };
             return new HttpResponseMessage(body is null ? HttpStatusCode.NotFound : HttpStatusCode.OK) { Content = new StringContent(body ?? "") };
         }
         var second = url == NextUrl;
-        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(second ? SecondPage : Models) };
+        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(second ? SecondPage : Downloads ? Models[..^1] + DownloadRows : Models) };
         if (Paged && !second)
             response.Headers.TryAddWithoutValidation("Link", $"<{NextUrl}>; rel=\"next\"");
         return response;
+    }
+
+    // 64 KB per 20 ms read (so the meter measures a speed); past half the file it waits for an open Gate.
+    private sealed class Slow(HubFakeHandler hub, byte[] rest, long start, long half) : MemoryStream(rest, writable: false)
+    {
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            await Task.Delay(20, cancellationToken);
+            if (hub.Gate is { } gate && start + Position >= half)
+            {
+                hub.AtGate.TrySetResult();
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+            return Read(buffer.Span[..Math.Min(buffer.Length, 1 << 16)]);
+        }
+
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
     }
 }
