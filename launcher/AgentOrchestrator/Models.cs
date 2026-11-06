@@ -271,6 +271,8 @@ internal sealed class AppSettings
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     public string HubSort { get; set; } = "trending"; // the Models Hub's sort (HubLogic.Sorts id)
     public bool HubOnlyFit { get; set; } // the Models Hub shows only models that fit this computer
+    public int HubKinds { get; set; } = 1; // the Models Hub's model types (HubLogic.HubKind flags); 1 = Text & vision
+    public List<string> HubBrands { get; set; } = new(); // the Models Hub's brand filter (HubBrand keys, "other"); empty = all
     public string HubDownloadFolder { get; set; } = ""; // where the Models Hub saves (root\<repo name>\<file>); "" = the Hugging Face cache
     public List<string> RemoteFavorites { get; set; } = new(); // the Remote API page's starred models, "<service id>|<model id>", in the order starred
     // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port

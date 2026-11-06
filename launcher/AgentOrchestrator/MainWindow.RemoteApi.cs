@@ -902,9 +902,11 @@ public partial class MainWindow
 
     // A model maker's badge: its logo (RemoteVendorIcon) on a neutral tile from the theme, a "-color" logo in its own colours,
     // any other in the theme's text colour; a maker with no logo gets its initials on its colour (RemoteVendorBadge).
-    private static Border RemoteBadge(string modelId)
+    // icon: a logo to use instead of the id's (the Models Hub's, from the model's brand).
+    private static Border RemoteBadge(string modelId, string? icon = null)
     {
-        if (RemoteVendorIcon(modelId) is { } icon && VendorIconImage(icon) is { } image)
+        icon ??= RemoteVendorIcon(modelId);
+        if (icon is not null && VendorIconImage(icon) is { } image)
         {
             FrameworkElement logo = new Image { Source = image };
             if (!icon.EndsWith("-color", StringComparison.Ordinal))

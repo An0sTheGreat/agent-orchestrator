@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using Fit = AgentOrchestrator.HubLogic.Fit;
+using HubKind = AgentOrchestrator.HubLogic.HubKind;
 using HubModel = AgentOrchestrator.HubLogic.HubModel;
 using HubVariant = AgentOrchestrator.HubLogic.HubVariant;
 
@@ -49,12 +50,12 @@ public partial class MainWindow
 
     private HttpClient? _hubHttp;
     private HttpClient HubHttp => _hubHttp ??= NewHubHttp();
-    private readonly Dictionary<(string Query, string Sort), (DateTime At, List<HubModel> Rows, Uri? Next)> _hubPageCache = new();
+    private readonly Dictionary<(string Query, string Sort, HubKind Kinds, string Brands), (DateTime At, List<HubModel> Rows, Uri? Next)> _hubPageCache = new();
     private Task<HubMachine> _hubMachine = Task.FromResult(new HubMachine(null, 0, [], []));
     private CancellationTokenSource? _hubCts;
     private Task _hubTask = Task.CompletedTask; // smokes await it
     private DispatcherTimer? _hubDebounce;
-    private (string Query, string Sort) _hubKey = ("", "trending");
+    private (string Query, string Sort, HubKind Kinds, string Brands) _hubKey = ("", "trending", HubKind.Text, "");
     private List<HubModel> _hubAll = [], _hubShown = [];
     private Uri? _hubNext;
     private int _hubPages;
@@ -62,7 +63,8 @@ public partial class MainWindow
     private HubModel? _hubSelected;
     private TextBox _hubSearch = new();
     private StackPanel _hubList = new(), _hubStatus = new();
-    private TextBlock _hubFooter = new(), _hubSortLabel = new();
+    private TextBlock _hubFooter = new(), _hubSortLabel = new(), _hubKindsLabel = new();
+    private System.Windows.Shapes.Ellipse _hubBrandDot = new();
     private Border _hubDetail = new();
     private ScrollViewer _hubDetailScroll = new();
     // The selected model's detail: its loads (cancelled when another row is selected), their replies cached by address
@@ -241,12 +243,15 @@ public partial class MainWindow
         }, TaskScheduler.FromCurrentSynchronizationContext());
 
         // ---- search box (with a clear button) and the sort pill
-        _hubSearch = new TextBox { Tag = "HubSearch", Height = 34, Padding = new Thickness(32, 0, 32, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        _hubSearch = new TextBox { Tag = "HubSearch", Height = 34, Padding = new Thickness(16, 0, 16, 0), VerticalContentAlignment = VerticalAlignment.Center };
         var glass = new TextBlock { Text = "\uE721", FontSize = 12, Margin = new Thickness(13, 0, 0, 0), HorizontalAlignment = HorizontalAlignment.Left, IsHitTestVisible = false };
         glass.SetResourceReference(StyleProperty, "RailGlyph");
         glass.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var hint = RemoteMuted("Search GGUF models on Hugging Face");
-        (hint.IsHitTestVisible, hint.VerticalAlignment, hint.TextWrapping, hint.Margin) = (false, VerticalAlignment.Center, TextWrapping.NoWrap, new Thickness(36, 0, 0, 0));
+        hint.Tag = "HubSearchHint";
+        // at the TextBox's text origin, so the caret sits before the "S": its border, its padding twice (the template's Border and
+        // the text view both apply it: 16 here puts the text 35 px in, clear of the glass) and the 2 px the text view keeps
+        (hint.IsHitTestVisible, hint.VerticalAlignment, hint.TextWrapping, hint.Margin) = (false, VerticalAlignment.Center, TextWrapping.NoWrap, new Thickness(35, 0, 0, 0));
         var clear = new Button
         {
             Content = "✕", Tag = "HubClear", Style = (Style)FindResource("GhostButton"), Width = 26, Height = 26, Padding = new Thickness(0), FontSize = 11,
@@ -268,14 +273,28 @@ public partial class MainWindow
             _hubDebounce.Stop();
             _hubDebounce.Start();
         };
+        Button Pill(string tag, object content, Func<UIElement, ContextMenu> menu)
+        {
+            var b = new Button { Tag = tag, Style = (Style)FindResource("GhostButton"), Height = 34, Padding = new Thickness(14, 0, 14, 0), Margin = new Thickness(10, 0, 0, 0), Content = content };
+            b.SetResourceReference(BackgroundProperty, "Card");
+            b.SetResourceReference(ForegroundProperty, "TextPrimary");
+            b.Click += (_, _) => menu(b).IsOpen = true;
+            DockPanel.SetDock(b, Dock.Right);
+            return b;
+        }
         _hubSortLabel = new TextBlock { Tag = "HubSortLabel", VerticalAlignment = VerticalAlignment.Center };
-        var sortButton = new Button { Tag = "HubSort", Style = (Style)FindResource("GhostButton"), Height = 34, Padding = new Thickness(14, 0, 14, 0), Margin = new Thickness(10, 0, 0, 0), Content = _hubSortLabel };
-        sortButton.SetResourceReference(BackgroundProperty, "Card");
-        sortButton.SetResourceReference(ForegroundProperty, "TextPrimary");
-        sortButton.Click += (_, _) => BuildHubSortMenu(sortButton).IsOpen = true;
+        var sortButton = Pill("HubSort", _hubSortLabel, BuildHubSortMenu);
         HubSortLabel();
-        DockPanel.SetDock(sortButton, Dock.Right);
-        var searchRow = new DockPanel { Margin = new Thickness(0, 20, 0, 0), Children = { sortButton, new Grid { Children = { _hubSearch, glass, hint, clear } } } };
+        _hubKindsLabel = new TextBlock { Tag = "HubKindsLabel", VerticalAlignment = VerticalAlignment.Center };
+        var kindsButton = Pill("HubKinds", _hubKindsLabel, BuildHubKindsMenu);
+        var funnel = new TextBlock { Text = "", FontSize = 13, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        funnel.SetResourceReference(StyleProperty, "RailGlyph");
+        _hubBrandDot = new System.Windows.Shapes.Ellipse { Tag = "HubBrandDot", Width = 7, Height = 7, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, -3, -6, 0) };
+        _hubBrandDot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "Accent");
+        var brandButton = Pill("HubBrands", new Grid { Children = { funnel, _hubBrandDot } }, BuildHubBrandMenu);
+        (brandButton.Width, brandButton.Padding, brandButton.ToolTip) = (34, new Thickness(0), "Filter by model maker");
+        HubFilterLabels();
+        var searchRow = new DockPanel { Margin = new Thickness(0, 20, 0, 0), Children = { sortButton, kindsButton, brandButton, new Grid { Children = { _hubSearch, glass, hint, clear } } } };
 
         // ---- the running download, whichever row is shown
         _hubStripText = new TextBlock { Tag = "HubStripText", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
@@ -436,6 +455,104 @@ public partial class MainWindow
         return menu;
     }
 
+    // ---- model type and model maker filters
+
+    private const HubKind HubAllKinds = HubKind.Text | HubKind.Audio | HubKind.Image | HubKind.Video;
+    private static readonly (HubKind Kind, string Label, string Short)[] HubKindNames =
+        [(HubKind.Text, "Text & vision", "Text"), (HubKind.Audio, "Audio", "Audio"), (HubKind.Image, "Image generation", "Image"), (HubKind.Video, "Video", "Video")];
+    private const double HubMenuRow = 32; // a filter menu's row; the brand menu shows 9 at a time
+
+    private HubKind HubKinds => (HubKind)_settings.HubKinds & HubAllKinds;
+
+    // The brand filter's keys for these types: their brands, then "other".
+    private static List<string> HubBrandKeys(HubKind kinds) => [.. HubLogic.BrandsFor(kinds).Select(b => b.Key), "other"];
+
+    private void HubFilterLabels()
+    {
+        var on = HubKindNames.Where(k => HubKinds.HasFlag(k.Kind)).ToList();
+        _hubKindsLabel.Text = (on.Count switch { 0 => "No types", 1 => on[0].Label, 2 => on[0].Short + ", " + on[1].Short, 4 => "All types", _ => on.Count + " types" }) + "  ▾";
+        _hubBrandDot.Visibility = _settings.HubBrands.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // Brands the types no longer list are dropped (kept while no type is picked); saved, relabelled, searched again.
+    private void HubFiltersChanged()
+    {
+        if (HubKinds != 0)
+            _settings.HubBrands = [.. _settings.HubBrands.Intersect(HubBrandKeys(HubKinds))];
+        _settings.Save();
+        HubFilterLabels();
+        HubSearch();
+    }
+
+    // "Select All" (or "Deselect All" when every entry is on), a line, then a checkable item per entry (Tag <tag>:<key>,
+    // <tag>:all for the first). Toggling keeps the menu open and saves the keys that are on.
+    private ContextMenu HubCheckMenu(UIElement anchor, string tag, List<(string Key, object Header)> entries, HashSet<string> on, Action<HashSet<string>> save)
+    {
+        var menu = NewPresetMenu(anchor);
+        MenuItem Item(object header, string key) => new() { Header = header, Tag = tag + ":" + key, Style = (Style)FindResource(typeof(MenuItem)), StaysOpenOnClick = true, Height = HubMenuRow };
+        var all = Item("", "all");
+        var items = entries.Select(e => (e.Key, Item: Item(e.Header, e.Key))).ToList();
+        void Sync()
+        {
+            foreach (var (key, item) in items)
+                item.IsChecked = on.Contains(key);
+            all.Header = items.All(i => i.Item.IsChecked) ? "Deselect All" : "Select All";
+        }
+        void Toggled()
+        {
+            save(on);
+            Sync();
+        }
+        all.Click += (_, _) =>
+        {
+            if (items.All(i => i.Item.IsChecked))
+                on.Clear();
+            else
+                on.UnionWith(items.Select(i => i.Key));
+            Toggled();
+        };
+        foreach (var (key, item) in items)
+            item.Click += (_, _) =>
+            {
+                if (!on.Remove(key))
+                    on.Add(key);
+                Toggled();
+            };
+        Sync();
+        menu.Items.Add(all);
+        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+        foreach (var (_, item) in items)
+            menu.Items.Add(item);
+        return menu;
+    }
+
+    private ContextMenu BuildHubKindsMenu(UIElement anchor) =>
+        HubCheckMenu(anchor, "hubkind", [.. HubKindNames.Select(k => (k.Kind.ToString(), (object)k.Label))],
+            [.. HubKindNames.Where(k => HubKinds.HasFlag(k.Kind)).Select(k => k.Kind.ToString())],
+            on =>
+            {
+                _settings.HubKinds = (int)HubKindNames.Where(k => on.Contains(k.Kind.ToString())).Aggregate((HubKind)0, (a, k) => a | k.Kind);
+                HubFiltersChanged();
+            });
+
+    // The brands of the picked types (logo and name) and Other; 9 rows show, the rest scroll.
+    private ContextMenu BuildHubBrandMenu(UIElement anchor)
+    {
+        static object Header(Border badge, string label)
+        {
+            badge.Margin = new Thickness(0, 0, 10, 0);
+            return new StackPanel { Orientation = Orientation.Horizontal, Children = { badge, new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center } } };
+        }
+        var entries = HubLogic.BrandsFor(HubKinds).Select(b => (b.Key, Header(RemoteBadge(b.Label, b.IconKey), b.Label))).Append(("other", Header(RemoteBadge("?"), "Other"))).ToList();
+        var menu = HubCheckMenu(anchor, "hubbrand", entries, [.. _settings.HubBrands], on =>
+        {
+            _settings.HubBrands = [.. on];
+            HubFiltersChanged();
+        });
+        menu.MaxHeight = 2 * (1 + 5) + 9 + 10 * HubMenuRow; // the menu's border and padding, the line, Select All and 9 brands
+        return menu;
+    }
+
     // ---- search, paging, cache
 
     private void HubSearch(bool fresh = false)
@@ -443,16 +560,32 @@ public partial class MainWindow
         _hubDebounce?.Stop();
         _hubCts?.Cancel();
         var cts = _hubCts = new CancellationTokenSource();
-        _hubTask = HubSearchAsync(_hubSearch.Text.Trim(), _settings.HubSort, fresh, cts.Token);
+        _hubTask = HubSearchAsync((_hubSearch.Text.Trim(), _settings.HubSort, HubKinds, string.Join(",", _settings.HubBrands.Order(StringComparer.Ordinal))), fresh, cts.Token);
     }
 
-    // The first page: each query variant in turn (QueryVariants) until enough rows match; "latest" also asks for the trending
-    // ones (Rank re-orders the union). Paging follows the first request's Link header. Cached per (query, sort) for 5 minutes.
-    private async Task HubSearchAsync(string query, string sort, bool fresh, CancellationToken ct)
+    private static HashSet<string> HubBrandSet(string brands) => [.. brands.Split(',', StringSplitOptions.RemoveEmptyEntries)];
+
+    // The rows to show: matching the query, ranked, of the picked types and makers.
+    private static List<HubModel> HubVisible(IEnumerable<HubModel> all, (string Query, string Sort, HubKind Kinds, string Brands) key) =>
+        HubLogic.FilterBrands(HubLogic.FilterKinds(HubLogic.Rank(HubLogic.FuzzyFilter(all, key.Query), key.Query, key.Sort, DateTimeOffset.UtcNow), key.Kinds), HubBrandSet(key.Brands));
+
+    // The first page: each query variant in turn (QueryVariants) until enough rows show; with no query and makers picked, each
+    // maker's word (BrandQueries; Other: the plain listing). Text is asked for without a pipeline_tag (FilterKinds keeps it),
+    // the other types with one request per tag. "latest" also asks for the trending ones (Rank re-orders the union). Paging
+    // follows the first request's Link header. Cached per (query, sort, types, makers) for 5 minutes. No type: nothing asked.
+    private async Task HubSearchAsync((string Query, string Sort, HubKind Kinds, string Brands) key, bool fresh, CancellationToken ct)
     {
-        _hubKey = (query, sort);
+        var (query, sort) = (key.Query, key.Sort);
+        _hubKey = key;
         _hubNext = null;
         _hubFooter.Visibility = Visibility.Collapsed;
+        if (key.Kinds == 0)
+        {
+            (_hubAll, _hubShown) = ([], []);
+            _hubList.Children.Clear();
+            HubStatus("Pick at least one model type");
+            return;
+        }
         try
         {
             if (fresh || !_hubPageCache.TryGetValue(_hubKey, out var hit) || DateTime.UtcNow - hit.At > HubCacheFor)
@@ -463,17 +596,24 @@ public partial class MainWindow
                 Uri? next = null;
                 var first = true;
                 string[] sorts = sort == "latest" ? ["latest", "trending"] : [sort];
-                foreach (var variant in query.Length == 0 ? [""] : HubLogic.QueryVariants(query))
+                string?[] tags = [.. key.Kinds.HasFlag(HubKind.Text) ? [null] : Array.Empty<string?>(), .. HubLogic.PipelineTagsFor(key.Kinds & ~HubKind.Text)];
+                var brands = HubBrandSet(key.Brands);
+                var picked = HubLogic.Brands.Where(b => brands.Contains(b.Key)).ToList();
+                List<string> words = query.Length > 0 ? [.. HubLogic.QueryVariants(query)]
+                    : picked.Count == 0 || HubBrandKeys(key.Kinds).All(brands.Contains) ? [""]
+                    : [.. HubLogic.BrandQueries(picked), .. brands.Contains("other") ? [""] : Array.Empty<string>()];
+                foreach (var word in words)
                 {
                     foreach (var s in sorts)
-                    {
-                        var (page, link) = await HubFetchAsync(HubLogic.SearchUrl(variant, s), ct);
-                        if (first)
-                            (next, first) = (link, false);
-                        HubMerge(rows, page);
-                    }
+                        foreach (var tag in tags)
+                        {
+                            var (page, link) = await HubFetchAsync(HubLogic.SearchUrl(word, s, pipelineTag: tag), ct);
+                            if (first)
+                                (next, first) = (link, false);
+                            HubMerge(rows, page);
+                        }
                     var snapshot = rows.ToList();
-                    if (await Task.Run(() => HubLogic.Rank(HubLogic.FuzzyFilter(snapshot, query), query, sort, DateTimeOffset.UtcNow).Count, ct) >= HubEnoughRows)
+                    if (query.Length > 0 && await Task.Run(() => HubVisible(snapshot, key).Count, ct) >= HubEnoughRows)
                         break;
                 }
                 hit = _hubPageCache[_hubKey] = (DateTime.UtcNow, rows, next);
@@ -540,8 +680,8 @@ public partial class MainWindow
 
     private async Task HubRenderAsync(CancellationToken ct)
     {
-        var (all, (query, sort)) = (_hubAll.ToList(), _hubKey);
-        var shown = await Task.Run(() => HubLogic.Rank(HubLogic.FuzzyFilter(all, query), query, sort, DateTimeOffset.UtcNow), ct);
+        var (all, key) = (_hubAll.ToList(), _hubKey);
+        var shown = await Task.Run(() => HubVisible(all, key), ct);
         await _hubMachine; // the fit filter needs it
         ct.ThrowIfCancellationRequested();
         _hubShown = shown;
@@ -561,18 +701,36 @@ public partial class MainWindow
         foreach (var m in rows)
             _hubList.Children.Add(HubRow(m, now));
         var query = _hubKey.Query;
-        HubStatus(rows.Count > 0 ? "" : (query.Length == 0 ? "No GGUF models found" : $"No GGUF models match “{query}”")
-            + (rows.Count == 0 && rows.Count < _hubShown.Count ? " that fit this computer" : ""));
+        if (rows.Count == 0 && _hubShown.Count == 0 && (_hubKey.Kinds != HubKind.Text || _hubKey.Brands.Length > 0))
+            HubStatus("No models match these filters", clearFilters: true);
+        else
+            HubStatus(rows.Count > 0 ? "" : (query.Length == 0 ? "No GGUF models found" : $"No GGUF models match “{query}”")
+                + (rows.Count == 0 && rows.Count < _hubShown.Count ? " that fit this computer" : ""));
         // a short list does not scroll: keep loading until it fills (or the pages run out)
         Dispatcher.BeginInvoke(HubLoadMore, DispatcherPriority.Background);
     }
 
-    private void HubStatus(string text)
+    // clearFilters: a "Clear filters" link after it (back to Text & vision, every maker).
+    private void HubStatus(string text, bool clearFilters = false)
     {
         _hubStatus.Children.Clear();
         _hubStatus.Visibility = text.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
-        if (text.Length > 0)
-            _hubStatus.Children.Add(RemoteMuted(text));
+        if (text.Length == 0)
+            return;
+        var line = RemoteMuted(text);
+        if (clearFilters)
+        {
+            var link = new Hyperlink(new Run("Clear filters")) { Tag = "HubClearFilters" };
+            link.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
+            link.Click += (_, _) =>
+            {
+                (_settings.HubKinds, _settings.HubBrands) = ((int)HubKind.Text, []);
+                HubFiltersChanged();
+            };
+            line.Inlines.Add(new Run("   "));
+            line.Inlines.Add(link);
+        }
+        _hubStatus.Children.Add(line);
     }
 
     private void HubError(Exception e)
@@ -615,11 +773,12 @@ public partial class MainWindow
         return HubTileColors[h % (uint)HubTileColors.Length];
     }
 
-    // The maker's logo (RemoteBadge) when it has one, else its initial on a colour from its name.
+    // The maker's logo (RemoteBadge): the brand named in the repo name (HubLogic.BrandOf), else the owner's; with neither, the
+    // owner's initial on a colour from its name.
     private static FrameworkElement HubBadge(HubModel m)
     {
-        if (RemoteVendorIcon(m.Id) is { } icon && VendorIconImage(icon) is not null)
-            return RemoteBadge(m.Id);
+        if ((HubLogic.BrandOf(m.Id)?.IconKey ?? RemoteVendorIcon(m.Id)) is { } icon && VendorIconImage(icon) is not null)
+            return RemoteBadge(m.Id, icon);
         var initial = m.Owner.Length > 0 ? char.ToUpperInvariant(m.Owner[0]).ToString() : "?";
         var rgb = HubOwnerColor(m.Owner);
         return new Border
@@ -1146,6 +1305,7 @@ public partial class MainWindow
         var fake = new HubFakeHandler();
         var (factory, vramWas, ramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _settings.HubSort, _settings.HubOnlyFit, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
         var (remoteHttp, helpShown) = (_remoteHttp, _settings.RemoteHelpShown);
+        var (kindsWas, brandsWas) = (_settings.HubKinds, _settings.HubBrands);
         var (hubFolderWas, modelsWas, pickWas, choiceWas) = (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice);
         var opened = new List<string>();
         var cache = Path.Combine(AppSettings.DataRoot, "hub-smoke-cache");
@@ -1195,7 +1355,7 @@ public partial class MainWindow
             _hubTextCache.Clear();
             _openExternal = opened.Add;
             Environment.SetEnvironmentVariable("HF_HUB_CACHE", cache);
-            (_settings.HubSort, _settings.HubOnlyFit, _settings.HubDownloadFolder) = ("trending", false, "");
+            (_settings.HubSort, _settings.HubOnlyFit, _settings.HubDownloadFolder, _settings.HubKinds, _settings.HubBrands) = ("trending", false, "", (int)HubKind.Text, []);
 
             if (!await OpenFromSidebar())
                 return Fail("no Models Hub right under Remote API in the sidebar");
@@ -1206,8 +1366,14 @@ public partial class MainWindow
             var stats = HubRows().Select(r => SmokeFind<TextBlock>(r, t => t.Tag as string == "hubstats")?.Text).ToList();
             if (stats[0] != "♡ 1.4K   ↓ 61K" || stats[1] != "♡ 12   ↓ 1.3M")
                 return Fail("row counts: " + string.Join(" / ", stats));
-            if (SmokeFind<Border>(HubRows()[0], b => b.Tag as string == "hubtile:U") is null || SmokeFind<Border>(HubRows()[1], b => b.Tag as string == "hubtile:Z") is null)
-                return Fail("the owners' initial tiles");
+            // unsloth's Qwen3.8 gets Qwen's logo (the brand in its name); zyxlab, no brand and no logo, its initial
+            if (SmokeFind<Border>(HubRows()[0], b => b.Tag as string == "icon:qwen-color") is null || SmokeFind<Border>(HubRows()[1], b => b.Tag as string == "hubtile:Z") is null)
+                return Fail("the brand logo and the owner's initial tile");
+            var hint = Find<TextBlock>("HubSearchHint")!;
+            var caretX = _hubSearch.TransformToAncestor(ModelHubView).Transform(_hubSearch.GetRectFromCharacterIndex(0).TopLeft).X;
+            var hintX = hint.TransformToAncestor(ModelHubView).Transform(new Point(0, 0)).X;
+            if (Math.Abs(caretX - hintX) > 1)
+                return Fail($"the search hint starts at {hintX:0.#}, the caret at {caretX:0.#}");
             if (Find<TextBlock>("HubChip:VRAM")?.Text != "4 GB" || Find<TextBlock>("HubChip:CPU")?.Text != Environment.ProcessorCount + " threads" || Find<TextBlock>("HubSortLabel")?.Text != "↑↓  Trending  ▾")
                 return Fail($"header: VRAM {Find<TextBlock>("HubChip:VRAM")?.Text}, CPU {Find<TextBlock>("HubChip:CPU")?.Text}, sort {Find<TextBlock>("HubSortLabel")?.Text}");
 
@@ -1524,6 +1690,7 @@ public partial class MainWindow
             (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp, _hubDlHttp) = (factory, vramWas, ramWas, open, null, null);
             _hubTextCache.Clear();
             (_settings.HubSort, _settings.HubOnlyFit, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
+            (_settings.HubKinds, _settings.HubBrands) = (kindsWas, brandsWas);
             (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice) = (hubFolderWas, modelsWas, pickWas, choiceWas);
             _settings.Save();
             foreach (var dir in new[] { saveDir, modelsDir })
@@ -1575,6 +1742,11 @@ internal sealed class HubFakeHandler : HttpMessageHandler
     private static readonly string MiniBlobs = """{"sha":"minisha","siblings":[""" + string.Join(",", MiniFiles.Select(f => $$"""{"rfilename":"{{f.Key}}","size":{{f.Value.Length}}}"""))
         + """,{"rfilename":"Mini-Q3_K_S.gguf","size":800000}]}""";
     private const string LockedBlobs = """{"sha":"lockedsha","siblings":[{"rfilename":"Locked-Q4_0.gguf","size":1000}]}""";
+
+    // BrandRows: the listing adds repos named for a maker that another account uploaded (and LiquidAI, whose account has no logo).
+    public const string DeepSeek = "ISTA-DASLab/DeepSeek-V4-Flash-GGUF", Huihui = "huihui-ai/Huihui-Qwen3.8-30B-GGUF", Liquid = "LiquidAI/LFM3-8B-GGUF";
+    public bool BrandRows;
+    private const string BrandRowsJson = """,{"id":"ISTA-DASLab/DeepSeek-V4-Flash-GGUF","downloads":30,"likes":3,"pipeline_tag":"text-generation","tags":["gguf"]},{"id":"huihui-ai/Huihui-Qwen3.8-30B-GGUF","downloads":20,"likes":2,"pipeline_tag":"text-generation","tags":["gguf"]},{"id":"LiquidAI/LFM3-8B-GGUF","downloads":10,"likes":1,"pipeline_tag":"text-generation","tags":["gguf"]}]""";
 
     public static string Sha256(byte[] data) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
     private static byte[] SeededBytes(int size, int seed)
@@ -1633,7 +1805,10 @@ internal sealed class HubFakeHandler : HttpMessageHandler
             return new HttpResponseMessage(body is null ? HttpStatusCode.NotFound : HttpStatusCode.OK) { Content = new StringContent(body ?? "") };
         }
         var second = url == NextUrl;
-        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(second ? SecondPage : Downloads ? Models[..^1] + DownloadRows : Models) };
+        var listing = Downloads ? Models[..^1] + DownloadRows : Models;
+        if (BrandRows)
+            listing = listing[..^1] + BrandRowsJson;
+        var response = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(second ? SecondPage : listing) };
         if (Paged && !second)
             response.Headers.TryAddWithoutValidation("Link", $"<{NextUrl}>; rel=\"next\"");
         return response;
