@@ -1092,7 +1092,7 @@ public partial class MainWindow
             RemoteVendorIcon("QWEN/qwen3-coder") == "qwen-color" && RemoteVendorIcon("google/gemma-3-27b-it") == "google-color" &&
             RemoteVendorIcon("llama3.1:8b") is null && RemoteVendorIcon("acme/x") is null && RemoteVendorIcon("/x") is null && RemoteVendorIcon("") is null &&
             Vendors.Keys.All(k => RemoteVendorIcon(k + "/m") is not null), "vendor icons");
-        var missing = VendorIcons.Values.Distinct().Where(i => VendorIconImage(i) is null).ToList();
+        var missing = VendorIcons.Values.Concat(HubLogic.Brands.Select(b => b.IconKey).OfType<string>()).Distinct().Where(i => VendorIconImage(i) is null).ToList();
         Check(missing.Count == 0, "vendor icons not in the app's resources: " + string.Join(", ", missing));
         RemoteCatalog.ProviderRow[] p =
         [

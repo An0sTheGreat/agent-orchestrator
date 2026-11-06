@@ -29,6 +29,13 @@ internal static class HubLogic
 
     public enum Fit { Unknown, Fits, Marginal, Partial, Oom }
 
+    // What a model makes. Text includes vision and other multimodal chat.
+    [Flags]
+    public enum HubKind { Text = 1, Audio = 2, Image = 4, Video = 8 }
+
+    // A model maker (family) for the brand filter and row icons. IconKey: a file stem in Assets\Vendors, or null.
+    public sealed record HubBrand(string Key, string Label, string? IconKey, HubKind Kinds);
+
     // ---- JSON helpers: every field may be missing or null ----
 
     private static string? Str(JsonElement e, string p) => e.TryGetProperty(p, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -57,9 +64,11 @@ internal static class HubLogic
     private static readonly string[] Expand = ["downloads", "likes", "lastModified", "createdAt", "trendingScore", "pipeline_tag", "gated", "tags", "library_name", "gguf"];
 
     // "latest" asks HF for the newest; the UI may add a trendingScore page, and Rank re-orders the union.
-    public static Uri SearchUrl(string query, string sortId, int limit = 100)
+    public static Uri SearchUrl(string query, string sortId, int limit = 100, string? pipelineTag = null)
     {
         var q = new List<string> { "filter=gguf" };
+        if (!string.IsNullOrWhiteSpace(pipelineTag))
+            q.Add("pipeline_tag=" + Uri.EscapeDataString(pipelineTag.Trim()));
         if (query.Trim() is { Length: > 0 } search)
             q.Add("search=" + Uri.EscapeDataString(search));
         q.Add("sort=" + SortField(sortId));
@@ -103,11 +112,11 @@ internal static class HubLogic
 
     // ---- ranking ----
 
-    // Drops diffusion repos. "latest": newest that are also trending first, (trendingScore+2)/(ageDays+2)^1.6; with a query,
-    // fuzzy match quality comes before that. Other sorts keep HF's order.
+    // "latest": newest that are also trending first, (trendingScore+2)/(ageDays+2)^1.6; with a query, fuzzy match quality
+    // comes before that. Other sorts keep HF's order. Diffusion repos stay: FilterKinds decides what is shown.
     public static List<HubModel> Rank(IEnumerable<HubModel> models, string query, string sortId, DateTimeOffset now)
     {
-        var list = models.Where(m => !m.IsDiffusion).ToList();
+        var list = models.ToList();
         if (sortId != "latest")
             return list;
         double Latest(HubModel m)
@@ -119,6 +128,174 @@ internal static class HubLogic
             ? list.OrderByDescending(Latest).ToList()
             : list.OrderByDescending(m => FuzzyScore(query, m.Id)).ThenByDescending(Latest).ToList();
     }
+
+    // ---- model kinds ----
+
+    private static readonly Regex VideoHint = new(@"(?<![a-z])(?:wan-?\d|ltx|mochi|cogvideo|hunyuan-?video|skyreels|step-?video|[ti]2v(?![a-z]))", RegexOptions.IgnoreCase);
+    private static readonly Regex ImageHint = new(@"(?<![a-z])(?:flux|stable-?diffusion|sdxl|sd-?3(?!\d)|hidream|qwen-?image|z-image|chroma(?![a-z])|lumina|pix-?art|kolors|t2i(?![a-z]))", RegexOptions.IgnoreCase);
+    private static readonly Regex AudioHint = new(@"tts(?![a-z])|(?<![a-z])(?:tts|asr(?![a-z])|whisper|kokoro|orpheus|parakeet|vibevoice|chatterbox|cosyvoice|bark(?![a-z]))", RegexOptions.IgnoreCase);
+
+    // From pipeline_tag; without one, from the name (and diffusers -> Image); nothing known -> Text. "*-text-to-text"
+    // (image/video/audio chat) is Text.
+    public static HubKind KindOf(HubModel m)
+    {
+        var tag = (m.PipelineTag ?? "").Trim().ToLowerInvariant();
+        if (tag.EndsWith("-text-to-text", StringComparison.Ordinal))
+            return HubKind.Text;
+        if (tag is "text-to-speech" or "automatic-speech-recognition" or "text-to-audio" or "voice-activity-detection" || tag.StartsWith("audio-", StringComparison.Ordinal))
+            return HubKind.Audio;
+        if (tag is "text-to-video" or "image-to-video" || tag.StartsWith("video-", StringComparison.Ordinal))
+            return HubKind.Video;
+        if (tag is "text-to-image" or "image-to-image" or "unconditional-image-generation" or "image-to-3d" or "text-to-3d")
+            return HubKind.Image;
+        if (tag.Length > 0)
+            return HubKind.Text;
+        if (VideoHint.IsMatch(m.Name))
+            return HubKind.Video;
+        if (ImageHint.IsMatch(m.Name) || m.IsDiffusion)
+            return HubKind.Image;
+        return AudioHint.IsMatch(m.Name) ? HubKind.Audio : HubKind.Text;
+    }
+
+    // The pipeline_tag values to ask HF for (one request each) to list these kinds.
+    public static string[] PipelineTagsFor(HubKind kinds) =>
+    [
+        .. kinds.HasFlag(HubKind.Text) ? new[] { "text-generation", "image-text-to-text", "any-to-any" } : [],
+        .. kinds.HasFlag(HubKind.Audio) ? new[] { "text-to-speech", "automatic-speech-recognition", "text-to-audio" } : [],
+        .. kinds.HasFlag(HubKind.Image) ? new[] { "text-to-image", "image-to-image" } : [],
+        .. kinds.HasFlag(HubKind.Video) ? new[] { "text-to-video", "image-to-video" } : [],
+    ];
+
+    // No kinds selected = no filter.
+    public static List<HubModel> FilterKinds(IEnumerable<HubModel> models, HubKind kinds) =>
+        kinds == 0 ? models.ToList() : models.Where(m => (KindOf(m) & kinds) != 0).ToList();
+
+    // ---- brands ----
+
+    private sealed record BrandDef(HubBrand Brand, Regex Name, string Query, string[] Owners);
+
+    private const HubKind Tx = HubKind.Text, Au = HubKind.Audio, Im = HubKind.Image, Vi = HubKind.Video;
+
+    // name: a regex matched in the repo name after a non-letter; owners: HF accounts that are this maker (the fallback).
+    private static BrandDef Def(string key, string label, string? icon, HubKind kinds, string name, string query, params string[] owners) =>
+        new(new HubBrand(key, label, icon, kinds), new Regex("(?<![a-z])(?:" + name + ")", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant), query, owners);
+
+    private static readonly BrandDef[] BrandDefs =
+    [
+        // text, vision and multimodal chat
+        Def("deepseek", "DeepSeek", "deepseek-color", Tx, "deepseek", "deepseek", "deepseek-ai"),
+        Def("qwen", "Qwen", "qwen-color", Tx | Au | Im, "qwen|qwq|qvq", "qwen", "Qwen"),
+        Def("llama", "Meta Llama", "meta-color", Tx, @"(?:code)?llama(?!file|[.-]?cpp)", "llama", "meta-llama", "facebook"),
+        Def("mistral", "Mistral", "mistral-color", Tx | Au, "mistral|mixtral|ministral|codestral|devstral|magistral|pixtral|voxtral", "mistral", "mistralai"),
+        Def("gemma", "Google Gemma", "google-color", Tx, "(?:code|pali|med|shield|t5|embedding)?gemma", "gemma", "google"),
+        Def("phi", "Microsoft Phi", "microsoft-color", Tx, @"phi-?\d", "phi", "microsoft"),
+        Def("nemotron", "NVIDIA Nemotron", "nvidia-color", Tx, "nemotron", "nemotron", "nvidia"),
+        Def("minimax", "MiniMax", "minimax-color", Tx, "minimax", "minimax", "MiniMaxAI"),
+        Def("glm", "Z.ai GLM", "zai", Tx, "(?:chat)?glm", "glm", "zai-org", "THUDM", "z-ai"),
+        Def("kimi", "Moonshot Kimi", "moonshot", Tx, "kimi|moonlight", "kimi", "moonshotai"),
+        Def("gpt-oss", "OpenAI gpt-oss", "openai", Tx, "gpt-oss", "gpt-oss", "openai"),
+        Def("cohere", "Cohere Command", "cohere-color", Tx, "command-?[ra](?![a-z])|c4ai|aya(?![a-z])", "command", "CohereLabs", "CohereForAI", "Cohere"),
+        Def("granite", "IBM Granite", "ibm", Tx | Au, "granite", "granite", "ibm-granite", "ibm"),
+        Def("liquid", "Liquid LFM", "liquid", Tx | Au, "lfm", "lfm", "LiquidAI"),
+        Def("stepfun", "StepFun Step", "stepfun-color", Tx | Au | Im | Vi, @"step-?\d|step-?(?:audio|video)|step1x", "step", "stepfun-ai"),
+        Def("seed", "ByteDance Seed", "bytedance-color", Tx, "seed-?(?:oss|coder|x)|ui-tars", "seed", "ByteDance-Seed", "ByteDance"),
+        Def("hunyuan", "Tencent Hunyuan", "tencent-color", Tx | Im | Vi, "hunyuan", "hunyuan", "tencent"),
+        Def("ernie", "Baidu ERNIE", "baidu-color", Tx, "ernie(?![a-z])", "ernie", "baidu"),
+        Def("mimo", "Xiaomi MiMo", "xiaomimimo", Tx | Au, "mimo(?![a-z])", "mimo", "XiaomiMiMo", "xiaomi"),
+        Def("olmo", "AllenAI OLMo", "ai2-color", Tx, "olmo|molmo|tulu", "olmo", "allenai"),
+        Def("smollm", "Hugging Face SmolLM", "huggingface-color", Tx, "smol(?:lm|vlm)", "smollm", "HuggingFaceTB", "HuggingFaceH4"),
+        Def("grok", "xAI Grok", "xai", Tx, "grok", "grok", "xai-org"),
+        Def("yi", "01.AI Yi", "zeroone", Tx, @"yi(?=[-\d])", "yi", "01-ai"),
+        Def("hermes", "Nous Hermes", "nousresearch", Tx, "hermes", "hermes", "NousResearch"),
+        Def("dolphin", "Dolphin", "dolphin", Tx, "dolphin", "dolphin", "cognitivecomputations", "dphn"),
+        Def("arcee", "Arcee", "arcee-color", Tx, "arcee", "arcee", "arcee-ai"),
+        Def("cogito", "Deep Cogito", "deepcogito-color", Tx, "cogito", "cogito", "deepcogito"),
+        Def("longcat", "Meituan LongCat", "longcat-color", Tx, "longcat", "longcat", "meituan-longcat", "meituan"),
+        Def("ling", "inclusionAI Ling", "ling-color", Tx, @"(?:ling|ring|ming)-(?:\d|flash|mini|lite|plus|omni)", "ling", "inclusionAI"),
+        Def("kat", "Kwaipilot KAT", "kwaipilot", Tx, @"kat-(?:dev|coder|v\d)", "kat", "Kwaipilot"),
+        Def("rnj", "Essential AI Rnj", "essentialai-color", Tx, @"rnj-?\d", "rnj", "EssentialAI"),
+        Def("solar", "Upstage Solar", "upstage-color", Tx, "solar(?![a-z])", "solar", "upstage"),
+        Def("jamba", "AI21 Jamba", "ai21", Tx, "jamba", "jamba", "ai21labs"),
+        Def("openchat", "OpenChat", "openchat-color", Tx, "openchat", "openchat", "openchat"),
+        Def("internlm", "InternLM", null, Tx, "intern(?:lm|vl|-?s1)", "internlm", "internlm", "OpenGVLab"),
+        Def("falcon", "TII Falcon", null, Tx, "falcon", "falcon", "tiiuae"),
+        Def("exaone", "LG EXAONE", null, Tx, "exaone", "exaone", "LGAI-EXAONE"),
+        Def("minicpm", "OpenBMB MiniCPM", null, Tx, "minicpm", "minicpm", "openbmb"),
+        Def("baichuan", "Baichuan", null, Tx, "baichuan", "baichuan", "baichuan-inc"),
+        Def("llava", "LLaVA", null, Tx, "llava", "llava", "llava-hf", "liuhaotian"),
+        Def("apriel", "ServiceNow Apriel", null, Tx, "apriel", "apriel", "ServiceNow-AI"),
+        Def("skywork", "Skywork", null, Tx, "skywork", "skywork", "Skywork"),
+        Def("moondream", "Moondream", null, Tx, "moondream", "moondream", "vikhyatk", "moondream"),
+        // speech
+        Def("whisper", "OpenAI Whisper", "openai", Au, "(?:distil-?|faster-)?whisper", "whisper"),
+        Def("parakeet", "NVIDIA Parakeet", "nvidia-color", Au, "parakeet|canary-", "parakeet"),
+        Def("vibevoice", "Microsoft VibeVoice", "microsoft-color", Au, "vibevoice", "vibevoice"),
+        Def("kokoro", "Kokoro", null, Au, "kokoro", "kokoro", "hexgrad"),
+        Def("orpheus", "Orpheus", null, Au, "orpheus", "orpheus", "canopylabs"),
+        Def("outetts", "OuteTTS", null, Au, "outetts", "outetts", "OuteAI"),
+        Def("dia", "Nari Dia", null, Au, @"dia-\d", "dia", "nari-labs"),
+        Def("csm", "Sesame CSM", null, Au, @"csm-\d", "csm", "sesame"),
+        Def("chatterbox", "Resemble Chatterbox", null, Au, "chatterbox", "chatterbox", "ResembleAI"),
+        Def("f5-tts", "F5-TTS", null, Au, "f5-?tts", "f5-tts", "SWivid"),
+        Def("spark-tts", "Spark-TTS", null, Au, "spark-?tts", "spark-tts", "SparkAudio"),
+        Def("fish-speech", "Fish Audio", null, Au, "fish-?speech|openaudio", "fish-speech", "fishaudio"),
+        Def("cosyvoice", "FunAudioLLM CosyVoice", null, Au, "cosyvoice|sensevoice", "cosyvoice", "FunAudioLLM"),
+        Def("index-tts", "IndexTTS", null, Au, "index-?tts", "indextts", "IndexTeam"),
+        Def("moshi", "Kyutai Moshi", null, Au, "moshi", "moshi", "kyutai"),
+        Def("bark", "Suno Bark", null, Au, "bark(?![a-z])", "bark", "suno"),
+        Def("higgs", "Boson Higgs Audio", null, Au, "higgs-?audio", "higgs-audio", "bosonai"),
+        Def("piper", "Piper", null, Au, "piper(?![a-z])", "piper", "rhasspy"),
+        // image
+        Def("flux", "Black Forest Labs FLUX", null, Im, "flux", "flux", "black-forest-labs"),
+        Def("stability", "Stability AI", null, Im | Au | Vi, @"stable-?(?:diffusion|audio|video|cascade)|sdxl|sd-?3(?!\d)", "stable-diffusion", "stabilityai"),
+        Def("hidream", "HiDream", null, Im, "hidream", "hidream", "HiDream-ai"),
+        Def("chroma", "Chroma", null, Im, "chroma(?![a-z])", "chroma", "lodestones"),
+        Def("sana", "NVIDIA Sana", "nvidia-color", Im, "sana(?![a-z])", "sana", "Efficient-Large-Model"),
+        Def("z-image", "Alibaba Z-Image", "alibaba-color", Im, "z-image", "z-image", "Tongyi-MAI"),
+        Def("omnigen", "OmniGen", null, Im, "omnigen", "omnigen", "Shitao", "OmniGen2"),
+        Def("lumina", "Lumina", null, Im, "lumina(?![a-z])", "lumina", "Alpha-VLLM"),
+        Def("pixart", "PixArt", null, Im, "pix-?art", "pixart", "PixArt-alpha"),
+        Def("kolors", "Kwai Kolors", null, Im, "kolors", "kolors", "Kwai-Kolors"),
+        Def("kandinsky", "Kandinsky", null, Im | Vi, "kandinsky", "kandinsky", "kandinskylab", "ai-forever"),
+        // video
+        Def("wan", "Wan", "alibaba-color", Vi | Im, @"wan-?\d", "wan", "Wan-AI"),
+        Def("ltx", "Lightricks LTX", null, Vi, "ltx", "ltx", "Lightricks"),
+        Def("mochi", "Genmo Mochi", null, Vi, "mochi", "mochi", "genmo"),
+        Def("cogvideo", "Zhipu CogVideoX", "zhipu-color", Vi | Im, "cog(?:videox?|view)", "cogvideox"),
+        Def("skyreels", "SkyReels", null, Vi, "skyreels", "skyreels"),
+    ];
+
+    public static readonly IReadOnlyList<HubBrand> Brands = BrandDefs.Select(d => d.Brand).ToArray();
+
+    // Add, not TryAdd: an owner listed twice fails the type initializer, so the self-test catches it.
+    private static readonly Dictionary<string, HubBrand> OwnerBrands = BrandDefs
+        .SelectMany(d => d.Owners.Select(o => (o, d.Brand))).ToDictionary(x => x.o, x => x.Brand, StringComparer.OrdinalIgnoreCase);
+
+    // The maker named in the repo name (the earliest match, the longer one on a tie: "Huihui-Qwen3.8" is Qwen,
+    // "DeepSeek-R1-Distill-Qwen" DeepSeek), else the owner's; null = Other. ponytail: one regex per brand per id.
+    public static HubBrand? BrandOf(string modelId)
+    {
+        var slash = modelId.IndexOf('/');
+        var name = modelId[(slash + 1)..];
+        HubBrand? best = null;
+        int at = int.MaxValue, length = 0;
+        foreach (var d in BrandDefs)
+            if (d.Name.Match(name) is { Success: true } m && (m.Index < at || m.Index == at && m.Length > length))
+                (best, at, length) = (d.Brand, m.Index, m.Length);
+        return best ?? (slash > 0 && OwnerBrands.TryGetValue(modelId[..slash], out var owner) ? owner : null);
+    }
+
+    public static List<HubBrand> BrandsFor(HubKind kinds) =>
+        Brands.Where(b => (b.Kinds & kinds) != 0).OrderBy(b => b.Label, StringComparer.OrdinalIgnoreCase).ToList();
+
+    // Empty set = no filter; "other" keeps the models with no known brand.
+    public static List<HubModel> FilterBrands(IEnumerable<HubModel> models, ISet<string> brandKeys) =>
+        brandKeys.Count == 0 ? models.ToList()
+        : models.Where(m => BrandOf(m.Id) is { } b ? brandKeys.Contains(b.Key) : brandKeys.Contains("other")).ToList();
+
+    // The search word per brand to send HF when the brand filter is on and the query is empty.
+    public static IEnumerable<string> BrandQueries(IEnumerable<HubBrand> selected) =>
+        selected.Select(b => BrandDefs.First(d => d.Brand.Key == b.Key).Query);
 
     // ---- fuzzy search ----
 
@@ -339,13 +516,75 @@ internal static class HubLogic
 
     // ---- README ----
 
-    // A line opening a raw HTML block: a comment, a block-level tag, or nothing but tags (an autolink like <https://x> is not a tag).
-    private static readonly Regex HtmlBlockRx = new(
-        @"^\s*(<!--|</?(address|article|aside|blockquote|center|details|div|dl|figure|footer|h[1-6]|header|hr|li|nav|ol|p|picture|section|summary|table|tbody|td|th|thead|tr|ul)(\s|/?>|$)|(</?[a-z][a-z0-9-]*(\s[^>]*)?/?>\s*)+$)",
+    // HTML elements whose tags are stripped (text kept). Only known names, so placeholders like <model> or <s> stay;
+    // source only with attributes (a "<source>" placeholder stays).
+    private const string HtmlTags = "a|abbr|article|aside|audio|b|big|blockquote|br|caption|center|cite|code|colgroup|col|dd|del|details|div|dl|dt|em|" +
+        "figcaption|figure|font|footer|h[1-6]|header|hr|iframe|img|ins|i|kbd|li|mark|nav|ol|picture|pre|p|section|small|source(?=\\s)|span|strike|" +
+        "strong|sub|summary|sup|table|tbody|td|tfoot|thead|th|tr|tt|ul|u|video";
+
+    // Elements that end a line where they open or close.
+    private static readonly HashSet<string> HtmlBlocks = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "article", "aside", "blockquote", "caption", "center", "dd", "details", "div", "dl", "dt", "figcaption", "figure", "footer",
+        "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td",
+        "tfoot", "th", "thead", "tr", "ul",
+    };
+
+    // A code span (kept as is), a comment, a script/style element, a whole <a> element, or one known tag. Leftmost wins, so a
+    // tag inside a code span is never touched. An autolink (<https://x>) or a comparison (a < b) matches nothing.
+    private static readonly Regex HtmlInlineRx = new(
+        @"(?<code>(?<bt>`+)(?:(?!\n[ \t]*\n)[\s\S])*?(?<!`)\k<bt>(?!`))|<!--[\s\S]*?(?:-->|\z)|<(?<raw>script|style)\b[\s\S]*?(?:</\k<raw>\s*>|\z)" +
+        @"|<a\b(?<attrs>[^<>]*)>(?<inner>[\s\S]*?)</a\s*>|<(?<close>/)?(?<tag>" + HtmlTags + @")(?![a-z0-9-])(?<attrs>[^<>]*)>",
         RegexOptions.IgnoreCase);
 
-    // The README as our Markdown renderer can show it: no YAML front matter, no raw HTML blocks (from the opening line through
-    // the next blank line, a comment through its end), code fences untouched. ponytail: CommonMark's HTML block rules, roughly.
+    // Marks a line an HTML tag was taken from: its indentation goes (so it does not turn into a code block) and, left blank, it
+    // merges with the blank lines around it.
+    private const char Stripped = '\u0001';
+
+    private static string? Attr(string attrs, string name) =>
+        Regex.Match(attrs, @"(?<![\w-])" + name + @"\s*=\s*(?:""(?<v>[^""]*)""|'(?<v>[^']*)'|(?<v>[^\s""'>]+))", RegexOptions.IgnoreCase) is { Success: true } m
+            ? m.Groups["v"].Value.Trim() : null;
+
+    // Inline HTML as Markdown: <a href> -> [text](href), <img alt src> -> ![alt](src) (no alt or src: dropped), <br> and block
+    // tags -> a line break, any other known tag -> nothing; comments, script and style dropped.
+    private static string StripHtml(string text) => HtmlInlineRx.Replace(text, m =>
+    {
+        if (m.Groups["code"].Success)
+            return m.Value;
+        if (m.Groups["inner"].Success)
+        {
+            var inner = StripHtml(m.Groups["inner"].Value).Replace(Stripped.ToString(), "").Trim();
+            return Stripped + (Attr(m.Groups["attrs"].Value, "href") is { Length: > 0 } href && inner.Length > 0 ? $"[{inner}]({href})" : inner) + Stripped;
+        }
+        if (!m.Groups["tag"].Success)
+            return Stripped.ToString();
+        var tag = m.Groups["tag"].Value;
+        var attrs = m.Groups["attrs"].Value;
+        if (tag.Equals("img", StringComparison.OrdinalIgnoreCase))
+            return Attr(attrs, "src") is { Length: > 0 } src && Attr(attrs, "alt") is { Length: > 0 } alt ? $"{Stripped}![{alt}]({src}){Stripped}" : Stripped.ToString();
+        return tag.Equals("br", StringComparison.OrdinalIgnoreCase) || HtmlBlocks.Contains(tag) ? $"{Stripped}\n{Stripped}" : Stripped.ToString();
+    });
+
+    // Text outside code fences: HTML stripped, touched lines unindented, runs of blank lines merged into one.
+    private static IEnumerable<string> Prose(IEnumerable<string> lines)
+    {
+        var blank = false;
+        foreach (var raw in StripHtml(string.Join("\n", lines)).Split('\n'))
+        {
+            var line = raw.TrimStart().StartsWith(Stripped) ? raw.Replace(Stripped.ToString(), "").TrimStart() : raw.Replace(Stripped.ToString(), "");
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (blank)
+                    continue;
+                line = "";
+            }
+            blank = line.Length == 0;
+            yield return line;
+        }
+    }
+
+    // The README as our Markdown renderer can show it: no YAML front matter, inline HTML turned into Markdown or plain text
+    // (StripHtml), code fences untouched. ponytail: regexes, not an HTML parser; nested markup in odd shapes may leave tags.
     public static string CleanReadme(string md)
     {
         var lines = md.Replace("\r\n", "\n").Split('\n');
@@ -353,36 +592,30 @@ internal static class HubLogic
         if (lines[0].TrimEnd() == "---" && Array.FindIndex(lines, 1, l => l.TrimEnd() is "---" or "...") is var end and > 0)
             at = end + 1;
         var kept = new List<string>();
-        bool fence = false, html = false, comment = false;
+        var prose = new List<string>();
+        void Flush()
+        {
+            if (prose.Count > 0)
+                kept.AddRange(Prose(prose));
+            prose.Clear();
+        }
+        var fence = false;
         for (; at < lines.Length; at++)
         {
             var line = lines[at];
             var t = line.Trim();
-            if (comment)
+            var marker = t.StartsWith("```", StringComparison.Ordinal) || t.StartsWith("~~~", StringComparison.Ordinal);
+            if (!fence && !marker)
             {
-                comment = !line.Contains("-->", StringComparison.Ordinal);
+                prose.Add(line);
                 continue;
             }
-            if (html && t.Length > 0)
-                continue;
-            if (html)
-            {
-                html = false;
-                if (kept.Count == 0 || kept[^1].Trim().Length == 0)
-                    continue;
-            }
-            else if (!fence && HtmlBlockRx.IsMatch(line))
-            {
-                if (t.StartsWith("<!--", StringComparison.Ordinal))
-                    comment = !t[4..].Contains("-->", StringComparison.Ordinal);
-                else
-                    html = true;
-                continue;
-            }
-            if (t.StartsWith("```", StringComparison.Ordinal) || t.StartsWith("~~~", StringComparison.Ordinal))
-                fence = !fence;
+            Flush();
             kept.Add(line);
+            if (marker)
+                fence = !fence;
         }
+        Flush();
         return string.Join("\n", kept).Trim('\n');
     }
 
@@ -439,9 +672,88 @@ internal static class HubLogic
         HubModel M(string id, double? trend, int? daysOld, bool diffusion = false) =>
             new(id, "", id, 0, 0, null, daysOld is { } d ? now.AddDays(-d) : null, trend, null, null, false, true, diffusion);
         var pool = new[] { M("old", 50, null), M("fresh", 0, 0), M("hot", 100, 10), M("pic", 1000, 0, true) };
-        Check(string.Join(",", Rank(pool, "", "latest", now).Select(m => m.Id)) == "hot,fresh,old", "latest ranking");
-        Check(string.Join(",", Rank(pool, "", "likes", now).Select(m => m.Id)) == "old,fresh,hot", "other sorts keep HF order, drop diffusion");
-        Check(string.Join(",", Rank(pool, "fresh", "latest", now).Select(m => m.Id)) == "fresh,hot,old", "latest with a query puts matches first");
+        Check(string.Join(",", Rank(pool, "", "latest", now).Select(m => m.Id)) == "pic,hot,fresh,old", "latest ranking keeps diffusion");
+        Check(string.Join(",", Rank(pool, "", "likes", now).Select(m => m.Id)) == "old,fresh,hot,pic", "other sorts keep HF order");
+        Check(string.Join(",", Rank(pool, "fresh", "latest", now).Select(m => m.Id)) == "fresh,pic,hot,old", "latest with a query puts matches first");
+
+        // 4b. kinds
+        HubModel K(string id, string? tag, bool diffusion = false) =>
+            new(id, id.Contains('/') ? id[..id.IndexOf('/')] : "", id[(id.IndexOf('/') + 1)..], 0, 0, null, null, null, null, tag, false, true, diffusion);
+        foreach (var (id, tag, diffusion, want) in new (string, string?, bool, HubKind)[]
+        {
+            ("unsloth/Qwen3.8-27B-GGUF", "text-generation", false, HubKind.Text), ("x/VL-GGUF", "image-text-to-text", false, HubKind.Text),
+            ("x/Omni-GGUF", "any-to-any", false, HubKind.Text), ("x/Vid-chat", "video-text-to-text", false, HubKind.Text), ("x/emb", "feature-extraction", false, HubKind.Text),
+            ("x/plain-GGUF", null, false, HubKind.Text), ("x/flux-named-but-tagged", "text-generation", false, HubKind.Text),
+            ("black-forest-labs/FLUX.1-dev-gguf", "text-to-image", true, HubKind.Image), ("city96/FLUX.1-dev-gguf", null, false, HubKind.Image),
+            ("x/sdxl-turbo-gguf", null, false, HubKind.Image), ("x/edit", "image-to-image", false, HubKind.Image), ("art/pics", null, true, HubKind.Image),
+            ("ggml-org/whisper-large-v3-GGUF", null, false, HubKind.Audio), ("x/asr", "automatic-speech-recognition", false, HubKind.Audio),
+            ("hexgrad/Kokoro-82M-gguf", null, false, HubKind.Audio), ("x/OuteTTS-1.0-GGUF", null, false, HubKind.Audio), ("x/say", "text-to-speech", false, HubKind.Audio),
+            ("x/cls", "audio-classification", false, HubKind.Audio),
+            ("city96/Wan2.1-T2V-14B-gguf", null, true, HubKind.Video), ("x/LTX-Video-gguf", null, false, HubKind.Video), ("x/t2v", "text-to-video", false, HubKind.Video),
+            ("x/i2v", "image-to-video", false, HubKind.Video), ("x/v2v", "video-to-video", false, HubKind.Video),
+        })
+            Check(KindOf(K(id, tag, diffusion)) == want, $"KindOf {id} [{tag}] = {KindOf(K(id, tag, diffusion))}");
+        var kindPool = new[] { K("a/Qwen3-GGUF", "text-generation"), K("b/FLUX.1-gguf", null, true), K("c/whisper-gguf", null), K("d/Wan2.2-gguf", null, true) };
+        Check(string.Join(",", FilterKinds(kindPool, HubKind.Text).Select(m => m.Owner)) == "a", "FilterKinds Text hides diffusion");
+        Check(string.Join(",", FilterKinds(kindPool, HubKind.Audio | HubKind.Video).Select(m => m.Owner)) == "c,d", "FilterKinds Audio|Video");
+        Check(FilterKinds(kindPool, 0).Count == 4, "FilterKinds none selected = no filter");
+        Check(PipelineTagsFor(HubKind.Text).Contains("text-generation") && PipelineTagsFor(HubKind.Text).Contains("image-text-to-text") && !PipelineTagsFor(HubKind.Text).Contains("text-to-image"), "tags for Text");
+        var avTags = PipelineTagsFor(HubKind.Audio | HubKind.Video);
+        Check(avTags.Contains("text-to-speech") && avTags.Contains("automatic-speech-recognition") && avTags.Contains("text-to-video") && !avTags.Contains("text-generation") && !avTags.Contains("text-to-image"), "tags for Audio|Video");
+        Check(PipelineTagsFor(0).Length == 0 && PipelineTagsFor(HubKind.Image).SequenceEqual(["text-to-image", "image-to-image"]), "tags for none and Image");
+        var tagUrl = SearchUrl("", "trending", 100, "text-to-image").AbsoluteUri;
+        Check(tagUrl.Contains("filter=gguf&pipeline_tag=text-to-image&sort=trendingScore"), "search URL pipeline_tag: " + tagUrl);
+        Check(!SearchUrl("x", "likes").AbsoluteUri.Contains("pipeline_tag=") && !SearchUrl("x", "likes", 100, " ").AbsoluteUri.Contains("pipeline_tag="), "no pipeline_tag by default");
+
+        // 4c. brands
+        string? BrandKey(string id) => BrandOf(id)?.Key;
+        foreach (var (id, want) in new (string, string?)[]
+        {
+            ("huihui-ai/Huihui-Qwen3.8-27B-abliterated-GGUF", "qwen"), ("ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF", "deepseek"),
+            ("SC117/Qwen3.8-Flash-Next-80B-A3B-GGUF", "qwen"), ("LiquidAI/LFM3-1.7B-GGUF", "liquid"), ("unsloth/Qwen3.8-27B-GGUF", "qwen"),
+            ("bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF", "deepseek"), ("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "llama"),
+            ("TheBloke/CodeLlama-7B-GGUF", "llama"), ("unsloth/gemma-3-27b-it-GGUF", "gemma"), ("x/medgemma-4b-GGUF", "gemma"),
+            ("microsoft/Phi-4-mini-instruct-gguf", "phi"), ("bartowski/phi3-medium", "phi"), ("unsloth/Mistral-Small-3.2-24B-GGUF", "mistral"),
+            ("x/Devstral-Small-GGUF", "mistral"), ("nvidia/Llama-3_3-Nemotron-Super-49B-GGUF", "llama"), ("x/Nemotron-H-8B-GGUF", "nemotron"),
+            ("unsloth/MiniMax-M2-GGUF", "minimax"), ("unsloth/GLM-4.6-GGUF", "glm"), ("unsloth/Kimi-K2-Instruct-GGUF", "kimi"),
+            ("ggml-org/gpt-oss-20b-GGUF", "gpt-oss"), ("ggml-org/whisper-large-v3-GGUF", "whisper"), ("x/c4ai-command-r-plus-GGUF", "cohere"),
+            ("ibm-granite/granite-4.0-h-small-GGUF", "granite"), ("x/Step-3.5-Flash-GGUF", "stepfun"), ("x/Seed-OSS-36B-GGUF", "seed"),
+            ("x/Hunyuan-A13B-GGUF", "hunyuan"), ("x/ERNIE-4.5-21B-GGUF", "ernie"), ("x/MiMo-7B-RL-GGUF", "mimo"), ("x/OLMo-2-13B-GGUF", "olmo"),
+            ("x/SmolLM3-3B-GGUF", "smollm"), ("black-forest-labs/FLUX.1-dev-gguf", "flux"), ("x/stable-diffusion-3.5-large-gguf", "stability"),
+            ("Lightricks/LTX-Video-gguf", "ltx"), ("city96/Wan2.1-T2V-14B-gguf", "wan"), ("x/Kokoro-82M-gguf", "kokoro"), ("x/orpheus-3b-0.1-ft-GGUF", "orpheus"),
+            ("x/parakeet-tdt-0.6b-v3-GGUF", "parakeet"),
+            // owner fallback
+            ("deepseek-ai/Janus-Pro-7B", "deepseek"), ("meta-llama/xyz", "llama"), ("LiquidAI/foo-GGUF", "liquid"), ("QWEN/thing", "qwen"),
+            // unknown, not a brand, false-positive guards
+            ("acme/foo-bar-GGUF", null), ("unsloth/foo-GGUF", null), ("bartowski/llamafile-x", null), ("x/Swan-7B", null), ("x/stepwise-7b", null),
+            ("x/Bernie-7B", null), ("x/sapphire-3", null), ("nofolder", null), ("", null), ("/x", null),
+        })
+            Check(BrandKey(id) == want, $"BrandOf {id} = {BrandKey(id) ?? "null"}");
+        Check(Brands.Count >= 60 && Brands.Select(b => b.Key).Distinct().Count() == Brands.Count && Brands.All(b => b.Key != "other" && b.Kinds != 0 && b.Label.Length > 0), "brand catalog keys and kinds");
+        foreach (var kind in new[] { HubKind.Text, HubKind.Audio, HubKind.Image, HubKind.Video })
+            Check(BrandsFor(kind).Count >= 5, "brands for " + kind);
+        // Stems listed from Assets\Vendors; RemoteApiSelfTest also loads every IconKey from the app's resources.
+        string[] vendorStems = ["ai2-color", "ai21", "aionlabs-color", "alibaba-color", "anthropic", "arcee-color", "aws", "baidu-color", "bytedance-color",
+            "cerebras-color", "cohere-color", "deepcogito-color", "deepinfra-color", "deepseek-color", "dolphin", "essentialai-color", "fireworks-color",
+            "google-color", "groq", "huggingface-color", "ibm", "inception", "inflection", "kwaipilot", "ling-color", "liquid", "longcat-color", "meta-color",
+            "microsoft-color", "minimax-color", "mistral-color", "moonshot", "morph-color", "nousresearch", "nvidia-color", "openai", "openchat-color",
+            "openrouter-color", "perplexity-color", "poolside-color", "qwen-color", "relace", "stepfun-color", "tencent-color", "together-color",
+            "upstage-color", "xai", "xiaomimimo", "zai", "zeroone", "zhipu-color"];
+        var badIcons = Brands.Where(b => b.IconKey is { } k && !vendorStems.Contains(k)).Select(b => b.IconKey).ToList();
+        Check(badIcons.Count == 0, "brand icons not in Assets\\Vendors: " + string.Join(", ", badIcons));
+        var audioBrands = BrandsFor(HubKind.Audio);
+        Check(audioBrands.Any(b => b.Key == "whisper") && audioBrands.Any(b => b.Key == "kokoro") && audioBrands.Any(b => b.Key == "qwen") && audioBrands.All(b => b.Key != "llama"), "BrandsFor Audio");
+        Check(audioBrands.Select(b => b.Label).SequenceEqual(audioBrands.Select(b => b.Label).OrderBy(l => l, StringComparer.OrdinalIgnoreCase)), "BrandsFor sorted by label");
+        var textAudio = BrandsFor(HubKind.Text | HubKind.Audio);
+        Check(textAudio.Any(b => b.Key == "llama") && textAudio.Any(b => b.Key == "whisper") && textAudio.All(b => b.Key != "flux"), "BrandsFor Text|Audio");
+        Check(BrandsFor(0).Count == 0, "BrandsFor none");
+        var brandPool = new[] { K("unsloth/Qwen3.8-27B-GGUF", null), K("acme/foo-GGUF", null), K("LiquidAI/LFM3-1.7B-GGUF", null), K("x/DeepSeek-V4-GGUF", null) };
+        Check(FilterBrands(brandPool, new HashSet<string>()).Count == 4, "FilterBrands empty = no filter");
+        Check(string.Join(",", FilterBrands(brandPool, new HashSet<string> { "qwen", "liquid" }).Select(m => m.Owner)) == "unsloth,LiquidAI", "FilterBrands keys");
+        Check(string.Join(",", FilterBrands(brandPool, new HashSet<string> { "other" }).Select(m => m.Owner)) == "acme", "FilterBrands other");
+        Check(string.Join(",", FilterBrands(brandPool, new HashSet<string> { "deepseek", "other" }).Select(m => m.Owner)) == "acme,x", "FilterBrands brand + other");
+        Check(string.Join(",", BrandQueries(Brands.Where(b => b.Key is "deepseek" or "qwen" or "liquid"))) == "deepseek,qwen,lfm", "BrandQueries");
+        Check(Brands.All(b => BrandQueries([b]).Single() is { Length: > 0 } w && w == w.ToLowerInvariant()), "every brand has a lower-case query");
 
         // 5. fuzzy search
         Check(Normalize("Un sloth/Qwen3.8_27B-GGUF") == "unslothqwen3827bgguf", "Normalize");
@@ -518,12 +830,34 @@ internal static class HubLogic
         Readme("---\r\nlicense: mit\r\ntags: [gguf]\r\n---\r\n# Title\r\n\r\nBody", "# Title\n\nBody", "front matter");
         Readme("---\nno end", "---\nno end", "unclosed front matter");
         Readme("# A\n\n---\n\nB", "# A\n\n---\n\nB", "a rule is not front matter");
-        Readme("<div align=\"center\">\n<img src=\"a.png\">\n</div>\n\n# T", "# T", "HTML block");
-        Readme("A\n\n<p align=\"center\">centred <b>x</b>\nmore</p>\n\nB", "A\n\nB", "block tag with text");
+        Readme("<div align=\"center\">\n<img src=\"a.png\">\n</div>\n\n# T", "# T", "HTML block, image without alt dropped");
+        Readme("A\n\n<p align=\"center\">centred <b>x</b>\nmore</p>\n\nB", "A\n\ncentred x\nmore\n\nB", "block tag keeps its text");
+        Readme("<p align=center>\n  Welcome to the model\n</p>\n\nNext", "  Welcome to the model\n\nNext", "p align=center paragraph");
         Readme("A\n\n<img src=\"x.png\" />\n\nB", "A\n\nB", "tags-only line");
         Readme("<!-- note\n\nstill -->\nText", "Text", "comment over a blank line");
         Readme("<!-- one line -->\nText", "Text", "one-line comment");
+        Readme("a <!-- c --> b", "a  b", "inline comment");
         Readme("```html\n<div>x</div>\n```", "```html\n<div>x</div>\n```", "HTML in a fence");
-        Readme("See <b>bold</b> here\n<https://x.y>", "See <b>bold</b> here\n<https://x.y>", "inline tags and autolinks");
+        Readme("See <b>bold</b> here\n<https://x.y>", "See bold here\n<https://x.y>", "inline tags and autolinks");
+        Readme("<small><font color=\"red\">ABSOLUTE FIRE:</font> 640 ARC-C ...</small>", "ABSOLUTE FIRE: 640 ARC-C ...", "small and font");
+        Readme("<font color=\"red\">NEW - Qwen 3.8 ...</font>", "NEW - Qwen 3.8 ...", "font");
+        Readme("# Model\n\n<small><font color=\"red\">ABSOLUTE FIRE:</font> 640 ARC-C ...</small>\n\n```\n<small>keep</small> <font color=\"red\">x</font>\n```\n\nEnd",
+            "# Model\n\nABSOLUTE FIRE: 640 ARC-C ...\n\n```\n<small>keep</small> <font color=\"red\">x</font>\n```\n\nEnd", "fence with <small> untouched");
+        Readme("Use `<small>x</small>` and ``<b>`y`</b>`` then <i>it</i>", "Use `<small>x</small>` and ``<b>`y`</b>`` then it", "code spans untouched");
+        Readme("~~~\n  <span>a</span>\n\n\n~~~", "~~~\n  <span>a</span>\n\n\n~~~", "tilde fence and its blank lines untouched");
+        Readme("x < 5 and y > 3; <model> and <s>[INST] and <source>", "x < 5 and y > 3; <model> and <s>[INST] and <source>", "comparisons and placeholders kept");
+        Readme("Go <a href=\"https://x.y/z\" target=\"_blank\">to <b>site</b></a>.", "Go [to site](https://x.y/z).", "a -> Markdown link");
+        Readme("<a name=\"top\"></a>\n# T", "# T", "anchor without text");
+        Readme("<a href='https://h'><img src=\"b.svg\" alt=\"badge\"></a>", "[![badge](b.svg)](https://h)", "linked badge");
+        Readme("<img alt=\"Logo\" width=200 src=logo.png>", "![Logo](logo.png)", "img with alt and src");
+        Readme("<img\n  src=\"x.png\"\n  alt=\"Two lines\">", "![Two lines](x.png)", "img over lines");
+        Readme("<div align=\"center\">\n    <img src=\"x.png\" alt=\"X\">\n</div>", "![X](x.png)", "indented tag not a code block");
+        Readme("a<br>b<br/>c<BR />d", "a\nb\nc\nd", "br breaks lines");
+        Readme("<details><summary>More</summary>\n\nHidden text\n</details>", "More\n\nHidden text", "details and summary keep text");
+        Readme("<table><tr><th>Q</th><th>Score</th></tr><tr><td>Q4</td><td>9</td></tr></table>", "Q\n\nScore\n\nQ4\n\n9", "table cells on their own lines");
+        Readme("<style>.x{color:red}</style>Text<script>alert(1)</script>", "Text", "style and script dropped");
+        Readme("H<sub>2</sub>O and x<sup>2</sup>, <mark>hi</mark> <em>e</em> <strong>s</strong> <u>u</u> <span class=\"k\">k</span> <center>c</center>",
+            "H2O and x2, hi e s u k \nc", "inline presentational tags");
+        Readme("  - item <b>bold</b>", "  - item bold", "list indentation kept when the line starts with text");
     }
 }
