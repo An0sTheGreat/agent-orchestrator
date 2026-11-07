@@ -3056,7 +3056,7 @@ public partial class MainWindow : Window
             // The model's mouse and keyboard: every action goes to the tab through the DevTools protocol, the page sees the events, and the
             // user's own pointer does not move.
             var inputPage = Path.Combine(AppSettings.DataRoot, "smoke-input.html");
-            File.WriteAllText(inputPage, "<body style='margin:0'><script>var L=[],K=[],md=0;function log(s){L.push(s)}</script>" +
+            File.WriteAllText(inputPage, "<body style='margin:0'><script>var L=[],K=[],KC=[],md=0;function log(s){L.push(s)};document.addEventListener('keydown',e=>KC.push(e.code+':'+e.key))</script>" +
                 "<button id=b style='position:absolute;left:10px;top:10px;width:100px;height:30px' onclick='log(\"click\")' ondblclick='log(\"dbl\")' oncontextmenu='log(\"ctx\");return false'>Press me</button>" +
                 "<input id=i style='position:absolute;left:10px;top:50px;width:140px' onkeydown='K.push(event.key)'>" +
                 "<div id=h style='position:absolute;left:10px;top:90px;width:80px;height:30px;background:#ccc' onmouseover='log(\"hover\")'>hover</div>" +
@@ -3117,6 +3117,10 @@ public partial class MainWindow : Window
             await InpAct("type", text: "ok \U0001F44D");
             var emoji = await InpJs("document.getElementById('i').value");
             var paste = await InpAct("key", keys: "Ctrl+V");
+            await InpJs("(KC.length = 0, 'ok')");
+            var seq = await InpAct("key", keys: "Escape F13 F24 NumpadAdd Numpad5 Shift+1 Minus Comma CapsLock ContextMenu Ctrl+Shift MediaPlayPause");
+            var pressed = await InpJs("KC.join(',')"); // each key's DOM code and key, as the page sees them
+            var badSeq = await InpAct("key", keys: "Tab Nope");
             var (dgx, dgy) = await InpAt("d");
             var (dzx, dzy) = await InpAt("z");
             await InpAct("drag", dgx, dgy, dzx, dzy);
@@ -3134,14 +3138,16 @@ public partial class MainWindow : Window
                           log.Contains("dbl") && log.Contains("ctx") && log.Contains("hover") && log.Contains("dropped") && log.Contains("mmove") && log.Contains("mup") &&
                           typed == "Hi 1" && replaced == "x" && emptied.StartsWith("|") && emptied.EndsWith("Enter") &&
                           scrolledTo > 20 && selNote.Contains("<select>") && picked == "b" &&
-                          confirmed.Contains("DIALOG: a Confirm dialog") && log.Contains("no") && chooser.Contains("file picker") && emoji == "ok \U0001F44D" && paste.Contains("clipboard") && badKey.StartsWith("ERROR: unknown key") && stale.StartsWith("ERROR:") &&
+                          confirmed.Contains("DIALOG: a Confirm dialog") && log.Contains("no") && chooser.Contains("file picker") && emoji == "ok \U0001F44D" && paste.Contains("clipboard") &&
+                          pressed == "Escape:Escape,F13:F13,F24:F24,NumpadAdd:+,Numpad5:5,Digit1:!,Minus:-,Comma:,,CapsLock:CapsLock,ContextMenu:ContextMenu,ShiftLeft:Shift,MediaPlayPause:MediaPlayPause" &&
+                          seq.StartsWith("PRESSED Escape F13") && badSeq.StartsWith("ERROR: unknown key \"Nope\"") && badKey.StartsWith("ERROR: unknown key") && stale.StartsWith("ERROR:") &&
                           off.Contains("switched off");  // the user's own pointer is only logged: they may be moving it while this runs
             CloseTab(inpTab);
             File.Delete(inputPage);
             if (!inputOk)
             {
                 Console.Error.WriteLine($"browser input: {r1.Split('\n')[0]} | {r2.Split('\n')[0]} | {r3.Split('\n')[0]} | {r4.Split('\n')[0]} | typed {typed} | replaced {replaced} | {emptied} | scroll {scrolledTo} | " +
-                                        $"{selNote.Split('\n')[0]} | {picked} | {confirmed.Replace('\n', '/')} | {chooser.Replace('\n', '/')} | emoji {emoji} | {paste.Split('\n')[0]} | log {log} | {badKey.Split('\n')[0]} | {stale.Split('\n')[0]} | {off.Split('\n')[0]} | pointer {userBefore.X},{userBefore.Y} -> {userAfter.X},{userAfter.Y}");
+                                        $"{selNote.Split('\n')[0]} | {picked} | {confirmed.Replace('\n', '/')} | {chooser.Replace('\n', '/')} | emoji {emoji} | keys {pressed} | {badSeq.Split('\n')[0]} | {paste.Split('\n')[0]} | log {log} | {badKey.Split('\n')[0]} | {stale.Split('\n')[0]} | {off.Split('\n')[0]} | pointer {userBefore.X},{userBefore.Y} -> {userAfter.X},{userAfter.Y}");
                 return Fail();
             }
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));

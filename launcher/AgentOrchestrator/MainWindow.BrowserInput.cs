@@ -26,22 +26,54 @@ internal static class BrowserInputLogic
 {
     public const int Alt = 1, Ctrl = 2, Meta = 4, Shift = 8; // DevTools' modifier bits
 
-    private static readonly Dictionary<string, (string Key, string Code, int Vk, string Text)> Named = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly Dictionary<string, (string Key, string Code, int Vk, string Text)> Named = BuildNamed();
+
+    // US keyboard: a punctuation key's character, the one Shift gives, its code and virtual-key number.
+    private static readonly (char Base, char Shifted, string Code, int Vk)[] Punct =
     {
-        ["enter"] = ("Enter", "Enter", 13, "\r"), ["return"] = ("Enter", "Enter", 13, "\r"), ["tab"] = ("Tab", "Tab", 9, ""),
-        ["escape"] = ("Escape", "Escape", 27, ""), ["esc"] = ("Escape", "Escape", 27, ""), ["backspace"] = ("Backspace", "Backspace", 8, ""),
-        ["delete"] = ("Delete", "Delete", 46, ""), ["del"] = ("Delete", "Delete", 46, ""), ["space"] = (" ", "Space", 32, " "),
-        ["arrowup"] = ("ArrowUp", "ArrowUp", 38, ""), ["up"] = ("ArrowUp", "ArrowUp", 38, ""),
-        ["arrowdown"] = ("ArrowDown", "ArrowDown", 40, ""), ["down"] = ("ArrowDown", "ArrowDown", 40, ""),
-        ["arrowleft"] = ("ArrowLeft", "ArrowLeft", 37, ""), ["left"] = ("ArrowLeft", "ArrowLeft", 37, ""),
-        ["arrowright"] = ("ArrowRight", "ArrowRight", 39, ""), ["right"] = ("ArrowRight", "ArrowRight", 39, ""),
-        ["home"] = ("Home", "Home", 36, ""), ["end"] = ("End", "End", 35, ""), ["pageup"] = ("PageUp", "PageUp", 33, ""),
-        ["pagedown"] = ("PageDown", "PageDown", 34, ""), ["insert"] = ("Insert", "Insert", 45, ""),
+        (';', ':', "Semicolon", 186), ('=', '+', "Equal", 187), (',', '<', "Comma", 188), ('-', '_', "Minus", 189), ('.', '>', "Period", 190),
+        ('/', '?', "Slash", 191), ('`', '~', "Backquote", 192), ('[', '{', "BracketLeft", 219), ('\\', '|', "Backslash", 220),
+        (']', '}', "BracketRight", 221), ('\'', '"', "Quote", 222),
     };
+
+    private const string ShiftedDigits = ")!@#$%^&*("; // Shift+0 .. Shift+9
+
+    private static Dictionary<string, (string Key, string Code, int Vk, string Text)> BuildNamed()
+    {
+        var d = new Dictionary<string, (string, string, int, string)>(StringComparer.OrdinalIgnoreCase);
+        // key, code, virtual key, the text it types, and the names it answers to besides its code
+        void Add(int vk, string key, string code, string text, params string[] names)
+        {
+            d[code] = (key, code, vk, text);
+            foreach (var n in names)
+                d[n] = (key, code, vk, text);
+        }
+        Add(13, "Enter", "Enter", "\r", "return"); Add(9, "Tab", "Tab", ""); Add(27, "Escape", "Escape", "", "esc"); Add(8, "Backspace", "Backspace", "");
+        Add(46, "Delete", "Delete", "", "del"); Add(32, " ", "Space", " ", "spacebar"); Add(45, "Insert", "Insert", "", "ins");
+        Add(38, "ArrowUp", "ArrowUp", "", "up"); Add(40, "ArrowDown", "ArrowDown", "", "down"); Add(37, "ArrowLeft", "ArrowLeft", "", "left"); Add(39, "ArrowRight", "ArrowRight", "", "right");
+        Add(36, "Home", "Home", ""); Add(35, "End", "End", ""); Add(33, "PageUp", "PageUp", "", "pgup"); Add(34, "PageDown", "PageDown", "", "pgdn");
+        Add(20, "CapsLock", "CapsLock", ""); Add(144, "NumLock", "NumLock", ""); Add(145, "ScrollLock", "ScrollLock", ""); Add(19, "Pause", "Pause", "", "break");
+        Add(44, "PrintScreen", "PrintScreen", "", "prtsc"); Add(93, "ContextMenu", "ContextMenu", "", "menu", "apps"); Add(47, "Help", "Help", ""); Add(12, "Clear", "Clear", "");
+        Add(16, "Shift", "ShiftLeft", "", "shift"); Add(16, "Shift", "ShiftRight", ""); Add(17, "Control", "ControlLeft", "", "ctrl", "control"); Add(17, "Control", "ControlRight", "");
+        Add(18, "Alt", "AltLeft", "", "alt", "option"); Add(18, "Alt", "AltRight", ""); Add(91, "Meta", "MetaLeft", "", "meta", "win", "windows", "cmd", "command", "super"); Add(92, "Meta", "MetaRight", "");
+        for (var n = 1; n <= 24; n++)
+            Add(111 + n, $"F{n}", $"F{n}", "");
+        for (var n = 0; n <= 9; n++)
+            Add(96 + n, n.ToString(), $"Numpad{n}", n.ToString());
+        Add(106, "*", "NumpadMultiply", "*"); Add(107, "+", "NumpadAdd", "+"); Add(109, "-", "NumpadSubtract", "-"); Add(110, ".", "NumpadDecimal", "."); Add(111, "/", "NumpadDivide", "/");
+        Add(13, "Enter", "NumpadEnter", "\r");
+        Add(173, "AudioVolumeMute", "AudioVolumeMute", ""); Add(174, "AudioVolumeDown", "AudioVolumeDown", ""); Add(175, "AudioVolumeUp", "AudioVolumeUp", "");
+        Add(176, "MediaTrackNext", "MediaTrackNext", ""); Add(177, "MediaTrackPrevious", "MediaTrackPrevious", ""); Add(178, "MediaStop", "MediaStop", ""); Add(179, "MediaPlayPause", "MediaPlayPause", "");
+        Add(166, "BrowserBack", "BrowserBack", ""); Add(167, "BrowserForward", "BrowserForward", ""); Add(168, "BrowserRefresh", "BrowserRefresh", "");
+        Add(169, "BrowserStop", "BrowserStop", ""); Add(170, "BrowserSearch", "BrowserSearch", ""); Add(171, "BrowserFavorites", "BrowserFavorites", ""); Add(172, "BrowserHome", "BrowserHome", "");
+        Add(180, "LaunchMail", "LaunchMail", ""); Add(181, "LaunchMediaPlayer", "LaunchMediaPlayer", "");
+        return d;
+    }
 
     private static readonly Dictionary<char, string> Edits = new() { ['a'] = "selectAll", ['c'] = "copy", ['x'] = "cut", ['v'] = "paste", ['z'] = "undo", ['y'] = "redo" };
 
-    /// <summary>"Ctrl+Shift+A", "Enter", "F5", "Ctrl++" -> the key event; null when a key or modifier name is unknown.</summary>
+    /// <summary>One key or chord: "Enter", "Ctrl+Shift+A", "F24", "NumpadAdd", "Shift+1", "Comma", "Ctrl++", "MediaPlayPause", "é"
+    /// -> the key event; null when a key or modifier name is unknown.</summary>
     public static KeySpec? ParseKeys(string chord)
     {
         var s = (chord ?? "").Trim();
@@ -58,33 +90,73 @@ internal static class BrowserInputLogic
         }
         var bits = 0;
         foreach (var m in mods)
-            switch (m.Trim().ToLowerInvariant())
-            {
-                case "ctrl" or "control": bits |= Ctrl; break;
-                case "shift": bits |= Shift; break;
-                case "alt" or "option": bits |= Alt; break;
-                case "meta" or "cmd" or "command" or "win" or "windows" or "super": bits |= Meta; break;
-                default: return null;
-            }
+            bits |= ModifierBit(m.Trim()) ?? -1;
+        if (bits < 0)
+            return null;
         var shift = (bits & Shift) != 0;
         (string Key, string Code, int Vk, string Text) k;
+        // "KeyA" and "Digit5" (DOM codes) mean the letter and the digit
+        var plain = main.Length == 4 && main.StartsWith("Key", StringComparison.OrdinalIgnoreCase) ? main[3..] :
+                    main.Length == 6 && main.StartsWith("Digit", StringComparison.OrdinalIgnoreCase) ? main[5..] : main;
         if (Named.TryGetValue(main, out var named))
             k = named;
-        else if (main.Length >= 2 && main.Length <= 3 && (main[0] is 'F' or 'f') && int.TryParse(main[1..], out var f) && f is >= 1 and <= 12)
-            k = ($"F{f}", $"F{f}", 111 + f, "");
-        else if (main.Length == 1 && char.IsAsciiLetter(main[0]))
-            k = (shift ? main.ToUpperInvariant() : main.ToLowerInvariant(), "Key" + char.ToUpperInvariant(main[0]), char.ToUpperInvariant(main[0]), shift ? main.ToUpperInvariant() : main.ToLowerInvariant());
-        else if (main.Length == 1 && char.IsAsciiDigit(main[0]))
-            k = (main, "Digit" + main, main[0], main);
-        else if (main.Length == 1 && !char.IsControl(main[0]))
-            k = (main, "", 0, main);
+        else if (plain.Length == 1 && char.IsAsciiLetter(plain[0]))
+            k = (shift ? plain.ToUpperInvariant() : plain.ToLowerInvariant(), "Key" + char.ToUpperInvariant(plain[0]), char.ToUpperInvariant(plain[0]), shift ? plain.ToUpperInvariant() : plain.ToLowerInvariant());
+        else if (plain.Length == 1 && char.IsAsciiDigit(plain[0]))
+        {
+            var key = shift ? ShiftedDigits[plain[0] - '0'].ToString() : plain;
+            k = (key, "Digit" + plain, plain[0], key);
+        }
+        else if (main.Equals("plus", StringComparison.OrdinalIgnoreCase))
+            k = ("+", "Equal", 187, "+");
+        else if (PunctByName(main) is { } byName)
+        {
+            var key = (shift ? byName.Shifted : byName.Base).ToString();
+            k = (key, byName.Code, byName.Vk, key);
+        }
+        else if (main.Length == 1 && Punct.Any(q => q.Base == main[0] || q.Shifted == main[0]) || (main.Length == 1 && ShiftedDigits.Contains(main[0])))
+        {
+            // the character itself: it types that character, whichever key and Shift it takes on a US keyboard
+            var pk = Punct.FirstOrDefault(q => q.Base == main[0] || q.Shifted == main[0]);
+            if (pk.Code is not null)
+                k = (main, pk.Code, pk.Vk, main);
+            else
+            {
+                var digit = ShiftedDigits.IndexOf(main[0]);
+                k = (main, "Digit" + digit, '0' + digit, main);
+            }
+        }
+        else if (new System.Globalization.StringInfo(main).LengthInTextElements == 1 && !char.IsControl(main[0]))
+            k = (main, "", 0, main); // any other character: typed as it is
         else
             return null;
+        bits |= k.Key switch { "Shift" => Shift, "Control" => Ctrl, "Alt" => Alt, "Meta" => Meta, _ => 0 }; // a modifier pressed on its own carries its own bit
         var typing = (bits & (Ctrl | Alt | Meta)) == 0; // a shortcut types nothing
-        string[] commands = (bits & (Ctrl | Meta)) != 0 && (bits & Alt) == 0 && main.Length == 1 && Edits.TryGetValue(char.ToLowerInvariant(main[0]), out var c)
+        string[] commands = (bits & (Ctrl | Meta)) != 0 && (bits & Alt) == 0 && k.Key.Length == 1 && Edits.TryGetValue(char.ToLowerInvariant(k.Key[0]), out var c)
             ? [shift && c == "undo" ? "redo" : c] : [];
         return new KeySpec(k.Key, k.Code, k.Vk, typing ? k.Text : "", bits, commands);
     }
+
+    private static int? ModifierBit(string name) => name.ToLowerInvariant() switch
+    {
+        "ctrl" or "control" => Ctrl, "shift" => Shift, "alt" or "option" => Alt,
+        "meta" or "cmd" or "command" or "win" or "windows" or "super" => Meta, _ => null,
+    };
+
+    // "Minus", "Comma", "Plus", "Backquote", ...: a punctuation key by its DOM code or common name.
+    private static (char Base, char Shifted, string Code, int Vk)? PunctByName(string name)
+    {
+        if (name.Equals("backtick", StringComparison.OrdinalIgnoreCase) || name.Equals("grave", StringComparison.OrdinalIgnoreCase))
+            return Punct[6];
+        foreach (var p in Punct)
+            if (p.Code.Equals(name, StringComparison.OrdinalIgnoreCase))
+                return p;
+        return null;
+    }
+
+    /// <summary>"Tab Tab Enter" or "Ctrl + A": the chords of a `keys` text, in order (a space inside a chord's plus is not a separator).</summary>
+    public static string[] Chords(string keys) =>
+        System.Text.RegularExpressions.Regex.Replace((keys ?? "").Trim(), @"\s*\+\s+|\s+\+\s*(?=\S)", "+").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
 
     /// <summary>A screenshot pixel on one axis as a CSS pixel: `shotPx` is the image's size on that axis, `viewCss` the viewport's.</summary>
     public static double ToCss(double v, int shotPx, double viewCss) => shotPx <= 0 ? v : v * viewCss / shotPx;
@@ -111,8 +183,25 @@ internal static class BrowserInputLogic
         if (!UsesClipboard(ParseKeys("Ctrl+V")!) || !UsesClipboard(ParseKeys("Meta+C")!) || !UsesClipboard(ParseKeys("Shift+Insert")!) ||
             UsesClipboard(ParseKeys("Ctrl+A")!) || UsesClipboard(ParseKeys("Ctrl+Z")!) || UsesClipboard(ParseKeys("v")!))
             throw new InvalidOperationException("UsesClipboard");
-        if (ParseKeys("") is not null || ParseKeys("Hyper+A") is not null || ParseKeys("Ctrl+Nope") is not null || ParseKeys("F13") is not null)
+        if (ParseKeys("") is not null || ParseKeys("Hyper+A") is not null || ParseKeys("Ctrl+Nope") is not null || ParseKeys("F25") is not null || ParseKeys("Numpad10") is not null)
             throw new InvalidOperationException("ParseKeys refuses");
+        // the whole keyboard: function keys to F24, the numpad, punctuation by name and by character, shifted symbols, lone modifiers, locks, media keys, other characters
+        if (ParseKeys("F13") is not { Key: "F13", VirtualKey: 124 } || ParseKeys("F24") is not { Key: "F24", VirtualKey: 135 } ||
+            ParseKeys("Numpad5") is not { Key: "5", Code: "Numpad5", VirtualKey: 101, Text: "5" } || ParseKeys("NumpadAdd") is not { Key: "+", Code: "NumpadAdd", VirtualKey: 107 } ||
+            ParseKeys("NumpadEnter") is not { Key: "Enter", Code: "NumpadEnter", VirtualKey: 13 } ||
+            ParseKeys("Shift+1") is not { Key: "!", Code: "Digit1", VirtualKey: 49, Text: "!", Modifiers: Shift } || ParseKeys("!") is not { Key: "!", Code: "Digit1", VirtualKey: 49, Text: "!" } ||
+            ParseKeys("Minus") is not { Key: "-", Code: "Minus", VirtualKey: 189 } || ParseKeys("Shift+Minus") is not { Key: "_", Code: "Minus" } || ParseKeys("_") is not { Key: "_", Code: "Minus", VirtualKey: 189 } ||
+            ParseKeys("Comma") is not { Key: ",", VirtualKey: 188 } || ParseKeys("Plus") is not { Key: "+", Code: "Equal" } || ParseKeys("?") is not { Code: "Slash", VirtualKey: 191 } ||
+            ParseKeys("\"") is not { Key: "\"", Code: "Quote" } || ParseKeys("BracketLeft") is not { Key: "[", VirtualKey: 219 } ||
+            ParseKeys("Ctrl+Shift") is not { Key: "Shift", Modifiers: Ctrl | Shift } || ParseKeys("Shift") is not { Key: "Shift", VirtualKey: 16, Modifiers: Shift } ||
+            ParseKeys("Meta") is not { Key: "Meta", Modifiers: Meta } || ParseKeys("CapsLock") is not { VirtualKey: 20 } || ParseKeys("ContextMenu") is not { VirtualKey: 93 } ||
+            ParseKeys("MediaPlayPause") is not { VirtualKey: 179 } || ParseKeys("AudioVolumeUp") is not { VirtualKey: 175 } || ParseKeys("PrintScreen") is not { VirtualKey: 44 } ||
+            ParseKeys("KeyA") is not { Key: "a", Code: "KeyA" } || ParseKeys("Digit5") is not { Key: "5", Code: "Digit5" } || ParseKeys("pgdn") is not { Key: "PageDown" } ||
+            ParseKeys("\u00e9") is not { Key: "\u00e9", Text: "\u00e9", VirtualKey: 0 } || ParseKeys("Ctrl+Z") is not { Commands: ["undo"] } || ParseKeys("Ctrl+Shift+Z") is not { Commands: ["redo"] })
+            throw new InvalidOperationException("ParseKeys: the whole keyboard");
+        if (string.Join("|", Chords("Tab  Tab Enter")) != "Tab|Tab|Enter" || string.Join("|", Chords("Ctrl + A")) != "Ctrl+A" || string.Join("|", Chords("Ctrl+ A Shift +B")) != "Ctrl+A|Shift+B" ||
+            string.Join("|", Chords("Ctrl++")) != "Ctrl++" || Chords("  ").Length != 0)
+            throw new InvalidOperationException("Chords");
         // a 1200-pixel-wide screenshot of a 800-CSS-pixel viewport (a 150% display): pixel 600 is CSS pixel 400
         if (Math.Abs(ToCss(600, 1200, 800) - 400) > 1e-9 || ToCss(5, 0, 800) != 5 || ButtonMask("left") != 1 || ButtonMask("right") != 2 ||
             ButtonMask("middle") != 4 || Steps(10) != 1 || Steps(400) != 5 || Steps(5000) != 10)
@@ -226,12 +315,21 @@ public partial class MainWindow
                     done = $"TYPED {input.Text.Length} character{(input.Text.Length == 1 ? "" : "s")}";
                     break;
                 case "key":
-                    if (BrowserInputLogic.ParseKeys(input.Keys) is not { } spec)
-                        return ($"ERROR: unknown key \"{input.Keys}\"; use Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12, a letter or digit, with Ctrl+, Shift+, Alt+ or Meta+", null);
-                    if (BrowserInputLogic.UsesClipboard(spec))
-                        return ("ERROR: copy, cut and paste use the user's own clipboard, which the model may not touch; type the text instead", null);
-                    await KeyAsync(core, spec);
-                    done = $"PRESSED {input.Keys}";
+                    var chords = BrowserInputLogic.Chords(input.Keys);
+                    if (chords.Length is 0 or > 30)
+                        return ("ERROR: key needs one to 30 keys, e.g. Enter, Ctrl+A, or Tab Tab Enter", null);
+                    var specs = new List<KeySpec>();
+                    foreach (var chord in chords)
+                    {
+                        if (BrowserInputLogic.ParseKeys(chord) is not { } spec)
+                            return ($"ERROR: unknown key \"{chord}\"; keys are letters, digits, punctuation (Comma, Minus, Slash...), Enter, Tab, Escape, Backspace, Delete, Insert, Space, Arrow*, Home, End, PageUp, PageDown, F1-F24, Numpad0-9, NumpadAdd..., CapsLock, ContextMenu, Shift, Control, Alt, Meta and the media keys, alone or with Ctrl+, Shift+, Alt+, Meta+; several keys are separated by spaces", null);
+                        if (BrowserInputLogic.UsesClipboard(spec))
+                            return ("ERROR: copy, cut and paste use the user's own clipboard, which the model may not touch; type the text instead", null);
+                        specs.Add(spec);
+                    }
+                    foreach (var spec in specs)
+                        await KeyAsync(core, spec);
+                    done = $"PRESSED {string.Join(" ", chords)}";
                     break;
                 default:
                     if (await PointAsync(tab, core, action, find, input) is { } failed)

@@ -4179,8 +4179,11 @@ BROWSER_TOOL = function_tool(
     "own (the user's are untouched): take a screenshot first, then x and y are pixels of that screenshot. 'click' "
     "(x,y, or `find` = a visible text to click; button left|right|middle; clicks 1-3 for a double or triple click), "
     "'move' (hover at x,y), 'drag' (x,y to to_x,to_y), 'scroll' (dy and dx wheel pixels, positive = down/right, at x,y "
-    "or the middle), 'type' (`text` into the focused field; click it first), 'key' (`keys`: Enter, Tab, Escape, "
-    "Backspace, Delete, ArrowDown, PageDown, Home, F5, a letter, with modifiers e.g. Ctrl+A, Shift+Tab). Each of these "
+    "or the middle), 'type' (`text` into the focused field; click it first), 'key' (`keys`: any key of the keyboard "
+    "by name, alone or as a chord, or several in a row separated by spaces: letters, digits, punctuation (Comma, Minus, "
+    "Slash, Quote...), Enter, Tab, Escape, Backspace, Delete, Insert, Space, Arrow*, Home, End, PageUp, PageDown, F1-F24, "
+    "Numpad0-9, NumpadAdd, CapsLock, ContextMenu, Shift/Control/Alt/Meta, media keys, with Ctrl+ Shift+ Alt+ Meta+, e.g. "
+    "Ctrl+A, Shift+Tab, or 'Tab Tab Enter'). Each of these "
     "returns what changed and, unless `shot` is false, a new screenshot. Browser menus, file pickers and a <select>'s "
     "list are not reachable (focus a <select> and press ArrowDown); alert/confirm dialogs are cancelled and reported; "
     "copy, cut and paste are refused (the clipboard is the user's).",
@@ -4195,7 +4198,7 @@ BROWSER_TOOL = function_tool(
      "dx": {"type": "number", "description": "scroll: wheel pixels right"}, "dy": {"type": "number", "description": "scroll: wheel pixels down"},
      "button": {"type": "string", "enum": ["left", "right", "middle"]}, "clicks": {"type": "integer", "description": "1 to 3"},
      "text": {"type": "string", "description": "type: the text to enter"},
-     "keys": {"type": "string", "description": "key: one key or chord, e.g. Enter, Ctrl+A, Shift+Tab"},
+     "keys": {"type": "string", "description": "key: a key or chord, or several separated by spaces, e.g. Enter, Ctrl+A, Tab Tab Enter"},
      "shot": {"type": "boolean", "description": "mouse/keyboard actions: send a screenshot after (default true)"}}, ["action"])
 
 
