@@ -23,6 +23,12 @@ public partial class MainWindow
         public string Url = "";
         public readonly List<string> Errors = new(); // its page's script errors since it started loading
         public TaskCompletionSource<bool>? Loaded;
+        // the model's mouse and keyboard (MainWindow.BrowserInput.cs): the last screenshot's size and the page's viewport then,
+        // where its pointer is, whether it is acting (its right clicks show no context menu), and what the last action did
+        public int ShotW, ShotH;
+        public double ShotViewW, ShotViewH, MouseX, MouseY;
+        public bool HasMouse, Driving;
+        public string Done = "", Dialog = ""; // Dialog: a script dialog or file picker the page opened while the model acted
     }
 
     private readonly List<BrowserTab> _tabs = new();
@@ -53,6 +59,7 @@ public partial class MainWindow
             BrowserPanel.Visibility = Visibility.Visible;
             SlideColumn(BrowserPanel, collapsed: false, slide: fromRail);
             BrowserFollowToggle.IsChecked = _settings.BrowserFollow;
+            BrowserInputToggle.IsChecked = _settings.BrowserInput;
             _settings.BrowserOpen = true;
             _settings.Save();
         }
@@ -147,6 +154,18 @@ public partial class MainWindow
                 OpenTab(a.Uri, trusted: true);
             };
             web.CoreWebView2.DocumentTitleChanged += (_, _) => RefreshTab(tab);
+            web.CoreWebView2.ContextMenuRequested += (_, a) => a.Handled = tab.Driving; // the model's right click acts on the page only
+            // The page's alert/confirm/beforeunload: the default dialogs are off (a setting that only applies from the start, and one the
+            // model could never answer), so they come here. The model's own actions cancel them and are told; the user gets a message box.
+            web.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
+            web.CoreWebView2.ScriptDialogOpening += (_, a) =>
+            {
+                if (tab.Driving)
+                    tab.Dialog += $"a {a.Kind} dialog said \"{a.Message}\" and was cancelled\n";
+                else if (a.Kind != CoreWebView2ScriptDialogKind.Prompt && // a prompt (text entry) is cancelled
+                         MessageBox.Show(a.Message, tab.Title.Text, a.Kind == CoreWebView2ScriptDialogKind.Alert ? MessageBoxButton.OK : MessageBoxButton.OKCancel) == MessageBoxResult.OK)
+                    a.Accept();
+            };
         };
         web.NavigationCompleted += (_, done) =>
         {
@@ -389,19 +408,24 @@ public partial class MainWindow
     private async Task AnswerBrowserAsync(JsonElement ev)
     {
         var asker = _chatProcess ?? _process;
+        double? Opt(string name) => ev.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+        var input = new BrowserInput(Opt("x"), Opt("y"), Opt("to_x"), Opt("to_y"), Opt("dx"), Opt("dy"), Str(ev, "button") is { Length: > 0 } button ? button : "left",
+            Math.Max((int)Num(ev, "clicks"), 1), Str(ev, "text"), Str(ev, "keys"), !(ev.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));
         var (result, image) = await BrowserAnswerAsync(Str(ev, "action"), Str(ev, "url"),
-            ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True, (int)Num(ev, "tab"), Str(ev, "find"));
+            ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True, (int)Num(ev, "tab"), Str(ev, "find"), input);
         NoteShot(image);
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
 
-    private async Task<(string Result, string? Image)> BrowserAnswerAsync(string action, string url, bool newTab, int number, string find)
+    private async Task<(string Result, string? Image)> BrowserAnswerAsync(string action, string url, bool newTab, int number, string find, BrowserInput? input = null)
     {
         string result;
         string? image = null;
         try
         {
-            if (action == "tabs")
+            if (action is "click" or "move" or "drag" or "scroll" or "type" or "key")
+                (result, image) = await DriveAsync(action, number, find, input ?? new BrowserInput(null, null, null, null, null, null, "left", 1, "", "", true));
+            else if (action == "tabs")
                 result = _tabs.Count == 0 ? "No tabs are open." : TabList();
             else if (action == "open")
             {
@@ -442,20 +466,18 @@ public partial class MainWindow
                         await Task.Delay(320); // a column that just opened lays the page out first
                         var found = find == "" || await core.ExecuteScriptAsync(FindScript(find)) == "true";
                         await Task.Delay(150);
-                        using var shot = new MemoryStream();
-                        var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
-                        if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
+                        var (taken, note) = await CaptureAsync(_tab, core);
+                        if (taken is null)
                             return ("ERROR: the screenshot did not finish within 15 s; use read", null);
-                        await capture;
-                        image = "data:image/jpeg;base64," + Convert.ToBase64String(shot.ToArray());
+                        image = taken;
                         result = $"TAB: {_tabs.IndexOf(_tab) + 1} of {_tabs.Count}\nURL: {core.Source}\nTITLE: {core.DocumentTitle}\n" +
                                  (found ? find == "" ? "SCREENSHOT: the part of the page the tab shows" : $"SCREENSHOT: scrolled to the first \"{find}\""
-                                     : $"SCREENSHOT: \"{find}\" is not on the page, so this is the part the tab shows");
+                                     : $"SCREENSHOT: \"{find}\" is not on the page, so this is the part the tab shows") + (note.Length > 0 ? "\n" + note : "");
                     }
                 }
             }
         }
-        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException or IOException)
+        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ArgumentException or IOException or JsonException)
         {
             (result, image) = ($"ERROR: the browser failed: {e.Message}", null);
         }
@@ -536,5 +558,6 @@ public partial class MainWindow
             BrowserUrl("what is wpf") != BrowserHome + "?q=what%20is%20wpf" || BrowserUrl("javascript:alert(1)") is not null ||
             BrowserUrl(@"file:///C:/x") is not null || BrowserUrl("  ") is not null || BrowserUrl("localhost") != BrowserHome + "?q=localhost")
             throw new InvalidOperationException("BrowserUrl");
+        BrowserInputLogic.SelfTest();
     }
 }

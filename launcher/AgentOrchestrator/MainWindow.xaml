@@ -1404,7 +1404,12 @@
                                       ToolTip="Open each search and page the model reads here as it reads it, opening the browser if needed (up to 5 tabs)" AutomationProperties.Name="Follow the model">
                             <TextBlock Text="Follow the model" />
                         </ToggleButton>
-                        <Border />
+                        <ToggleButton x:Name="BrowserInputToggle" DockPanel.Dock="Right" Style="{StaticResource ChipToggle}" Click="BrowserInputToggle_Click" VerticalAlignment="Center" Margin="0,0,6,0"
+                                      ToolTip="Let the model use the browser with its own mouse and keyboard (click, type, scroll, press keys). Yours stay free; turn this off to keep it read-only" AutomationProperties.Name="Let the model use mouse and keyboard">
+                            <TextBlock Text="Model input" />
+                        </ToggleButton>
+                        <TextBlock x:Name="BrowserDriving" Text="&#x25CF; model driving" Foreground="#E5484D" FontSize="11" Margin="10,0,0,0" VerticalAlignment="Center" Visibility="Collapsed"
+                                   TextTrimming="CharacterEllipsis" ToolTip="The model is using the browser's mouse or keyboard" />
                     </DockPanel>
                     <!-- Tabs (MainWindow.Browser.cs): one chip per page, the shown one checked; + opens a new tab -->
                     <ScrollViewer DockPanel.Dock="Top" Margin="10,0,10,6" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">

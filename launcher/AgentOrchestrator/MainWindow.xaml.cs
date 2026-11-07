@@ -3053,6 +3053,97 @@ public partial class MainWindow : Window
                 Console.Error.WriteLine($"browser page {pageText[..Math.Min(300, pageText.Length)]} | {shotText} | {shot?[..Math.Min(40, shot.Length)]} | {scrolled}");
                 return Fail();
             }
+            // The model's mouse and keyboard: every action goes to the tab through the DevTools protocol, the page sees the events, and the
+            // user's own pointer does not move.
+            var inputPage = Path.Combine(AppSettings.DataRoot, "smoke-input.html");
+            File.WriteAllText(inputPage, "<body style='margin:0'><script>var L=[],K=[],md=0;function log(s){L.push(s)}</script>" +
+                "<button id=b style='position:absolute;left:10px;top:10px;width:100px;height:30px' onclick='log(\"click\")' ondblclick='log(\"dbl\")' oncontextmenu='log(\"ctx\");return false'>Press me</button>" +
+                "<input id=i style='position:absolute;left:10px;top:50px;width:140px' onkeydown='K.push(event.key)'>" +
+                "<div id=h style='position:absolute;left:10px;top:90px;width:80px;height:30px;background:#ccc' onmouseover='log(\"hover\")'>hover</div>" +
+                "<div id=s style='position:absolute;left:10px;top:130px;width:140px;height:60px;overflow:auto'><div style='height:2000px'>long</div></div>" +
+                "<button id=c style='position:absolute;left:10px;top:240px;width:60px;height:24px' onclick='log(confirm(\"sure?\")?\"yes\":\"no\")'>Del</button>" +
+                "<label id=f for=fi style='position:absolute;left:100px;top:240px;width:60px;height:24px;background:#eee'>Upload</label><input id=fi type=file style='display:none'>" +
+                "<select id=sel style='position:absolute;left:10px;top:200px'><option>a</option><option>b</option></select>" +
+                "<div id=d draggable=true ondragstart='event.dataTransfer.setData(\"text\",\"x\")' style='position:absolute;left:170px;top:10px;width:40px;height:40px;background:red'></div>" +
+                "<div id=z ondragover='event.preventDefault()' ondrop='event.preventDefault();log(\"dropped\")' style='position:absolute;left:170px;top:70px;width:40px;height:40px;background:#8a8'></div>" +
+                "<div id=m onmousedown='md=1' onmousemove='if(md)log(\"mmove\")' onmouseup='md=0;log(\"mup\")' style='position:absolute;left:170px;top:130px;width:40px;height:40px;background:#88a'></div></body>");
+            await BrowserAnswerAsync("open", new Uri(inputPage).AbsoluteUri, true, 0, "");
+            await Task.Delay(300);
+            var inpTab = _tab!;
+            var inpCore = inpTab.Web.CoreWebView2;
+            await BrowserAnswerAsync("screenshot", "", false, 0, "");
+            var inpRatio = inpTab.ShotW / inpTab.ShotViewW;
+            async Task<string> InpJs(string s) => System.Text.Json.JsonSerializer.Deserialize<string>(await inpCore.ExecuteScriptAsync("String(" + s + ")")) ?? "";
+            async Task<(double X, double Y)> InpAt(string id)
+            {
+                var cx = await InpJs($"(() => {{ const r = document.getElementById('{id}').getBoundingClientRect(); return r.left + r.width / 2; }})()");
+                var cy = await InpJs($"(() => {{ const r = document.getElementById('{id}').getBoundingClientRect(); return r.top + r.height / 2; }})()");
+                return (double.Parse(cx, System.Globalization.CultureInfo.InvariantCulture) * inpRatio, double.Parse(cy, System.Globalization.CultureInfo.InvariantCulture) * inpRatio);
+            }
+            async Task<string> InpAct(string action, double? x = null, double? y = null, double? tx = null, double? ty = null, double? dx = null, double? dy = null,
+                string button = "left", int clicks = 1, string text = "", string keys = "", string find = "") =>
+                (await BrowserAnswerAsync(action, "", false, 0, find, new BrowserInput(x, y, tx, ty, dx, dy, button, clicks, text, keys, Shot: false))).Result;
+            GetCursorPos(out var userBefore);
+            var (bx, by) = await InpAt("b");
+            var r1 = await InpAct("click", bx, by);
+            var r2 = await InpAct("click", bx, by, clicks: 2);
+            var r3 = await InpAct("click", bx, by, button: "right");
+            var r4 = await InpAct("click", find: "Press me");
+            var (ix, iy) = await InpAt("i");
+            await InpAct("click", ix, iy);
+            await InpAct("type", text: "Hi 1");
+            var typed = await InpJs("document.getElementById('i').value");
+            await InpAct("key", keys: "Ctrl+A");
+            await InpAct("type", text: "x");
+            var replaced = await InpJs("document.getElementById('i').value");
+            await InpAct("key", keys: "Backspace");
+            await InpAct("key", keys: "Enter");
+            var emptied = await InpJs("document.getElementById('i').value + '|' + K.join(',')");
+            var (hx, hy) = await InpAt("h");
+            await InpAct("move", hx, hy);
+            var (sx, sy) = await InpAt("s");
+            await InpAct("scroll", sx, sy, dy: 150);
+            var scrolledTo = double.Parse(await InpJs("document.getElementById('s').scrollTop"), System.Globalization.CultureInfo.InvariantCulture);
+            var (qx, qy) = await InpAt("sel");
+            var selNote = await InpAct("click", qx, qy);
+            await InpAct("key", keys: "ArrowDown");
+            var picked = await InpJs("document.getElementById('sel').value");
+            var (cx0, cy0) = await InpAt("c");
+            var confirmed = await InpAct("click", cx0, cy0); // a confirm() is cancelled and reported, not left waiting for a person
+            var (fx0, fy0) = await InpAt("f");
+            var chooser = await InpAct("click", fx0, fy0); // a label for a file input opens a picker: intercepted and reported
+            await InpAct("click", ix, iy);
+            await InpAct("key", keys: "Ctrl+A");
+            await InpAct("type", text: "ok \U0001F44D");
+            var emoji = await InpJs("document.getElementById('i').value");
+            var paste = await InpAct("key", keys: "Ctrl+V");
+            var (dgx, dgy) = await InpAt("d");
+            var (dzx, dzy) = await InpAt("z");
+            await InpAct("drag", dgx, dgy, dzx, dzy);
+            var (mx, my) = await InpAt("m");
+            await InpAct("drag", mx, my, mx + 12, my + 12);
+            var log = await InpJs("L.join(',')");
+            var badKey = await InpAct("key", keys: "Hyper+Z");
+            var stale = await InpAct("click", 99999, 5);
+            GetCursorPos(out var userAfter);
+            _settings.BrowserInput = false;
+            var off = await InpAct("click", bx, by);
+            _settings.BrowserInput = true;
+            var clicks = log.Split(',').Count(e => e == "click");
+            var inputOk = r1.StartsWith("CLICKED") && r2.StartsWith("DOUBLE-CLICKED") && r3.StartsWith("RIGHT-CLICKED") && r4.StartsWith("CLICKED") && clicks >= 4 &&
+                          log.Contains("dbl") && log.Contains("ctx") && log.Contains("hover") && log.Contains("dropped") && log.Contains("mmove") && log.Contains("mup") &&
+                          typed == "Hi 1" && replaced == "x" && emptied.StartsWith("|") && emptied.EndsWith("Enter") &&
+                          scrolledTo > 20 && selNote.Contains("<select>") && picked == "b" &&
+                          confirmed.Contains("DIALOG: a Confirm dialog") && log.Contains("no") && chooser.Contains("file picker") && emoji == "ok \U0001F44D" && paste.Contains("clipboard") && badKey.StartsWith("ERROR: unknown key") && stale.StartsWith("ERROR:") &&
+                          off.Contains("switched off");  // the user's own pointer is only logged: they may be moving it while this runs
+            CloseTab(inpTab);
+            File.Delete(inputPage);
+            if (!inputOk)
+            {
+                Console.Error.WriteLine($"browser input: {r1.Split('\n')[0]} | {r2.Split('\n')[0]} | {r3.Split('\n')[0]} | {r4.Split('\n')[0]} | typed {typed} | replaced {replaced} | {emptied} | scroll {scrolledTo} | " +
+                                        $"{selNote.Split('\n')[0]} | {picked} | {confirmed.Replace('\n', '/')} | {chooser.Replace('\n', '/')} | emoji {emoji} | {paste.Split('\n')[0]} | log {log} | {badKey.Split('\n')[0]} | {stale.Split('\n')[0]} | {off.Split('\n')[0]} | pointer {userBefore.X},{userBefore.Y} -> {userAfter.X},{userAfter.Y}");
+                return Fail();
+            }
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
             var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);

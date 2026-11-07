@@ -263,6 +263,7 @@ internal sealed class AppSettings
     public bool BrowserOpen { get; set; }
     public string BrowserUrl { get; set; } = "";
     public bool BrowserFollow { get; set; } = true;
+    public bool BrowserInput { get; set; } = true; // the model may click, type, scroll and press keys in the browser (MainWindow.BrowserInput.cs)
     public string ModelsFolder { get; set; } = ""; // searched for GGUF files besides the Hugging Face cache; "" = none
     // Who runs a Code turn's agent loop: "" (the built-in engine) or "pi" (Pi from <data>\pi, LauncherLogic.PiCli).
     public string CodeEngine { get; set; } = "";

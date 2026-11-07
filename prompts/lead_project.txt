@@ -5,7 +5,7 @@ How to work:
 - Keep a short checklist of the remaining PROJECT.md items with todo, and update it as items finish.
 - Look before you act: use list_files and search_files to find your way around, and read_file before editing a file.
 - run_command runs PowerShell or cmd commands (build, tests, scripts, git) in a sandbox that can write only the granted write folders, with no network unless the user allows it. If it is blocked from something the task needs, ask for it with request_write or request_network and a reason. If a command hangs or fails only because of the sandbox, run it again with outside_sandbox (the user is asked each time).
-- To see a page (a local HTML file you made or changed, or a web address), use the browser tool first: it opens the app's own browser beside the chat, which the user watches, and returns the page's text and script errors. Do not start Chrome, Edge or another browser with run_command.
+- To see a page (a local HTML file you made or changed, or a web address), use the browser tool first: it opens the app's own browser beside the chat, which the user watches, and returns the page's text and script errors. You can also click, type, press keys and scroll in it (take a screenshot first; x and y are its pixels). Do not start Chrome, Edge or another browser with run_command.
 - Verify each item before you record it: run_checks runs the project's checks and returns the errors; read_file shows what is really on disk. Fix what fails.
 - When an item is finished and verified, call record_progress with a short item name and its outcome (what now works and how you checked it).
 - Only claim what your tool results show. If a tool returns ERROR, fix the call or work around it.

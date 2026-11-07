@@ -3146,6 +3146,58 @@ class CodeTests(unittest.TestCase):
         parts = orchestrator.context_parts(orchestrator.with_images([{"role": "system", "content": "s" * 8750}, big]), None, 1000)
         self.assertLess(parts["messages"], 600)  # the image counts as IMAGE_TOKENS, not as its 200,000 characters of text
 
+    def test_browser_mouse_and_keyboard_actions_are_checked_then_sent_to_the_launcher(self):
+        # click/move/drag/scroll/type/key go to the launcher as one "browser" request each (pixels of the last screenshot);
+        # bad arguments and x/y for a model that cannot see are refused before the launcher is asked; the new screenshot
+        # comes back as an image only when the model sees and `shot` is not off.
+        asked, image = [], "data:image/jpeg;base64,/9j/AAAA"
+        answer = lambda event, **d: asked.append(d) or {"result": "CLICKED", "image": image}
+        with patch.object(orchestrator, "launcher_call", answer):
+            browse = orchestrator.browser_handler(self.folders, {})
+            shot = browse("click", x=10, y="20.5", button="right", clicks=2)
+            self.assertEqual((str(shot), shot.images), ("CLICKED", [image]))
+            self.assertEqual(str(browse("click", find=" Sign in ", tab=2, shot=False)), "CLICKED")
+            self.assertNotIsInstance(browse("click", find="Sign in", shot=False), orchestrator.ToolResult)  # shot off: text only
+            browse("move", x=1, y=2)
+            browse("drag", x=1, y=2, to_x=30, to_y=40)
+            browse("scroll", dy=300)
+            browse("scroll", x=5, y=6, dx=-20)
+            browse("type", text="hello world")
+            browse("key", keys="Ctrl+A")
+            self.assertEqual(asked[0], {"action": "click", "url": "", "x": 10.0, "y": 20.5, "button": "right", "clicks": 2, "shot": True})
+            self.assertEqual(asked[1], {"action": "click", "url": "", "tab": 2, "button": "left", "clicks": 1, "find": "Sign in", "shot": False})
+            self.assertEqual(asked[3:], [
+                {"action": "move", "url": "", "x": 1.0, "y": 2.0, "shot": True},
+                {"action": "drag", "url": "", "x": 1.0, "y": 2.0, "to_x": 30.0, "to_y": 40.0, "shot": True},
+                {"action": "scroll", "url": "", "dx": 0.0, "dy": 300.0, "shot": True},
+                {"action": "scroll", "url": "", "x": 5.0, "y": 6.0, "dx": -20.0, "dy": 0.0, "shot": True},
+                {"action": "type", "url": "", "text": "hello world", "shot": True},
+                {"action": "key", "url": "", "keys": "Ctrl+A", "shot": True}])
+            count = len(asked)
+            for args, why in (({"action": "click"}, "needs x and y"), ({"action": "click", "x": 1}, "both x and y"),
+                              ({"action": "click", "x": "left", "y": 1}, "must be a finite number"),
+                              ({"action": "click", "x": 1, "y": 1, "button": "back"}, "left, right or middle"),
+                              ({"action": "click", "x": 1, "y": 1, "clicks": 4}, "1, 2 or 3"),
+                              ({"action": "move", "find": "x"}, "needs x and y"), ({"action": "drag", "x": 1, "y": 1}, "to_x and to_y"),
+                              ({"action": "scroll"}, "needs dy"), ({"action": "type", "text": ""}, "needs text"),
+                              ({"action": "key", "keys": " "}, "needs keys"), ({"action": "click", "x": float("nan"), "y": 1}, "finite"),
+                              ({"action": "click", "x": 1, "y": "inf"}, "finite"), ({"action": "scroll", "dy": 1e999}, "finite"),
+                              ({"action": "click", "x": 1, "y": 1, "clicks": float("inf")}, "finite"), ({"action": "key", "keys": "Enter", "tab": float("inf")}, "finite")):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    browse(**args)
+            blind = orchestrator.browser_handler(self.folders, {}, vision=False)
+            for args in ({"action": "click", "x": 1, "y": 1}, {"action": "move", "x": 1, "y": 1}, {"action": "drag", "x": 1, "y": 1, "to_x": 2, "to_y": 2}):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
+                    blind(**args)
+            self.assertEqual(len(asked), count)  # none of the refused ones reached the launcher
+            self.assertEqual(str(blind("click", find="Go")), "CLICKED")  # no image for a model that cannot see
+            self.assertNotIsInstance(blind("key", keys="Enter"), orchestrator.ToolResult)
+            self.assertFalse(asked[-1]["shot"])
+        self.assertIn("browser", orchestrator.BROWSER_TOOL["function"]["name"])
+        self.assertTrue(set(orchestrator.BROWSER_INPUT) <= set(orchestrator.BROWSER_TOOL["function"]["parameters"]["properties"]["action"]["enum"]))
+        with patch.object(orchestrator, "EVENTS", False):
+            self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("key", keys="Enter"))
+
     def test_compact_command_summarizes_now_without_a_model_turn(self):
         # /compact <focus>: one quiet summary call with the focus in its prompt, a history_compacted event covering the
         # earlier messages, and a reply that says so; with nothing earlier, nothing is called.

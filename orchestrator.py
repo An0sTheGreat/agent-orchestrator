@@ -4164,6 +4164,9 @@ def steer_to(handler: Any) -> None:
             handler(message)
 
 
+BROWSER_INPUT = ("click", "move", "drag", "scroll", "type", "key")  # the model's mouse and keyboard in the in-app browser
+BROWSER_BUTTONS = ("left", "right", "middle")
+
 BROWSER_TOOL = function_tool(
     "browser", "Look at a page in the app's own browser, which the user sees beside the chat (it opens there): use it "
     "before anything else to view a local HTML file or a web page, never Chrome, Edge or another browser through "
@@ -4172,11 +4175,28 @@ BROWSER_TOOL = function_tool(
     "or, with new_tab, a new one; 'read' returns the shown page again (after it changed), or tab N's, which it then shows. "
     "Long text is cut: read on with `offset` as the reply says, or jump to a part with `find` (e.g. find 'README'). "
     "'screenshot' returns an image of what the shown tab (or tab N) shows, scrolled to `find` when given: use it to see "
-    "a page's look or its pictures. 'tabs' lists the open tabs.",
-    {"action": {"type": "string", "enum": ["open", "read", "screenshot", "tabs"]}, "url": {"type": "string"},
+    "a page's look or its pictures. 'tabs' lists the open tabs. You also drive the page with a mouse and keyboard of its "
+    "own (the user's are untouched): take a screenshot first, then x and y are pixels of that screenshot. 'click' "
+    "(x,y, or `find` = a visible text to click; button left|right|middle; clicks 1-3 for a double or triple click), "
+    "'move' (hover at x,y), 'drag' (x,y to to_x,to_y), 'scroll' (dy and dx wheel pixels, positive = down/right, at x,y "
+    "or the middle), 'type' (`text` into the focused field; click it first), 'key' (`keys`: Enter, Tab, Escape, "
+    "Backspace, Delete, ArrowDown, PageDown, Home, F5, a letter, with modifiers e.g. Ctrl+A, Shift+Tab). Each of these "
+    "returns what changed and, unless `shot` is false, a new screenshot. Browser menus, file pickers and a <select>'s "
+    "list are not reachable (focus a <select> and press ArrowDown); alert/confirm dialogs are cancelled and reported; "
+    "copy, cut and paste are refused (the clipboard is the user's).",
+    {"action": {"type": "string", "enum": ["open", "read", "screenshot", "tabs", *BROWSER_INPUT]}, "url": {"type": "string"},
      "new_tab": {"type": "boolean"}, "tab": {"type": "integer", "description": "a tab number from 'tabs'"},
      "offset": {"type": "integer", "description": "read the text from this character (the reply says where to read on)"},
-     "find": {"type": "string", "description": "read from, or screenshot at, the first place with this text"}}, ["action"])
+     "find": {"type": "string", "description": "read from, screenshot at, or click, the first place with this text"},
+     "x": {"type": "number", "description": "pixels from the left of the last screenshot"},
+     "y": {"type": "number", "description": "pixels from the top of the last screenshot"},
+     "to_x": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+     "to_y": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+     "dx": {"type": "number", "description": "scroll: wheel pixels right"}, "dy": {"type": "number", "description": "scroll: wheel pixels down"},
+     "button": {"type": "string", "enum": ["left", "right", "middle"]}, "clicks": {"type": "integer", "description": "1 to 3"},
+     "text": {"type": "string", "description": "type: the text to enter"},
+     "keys": {"type": "string", "description": "key: one key or chord, e.g. Enter, Ctrl+A, Shift+Tab"},
+     "shot": {"type": "boolean", "description": "mouse/keyboard actions: send a screenshot after (default true)"}}, ["action"])
 
 
 def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], vision: bool = True):
@@ -4186,9 +4206,66 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
     returns an image of what the tab shows (a ToolResult), only when the model sees images (`vision`)."""
     web = bool(request.get("search") or request.get("tools"))
 
-    def browser(action: str = "open", url: str = "", new_tab: bool = False, tab: int = 0, offset: Any = 0, find: str = "") -> str:
+    def browser_input(action, tab, find, x, y, to_x, to_y, dx, dy, button, clicks, text, keys, shot) -> Any:
+        """click / move / drag / scroll / type / key: checked here, performed by the launcher in the tab with DevTools input
+        (the user's own mouse and keyboard are not used); the reply says what changed, with a screenshot when `shot`."""
+        def number(name: str, value: Any) -> float:
+            try:
+                result = float(value)
+            except (TypeError, ValueError):
+                result = math.nan
+            if not math.isfinite(result):  # NaN/Infinity would make the request invalid JSON, and the launcher would never answer it
+                raise WorkflowError(f"{name} must be a finite number: pixels of the last screenshot")
+            return result
+        find, text, keys, button = str(find or "").strip(), str(text or ""), str(keys or "").strip(), str(button or "left").lower()
+        point = {k: number(k, v) for k, v in (("x", x), ("y", y)) if v is not None}
+        if len(point) == 1:
+            raise WorkflowError("give both x and y")
+        if (point or action == "drag") and not vision:
+            raise WorkflowError("this model's settings switch vision off, so x and y mean nothing; click by `find` text, or use the keyboard")
+        extra: dict[str, Any] = dict(point)
+        if action == "click":
+            if not point and not find:
+                raise WorkflowError("click needs x and y (pixels of the last screenshot) or `find` (a visible text to click)")
+            if button not in BROWSER_BUTTONS:
+                raise WorkflowError("button must be left, right or middle")
+            count = int(number("clicks", clicks))
+            if not 1 <= count <= 3:
+                raise WorkflowError("clicks must be 1, 2 or 3")
+            extra.update(button=button, clicks=count, **({"find": find} if find and not point else {}))
+        elif action in ("move", "drag"):
+            if not point:
+                raise WorkflowError(f"{action} needs x and y (pixels of the last screenshot)")
+            if action == "drag":
+                if to_x is None or to_y is None:
+                    raise WorkflowError("drag needs to_x and to_y: where to release")
+                extra.update(to_x=number("to_x", to_x), to_y=number("to_y", to_y))
+        elif action == "scroll":
+            if dx is None and dy is None:
+                raise WorkflowError("scroll needs dy (down) and/or dx (right), in pixels")
+            extra.update(dx=number("dx", dx or 0), dy=number("dy", dy or 0))
+        elif action == "type":
+            if not text:
+                raise WorkflowError("type needs text; click the field first")
+            extra["text"] = text
+        elif action == "key":
+            if not keys:
+                raise WorkflowError("key needs keys, e.g. Enter or Ctrl+A")
+            extra["keys"] = keys
+        want = bool(shot) and vision
+        answer = launcher_call("browser", action=action, url="", **({"tab": int(number("tab", tab))} if tab else {}), **extra, shot=want)
+        if answer is None:
+            return "ERROR: the in-app browser is only there when the app runs this turn"
+        result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+        return ToolResult(result, [image]) if want and image.startswith("data:image/") else result
+
+    def browser(action: str = "open", url: str = "", new_tab: bool = False, tab: int = 0, offset: Any = 0, find: str = "",
+                x: Any = None, y: Any = None, to_x: Any = None, to_y: Any = None, dx: Any = None, dy: Any = None,
+                button: str = "left", clicks: Any = 1, text: str = "", keys: str = "", shot: bool = True) -> str:
+        if action in BROWSER_INPUT:
+            return browser_input(action, tab, find, x, y, to_x, to_y, dx, dy, button, clicks, text, keys, shot)
         if action not in ("open", "read", "tabs", "screenshot"):
-            raise WorkflowError("action must be 'open', 'read', 'screenshot' or 'tabs'")
+            raise WorkflowError("action must be 'open', 'read', 'screenshot', 'tabs', " + ", ".join(f"'{a}'" for a in BROWSER_INPUT))
         if action == "screenshot" and not vision:
             raise WorkflowError("this model's settings switch vision off, so it cannot see a screenshot; use read")
         target = ""
