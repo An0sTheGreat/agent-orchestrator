@@ -22,6 +22,7 @@ public partial class MainWindow
     private HttpClient _remoteHttp = new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan }; // RemoteCatalog caps each request at 15 s; smokes put a fake handler here
     private Action<string> _openExternal = url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); // smokes record the address instead
     private DialogShell? _remoteHelp;
+    private Action<ContextMenu> _openKeyMenu = m => m.IsOpen = true; // smokes count the opens instead of showing a popup
     private Func<ContextMenu> _remoteKeyMenu = () => new(); // the API key field's saved-keys menu (the page's); smokes click its items
     private (string Service, string BaseUrl, string Model)? _remoteLast; // the page's last choice, this session only
     private CancellationTokenSource? _remoteModelsCts, _remoteProvidersCts;
@@ -328,6 +329,7 @@ public partial class MainWindow
             keyInput.Visibility = saveKey.Visibility = keyName.Visibility = entry ? Visibility.Visible : Visibility.Collapsed;
             keyShown.Visibility = entry ? Visibility.Collapsed : Visibility.Visible;
             keyShown.Text = $"••••••••   {active}";
+            keyField.Cursor = entry ? null : System.Windows.Input.Cursors.Hand;
             keyMenuButton.Visibility = labels.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             if (!entry || keyName.Text.Trim().Length == 0)
                 keyName.Text = labels.Count == 0 ? "Default" : Enumerable.Range(labels.Count + 1, labels.Count + 1).Select(n => $"Key {n}").First(n => !labels.Contains(n));
@@ -906,7 +908,15 @@ public partial class MainWindow
             menu.Items.Add(remove);
             return menu;
         };
-        keyMenuButton.Click += (_, _) => _remoteKeyMenu().IsOpen = true;
+        keyMenuButton.Click += (_, _) => _openKeyMenu(_remoteKeyMenu());
+        // With a key saved the whole field is the switcher: a click anywhere on it (not only the arrow) opens the menu.
+        keyField.MouseLeftButtonUp += (_, e) =>
+        {
+            if (keyShown.Visibility != Visibility.Visible || keyInput.Visibility == Visibility.Visible)
+                return;
+            _openKeyMenu(_remoteKeyMenu());
+            e.Handled = true;
+        };
 
         // ---- the page
         var title = new TextBlock { Text = "Remote API", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold };
@@ -1700,6 +1710,18 @@ public partial class MainWindow
                 Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set: Default", ToolTip: string savedTip } || !savedTip.StartsWith("A key is saved", StringComparison.Ordinal) ||
                 !fake.Seen.Skip(before).Contains(($"{Lan}/models", "Bearer secret-c")) || File.ReadAllText(keysFile).Contains("secret-c", StringComparison.Ordinal))
                 return Fail($"a pasted key: {KeyState()}, saved {ApiKeys.Has(KeyC)}, asked [{Asked(before)}]");
+            // a click anywhere on the field (not only the arrow) opens the saved-keys menu
+            var opens = 0;
+            _openKeyMenu = _ => opens++;
+            var shownLabel = Find<TextBlock>("RemoteKeyShown");
+            var fieldBox = (shownLabel.Parent as Grid)?.Parent as Border;
+            if (fieldBox is null)
+                return Fail("the key field's border");
+            fieldBox.RaiseEvent(new System.Windows.Input.MouseButtonEventArgs(System.Windows.Input.Mouse.PrimaryDevice, Environment.TickCount, System.Windows.Input.MouseButton.Left)
+                { RoutedEvent = UIElement.MouseLeftButtonUpEvent, Source = fieldBox });
+            _openKeyMenu = m => m.IsOpen = true;
+            if (opens != 1)
+                return Fail($"clicking the key field opened the menu {opens} times");
             if (Shown("RemoteKeyInput") || Shown("RemoteKeySave") || Shown("RemoteKeyName") || !Shown("RemoteKeyMenu") || Find<TextBlock>("RemoteKeyShown") is not { Text: var shownText } ||
                 !shownText.EndsWith("Default", StringComparison.Ordinal) || shownText.Contains("secret", StringComparison.Ordinal) || Keys() != "*Default")
                 return Fail($"the field with a saved key: shows \"{Find<TextBlock>("RemoteKeyShown").Text}\", {KeyState()}");
