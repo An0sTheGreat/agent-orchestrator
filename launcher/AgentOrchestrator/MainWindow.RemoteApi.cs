@@ -22,6 +22,7 @@ public partial class MainWindow
     private HttpClient _remoteHttp = new() { Timeout = System.Threading.Timeout.InfiniteTimeSpan }; // RemoteCatalog caps each request at 15 s; smokes put a fake handler here
     private Action<string> _openExternal = url => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); // smokes record the address instead
     private DialogShell? _remoteHelp;
+    private Func<ContextMenu> _remoteKeyMenu = () => new(); // the API key field's saved-keys menu (the page's); smokes click its items
     private (string Service, string BaseUrl, string Model)? _remoteLast; // the page's last choice, this session only
     private CancellationTokenSource? _remoteModelsCts, _remoteProvidersCts;
     private Task _remoteModelsTask = Task.CompletedTask, _remoteProvidersTask = Task.CompletedTask; // smokes await them
@@ -286,25 +287,51 @@ public partial class MainWindow
         var keyHelp = new Button { Content = "Key help", Tag = "RemoteKeyHelp", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), VerticalAlignment = VerticalAlignment.Top };
         DockPanel.SetDock(keyHelp, Dock.Right);
         // The key typed here: encrypted for this Windows user (ApiKeys) and put in the environment under the variable's name.
-        var keyInput = new PasswordBox { Tag = "RemoteKeyInput", Height = 30, Margin = new Thickness(0, 4, 0, 0), Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
+        // Several keys can be saved per variable, each under a name; the field shows the active one's name (never a key) and its
+        // chevron lists them to switch, add, rename or remove. With none saved, or while adding one, it is the paste box.
+        var keyInput = new PasswordBox { Tag = "RemoteKeyInput", Background = Brushes.Transparent, BorderThickness = new Thickness(0), Padding = new Thickness(14, 0, 4, 0), VerticalContentAlignment = VerticalAlignment.Center };
         System.Windows.Automation.AutomationProperties.SetName(keyInput, "API key");
-        Button KeyButton(string text, string tag) => new() { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 4, 0, 0) };
-        var saveKey = KeyButton("Save key", "RemoteKeySave");
-        var removeKey = KeyButton("Remove", "RemoteKeyRemove");
+        var keyShown = new TextBlock { Tag = "RemoteKeyShown", Margin = new Thickness(14, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        var keyMenuButton = new Button { Tag = "RemoteKeyMenu", Style = (Style)FindResource("BareButton"), Padding = new Thickness(8, 0, 12, 0), ToolTip = "Saved keys",
+            Content = new TextBlock { Text = "", FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), FontSize = 10, VerticalAlignment = VerticalAlignment.Center } };
+        keyMenuButton.SetResourceReference(Control.ForegroundProperty, "Muted");
+        System.Windows.Automation.AutomationProperties.SetName(keyMenuButton, "Saved keys");
+        Grid.SetColumn(keyMenuButton, 1);
+        var keyField = new Border { Height = 30, Margin = new Thickness(0, 4, 0, 0), BorderThickness = new Thickness(1), Child = new Grid
+        {
+            ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } },
+            Children = { keyInput, keyShown, keyMenuButton },
+        } };
+        foreach (var (property, key) in new[] { (Border.BackgroundProperty, "Card"), (Border.BorderBrushProperty, "ControlBorder"), (Border.CornerRadiusProperty, "ControlRadius") })
+            keyField.SetResourceReference(property, key);
+        keyInput.GotKeyboardFocus += (_, _) => keyField.SetResourceReference(Border.BorderBrushProperty, "Accent");
+        keyInput.LostKeyboardFocus += (_, _) => keyField.SetResourceReference(Border.BorderBrushProperty, "ControlBorder");
+        var keyName = new TextBox { Tag = "RemoteKeyName", Height = 30, MaxLength = 40, Margin = new Thickness(0, 6, 0, 0), Padding = new Thickness(12, 0, 12, 0), VerticalContentAlignment = VerticalAlignment.Center, ToolTip = "The key's name" };
+        System.Windows.Automation.AutomationProperties.SetName(keyName, "Key name");
+        var saveKey = new Button { Content = "Save key", Tag = "RemoteKeySave", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(8, 6, 0, 0) };
         DockPanel.SetDock(saveKey, Dock.Right);
-        DockPanel.SetDock(removeKey, Dock.Right);
         var keyRowNote = RemoteMuted("Paste the key here: it is kept encrypted for your Windows account in the app's data folder and sent only to the selected service. " +
-                                     "Or set the variable yourself; a key saved here wins.");
+                                     "Or set the variable yourself; a key saved here wins. Save several under different names and switch with the arrow.");
         keyRowNote.Margin = new Thickness(0, 2, 0, 0);
-        var keyRow = new StackPanel { Children = { Label("API key"), keyRowNote, new DockPanel { Children = { removeKey, saveKey, keyInput } } } };
+        // The name box and Save key go under the field (only while pasting a key), so a narrow page still fits the key.
+        var keyRow = new StackPanel { Children = { Label("API key"), keyRowNote, keyField, new DockPanel { Children = { saveKey, keyName } } } };
+        var addingKey = false; // "Add new key…": the paste box although keys are saved
 
         void KeyStatus()
         {
             var env = keyVar;
             var set = EnvKey() is not null;
-            var saved = env.Length > 0 && ApiKeys.Has(env);
-            removeKey.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
-            keyStatus.Text = env.Length == 0 ? "No key variable" : set ? "✓ Key set" : "✗ Key not set — see Key help";
+            var labels = env.Length > 0 ? ApiKeys.Labels(env) : [];
+            var active = env.Length > 0 ? ApiKeys.Active(env) : null;
+            var saved = active is not null;
+            var entry = addingKey || labels.Count == 0;
+            keyInput.Visibility = saveKey.Visibility = keyName.Visibility = entry ? Visibility.Visible : Visibility.Collapsed;
+            keyShown.Visibility = entry ? Visibility.Collapsed : Visibility.Visible;
+            keyShown.Text = $"••••••••   {active}";
+            keyMenuButton.Visibility = labels.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (!entry || keyName.Text.Trim().Length == 0)
+                keyName.Text = labels.Count == 0 ? "Default" : Enumerable.Range(labels.Count + 1, labels.Count + 1).Select(n => $"Key {n}").First(n => !labels.Contains(n));
+            keyStatus.Text = env.Length == 0 ? "No key variable" : saved ? $"✓ Key set: {active}" : set ? "✓ Key set" : "✗ Key not set — see Key help";
             keyStatus.ToolTip = env.Length == 0 ? "No variable: requests go without a key." : saved ? $"A key is saved in the app for {env}." : set ? $"{env} is set in your environment." : $"{env} is not set: paste the key into the API key box below, or see Key help.";
             if (set || env.Length == 0)
                 keyStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
@@ -316,6 +343,8 @@ public partial class MainWindow
         {
             var was = keyVar;
             keyVar = keyEnv.Text.Trim();
+            if (keyVar != was)
+                (addingKey, keyName.Text) = (false, "");
             KeyStatus();
             return keyVar != was;
         }
@@ -791,36 +820,93 @@ public partial class MainWindow
         };
         apply.Click += (_, _) => Apply();
         keyHelp.Click += (_, _) => ShowRemoteHelp(Selected().Id);
-        void SaveKey()
+        bool KeyChange(Action change, string log) // a saved-keys change: its error on the page, or logged (never a key)
         {
-            CommitKeyEnv();
             try
             {
-                ApiKeys.Save(keyVar, keyInput.Password);
+                change();
             }
             catch (Exception x) when (x is ArgumentException or IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException)
             {
                 Note(errorLine, x.Message, error: true);
-                return;
+                return false;
             }
-            keyInput.Clear();
             Note(errorLine, "");
-            Log($"API key saved in the app for {keyVar}");
+            Log(log);
+            return true;
+        }
+        void SaveKey()
+        {
+            CommitKeyEnv();
+            if (!KeyChange(() => ApiKeys.Save(keyVar, keyName.Text, keyInput.Password), $"API key \"{keyName.Text.Trim()}\" saved in the app for {keyVar}"))
+                return;
+            keyInput.Clear();
+            addingKey = false;
             KeyStatus();
             LoadModels(); // the list may need the key
         }
         saveKey.Click += (_, _) => SaveKey();
-        keyInput.KeyDown += (_, e) =>
+        foreach (var box in new Control[] { keyInput, keyName })
+            box.KeyDown += (_, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Enter)
+                    SaveKey();
+                else if (e.Key == System.Windows.Input.Key.Escape && addingKey) // back to the saved keys
+                {
+                    (addingKey, keyName.Text) = (false, "");
+                    keyInput.Clear();
+                    KeyStatus();
+                }
+            };
+        _remoteKeyMenu = () =>
         {
-            if (e.Key == System.Windows.Input.Key.Enter)
-                SaveKey();
+            var menu = NewPresetMenu(keyField);
+            var active = ApiKeys.Active(keyVar);
+            foreach (var label in ApiKeys.Labels(keyVar))
+            {
+                var item = PresetItem(label, () =>
+                {
+                    if (!KeyChange(() => ApiKeys.Select(keyVar, label), $"API key \"{label}\" in use for {keyVar}"))
+                        return;
+                    (addingKey, keyName.Text) = (false, "");
+                    keyInput.Clear();
+                    KeyStatus();
+                    LoadModels();
+                });
+                (item.IsChecked, item.Tag) = (label == active, "key:" + label);
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
+            var add = PresetItem("Add new key…", () =>
+            {
+                (addingKey, keyName.Text) = (true, "");
+                keyInput.Clear();
+                KeyStatus();
+                keyInput.Focus();
+            });
+            var rename = PresetItem("Rename…", () =>
+            {
+                if (active is not null && SidebarAsk("Rename key", $"A new name for the key \"{active}\" saved for {keyVar}.", "Rename", active) is { } name &&
+                    KeyChange(() => ApiKeys.Rename(keyVar, active, name), $"API key \"{active}\" renamed \"{name}\" for {keyVar}"))
+                    KeyStatus();
+            }, active is not null);
+            var remove = PresetItem("Remove", () =>
+            {
+                if (active is null || Choose("Remove key", $"Remove the key \"{active}\" saved for {keyVar}? It cannot be brought back.", ("Remove", "remove")) != "remove" ||
+                    !KeyChange(() => ApiKeys.Remove(keyVar, active), $"API key \"{active}\" removed from the app for {keyVar}"))
+                    return;
+                keyName.Text = ""; // the next name to suggest may have changed
+                KeyStatus();
+                if (ApiKeys.Has(keyVar))
+                    LoadModels(); // another saved key took over
+            }, active is not null);
+            (add.Tag, rename.Tag, remove.Tag) = ("RemoteKeyAdd", "RemoteKeyRename", "RemoteKeyRemove");
+            menu.Items.Add(add);
+            menu.Items.Add(rename);
+            menu.Items.Add(remove);
+            return menu;
         };
-        removeKey.Click += (_, _) =>
-        {
-            ApiKeys.Remove(keyVar);
-            Log($"API key removed from the app for {keyVar}");
-            KeyStatus();
-        };
+        keyMenuButton.Click += (_, _) => _remoteKeyMenu().IsOpen = true;
 
         // ---- the page
         var title = new TextBlock { Text = "Remote API", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold };
@@ -1169,8 +1255,13 @@ public partial class MainWindow
     private async Task<bool> RemoteApiSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote api: {what}"); return false; }
+        void Snap(string name, FrameworkElement? target = null) // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder>, as RunUiSmokeAsync's
+        {
+            if (Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS") is { Length: > 0 } folder)
+                SavePicture(target ?? this, Path.Combine(folder, name + ".png"));
+        }
         var (http, open, shown, last) = (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast);
-        var favoritesWere = _settings.RemoteFavorites;
+        var (favoritesWere, choiceWas) = (_settings.RemoteFavorites, _codeChoice);
         var fake = new RemoteApiFakeHandler();
         var opened = new List<string>();
         _remoteHttp = new HttpClient(fake);
@@ -1582,22 +1673,96 @@ public partial class MainWindow
             if (!fake.Seen.Skip(before).SequenceEqual([($"{Lan}/models", "Bearer secret-b")]))
                 return Fail($"Load models asked [{Asked(before)}]");
 
-            // A key pasted into the page: saved encrypted (not in settings), set for this process, shown as set, sent to the
-            // confirmed host with the list request; Remove forgets it. A name that is not key-like is refused.
+            // A key pasted into the page: saved encrypted (not in settings) under the name beside it, set for this process,
+            // shown as set (by name), sent to the confirmed host with the list request. A second key under another name becomes
+            // the active one; the field's menu lists both, switches, renames (a name in use refused) and removes (asked first)
+            // them, the last one leaving the variable unset. A name that is not key-like is refused.
             const string KeyC = "AO_SMOKE_KEY_C";
+            var keysFile = Path.Combine(AppSettings.DataRoot, "keys.json");
+            List<MenuItem> KeyItems() => [.. _remoteKeyMenu().Items.OfType<MenuItem>()];
+            string Keys() => string.Join(", ", KeyItems().Where(i => i.Tag is string t && t.StartsWith("key:", StringComparison.Ordinal)).Select(i => (i.IsChecked ? "*" : "") + i.Header));
+            void KeyMenu(string tag) => KeyItems().First(i => i.Tag as string == tag).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            string KeyStatus() => Find<TextBlock>("RemoteKeyStatus").Text;
+            bool Shown(string tag) => Find<FrameworkElement>(tag).Visibility == Visibility.Visible;
+            string KeyState() => $"env \"{Environment.GetEnvironmentVariable(KeyC)}\", keys [{Keys()}], status \"{KeyStatus()}\", name \"{Find<TextBox>("RemoteKeyName").Text}\", error \"{Find<TextBlock>("RemoteError").Text}\"";
+            string? answer = null;
+            var asked = new List<string>();
+            _codeChoice = title => { asked.Add(title); return answer; };
             before = fake.Seen.Count;
             KeyEnv(KeyC);
             await Loaded();
+            if (!Shown("RemoteKeyInput") || !Shown("RemoteKeyName") || Find<TextBox>("RemoteKeyName").Text != "Default" || Shown("RemoteKeyMenu") || Shown("RemoteKeyShown"))
+                return Fail($"the empty key field: {KeyState()}");
             Find<PasswordBox>("RemoteKeyInput").Password = "secret-c";
             SmokeClick(Find<Button>("RemoteKeySave"));
             await Loaded();
             if (Environment.GetEnvironmentVariable(KeyC) != "secret-c" || !ApiKeys.Has(KeyC) || Find<PasswordBox>("RemoteKeyInput").Password.Length != 0 ||
-                Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set", ToolTip: string savedTip } || !savedTip.StartsWith("A key is saved", StringComparison.Ordinal) ||
-                !fake.Seen.Skip(before).Contains(($"{Lan}/models", "Bearer secret-c")) || File.ReadAllText(Path.Combine(AppSettings.DataRoot, "keys.json")).Contains("secret-c", StringComparison.Ordinal))
-                return Fail($"a pasted key: env \"{Environment.GetEnvironmentVariable(KeyC)}\", saved {ApiKeys.Has(KeyC)}, asked [{Asked(before)}]");
-            SmokeClick(Find<Button>("RemoteKeyRemove"));
-            if (ApiKeys.Has(KeyC) || Environment.GetEnvironmentVariable(KeyC) is not null || Find<TextBlock>("RemoteKeyStatus").Text != "✗ Key not set — see Key help")
-                return Fail("Remove left the pasted key");
+                Find<TextBlock>("RemoteKeyStatus") is not { Text: "✓ Key set: Default", ToolTip: string savedTip } || !savedTip.StartsWith("A key is saved", StringComparison.Ordinal) ||
+                !fake.Seen.Skip(before).Contains(($"{Lan}/models", "Bearer secret-c")) || File.ReadAllText(keysFile).Contains("secret-c", StringComparison.Ordinal))
+                return Fail($"a pasted key: {KeyState()}, saved {ApiKeys.Has(KeyC)}, asked [{Asked(before)}]");
+            if (Shown("RemoteKeyInput") || Shown("RemoteKeySave") || Shown("RemoteKeyName") || !Shown("RemoteKeyMenu") || Find<TextBlock>("RemoteKeyShown") is not { Text: var shownText } ||
+                !shownText.EndsWith("Default", StringComparison.Ordinal) || shownText.Contains("secret", StringComparison.Ordinal) || Keys() != "*Default")
+                return Fail($"the field with a saved key: shows \"{Find<TextBlock>("RemoteKeyShown").Text}\", {KeyState()}");
+            KeyMenu("RemoteKeyAdd");
+            if (!Shown("RemoteKeyInput") || !Shown("RemoteKeySave") || Find<TextBox>("RemoteKeyName").Text != "Key 2")
+                return Fail($"Add new key: {KeyState()}");
+            Find<TextBox>("RemoteKeyName").Text = "Work";
+            Find<PasswordBox>("RemoteKeyInput").Password = "secret-w";
+            await Task.Delay(400); // laid out, for the picture
+            Snap("remote-keys-add");
+            SmokeClick(Find<Button>("RemoteKeySave"));
+            await Loaded();
+            if (Environment.GetEnvironmentVariable(KeyC) != "secret-w" || Keys() != "Default, *Work" || KeyStatus() != "✓ Key set: Work" || Shown("RemoteKeyInput") ||
+                File.ReadAllText(keysFile) is var saved2 && (saved2.Contains("secret-w", StringComparison.Ordinal) || saved2.Contains("secret-c", StringComparison.Ordinal)))
+                return Fail($"a second key: {KeyState()}");
+            Snap("remote-keys");
+            var keysMenu = _remoteKeyMenu();
+            keysMenu.IsOpen = true;
+            await Task.Delay(400);
+            Snap("remote-keys-menu", keysMenu);
+            keysMenu.IsOpen = false;
+            before = fake.Seen.Count;
+            KeyMenu("key:Default");
+            await Loaded();
+            if (Environment.GetEnvironmentVariable(KeyC) != "secret-c" || Keys() != "*Default, Work" || KeyStatus() != "✓ Key set: Default" ||
+                !fake.Seen.Skip(before).Contains(($"{Lan}/models", "Bearer secret-c")))
+                return Fail($"switching keys: {KeyState()}, asked [{Asked(before)}]");
+            answer = "Personal";
+            KeyMenu("RemoteKeyRename");
+            if (asked.LastOrDefault() != "Rename key" || Keys() != "*Personal, Work" || KeyStatus() != "✓ Key set: Personal" || Environment.GetEnvironmentVariable(KeyC) != "secret-c")
+                return Fail($"renaming a key: {KeyState()}");
+            answer = "Work";
+            KeyMenu("RemoteKeyRename");
+            if (Keys() != "*Personal, Work" || !Shown("RemoteError"))
+                return Fail($"renaming a key to a name in use: {KeyState()}");
+            answer = null; // Cancel
+            KeyMenu("RemoteKeyRemove");
+            if (asked.LastOrDefault() != "Remove key" || Keys() != "*Personal, Work" || Environment.GetEnvironmentVariable(KeyC) != "secret-c")
+                return Fail($"a cancelled Remove: {KeyState()}");
+            answer = "remove";
+            KeyMenu("RemoteKeyRemove");
+            await Loaded();
+            if (Keys() != "*Work" || Environment.GetEnvironmentVariable(KeyC) != "secret-w" || KeyStatus() != "✓ Key set: Work")
+                return Fail($"removing the active key: {KeyState()}");
+            KeyMenu("RemoteKeyRemove");
+            if (ApiKeys.Has(KeyC) || Environment.GetEnvironmentVariable(KeyC) is not null || KeyStatus() != "✗ Key not set — see Key help" ||
+                !Shown("RemoteKeyInput") || Shown("RemoteKeyMenu") || Find<TextBox>("RemoteKeyName").Text != "Default")
+                return Fail($"Remove left the pasted key: {KeyState()}");
+            // A key saved by an older version (one per variable) is the key named Default.
+            File.WriteAllText(keysFile, System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string>
+            {
+                [KeyC] = Convert.ToBase64String(System.Security.Cryptography.ProtectedData.Protect("secret-l"u8.ToArray(), null, System.Security.Cryptography.DataProtectionScope.CurrentUser)),
+            }));
+            ApiKeys.ApplyAll();
+            KeyEnv(KeyB);
+            KeyEnv(KeyC);
+            await Loaded();
+            if (Environment.GetEnvironmentVariable(KeyC) != "secret-l" || Keys() != "*Default" || KeyStatus() != "✓ Key set: Default")
+                return Fail($"an old key file: {KeyState()}");
+            KeyMenu("RemoteKeyRemove");
+            if (ApiKeys.Has(KeyC) || Environment.GetEnvironmentVariable(KeyC) is not null)
+                return Fail($"removing the old key: {KeyState()}");
+            _codeChoice = choiceWas;
             KeyEnv("PATH");
             Find<PasswordBox>("RemoteKeyInput").Password = "x";
             SmokeClick(Find<Button>("RemoteKeySave"));
@@ -1760,7 +1925,7 @@ public partial class MainWindow
                 RemoveWorker(worker);
             Reset();
             PrefillCards();
-            (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast, _settings.RemoteFavorites) = (http, open, shown, last, favoritesWere);
+            (_remoteHttp, _openExternal, _settings.RemoteHelpShown, _remoteLast, _settings.RemoteFavorites, _codeChoice) = (http, open, shown, last, favoritesWere, choiceWas);
             _settings.Save(); // the stars the smoke saved
         }
     }
