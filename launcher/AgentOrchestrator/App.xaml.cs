@@ -14,6 +14,7 @@ public partial class App : Application
             UsageStats.SelfTest();
             VramEstimate.SelfTest();
             AgentOrchestrator.MainWindow.BrowserSelfTest();
+            AgentOrchestrator.MainWindow.ToolCallSelfTest();
             AgentOrchestrator.MainWindow.RemoteApiSelfTest();
             AgentOrchestrator.MainWindow.SearchSelfTest();
             AgentOrchestrator.MainWindow.SkillCompleteSelfTest();

@@ -108,7 +108,7 @@ public partial class MainWindow
             kept.Add(row);
             ((TextBlock)((StackPanel)row.Header).Children[1]).Text = WorkSummary(run);
             var at = content.Children.IndexOf(run[0]);
-            if (content.Children.IndexOf(row) != at - 1)
+            if (!content.Children.Contains(row) || content.Children.IndexOf(row) != at - 1) // (a run at the very start has no step before it)
             {
                 content.Children.Remove(row);
                 content.Children.Insert(content.Children.IndexOf(run[0]), row);
@@ -210,6 +210,60 @@ public partial class MainWindow
         finally
         {
             _settings.ViewThinking = view;
+            ClearConversation(_chat);
+            (_turn, _reply) = (turn, reply);
+        }
+    }
+
+    // --ui-smoke: a tool call that writes a file streams into a section like thinking: collapsible, its code in a fenced block,
+    // folded into the THINKING row with View thinking off; the finished call's result joins that section (no second one).
+    private bool ToolCallSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: tool call: {what}"); return false; }
+        var (view, turn, reply) = (_settings.ViewThinking, _turn, _reply);
+        try
+        {
+            ClearConversation(_chat);
+            _turn = _chat;
+            var r = _reply = AddReply("planner");
+            _settings.ViewThinking = true;
+            const string path = """{"path": "index.html", """;
+            AppendChatDelta("planner", "tool", path, "write");
+            if (r.Content.Children.OfType<Expander>().Any())
+                return Fail("a section before any code streamed");
+            AppendChatDelta("planner", "tool", "\"content\": \"<p class=\\\"a\\\">hi", "write");
+            AppendChatDelta("planner", "tool", """</p>\n<b>x""", "write");
+            var sections = r.Content.Children.OfType<Expander>().ToList();
+            if (sections.Count != 1 || sections[0].Content is not StackPanel { Children: [TextBox raw, RichTextBox, ..] } panel)
+                return Fail($"{sections.Count} sections while streaming");
+            if (raw.Text != "```html\n<p class=\"a\">hi</p>\n<b>x" || sections[0].IsExpanded)
+                return Fail("code so far: " + raw.Text);
+            var preview = ((TextBlock)((StackPanel)sections[0].Header).Children[1]).Text;
+            if (!preview.Contains("characters"))
+                return Fail("preview: " + preview);
+            _settings.ViewThinking = false;
+            RegroupAll();
+            if (sections[0].Visibility != Visibility.Collapsed || r.Content.Children.OfType<Expander>().Count(x => x.Tag as string == WorkGroup) != 1)
+                return Fail($"View thinking off did not fold the call: {sections[0].Visibility}, rows {r.Content.Children.OfType<Expander>().Count(x => x.Tag as string == WorkGroup)}, children {r.Content.Children.Count}, vt {_settings.ViewThinking}");
+            _settings.ViewThinking = true;
+            RegroupAll();
+            AppendChatDelta("planner", "tool", "\"}", "write");
+            AddCodeTool("write", """{"path":"index.html","content":"<p class=\"a\">hi</p>\n<b>x"}""", "Successfully wrote index.html");
+            sections = r.Content.Children.OfType<Expander>().ToList();
+            if (sections.Count != 1 || panel.Children.Count != 3 || panel.Children[2] is not TextBox { Text: "Successfully wrote index.html" } ||
+                !raw.Text.EndsWith("\n```") || ((TextBlock)((StackPanel)sections[0].Header).Children[0]).Text != "write")
+                return Fail($"after the result: {sections.Count} sections, {panel.Children.Count} parts, {raw.Text.Length} chars");
+            // a call that never streamed (replayed) shows its code too
+            AddCodeTool("write", """{"path":"a.py","content":"print(1)"}""", "ok");
+            if (r.Content.Children.OfType<Expander>().Last().Content is not StackPanel { Children: [TextBox { Text: "```py\nprint(1)\n```" }, RichTextBox, TextBox] })
+                return Fail("a replayed call's code");
+            return true;
+        }
+        finally
+        {
+            _settings.ViewThinking = view;
+            _toolArgs.Clear();
+            _toolBlock = null;
             ClearConversation(_chat);
             (_turn, _reply) = (turn, reply);
         }

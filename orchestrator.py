@@ -5151,6 +5151,10 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     stdout, sys.stdout = sys.stdout, LineAtomic(sys.stdout)
     compacted, settled, measured = False, False, []  # measured: (prompt, completion) of calls whose context is still to come
     outbox, steers, prompted, blind = queue.Queue(), [], False, vision_off(config, role)  # steers: the launcher's keys Pi has not delivered yet
+    # The role's "max_tool_call_chars": a tool call whose arguments pass it is aborted, and the model is told (as a queued follow-up,
+    # which Pi delivers when it continues after the abort) to send the work in pieces. A model stuck inside a call never ends it.
+    call_cap = int(((config.get("roles") or {}).get(role) or {}).get("max_tool_call_chars") or 0)
+    call_chars, cut, notes = {}, 0, []  # characters so far per call; the size of the call being cut; the follow-ups that are ours
 
     def write_out() -> None:
         """Pi's stdin has this one writer, so the main thread (the only reader of Pi's stdout) never waits on a write: a big
@@ -5187,7 +5191,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             except ValueError:
                 continue
             kind = event.get("type")
-            if kind == "response" and event.get("command") == "steer":  # queued; a user message marks its delivery
+            if kind == "response" and event.get("command") in ("steer", "follow_up", "abort"):  # queued; a user message marks its delivery
                 continue
             if kind == "response" and event.get("command") == "compact":  # the /compact's answer ends the turn
                 if not event.get("success"):
@@ -5216,9 +5220,11 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 seeded.parent.mkdir(parents=True, exist_ok=True)
                 seeded.touch()
             if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
-                started, first_out = time.time(), None
+                started, first_out, call_chars, cut = time.time(), None, {}, 0
             elif kind == "message_end" and (event.get("message") or {}).get("role") == "user":  # the prompt, then each steer
-                if prompted and steers:
+                if notes and pi_text((event.get("message") or {}).get("content")).strip() == notes[0]:
+                    notes.pop(0)  # our own cut-call note, not one of the launcher's steers
+                elif prompted and steers:
                     emit("steered", role=role, key=steers.pop(0))
                     answer = ""  # a reply before the steer does not answer it: the model's next one does, or fails
                 prompted = True
@@ -5234,6 +5240,16 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                     blocks = (update.get("partial") or {}).get("content") or []
                     name = blocks[index].get("name", "") if index < len(blocks) and isinstance(blocks[index], dict) else ""
                     emit("delta", role=role, kind="tool", index=index, name=str(name), text=update.get("delta", ""))
+                    call_chars[index] = call_chars.get(index, 0) + len(str(update.get("delta") or ""))
+                    if call_cap and not cut and call_chars[index] > call_cap:
+                        cut = call_chars[index]
+                        note = (f"Your last tool call was cut off after {cut:,} characters, past this setup's limit of {call_cap:,} per call, "
+                                "so it did NOT run and nothing was written. Do not repeat it. Send the work in smaller pieces: a short "
+                                "skeleton first, then one part per call, each well under the limit, and check each result before the next.")
+                        notes.append(note)
+                        print(f"[{title}] a tool call passed {call_cap:,} characters; cutting it off and asking the model to send it in pieces")
+                        outbox.put({"type": "follow_up", "message": note})
+                        outbox.put({"type": "abort"})
             elif kind == "message_end" and (event.get("message") or {}).get("role") == "assistant":
                 message = event["message"]
                 calls = any(b.get("type") == "toolCall" for b in message.get("content") or [] if isinstance(b, dict))
@@ -5248,7 +5264,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                      prompt_tps=round(prompt_tokens / reading, 1) if first_out and reading > 0.05 else None)
                 measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
                 outbox.put({"id": "ctx", "type": "get_messages"})
-                if message.get("stopReason") in ("error", "aborted"):
+                if cut and message.get("stopReason") == "aborted":
+                    cut = 0  # our abort: the follow-up note carries the turn on
+                elif message.get("stopReason") in ("error", "aborted"):
                     error = str(message.get("errorMessage") or message.get("stopReason"))
                 elif not calls:
                     answer = pi_text(message.get("content")).strip() or answer

@@ -32,7 +32,7 @@ internal static class ModelOptions
         ["chat_template_override"] = "Chat template override", ["llama_extra_args"] = "Extra llama-server arguments", ["temperature"] = "Temperature",
         ["top_p"] = "Top P", ["top_k"] = "Top K", ["min_p"] = "Min P", ["repetition_penalty"] = "Repetition penalty", ["presence_penalty"] = "Presence penalty",
         ["frequency_penalty"] = "Frequency penalty", ["max_tokens"] = "Max tokens", ["seed"] = "Seed", ["stop"] = "Stop strings",
-        ["enable_thinking"] = "Thinking", ["reasoning_effort"] = "Reasoning effort", ["timeout_seconds"] = "Timeout (seconds)",
+        ["enable_thinking"] = "Thinking", ["reasoning_effort"] = "Reasoning effort", ["timeout_seconds"] = "Timeout (seconds)", ["max_tool_call_chars"] = "Max tool call (characters)",
     };
 
     // What each option does, for its hover tip in the worker settings (about 20 words; the tip adds the default shown).
@@ -76,6 +76,7 @@ internal static class ModelOptions
         ["enable_thinking"] = "Lets a thinking model reason before answering. Better answers, slower replies; empty uses the model's own default.",
         ["reasoning_effort"] = "How hard a model that takes an effort level thinks: low is quick, high is thorough and slower.",
         ["timeout_seconds"] = "How long the orchestrator waits for this worker's reply before it gives up, in seconds.",
+        ["max_tool_call_chars"] = "The longest tool call (such as a file write) the model may send, in characters. Past it the call is cut off and the model is told to send the work in smaller pieces. Stops a model looping inside one call. About 60000 suits a small model; empty or 0 = no limit.",
     };
 
     private static readonly string[] CacheTypes = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"];
@@ -123,6 +124,7 @@ internal static class ModelOptions
         new("enable_thinking", "sampling", Kind.Bool, "Reason before answering; off suits workers that edit files; empty = the model's own default"),
         new("reasoning_effort", "sampling", Kind.Choice, "For models that take an effort level", Choices: ["none", "minimal", "low", "medium", "high", "max", "xhigh"]),
         new("timeout_seconds", "role", Kind.Int, "Seconds to wait for a reply, 1 to 86400", 1, 86400),
+        new("max_tool_call_chars", "role", Kind.Int, "Longest tool call, in characters; empty or 0 = no limit", 0, Big),
     ];
 
     private static JsonObject? Container(JsonObject role, string target, bool create)
@@ -299,7 +301,7 @@ internal static class ModelOptions
         var errors = Apply(role, new Dictionary<string, string>
         {
             ["temperature"] = "0.7", ["top_p"] = "", ["top_k"] = "25", ["min_p"] = "0.05", ["n_batch"] = " ", ["tensor_split"] = "3, 1.5", ["gpu_ids"] = "0,1",
-            ["stop"] = "a, b", ["llama_extra_args"] = "--foo 1  --bar", ["tensor_parallel"] = "on", ["timeout_seconds"] = "90", ["cache_type_kv"] = "q8_0",
+            ["stop"] = "a, b", ["llama_extra_args"] = "--foo 1  --bar", ["tensor_parallel"] = "on", ["timeout_seconds"] = "90", ["max_tool_call_chars"] = "60000", ["cache_type_kv"] = "q8_0",
         }, includeLoad: true);
         var s = role["sampling"]!;
         var load = role["auto_load"]!;
@@ -308,6 +310,7 @@ internal static class ModelOptions
         Check(load["n_batch"] is null && (string?)load["gguf_variant"] == "Q4" && (string?)load["model_path"] == "m", "empty removes, absent untouched: " + J(load));
         Check(J(load["tensor_split"]) == "[3,1.5]" && J(load["gpu_ids"]) == "[0,1]" && J(s["stop"]) == """["a","b"]""" &&
               J(load["llama_extra_args"]) == """["--foo","1","--bar"]""" && J(load["tensor_parallel"]) == "true" && (string?)load["cache_type_kv"] == "q8_0", "lists and choices: " + J(role));
+        Check(J(role["max_tool_call_chars"]) == "60000", "the tool call limit is a role key: " + J(role));
         Check(J(role["timeout_seconds"]) == "90" && (string?)role["display_name"] == "x" && J(role["custom"]) == "1", "role keys: " + J(role));
         var shown = Read(role);
         Check(shown["tensor_split"] == "3, 1.5" && shown["stop"] == "a\nb" && shown["tensor_parallel"] == "on" && shown["top_k"] == "25" && shown["top_p"] == "", "read back: " + string.Join(" ", shown));

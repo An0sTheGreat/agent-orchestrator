@@ -3807,11 +3807,11 @@ class PiEngineTests(unittest.TestCase):
 
     setUp = CodeTests.setUp
 
-    def turn(self, replies, messages, hook=None, compactor=None, **request):
+    def turn(self, replies, messages, hook=None, compactor=None, role_extra=None, **request):
         fake = FakeModelServer(replies)
         self.addCleanup(fake.close)
         config = {"roles": {"planner": {"base_url": fake.url, "api_key": "k", "model": "fake-model",
-                                        "sampling": {"temperature": 0.3, "max_tokens": 2000}}}}
+                                        "sampling": {"temperature": 0.3, "max_tokens": 2000}, **(role_extra or {})}}}
         if compactor:  # a separate Compactor on its own model
             config["roles"]["compactor"] = {"base_url": fake.url, "api_key": "k", "model": compactor}
         (self.cfg / "config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -4032,17 +4032,19 @@ import json, os, sys, threading
 timer = threading.Timer(10, os._exit, [3])
 timer.daemon = True
 timer.start()
-held = []
+held, taken = [], {}
 def out(event):
     sys.stdout.buffer.write((json.dumps(event) + "\n").encode())
     sys.stdout.buffer.flush()
 def take(kind):
     for command in held:
         if command["type"] == kind:
+            taken[kind] = command
             return held.remove(command)
     while line := sys.stdin.buffer.readline():
         command = json.loads(line)
         if command["type"] == kind:
+            taken[kind] = command
             return
         held.append(command)
     os._exit(4)
@@ -4060,8 +4062,22 @@ for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
     elif step == "pad":
         for _ in range(arg // 1000):
             out({"type": "padding", "text": "x" * 1000})
+    elif step == "start":
+        out({"type": "message_start", "message": {"role": "assistant", "content": []}})
+    elif step == "toolchars":  # a tool call's arguments streaming in: arg characters, 1,000 at a time
+        for _ in range(arg // 1000):
+            out({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "x" * 1000}})
+    elif step == "aborted":
+        out({"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "aborted", "usage": {}}})
+    elif step == "note":  # the follow-up Pi delivers after an abort: its user message
+        out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": taken["follow_up"]["message"]}]}})
+        open(os.environ["FAKE_PI_NOTEFILE"], "w").write(taken["follow_up"]["message"])
     elif step == "settle":
         out({"type": "agent_settled"})
+    elif step == "drain":  # the types of every command the engine sent that no "take" asked for, once it closes Pi's stdin
+        while line := sys.stdin.buffer.readline():
+            held.append(json.loads(line))
+        open(arg, "w").write(json.dumps([c["type"] for c in held]))
     elif step == "argv":
         open(arg, "w").write(json.dumps(sys.argv))
     elif step == "compacted":
@@ -4103,6 +4119,35 @@ class PiSteerTests(unittest.TestCase):
         steps = [["take", "prompt"], ["take", "steer"], ["take", "steer"], ["take", "steer"], ["user", None], ["user", None],
                  ["user", None], ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
         self.assertEqual(self.steered(steps, *({"steer": f"note {k}", "key": k} for k in ("k1", "k2", "k3"))), ["k1", "k2"])
+
+    def run_fake(self, steps, role_extra=None):
+        script = self.cfg / "fake_pi.py"
+        script.write_text(FAKE_PI, encoding="utf-8")
+        with patch.object(orchestrator, "pi_command", lambda: [sys.executable, str(script)]),                 patch.dict(os.environ, {"FAKE_PI_STEPS": json.dumps(steps), "FAKE_PI_NOTEFILE": str(self.cfg / "note.txt")}):
+            return self.turn([], [{"role": "user", "content": "build it"}], role_extra=role_extra)
+
+    def test_a_tool_call_past_the_role_limit_is_aborted_and_the_model_told_to_send_pieces(self):
+        # 5,000 characters stream into a call limited to 3,000: the engine queues its note, aborts, and the turn goes on to the
+        # model's next reply instead of failing on the aborted call
+        steps = [["take", "prompt"], ["user", None], ["start", None], ["toolchars", 5000], ["take", "follow_up"], ["take", "abort"],
+                 ["aborted", None], ["note", None], ["start", None], ["say", {"text": "Done."}], ["ctx", None], ["ctx", None], ["settle", None]]
+        code, events, _ = self.run_fake(steps, {"max_tool_call_chars": 3000})
+        self.assertEqual(code, 0)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+        note = (self.cfg / "note.txt").read_text(encoding="utf-8")
+        self.assertIn("cut off after 4,000 characters", note)
+        self.assertIn("limit of 3,000", note)
+        self.assertEqual([d for e, d in events if e == "steered"], [])  # the note is not one of the launcher's steers
+
+    def test_a_tool_call_within_the_role_limit_or_with_no_limit_is_left_alone(self):
+        sent = self.cfg / "sent.json"
+        steps = [["take", "prompt"], ["user", None], ["start", None], ["toolchars", 5000], ["say", {"text": "Done."}], ["ctx", None],
+                 ["settle", None], ["drain", str(sent)]]
+        for extra in ({"max_tool_call_chars": 6000}, {"max_tool_call_chars": 0}, None):
+            sent.unlink(missing_ok=True)
+            code, events, _ = self.run_fake(steps, extra)
+            self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+            self.assertEqual(json.loads(sent.read_text(encoding="utf-8")), [])  # no abort, no note
 
     def test_a_reply_before_a_delivered_steer_is_not_the_answer(self):
         steps = [["take", "prompt"], ["user", None], ["say", {"text": "Done."}], ["ctx", None], ["take", "steer"], ["user", None],

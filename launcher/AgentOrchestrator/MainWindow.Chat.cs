@@ -1245,18 +1245,125 @@ public partial class MainWindow
     private static readonly System.Text.RegularExpressions.Regex ToolPath = new("\"(?:path|file_path)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
 
     private static readonly System.Text.RegularExpressions.Regex ToolBody = new("\"(?:content|contents|text|new_string|newText|new_str|code)\"\\s*:\\s*\"");
-    private static readonly System.Text.RegularExpressions.Regex JsonEscape = new("\\\\([rnt\"\\\\/])");
 
-    // The last lines of the file a tool call is writing, read from its streaming JSON arguments, so the user watches the write happen.
-    private static string ToolTail(string args)
+    // The JSON string that starts at `start` (just past its opening quote) as far as it has streamed: escapes decoded, a cut-off
+    // escape held back, and it ends at the closing quote.
+    internal static string JsonPrefix(string s, int start)
+    {
+        var sb = new StringBuilder();
+        for (var i = start; i < s.Length; i++)
+        {
+            var c = s[i];
+            if (c == '"')
+                break;
+            if (c != '\\')
+            {
+                sb.Append(c);
+                continue;
+            }
+            if (i + 1 >= s.Length)
+                break;
+            var e = s[++i];
+            if (e == 'u')
+            {
+                if (i + 4 >= s.Length || !int.TryParse(s.AsSpan(i + 1, 4), System.Globalization.NumberStyles.HexNumber, null, out var code))
+                    break;
+                sb.Append((char)code);
+                i += 4;
+            }
+            else
+                sb.Append(e switch { 'n' => '\n', 't' => '\t', 'r' => '\0', 'b' => '\b', 'f' => '\f', _ => e });
+        }
+        return sb.Replace("\0", "").ToString();
+    }
+
+    // The streamed JSON string decoder and the code a finished call carried.
+    internal static void ToolCallSelfTest()
+    {
+        static void Check(bool ok, string what)
+        {
+            if (!ok)
+                throw new InvalidOperationException("Tool call self-test failed: " + what);
+        }
+        const string args = """{"content": "<p class=\"a\">hi</p>\n\tx\\y é", "path": "i.html"}""";
+        var at = ToolBody.Match(args);
+        var decoded = at.Success ? JsonPrefix(args, at.Index + at.Length) : "";
+        Check(decoded == "<p class=\"a\">hi</p>\n\tx\\y é", "decoded string: " + decoded);
+        Check(JsonPrefix("""ab\""", 0) == "ab" && JsonPrefix("""ab\u00""", 0) == "ab" && JsonPrefix("""ab\n""", 0) == "ab\n", "a cut-off escape is held back");
+        Check(!ToolBody.Match("""{"path": "a"}""").Success && ToolBody.Match("""{"path": "a", "new_string": "x""").Success, "which arguments carry code");
+        Check(ToolCode("""{"path":"a.py","content":"print(1)"}""") == "```py\nprint(1)\n```" && ToolCode("""{"path":"a.py"}""") is null && ToolCode("not json") is null,
+            "a finished call's code block");
+    }
+
+
+
+    private StreamBlock? _toolBlock; // the code a streaming tool call is writing, shown as a section like thinking
+    private int _toolShown; // characters of it already in the block
+
+    // The file or text a tool call is writing, as it streams: a collapsible section (folded into the THINKING row with View
+    // thinking off) whose code shows in a colour-coded block. Calls without such an argument show only the status line.
+    private void ShowToolCall(ChatReply r, string role, string args, string name, string path)
     {
         if (ToolBody.Match(args) is not { Success: true } m)
-            return "";
-        var body = args[(m.Index + m.Length)..];
-        if (body.Length > 6000)
-            body = body[^6000..];
-        body = JsonEscape.Replace(body, x => x.Groups[1].Value switch { "n" => "\n", "t" => "    ", "r" => "", var c => c });
-        return "\n" + string.Join("\n", body.Split('\n').TakeLast(12).Select(l => l.Length > 140 ? l[..140] : l));
+            return;
+        var body = JsonPrefix(args, m.Index + m.Length);
+        if (_toolBlock is null)
+        {
+            EndChatBlock();
+            DetachAnswer(r);
+            _toolBlock = StartToolBlock(r, role, name, path);
+            _toolShown = 0;
+        }
+        var block = _toolBlock;
+        if (body.Length > _toolShown)
+        {
+            var more = body[_toolShown..];
+            _toolShown = body.Length;
+            block.Text.Append(more);
+            block.Body.AppendText(more);
+            RenderSoon(block.View!);
+        }
+        block.Label!.Text = name.Length > 0 ? name.ToUpperInvariant() : "TOOL CALL";
+        block.Preview!.Text = $"{path.Trim()}  ·  {_toolShown:N0} characters".TrimStart(' ', '·');
+        if (!_turn.Follow)
+            Reveal(_turn.Jump, true, slide: 10);
+    }
+
+    private StreamBlock StartToolBlock(ChatReply r, string role, string name, string path)
+    {
+        var block = new StreamBlock { Role = role, Kind = "toolcall" };
+        if (r.LastRole is not null && r.LastRole != role)
+            r.Content.Children.Add(ModelSwitchRule());
+        r.LastRole = role;
+        block.Body = BodyText($"```{LanguageOf(path)}\n", mono: false, muted: false, conv: _turn);
+        block.View = MarkdownView(block.Body);
+        var content = new StackPanel();
+        content.Children.Add(block.Body);
+        content.Children.Add(block.View);
+        block.Expander = BuildExpander(name.Length > 0 ? name.ToUpperInvariant() : "TOOL CALL", "", content, out block.Preview);
+        block.Label = (TextBlock)((StackPanel)block.Expander.Header).Children[0];
+        block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
+        block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
+        r.Content.Children.Add(block.Expander);
+        FadeIn(block.Expander);
+        SetPulse(block, true);
+        return block;
+    }
+
+    private static string LanguageOf(string path) => System.IO.Path.GetExtension(path.Trim()).TrimStart('.').ToLowerInvariant();
+
+    // The call ended (it ran, or the model went on to other output): the code block closes, and the section folds unless opened.
+    // Returns the block so a tool's result can join it.
+    private StreamBlock? EndToolBlock()
+    {
+        if (_toolBlock is not { } block)
+            return null;
+        _toolBlock = null;
+        block.Body.AppendText("\n```");
+        Render(block.View!);
+        SetPulse(block, false);
+        Fold(block);
+        return block;
     }
 
     private void AppendChatDelta(string role, string kind, string text, string name = "")
@@ -1269,10 +1376,12 @@ public partial class MainWindow
         {
             _toolArgs.Append(text);
             var path = ToolPath.Match(_toolArgs.ToString()) is { Success: true } m ? " " + System.IO.Path.GetFileName(m.Groups[1].Value.Replace("\\\\", "\\")) : "";
-            SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters" + ToolTail(_toolArgs.ToString()));
-            return; // the call itself shows once it has run (AddCodeTool)
+            SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters");
+            ShowToolCall(r, role, _toolArgs.ToString(), name, path);
+            return; // the call's result joins its section once it has run (AddCodeTool)
         }
         _toolArgs.Clear();
+        EndToolBlock(); // a call cut off, or one that never ran, is followed by other output
         r.Status.Visibility = Visibility.Collapsed; // the thinking or text itself shows what is happening
         if (r.Block is null || r.Block.Kind != kind)
         {

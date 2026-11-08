@@ -159,14 +159,49 @@ public partial class MainWindow
     {
         if (_reply is not { } r)
             return;
+        var live = EndToolBlock(); // the code the call streamed is already a section: the result joins it
         var body = BodyText(result, mono: true, muted: false, conv: _turn);
-        var expander = BuildExpander(name, ToolTarget(args), body, out _);
-        expander.Margin = new Thickness(0, 2, 0, 2);
-        r.Content.Children.Add(expander);
+        Expander expander;
+        if (live?.Expander is { Content: StackPanel section } open)
+        {
+            section.Children.Add(body);
+            ((TextBlock)((StackPanel)open.Header).Children[0]).Text = name;
+            live.Preview!.Text = ToolTarget(args);
+            expander = open;
+        }
+        else
+        {
+            UIElement content = body;
+            if (ToolCode(args) is { } code) // a call that carried code (replayed, or not streamed): the code, then the result
+            {
+                var raw = BodyText(code, mono: false, muted: false, conv: _turn);
+                content = new StackPanel { Children = { raw, MarkdownView(raw), body } };
+            }
+            expander = BuildExpander(name, ToolTarget(args), content, out _);
+            expander.Margin = new Thickness(0, 2, 0, 2);
+            r.Content.Children.Add(expander);
+        }
         ShowPendingShot(r); // a browser screenshot: under its step
         FadeIn(expander);
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
+    }
+
+    // A tool call's code (its content, text or new_string argument) as a fenced block named for the file's extension, else null.
+    internal static string? ToolCode(string args)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(args);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                return null;
+            var root = doc.RootElement;
+            foreach (var key in new[] { "content", "contents", "text", "new_string", "newText", "new_str", "code" })
+                if (root.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.String && v.GetString() is { Length: > 0 } text)
+                    return $"```{LanguageOf(root.TryGetProperty("path", out var p) && p.ValueKind == JsonValueKind.String ? p.GetString()! : "")}\n{text}\n```";
+            return null;
+        }
+        catch (JsonException) { return null; }
     }
 
     // "path" or "pattern" when the arguments have one, else the first string argument.

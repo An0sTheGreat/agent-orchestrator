@@ -95,7 +95,13 @@ export default function (pi: ExtensionAPI) {
 		"then add each section with its own edit, always sending path and content in a complete, well-formed call.";
 	pi.on("context", async (event) => {
 		const refused = new Set(event.messages.flatMap((m) => notWritten(m as Parameters<typeof notWritten>[0]) ? [(m as { toolCallId: string }).toolCallId] : []));
-		const changed = !!noImages || refused.size > 0;
+		// a call the engine cut off for passing the role's max_tool_call_chars stays in the session with its partial arguments
+		const cutOff = (m: { role?: string; stopReason?: string; content?: unknown }) => m.role === "assistant" && m.stopReason === "aborted" &&
+			Array.isArray(m.content) && (m.content as { type?: string }[]).some((c) => c.type === "toolCall");
+		const changed = !!noImages || refused.size > 0 || event.messages.some((m) => cutOff(m as Parameters<typeof cutOff>[0]));
+		if (event.messages.some((m) => cutOff(m as Parameters<typeof cutOff>[0])))
+			event = { ...event, messages: event.messages.map((m) => !cutOff(m as Parameters<typeof cutOff>[0]) ? m : { ...m, content: (m as { content: { type?: string; arguments?: Record<string, unknown> }[] }).content.map((c) => c.type === "toolCall"
+				? { ...c, arguments: Object.fromEntries(Object.entries(c.arguments ?? {}).map(([k, v]) => [k, typeof v === "string" && v.length > 300 ? "[left out: this call was cut off]" : v])) } : c) }) };
 		if (refused.size > 0) // the note replaces the echo, and the rejected call's own copy of the file goes too
 			event = { ...event, messages: event.messages.map((m) => {
 				if (refused.has((m as { toolCallId?: string }).toolCallId ?? "")) return { ...m, content: [{ type: "text" as const, text: NOT_WRITTEN }] };
