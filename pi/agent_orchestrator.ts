@@ -82,12 +82,32 @@ export default function (pi: ExtensionAPI) {
 		content: (m.content as { type?: string }[]).map((c) =>
 			c.type === "image" ? { type: "text" as const, text: `[an image is left out: ${noImages}]` } : c),
 	};
+	// A write or edit rejected before it ran (a long file's arguments cut off, so a field is missing) comes back as "Validation
+	// failed" plus an echo of everything the model sent. Small models then reopen the unchanged file and call the work done, and the
+	// echo (tens of thousands of characters) rides along in every later request. Pi skips its tool_result hook for these, so the
+	// rewrite is made on the request: the echo goes, and the note says nothing was written and what to do.
+	const notWritten = (m: { role?: string; toolName?: string; isError?: boolean; content?: unknown }) =>
+		m.role === "toolResult" && m.isError === true && (m.toolName === "write" || m.toolName === "edit") && Array.isArray(m.content) &&
+		/^Validation failed/.test((m.content as { type?: string; text?: string }[]).map((c) => (c.type === "text" ? c.text ?? "" : "")).join(""));
+	const NOT_WRITTEN = "NOTHING WAS WRITTEN: the file is exactly as it was and the step is NOT done. The call was rejected because its " +
+		"arguments were malformed (usually the content was too long and was cut off, so a required field such as path was missing). " +
+		"Do not say the work is complete and do not just reopen the file. Retry in smaller pieces: write a short skeleton file first, " +
+		"then add each section with its own edit, always sending path and content in a complete, well-formed call.";
 	pi.on("context", async (event) => {
+		const refused = new Set(event.messages.flatMap((m) => notWritten(m as Parameters<typeof notWritten>[0]) ? [(m as { toolCallId: string }).toolCallId] : []));
+		const changed = !!noImages || refused.size > 0;
+		if (refused.size > 0) // the note replaces the echo, and the rejected call's own copy of the file goes too
+			event = { ...event, messages: event.messages.map((m) => {
+				if (refused.has((m as { toolCallId?: string }).toolCallId ?? "")) return { ...m, content: [{ type: "text" as const, text: NOT_WRITTEN }] };
+				if (m.role !== "assistant" || !m.content.some((c) => c.type === "toolCall" && refused.has(c.id))) return m;
+				return { ...m, content: m.content.map((c) => c.type === "toolCall" && refused.has(c.id)
+					? { ...c, arguments: Object.fromEntries(Object.entries(c.arguments ?? {}).map(([k, v]) => [k, typeof v === "string" && v.length > 300 ? "[left out: this call was rejected]" : v])) } : c) };
+			}) };
 		if (noImages && event.messages.some((m) => unseen((m as { content?: unknown }).content)))
 			event = { ...event, messages: event.messages.map((m) => textOnly(m as typeof m & { content: unknown })) };
 		const rounds = event.messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
-		if (rounds.length <= KEEP_TOOL_ROUNDS) return noImages ? { messages: event.messages } : undefined;
-		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return noImages ? { messages: event.messages } : undefined;
+		if (rounds.length <= KEEP_TOOL_ROUNDS) return changed ? { messages: event.messages } : undefined;
+		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return changed ? { messages: event.messages } : undefined;
 		const keepFrom = rounds[rounds.length - KEEP_TOOL_ROUNDS];
 		const calls = new Map<string, string>();
 		for (const m of event.messages.slice(0, keepFrom))

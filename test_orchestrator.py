@@ -6121,5 +6121,47 @@ class ContextTests(unittest.TestCase):
             self.assertEqual(sum(parts.values()), prompt)
 
 
+class PiExtensionTests(unittest.TestCase):
+    HARNESS = """
+const jiti = require(process.argv[1] + "/node_modules/jiti")(process.argv[1] + "/x.js", {interopDefault: true});
+const ext = jiti(process.argv[2]);
+const handlers = {};
+(ext.default || ext)({on: (n, f) => handlers[n] = f, registerTool() {}, registerCommand() {}, registerFlag() {}});
+const big = "x".repeat(70000);
+const msgs = [
+ {role: "user", content: "go"},
+ {role: "assistant", content: [{type: "toolCall", id: "a", name: "write", arguments: {content: big}}]},
+ {role: "toolResult", toolCallId: "a", toolName: "write", isError: true, content: [{type: "text", text: 'Validation failed for tool "write": ' + big}]},
+ {role: "assistant", content: [{type: "toolCall", id: "b", name: "write", arguments: {path: "i.html", content: "ok"}}]},
+ {role: "toolResult", toolCallId: "b", toolName: "write", isError: false, content: [{type: "text", text: "Successfully wrote"}]},
+];
+(async () => {
+  const out = (await handlers.context({messages: msgs})).messages;
+  const clean = await handlers.context({messages: msgs.slice(3)});
+  console.log(JSON.stringify({note: out[2].content[0].text, call: JSON.stringify(out[1]).length, good: out[3].content[0].arguments.content, clean: clean === undefined}));
+})();
+"""
+
+    def test_a_rejected_write_is_reported_as_nothing_written_and_its_echo_is_dropped(self):
+        pi = Path(os.environ.get("APPDATA", "")) / "Agent Orchestrator" / "pi"
+        node = shutil.which("node")
+        if not node or not (pi / "node_modules" / "jiti").is_dir():
+            self.skipTest("Node or Pi's modules are not installed")
+        copy = pi / "_test_ext.ts"
+        shutil.copyfile(orchestrator.PI_EXTENSION, copy)
+        try:
+            run = subprocess.run([node, "-e", self.HARNESS, str(pi), str(copy)], capture_output=True, text=True, timeout=60,
+                                 env={**os.environ, "AO_GATEWAY": "http://127.0.0.1:1"})
+        finally:
+            copy.unlink(missing_ok=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        got = json.loads(run.stdout)
+        self.assertTrue(got["note"].startswith("NOTHING WAS WRITTEN"))
+        self.assertLess(len(got["note"]), 800)  # the 70,000-character echo is gone
+        self.assertLess(got["call"], 400)  # and so is the rejected call's own copy of the file
+        self.assertEqual(got["good"], "ok")  # a call that ran is untouched
+        self.assertTrue(got["clean"])  # nothing rejected: the request is left alone
+
+
 if __name__ == "__main__":
     unittest.main()
