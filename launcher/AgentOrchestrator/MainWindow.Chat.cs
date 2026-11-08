@@ -1244,6 +1244,21 @@ public partial class MainWindow
     private readonly StringBuilder _toolArgs = new();
     private static readonly System.Text.RegularExpressions.Regex ToolPath = new("\"(?:path|file_path)\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"");
 
+    private static readonly System.Text.RegularExpressions.Regex ToolBody = new("\"(?:content|contents|text|new_string|newText|new_str|code)\"\\s*:\\s*\"");
+    private static readonly System.Text.RegularExpressions.Regex JsonEscape = new("\\\\([rnt\"\\\\/])");
+
+    // The last lines of the file a tool call is writing, read from its streaming JSON arguments, so the user watches the write happen.
+    private static string ToolTail(string args)
+    {
+        if (ToolBody.Match(args) is not { Success: true } m)
+            return "";
+        var body = args[(m.Index + m.Length)..];
+        if (body.Length > 6000)
+            body = body[^6000..];
+        body = JsonEscape.Replace(body, x => x.Groups[1].Value switch { "n" => "\n", "t" => "    ", "r" => "", var c => c });
+        return "\n" + string.Join("\n", body.Split('\n').TakeLast(12).Select(l => l.Length > 140 ? l[..140] : l));
+    }
+
     private void AppendChatDelta(string role, string kind, string text, string name = "")
     {
         Activate(role, kind == "thinking" ? "Thinking" : kind == "tool" ? "Using tools" : "Working");
@@ -1254,7 +1269,7 @@ public partial class MainWindow
         {
             _toolArgs.Append(text);
             var path = ToolPath.Match(_toolArgs.ToString()) is { Success: true } m ? " " + System.IO.Path.GetFileName(m.Groups[1].Value.Replace("\\\\", "\\")) : "";
-            SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters");
+            SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters" + ToolTail(_toolArgs.ToString()));
             return; // the call itself shows once it has run (AddCodeTool)
         }
         _toolArgs.Clear();
