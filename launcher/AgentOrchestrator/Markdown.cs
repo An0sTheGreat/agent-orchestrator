@@ -325,7 +325,7 @@ internal static class Markdown
         };
         copy.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
         var card = new Border { Child = new Grid { Children = { body, copy } }, Padding = Roomy ? new Thickness(16, 12, 8, 12) : new Thickness(10, 6, 6, 6) };
-        card.SetResourceReference(Border.BackgroundProperty, "Hover");
+        card.SetResourceReference(Border.BackgroundProperty, "Card"); // the site's code block: the surface shade with a hairline ring
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
         card.BorderThickness = new Thickness(1);
         if (Roomy)

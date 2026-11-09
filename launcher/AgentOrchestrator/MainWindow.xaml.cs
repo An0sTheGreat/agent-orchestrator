@@ -69,7 +69,7 @@ public partial class MainWindow : Window
         InitWorkerRail();
         SetSidebar(_settings.SidebarCollapsed, animate: false);
         SidePane.SizeChanged += (_, _) => FitDetailsColumn();
-        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" or "ParchmentDark" ? _settings.Theme : "Graphite";
+        _settings.Theme = _settings.Theme is "Glass" or "Gold" or "Oled" or "Graphite" or "Flat" or "Parchment" or "ParchmentDark" or "Beautiful" ? _settings.Theme : "Graphite";
         ThemeFlatRadio.IsChecked = _settings.Theme == "Flat";
         ThemeGoldRadio.IsChecked = _settings.Theme == "Gold";
         ThemeGlassRadio.IsChecked = _settings.Theme == "Glass";
@@ -77,6 +77,7 @@ public partial class MainWindow : Window
         ThemeGraphiteRadio.IsChecked = _settings.Theme == "Graphite";
         ThemeParchmentRadio.IsChecked = _settings.Theme == "Parchment";
         ThemeParchmentDarkRadio.IsChecked = _settings.Theme == "ParchmentDark";
+        ThemeBeautifulRadio.IsChecked = _settings.Theme == "Beautiful";
         ApplyTheme();
         InitRuntime();
         _initializing = false;
@@ -826,23 +827,23 @@ public partial class MainWindow : Window
     {
         var (color, glyph) = state switch
         {
-            RowState.Done => ("#3FBF7F", "\uE73E"), RowState.Failed => ("#FF667A", "\uE711"), _ => ("#7C8CFF", "\uE895"),
+            RowState.Done => ("#3CBB72", "\uE73E"), RowState.Failed => ("#EE5C61", "\uE711"), _ => ("#3D9AFF", "\uE895"), // the site's green, red and accent
         };
         var tint = (Color)ColorConverter.ConvertFromString(color);
-        var disc = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Background = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Top };
+        var disc = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Background = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Center };
         var mark = new TextBlock { Text = glyph, FontSize = 11, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
         mark.SetResourceReference(StyleProperty, "RailGlyph");
         mark.Foreground = Brushes.White; // (after the style, which sets the muted colour)
         disc.Child = mark;
-        var heading = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 13, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        var heading = new TextBlock { Text = title, FontWeight = FontWeights.Medium, FontSize = 13, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
         heading.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-        var small = new TextBlock { Text = meta, FontSize = 12, Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        var small = new TextBlock { Text = meta, FontSize = 12.5, Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
         small.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var label = new TextBlock { Text = pill, FontSize = 11, Foreground = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Center };
+        var label = new TextBlock { Text = pill, FontSize = 11.5, FontWeight = FontWeights.Medium, Foreground = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Center };
         var status = new Border
         {
-            Child = label, Padding = new Thickness(8, 1, 8, 2), CornerRadius = new CornerRadius(7), VerticalAlignment = VerticalAlignment.Center,
-            Background = new SolidColorBrush(Color.FromArgb(0x26, tint.R, tint.G, tint.B)),
+            Child = label, Padding = new Thickness(8, 0, 8, 0), Height = 22, CornerRadius = new CornerRadius(11), VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromArgb(0x24, tint.R, tint.G, tint.B)), // the site's tint: the colour at 14%
         };
         var head = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition { Width = GridLength.Auto } } };
         heading.Margin = new Thickness(12, 0, 0, 0);
@@ -860,7 +861,7 @@ public partial class MainWindow : Window
             more.Margin = new Thickness(34, 6, 0, 0);
             body.Children.Add(more);
         }
-        var card = new Border { Child = body, Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(0, 8, 0, 4), CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1), Tag = tag };
+        var card = new Border { Child = body, Padding = new Thickness(10, 10, 10, 10), MinHeight = 44, Margin = new Thickness(0, 8, 0, 4), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Tag = tag };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
         _blockRole = null;
@@ -960,12 +961,13 @@ public partial class MainWindow : Window
         var label = (TextBlock)header.Children[0];
         label.ClearValue(StyleProperty);
         label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-        (label.FontSize, label.FontWeight, label.Margin) = (13, FontWeights.SemiBold, new Thickness(0, 0, 10, 0));
+        (label.FontSize, label.FontWeight, label.Margin) = (12.5, FontWeights.Medium, new Thickness(0, 0, 8, 0)); // the site's Tool Chips: 12.5 medium, 8 gap
         header.Children.Remove(preview);
-        preview.FontFamily = AppFonts.Mono;
+        (preview.FontFamily, preview.FontSize) = (AppFonts.Mono, 11.5);
         preview.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var chip = new Border { Child = preview, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), MaxWidth = 560 };
-        chip.SetResourceReference(Border.BackgroundProperty, "Hover");
+        var chip = new Border { Child = preview, Padding = new Thickness(6, 0, 6, 0), Height = 22, CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), MaxWidth = 560 };
+        preview.VerticalAlignment = VerticalAlignment.Center;
+        chip.SetResourceReference(Border.BackgroundProperty, "Field");
         chip.SetResourceReference(Border.BorderBrushProperty, "Border");
         header.Children.Insert(1, chip);
         return expander;
@@ -2922,7 +2924,7 @@ public partial class MainWindow : Window
             if (way == 0)
             {
                 var background = ((SolidColorBrush)settings.Frame.Background).Color;
-                var picked = new[] { ThemeFlatRadio, ThemeGoldRadio, ThemeGlassRadio, ThemeOledRadio, ThemeGraphiteRadio, ThemeParchmentRadio, ThemeParchmentDarkRadio }
+                var picked = new[] { ThemeFlatRadio, ThemeGoldRadio, ThemeGlassRadio, ThemeOledRadio, ThemeGraphiteRadio, ThemeParchmentRadio, ThemeParchmentDarkRadio, ThemeBeautifulRadio }
                     .Single(r => r.IsChecked == true);
                 (picked == ThemeOledRadio ? ThemeParchmentRadio : ThemeOledRadio).IsChecked = true;
                 await Settle();
@@ -3309,7 +3311,7 @@ public partial class MainWindow : Window
             return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
-            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Flat" })
+            foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Beautiful", "Flat" })
             {
                 _settings.Theme = theme;
                 ApplyTheme();
@@ -4840,7 +4842,7 @@ public partial class MainWindow : Window
     {
         if (_initializing)
             return;
-        _settings.Theme = ThemeParchmentDarkRadio.IsChecked == true ? "ParchmentDark" : ThemeParchmentRadio.IsChecked == true ? "Parchment" : ThemeGraphiteRadio.IsChecked == true ? "Graphite" : ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
+        _settings.Theme = ThemeBeautifulRadio.IsChecked == true ? "Beautiful" : ThemeParchmentDarkRadio.IsChecked == true ? "ParchmentDark" : ThemeParchmentRadio.IsChecked == true ? "Parchment" : ThemeGraphiteRadio.IsChecked == true ? "Graphite" : ThemeOledRadio.IsChecked == true ? "Oled" : ThemeGlassRadio.IsChecked == true ? "Glass" : ThemeGoldRadio.IsChecked == true ? "Gold" : "Flat";
         ApplyTheme();
         _settings.Save();
     }
@@ -4852,7 +4854,8 @@ public partial class MainWindow : Window
         var graphite = _settings.Theme == "Graphite";
         var parchment = _settings.Theme == "Parchment"; // the one light theme
         var clay = _settings.Theme == "ParchmentDark"; // Parchment's dark variant: near-neutral grays; the accent tint adds the clay
-        var flat = _settings.Theme == "Flat" || oled || graphite || parchment || clay; // these have the Flat shapes
+        var bui = _settings.Theme == "Beautiful"; // beautifului.dev's dark tokens (its foundation.css, converted from OKLCH), untinted by the accent
+        var flat = _settings.Theme == "Flat" || oled || graphite || parchment || clay || bui; // these have the Flat shapes
         // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
         // OLED's black background stays pure black.
         var tint = (Color)ColorConverter.ConvertFromString(AccentColors.First(x => x.Key == AccentKey).Accent)!;
@@ -4883,6 +4886,26 @@ public partial class MainWindow : Window
         Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#3B3B3B" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", graphite ? 0 : clay ? 0.02 : 0.08);
         Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
         SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9A9A9A" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        if (bui)
+        {
+            foreach (var (key, hex) in new[] { ("AppBackground", "#17181A"), ("TitleBackground", "#17181A"), ("Panel", "#1C1D1F"), ("NavBackground", "#1C1D1F"), ("Card", "#232427"),
+                         ("Hover", "#2A2B2E"), ("Border", "#2E3033"), ("DialogBackground", "#232427"), ("DialogInput", "#17181A"), ("TextPrimary", "#F2F3F4"), ("Muted", "#A5A8AD") })
+                SetThemeBrush(key, hex);
+            SetThemeBrush("ControlBorder", "#00000000");
+        }
+        // chips and inputs sit on the site's "field" shade (one step above the card); the other themes use their hover shade
+        if (bui)
+        {
+            SetThemeBrush("Field", "#2B2C2F");
+            SetThemeBrush("HoverStrong", "#313236"); // the site's hover-2: the gliding sidebar highlight
+            SetThemeBrush("BorderStrong", "#3A3C40"); // line-strong: a focused composer's edge
+        }
+        else
+        {
+            Resources["Field"] = Resources["Hover"];
+            Resources["HoverStrong"] = Resources["Hover"];
+            Resources["BorderStrong"] = Resources["Border"];
+        }
         // A card under the mouse (the Context cards): the card a step toward the text colour, brighter on dark themes
         {
             var (card, text) = (((SolidColorBrush)Resources["Card"]).Color, ((SolidColorBrush)Resources["TextPrimary"]).Color);
@@ -4890,7 +4913,7 @@ public partial class MainWindow : Window
             Resources["CardHover"] = new SolidColorBrush(Color.FromArgb(card.A, Step(card.R, text.R), Step(card.G, text.G), Step(card.B, text.B)));
         }
         // Top-edge rim of raised surfaces: white fading out over the first 24 px, stronger on translucent Glass.
-        var rim = (byte)(parchment || graphite ? 0 : glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A); // Graphite: flat, as Claude's
+        var rim = (byte)(parchment || graphite || bui ? 0 : glass ? 0x50 : oled ? 0x18 : flat ? 0x22 : 0x1A); // Graphite: flat, as Claude's
         // Code colours: VS Code's light palette on Parchment, its dark one elsewhere; inline code sits on a chip of the opposite shade.
         foreach (var (key, dark, light) in new[] { ("CodeComment", "#6A9955", "#008000"), ("CodeString", "#CE9178", "#A31515"), ("CodeNumber", "#B5CEA8", "#098658"),
                      ("CodeKeyword", "#569CD6", "#0000FF"), ("CodeControl", "#C586C0", "#AF00DB"), ("CodeCall", "#DCDCAA", "#795E26"), ("CodeType", "#4EC9B0", "#267F99"),
@@ -4903,6 +4926,8 @@ public partial class MainWindow : Window
         Resources["CardRadius"] = new CornerRadius(flat ? 14 : 5);
         Resources["PanelRadius"] = new CornerRadius(flat ? 14 : 9);
         Resources["SmallRadius"] = new CornerRadius(flat ? 10 : 6);
+        if (bui) // the site's radii: chips 6, controls 8, cards 10, windows 14
+            (Resources["ControlRadius"], Resources["CardRadius"], Resources["PanelRadius"], Resources["SmallRadius"]) = (new CornerRadius(8), new CornerRadius(10), new CornerRadius(14), new CornerRadius(6));
         ThemeBackdrop.Visibility = glass ? Visibility.Visible : Visibility.Collapsed;
     }
 

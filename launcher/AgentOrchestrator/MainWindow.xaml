@@ -593,14 +593,14 @@
         </Style>
         <!-- The composer's round Send / Stop button: a filled disc, its arrow or square in the page colour. -->
         <Style x:Key="SendCircle" TargetType="Button">
-            <Setter Property="Width" Value="34" /><Setter Property="Height" Value="34" /><Setter Property="Padding" Value="0" />
+            <Setter Property="Width" Value="30" /><Setter Property="Height" Value="30" /><Setter Property="Padding" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid Background="Transparent">
-                            <Ellipse x:Name="Disc" Fill="{DynamicResource TextPrimary}" Margin="2" />
+                            <Ellipse x:Name="Disc" Fill="{DynamicResource TextPrimary}" Margin="1" />
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Grid>
                         <ControlTemplate.Triggers>
@@ -689,9 +689,12 @@
             <Setter Property="Background" Value="{DynamicResource Card}" />
             <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="20" />
+            <Setter Property="CornerRadius" Value="22" />
             <Setter Property="Padding" Value="12,10,12,8" />
-            <!-- no focus outline: the caret shows where typing goes (an accent outline read as a white frame on light accents) -->
+            <!-- the site's prompt bar: a neutral, slightly stronger edge while focused (an accent outline read as a white frame on light accents) -->
+            <Style.Triggers>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource BorderStrong}" /></Trigger>
+            </Style.Triggers>
         </Style>
         <Style TargetType="ScrollBar">
             <Setter Property="Width" Value="10" /><Setter Property="Background" Value="Transparent" />
@@ -1095,7 +1098,7 @@
                         <StackPanel Margin="12,4,12,12">
                             <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
                             <Grid x:Name="SidebarHost">
-                                <Border x:Name="SidebarGlide" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" VerticalAlignment="Top"
+                                <Border x:Name="SidebarGlide" Background="{DynamicResource HoverStrong}" CornerRadius="{DynamicResource ControlRadius}" VerticalAlignment="Top"
                                         Opacity="0" IsHitTestVisible="False" Height="0"><Border.RenderTransform><TranslateTransform /></Border.RenderTransform></Border>
                                 <StackPanel x:Name="SidebarList" />
                             </Grid>
@@ -1714,7 +1717,8 @@
                         <RadioButton x:Name="ThemeOledRadio" GroupName="Theme" Content="OLED — pure black, flat, purple accents" Margin="0,0,0,8" Checked="Theme_Checked" />
                         <RadioButton x:Name="ThemeGraphiteRadio" GroupName="Theme" Content="Graphite — flat dark gray with light gray accents (default)" Margin="0,0,0,8" Checked="Theme_Checked" />
                         <RadioButton x:Name="ThemeParchmentRadio" GroupName="Theme" Content="Parchment — light warm paper with clay accents" Margin="0,0,0,8" Checked="Theme_Checked" />
-                        <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeParchmentDarkRadio" GroupName="Theme" Content="Dark Parchment — warm dark gray with clay accents" Margin="0,0,0,8" Checked="Theme_Checked" />
+                        <RadioButton x:Name="ThemeBeautifulRadio" GroupName="Theme" Content="Beautiful UI — cool dark neutrals and hairline borders (beautifului.dev)" Checked="Theme_Checked" />
                         <StackPanel Orientation="Horizontal" Margin="0,18,0,0">
                         <TextBlock Text="Accent" VerticalAlignment="Center" Margin="0,0,12,0" />
                         <Button x:Name="AccentButton" Padding="11,6" HorizontalAlignment="Left" VerticalAlignment="Center" ToolTip="Accent colour for this theme" Click="Accent_Click">
