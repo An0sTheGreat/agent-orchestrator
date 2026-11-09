@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
 
@@ -99,6 +100,9 @@ public partial class MainWindow
             if (!_workRows.TryGetValue(run[0], out var row))
             {
                 row = BuildExpander("THINKING", "", new StackPanel(), out _);
+                var heading = (TextBlock)((StackPanel)row.Header).Children[0];
+                heading.ClearValue(StyleProperty); // the site's thinking row: a sparkle and "Thought for 4 seconds", not a small-caps label
+                (heading.FontSize, heading.FontWeight, heading.Margin) = (13, FontWeights.Medium, new Thickness(0, 0, 10, 0));
                 row.Tag = WorkGroup;
                 row.Margin = new Thickness(0, 2, 0, 2);
                 row.Expanded += (_, _) => Regroup(content, inRun);
@@ -107,6 +111,8 @@ public partial class MainWindow
             }
             kept.Add(row);
             ((TextBlock)((StackPanel)row.Header).Children[1]).Text = WorkSummary(run);
+            var seconds = run.OfType<Expander>().Sum(x => x.DataContext is double d ? d : 0); // each ended thinking block keeps its length
+            SetThoughtLabel((TextBlock)((StackPanel)row.Header).Children[0], seconds > 0 ? ThoughtFor(TimeSpan.FromSeconds(seconds)) : "Worked");
             var at = content.Children.IndexOf(run[0]);
             if (!content.Children.Contains(row) || content.Children.IndexOf(row) != at - 1) // (a run at the very start has no step before it)
             {
@@ -122,6 +128,19 @@ public partial class MainWindow
         }
         foreach (var row in rows.Where(r => !kept.Contains(r)))
             content.Children.Remove(row);
+    }
+
+    // The row's heading: a muted sparkle, then the text ("Thought for 4 seconds"), in the ink-2 shade.
+    private static void SetThoughtLabel(TextBlock label, string text)
+    {
+        if (label.Inlines.Count == 2 && ((Run)label.Inlines.LastInline).Text == text)
+            return;
+        label.Inlines.Clear();
+        var spark = new Run("✦  ") { FontSize = 12 };
+        spark.SetResourceReference(System.Windows.Documents.TextElement.ForegroundProperty, "CodeLineNumber");
+        label.Inlines.Add(spark);
+        label.Inlines.Add(new Run(text));
+        label.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
     }
 
     // "2 thoughts · read 3 files · searched 2 times · ran 1 command": the run's steps by kind.

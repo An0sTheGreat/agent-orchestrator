@@ -690,6 +690,8 @@ public partial class MainWindow : Window
             return;
         _stream = null;
         block.Ended = Stopwatch.GetTimestamp();
+        if (block.Kind == "thinking" && block.Expander is not null)
+            block.Expander.DataContext = Stopwatch.GetElapsedTime(block.Started, block.Ended).TotalSeconds; // the folded row sums these
         QueueRegroup(); // no longer streaming: it can fold (View thinking off)
         DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Kind != "tool")

@@ -1679,6 +1679,8 @@ public partial class MainWindow
             return;
         _reply.Block = null;
         block.Ended = Stopwatch.GetTimestamp();
+        if (block.Kind == "thinking" && block.Expander is not null)
+            block.Expander.DataContext = Stopwatch.GetElapsedTime(block.Started, block.Ended).TotalSeconds; // the folded row sums these
         _chatClosed.Add(block);
         DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Expander is null)
