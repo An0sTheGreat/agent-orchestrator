@@ -17,7 +17,33 @@ internal static class RemoteCatalog
     public sealed record ModelEntry(string Id, string Name, long ContextLength, decimal? InputPerM = null, decimal? OutputPerM = null);
 
     public sealed record ProviderRow(string Name, string Tag, string Quantization, decimal? InputPerM, decimal? OutputPerM, decimal? CacheReadPerM,
-        double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength);
+        double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength, string Privacy = "");
+
+    // How a provider treats prompts, as OpenRouter's own provider page shows it (its API does not carry this): Private = no training and no
+    // retention; Logs = may retain prompts but does not train; Trains = may train on them; "" = not known.
+    public const string Private = "private", Logs = "logs", Trains = "trains";
+
+    public static string PrivacyTip(string privacy) => privacy switch
+    {
+        Private => "Private: this provider does not train on prompts and does not retain prompt data.",
+        Logs => "Logs: this provider may retain prompts, but does not use them for training.",
+        Trains => "Trains: this provider may use prompts for training.",
+        _ => "",
+    };
+
+    // slug -> level from the data policies embedded in OpenRouter's /{model}/providers page (quotes escaped inside its script data).
+    public static Dictionary<string, string> ParsePrivacy(string page)
+    {
+        var found = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(page.Replace("\\\"", "\""),
+            "\"slug\":\"([^\"]+)\"[^{}]{0,300}\"dataPolicy\":\\{[^{}]*?\"training\":(true|false)[^{}]*?\"retainsPrompts\":(true|false)"))
+            found[m.Groups[1].Value] = m.Groups[2].Value == "true" ? Trains : m.Groups[3].Value == "true" ? Logs : Private;
+        return found;
+    }
+
+    // The endpoint tag is "<provider slug>/<quantization>" (or just the slug).
+    public static List<ProviderRow> WithPrivacy(List<ProviderRow> rows, Dictionary<string, string> privacy) =>
+        privacy.Count == 0 ? rows : [.. rows.Select(r => privacy.TryGetValue(r.Tag.Split('/')[0], out var p) ? r with { Privacy = p } : r)];
 
     // ModelsNeedKey: what an unauthenticated GET {BaseUrl}/models answered on 2026-11-05 (200 => false; 401/403, or Gemini's 404 => true).
     public static IReadOnlyList<Service> Services { get; } =
@@ -103,8 +129,28 @@ internal static class RemoteCatalog
     });
 
     // Public without a key; latency and throughput come back null unless a key is sent.
-    public static async Task<List<ProviderRow>> FetchProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey = null) =>
-        ParseProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/models/{modelId.Trim()}/endpoints", apiKey, ct).ConfigureAwait(false));
+    public static async Task<List<ProviderRow>> FetchProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey = null)
+    {
+        var privacy = FetchPrivacyAsync(http, modelId.Trim(), ct);
+        var rows = ParseProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/models/{modelId.Trim()}/endpoints", apiKey, ct).ConfigureAwait(false));
+        return WithPrivacy(rows, await privacy.ConfigureAwait(false));
+    }
+
+    // Best effort: the shields are a nicety, so a page that is down or reshaped leaves the rows without them. No key goes to the page.
+    private static async Task<Dictionary<string, string>> FetchPrivacyAsync(HttpClient http, string modelId, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            using var response = await http.GetAsync($"https://openrouter.ai/{modelId.Split(':')[0]}/providers", timeout.Token).ConfigureAwait(false);
+            return response.IsSuccessStatusCode ? ParsePrivacy(await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false)) : [];
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            return [];
+        }
+    }
 
     private static async Task<string> GetAsync(HttpClient http, string url, string? apiKey, CancellationToken ct)
     {
@@ -219,6 +265,9 @@ internal static class RemoteCatalog
             is [{ Vision: true, Tag: "openai", InputPerM: null }], "an image-input model is Vision");
         try { ParseProviders("{\"error\":{\"message\":\"No endpoints found\"}}"); Check(false, "a non-provider reply parsed"); }
         catch (InvalidOperationException e) when (e.Message.Contains("not a provider list")) { }
+        var shields = ParsePrivacy(PrivacySample);
+        Check(shields.Count == 3 && shields["gmicloud"] == Logs && shields["deepinfra"] == Private && shields["novita"] == Trains, $"privacy levels: {string.Join(",", shields)}");
+        Check(ParsePrivacy("").Count == 0 && ParsePrivacy("<html>no data</html>").Count == 0 && PrivacyTip(Private).StartsWith("Private:") && PrivacyTip("") == "", "privacy of nothing");
 
         Check(ServiceFor("https://openrouter.ai/api/v1/")?.Id == "openrouter" && ServiceFor("HTTP://OpenRouter.AI/api/v1")?.Id == "openrouter" &&
             ServiceFor("api.groq.com/openai/v1")?.Id == "groq", "ServiceFor a known service");
@@ -248,20 +297,43 @@ internal static class RemoteCatalog
             try { await FetchModelsAsync(http, "https://api.example.test/v1", null, CancellationToken.None); Check(false, "HTML parsed as models"); }
             catch (InvalidOperationException e) when (e.Message.Contains("not a model list")) { }
             fake.Reply = (HttpStatusCode.OK, "{\"data\":{\"endpoints\":[]}}");
+            fake.All.Clear();
             Check((await FetchProvidersAsync(http, "z-ai/glm-5.3-flash", CancellationToken.None)).Count == 0 &&
-                fake.Seen?.RequestUri?.ToString() == "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints" && fake.Seen.Headers.Authorization is null, "provider fetch");
+                fake.All.Any(r => r.RequestUri?.ToString() == "https://openrouter.ai/api/v1/models/z-ai/glm-5.3-flash/endpoints" && r.Headers.Authorization is null), "provider fetch");
+            // With a key: the endpoints get it, the page (privacy shields) never does; the page's answer is merged by provider slug.
+            fake.Reply = (HttpStatusCode.OK, "{\"data\":{\"endpoints\":[{\"provider_name\":\"GMICloud\",\"tag\":\"gmicloud/fp8\"},{\"provider_name\":\"Other\",\"tag\":\"other\"}]}}");
+            fake.Page = (HttpStatusCode.OK, PrivacySample);
+            fake.All.Clear();
+            var shown = await FetchProvidersAsync(http, "deepseek/v3:floor", CancellationToken.None, "sk-test");
+            Check(fake.All.Any(r => r.RequestUri?.ToString() == "https://openrouter.ai/deepseek/v3/providers" && r.Headers.Authorization is null) &&
+                fake.All.Count(r => r.Headers.Authorization is not null) == 1, "privacy page fetch");
+            Check(shown.Select(r => r.Privacy).SequenceEqual([Logs, ""]), $"privacy merged: {string.Join(",", shown.Select(r => $"{r.Tag}={r.Privacy}"))}");
+            fake.Page = (HttpStatusCode.InternalServerError, "");
+            Check((await FetchProvidersAsync(http, "deepseek/v3", CancellationToken.None)).Count == 2, "rows still shown when the page is down");
         }).GetAwaiter().GetResult();
     }
 
+    // Two providers' data policies as the page embeds them (quotes escaped): gmicloud retains, deepinfra keeps nothing, novita trains.
+    private const string PrivacySample =
+        "x{\\\"displayName\\\":\\\"GMICloud\\\",\\\"slug\\\":\\\"gmicloud\\\",\\\"baseUrl\\\":\\\"https://api.gmi.test\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true,\\\"canPublish\\\":false},\\\"headquarters\\\":\\\"US\\\"}" +
+        "{\\\"displayName\\\":\\\"DeepInfra\\\",\\\"slug\\\":\\\"deepinfra\\\",\\\"baseUrl\\\":\\\"https://x.test\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":false}}" +
+        "{\\\"slug\\\":\\\"novita\\\",\\\"baseUrl\\\":\\\"\\\",\\\"dataPolicy\\\":{\\\"training\\\":true,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}";
+
     private sealed class FakeHandler : HttpMessageHandler
     {
-        public (HttpStatusCode Status, string Body) Reply;
+        public (HttpStatusCode Status, string Body) Reply, Page = (HttpStatusCode.NotFound, ""); // Page answers the /providers web page
         public HttpRequestMessage? Seen;
+        public readonly List<HttpRequestMessage> All = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            Seen = request;
-            return Task.FromResult(new HttpResponseMessage(Reply.Status) { Content = new StringContent(Reply.Body) });
+            lock (All)
+            {
+                Seen = request;
+                All.Add(request);
+            }
+            var (status, body) = request.RequestUri?.AbsolutePath.EndsWith("/providers", StringComparison.Ordinal) == true ? Page : Reply;
+            return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
         }
     }
 }

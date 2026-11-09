@@ -270,7 +270,8 @@ public partial class MainWindow
             Children =
             {
                 providersHead,
-                RemoteMuted("Tick providers to use only those, in the order ticked (no fallbacks). Nothing ticked: OpenRouter picks any provider."),
+                RemoteMuted("Tick providers to use only those, in the order ticked (no fallbacks). Nothing ticked: OpenRouter picks any provider. " +
+                    "The shield is the provider's data policy: green = private, amber = may keep prompts (logs), red = may train on them; hover it for the wording."),
                 keyNote, providersNote,
                 tableScroll,
                 new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { clearOrder, orderText } },
@@ -586,6 +587,15 @@ public partial class MainWindow
                     Cell(RemoteFigure(r.LatencySeconds, "0.00")), Cell(RemoteFigure(r.ThroughputTps, "0")), Cell(RemoteFigure(r.Uptime, "0.#")),
                     Cell(r.Vision ? "✓" : "", number: false));
                 line.Tag = r;
+                name.Margin = new Thickness(0, 0, 30, 0);
+                if (r.Privacy.Length > 0)
+                {
+                    var text = new FormattedText(name.Text, CultureInfo.CurrentUICulture, FlowDirection, new Typeface(FontFamily, FontStyle, FontWeight, FontStretch), name.FontSize,
+                        Brushes.Black, VisualTreeHelper.GetDpi(this).PixelsPerDip);
+                    var shield = PrivacyShield(r.Privacy, amber, Math.Min(text.WidthIncludingTrailingWhitespace, 100)); // right after the name, as on OpenRouter
+                    Grid.SetColumn(shield, 1);
+                    line.Children.Add(shield); // not a TextBlock: the row's text stays the figures
+                }
                 table.Children.Add(line);
             }
         }
@@ -1164,6 +1174,27 @@ public partial class MainWindow
         return t;
     }
 
+    // OpenRouter's provider shield: green with a tick = private, amber with a bar = logs, red with a cross = trains; the tooltip says it in words.
+    private static FrameworkElement PrivacyShield(string privacy, Brush amber, double afterName)
+    {
+        var (ink, mark) = privacy switch
+        {
+            RemoteCatalog.Private => ((Brush)new SolidColorBrush(Color.FromRgb(0x2F, 0xBF, 0x8A)), "M5.2,8 L7.2,10 L10.8,6"),
+            RemoteCatalog.Logs => (amber, "M8,5.2 L8,8.6 M8,10.6 L8,10.7"),
+            _ => (new SolidColorBrush(Color.FromRgb(0xE5, 0x53, 0x4B)), "M6,6 L10,10 M10,6 L6,10"),
+        };
+        System.Windows.Shapes.Path Stroke(string data) => new()
+        {
+            Data = Geometry.Parse(data), Stroke = ink, StrokeThickness = 1.3, StrokeLineJoin = PenLineJoin.Round, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round,
+        };
+        var icon = new Canvas { Width = 16, Height = 16, Children = { Stroke("M8,1.8 L13.2,3.6 L13.2,8 C13.2,11 11,13.2 8,14.4 C5,13.2 2.8,11 2.8,8 L2.8,3.6 Z"), Stroke(mark) } };
+        return new Border
+        {
+            Child = icon, Background = Brushes.Transparent, Width = 22, Height = 22, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(afterName + 2, 0, 0, 0), Tag = "shield:" + privacy, ToolTip = RemoteCatalog.PrivacyTip(privacy),
+        };
+    }
+
     // USD per million tokens; "—" unknown, "$0" free, "<$0.0001" any other price the format would round down to $0.00.
     private static string RemotePrice(decimal? perMillion) => perMillion switch
     {
@@ -1429,6 +1460,11 @@ public partial class MainWindow
                 Heads(head) != "|Provider|Quant.|In $/M|Out $/M|Cache $/M|Latency|tok/s|Uptime|Vision" ||
                 !Rows().SequenceEqual(wantRows))
                 return Fail($"the providers table: {string.Join(" / ", Rows())}");
+            // The privacy shields (from the model's providers page): Relace private, GMICloud logs, OpenInference trains, the others none.
+            var shields = string.Join(", ", Find<StackPanel>("RemoteProviderRows").Children.OfType<Grid>().Where(g => g.Tag is RemoteCatalog.ProviderRow).Select(g =>
+                $"{((RemoteCatalog.ProviderRow)g.Tag).Name}={g.Children.OfType<Border>().FirstOrDefault(b => b.Tag is string t && t.StartsWith("shield:", StringComparison.Ordinal))?.ToolTip}"));
+            if (shields != $"Untagged=, Relace={RemoteCatalog.PrivacyTip("private")}, OpenInference={RemoteCatalog.PrivacyTip("trains")}, GMICloud={RemoteCatalog.PrivacyTip("logs")}, Mystery=")
+                return Fail($"the privacy shields: {shields}");
             if (Tick("") is not { IsEnabled: false } || Tick("relace/fp4") is not { IsEnabled: true }) // no tag: nothing to put in the order
                 return Fail("the untagged provider's tick is enabled (or a tagged one's is not)");
             Toggle(Find<ToggleButton>("RemoteVisionOnly"));
@@ -1991,6 +2027,12 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "{\"provider_name\":\"Untagged\",\"quantization\":\"\",\"context_length\":8192,\"pricing\":{\"prompt\":\"0.00000000004\",\"completion\":\"0\"}," +
         "\"uptime_last_30m\":null,\"supports_image_reference\":false,\"latency_last_30m\":null,\"throughput_last_30m\":null}]}}";
 
+    // OpenRouter's /{model}/providers page, reduced to the data policies it embeds: Relace private, GMICloud logs, OpenInference trains.
+    private const string PrivacyPage =
+        "{\\\"slug\\\":\\\"relace\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":false}}" +
+        "{\\\"slug\\\":\\\"gmicloud\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}" +
+        "{\\\"slug\\\":\\\"open-inference\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":true,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}";
+
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var url = request.RequestUri!.ToString();
@@ -2000,7 +2042,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
             throw Failure;
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
-        var body = Body ?? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
+        var body = Body ?? (url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
