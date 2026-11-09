@@ -1587,10 +1587,10 @@ public partial class MainWindow
             hook(code);
         else
             CopyToClipboard(code, "Code copied", "Code block is empty");
-        var glyph = (TextBlock)copy.Content;
-        glyph.Text = Markdown.CopiedGlyph; // a check while the toast shows
+        var label = (TextBlock)copy.Content;
+        Markdown.CopyLabel(label, copied: true); // a check and "Copied" while the toast shows
         var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1.5) };
-        timer.Tick += (_, _) => { timer.Stop(); glyph.Text = Markdown.CopyGlyph; };
+        timer.Tick += (_, _) => { timer.Stop(); Markdown.CopyLabel(label, copied: false); };
         timer.Start();
     }
 

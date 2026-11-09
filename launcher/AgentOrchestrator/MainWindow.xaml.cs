@@ -2394,7 +2394,8 @@ public partial class MainWindow : Window
                     blocks.FirstOrDefault() is not System.Windows.Documents.Paragraph { FontWeight: var headingWeight, FontFamily: var headingFont } || headingWeight != Markdown.StrongWeight || headingFont != AppFonts.Serif || lists.Count != 2 || lists[0].MarkerStyle != TextMarkerStyle.Disc ||
                     lists[1].MarkerStyle != TextMarkerStyle.Decimal || lists[0].ListItems.First().Blocks.OfType<System.Windows.Documents.List>().Count() != 1 ||
                     blocks.OfType<System.Windows.Documents.Table>().Single().RowGroups[0].Rows.Count != 2 || blocks.OfType<System.Windows.Documents.Section>().Count() != 1 ||
-                    Markdown.CodeBlocks(blocks).SingleOrDefault() is not { Child: Grid { Children: [TextBlock codeText, Button { Tag: "code **raw**" }] } } ||
+                    Markdown.CodeBlocks(blocks).SingleOrDefault() is not { Child: Grid { Children: [StackPanel codeContent, Button { Tag: "code **raw**" }] } } ||
+                    SmokeFind<TextBlock>(codeContent, t => t.Tag as string == "codetext") is not { } codeText ||
                     string.Concat(codeText.Inlines.OfType<System.Windows.Documents.Run>().Select(run => run.Text)) != "code **raw**" ||
                     mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
                     blocks.OfType<System.Windows.Documents.Paragraph>().SelectMany(p => p.Inlines).OfType<System.Windows.Documents.Hyperlink>().Single().NavigateUri.AbsoluteUri != "https://example.org/p")
@@ -2421,7 +2422,7 @@ public partial class MainWindow : Window
                 copyCode.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
                 _copyCodeHook = null;
                 if (codeCard.Parent is not System.Windows.Documents.BlockUIContainer || codeCard.CornerRadius.TopLeft <= 0 || copied != longCode ||
-                    ((TextBlock)copyCode.Content).Text != Markdown.CopiedGlyph || !_codeBlocks.Contains(codeCard))
+                    !((TextBlock)copyCode.Content).Text.Contains(Markdown.CopiedGlyph) || !_codeBlocks.Contains(codeCard))
                     return Fail();
                 double PinOf(Border card) => ((TranslateTransform)((Grid)card.Child).Children[1].RenderTransform).Y;
                 double CardTop(Border card) => card.TransformToAncestor(ChatScroll).Transform(new Point()).Y;
@@ -4919,7 +4920,16 @@ public partial class MainWindow : Window
                      ("CodeKeyword", "#569CD6", "#0000FF"), ("CodeControl", "#C586C0", "#AF00DB"), ("CodeCall", "#DCDCAA", "#795E26"), ("CodeType", "#4EC9B0", "#267F99"),
                      ("InlineCode", "#33FFFFFF", "#14000000") })
             SetThemeBrush(key, parchment ? light : dark);
-        SetBrush("EdgeHighlight", new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
+        if (bui) // the site's code colours: strings and numbers orange, keywords its light blue, calls in the ink colour
+            foreach (var (key, hex) in new[] { ("CodeString", "#F68F3C"), ("CodeNumber", "#F68F3C"), ("CodeKeyword", "#7EC0FF"), ("CodeControl", "#7EC0FF"),
+                         ("CodeCall", "#F2F3F4"), ("CodeComment", "#6C6F75"), ("CodeType", "#A5A8AD") })
+                SetThemeBrush(key, hex);
+        Resources["CodeText"] = bui ? Resources["Muted"] : Resources["TextPrimary"]; // a listing's plain text: the site's ink-2
+        if (bui)
+            SetThemeBrush("CodeLineNumber", "#6C6F75");
+        else
+            Resources["CodeLineNumber"] = Resources["Muted"];
+        SetBrush("EdgeHighlight",new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
             { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();
         Resources["ControlRadius"] = new CornerRadius(flat ? 8 : 7); // buttons, toggles, inputs: softly rounded, not pills
