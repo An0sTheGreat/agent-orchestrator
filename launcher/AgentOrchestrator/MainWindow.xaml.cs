@@ -81,6 +81,7 @@ public partial class MainWindow : Window
         InitRuntime();
         _initializing = false;
         InitChat();
+        InitSidebarGlide();
         StoreDo(_store.Load);
         RestoreWindowBounds();
         InitRemote();

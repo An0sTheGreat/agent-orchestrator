@@ -26,10 +26,52 @@ public partial class MainWindow
     private readonly Dictionary<string, Func<string?, Func<bool>?>> _sidebarDrops = new();
     private const string DragFormat = "AgentOrchestrator.SidebarItem";
 
+    // One highlight glides between the rows as the pointer moves over them (the rows have no hover fill of their own), then
+    // fades out when it leaves the list.
+    private void InitSidebarGlide()
+    {
+        SidebarList.MouseMove += (_, e) => GlideTo(SidebarRowAt(e.OriginalSource as DependencyObject));
+        SidebarList.MouseLeave += (_, _) => GlideTo(null);
+        SidebarList.PreviewMouseWheel += (_, _) => GlideTo(null); // the rows move under a still pointer
+    }
+
+    private Button? SidebarRowAt(DependencyObject? at)
+    {
+        var rowStyle = TryFindResource("SidebarRow");
+        for (; at is not null && !ReferenceEquals(at, SidebarList); at = VisualTreeHelper.GetParent(at))
+            if (at is Button button && ReferenceEquals(button.Style, rowStyle))
+                return button;
+        return null;
+    }
+
+    private Button? _glideRow;
+
+    private void GlideTo(Button? row)
+    {
+        var move = (TranslateTransform)SidebarGlide.RenderTransform;
+        if (row is null || !row.IsVisible || row.ActualHeight <= 0)
+        {
+            _glideRow = null;
+            SidebarGlide.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, TimeSpan.FromMilliseconds(160)));
+            return;
+        }
+        if (ReferenceEquals(row, _glideRow))
+            return;
+        var first = SidebarGlide.Opacity < 0.05; // appearing: it starts on the row instead of sweeping in from the last place
+        _glideRow = row;
+        var top = row.TransformToAncestor(SidebarHost).Transform(new Point()).Y;
+        var ease = new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut };
+        var time = TimeSpan.FromMilliseconds(first ? 0 : 150);
+        move.BeginAnimation(TranslateTransform.YProperty, new System.Windows.Media.Animation.DoubleAnimation(top, time) { EasingFunction = ease });
+        SidebarGlide.BeginAnimation(HeightProperty, new System.Windows.Media.Animation.DoubleAnimation(row.ActualHeight, time) { EasingFunction = ease });
+        SidebarGlide.BeginAnimation(OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(1, TimeSpan.FromMilliseconds(120)));
+    }
+
     private bool CodeBusy => _chatBusy || _process is not null;
 
     private void RefreshSidebarList()
     {
+        GlideTo(null); // the rows are rebuilt under the highlight
         SidebarList.Children.Clear();
         _sidebarMenus.Clear();
         _sidebarDrops.Clear();

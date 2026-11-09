@@ -584,14 +584,28 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
                         <Grid Background="Transparent">
-                            <Border x:Name="HoverFill" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0" />
                             <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
                         </Grid>
+                        <!-- no hover fill of its own: one highlight glides between the rows (MainWindow.Sidebar.cs, SidebarGlide) -->
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <!-- The composer's round Send / Stop button: a filled disc, its arrow or square in the page colour. -->
+        <Style x:Key="SendCircle" TargetType="Button">
+            <Setter Property="Width" Value="34" /><Setter Property="Height" Value="34" /><Setter Property="Padding" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid Background="Transparent">
+                            <Ellipse x:Name="Disc" Fill="{DynamicResource TextPrimary}" Margin="2" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Trigger.EnterActions><BeginStoryboard Storyboard="{StaticResource HoverIn}" /></Trigger.EnterActions>
-                                <Trigger.ExitActions><BeginStoryboard Storyboard="{StaticResource HoverOut}" /></Trigger.ExitActions>
-                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Disc" Property="Opacity" Value="0.85" /></Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="Disc" Property="Opacity" Value="0.7" /></Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -675,8 +689,8 @@
             <Setter Property="Background" Value="{DynamicResource Card}" />
             <Setter Property="BorderBrush" Value="{DynamicResource Border}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="{DynamicResource PanelRadius}" />
-            <Setter Property="Padding" Value="10,8,10,8" />
+            <Setter Property="CornerRadius" Value="20" />
+            <Setter Property="Padding" Value="12,10,12,8" />
             <!-- no focus outline: the caret shows where typing goes (an accent outline read as a white frame on light accents) -->
         </Style>
         <Style TargetType="ScrollBar">
@@ -1080,7 +1094,11 @@
                     <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                         <StackPanel Margin="12,4,12,12">
                             <!-- The saved Code conversations, built by RefreshSidebarList (MainWindow.Sidebar.cs). -->
-                            <StackPanel x:Name="SidebarList" />
+                            <Grid x:Name="SidebarHost">
+                                <Border x:Name="SidebarGlide" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" VerticalAlignment="Top"
+                                        Opacity="0" IsHitTestVisible="False" Height="0"><Border.RenderTransform><TranslateTransform /></Border.RenderTransform></Border>
+                                <StackPanel x:Name="SidebarList" />
+                            </Grid>
                         </StackPanel>
                     </ScrollViewer>
                     <!-- Profile (MainWindow.Profile.cs): below an accent rule, the picture and name open the profile card; the gear opens Settings. -->
@@ -1267,14 +1285,14 @@
                                            TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                                 <TextBlock x:Name="CodeBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                            MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
-                                <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
+                                <Button x:Name="CodeStop" Grid.Column="3" Style="{StaticResource SendCircle}"
                                         VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
-                                    <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
+                                    <Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{DynamicResource Panel}" />
                                 </Button>
                                 <!-- Send: an enter arrow, shown once there is text; while the models work it queues the message, beside the stop square. -->
-                                <Button x:Name="CodeSend" Grid.Column="4" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                                <Button x:Name="CodeSend" Grid.Column="4" Style="{StaticResource SendCircle}" Visibility="Collapsed"
                                         VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
-                                    <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
+                                    <TextBlock Text="&#xE74A;" Style="{StaticResource RailGlyph}" FontSize="14" Foreground="{DynamicResource Panel}" />
                                 </Button>
                             </Grid>
                             <DockPanel Grid.Row="2" Margin="4,6,2,0">
@@ -1538,14 +1556,14 @@
                                        TextTrimming="CharacterEllipsis" IsHitTestVisible="False" />
                             <TextBlock x:Name="ChatBusyText" Grid.Column="2" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" Margin="0,0,8,0"
                                        MaxWidth="280" TextTrimming="CharacterEllipsis" Visibility="Collapsed" />
-                            <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0"
+                            <Button x:Name="ChatStop" Grid.Column="3" Style="{StaticResource SendCircle}"
                                     VerticalAlignment="Bottom" Visibility="Collapsed" Click="StopWork_Click" ToolTip="Stop (Ctrl+Shift+X)" AutomationProperties.Name="Stop">
-                                <Rectangle Width="11" Height="11" RadiusX="2" RadiusY="2" Fill="{DynamicResource TextPrimary}" />
+                                <Rectangle Width="10" Height="10" RadiusX="2" RadiusY="2" Fill="{DynamicResource Panel}" />
                             </Button>
                             <!-- Send: an enter arrow, shown once there is text; while the models work it queues the message, beside the stop square. -->
-                            <Button x:Name="ChatSend" Grid.Column="4" Style="{StaticResource GhostButton}" Width="34" Height="34" Padding="0" Visibility="Collapsed"
+                            <Button x:Name="ChatSend" Grid.Column="4" Style="{StaticResource SendCircle}" Visibility="Collapsed"
                                     VerticalAlignment="Bottom" Click="ChatSend_Click" ToolTip="Send (Enter)" AutomationProperties.Name="Send">
-                                <TextBlock Text="&#xE751;" Style="{StaticResource RailGlyph}" FontSize="15" Foreground="{DynamicResource TextPrimary}" />
+                                <TextBlock Text="&#xE74A;" Style="{StaticResource RailGlyph}" FontSize="14" Foreground="{DynamicResource Panel}" />
                             </Button>
                         </Grid>
                         <DockPanel Grid.Row="2" Margin="4,6,2,0">
