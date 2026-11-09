@@ -83,6 +83,7 @@ public partial class MainWindow : Window
         _initializing = false;
         InitChat();
         InitSidebarGlide();
+        InitAutoScroll();
         StoreDo(_store.Load);
         RestoreWindowBounds();
         InitRemote();
@@ -3277,7 +3278,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !ToolCallSmoke() || !await RunThinkingSmoke(Snap))
+        if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !ToolCallSmoke() || !AutoScrollSmoke() || !await RunThinkingSmoke(Snap))
             return false;
         // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
         {
