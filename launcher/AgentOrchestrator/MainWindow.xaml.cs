@@ -1919,6 +1919,9 @@ public partial class MainWindow : Window
             if (codeReply.Final != "Fixed" || codeReply.Answer?.Text != "Fixed" || _code.History.Count != 2 || ChatPanel.Children.Count != chatCount ||
                 toolRow is null || HeaderPreview(toolRow).Text != "src/a.js" || _chatBusy)
                 return Fail();
+                // the turn's tool calls as the site's header under the work (no file was changed, so no chips)
+                if (codeReply.Content.Children.OfType<Border>().SingleOrDefault(b => b.Tag as string == "file-chips") is not { Child: StackPanel { Children: [TextBlock { Text: "1 tool call" }] } })
+                    return Fail();
             // In the order it happened: the text before the tool call stays above it, the reply after it below.
             var parts = codeReply.Content.Children.Cast<UIElement>().ToList();
             var early = parts.OfType<TextBox>().FirstOrDefault(t => t.Text == "Looking");

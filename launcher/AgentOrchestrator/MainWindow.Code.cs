@@ -2,6 +2,8 @@ using System.IO;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
@@ -159,6 +161,9 @@ public partial class MainWindow
     {
         if (_reply is not { } r)
             return;
+        r.ToolCalls++;
+        foreach (var (file, added, removed) in ToolFileChanges(name, args))
+            r.Files[file] = r.Files.TryGetValue(file, out var so) ? (so.Added + added, so.Removed + removed) : (added, removed);
         var live = EndToolBlock(); // the code the call streamed is already a section: the result joins it
         var body = BodyText(result, mono: true, muted: false, conv: _turn);
         Expander expander;
@@ -185,6 +190,72 @@ public partial class MainWindow
         FadeIn(expander);
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
+    }
+
+    // The lines a file-writing tool call added and removed: a whole-file write adds its lines; a replace adds the new text's lines
+    // and removes the old text's (`edits` arrays too). Other tools change no file.
+    internal static List<(string File, int Added, int Removed)> ToolFileChanges(string name, string args)
+    {
+        var changes = new List<(string, int, int)>();
+        if (name is not ("write_file" or "replace_text" or "write" or "edit" or "str_replace"))
+            return changes;
+        static int Lines(string? text) => string.IsNullOrEmpty(text) ? 0 : text.Count(c => c == (char)10) + (text.EndsWith((char)10) ? 0 : 1);
+        static string? Get(JsonElement o, params string[] keys) =>
+            keys.Select(k => o.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null).FirstOrDefault(s => s is not null);
+        try
+        {
+            using var doc = JsonDocument.Parse(args);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object || Get(root, "path", "file_path") is not { Length: > 0 } path)
+                return changes;
+            var file = System.IO.Path.GetFileName(path.Replace('/', '\\'));
+            (int Added, int Removed) total = (0, 0);
+            if (root.TryGetProperty("edits", out var edits) && edits.ValueKind == JsonValueKind.Array)
+                foreach (var e in edits.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object))
+                    total = (total.Added + Lines(Get(e, "newText", "new_string", "new")), total.Removed + Lines(Get(e, "oldText", "old_string", "old")));
+            else
+                total = (Lines(Get(root, "content", "newText", "new_string", "new_str", "new")), Lines(Get(root, "oldText", "old_string", "old_str", "old")));
+            if (total != (0, 0))
+                changes.Add((file, total.Added, total.Removed));
+        }
+        catch (JsonException) { }
+        return changes;
+    }
+
+    // The files a turn changed, as the site's file chips under a "N tool calls" line: the name, +added in green, −removed in red.
+    private void AddFileChips(ChatReply r)
+    {
+        if (r.ToolCalls == 0 || r.Content.Children.OfType<Border>().Any(b => b.Tag as string == "file-chips"))
+            return;
+        var wrap = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        foreach (var (file, (added, removed)) in r.Files.Take(6))
+        {
+            var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center };
+            text.Inlines.Add(new Run(file));
+            if (added > 0)
+                text.Inlines.Add(new Run("  +" + added) { Foreground = new SolidColorBrush(Color.FromRgb(0x3C, 0xBB, 0x72)) });
+            if (removed > 0)
+                text.Inlines.Add(new Run("  −" + removed) { Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x5C, 0x61)) });
+            text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            var chip = new Border { Child = text, Height = 28, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), ToolTip = file };
+            chip.SetResourceReference(Border.BackgroundProperty, "Card");
+            chip.SetResourceReference(Border.BorderBrushProperty, "BorderStrong");
+            wrap.Children.Add(chip);
+        }
+        if (r.Files.Count > 6)
+        {
+            var more = new TextBlock { Text = $"+{r.Files.Count - 6} more", FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 6) };
+            more.SetResourceReference(TextBlock.ForegroundProperty, "CodeLineNumber");
+            wrap.Children.Add(more);
+        }
+        var header = new TextBlock { Text = $"{r.ToolCalls} tool {(r.ToolCalls == 1 ? "call" : "calls")}" + (r.Files.Count > 0 ? $" · {r.Files.Count} {(r.Files.Count == 1 ? "file" : "files")} changed" : ""), FontSize = 12.5 };
+        header.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var box = new StackPanel { Children = { header } };
+        if (r.Files.Count > 0)
+            box.Children.Add(wrap);
+        var block = new Border { Child = box, Tag = "file-chips", Margin = new Thickness(0, 8, 0, 2), Padding = new Thickness(0, 10, 0, 0), BorderThickness = new Thickness(0, 1, 0, 0) };
+        block.SetResourceReference(Border.BorderBrushProperty, "Border");
+        r.Content.Children.Add(block);
     }
 
     // A tool call's code (its content, text or new_string argument) as a fenced block named for the file's extension, else null.

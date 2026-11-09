@@ -113,6 +113,8 @@ public partial class MainWindow
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
         public RichTextBox? Rendered; // the answer as formatted Markdown, re-rendered as it streams
         public readonly StringBuilder AnswerText = new();
+        public int ToolCalls; // the turn's tool calls, and the lines each file got (name -> added, removed): the chips under the work
+        public readonly Dictionary<string, (int Added, int Removed)> Files = new();
         public string? Final;
     }
 
@@ -936,6 +938,7 @@ public partial class MainWindow
         {
             EndChatBlock();
             reply.Status.Visibility = Visibility.Collapsed;
+            AddFileChips(reply);
             var answer = reply.Final ?? (reply.AnswerText.Length > 0 ? reply.AnswerText.ToString() : null);
             stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
             string? problem = stopped ? null : failure is not null || exitCode != 0 ? failure ?? _chatError ?? $"The chat failed (exit code {exitCode})."
@@ -1294,6 +1297,11 @@ public partial class MainWindow
         Check(decoded == "<p class=\"a\">hi</p>\n\tx\\y é", "decoded string: " + decoded);
         Check(JsonPrefix("""ab\""", 0) == "ab" && JsonPrefix("""ab\u00""", 0) == "ab" && JsonPrefix("""ab\n""", 0) == "ab\n", "a cut-off escape is held back");
         Check(!ToolBody.Match("""{"path": "a"}""").Success && ToolBody.Match("""{"path": "a", "new_string": "x""").Success, "which arguments carry code");
+        var wrote = ToolFileChanges("write_file", """{"path":"src/app.js","content":"a\nb\nc"}""");
+        var replaced = ToolFileChanges("replace_text", """{"path":"C:\\x\\app.js","old":"a\nb","new":"c"}""");
+        var edited = ToolFileChanges("edit", """{"path":"m.ts","edits":[{"oldText":"x","newText":"y\nz"},{"oldText":"p\nq","newText":"r"}]}""");
+        Check(wrote.SequenceEqual([("app.js", 3, 0)]) && replaced.SequenceEqual([("app.js", 1, 2)]) && edited.SequenceEqual([("m.ts", 3, 3)]) &&
+              ToolFileChanges("read_file", """{"path":"a"}""").Count == 0 && ToolFileChanges("write", "not json").Count == 0, "the lines each tool call changed");
         Check(ThoughtFor(TimeSpan.FromMilliseconds(400)) == "Thought for under a second" && ThoughtFor(TimeSpan.FromSeconds(1.2)) == "Thought for 1 second" &&
               ThoughtFor(TimeSpan.FromSeconds(4.4)) == "Thought for 4 seconds", "the thinking duration line");
         Check(ToolCode("""{"path":"a.py","content":"print(1)"}""") =="```py\nprint(1)\n```" && ToolCode("""{"path":"a.py"}""") is null && ToolCode("not json") is null,
