@@ -193,19 +193,19 @@ public partial class MainWindow
         if (_skillPopup is null)
         {
             _skillRows = new StackPanel { Margin = new Thickness(4) };
-            var card = new Border { Child = _skillRows, BorderThickness = new Thickness(1), MinWidth = 220 };
+            // under the rows, as the site's command list: a muted line saying the box filters them
+            var footer = new TextBlock { Text = "Type to search commands", FontSize = 12, Margin = new Thickness(14, 2, 14, 8) };
+            footer.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var card = new Border { Child = new StackPanel { Children = { _skillRows, footer } }, BorderThickness = new Thickness(1), MinWidth = 260, CornerRadius = new CornerRadius(14) };
             card.SetResourceReference(Border.BackgroundProperty, "Card");
             card.SetResourceReference(Border.BorderBrushProperty, "Border");
-            card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
             _skillPopup = new Popup { Child = card, Placement = PlacementMode.Top, VerticalOffset = -6, AllowsTransparency = true, StaysOpen = true };
         }
-        var typed = CompletionToken(input.Text, input.CaretIndex)!.Value.Typed.Length;
         _skillRows!.Children.Clear();
         foreach (var (name, help) in names)
         {
             var text = new TextBlock { FontSize = 13, MaxWidth = 520, TextTrimming = TextTrimming.CharacterEllipsis };
-            text.Inlines.Add(new Run(name[..typed]) { FontWeight = FontWeights.SemiBold });
-            text.Inlines.Add(new Run(name[typed..]));
+            text.Inlines.Add(new Run(name) { FontWeight = FontWeights.SemiBold }); // the whole command in bold, its hint dim
             if (help.Length > 0)
             {
                 var hint = new Run("   " + help) { FontSize = 12 };
@@ -213,8 +213,7 @@ public partial class MainWindow
                 text.Inlines.Add(hint);
             }
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-            var row = new Border { Child = text, Padding = new Thickness(10, 5, 10, 5), Tag = name, Cursor = Cursors.Hand };
-            row.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+            var row = new Border { Child = text, Padding = new Thickness(12, 6, 12, 6), Tag = name, Cursor = Cursors.Hand, CornerRadius = new CornerRadius(9) };
             row.MouseLeftButtonUp += (_, e) => { e.Handled = true; CompleteSkill(input, name); };
             row.MouseEnter += (_, _) => HighlightSkill(_skillRows.Children.IndexOf(row));
             _skillRows.Children.Add(row);

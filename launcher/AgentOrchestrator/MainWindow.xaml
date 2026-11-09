@@ -1860,8 +1860,8 @@
              toasts, so a refused open's toast shows over it. -->
         <Grid x:Name="SearchOverlay" Grid.Row="1" Grid.RowSpan="3" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#99000000"
               MouseLeftButtonDown="SearchOverlay_MouseDown" PreviewKeyDown="SearchOverlay_PreviewKeyDown">
-            <Border x:Name="SearchCard" Width="640" VerticalAlignment="Top" Margin="0,64,0,48" Padding="8,6,8,8" Background="{DynamicResource Card}"
-                    BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource CardRadius}">
+            <Border x:Name="SearchCard" Width="640" VerticalAlignment="Top" Margin="0,64,0,48" Padding="10,8,10,10" Background="{DynamicResource Card}"
+                    BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="18">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="8,2,0,4">
                         <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="30" Height="30" Padding="0" Click="SearchClose_Click"
