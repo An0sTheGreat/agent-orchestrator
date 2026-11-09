@@ -292,20 +292,31 @@ public partial class MainWindow
 
     private void CodeContextPin_SizeChanged(object sender, SizeChangedEventArgs e) => ReserveCodeContextStack();
 
-    // While a collapsed-rail worker card is open, the context stack slides left out of its way, and back when it closes.
+    // While a collapsed-rail worker card is open, a context stack (Code's or Chat's) that the card would cover slides left out of
+    // its way, and back when the card closes. A stack the card does not overlap stays where it is.
     private void DodgeRailCard(bool open)
     {
-        if (CodeContextPin.RenderTransform is not TranslateTransform shift)
-            CodeContextPin.RenderTransform = shift = new TranslateTransform();
-        var by = 0.0;
-        if (open && CodeContextPin.IsVisible && RailPopup.Child is FrameworkElement railCard && railCard.IsVisible)
+        foreach (var pin in new FrameworkElement[] { CodeContextPin, ChatContextPin })
         {
-            var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
-            var cardLeft = railCard.PointToScreen(new Point()).X;
-            var stackRight = CodeContextPin.PointToScreen(new Point(CodeContextPin.ActualWidth, 0)).X - shift.X * scale; // where it rests
-            by = Math.Min(0, (cardLeft - stackRight) / scale - 12);
+            if (pin.RenderTransform is not TranslateTransform shift)
+                pin.RenderTransform = shift = new TranslateTransform();
+            var by = 0.0;
+            if (open && pin.IsVisible && RailPopup.Child is FrameworkElement railCard && railCard.IsVisible)
+            {
+                var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
+                var card = (Left: railCard.PointToScreen(new Point()).X, Top: railCard.PointToScreen(new Point()).Y,
+                            Bottom: railCard.PointToScreen(new Point(0, railCard.ActualHeight)).Y);
+                var rest = shift.X * scale; // where the stack rests: its position without the current slide
+                var left = pin.PointToScreen(new Point()).X - rest;
+                var right = pin.PointToScreen(new Point(pin.ActualWidth, 0)).X - rest;
+                var top = pin.PointToScreen(new Point()).Y;
+                var bottom = pin.PointToScreen(new Point(0, pin.ActualHeight)).Y;
+                var overlaps = card.Left < right && card.Top < bottom && card.Bottom > top;
+                if (overlaps)
+                    by = Math.Min(0, (card.Left - right) / scale - 12);
+            }
+            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(by, TimeSpan.FromMilliseconds(200)) { EasingFunction = Decelerate });
         }
-        shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(by, TimeSpan.FromMilliseconds(200)) { EasingFunction = Decelerate });
     }
 
     private void RefreshContextPins()
