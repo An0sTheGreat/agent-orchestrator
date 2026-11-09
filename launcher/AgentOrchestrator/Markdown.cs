@@ -311,16 +311,10 @@ internal static class Markdown
     // copying, and keeping it in view while the block scrolls (its TranslateTransform).
     private static Block CodeBlock(string code, string language)
     {
-        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, 30, 2) };
-        if (Roomy)
-            text.LineHeight = 20;
-        foreach (var (piece, color) in Highlight(code, language))
-        {
-            var run = new Run(piece);
-            if (color is not null)
-                run.SetResourceReference(TextElement.ForegroundProperty, color);
-            text.Inlines.Add(run);
-        }
+        var pieces = Highlight(code, language);
+        var lineCount = code.Count(c => c == (char)10) + 1;
+        UIElement body = lineCount is >= 2 and <= MaxNumbered // a line-number gutter, each number level with its (possibly wrapped) line
+            ? NumberedLines(pieces, lineCount) : CodeText(pieces);
         var glyph = new TextBlock { Text = CopyGlyph, FontSize = 13 };
         glyph.SetResourceReference(FrameworkElement.StyleProperty, "RailGlyph");
         var copy = new Button
@@ -330,13 +324,70 @@ internal static class Markdown
             Cursor = System.Windows.Input.Cursors.Hand,
         };
         copy.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
-        var card = new Border { Child = new Grid { Children = { text, copy } }, Padding = Roomy ? new Thickness(16, 12, 8, 12) : new Thickness(10, 6, 6, 6) };
+        var card = new Border { Child = new Grid { Children = { body, copy } }, Padding = Roomy ? new Thickness(16, 12, 8, 12) : new Thickness(10, 6, 6, 6) };
         card.SetResourceReference(Border.BackgroundProperty, "Hover");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.BorderThickness = new Thickness(1);
         if (Roomy)
             card.CornerRadius = new CornerRadius(10);
         else
             card.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
         return new BlockUIContainer(card) { Margin = new Thickness(0, R(2, 6), 0, R(10, 16)) };
+    }
+
+    private const int MaxNumbered = 200; // longer listings stay one block of text: a row each would slow a streaming render
+
+    private static TextBlock CodeText(IEnumerable<(string Text, string? Color)> pieces, bool lastColumn = true)
+    {
+        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 2, lastColumn ? 30 : 0, 2) };
+        if (Roomy)
+            text.LineHeight = 20;
+        foreach (var (piece, color) in pieces)
+        {
+            var run = new Run(piece);
+            if (color is not null)
+                run.SetResourceReference(TextElement.ForegroundProperty, color);
+            text.Inlines.Add(run);
+        }
+        return text;
+    }
+
+    // The highlighted pieces cut at line ends (a block comment or template string can span lines, so the code is highlighted
+    // whole first), one row per line: the number in a muted gutter, then the line.
+    private static StackPanel NumberedLines(List<(string Text, string? Color)> pieces, int lineCount)
+    {
+        var lines = new List<List<(string, string?)>> { new() };
+        foreach (var (piece, color) in pieces)
+        {
+            var parts = piece.Split((char)10);
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (i > 0)
+                    lines.Add(new());
+                if (parts[i].Length > 0)
+                    lines[^1].Add((parts[i], color));
+            }
+        }
+        var rows = new StackPanel();
+        var width = lineCount.ToString().Length * 8 + 14;
+        for (var n = 0; n < lines.Count; n++)
+        {
+            var number = new TextBlock
+            {
+                Text = (n + 1).ToString(), FontFamily = AppFonts.Mono, FontSize = R(11, 12), Width = width, TextAlignment = TextAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(0, 2, 12, 2), Opacity = 0.55,
+            };
+            if (Roomy)
+                number.LineHeight = 20;
+            number.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var row = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition() } };
+            var text = CodeText(lines[n].Count > 0 ? lines[n] : [(" ", null)], lastColumn: true);
+            Grid.SetColumn(text, 1);
+            row.Children.Add(number);
+            row.Children.Add(text);
+            rows.Children.Add(row);
+        }
+        return rows;
     }
 
     public const string CopyGlyph = "", CopiedGlyph = "";

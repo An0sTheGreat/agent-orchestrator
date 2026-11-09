@@ -891,6 +891,30 @@ public partial class MainWindow : Window
         return expander;
     }
 
+    // A tool call's header as a chip row: the tool in bold, its file or command in a rounded mono chip. `preview` is the chip's
+    // text (Children[1] of the header is its Border: HeaderPreview finds the text).
+    private Expander BuildToolExpander(string verb, string detail, UIElement body, out TextBlock preview)
+    {
+        var expander = BuildExpander(verb, detail, body, out preview);
+        var header = (StackPanel)expander.Header;
+        var label = (TextBlock)header.Children[0];
+        label.ClearValue(StyleProperty);
+        label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        (label.FontSize, label.FontWeight, label.Margin) = (13, FontWeights.SemiBold, new Thickness(0, 0, 10, 0));
+        header.Children.Remove(preview);
+        preview.FontFamily = AppFonts.Mono;
+        preview.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var chip = new Border { Child = preview, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), MaxWidth = 560 };
+        chip.SetResourceReference(Border.BackgroundProperty, "Hover");
+        chip.SetResourceReference(Border.BorderBrushProperty, "Border");
+        header.Children.Insert(1, chip);
+        return expander;
+    }
+
+    // The text of a header's second part: a plain preview, or a tool chip's.
+    private static TextBlock HeaderPreview(Expander expander) =>
+        ((StackPanel)expander.Header).Children[1] is Border { Child: TextBlock chip } ? chip : (TextBlock)((StackPanel)expander.Header).Children[1];
+
     private TextBlock Label(string text, bool accent = false, Thickness? margin = null)
     {
         var label = new TextBlock { Text = text, Margin = margin ?? new Thickness(0, 6, 0, 4), VerticalAlignment = VerticalAlignment.Center };
@@ -1829,7 +1853,7 @@ public partial class MainWindow : Window
             FinishChatTurn(0, false, null);
             var toolRow = codeReply.Content.Children.OfType<Expander>().SingleOrDefault();
             if (codeReply.Final != "Fixed" || codeReply.Answer?.Text != "Fixed" || _code.History.Count != 2 || ChatPanel.Children.Count != chatCount ||
-                toolRow is null || ((TextBlock)((StackPanel)toolRow.Header).Children[1]).Text != "src/a.js" || _chatBusy)
+                toolRow is null || HeaderPreview(toolRow).Text != "src/a.js" || _chatBusy)
                 return Fail();
             // In the order it happened: the text before the tool call stays above it, the reply after it below.
             var parts = codeReply.Content.Children.Cast<UIElement>().ToList();

@@ -177,7 +177,7 @@ public partial class MainWindow
                 var raw = BodyText(code, mono: false, muted: false, conv: _turn);
                 content = new StackPanel { Children = { raw, MarkdownView(raw), body } };
             }
-            expander = BuildExpander(name, ToolTarget(args), content, out _);
+            expander = BuildToolExpander(name, ToolTarget(args), content, out _);
             expander.Margin = new Thickness(0, 2, 0, 2);
             r.Content.Children.Add(expander);
         }

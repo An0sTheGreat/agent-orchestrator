@@ -238,7 +238,7 @@ public partial class MainWindow
                 return Fail($"{sections.Count} sections while streaming");
             if (raw.Text != "```html\n<p class=\"a\">hi</p>\n<b>x" || sections[0].IsExpanded)
                 return Fail("code so far: " + raw.Text);
-            var preview = ((TextBlock)((StackPanel)sections[0].Header).Children[1]).Text;
+            var preview = HeaderPreview(sections[0]).Text;
             if (!preview.Contains("characters"))
                 return Fail("preview: " + preview);
             _settings.ViewThinking = false;

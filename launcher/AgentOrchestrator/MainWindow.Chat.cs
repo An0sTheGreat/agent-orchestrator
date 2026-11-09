@@ -906,6 +906,9 @@ public partial class MainWindow
         header.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
         reply.Status = new TextBlock { Text = "Starting…", FontStyle = FontStyles.Italic, FontSize = 12, Margin = new Thickness(2, 4, 0, 0) };
         reply.Status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        // a soft shimmer while the model works (the line only shows then)
+        reply.Status.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.5, 1, TimeSpan.FromMilliseconds(900))
+            { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever });
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
         reply.Footer.Visibility = Visibility.Collapsed;
         if (Markdown.Roomy) // the stats stand back from the answer
@@ -1323,8 +1326,9 @@ public partial class MainWindow
             block.Body.AppendText(more);
             RenderSoon(block.View!);
         }
-        block.Label!.Text = name.Length > 0 ? name.ToUpperInvariant() : "TOOL CALL";
-        block.Preview!.Text = $"{path.Trim()}  ·  {_toolShown:N0} characters".TrimStart(' ', '·');
+        block.Label!.Text = name.Length > 0 ? name : "tool call";
+        var lines = block.Text.ToString().Count(c => c == (char)10) + 1;
+        block.Preview!.Text = $"{path.Trim()}  ·  {lines:N0} {(lines == 1 ? "line" : "lines")}  ·  {_toolShown:N0} characters".TrimStart(' ', '·');
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
     }
@@ -1340,7 +1344,7 @@ public partial class MainWindow
         var content = new StackPanel();
         content.Children.Add(block.Body);
         content.Children.Add(block.View);
-        block.Expander = BuildExpander(name.Length > 0 ? name.ToUpperInvariant() : "TOOL CALL", "", content, out block.Preview);
+        block.Expander = BuildToolExpander(name.Length > 0 ? name : "tool call", "", content, out block.Preview);
         block.Label = (TextBlock)((StackPanel)block.Expander.Header).Children[0];
         block.Expander.Expanded += (_, _) => { if (!block.Programmatic) block.Touched = true; };
         block.Expander.Collapsed += (_, _) => { if (!block.Programmatic) block.Touched = true; };
