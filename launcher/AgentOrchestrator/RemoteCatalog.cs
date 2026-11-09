@@ -143,8 +143,14 @@ internal static class RemoteCatalog
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
-            using var response = await http.GetAsync($"https://openrouter.ai/{modelId.Split(':')[0]}/providers", timeout.Token).ConfigureAwait(false);
-            return response.IsSuccessStatusCode ? ParsePrivacy(await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false)) : [];
+            // A variant (":free") has a page of its own, with its own providers; ":floor" and the like may not: then the base model's.
+            foreach (var id in modelId.Contains(':') ? new[] { modelId, modelId.Split(':')[0] } : [modelId])
+            {
+                using var response = await http.GetAsync($"https://openrouter.ai/{id}/providers", timeout.Token).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode && ParsePrivacy(await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false)) is { Count: > 0 } found)
+                    return found;
+            }
+            return [];
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
@@ -305,9 +311,15 @@ internal static class RemoteCatalog
             fake.Page = (HttpStatusCode.OK, PrivacySample);
             fake.All.Clear();
             var shown = await FetchProvidersAsync(http, "deepseek/v3:floor", CancellationToken.None, "sk-test");
-            Check(fake.All.Any(r => r.RequestUri?.ToString() == "https://openrouter.ai/deepseek/v3/providers" && r.Headers.Authorization is null) &&
-                fake.All.Count(r => r.Headers.Authorization is not null) == 1, "privacy page fetch");
+            Check(fake.All.Any(r => r.RequestUri?.ToString() == "https://openrouter.ai/deepseek/v3:floor/providers" && r.Headers.Authorization is null) &&
+                fake.All.Count(r => r.Headers.Authorization is not null) == 1, "privacy page fetch (the variant's own page first)");
             Check(shown.Select(r => r.Privacy).SequenceEqual([Logs, ""]), $"privacy merged: {string.Join(",", shown.Select(r => $"{r.Tag}={r.Privacy}"))}");
+            // A variant whose page carries nothing falls back to the base model's page.
+            fake.PageOnly = "https://openrouter.ai/deepseek/v3/providers";
+            fake.All.Clear();
+            Check((await FetchProvidersAsync(http, "deepseek/v3:floor", CancellationToken.None)).Select(r => r.Privacy).SequenceEqual([Logs, ""]) &&
+                fake.All.Count(r => r.RequestUri!.AbsolutePath.EndsWith("/providers", StringComparison.Ordinal)) == 2, "privacy falls back to the base model's page");
+            fake.PageOnly = null;
             fake.Page = (HttpStatusCode.InternalServerError, "");
             Check((await FetchProvidersAsync(http, "deepseek/v3", CancellationToken.None)).Count == 2, "rows still shown when the page is down");
         }).GetAwaiter().GetResult();
@@ -323,6 +335,7 @@ internal static class RemoteCatalog
     {
         public (HttpStatusCode Status, string Body) Reply, Page = (HttpStatusCode.NotFound, ""); // Page answers the /providers web page
         public HttpRequestMessage? Seen;
+        public string? PageOnly; // when set, only this page answers; any other /providers page has nothing in it
         public readonly List<HttpRequestMessage> All = [];
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -332,7 +345,8 @@ internal static class RemoteCatalog
                 Seen = request;
                 All.Add(request);
             }
-            var (status, body) = request.RequestUri?.AbsolutePath.EndsWith("/providers", StringComparison.Ordinal) == true ? Page : Reply;
+            var (status, body) = request.RequestUri?.AbsolutePath.EndsWith("/providers", StringComparison.Ordinal) != true ? Reply
+                : PageOnly is null || request.RequestUri.ToString() == PageOnly ? Page : (HttpStatusCode.OK, "<html>nothing</html>");
             return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent(body) });
         }
     }
