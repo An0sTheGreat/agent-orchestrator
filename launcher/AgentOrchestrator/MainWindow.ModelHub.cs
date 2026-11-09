@@ -809,7 +809,7 @@ public partial class MainWindow
         var age = Line(HubLogic.FormatAge(m.LastModified, now));
         var right = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { stats, age } };
         (stats.HorizontalAlignment, age.HorizontalAlignment) = (HorizontalAlignment.Right, HorizontalAlignment.Right);
-        var done = HubPill("Downloaded");
+        var done = HubPill("Downloaded", new SolidColorBrush(Color.FromRgb(0x3F, 0xBF, 0x7F)));
         (done.Tag, done.Margin, done.Padding, done.VerticalAlignment) = ("HubRowDownloaded", new Thickness(8, 0, 0, 0), new Thickness(7, 0, 7, 1), VerticalAlignment.Center);
         done.Visibility = HubRowIsDownloaded(m.Id) ? Visibility.Visible : Visibility.Collapsed;
         var nameLine = new DockPanel { Children = { done, Line(m.Name, strong: true) } };
@@ -899,8 +899,15 @@ public partial class MainWindow
             t.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
         else
             t.Foreground = foreground;
-        var pill = new Border { Tag = "HubTag:" + text, Padding = new Thickness(9, 3, 9, 3), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(10), Child = t };
-        pill.SetResourceReference(Border.BackgroundProperty, "Hover");
+        var pill = new Border { Tag = "HubTag:" + text, Padding = new Thickness(9, 3, 9, 3), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(8), Child = t };
+        if (foreground is SolidColorBrush status) // a status pill (Downloaded, Gated): a tint of its own colour, as the site's status chips
+            pill.Background = new SolidColorBrush(Color.FromArgb(0x26, status.Color.R, status.Color.G, status.Color.B));
+        else // a tag: a hairline chip
+        {
+            pill.SetResourceReference(Border.BackgroundProperty, "Hover");
+            pill.SetResourceReference(Border.BorderBrushProperty, "Border");
+            pill.BorderThickness = new Thickness(1);
+        }
         return pill;
     }
 
