@@ -393,10 +393,15 @@ public partial class MainWindow
 
     // `remote`: the conversation the remote page shows it in and may answer it from (only the sandbox's approvals pass one);
     // null: the PC only, and an open remote one stays hidden while this is on top of it.
+    private UIElement? _choiceBody; // the next Choose shows this in place of its message (the remote page still gets the message)
+
     private string? Choose(string? remote, string title, string message, params (string Label, string Value)[] options)
     {
         if (_codeChoice is { } answer)
+        {
+            _choiceBody = null;
             return answer(title);
+        }
         string? result = null;
         DialogShell? dialog = null;
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
@@ -412,7 +417,8 @@ public partial class MainWindow
             buttons.Children.Add(button);
         }
         var panel = new StackPanel();
-        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 });
+        panel.Children.Add(_choiceBody ?? new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 460 }); // an approval brings its own card
+        _choiceBody = null;
         panel.Children.Add(buttons);
         dialog = new DialogShell(this, title, panel) { ShowActivated = !_dialogsQuiet };
         // While it is open the remote page shows it with its choices; an answer from there (with its nonce) resolves it as a click would.

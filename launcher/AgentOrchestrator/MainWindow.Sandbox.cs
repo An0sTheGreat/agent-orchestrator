@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Controls;
 
 namespace AgentOrchestrator;
 
@@ -48,6 +49,7 @@ public partial class MainWindow
                 after += "\n\nAllow similar commands for this session: " + (kind == "write" ? "writing in these folders" : $"{kind switch
                     { "network" => "network access for", _ => "running" }} \"{key}\" commands") + " is allowed in this chat without asking again, until the app closes.";
             var message = $"{what}\n\n{detail}" + (reason.Length > 0 ? $"\n\nReason given: {reason}" : "") + $"\n\n{after}";
+            _choiceBody = ApprovalCard(what, detail, reason, after);
             // the remote page may answer it in the conversation that asked (none running: the PC only)
             var answer = similar ? Choose(remote: RunningId, title, message, (yes, "allow"), ("Allow similar commands for this session", "similar"), (no, "deny"))
                 : Choose(remote: RunningId, title, message, (yes, "allow"), (no, "deny"));
@@ -62,6 +64,35 @@ public partial class MainWindow
         }
         // the process that asked: a chat/Code turn's, else a project run's (one of the two runs at a time)
         ToTurn(_chatProcess ?? _process, JsonSerializer.Serialize(new { id = Str(ev, "id"), allow }));
+    }
+
+    // The approval as a card: the question, the command or folders in a mono chip, the reason and what allowing means in muted text.
+    private UIElement ApprovalCard(string what, string detail, string reason, string after)
+    {
+        TextBlock Text(string text, double size, bool muted)
+        {
+            var block = new TextBlock { Text = text, FontSize = size, TextWrapping = TextWrapping.Wrap };
+            block.SetResourceReference(TextBlock.ForegroundProperty, muted ? "Muted" : "TextPrimary");
+            return block;
+        }
+        var chipText = Text(detail, 12.5, false);
+        chipText.FontFamily = AppFonts.Mono;
+        var chip = new Border { Child = chipText, Padding = new Thickness(12, 9, 12, 9), CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Margin = new Thickness(0, 10, 0, 0) };
+        chip.SetResourceReference(Border.BackgroundProperty, "Hover");
+        chip.SetResourceReference(Border.BorderBrushProperty, "Border");
+        var card = new StackPanel { MaxWidth = 460 };
+        card.Children.Add(Text(what, 13, false));
+        card.Children.Add(chip);
+        if (reason.Length > 0)
+        {
+            var why = Text("Reason given: " + reason, 12, true);
+            why.Margin = new Thickness(2, 10, 0, 0);
+            card.Children.Add(why);
+        }
+        var note = Text(after, 12, true);
+        note.Margin = new Thickness(2, 10, 0, 0);
+        card.Children.Add(note);
+        return card;
     }
 
     private void InitSandbox()

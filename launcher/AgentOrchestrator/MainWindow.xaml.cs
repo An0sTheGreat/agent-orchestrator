@@ -474,7 +474,7 @@ public partial class MainWindow : Window
             case "task":
                 EndStream(false);
                 Log($"Task {Str(ev, "id")}: {Str(ev, "outcome")}");
-                AddNote($"TASK  {Str(ev, "id")}", Str(ev, "outcome"));
+                AddTaskRow($"TASK  {Str(ev, "id")}", Str(ev, "outcome"), Str(ev, "id"), "Completed", RowState.Done);
                 RefreshPrimary();
                 break;
             case "task_start": // planning (or a resume) begins: TASK TIME restarts, workers count this task from zero
@@ -490,14 +490,14 @@ public partial class MainWindow : Window
             case "complete":
                 EndStream(false);
                 Log($"Project complete: {Str(ev, "summary")}");
-                AddNote("PROJECT COMPLETE", Str(ev, "summary"));
+                AddTaskRow("PROJECT COMPLETE", "Project complete", "", "Completed", RowState.Done, Str(ev, "summary"));
                 Toast("Project complete");
                 RefreshPrimary();
                 break;
             case "resume":
                 EndStream(false);
                 Log($"Resuming task {Str(ev, "id")} at review round {Num(ev, "round") + 1}");
-                AddNote($"RESUMED  {Str(ev, "id")}", $"Continuing at review round {Num(ev, "round") + 1}");
+                AddTaskRow($"RESUMED  {Str(ev, "id")}", $"Continuing at review round {Num(ev, "round") + 1}", Str(ev, "id"), "Running", RowState.Running);
                 RefreshPrimary();
                 break;
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
@@ -509,7 +509,8 @@ public partial class MainWindow : Window
             case "verdict":
                 EndStream(false);
                 Log($"Review round {Num(ev, "round")}: {Str(ev, "verdict")}");
-                AddNote($"REVIEW  {Str(ev, "verdict")}", $"Task {Str(ev, "id")}, round {Num(ev, "round")}");
+                AddTaskRow($"REVIEW  {Str(ev, "verdict")}", $"Review {Str(ev, "verdict")}", $"Task {Str(ev, "id")} · round {Num(ev, "round")}", Str(ev, "verdict") == "PASS" ? "Passed" : "Failed",
+                    Str(ev, "verdict") == "PASS" ? RowState.Done : RowState.Failed);
                 Toast($"Review {Str(ev, "verdict")}: task {Str(ev, "id")}, round {Num(ev, "round")}", Str(ev, "verdict") == "PASS" ? null : "#FF667A");
                 RefreshPrimary();
                 break;
@@ -806,6 +807,56 @@ public partial class MainWindow : Window
         panel.Children.Add(BodyText(text, mono: false, muted: true));
         _blockRole = null;
         AddBlock(panel, $"\n[{title}] {text}\n");
+    }
+
+    private enum RowState { Done, Failed, Running }
+
+    // A project run's task, review or completion as a status row: a coloured status disc, the title, its small detail and a
+    // status pill, with any longer text under it. The transcript line is the one AddNote writes. `tag` is the row's old note
+    // title ("TASK  T1"), which --ui-smoke reads the order from.
+    private void AddTaskRow(string tag, string title, string meta, string pill, RowState state, string detail = "")
+    {
+        var (color, glyph) = state switch
+        {
+            RowState.Done => ("#3FBF7F", "\uE73E"), RowState.Failed => ("#FF667A", "\uE711"), _ => ("#7C8CFF", "\uE895"),
+        };
+        var tint = (Color)ColorConverter.ConvertFromString(color);
+        var disc = new Border { Width = 22, Height = 22, CornerRadius = new CornerRadius(11), Background = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Top };
+        var mark = new TextBlock { Text = glyph, FontSize = 11, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+        mark.SetResourceReference(StyleProperty, "RailGlyph");
+        mark.Foreground = Brushes.White; // (after the style, which sets the muted colour)
+        disc.Child = mark;
+        var heading = new TextBlock { Text = title, FontWeight = FontWeights.SemiBold, FontSize = 13, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+        heading.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+        var small = new TextBlock { Text = meta, FontSize = 12, Margin = new Thickness(12, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+        small.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var label = new TextBlock { Text = pill, FontSize = 11, Foreground = new SolidColorBrush(tint), VerticalAlignment = VerticalAlignment.Center };
+        var status = new Border
+        {
+            Child = label, Padding = new Thickness(8, 1, 8, 2), CornerRadius = new CornerRadius(7), VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromArgb(0x26, tint.R, tint.G, tint.B)),
+        };
+        var head = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition { Width = GridLength.Auto } } };
+        heading.Margin = new Thickness(12, 0, 0, 0);
+        Grid.SetColumn(heading, 1);
+        Grid.SetColumn(small, 2);
+        Grid.SetColumn(status, 3);
+        head.Children.Add(disc);
+        head.Children.Add(heading);
+        head.Children.Add(small);
+        head.Children.Add(status);
+        var body = new StackPanel { Children = { head } };
+        if (detail.Length > 0)
+        {
+            var more = BodyText(detail, mono: false, muted: true);
+            more.Margin = new Thickness(34, 6, 0, 0);
+            body.Children.Add(more);
+        }
+        var card = new Border { Child = body, Padding = new Thickness(12, 10, 12, 10), Margin = new Thickness(0, 8, 0, 4), CornerRadius = new CornerRadius(12), BorderThickness = new Thickness(1), Tag = tag };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        _blockRole = null;
+        AddBlock(card, $"\n[{tag}] {title}{(detail.Length > 0 ? " " + detail : "")}\n");
     }
 
     // A thin rule under a context-compacted note, as Claude and ChatGPT mark it: what is above it was summarized.
@@ -1944,8 +1995,8 @@ public partial class MainWindow : Window
                 ToastStack.Children.Clear();
                 void RunEvent(string json) { _lines.Enqueue(LauncherLogic.EventPrefix + json); DrainLines(); }
                 // the run's last note in the panel on screen: its title
-                string LastBlock() => CodePanel.Children.Count > 0 && CodePanel.Children[^1] == OutputPanel && OutputPanel.Children.Count > 0 &&
-                    OutputPanel.Children[^1] is StackPanel { Children: [TextBlock title, ..] } ? title.Text : "";
+                string LastBlock() => CodePanel.Children.Count > 0 && CodePanel.Children[^1] == OutputPanel && OutputPanel.Children.Count > 0
+                    ? OutputPanel.Children[^1] switch { StackPanel { Children: [TextBlock title, ..] } => title.Text, Border { Tag: string tag } => tag, _ => "" } : "";
                 RunEvent("""{"e":"task","id":"T1","outcome":"before leaving"}""");
                 if (CodePanel.Children.Count != 3 || LastBlock() != "TASK  T1")
                     return Fail();
