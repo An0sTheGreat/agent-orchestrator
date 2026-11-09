@@ -599,7 +599,12 @@ public partial class MainWindow : Window
         public TextBlock ResultLabel = null!;
         public readonly StringBuilder Text = new();
         public bool Touched, Programmatic;
+        public long Started = Stopwatch.GetTimestamp(), Ended; // when it opened and when it closed (ticks), for "Thought for 4 seconds"
     }
+
+    // "Thought for 4 seconds": a thinking block's length, shown once it has ended.
+    internal static string ThoughtFor(TimeSpan took) => took.TotalSeconds < 1 ? "Thought for under a second"
+        : $"Thought for {(int)Math.Round(took.TotalSeconds)} {((int)Math.Round(took.TotalSeconds) == 1 ? "second" : "seconds")}";
 
     private void AppendDelta(string role, string kind, int index, string name, string text)
     {
@@ -683,6 +688,7 @@ public partial class MainWindow : Window
         if (_stream is not { } block)
             return;
         _stream = null;
+        block.Ended = Stopwatch.GetTimestamp();
         QueueRegroup(); // no longer streaming: it can fold (View thinking off)
         DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Kind != "tool")
@@ -717,6 +723,8 @@ public partial class MainWindow : Window
         panel.Children.Add(line);
         if (block.Preview is not null && tps > 0)
             block.Preview.Text += $"  ·  {tps:0.#} tok/s";
+        if (block.Kind == "thinking" && block.Ended > 0 && block.Preview is not null && !block.Preview.Text.StartsWith("Thought for"))
+            block.Preview.Text = ThoughtFor(Stopwatch.GetElapsedTime(block.Started, block.Ended)) + (block.Preview.Text.Length > 0 ? "  ·  " + block.Preview.Text : "");
     }
 
     // While a call streams, a muted line under its open block: the call's delta chunks so far (about one token each) and

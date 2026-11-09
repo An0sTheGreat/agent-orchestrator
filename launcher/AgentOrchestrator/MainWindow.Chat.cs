@@ -1294,7 +1294,9 @@ public partial class MainWindow
         Check(decoded == "<p class=\"a\">hi</p>\n\tx\\y é", "decoded string: " + decoded);
         Check(JsonPrefix("""ab\""", 0) == "ab" && JsonPrefix("""ab\u00""", 0) == "ab" && JsonPrefix("""ab\n""", 0) == "ab\n", "a cut-off escape is held back");
         Check(!ToolBody.Match("""{"path": "a"}""").Success && ToolBody.Match("""{"path": "a", "new_string": "x""").Success, "which arguments carry code");
-        Check(ToolCode("""{"path":"a.py","content":"print(1)"}""") == "```py\nprint(1)\n```" && ToolCode("""{"path":"a.py"}""") is null && ToolCode("not json") is null,
+        Check(ThoughtFor(TimeSpan.FromMilliseconds(400)) == "Thought for under a second" && ThoughtFor(TimeSpan.FromSeconds(1.2)) == "Thought for 1 second" &&
+              ThoughtFor(TimeSpan.FromSeconds(4.4)) == "Thought for 4 seconds", "the thinking duration line");
+        Check(ToolCode("""{"path":"a.py","content":"print(1)"}""") =="```py\nprint(1)\n```" && ToolCode("""{"path":"a.py"}""") is null && ToolCode("not json") is null,
             "a finished call's code block");
     }
 
@@ -1676,6 +1678,7 @@ public partial class MainWindow
         if (_reply?.Block is not { } block)
             return;
         _reply.Block = null;
+        block.Ended = Stopwatch.GetTimestamp();
         _chatClosed.Add(block);
         DropLive(block); // the call's live line moves to its next block; its usage event adds the exact stats
         if (block.Expander is null)
