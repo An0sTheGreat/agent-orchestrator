@@ -1324,7 +1324,6 @@ public partial class MainWindow
         var body = JsonPrefix(args, m.Index + m.Length);
         if (_toolBlock is null)
         {
-            EndChatBlock();
             DetachAnswer(r);
             _toolBlock = StartToolBlock(r, role, name, path);
             _toolShown = 0;

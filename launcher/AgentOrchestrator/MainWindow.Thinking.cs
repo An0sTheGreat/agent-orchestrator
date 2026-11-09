@@ -74,7 +74,8 @@ public partial class MainWindow
 
     private void Regroup(StackPanel content, bool inRun = false)
     {
-        Func<UIElement, bool> isWork = inRun ? IsRunWork : IsWork;
+        // the streaming call's live "tok/s · tokens" line stays in view with View thinking off: it is the one thing to watch while a long write runs
+        Func<UIElement, bool> isWork = inRun ? IsRunWork : e => IsWork(e) && !(e is TextBlock { Tag: "stats" } live && ReferenceEquals(live, _reply?.Block?.Live));
         var rows = content.Children.OfType<Expander>().Where(x => x.Tag as string == WorkGroup).ToList();
         var steps = content.Children.OfType<UIElement>().Where(e => !rows.Contains(e)).ToList();
         foreach (var step in steps.Where(_hiddenWork.Contains))
@@ -272,6 +273,25 @@ public partial class MainWindow
             if (sections.Count != 1 || panel.Children.Count != 3 || panel.Children[2] is not TextBox { Text: "Successfully wrote index.html" } ||
                 !raw.Text.EndsWith("\n```") || ((TextBlock)((StackPanel)sections[0].Header).Children[0]).Text != "write")
                 return Fail($"after the result: {sections.Count} sections, {panel.Children.Count} parts, {raw.Text.Length} chars");
+            // a call's live "tok/s · tokens" line belongs to the block it began in, and stays while its tool call streams
+            ClearConversation(_chat);
+            r = _reply = AddReply("planner");
+            AppendChatDelta("planner", "thinking", "hmm");
+            var liveLine = r.Block?.Live;
+            AppendChatDelta("planner", "tool", "{\"path\": \"a.py\", \"content\": \"x", "write");
+            if (r.Block is null || liveLine is null || liveLine.Parent is null || r.Block.Live != liveLine)
+                return Fail("the call's live stats line went when its tool call began");
+            // ...and with View thinking off it is not folded into the row
+            _settings.ViewThinking = false;
+            RegroupAll();
+            if (liveLine.Visibility != Visibility.Visible)
+                return Fail("the live stats line folded away with View thinking off");
+            _settings.ViewThinking = true;
+            RegroupAll();
+            ClearConversation(_chat);
+            r = _reply = AddReply("planner");
+            _toolArgs.Clear();
+            _toolBlock = null;
             // a call that never streamed (replayed) shows its code too
             AddCodeTool("write", """{"path":"a.py","content":"print(1)"}""", "ok");
             if (r.Content.Children.OfType<Expander>().Last().Content is not StackPanel { Children: [TextBox { Text: "```py\nprint(1)\n```" }, RichTextBox, TextBox] })
