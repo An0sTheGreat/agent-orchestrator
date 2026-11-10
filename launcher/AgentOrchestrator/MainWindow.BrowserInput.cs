@@ -262,7 +262,10 @@ public partial class MainWindow
         {
             var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
             if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
+            {
+                Forget(capture.ContinueWith(_ => { }, TaskScheduler.Default)); // its exception, if any, is not unobserved
                 return (null, "");
+            }
             await capture;
         }
         finally

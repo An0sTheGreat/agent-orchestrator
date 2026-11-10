@@ -2627,6 +2627,17 @@ class ChatTests(unittest.TestCase):
         _, log, *_ = self.chat({"messages": self.MSGS, "computer": ["Brave Browser"]}, {"planner": ["OK"]})
         self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "browser", "computer"])
         self.assertIn("Brave Browser", log[0]["tools"][2]["function"]["description"])
+        answered = []
+        real = orchestrator.chat_call
+
+        def spy(*args, **kwargs):
+            if args[2] == "answer":
+                answered.append(args[5][1])  # the handlers the answering model's calls run against
+            return real(*args, **kwargs)
+
+        with patch.object(orchestrator, "chat_call", spy):
+            self.chat({"messages": self.MSGS, "computer": ["Brave Browser"]}, {"planner": ["OK"]})
+        self.assertTrue({"browser", "computer"} <= set(answered[0]))
         _, log, *_ = self.chat({"messages": self.MSGS, "computer": []}, {"planner": ["OK"]})
         self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "browser"])
 
@@ -2634,7 +2645,7 @@ class ChatTests(unittest.TestCase):
         _, log, *_ = self.chat({"messages": self.MSGS}, {"planner": ["OK"]})
         self.assertIn("browser", [t["function"]["name"] for t in log[0]["tools"]])
         with self.assertRaises(orchestrator.WorkflowError):
-            orchestrator.browser_handler([], {})("open", "C:/x.html")
+            orchestrator.browser_handler([], {})("open", "x.html")
 
     def test_only_the_first_computer_call_of_a_reply_runs(self):
         # Gemma sent 22 "type" calls in one reply: each acts on a screen the one before changed, so only the first runs and

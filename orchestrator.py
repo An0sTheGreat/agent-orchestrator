@@ -3807,7 +3807,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
     extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler([], request, not vision_off(turn, role))}, note)  # the answering model's only; no folders, so only web addresses
     if apps := computer_apps(request):  # the answering model's only, as in Code
-        extras = ([*extras[0], computer_tool(apps)], {**handlers, "computer": computer_handler(not vision_off(turn, role))}, note)
+        extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role))}, note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
