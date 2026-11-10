@@ -6106,6 +6106,24 @@ class MultiModelTests(unittest.TestCase):
         half = int((size / 2 + 32768 * per_token) * 1.1 / 2**20)  # 2 of 4 layers on the GPU
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-ngl", "2"]), half)
 
+    def test_vram_estimate_counts_only_the_window_for_sliding_window_layers(self):
+        # Gemma: most layers attend to a sliding window (sliding_window_pattern), so they cache the window plus a micro-batch,
+        # at their own widths, not the whole context; hybrid models (full_attention_interval) cache only their attention layers.
+        meta = {"general.architecture": "gemma", "gemma.block_count": 4, "gemma.attention.head_count": 4, "gemma.attention.head_count_kv": 2,
+                "gemma.embedding_length": 64, "gemma.attention.key_length": 32, "gemma.attention.value_length": 32,
+                "gemma.attention.key_length_swa": 16, "gemma.attention.value_length_swa": 16, "gemma.attention.sliding_window": 1024,
+                "gemma.attention.sliding_window_pattern": [1, 1, 1, 0]}
+        model = self.tmp / "gemma.gguf"
+        size = self.gguf(model, meta)
+        kv = 3 * 2 * (16 + 16) * 2 * (1024 + 512) + 1 * 2 * (32 + 32) * 2 * 100000  # 3 window layers, 1 full; f16
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]), int((size + kv) * 1.1 / 2**20))
+        hybrid = {"general.architecture": "qwen", "qwen.block_count": 4, "qwen.attention.head_count": 4, "qwen.attention.head_count_kv": 2,
+                  "qwen.embedding_length": 64, "qwen.full_attention_interval": 4}
+        model = self.tmp / "hybrid.gguf"
+        size = self.gguf(model, hybrid)
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]),
+                         int((size + 2 * (16 + 16) * 2 * 100000) * 1.1 / 2**20))  # only layer 4 attends
+
 
 class ContextTests(unittest.TestCase):
     """The "context" event: after each model call of a --chat/--code turn, the prompt's split by category and n_ctx."""

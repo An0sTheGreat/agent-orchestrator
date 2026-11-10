@@ -323,6 +323,9 @@ public partial class MainWindow
             sliderRanges.GetValueOrDefault("max_seq_length")?.Invoke(ModelOptions.ModelContext(meta) ?? 131072);
             var layers = meta?.GetValueOrDefault("general.architecture") is { } arch && long.TryParse(meta.GetValueOrDefault(arch + ".block_count"), out var n) ? n + 1 : 100;
             sliderRanges.GetValueOrDefault("gpu_layers")?.Invoke(layers);
+            // a count kept from another model with more layers: shown as this model's all (the server would cap it anyway)
+            if (layers != 100 && editors.GetValueOrDefault("gpu_layers") is TextBox gpu && long.TryParse(gpu.Text.Trim(), out var set) && set > layers)
+                gpu.Text = layers.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
         StackPanel Fields(string group)
         {

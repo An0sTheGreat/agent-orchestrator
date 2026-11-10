@@ -82,7 +82,13 @@ internal static class ComputerLogic
     }
 
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
-    public const int MaxShot = 1024; // smaller images: fewer tokens for the model to read after each action
+    // A screenshot's pixel budget: image tokens grow with the area, so the cap is on the area (a 16:9 window comes out about
+    // 1067x600), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
+    public const int MaxShotArea = 640_000, MaxShotSide = 1800;
+
+    /// <summary>The scale a w x h window's screenshot is taken at: 1 when it fits the budget.</summary>
+    public static double ShotScale(int w, int h) =>
+        w <= 0 || h <= 0 ? 1 : Math.Min(1.0, Math.Min(Math.Sqrt((double)MaxShotArea / ((double)w * h)), (double)MaxShotSide / Math.Max(w, h)));
 
     /// <summary>Why a key may not be pressed in the window, or null: the Windows key and Alt+Tab act on the desktop, not the
     /// window; copy, cut and paste use the user's own clipboard.</summary>
@@ -131,6 +137,11 @@ internal static class ComputerLogic
         if (GlideMs(0.5) != 0 || Math.Abs(GlideMs(100) - 160) > 1e-6 || GlideMs(5000) != 400 || GlideMs(1) < 140 ||
             Ease(0) != 0 || Ease(1) != 1 || Math.Abs(Ease(0.5) - 0.5) > 1e-9 || Ease(0.1) >= 0.1 || Ease(0.9) <= 0.9)
             throw new InvalidOperationException("Glide");
+        // a small window stays as it is; a 16:9 one keeps the budget; an ultrawide one keeps more height than a side cap would give
+        int Side(int w, int h, bool width) => (int)Math.Round((width ? w : h) * ShotScale(w, h));
+        if (ShotScale(800, 600) != 1 || Math.Abs(Side(2560, 1440, true) * Side(2560, 1440, false) - MaxShotArea) > 4000 ||
+            Side(3440, 1390, false) <= 450 || Side(3440, 1390, true) * Side(3440, 1390, false) > MaxShotArea + 4000 || Side(10000, 200, true) > MaxShotSide)
+            throw new InvalidOperationException("ShotScale");
         // the bundled pointer: one 32x32 image, hot spot at its tip, drawn there (not transparent) and not drawn far from it
         var (art, hotX, hotY) = MainWindow.PointerArt();
         var pixels = new byte[art.PixelWidth * art.PixelHeight * 4];
@@ -560,7 +571,7 @@ public partial class MainWindow
         return MineAt(at) ? null : "ERROR: another window is now under the pointer, so nothing was clicked; take a new screenshot";
     }
 
-    // A JPEG of the window as the screen shows it (dialogs on top of it included), at most MaxShot pixels a side.
+    // A JPEG of the window as the screen shows it (dialogs on top of it included), within the pixel budget (ShotScale).
     private async Task<(string, string?)> ShotAsync(string done)
     {
         await Task.Delay(50);
@@ -575,7 +586,7 @@ public partial class MainWindow
             g.CopyFromScreen(r.Left, r.Top, 0, 0, new System.Drawing.Size(w, h));
             return 0;
         });
-        var scale = Math.Min(1.0, (double)ComputerLogic.MaxShot / Math.Max(w, h));
+        var scale = ComputerLogic.ShotScale(w, h);
         var (iw, ih) = (Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
         using var small = scale < 1 ? new System.Drawing.Bitmap(full, iw, ih) : null;
         using var jpeg = new MemoryStream();

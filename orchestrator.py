@@ -1197,16 +1197,25 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         layers, heads = int(get("block_count")), get("attention.head_count")
         heads = max(heads) if isinstance(heads, list) else heads
         kv_heads = get("attention.head_count_kv") or heads
-        kv_heads = sum(kv_heads) if isinstance(kv_heads, list) else kv_heads * layers  # per layer, or the same in each
+        per_layer = kv_heads if isinstance(kv_heads, list) and len(kv_heads) == layers else [kv_heads if not isinstance(kv_heads, list) else max(kv_heads)] * layers
+        if not (isinstance(kv_heads, list) and len(kv_heads) == layers) and (every := int(get("full_attention_interval") or 0)) >= 1:
+            per_layer = [h if (i + 1) % every == 0 else 0 for i, h in enumerate(per_layer)]  # hybrid: only every Nth layer attends
         width = get("embedding_length") // heads if heads else 0
         # ponytail: without -c the server's own default is unknown here, so the model's trained context is capped at 32768
         # (a 262k trained context would otherwise estimate hundreds of GB); a guess, not llama.cpp's real default.
         ctx = int(arg("-c") or 0) or min(int(get("context_length") or 0), 32768)
         ngl = int(arg("-ngl")) if arg("-ngl").isdigit() else layers  # 999 or more: every layer on the GPU
         weights = size * min(ngl, layers) / layers  # ponytail: layers weigh the same; ignores the output layer and the KV split
-        per_token = kv_heads * (int(get("attention.key_length") or width) * KV_BYTES.get(arg("--cache-type-k"), 2)
-                                + int(get("attention.value_length") or width) * KV_BYTES.get(arg("--cache-type-v"), 2))
-        return int((weights + ctx * per_token) * 1.1 / 2**20)
+        k_bytes, v_bytes = KV_BYTES.get(arg("--cache-type-k"), 2), KV_BYTES.get(arg("--cache-type-v"), 2)
+        key, value = int(get("attention.key_length") or width), int(get("attention.value_length") or width)
+        # sliding-window layers (Gemma) cache only the window plus a micro-batch, at their own widths (as VramEstimate.cs)
+        window, pattern = int(get("attention.sliding_window") or 0), get("attention.sliding_window_pattern")
+        swa_key, swa_value = int(get("attention.key_length_swa") or key), int(get("attention.value_length_swa") or value)
+        ubatch = int(arg("-ub")) if arg("-ub").isdigit() else 512
+        sliding = [bool(p) for p in pattern] if window and isinstance(pattern, list) and len(pattern) == layers else [False] * layers
+        kv = sum(h * (swa_key * k_bytes + swa_value * v_bytes) * min(ctx, window + ubatch) if swa else h * (key * k_bytes + value * v_bytes) * ctx
+                 for h, swa in zip(per_layer, sliding))
+        return int((weights + kv) * 1.1 / 2**20)
     except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, struct.error):
         return int(size * 1.25 / 2**20)
 
