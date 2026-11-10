@@ -2554,7 +2554,7 @@ class ChatTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(len(log), 1)
         self.assertEqual((log[0]["model"], log[0]["sampling"]), ("implementer-model", {"temperature": 1}))
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate"])  # always offered
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "browser"])  # always offered
         self.assertIn((Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip(), log[0]["system"])
         self.assertIn("Implementer worker", log[0]["system"])
         self.assertIn("explain X", log[0]["input"])
@@ -2625,10 +2625,16 @@ class ChatTests(unittest.TestCase):
     def test_chat_offers_the_computer_tool_only_with_approved_apps(self):
         # Options > Computer use reaches Chat replies too: the answering model gets the tool, a delegate does not.
         _, log, *_ = self.chat({"messages": self.MSGS, "computer": ["Brave Browser"]}, {"planner": ["OK"]})
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "computer"])
-        self.assertIn("Brave Browser", log[0]["tools"][1]["function"]["description"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "browser", "computer"])
+        self.assertIn("Brave Browser", log[0]["tools"][2]["function"]["description"])
         _, log, *_ = self.chat({"messages": self.MSGS, "computer": []}, {"planner": ["OK"]})
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "browser"])
+
+    def test_chat_offers_the_browser_tool_and_refuses_local_files(self):
+        _, log, *_ = self.chat({"messages": self.MSGS}, {"planner": ["OK"]})
+        self.assertIn("browser", [t["function"]["name"] for t in log[0]["tools"]])
+        with self.assertRaises(orchestrator.WorkflowError):
+            orchestrator.browser_handler([], {})("open", "C:/x.html")
 
     def test_only_the_first_computer_call_of_a_reply_runs(self):
         # Gemma sent 22 "type" calls in one reply: each acts on a screen the one before changed, so only the first runs and
@@ -5527,7 +5533,7 @@ class ExtrasTests(unittest.TestCase):
             code, log, events, *_ = ChatTests().chat({"mode": "single", "worker": "implementer", "messages": ChatTests.MSGS, "search": True},
                                                      {"implementer": [call, "Plant in full sun [1](https://peony.org/care)"]})
         self.assertEqual(code, 0)
-        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["web_search", "fetch_page", "delegate"])
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["web_search", "fetch_page", "delegate", "browser"])
         self.assertIn("WEB SEARCH\n", log[0]["system"])
         tool = [d for e, d in events if e == "tool"]
         self.assertEqual((tool[0]["name"], "https://peony.org/care" in tool[0]["result"]), ("web_search", True))
@@ -5552,7 +5558,7 @@ class ExtrasTests(unittest.TestCase):
     def test_chat_and_code_get_the_extras(self):
         code, log, *_ = ChatTests().chat({"messages": ChatTests.MSGS, "tools": True})
         self.assertEqual(code, 0)
-        self.assertEqual([[t["function"]["name"] for t in entry["tools"]] for entry in log], [["calculator", "current_time", "fetch_page", "delegate"]])
+        self.assertEqual([[t["function"]["name"] for t in entry["tools"]] for entry in log], [["calculator", "current_time", "fetch_page", "delegate", "browser"]])
         test = CodeTests("test_request_validation")
         test.setUp()
         try:
