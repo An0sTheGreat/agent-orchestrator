@@ -435,7 +435,10 @@ public partial class MainWindow
         (() => { let d = document.getElementById('__ao_cursor');
                  if (!d) { d = document.createElement('div'); d.id = '__ao_cursor'; const s = d.style;
                      s.position = 'fixed'; s.zIndex = '2147483647'; s.pointerEvents = 'none'; s.left = '{{Num(fromX)}}px'; s.top = '{{Num(fromY)}}px';
-                     d.innerHTML = '<svg width="16" height="24" viewBox="0 0 16 24" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))"><path d="M1 1 L1 18 L5.5 14 L8.5 21 L11.5 19.7 L8.5 13 L14 13 Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+                     const N = 'http://www.w3.org/2000/svg', v = document.createElementNS(N, 'svg'), p = document.createElementNS(N, 'path'); // built with DOM calls: Trusted Types pages reject markup strings
+                     v.setAttribute('width', '16'); v.setAttribute('height', '24'); v.setAttribute('viewBox', '0 0 16 24'); v.style.display = 'block'; v.style.filter = 'drop-shadow(0 1px 2px rgba(0,0,0,.5))';
+                     p.setAttribute('d', 'M1 1 L1 18 L5.5 14 L8.5 21 L11.5 19.7 L8.5 13 L14 13 Z'); p.setAttribute('fill', '#fff'); p.setAttribute('stroke', '#111'); p.setAttribute('stroke-width', '1.4'); p.setAttribute('stroke-linejoin', 'round');
+                     v.appendChild(p); d.appendChild(v); s.margin = '-1px 0 0 -1px'; // the path's tip is at (1, 1)
                      document.documentElement.appendChild(d); d.getBoundingClientRect(); }
                  d.style.transition = {{(ms > 0 ? $"'left {Num(ms)}ms cubic-bezier(.65,0,.35,1), top {Num(ms)}ms cubic-bezier(.65,0,.35,1)'" : "'none'")}};
                  d.style.left = '{{Num(x)}}px'; d.style.top = '{{Num(y)}}px';
@@ -457,12 +460,19 @@ public partial class MainWindow
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
     }
 
-    // The pointer and ripples are hidden while the page is captured, so the model does not see its own cursor.
+    // The pointer and ripples are hidden while the page is captured, so the model does not see its own cursor. Hiding waits for two painted frames;
+    // every step is bounded to 1 s so a page that will not run scripts (busy, an alert open) cannot stall the capture or its restore.
     private static async Task ShowPointer(CoreWebView2 core, bool show)
     {
         try
         {
-            await core.ExecuteScriptAsync($"document.querySelectorAll('#__ao_cursor,.__ao_ripple').forEach(e => e.style.visibility = '{(show ? "visible" : "hidden")}')");
+            var set = $"document.querySelectorAll('#__ao_cursor,.__ao_ripple').forEach(e => e.style.visibility = '{(show ? "visible" : "hidden")}')";
+            var run = Cdp(core, "Runtime.evaluate", new { expression = show ? set : set + ";new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))", awaitPromise = !show });
+            var done = await Task.WhenAny(run, Task.Delay(1000));
+            if (done != run)
+                Forget(run.ContinueWith(_ => { }, TaskScheduler.Default)); // its exception, if any, is not unobserved
+            else
+                await run;
         }
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
     }
