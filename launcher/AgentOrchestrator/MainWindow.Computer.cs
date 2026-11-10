@@ -48,7 +48,7 @@ internal static class ComputerLogic
     public static int ToScreen(double v, int origin, int size, int image) => origin + (int)Math.Floor(image <= 0 ? v : v * size / image);
 
     /// <summary>How long the pointer takes to glide `distance` screen pixels, in ms: slow enough to follow, never sluggish.</summary>
-    public static double GlideMs(double distance) => distance < 1 ? 0 : Math.Clamp(180 + distance * 0.3, 180, 600);
+    public static double GlideMs(double distance) => distance < 1 ? 0 : Math.Clamp(140 + distance * 0.2, 140, 400);
 
     /// <summary>Ease in and out (cubic): 0 at 0, 1 at 1, slow at both ends.</summary>
     public static double Ease(double t) => t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
@@ -82,7 +82,7 @@ internal static class ComputerLogic
     }
 
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
-    public const int MaxShot = 1280; // smaller images: fewer tokens for the model to read after each action
+    public const int MaxShot = 1024; // smaller images: fewer tokens for the model to read after each action
 
     /// <summary>Why a key may not be pressed in the window, or null: the Windows key and Alt+Tab act on the desktop, not the
     /// window; copy, cut and paste use the user's own clipboard.</summary>
@@ -128,7 +128,7 @@ internal static class ComputerLogic
             throw new InvalidOperationException("Typed");
         if (!Extended(37) || !Extended(46) || Extended(65) || Extended(13))
             throw new InvalidOperationException("Extended");
-        if (GlideMs(0.5) != 0 || Math.Abs(GlideMs(100) - 210) > 1e-6 || GlideMs(5000) != 600 || GlideMs(1) < 180 ||
+        if (GlideMs(0.5) != 0 || Math.Abs(GlideMs(100) - 160) > 1e-6 || GlideMs(5000) != 400 || GlideMs(1) < 140 ||
             Ease(0) != 0 || Ease(1) != 1 || Math.Abs(Ease(0.5) - 0.5) > 1e-9 || Ease(0.1) >= 0.1 || Ease(0.9) <= 0.9)
             throw new InvalidOperationException("Glide");
         // the bundled pointer: one 32x32 image, hot spot at its tip, drawn there (not transparent) and not drawn far from it
@@ -371,7 +371,7 @@ public partial class MainWindow
         {
             if (i > 0)
             {
-                await Task.Delay(300); // the application reacts before the next step
+                await Task.Delay(200); // the application reacts before the next step
                 if (_cuStopped || !IsWindow(_cuWindow) || !Front())
                 {
                     lines.Add(_cuStopped ? "ERROR: the user pressed Esc to take back control" : "ERROR: the window closed or could not be brought to the front");
@@ -390,7 +390,7 @@ public partial class MainWindow
             }
         }
         var report = string.Join("\n", lines);
-        await Task.Delay(450); // the application reacts
+        await Task.Delay(250); // the application reacts
         if (!IsWindow(_cuWindow))
             return ($"{report}\nthe window closed", null);
         return input.Shot && !_cuStopped ? await ShotAsync(report) : ($"{report}\nWINDOW: \"{TitleOf(_cuWindow)}\"", null);
@@ -789,7 +789,7 @@ public partial class MainWindow
         });
     }
 
-    private const double PointerScale = 1.5; // the art is drawn larger than a normal cursor, so the model's pointer stands out
+    private const double PointerScale = 2.0; // the art is drawn larger than a normal cursor, so the model's pointer stands out
     private int _cuHotX, _cuHotY, _cuArtW;
 
     // The pointer art: Assets\pointer.cur (the "light" scheme's arrow), read as a cursor file.
