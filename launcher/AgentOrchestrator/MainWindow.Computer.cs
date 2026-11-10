@@ -75,8 +75,8 @@ internal static class ComputerLogic
 
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
     // A screenshot's pixel budget: image tokens grow with the area, so the cap is on the area (a 16:9 window comes out about
-    // 1067x600), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
-    public const int MaxShotArea = 640_000, MaxShotSide = 1800;
+    // 1280x720), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
+    public const int MaxShotArea = 921_600, MaxShotSide = 1800;
 
     /// <summary>A round grid spacing (in screenshot pixels) giving at most about ten lines across `span` screenshot pixels.</summary>
     public static double GridStep(double span) => new double[] { 2, 5, 10, 20, 25, 50, 100, 200 }.FirstOrDefault(s => span / s <= 10, 500);
@@ -110,7 +110,10 @@ internal static class ComputerLogic
             var py = (float)((v - originY) / units);
             g.DrawLine(line, 0, py, iw, py);
             if (v > 0)
-                Tag(Label(v), 1, py + 1);
+                {
+                var text = Label(v);
+                Tag(text, iw - g.MeasureString(text, font).Width, py + 1); // right edge: the left column is where controls are
+            }
         }
     }
 
@@ -195,8 +198,8 @@ internal static class ComputerLogic
             throw new InvalidOperationException("ZoomBox");
         if (GridStep(40) != 5 || GridStep(100) != 10 || GridStep(450) != 50 || GridStep(1000) != 100 || GridStep(1800) != 200 || GridStep(9000) != 500)
             throw new InvalidOperationException("GridStep");
-        if (LogLine("click", """{"e":"computer","id":"9","action":"click","x":512,"y":300,"shot":true}""", 1067, 600, "CLICKED at (512, 300)\nWINDOW: \"x\"")
-                != """Computer: click {"x":512,"y":300} (screenshot 1067x600) -> CLICKED at (512, 300)""" ||
+        if (LogLine("click", """{"e":"computer","id":"9","action":"click","x":512,"y":300,"shot":true}""", 1280, 720, "CLICKED at (512, 300)\nWINDOW: \"x\"")
+                != """Computer: click {"x":512,"y":300} (screenshot 1280x720) -> CLICKED at (512, 300)""" ||
             !LogLine("type", $$"""{"text":"{{new string('a', 500)}}"}""", 0, 0, "ERROR: no window yet").EndsWith("… -> ERROR: no window yet", StringComparison.Ordinal))
             throw new InvalidOperationException("LogLine");
         // the pointer art, drawn at 4x: painted at its tip (the hot spot), white inside, and clear far from it
@@ -646,7 +649,7 @@ public partial class MainWindow
         var scale = ComputerLogic.ShotScale(w, h);
         var (iw, ih) = (Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
         var hwnd = _cuWindow;
-        var found = await Task.Run(() => Physical(() => Controls(hwnd, r))); // the controls the application reports, while the capture waits
+        var found = await Task.Run(() => Physical(() => Controls(hwnd, r, IsBrowser(_cuExe)))); // the controls the application reports, while the capture waits
         var marks = found.Select((c, i) => new Mark(i + 1, c.Kind, c.Name, (c.Box.Left + c.Box.Right) / 2.0 - r.Left, (c.Box.Top + c.Box.Bottom) / 2.0 - r.Top, c.Box))
             .Select(m => m with { X = Math.Round(m.X * iw / w), Y = Math.Round(m.Y * ih / h) }).ToList();
         var (image, _, _) = Capture(r, scale, g =>
@@ -678,7 +681,7 @@ public partial class MainWindow
     // The clickable controls of a window the user sees, from UI Automation, nearest the top of the tree first: at most
     // MaxMarks, within a time budget (a big web page can expose thousands). Games (VaM) draw their own controls and report none.
     private const int MaxMarks = 60;
-    private static List<(string Kind, string Name, RECT Box)> Controls(IntPtr hwnd, RECT window)
+    private static List<(string Kind, string Name, RECT Box)> Controls(IntPtr hwnd, RECT window, bool browser)
     {
         var found = new List<(string, string, RECT)>();
         var clock = Stopwatch.StartNew();
@@ -686,7 +689,14 @@ public partial class MainWindow
         {
             var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
             var queue = new Queue<System.Windows.Automation.AutomationElement>();
-            queue.Enqueue(System.Windows.Automation.AutomationElement.FromHandle(hwnd));
+            var root = System.Windows.Automation.AutomationElement.FromHandle(hwnd);
+            if (!browser)
+                queue.Enqueue(root);
+            else // a browser: only the web page (its Document), not the tabs, bookmarks and extension buttons around it
+                foreach (System.Windows.Automation.AutomationElement d in root.FindAll(System.Windows.Automation.TreeScope.Descendants,
+                    new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Document)))
+                    if (!d.Current.IsOffscreen && d.Current.BoundingRectangle is { IsEmpty: false, Width: > 50, Height: > 50 })
+                        queue.Enqueue(d);
             while (queue.Count > 0 && found.Count < MaxMarks && clock.ElapsedMilliseconds < 900)
             {
                 var child = walker.GetFirstChild(queue.Dequeue());
@@ -700,6 +710,8 @@ public partial class MainWindow
                     if (!Clickable.TryGetValue(c.ControlType, out var kind) || !c.IsEnabled || b.IsEmpty || b.Width < 4 || b.Height < 4 ||
                         b.Left < window.Left - 2 || b.Top < window.Top - 2 || b.Right > window.Right + 2 || b.Bottom > window.Bottom + 2)
                         continue;
+                    if (browser && !HitsItself(child, walker, b)) // a stale element that is not what is shown at its place
+                        continue;
                     var name = string.Join(' ', (c.Name ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
                     found.Add((kind, name.Length > 40 ? name[..40] + "…" : name,
                         new RECT { Left = (int)b.Left, Top = (int)b.Top, Right = (int)b.Right, Bottom = (int)b.Bottom }));
@@ -712,10 +724,27 @@ public partial class MainWindow
         return found;
     }
 
+    private static bool IsBrowser(string exe) =>
+        Path.GetFileNameWithoutExtension(exe).ToLowerInvariant() is "chrome" or "msedge" or "brave" or "firefox" or "opera" or "vivaldi";
+
+    // Whether the element at the centre of `box` is `e` or inside it.
+    private static bool HitsItself(System.Windows.Automation.AutomationElement e, System.Windows.Automation.TreeWalker walker, System.Windows.Rect box)
+    {
+        try
+        {
+            var hit = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(box.Left + box.Width / 2, box.Top + box.Height / 2));
+            for (var i = 0; hit is not null && i < 8; i++, hit = walker.GetParent(hit))
+                if (System.Windows.Automation.Automation.Compare(hit, e))
+                    return true;
+        }
+        catch (Exception ex) when (ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException or ArgumentException) { }
+        return false;
+    }
+
     // Each control's box and its number on a tag at the box's corner, in a colour that stands out from most interfaces.
     private static void DrawMarks(System.Drawing.Graphics g, List<Mark> marks, RECT window, double scale)
     {
-        using var pen = new System.Drawing.Pen(System.Drawing.Color.FromArgb(220, 255, 64, 160), 1.5f);
+        using var pen = new System.Drawing.Pen(System.Drawing.Color.FromArgb(150, 255, 64, 160), 1f);
         using var tag = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(235, 255, 64, 160));
         using var font = new System.Drawing.Font("Segoe UI", 8.5f, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -1367,7 +1396,7 @@ public partial class MainWindow
             // the controls UI Automation reports for this app's own window (it lists its buttons), drawn as numbered boxes on a grid
             var own = new WindowInteropHelper(this).Handle;
             var frame = Bounds(own);
-            var controls = await Task.Run(() => Physical(() => Controls(own, frame)));
+            var controls = await Task.Run(() => Physical(() => Controls(own, frame, false)));
             if (controls.Count == 0 || !controls.Any(c => c.Kind == "button" && c.Name.Length > 0) || controls.Count > MaxMarks ||
                 controls.Any(c => c.Box.Left < frame.Left - 2 || c.Box.Bottom > frame.Bottom + 2))
                 return Fail($"controls: {controls.Count} ({string.Join(", ", controls.Take(5).Select(c => c.Kind + " " + c.Name))})");
