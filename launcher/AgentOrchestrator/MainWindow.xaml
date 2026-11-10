@@ -1683,7 +1683,7 @@
                                           AutomationProperties.Name="Let the model use applications" />
                             <TextBlock Text="Let the model use applications" VerticalAlignment="Center" />
                         </DockPanel>
-                        <TextBlock Text="The Code lead may use one window of an approved application per reply with your real mouse and keyboard: it clicks, types and presses keys as you would, so leave the computer alone while it works. Press Esc at any time to stop it. Admin windows cannot be used."
+                        <TextBlock Text="In Chat and Code, the model may use one window of an approved application per reply with your real mouse and keyboard: it clicks, types and presses keys as you would, so leave the computer alone while it works. Press Esc at any time to stop it. Admin windows cannot be used."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,16,0,0">
                             <Button x:Name="ComputerAddButton" DockPanel.Dock="Right" Content="Add application  ▾" Padding="11,6" VerticalAlignment="Center" Click="ComputerAdd_Click" />

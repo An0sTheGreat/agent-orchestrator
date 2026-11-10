@@ -324,6 +324,7 @@ internal static class LauncherLogic
             images = extras?.Images ?? [],
             vision = extras?.Vision ?? true,
             emoji = extras?.Emoji ?? "standard",
+            computer = extras?.Computer ?? [],
             title,
             effort,
             summary,

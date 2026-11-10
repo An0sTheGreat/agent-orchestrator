@@ -3766,7 +3766,9 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     lead_extras, research = with_research(handlers)
     handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
     extras = ([*tools, DELEGATE_TOOL], handlers, note)
-    system = chat + (role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
+    if apps := computer_apps(request):  # the answering model's only, as in Code
+        extras = ([*extras[0], computer_tool(apps)], {**handlers, "computer": computer_handler(not vision_off(turn, role))}, note)
+    system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0
@@ -4322,6 +4324,11 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
 COMPUTER_ACTIONS = ("apps", "open", "screenshot", *BROWSER_INPUT)
 
 
+def computer_apps(request: dict[str, Any]) -> list[str]:
+    """The applications the user approved for the computer tool (Options > Computer use); empty while it is off."""
+    return [str(a) for a in request.get("computer") or [] if str(a).strip()]
+
+
 def computer_tool(apps: list[str]) -> dict[str, Any]:
     """The lead's computer tool, offered only while the user switched on Computer use in Options; `apps` are the
     applications they approved there (the launcher refuses every other)."""
@@ -4755,7 +4762,7 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
     tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request, not vision_off(config, role))  # the lead's only
-    if apps := [str(a) for a in request.get("computer") or [] if str(a).strip()]:  # Options > Computer use is on
+    if apps := computer_apps(request):
         tools, handlers["computer"] = tools + [computer_tool(apps)], computer_handler(not vision_off(config, role))
     if asked_to_start(request):
         def start_project() -> str:

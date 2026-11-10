@@ -2588,6 +2588,14 @@ class ChatTests(unittest.TestCase):
             _, log, *_ = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS, "effort": effort})
             self.assertEqual(log[0]["sampling"], {"temperature": 1}, effort)
 
+    def test_chat_offers_the_computer_tool_only_with_approved_apps(self):
+        # Options > Computer use reaches Chat replies too: the answering model gets the tool, a delegate does not.
+        _, log, *_ = self.chat({"messages": self.MSGS, "computer": ["Brave Browser"]}, {"planner": ["OK"]})
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate", "computer"])
+        self.assertIn("Brave Browser", log[0]["tools"][1]["function"]["description"])
+        _, log, *_ = self.chat({"messages": self.MSGS, "computer": []}, {"planner": ["OK"]})
+        self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate"])
+
     def test_legacy_mode_is_ignored_and_worker_defaults_to_planner(self):
         for request in ({"mode": "multi", "messages": self.MSGS}, {"mode": "single", "messages": self.MSGS}, {"messages": self.MSGS}):
             code, log, events, *_ = self.chat(request, {"planner": ["ANSWER"]})
