@@ -4050,7 +4050,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             nudges += 1
             messages.append({"role": "user", "content": nudge() if callable(nudge) else nudge})
             continue
-        nudges, results, images = 0, [], []
+        nudges, results, images, acted = 0, [], [], False
         for call in calls:
             function = call.get("function") or {}
             tool = str(function.get("name") or "?")
@@ -4058,6 +4058,10 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 arguments = json.loads(function.get("arguments") or "{}")
                 if tool not in handlers or not isinstance(arguments, dict):
                     raise WorkflowError(f"tool {tool!r} is unavailable" if tool not in handlers else "arguments must be an object")
+                if tool == "computer" and acted:  # each action changes the screen the next one was planned on
+                    raise WorkflowError("not run: one computer call per reply, since the screen changes after each; look at the "
+                                        "screenshot the first one returned, then decide. To chain actions you are sure of, put them in `steps`")
+                acted = acted or tool == "computer"
                 result = cap_result(tool, handlers[tool](**arguments), arguments, getattr(client, "context_size", lambda: None)())
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
@@ -4070,7 +4074,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
-            messages.append({"role": "user", "content": "The screenshot the browser tool took:", "images": images})
+            messages.append({"role": "user", "content": "The screenshot the tool took:", "images": images})
         if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():

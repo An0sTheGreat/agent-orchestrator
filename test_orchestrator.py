@@ -2630,6 +2630,18 @@ class ChatTests(unittest.TestCase):
         _, log, *_ = self.chat({"messages": self.MSGS, "computer": []}, {"planner": ["OK"]})
         self.assertEqual([t["function"]["name"] for t in log[0]["tools"]], ["delegate"])
 
+    def test_only_the_first_computer_call_of_a_reply_runs(self):
+        # Gemma sent 22 "type" calls in one reply: each acts on a screen the one before changed, so only the first runs and
+        # the rest come back refused, pointing to `steps`.
+        calls = [{"id": f"c{n}", "function": {"name": "computer", "arguments": json.dumps({"action": "type", "text": "youtube.com"})}} for n in range(3)]
+        asked = []
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: asked.append(d) or {"result": "TYPED"}):
+            _, log, *_ = self.chat({"messages": self.MSGS, "computer": ["Brave"]},
+                                   {"planner": [{"role": "assistant", "content": "", "tool_calls": calls}, "DONE"]})
+        self.assertEqual(len(asked), 1)
+        sent = str(log[1]["input"])  # the model's next call sees one result and two refusals
+        self.assertEqual((sent.count("TYPED"), sent.count("ERROR: not run: one computer call per reply")), (1, 2))
+
     def test_legacy_mode_is_ignored_and_worker_defaults_to_planner(self):
         for request in ({"mode": "multi", "messages": self.MSGS}, {"mode": "single", "messages": self.MSGS}, {"messages": self.MSGS}):
             code, log, events, *_ = self.chat(request, {"planner": ["ANSWER"]})
@@ -3182,7 +3194,7 @@ class CodeTests(unittest.TestCase):
             self.assertEqual(len(asked), 1)  # the launcher was not asked again
         later = [*log[1]["messages"], {"role": "assistant", "content": "a"}, {"role": "assistant", "content": "b"}]
         old = orchestrator.slim_tool_results(later)[-3]  # two rounds on, the image is left out and its text stays
-        self.assertTrue("images" not in old and old["content"].startswith("The screenshot the browser tool took: (the image is left out"), old)
+        self.assertTrue("images" not in old and old["content"].startswith("The screenshot the tool took: (the image is left out"), old)
         self.assertEqual(orchestrator.estimate_tokens([shot]) - orchestrator.estimate_tokens([{"content": shot["content"]}]), orchestrator.IMAGE_TOKENS)
         big = {**shot, "images": ["data:image/jpeg;base64," + "A" * 200_000]}  # a real screenshot's data URL is this long
         parts = orchestrator.context_parts(orchestrator.with_images([{"role": "system", "content": "s" * 8750}, big]), None, 1000)
