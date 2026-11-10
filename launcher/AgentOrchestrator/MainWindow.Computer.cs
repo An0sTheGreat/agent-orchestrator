@@ -38,6 +38,26 @@ internal static class ComputerLogic
                                              Path.GetFileNameWithoutExtension(exe).Equals(n, StringComparison.OrdinalIgnoreCase) ||
                                              Path.GetFileName(exe).Equals(n, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>One computer action for the daily log, so a bad run can be looked into after its chat is gone: the action,
+    /// its arguments (the request less its id, event and shot flag; long text cut), the screenshot size the coordinates
+    /// refer to, and the first line of the result.</summary>
+    public static string LogLine(string action, string request, int shotW, int shotH, string result)
+    {
+        var args = "";
+        try
+        {
+            var fields = System.Text.Json.Nodes.JsonNode.Parse(request)!.AsObject();
+            foreach (var drop in new[] { "id", "event", "action", "shot" })
+                fields.Remove(drop);
+            args = fields.ToJsonString();
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or NullReferenceException) { }
+        if (args.Length > 300)
+            args = args[..300] + "…";
+        var first = result.Split('\n')[0];
+        return $"Computer: {action} {args}{(shotW > 0 ? $" (screenshot {shotW}x{shotH})" : "")} -> {(first.Length > 200 ? first[..200] + "…" : first)}";
+    }
+
     /// <summary>Whether a program may be approved: not this app (the model would change its own Options), not the frame host of
     /// Store apps (approving it would approve every one of them).</summary>
     public static bool Approvable(string exe, string? self) =>
@@ -142,6 +162,10 @@ internal static class ComputerLogic
         if (ShotScale(800, 600) != 1 || Math.Abs(Side(2560, 1440, true) * Side(2560, 1440, false) - MaxShotArea) > 4000 ||
             Side(3440, 1390, false) <= 450 || Side(3440, 1390, true) * Side(3440, 1390, false) > MaxShotArea + 4000 || Side(10000, 200, true) > MaxShotSide)
             throw new InvalidOperationException("ShotScale");
+        if (LogLine("click", """{"id":"9","event":"computer","action":"click","x":512,"y":300,"shot":true}""", 1067, 600, "CLICKED at (512, 300)\nWINDOW: \"x\"")
+                != """Computer: click {"x":512,"y":300} (screenshot 1067x600) -> CLICKED at (512, 300)""" ||
+            !LogLine("type", $$"""{"text":"{{new string('a', 500)}}"}""", 0, 0, "ERROR: no window yet").EndsWith("… -> ERROR: no window yet", StringComparison.Ordinal))
+            throw new InvalidOperationException("LogLine");
         // the bundled pointer: one 32x32 image, hot spot at its tip, drawn there (not transparent) and not drawn far from it
         var (art, hotX, hotY) = MainWindow.PointerArt();
         var pixels = new byte[art.PixelWidth * art.PixelHeight * 4];
@@ -341,6 +365,7 @@ public partial class MainWindow
         {
             result = "ERROR: " + e.Message;
         }
+        Log(ComputerLogic.LogLine(Str(ev, "action"), ev.GetRawText(), _cuShotW, _cuShotH, result));
         NoteShot(image);
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
