@@ -517,10 +517,16 @@ class ApiClient:
         finish = None
         splitter = ThinkSplitter(self._starts_thinking(body))
         seen_content = False
+        tails: dict[str, str] = {}  # the last LOOP_SPAN characters of each kind of output: a runaway repetition shows there
 
         def put(kind: str, text: str) -> None:
             (reasoning if kind == "thinking" else content).append(text)
             emit("delta", role=self.role, kind=kind, text=text)
+
+        def watch(kind: str, text: str) -> None:
+            tails[kind] = (tails.get(kind, "") + text)[-LOOP_SPAN:]
+            if looping(tails[kind]):
+                raise _Loop(kind)
 
         try:
             with urlopen(request, timeout=self.stall) as response:  # also the longest silence between two reads
@@ -553,6 +559,8 @@ class ApiClient:
                                 splitter = ThinkSplitter()
                             put("thinking", thought)
                         seen_content = seen_content or bool(text)
+                        watch("thinking", thought or "")  # as it arrives (the splitter may hold text back)
+                        watch("text", text)
                         for kind, text in splitter.feed(text):
                             put(kind, text)
                         for call in delta.get("tool_calls") or []:
@@ -563,6 +571,13 @@ class ApiClient:
                             fragment = function.get("arguments") or ""
                             slot["arguments"] += fragment
                             emit("delta", role=self.role, kind="tool", index=call.get("index", 0), name=slot["name"], text=fragment)
+                            watch(f"tool{call.get('index', 0)}", fragment)
+        except _Loop as loop:  # leaving the stream closes the connection, which stops the server generating
+            print(f"[{self.title or self.role}] stopped the model: it kept repeating the same text ({loop.args[0]})")
+            calls.clear()  # arguments cut off mid-repetition are not a call to run
+            content.append(LOOP_NOTE)
+            emit("delta", role=self.role, kind="text", text=LOOP_NOTE)
+            finish = "stop"
         except HTTPError as exc:
             raise self._http_error(exc, f"{self.base_url}/chat/completions") from exc
         except (URLError, TimeoutError) as exc:
@@ -1174,6 +1189,22 @@ def gguf_metadata(path: Path) -> dict[str, Any]:
             key = value(8)
             meta[key] = value(read("I"))
         return meta
+
+
+LOOP_SPAN = 800  # characters: output whose last LOOP_SPAN are one short unit over and over is a runaway repetition
+LOOP_NOTE = "\n\n(Stopped: the model kept repeating the same text.)"
+
+
+class _Loop(Exception):
+    """A streamed reply ran into a repetition loop (looping); its argument is the kind of output."""
+
+
+def looping(tail: str) -> bool:
+    """True when `tail` is LOOP_SPAN characters made of one unit of up to 32 characters repeated (\"0000...\",
+    \"ab ab ab ...\"): a model stuck in a loop, which would otherwise run until max_tokens."""
+    if len(tail) < LOOP_SPAN:
+        return False
+    return any(tail[:-period] == tail[period:] for period in range(1, 33))
 
 
 KV_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "q8_0": 1.0625, "q4_0": 0.5625}  # bytes per cached element by --cache-type

@@ -368,6 +368,40 @@ class OrchestratorTests(unittest.TestCase):
         with patch.object(orchestrator, "urlopen", return_value=Response()), patch.object(orchestrator, "emit"):
             self.assertEqual(client._stream_chat({})["choices"][0]["finish_reason"], "length")
 
+    def test_stream_chat_stops_a_model_stuck_repeating_itself(self):
+        # Gemma once wrote "1000000…" until max_tokens: output whose last 800 characters are one short unit repeated ends
+        # the stream (closing the connection stops the server), with a note; a half-written tool call in the loop is dropped.
+        def response(chunks):
+            class Response:
+                headers = type("H", (), {"get_content_type": staticmethod(lambda: "text/event-stream")})()
+                read = []
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def __iter__(self):
+                    for chunk in chunks:
+                        Response.read.append(chunk)
+                        yield f"data: {json.dumps(chunk)}\n".encode()
+                    yield b"data: [DONE]\n"
+            return Response
+        text = lambda t: {"choices": [{"delta": {"content": t}}]}
+        stuck = response([text("- \"NEMOTRON\"\n- \"1")] + [text("0" * 50)] * 1000)
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        with patch.object(orchestrator, "urlopen", return_value=stuck()), patch.object(orchestrator, "emit"):
+            message = client._stream_chat({})["choices"][0]["message"]
+        self.assertTrue(message["content"].startswith("- \"NEMOTRON\"\n- \"1000"))
+        self.assertTrue(message["content"].endswith(orchestrator.LOOP_NOTE))
+        self.assertLess(len(stuck.read), 30)  # stopped soon after 800 characters, not after all 50,000
+        tool = lambda t: {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c", "function": {"name": "computer", "arguments": t}}]}}]}
+        stuck = response([tool('{"action": "type", "text": "')] + [tool("ab")] * 1000)
+        with patch.object(orchestrator, "urlopen", return_value=stuck()), patch.object(orchestrator, "emit"):
+            message = client._stream_chat({})["choices"][0]["message"]
+        self.assertNotIn("tool_calls", message)
+        # ordinary output is never stopped, however long: prose, a long number, a table's rule
+        fine = response([text(f"Line {n}: the quick brown fox jumps over the lazy dog.\n") for n in range(300)] +
+                        [text("|" + "-" * 600 + "|\n"), text(str(2**2000))])
+        with patch.object(orchestrator, "urlopen", return_value=fine()), patch.object(orchestrator, "emit"):
+            self.assertNotIn(orchestrator.LOOP_NOTE, client._stream_chat({})["choices"][0]["message"]["content"])
+
     def test_think_splitter_start_modes(self):
         def split(start, chunks):
             splitter = orchestrator.ThinkSplitter(start)
