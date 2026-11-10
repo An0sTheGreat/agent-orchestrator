@@ -47,6 +47,12 @@ internal static class ComputerLogic
     /// <summary>A screenshot pixel as a screen pixel: `origin` and `size` are the window's on that axis when the shot was taken, `image` the shot's.</summary>
     public static int ToScreen(double v, int origin, int size, int image) => origin + (int)Math.Floor(image <= 0 ? v : v * size / image);
 
+    /// <summary>How long the pointer takes to glide `distance` screen pixels, in ms: slow enough to follow, never sluggish.</summary>
+    public static double GlideMs(double distance) => distance < 1 ? 0 : Math.Clamp(180 + distance * 0.3, 180, 600);
+
+    /// <summary>Ease in and out (cubic): 0 at 0, 1 at 1, slow at both ends.</summary>
+    public static double Ease(double t) => t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
+
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
     public const int MaxShot = 1600;
 
@@ -94,6 +100,9 @@ internal static class ComputerLogic
             throw new InvalidOperationException("Typed");
         if (!Extended(37) || !Extended(46) || Extended(65) || Extended(13))
             throw new InvalidOperationException("Extended");
+        if (GlideMs(0.5) != 0 || Math.Abs(GlideMs(100) - 210) > 1e-6 || GlideMs(5000) != 600 || GlideMs(1) < 180 ||
+            Ease(0) != 0 || Ease(1) != 1 || Math.Abs(Ease(0.5) - 0.5) > 1e-9 || Ease(0.1) >= 0.1 || Ease(0.9) <= 0.9)
+            throw new InvalidOperationException("Glide");
     }
 }
 
@@ -132,6 +141,8 @@ public partial class MainWindow
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
     [DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
     [DllImport("user32.dll")] private static extern IntPtr SetWindowsHookEx(int id, LowLevelProc proc, IntPtr module, uint thread);
+    [DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern int GetMessage(out MSG message, IntPtr hwnd, uint min, uint max);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, StringBuilder name, int max);
     [StructLayout(LayoutKind.Sequential)] private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public POINT pt; public uint lPrivate; }
@@ -161,7 +172,7 @@ public partial class MainWindow
     private int _cuShotW, _cuShotH;
     private List<IntPtr> _cuListed = new();
     private LowLevelProc? _cuHookProc; // kept: the hook calls it after this method returns
-    private Window? _cuBanner;
+    private Window? _cuBanner, _cuPulse;
     private DispatcherTimer? _cuWatch;
 
     private static T Physical<T>(Func<T> f)
@@ -556,17 +567,19 @@ public partial class MainWindow
                 {
                     if (n > 0 && Gate() is { } between)
                         return between;
+                    Pulse(at);
                     SendMouse(down);
                     SendMouse(up);
                     await Task.Delay(40);
                 }
                 return $"{(input.Clicks > 1 ? input.Clicks == 2 ? "DOUBLE-" : "TRIPLE-" : "")}{(input.Button == "left" ? "CLICKED" : input.Button.ToUpperInvariant() + "-CLICKED")} at ({input.X:0.#}, {input.Y:0.#})";
             case "drag":
+                Pulse(at);
                 SendMouse(0x2);
                 _cuDragging = true;
                 try
                 {
-                    await GlideAsync(to, 15);
+                    await GlideAsync(to, 1.6);
                     await Task.Delay(60);
                 }
                 finally
@@ -585,17 +598,63 @@ public partial class MainWindow
         }
     }
 
-    // The pointer moves to the point in steps, so hover effects and drags see a path rather than a jump.
-    private async Task GlideAsync(POINT to, int delay = 8)
+    // The pointer glides to the point, easing in and out, so the user can follow it (and hover effects and drags see a
+    // path). slower: a factor on the time (a drag moves more deliberately).
+    private async Task GlideAsync(POINT to, double slower = 1)
     {
         var start = Physical(() => GetCursorPos(out CursorPoint from) ? new POINT { X = from.X, Y = from.Y } : to);
-        var steps = BrowserInputLogic.Steps(Math.Sqrt(Math.Pow(to.X - start.X, 2) + Math.Pow(to.Y - start.Y, 2)));
-        for (var i = 1; i <= steps && !_cuStopped; i++)
+        var ms = ComputerLogic.GlideMs(Math.Sqrt(Math.Pow(to.X - start.X, 2) + Math.Pow(to.Y - start.Y, 2))) * slower;
+        var clock = Stopwatch.StartNew();
+        while (!_cuStopped)
         {
-            var (x, y) = (start.X + (to.X - start.X) * i / steps, start.Y + (to.Y - start.Y) * i / steps);
+            var t = ms <= 0 ? 1 : Math.Min(1, clock.Elapsed.TotalMilliseconds / ms);
+            var e = ComputerLogic.Ease(t);
+            var (x, y) = ((int)Math.Round(start.X + (to.X - start.X) * e), (int)Math.Round(start.Y + (to.Y - start.Y) * e));
             Physical(() => SetCursorPos(x, y));
-            await Task.Delay(delay);
+            if (t >= 1)
+                break;
+            await Task.Delay(10);
         }
+    }
+
+    // A ring that swells and fades where the model clicks: click-through, never focused, left out of screenshots.
+    private void Pulse(POINT at)
+    {
+        if (_cuPulse is null)
+        {
+            var ring = new System.Windows.Shapes.Ellipse
+            {
+                Width = 56, Height = 56, StrokeThickness = 4, Opacity = 0, Stroke = new SolidColorBrush(Color.FromRgb(0xE5, 0x48, 0x4D)),
+                Fill = new SolidColorBrush(Color.FromArgb(70, 0xE5, 0x48, 0x4D)), RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = new ScaleTransform(),
+            };
+            _cuPulse = Overlay(new Window { Width = 64, Height = 64, Content = new Grid { Children = { ring } } });
+        }
+        _cuPulse.Show();
+        var hwnd = new WindowInteropHelper(_cuPulse).Handle;
+        Physical(() => GetWindowRect(hwnd, out var r) &&
+            SetWindowPos(hwnd, new IntPtr(-1) /* topmost */, at.X - (r.Right - r.Left) / 2, at.Y - (r.Bottom - r.Top) / 2, 0, 0, 0x1 | 0x10 /* no size, no activate */));
+        var shape = (System.Windows.Shapes.Ellipse)((Grid)_cuPulse.Content).Children[0];
+        var time = new Duration(TimeSpan.FromMilliseconds(450));
+        var grow = new System.Windows.Media.Animation.DoubleAnimation(0.3, 1, time) { EasingFunction = new System.Windows.Media.Animation.CubicEase() };
+        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, time);
+        fade.Completed += (_, _) => _cuPulse?.Hide();
+        ((ScaleTransform)shape.RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+        ((ScaleTransform)shape.RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+        shape.BeginAnimation(UIElement.OpacityProperty, fade);
+    }
+
+    // A borderless, transparent, topmost window that is click-through, never takes focus and is left out of screen captures.
+    private static Window Overlay(Window w)
+    {
+        (w.WindowStyle, w.AllowsTransparency, w.Background, w.Topmost, w.ShowInTaskbar, w.ShowActivated, w.Focusable, w.IsHitTestVisible, w.ResizeMode) =
+            (WindowStyle.None, true, Brushes.Transparent, true, false, false, false, false, ResizeMode.NoResize);
+        w.SourceInitialized += (_, _) =>
+        {
+            var hwnd = new WindowInteropHelper(w).Handle;
+            SetWindowLongPtr(hwnd, ExStyle, new IntPtr((long)GetWindowLongPtr(hwnd, ExStyle) | Transparent | NoActivate | ToolWindow | Layered));
+            SetWindowDisplayAffinity(hwnd, 0x11 /* WDA_EXCLUDEFROMCAPTURE */);
+        };
+        return w;
     }
 
     private static void Send(params INPUT[] inputs) => SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
@@ -749,18 +808,11 @@ public partial class MainWindow
         if (_cuBanner is null)
         {
             var text = new TextBlock { Foreground = Brushes.White, FontSize = 13, FontWeight = FontWeights.SemiBold };
-            _cuBanner = new Window
+            _cuBanner = Overlay(new Window
             {
-                WindowStyle = WindowStyle.None, AllowsTransparency = true, Background = Brushes.Transparent, Topmost = true, ShowInTaskbar = false,
-                ShowActivated = false, Focusable = false, IsHitTestVisible = false, SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize,
+                SizeToContent = SizeToContent.WidthAndHeight,
                 Content = new Border { Background = new SolidColorBrush(Color.FromArgb(235, 0xC2, 0x2F, 0x34)), CornerRadius = new CornerRadius(14), Padding = new Thickness(14, 6, 14, 6), Child = text },
-            };
-            _cuBanner.SourceInitialized += (_, _) =>
-            {
-                var hwnd = new WindowInteropHelper(_cuBanner).Handle;
-                SetWindowLongPtr(hwnd, ExStyle, new IntPtr((long)GetWindowLongPtr(hwnd, ExStyle) | Transparent | NoActivate | ToolWindow | Layered));
-                SetWindowDisplayAffinity(hwnd, 0x11 /* WDA_EXCLUDEFROMCAPTURE */);
-            };
+            });
             _cuBanner.SizeChanged += (_, _) =>
             {
                 var area = SystemParameters.WorkArea;
@@ -778,7 +830,7 @@ public partial class MainWindow
     {
         ComputerToggle.IsChecked = _settings.ComputerUse;
         RenderComputerApps();
-        Closed += (_, _) => _cuBanner?.Close(); // a hidden window would keep the app running after the main one closes
+        Closed += (_, _) => { _cuBanner?.Close(); _cuPulse?.Close(); }; // a hidden window would keep the app running after the main one closes
     }
 
     private void ComputerToggle_Click(object sender, RoutedEventArgs e)
@@ -890,6 +942,12 @@ public partial class MainWindow
                 !(await Ask("click")).Contains("no window yet") || !(await Ask("open", window: 9)).Contains("no window 9") ||
                 !(await Ask("open", "fake tool")).Contains("no longer there"))
                 return Fail("refusals");
+            Pulse(new POINT { X = -20000, Y = -20000 }); // off every screen: it shows, then hides itself when the ring has faded
+            if (_cuPulse is not { IsVisible: true })
+                return Fail("the click pulse did not show");
+            await Task.Delay(800);
+            if (_cuPulse.IsVisible)
+                return Fail("the click pulse stayed");
             if (!StartHook() || !StartHook())
                 return Fail("the Esc watch did not start");
             var self = new WindowInteropHelper(this).Handle; // a window and its child are "mine"; another window is not
