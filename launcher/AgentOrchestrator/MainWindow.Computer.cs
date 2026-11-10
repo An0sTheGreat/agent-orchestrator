@@ -78,6 +78,42 @@ internal static class ComputerLogic
     // 1067x600), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
     public const int MaxShotArea = 640_000, MaxShotSide = 1800;
 
+    /// <summary>A round grid spacing (in screenshot pixels) giving at most about ten lines across `span` screenshot pixels.</summary>
+    public static double GridStep(double span) => new double[] { 2, 5, 10, 20, 25, 50, 100, 200 }.FirstOrDefault(s => span / s <= 10, 500);
+
+    /// <summary>A faint grid on an image, labelled in screenshot pixels: image pixel p is screenshot pixel origin + p x units.
+    /// A screenshot gets a line every 100 px (units 1); a zoom gets lines in the full screenshot's pixels, so a point in it can
+    /// be read off in the numbers clicks use.</summary>
+    public static void DrawGrid(System.Drawing.Graphics g, int iw, int ih, double originX, double originY, double units)
+    {
+        var step = units == 1 ? 100 : GridStep(Math.Max(iw, ih) * units);
+        using var line = new System.Drawing.Pen(System.Drawing.Color.FromArgb(80, 0, 220, 255), 1);
+        using var back = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(170, 0, 0, 0));
+        using var ink = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(235, 120, 240, 255));
+        using var font = new System.Drawing.Font("Segoe UI", 9f, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+        string Label(double v) => v.ToString(v == Math.Floor(v) ? "0" : "0.#", System.Globalization.CultureInfo.InvariantCulture);
+        void Tag(string text, float x, float y)
+        {
+            var size = g.MeasureString(text, font);
+            g.FillRectangle(back, x, y, size.Width, size.Height - 1);
+            g.DrawString(text, font, ink, x, y - 1);
+        }
+        for (var v = Math.Ceiling(originX / step) * step; (v - originX) / units < iw; v += step)
+        {
+            var px = (float)((v - originX) / units);
+            g.DrawLine(line, px, 0, px, ih);
+            if (v > 0)
+                Tag(Label(v), px + 1, 1);
+        }
+        for (var v = Math.Ceiling(originY / step) * step; (v - originY) / units < ih; v += step)
+        {
+            var py = (float)((v - originY) / units);
+            g.DrawLine(line, 0, py, iw, py);
+            if (v > 0)
+                Tag(Label(v), 1, py + 1);
+        }
+    }
+
     /// <summary>The scale of a zoom of a w x h screen area: enlarged up to 4x toward the pixel budget (more detail for the model
     /// to see), shrunk only when the area is bigger than the budget.</summary>
     public static double ZoomScale(int w, int h) =>
@@ -157,6 +193,8 @@ internal static class ComputerLogic
             ZoomBox(10, 10, 12, 50, (0, 0, 100, 100), 100, 100) is not null || ZoomBox(-50, -50, 2000, 2000, (0, 0, 100, 100), 100, 100) is not (0, 0, 100, 100) ||
             ZoomScale(200, 100) != 4 || ZoomScale(4000, 2000) >= 1 || Math.Abs(ZoomScale(800, 400) * ZoomScale(800, 400) * 800 * 400 - MaxShotArea) > 1)
             throw new InvalidOperationException("ZoomBox");
+        if (GridStep(40) != 5 || GridStep(100) != 10 || GridStep(450) != 50 || GridStep(1000) != 100 || GridStep(1800) != 200 || GridStep(9000) != 500)
+            throw new InvalidOperationException("GridStep");
         if (LogLine("click", """{"e":"computer","id":"9","action":"click","x":512,"y":300,"shot":true}""", 1067, 600, "CLICKED at (512, 300)\nWINDOW: \"x\"")
                 != """Computer: click {"x":512,"y":300} (screenshot 1067x600) -> CLICKED at (512, 300)""" ||
             !LogLine("type", $$"""{"text":"{{new string('a', 500)}}"}""", 0, 0, "ERROR: no window yet").EndsWith("… -> ERROR: no window yet", StringComparison.Ordinal))
@@ -348,7 +386,8 @@ public partial class MainWindow
             double? Opt(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
             string Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
             return new BrowserInput(Opt("x"), Opt("y"), Opt("to_x"), Opt("to_y"), Opt("dx"), Opt("dy"), Text("button") is { Length: > 0 } button ? button : "left",
-                Math.Max((int)(Opt("clicks") ?? 1), 1), Text("text"), Text("keys"), !(e.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));
+                Math.Max((int)(Opt("clicks") ?? 1), 1), Text("text"), Text("keys"), !(e.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False),
+                Opt("element") is { } n ? (int)n : null);
         }
         var input = Parse(ev);
         var steps = ev.TryGetProperty("steps", out var list) && list.ValueKind == JsonValueKind.Array
@@ -604,9 +643,93 @@ public partial class MainWindow
         var (w, h) = (r.Right - r.Left, r.Bottom - r.Top);
         if (w <= 0 || h <= 0)
             return ($"{done}\nthe window has no size (minimized?)", null);
-        var (image, iw, ih) = Capture(r, ComputerLogic.ShotScale(w, h));
-        (_cuShotRect, _cuShotW, _cuShotH) = (r, iw, ih);
-        return ($"{done}\nWINDOW: \"{TitleOf(_cuWindow)}\"\nIMAGE: {iw}x{ih} px; x and y for click, move, drag and scroll are pixels of this image", image);
+        var scale = ComputerLogic.ShotScale(w, h);
+        var (iw, ih) = (Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
+        var hwnd = _cuWindow;
+        var found = await Task.Run(() => Physical(() => Controls(hwnd, r))); // the controls the application reports, while the capture waits
+        var marks = found.Select((c, i) => new Mark(i + 1, c.Kind, c.Name, (c.Box.Left + c.Box.Right) / 2.0 - r.Left, (c.Box.Top + c.Box.Bottom) / 2.0 - r.Top, c.Box))
+            .Select(m => m with { X = Math.Round(m.X * iw / w), Y = Math.Round(m.Y * ih / h) }).ToList();
+        var (image, _, _) = Capture(r, scale, g =>
+        {
+            ComputerLogic.DrawGrid(g, iw, ih, 0, 0, 1);
+            DrawMarks(g, marks, r, (double)iw / w);
+        });
+        (_cuShotRect, _cuShotW, _cuShotH, _cuMarks) = (r, iw, ih, marks);
+        var list = marks.Count == 0 ? "" : "\nELEMENTS (numbered boxes in the image; click one with `element`):\n" +
+            string.Join("\n", marks.Select(m => $"{m.N}: {m.Kind}{(m.Name.Length > 0 ? $" \"{m.Name}\"" : "")} at {m.X:0},{m.Y:0}"));
+        return ($"{done}\nWINDOW: \"{TitleOf(_cuWindow)}\"\nIMAGE: {iw}x{ih} px with a grid labelled every 100 px; x and y for click, move, drag and scroll are pixels of this image{list}", image);
+    }
+
+    // A control the application reports through UI Automation (its kind, name, screen box), numbered on a screenshot at X, Y.
+    private sealed record Mark(int N, string Kind, string Name, double X, double Y, RECT Box);
+    private List<Mark> _cuMarks = new();
+
+    private static readonly Dictionary<System.Windows.Automation.ControlType, string> Clickable = new()
+    {
+        [System.Windows.Automation.ControlType.Button] = "button", [System.Windows.Automation.ControlType.SplitButton] = "button",
+        [System.Windows.Automation.ControlType.CheckBox] = "checkbox", [System.Windows.Automation.ControlType.RadioButton] = "radio",
+        [System.Windows.Automation.ControlType.ComboBox] = "dropdown", [System.Windows.Automation.ControlType.Edit] = "field",
+        [System.Windows.Automation.ControlType.Hyperlink] = "link", [System.Windows.Automation.ControlType.MenuItem] = "menu item",
+        [System.Windows.Automation.ControlType.ListItem] = "list item", [System.Windows.Automation.ControlType.TabItem] = "tab",
+        [System.Windows.Automation.ControlType.TreeItem] = "tree item", [System.Windows.Automation.ControlType.Slider] = "slider",
+        [System.Windows.Automation.ControlType.Spinner] = "spinner", [System.Windows.Automation.ControlType.DataItem] = "item",
+    };
+
+    // The clickable controls of a window the user sees, from UI Automation, nearest the top of the tree first: at most
+    // MaxMarks, within a time budget (a big web page can expose thousands). Games (VaM) draw their own controls and report none.
+    private const int MaxMarks = 60;
+    private static List<(string Kind, string Name, RECT Box)> Controls(IntPtr hwnd, RECT window)
+    {
+        var found = new List<(string, string, RECT)>();
+        var clock = Stopwatch.StartNew();
+        try
+        {
+            var walker = System.Windows.Automation.TreeWalker.ControlViewWalker;
+            var queue = new Queue<System.Windows.Automation.AutomationElement>();
+            queue.Enqueue(System.Windows.Automation.AutomationElement.FromHandle(hwnd));
+            while (queue.Count > 0 && found.Count < MaxMarks && clock.ElapsedMilliseconds < 900)
+            {
+                var child = walker.GetFirstChild(queue.Dequeue());
+                for (; child is not null && clock.ElapsedMilliseconds < 900; child = walker.GetNextSibling(child))
+                {
+                    var c = child.Current;
+                    if (c.IsOffscreen)
+                        continue;
+                    queue.Enqueue(child);
+                    var b = c.BoundingRectangle;
+                    if (!Clickable.TryGetValue(c.ControlType, out var kind) || !c.IsEnabled || b.IsEmpty || b.Width < 4 || b.Height < 4 ||
+                        b.Left < window.Left - 2 || b.Top < window.Top - 2 || b.Right > window.Right + 2 || b.Bottom > window.Bottom + 2)
+                        continue;
+                    var name = string.Join(' ', (c.Name ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+                    found.Add((kind, name.Length > 40 ? name[..40] + "…" : name,
+                        new RECT { Left = (int)b.Left, Top = (int)b.Top, Right = (int)b.Right, Bottom = (int)b.Bottom }));
+                    if (found.Count >= MaxMarks)
+                        break;
+                }
+            }
+        }
+        catch (Exception e) when (e is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException or COMException or ArgumentException) { }
+        return found;
+    }
+
+    // Each control's box and its number on a tag at the box's corner, in a colour that stands out from most interfaces.
+    private static void DrawMarks(System.Drawing.Graphics g, List<Mark> marks, RECT window, double scale)
+    {
+        using var pen = new System.Drawing.Pen(System.Drawing.Color.FromArgb(220, 255, 64, 160), 1.5f);
+        using var tag = new System.Drawing.SolidBrush(System.Drawing.Color.FromArgb(235, 255, 64, 160));
+        using var font = new System.Drawing.Font("Segoe UI", 8.5f, System.Drawing.FontStyle.Bold, System.Drawing.GraphicsUnit.Pixel);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        foreach (var m in marks)
+        {
+            var (x, y) = ((float)((m.Box.Left - window.Left) * scale), (float)((m.Box.Top - window.Top) * scale));
+            var (w, h) = ((float)((m.Box.Right - m.Box.Left) * scale), (float)((m.Box.Bottom - m.Box.Top) * scale));
+            g.DrawRectangle(pen, x, y, w, h);
+            var text = m.N.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var size = g.MeasureString(text, font);
+            g.FillRectangle(tag, x, Math.Max(0, y - size.Height + 2), size.Width, size.Height - 2);
+            g.DrawString(text, font, System.Drawing.Brushes.White, x, Math.Max(0, y - size.Height + 2) - 1);
+        }
     }
 
     // zoom: a box of the last screenshot (its pixels) captured from the screen at full detail, enlarged to the pixel budget
@@ -622,14 +745,19 @@ public partial class MainWindow
             return ($"ERROR: the zoom box must be at least 4 pixels each way, inside the last screenshot ({_cuShotW}x{_cuShotH})", null);
         await Task.Delay(50);
         var area = new RECT { Left = box.Left, Top = box.Top, Right = box.Right, Bottom = box.Bottom };
-        var (image, iw, ih) = Capture(area, ComputerLogic.ZoomScale(box.Right - box.Left, box.Bottom - box.Top));
-        var (x1, y1, x2, y2) = (Math.Min(input.X ?? 0, input.ToX ?? 0), Math.Min(input.Y ?? 0, input.ToY ?? 0), Math.Max(input.X ?? 0, input.ToX ?? 0), Math.Max(input.Y ?? 0, input.ToY ?? 0));
-        return ($"ZOOM of ({x1:0.#}, {y1:0.#}) to ({x2:0.#}, {y2:0.#}) of the last screenshot, {iw}x{ih} px. To click something in it, use the " +
-                $"pixels of the last full screenshot ({_cuShotW}x{_cuShotH}): a point a fraction f across this image is at {x1:0.#} + f x {x2 - x1:0.#} there", image);
+        // the box's corners in screenshot pixels, as the screen box (rounded to whole pixels) really covers them
+        var (sw, sh) = (now.Right - now.Left, now.Bottom - now.Top);
+        var (x1, y1) = ((box.Left - now.Left) * (double)_cuShotW / sw, (box.Top - now.Top) * (double)_cuShotH / sh);
+        var (x2, y2) = ((box.Right - now.Left) * (double)_cuShotW / sw, (box.Bottom - now.Top) * (double)_cuShotH / sh);
+        var zoom = ComputerLogic.ZoomScale(box.Right - box.Left, box.Bottom - box.Top);
+        var (iw, ih) = (Math.Max(1, (int)Math.Round((box.Right - box.Left) * zoom)), Math.Max(1, (int)Math.Round((box.Bottom - box.Top) * zoom)));
+        var (image, _, _) = Capture(area, zoom, g => ComputerLogic.DrawGrid(g, iw, ih, x1, y1, (x2 - x1) / iw));
+        return ($"ZOOM of ({x1:0.#}, {y1:0.#}) to ({x2:0.#}, {y2:0.#}) of the last screenshot, {iw}x{ih} px. Its grid is labelled in the last full " +
+                $"screenshot's pixels ({_cuShotW}x{_cuShotH}), the ones clicks use: read a point's x and y off the grid", image);
     }
 
     // A screen rectangle as a JPEG data URL at `scale` (smaller or larger), and its size in pixels.
-    private static (string Image, int W, int H) Capture(RECT r, double scale)
+    private static (string Image, int W, int H) Capture(RECT r, double scale, Action<System.Drawing.Graphics>? overlay = null)
     {
         var (w, h) = (r.Right - r.Left, r.Bottom - r.Top);
         using var full = new System.Drawing.Bitmap(w, h);
@@ -647,6 +775,11 @@ public partial class MainWindow
             g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
             g.DrawImage(full, 0, 0, iw, ih);
+        }
+        if (overlay is not null)
+        {
+            using var g = System.Drawing.Graphics.FromImage(sized ?? full);
+            overlay(g);
         }
         using var jpeg = new MemoryStream();
         var codec = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
@@ -677,6 +810,13 @@ public partial class MainWindow
 
     private async Task<string> PointAtAsync(string action, BrowserInput input)
     {
+        if (input.Element is { } number) // a numbered control of the last screenshot: its centre
+        {
+            if (_cuMarks.FirstOrDefault(m => m.N == number) is not { } mark)
+                return _cuMarks.Count == 0 ? "ERROR: the last screenshot numbered no controls (this application does not list them); use x and y"
+                    : $"ERROR: there is no element {number} in the last screenshot (1 to {_cuMarks.Count})";
+            input = input with { X = mark.X, Y = mark.Y };
+        }
         POINT at;
         if (input.X is { } x && input.Y is { } y)
         {
@@ -1224,6 +1364,26 @@ public partial class MainWindow
             var (zoomed, zw, zh) = Capture(new RECT { Left = 0, Top = 0, Right = 50, Bottom = 20 }, ComputerLogic.ZoomScale(50, 20)); // a zoom is enlarged
             if (zw != 200 || zh != 80 || !zoomed.StartsWith("data:image/jpeg;base64,", StringComparison.Ordinal))
                 return Fail($"zoom capture {zw}x{zh}");
+            // the controls UI Automation reports for this app's own window (it lists its buttons), drawn as numbered boxes on a grid
+            var own = new WindowInteropHelper(this).Handle;
+            var frame = Bounds(own);
+            var controls = await Task.Run(() => Physical(() => Controls(own, frame)));
+            if (controls.Count == 0 || !controls.Any(c => c.Kind == "button" && c.Name.Length > 0) || controls.Count > MaxMarks ||
+                controls.Any(c => c.Box.Left < frame.Left - 2 || c.Box.Bottom > frame.Bottom + 2))
+                return Fail($"controls: {controls.Count} ({string.Join(", ", controls.Take(5).Select(c => c.Kind + " " + c.Name))})");
+            var (fw, fh) = (frame.Right - frame.Left, frame.Bottom - frame.Top);
+            var sketch = controls.Select((c, i) => new Mark(i + 1, c.Kind, c.Name, 0, 0, c.Box)).ToList();
+            using (var board = new System.Drawing.Bitmap(Math.Max(1, (int)(fw * ComputerLogic.ShotScale(fw, fh))), Math.Max(1, (int)(fh * ComputerLogic.ShotScale(fw, fh)))))
+            {
+                using (var g = System.Drawing.Graphics.FromImage(board))
+                {
+                    g.Clear(System.Drawing.Color.FromArgb(40, 42, 48));
+                    ComputerLogic.DrawGrid(g, board.Width, board.Height, 0, 0, 1);
+                    DrawMarks(g, sketch, frame, ComputerLogic.ShotScale(fw, fh));
+                }
+                if (Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_SNAPSHOTS") is { Length: > 0 } snaps)
+                    board.Save(Path.Combine(snaps, "computer-marks.png"), System.Drawing.Imaging.ImageFormat.Png);
+            }
             Pulse(new POINT { X = -20000, Y = -20000 }); // off every screen: it shows, then hides itself when the ring has faded
             if (_cuPulse is not { IsVisible: true })
                 return Fail("the click pulse did not show");

@@ -4387,7 +4387,9 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
         "clicks 1-3), 'move' (hover at x,y), 'drag' (x,y to to_x,to_y), 'scroll' (dy and dx in wheel notches, positive = "
         "down/right, at x,y or the middle), 'type' (`text` into the focused field), 'key' (`keys`: a key or chord, or several "
         "separated by spaces, e.g. Enter, Ctrl+S, Alt+F4, Tab Tab Enter). x and y are pixels of the last screenshot, inside "
-        "the window. Each action returns a new screenshot unless `shot` is false; to do several in a row (click a field, type, "
+        "the window: each screenshot has a grid labelled every 100 px, and the controls the application reports (buttons, fields, "
+        "links, menu items...) are boxed and numbered, listed under ELEMENTS: to click one, give `element` = its number instead of "
+        "x and y (most reliable). Games draw their own controls and list none: use the grid and zoom.Each action returns a new screenshot unless `shot` is false; to do several in a row (click a field, type, "
         "press Enter) with one screenshot at the end, add them as `steps`.The user can press Esc at any time to take "
         "back control: the tool then refuses every action; stop and tell them what you did. Copy, cut and paste are refused "
         "(the clipboard is the user's). Admin (elevated) windows and other applications cannot be used.",
@@ -4402,6 +4404,7 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
          "text": {"type": "string", "description": "type: the text to enter"},
          "keys": {"type": "string", "description": "key: a key or chord, or several separated by spaces"},
          "shot": {"type": "boolean", "description": "send a screenshot after (default true)"},
+         "element": {"type": "integer", "description": "click/move: a number from the last screenshot's ELEMENTS list, instead of x and y"},
          "steps": {"type": "array", "description": "more actions to run right after this one, each an object with its own action "
                    "(click, move, drag, scroll, type, key) and fields, e.g. [{\"action\": \"type\", \"text\": \"hi\"}, {\"action\": \"key\", "
                    "\"keys\": \"Enter\"}]; one screenshot comes back after the last. Use it when you know the next steps, to save turns.",
@@ -4413,7 +4416,20 @@ def computer_handler(vision: bool = True):
     the one window it bound for this turn (Options > Computer use: off by default, approved applications only, Esc stops)."""
     def computer(action: str = "apps", app: str = "", window: Any = 0, x: Any = None, y: Any = None, to_x: Any = None, to_y: Any = None,
                  dx: Any = None, dy: Any = None, button: str = "left", clicks: Any = 1, text: str = "", keys: str = "", shot: bool = True,
-                 steps: Any = None) -> Any:
+                 steps: Any = None, element: Any = None) -> Any:
+        def act(action: str, f: dict[str, Any]) -> dict[str, Any]:
+            """One mouse/keyboard action's checked fields; click and move may name a numbered control (`element`) instead of x, y."""
+            if f.get("element") is None:
+                return input_args(action, vision, "", f.get("x"), f.get("y"), f.get("to_x"), f.get("to_y"), f.get("dx"), f.get("dy"),
+                                  f.get("button"), f.get("clicks", 1), f.get("text"), f.get("keys"), findable=False)
+            if action not in ("click", "move"):
+                raise WorkflowError("element goes with click or move")
+            number = int(finite("element", f["element"]))
+            if number < 1:
+                raise WorkflowError("element is a number from the last screenshot's ELEMENTS list")
+            checked = input_args(action, True, "", 0, 0, None, None, None, None, f.get("button"), f.get("clicks", 1), "", "", findable=False)
+            return {k: v for k, v in checked.items() if k not in ("x", "y")} | {"element": number}
+
         if action not in COMPUTER_ACTIONS:
             raise WorkflowError("action must be " + ", ".join(f"'{a}'" for a in COMPUTER_ACTIONS))
         extra: dict[str, Any] = {}
@@ -4429,7 +4445,8 @@ def computer_handler(vision: bool = True):
                 raise WorkflowError("zoom needs x, y (one corner) and to_x, to_y (the opposite corner): pixels of the last screenshot")
             extra = {k: finite(k, v) for k, v in (("x", x), ("y", y), ("to_x", to_x), ("to_y", to_y))}
         elif action in BROWSER_INPUT:
-            extra = input_args(action, vision, "", x, y, to_x, to_y, dx, dy, button, clicks, text, keys, findable=False)
+            extra = act(action, {"x": x, "y": y, "to_x": to_x, "to_y": to_y, "dx": dx, "dy": dy, "button": button, "clicks": clicks,
+                                 "text": text, "keys": keys, "element": element})
         if steps:  # this action, then these, then one screenshot: one launcher request ("batch")
             if action not in BROWSER_INPUT or not isinstance(steps, list) or len(steps) > 19:
                 raise WorkflowError("steps go with click, move, drag, scroll, type or key, and hold at most 19 more actions")
@@ -4437,10 +4454,8 @@ def computer_handler(vision: bool = True):
             for n, step in enumerate(steps, 2):
                 if not isinstance(step, dict) or step.get("action") not in BROWSER_INPUT:
                     raise WorkflowError(f"step {n} needs an action: click, move, drag, scroll, type or key")
-                fields = {k: step.get(k) for k in ("x", "y", "to_x", "to_y", "dx", "dy", "text", "keys")}
                 try:
-                    plan.append({"action": step["action"], **input_args(step["action"], vision, "", **fields, button=step.get("button"),
-                                                                        clicks=step.get("clicks", 1), findable=False)})
+                    plan.append({"action": step["action"], **act(step["action"], step)})
                 except WorkflowError as e:
                     raise WorkflowError(f"step {n}: {e}") from None
             action, extra = "batch", {"steps": plan}

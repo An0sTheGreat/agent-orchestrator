@@ -3281,6 +3281,18 @@ class CodeTests(unittest.TestCase):
                 {"action": "screenshot", "shot": True}, {"action": "click", "x": 5.0, "y": 6.0, "button": "left", "clicks": 2, "shot": True},
                 {"action": "scroll", "dx": 0.0, "dy": -3.0, "shot": True}, {"action": "key", "keys": "Ctrl+S", "shot": False}])
             self.assertEqual({e for e, _ in asked}, {"computer"})
+            # element: click or move a numbered control of the last screenshot instead of x, y (a blind model may too)
+            use("click", element=14, clicks=2)
+            self.assertEqual(asked[-1][1], {"action": "click", "button": "left", "clicks": 2, "element": 14, "shot": True})
+            orchestrator.computer_handler(vision=False)("move", element="3")
+            self.assertEqual(asked[-1][1], {"action": "move", "element": 3, "shot": False})
+            use("click", element=2, steps=[{"action": "click", "element": 5}, {"action": "type", "text": "x"}])
+            self.assertEqual(asked[-1][1]["steps"], [{"action": "click", "button": "left", "clicks": 1, "element": 2},
+                                                     {"action": "click", "button": "left", "clicks": 1, "element": 5}, {"action": "type", "text": "x"}])
+            for args, why in (({"action": "drag", "element": 1, "to_x": 1, "to_y": 1}, "element goes with"), ({"action": "click", "element": 0}, "ELEMENTS list"),
+                              ({"action": "click", "element": "first"}, "finite"), ({"action": "click", "element": 1, "button": "back"}, "left, right")):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    use(**args)
             # zoom: a box of the last screenshot, always an image back (shot off or not)
             self.assertEqual(use("zoom", x=10, y=20, to_x=110, to_y=70, shot=False).images, [image])
             self.assertEqual(asked[-1][1], {"action": "zoom", "x": 10.0, "y": 20.0, "to_x": 110.0, "to_y": 70.0, "shot": True})

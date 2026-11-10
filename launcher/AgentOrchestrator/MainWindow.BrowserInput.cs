@@ -17,7 +17,7 @@ namespace AgentOrchestrator;
 
 /// <summary>One mouse/keyboard request from the engine. Null X/Y: not given (scroll then uses the middle; click uses Find).</summary>
 internal sealed record BrowserInput(double? X, double? Y, double? ToX, double? ToY, double? Dx, double? Dy,
-    string Button, int Clicks, string Text, string Keys, bool Shot);
+    string Button, int Clicks, string Text, string Keys, bool Shot, int? Element = null); // Element: a numbered control of the computer tool's last screenshot
 
 /// <summary>A parsed key chord, in the shape Input.dispatchKeyEvent wants.</summary>
 internal sealed record KeySpec(string Key, string Code, int VirtualKey, string Text, int Modifiers, string[] Commands);
