@@ -110,7 +110,7 @@ internal static class ComputerLogic
             var py = (float)((v - originY) / units);
             g.DrawLine(line, 0, py, iw, py);
             if (v > 0)
-                {
+            {
                 var text = Label(v);
                 Tag(text, iw - g.MeasureString(text, font).Width, py + 1); // right edge: the left column is where controls are
             }
@@ -693,10 +693,21 @@ public partial class MainWindow
             if (!browser)
                 queue.Enqueue(root);
             else // a browser: only the web page (its Document), not the tabs, bookmarks and extension buttons around it
-                foreach (System.Windows.Automation.AutomationElement d in root.FindAll(System.Windows.Automation.TreeScope.Descendants,
-                    new System.Windows.Automation.PropertyCondition(System.Windows.Automation.AutomationElement.ControlTypeProperty, System.Windows.Automation.ControlType.Document)))
-                    if (!d.Current.IsOffscreen && d.Current.BoundingRectangle is { IsEmpty: false, Width: > 50, Height: > 50 })
-                        queue.Enqueue(d);
+            {
+                // breadth first from the window, inside the same budget; a Document is a page root and is not searched for more
+                // (an iframe's Document is reached by the mark walk below, so its controls are listed once)
+                var scan = new Queue<System.Windows.Automation.AutomationElement>();
+                scan.Enqueue(root);
+                while (scan.Count > 0 && clock.ElapsedMilliseconds < 900)
+                    for (var ch = walker.GetFirstChild(scan.Dequeue()); ch is not null && clock.ElapsedMilliseconds < 900; ch = walker.GetNextSibling(ch))
+                    {
+                        var cc = ch.Current;
+                        if (cc.ControlType != System.Windows.Automation.ControlType.Document)
+                            scan.Enqueue(ch);
+                        else if (!cc.IsOffscreen && cc.BoundingRectangle is { IsEmpty: false, Width: > 50, Height: > 50 })
+                            queue.Enqueue(ch);
+                    }
+            }
             while (queue.Count > 0 && found.Count < MaxMarks && clock.ElapsedMilliseconds < 900)
             {
                 var child = walker.GetFirstChild(queue.Dequeue());
