@@ -4365,7 +4365,7 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
     return browser
 
 
-COMPUTER_ACTIONS = ("apps", "open", "screenshot", *BROWSER_INPUT)
+COMPUTER_ACTIONS = ("apps", "open", "screenshot", "zoom", *BROWSER_INPUT)
 
 
 def computer_apps(request: dict[str, Any]) -> list[str]:
@@ -4381,7 +4381,9 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
         f"Only these applications the user approved: {', '.join(apps)}; and only one window per reply: the first you open. "
         "action 'apps' lists them and their open windows (numbered); 'open' picks the window you work in (`app` = a name from "
         "that list, which starts it when it has no window, or `window` = a number from 'apps'), brings it to the front and "
-        "returns a screenshot of it; 'screenshot' returns that window again. Then: 'click' (x,y; button left|right|middle; "
+        "returns a screenshot of it; 'screenshot' returns that window again; 'zoom' (x,y to to_x,to_y: a box of the last "
+        "screenshot) returns that part at full detail, to read small text or tell small buttons apart before clicking: "
+        "clicks still use the pixels of the last full screenshot, not of the zoom. Then: 'click' (x,y; button left|right|middle; "
         "clicks 1-3), 'move' (hover at x,y), 'drag' (x,y to to_x,to_y), 'scroll' (dy and dx in wheel notches, positive = "
         "down/right, at x,y or the middle), 'type' (`text` into the focused field), 'key' (`keys`: a key or chord, or several "
         "separated by spaces, e.g. Enter, Ctrl+S, Alt+F4, Tab Tab Enter). x and y are pixels of the last screenshot, inside "
@@ -4393,8 +4395,8 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
          "window": {"type": "integer", "description": "open: a window number from 'apps'"},
          "x": {"type": "number", "description": "pixels from the left of the last screenshot"},
          "y": {"type": "number", "description": "pixels from the top of the last screenshot"},
-         "to_x": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
-         "to_y": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+         "to_x": {"type": "number", "description": "drag: where to release; zoom: the box's opposite corner (screenshot pixels)"},
+         "to_y": {"type": "number", "description": "drag: where to release; zoom: the box's opposite corner (screenshot pixels)"},
          "dx": {"type": "number", "description": "scroll: wheel notches right"}, "dy": {"type": "number", "description": "scroll: wheel notches down"},
          "button": {"type": "string", "enum": list(BROWSER_BUTTONS)}, "clicks": {"type": "integer", "description": "1 to 3"},
          "text": {"type": "string", "description": "type: the text to enter"},
@@ -4420,8 +4422,12 @@ def computer_handler(vision: bool = True):
             if not app and number <= 0:
                 raise WorkflowError("open needs `app` (an approved application's name) or `window` (a number from 'apps')")
             extra = {"app": app} if app else {"window": number}
-        elif action == "screenshot" and not vision:
+        elif action in ("screenshot", "zoom") and not vision:
             raise WorkflowError("this model's settings switch vision off, so it cannot see a screenshot")
+        elif action == "zoom":
+            if None in (x, y, to_x, to_y):
+                raise WorkflowError("zoom needs x, y (one corner) and to_x, to_y (the opposite corner): pixels of the last screenshot")
+            extra = {k: finite(k, v) for k, v in (("x", x), ("y", y), ("to_x", to_x), ("to_y", to_y))}
         elif action in BROWSER_INPUT:
             extra = input_args(action, vision, "", x, y, to_x, to_y, dx, dy, button, clicks, text, keys, findable=False)
         if steps:  # this action, then these, then one screenshot: one launcher request ("batch")
@@ -4438,7 +4444,7 @@ def computer_handler(vision: bool = True):
                 except WorkflowError as e:
                     raise WorkflowError(f"step {n}: {e}") from None
             action, extra = "batch", {"steps": plan}
-        want = action != "apps" and (action == "screenshot" or bool(shot)) and vision
+        want = action != "apps" and (action in ("screenshot", "zoom") or bool(shot)) and vision
         answer = launcher_call("computer", action=action, **extra, shot=want)
         if answer is None:
             return "ERROR: the computer tool is only there when the app runs this turn"

@@ -3281,6 +3281,14 @@ class CodeTests(unittest.TestCase):
                 {"action": "screenshot", "shot": True}, {"action": "click", "x": 5.0, "y": 6.0, "button": "left", "clicks": 2, "shot": True},
                 {"action": "scroll", "dx": 0.0, "dy": -3.0, "shot": True}, {"action": "key", "keys": "Ctrl+S", "shot": False}])
             self.assertEqual({e for e, _ in asked}, {"computer"})
+            # zoom: a box of the last screenshot, always an image back (shot off or not)
+            self.assertEqual(use("zoom", x=10, y=20, to_x=110, to_y=70, shot=False).images, [image])
+            self.assertEqual(asked[-1][1], {"action": "zoom", "x": 10.0, "y": 20.0, "to_x": 110.0, "to_y": 70.0, "shot": True})
+            for args, why in (({"action": "zoom", "x": 1, "y": 1}, "zoom needs"), ({"action": "zoom", "x": 1, "y": 1, "to_x": 2, "to_y": "big"}, "finite")):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    use(**args)
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
+                orchestrator.computer_handler(vision=False)("zoom", x=1, y=1, to_x=2, to_y=2)
             # steps: this action and the next ones as one "batch" request, one screenshot after the last
             self.assertEqual(use("click", x=1, y=2, steps=[{"action": "type", "text": "hi"}, {"action": "key", "keys": "Enter"}]).images, [image])
             self.assertEqual(asked[-1][1], {"action": "batch", "shot": True, "steps": [

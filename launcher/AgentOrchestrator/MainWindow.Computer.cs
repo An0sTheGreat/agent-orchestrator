@@ -47,7 +47,7 @@ internal static class ComputerLogic
         try
         {
             var fields = System.Text.Json.Nodes.JsonNode.Parse(request)!.AsObject();
-            foreach (var drop in new[] { "id", "event", "action", "shot" })
+            foreach (var drop in new[] { "id", "e", "event", "action", "shot" })
                 fields.Remove(drop);
             args = fields.ToJsonString();
         }
@@ -77,6 +77,24 @@ internal static class ComputerLogic
     // A screenshot's pixel budget: image tokens grow with the area, so the cap is on the area (a 16:9 window comes out about
     // 1067x600), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
     public const int MaxShotArea = 640_000, MaxShotSide = 1800;
+
+    /// <summary>The scale of a zoom of a w x h screen area: enlarged up to 4x toward the pixel budget (more detail for the model
+    /// to see), shrunk only when the area is bigger than the budget.</summary>
+    public static double ZoomScale(int w, int h) =>
+        w <= 0 || h <= 0 ? 1 : Math.Min(4.0, Math.Min(Math.Sqrt((double)MaxShotArea / ((double)w * h)), (double)MaxShotSide / Math.Max(w, h)));
+
+    /// <summary>A zoom box (two corners in pixels of a shotW x shotH screenshot of the window at `window`) as screen pixels,
+    /// clamped to the window; null when it is under 4 screenshot pixels either way.</summary>
+    public static (int Left, int Top, int Right, int Bottom)? ZoomBox(double x1, double y1, double x2, double y2, (int Left, int Top, int Right, int Bottom) window, int shotW, int shotH)
+    {
+        var (left, right) = (Math.Clamp(Math.Min(x1, x2), 0, shotW), Math.Clamp(Math.Max(x1, x2), 0, shotW));
+        var (top, bottom) = (Math.Clamp(Math.Min(y1, y2), 0, shotH), Math.Clamp(Math.Max(y1, y2), 0, shotH));
+        if (right - left < 4 || bottom - top < 4)
+            return null;
+        var (w, h) = (window.Right - window.Left, window.Bottom - window.Top);
+        return (ToScreen(left, window.Left, w, shotW), ToScreen(top, window.Top, h, shotH),
+                Math.Min(window.Right, (int)Math.Ceiling(window.Left + right * w / shotW)), Math.Min(window.Bottom, (int)Math.Ceiling(window.Top + bottom * h / shotH)));
+    }
 
     /// <summary>The scale a w x h window's screenshot is taken at: 1 when it fits the budget.</summary>
     public static double ShotScale(int w, int h) =>
@@ -134,7 +152,12 @@ internal static class ComputerLogic
         if (ShotScale(800, 600) != 1 || Math.Abs(Side(2560, 1440, true) * Side(2560, 1440, false) - MaxShotArea) > 4000 ||
             Side(3440, 1390, false) <= 450 || Side(3440, 1390, true) * Side(3440, 1390, false) > MaxShotArea + 4000 || Side(10000, 200, true) > MaxShotSide)
             throw new InvalidOperationException("ShotScale");
-        if (LogLine("click", """{"id":"9","event":"computer","action":"click","x":512,"y":300,"shot":true}""", 1067, 600, "CLICKED at (512, 300)\nWINDOW: \"x\"")
+        // a 1236x518 shot of a 3440x1440 window at (100, 50): the box (100,200)-(300,300) is the screen's (378,605)-(935,884)
+        if (ZoomBox(300, 300, 100, 200, (100, 50, 3540, 1490), 1236, 518) is not (378, 605, 935, 884) ||
+            ZoomBox(10, 10, 12, 50, (0, 0, 100, 100), 100, 100) is not null || ZoomBox(-50, -50, 2000, 2000, (0, 0, 100, 100), 100, 100) is not (0, 0, 100, 100) ||
+            ZoomScale(200, 100) != 4 || ZoomScale(4000, 2000) >= 1 || Math.Abs(ZoomScale(800, 400) * ZoomScale(800, 400) * 800 * 400 - MaxShotArea) > 1)
+            throw new InvalidOperationException("ZoomBox");
+        if (LogLine("click", """{"e":"computer","id":"9","action":"click","x":512,"y":300,"shot":true}""", 1067, 600, "CLICKED at (512, 300)\nWINDOW: \"x\"")
                 != """Computer: click {"x":512,"y":300} (screenshot 1067x600) -> CLICKED at (512, 300)""" ||
             !LogLine("type", $$"""{"text":"{{new string('a', 500)}}"}""", 0, 0, "ERROR: no window yet").EndsWith("… -> ERROR: no window yet", StringComparison.Ordinal))
             throw new InvalidOperationException("LogLine");
@@ -371,6 +394,8 @@ public partial class MainWindow
             return ("ERROR: the window could not be brought to the front; ask the user to click it once", null);
         if (action == "screenshot")
             return await ShotAsync("SCREENSHOT");
+        if (action == "zoom")
+            return await ZoomAsync(input);
         ShowBanner();
         ShowPointer();
         // "batch": several steps in a row, one screenshot after the last (fewer model calls); a step that fails ends it
@@ -579,6 +604,34 @@ public partial class MainWindow
         var (w, h) = (r.Right - r.Left, r.Bottom - r.Top);
         if (w <= 0 || h <= 0)
             return ($"{done}\nthe window has no size (minimized?)", null);
+        var (image, iw, ih) = Capture(r, ComputerLogic.ShotScale(w, h));
+        (_cuShotRect, _cuShotW, _cuShotH) = (r, iw, ih);
+        return ($"{done}\nWINDOW: \"{TitleOf(_cuWindow)}\"\nIMAGE: {iw}x{ih} px; x and y for click, move, drag and scroll are pixels of this image", image);
+    }
+
+    // zoom: a box of the last screenshot (its pixels) captured from the screen at full detail, enlarged to the pixel budget
+    // when small, so small text and buttons can be read. The last screenshot stays the frame clicks are measured in.
+    private async Task<(string, string?)> ZoomAsync(BrowserInput input)
+    {
+        if (_cuShotW <= 0)
+            return ("ERROR: take a screenshot first; the zoom box is in pixels of the last screenshot", null);
+        var now = Bounds(_cuWindow);
+        if (now.Left != _cuShotRect.Left || now.Top != _cuShotRect.Top || now.Right != _cuShotRect.Right || now.Bottom != _cuShotRect.Bottom)
+            return ("ERROR: the window moved or changed size since the last screenshot; take a new screenshot", null);
+        if (ComputerLogic.ZoomBox(input.X ?? 0, input.Y ?? 0, input.ToX ?? 0, input.ToY ?? 0, (now.Left, now.Top, now.Right, now.Bottom), _cuShotW, _cuShotH) is not { } box)
+            return ($"ERROR: the zoom box must be at least 4 pixels each way, inside the last screenshot ({_cuShotW}x{_cuShotH})", null);
+        await Task.Delay(50);
+        var area = new RECT { Left = box.Left, Top = box.Top, Right = box.Right, Bottom = box.Bottom };
+        var (image, iw, ih) = Capture(area, ComputerLogic.ZoomScale(box.Right - box.Left, box.Bottom - box.Top));
+        var (x1, y1, x2, y2) = (Math.Min(input.X ?? 0, input.ToX ?? 0), Math.Min(input.Y ?? 0, input.ToY ?? 0), Math.Max(input.X ?? 0, input.ToX ?? 0), Math.Max(input.Y ?? 0, input.ToY ?? 0));
+        return ($"ZOOM of ({x1:0.#}, {y1:0.#}) to ({x2:0.#}, {y2:0.#}) of the last screenshot, {iw}x{ih} px. To click something in it, use the " +
+                $"pixels of the last full screenshot ({_cuShotW}x{_cuShotH}): a point a fraction f across this image is at {x1:0.#} + f x {x2 - x1:0.#} there", image);
+    }
+
+    // A screen rectangle as a JPEG data URL at `scale` (smaller or larger), and its size in pixels.
+    private static (string Image, int W, int H) Capture(RECT r, double scale)
+    {
+        var (w, h) = (r.Right - r.Left, r.Bottom - r.Top);
         using var full = new System.Drawing.Bitmap(w, h);
         Physical(() =>
         {
@@ -586,17 +639,21 @@ public partial class MainWindow
             g.CopyFromScreen(r.Left, r.Top, 0, 0, new System.Drawing.Size(w, h));
             return 0;
         });
-        var scale = ComputerLogic.ShotScale(w, h);
         var (iw, ih) = (Math.Max(1, (int)Math.Round(w * scale)), Math.Max(1, (int)Math.Round(h * scale)));
-        using var small = scale < 1 ? new System.Drawing.Bitmap(full, iw, ih) : null;
+        using var sized = iw == w && ih == h ? null : new System.Drawing.Bitmap(iw, ih);
+        if (sized is not null)
+        {
+            using var g = System.Drawing.Graphics.FromImage(sized);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            g.DrawImage(full, 0, 0, iw, ih);
+        }
         using var jpeg = new MemoryStream();
         var codec = System.Drawing.Imaging.ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == System.Drawing.Imaging.ImageFormat.Jpeg.Guid);
         using var quality = new System.Drawing.Imaging.EncoderParameters(1);
         quality.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.Quality, 85L);
-        (small ?? full).Save(jpeg, codec, quality);
-        (_cuShotRect, _cuShotW, _cuShotH) = (r, iw, ih);
-        return ($"{done}\nWINDOW: \"{TitleOf(_cuWindow)}\"\nIMAGE: {iw}x{ih} px; x and y for click, move, drag and scroll are pixels of this image",
-            "data:image/jpeg;base64," + Convert.ToBase64String(jpeg.ToArray()));
+        (sized ?? full).Save(jpeg, codec, quality);
+        return ("data:image/jpeg;base64," + Convert.ToBase64String(jpeg.ToArray()), iw, ih);
     }
 
     // A screenshot pixel as a screen point, checked: a screenshot was taken, the window has not moved or resized since, and the
@@ -651,10 +708,17 @@ public partial class MainWindow
                 {
                     if (n > 0 && Gate() is { } between)
                         return between;
+                    await Task.Delay(ClickHoldMs); // the pointer rests first, so the application sees it hover
                     Pulse(at);
                     SendMouse(down);
-                    SendMouse(up);
-                    await Task.Delay(40);
+                    try
+                    {
+                        await Task.Delay(ClickHoldMs); // held like a person's click: a game reading input once a frame sees the press
+                    }
+                    finally
+                    {
+                        SendMouse(up);
+                    }
                 }
                 return $"{(input.Clicks > 1 ? input.Clicks == 2 ? "DOUBLE-" : "TRIPLE-" : "")}{(input.Button == "left" ? "CLICKED" : input.Button.ToUpperInvariant() + "-CLICKED")} at ({input.X:0.#}, {input.Y:0.#})";
             case "drag":
@@ -796,6 +860,7 @@ public partial class MainWindow
         });
     }
 
+    private const int ClickHoldMs = 50; // the rest before a click and the time its button is held
     private const double PointerScale = 2.0; // the art is drawn larger than a normal cursor, so the model's pointer stands out
     private const double ArtSize = 32, HotSpot = 2; // the art's box and its tip, in the units of a 32-pixel cursor
 
@@ -1156,6 +1221,9 @@ public partial class MainWindow
                 !(await Ask("click")).Contains("no window yet") || !(await Ask("open", window: 9)).Contains("no window 9") ||
                 !(await Ask("open", "fake tool")).Contains("no longer there"))
                 return Fail("refusals");
+            var (zoomed, zw, zh) = Capture(new RECT { Left = 0, Top = 0, Right = 50, Bottom = 20 }, ComputerLogic.ZoomScale(50, 20)); // a zoom is enlarged
+            if (zw != 200 || zh != 80 || !zoomed.StartsWith("data:image/jpeg;base64,", StringComparison.Ordinal))
+                return Fail($"zoom capture {zw}x{zh}");
             Pulse(new POINT { X = -20000, Y = -20000 }); // off every screen: it shows, then hides itself when the ring has faded
             if (_cuPulse is not { IsVisible: true })
                 return Fail("the click pulse did not show");
