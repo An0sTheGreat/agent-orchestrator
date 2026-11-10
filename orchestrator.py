@@ -4167,6 +4167,59 @@ def steer_to(handler: Any) -> None:
 BROWSER_INPUT = ("click", "move", "drag", "scroll", "type", "key")  # the model's mouse and keyboard in the in-app browser
 BROWSER_BUTTONS = ("left", "right", "middle")
 
+
+def finite(name: str, value: Any) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        result = math.nan
+    if not math.isfinite(result):  # NaN/Infinity would make the request invalid JSON, and the launcher would never answer it
+        raise WorkflowError(f"{name} must be a finite number: pixels of the last screenshot")
+    return result
+
+
+def input_args(action: str, vision: bool, find: Any, x: Any, y: Any, to_x: Any, to_y: Any, dx: Any, dy: Any, button: Any, clicks: Any,
+               text: Any, keys: Any, findable: bool = True) -> dict[str, Any]:
+    """The checked arguments of a mouse/keyboard action (browser and computer tools), as the launcher request's fields.
+    findable: a click may name a visible text instead of x and y (the browser only)."""
+    find, text, keys, button = str(find or "").strip(), str(text or ""), str(keys or "").strip(), str(button or "left").lower()
+    point = {k: finite(k, v) for k, v in (("x", x), ("y", y)) if v is not None}
+    if len(point) == 1:
+        raise WorkflowError("give both x and y")
+    if (point or action == "drag") and not vision:
+        raise WorkflowError("this model's settings switch vision off, so x and y mean nothing; "
+                            + ("click by `find` text, or use the keyboard" if findable else "use the keyboard"))
+    extra: dict[str, Any] = dict(point)
+    if action == "click":
+        if not point and not (find and findable):
+            raise WorkflowError("click needs x and y (pixels of the last screenshot)" + (" or `find` (a visible text to click)" if findable else ""))
+        if button not in BROWSER_BUTTONS:
+            raise WorkflowError("button must be left, right or middle")
+        count = int(finite("clicks", clicks))
+        if not 1 <= count <= 3:
+            raise WorkflowError("clicks must be 1, 2 or 3")
+        extra.update(button=button, clicks=count, **({"find": find} if find and not point else {}))
+    elif action in ("move", "drag"):
+        if not point:
+            raise WorkflowError(f"{action} needs x and y (pixels of the last screenshot)")
+        if action == "drag":
+            if to_x is None or to_y is None:
+                raise WorkflowError("drag needs to_x and to_y: where to release")
+            extra.update(to_x=finite("to_x", to_x), to_y=finite("to_y", to_y))
+    elif action == "scroll":
+        if dx is None and dy is None:
+            raise WorkflowError("scroll needs dy (down) and/or dx (right)")
+        extra.update(dx=finite("dx", dx or 0), dy=finite("dy", dy or 0))
+    elif action == "type":
+        if not text:
+            raise WorkflowError("type needs text; click the field first")
+        extra["text"] = text
+    elif action == "key":
+        if not keys:
+            raise WorkflowError("key needs keys, e.g. Enter or Ctrl+A")
+        extra["keys"] = keys
+    return extra
+
 BROWSER_TOOL = function_tool(
     "browser", "Look at a page in the app's own browser, which the user sees beside the chat (it opens there): use it "
     "before anything else to view a local HTML file or a web page, never Chrome, Edge or another browser through "
@@ -4212,51 +4265,9 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
     def browser_input(action, tab, find, x, y, to_x, to_y, dx, dy, button, clicks, text, keys, shot) -> Any:
         """click / move / drag / scroll / type / key: checked here, performed by the launcher in the tab with DevTools input
         (the user's own mouse and keyboard are not used); the reply says what changed, with a screenshot when `shot`."""
-        def number(name: str, value: Any) -> float:
-            try:
-                result = float(value)
-            except (TypeError, ValueError):
-                result = math.nan
-            if not math.isfinite(result):  # NaN/Infinity would make the request invalid JSON, and the launcher would never answer it
-                raise WorkflowError(f"{name} must be a finite number: pixels of the last screenshot")
-            return result
-        find, text, keys, button = str(find or "").strip(), str(text or ""), str(keys or "").strip(), str(button or "left").lower()
-        point = {k: number(k, v) for k, v in (("x", x), ("y", y)) if v is not None}
-        if len(point) == 1:
-            raise WorkflowError("give both x and y")
-        if (point or action == "drag") and not vision:
-            raise WorkflowError("this model's settings switch vision off, so x and y mean nothing; click by `find` text, or use the keyboard")
-        extra: dict[str, Any] = dict(point)
-        if action == "click":
-            if not point and not find:
-                raise WorkflowError("click needs x and y (pixels of the last screenshot) or `find` (a visible text to click)")
-            if button not in BROWSER_BUTTONS:
-                raise WorkflowError("button must be left, right or middle")
-            count = int(number("clicks", clicks))
-            if not 1 <= count <= 3:
-                raise WorkflowError("clicks must be 1, 2 or 3")
-            extra.update(button=button, clicks=count, **({"find": find} if find and not point else {}))
-        elif action in ("move", "drag"):
-            if not point:
-                raise WorkflowError(f"{action} needs x and y (pixels of the last screenshot)")
-            if action == "drag":
-                if to_x is None or to_y is None:
-                    raise WorkflowError("drag needs to_x and to_y: where to release")
-                extra.update(to_x=number("to_x", to_x), to_y=number("to_y", to_y))
-        elif action == "scroll":
-            if dx is None and dy is None:
-                raise WorkflowError("scroll needs dy (down) and/or dx (right), in pixels")
-            extra.update(dx=number("dx", dx or 0), dy=number("dy", dy or 0))
-        elif action == "type":
-            if not text:
-                raise WorkflowError("type needs text; click the field first")
-            extra["text"] = text
-        elif action == "key":
-            if not keys:
-                raise WorkflowError("key needs keys, e.g. Enter or Ctrl+A")
-            extra["keys"] = keys
+        extra = input_args(action, vision, find, x, y, to_x, to_y, dx, dy, button, clicks, text, keys)
         want = bool(shot) and vision
-        answer = launcher_call("browser", action=action, url="", **({"tab": int(number("tab", tab))} if tab else {}), **extra, shot=want)
+        answer = launcher_call("browser", action=action, url="", **({"tab": int(finite("tab", tab))} if tab else {}), **extra, shot=want)
         if answer is None:
             return "ERROR: the in-app browser is only there when the app runs this turn"
         result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
@@ -4306,6 +4317,64 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
         return head + f"TEXT FROM CHARACTER {start} OF {len(text)}:\n{text[start:]}"  # cap_result cuts it to the window's share
 
     return browser
+
+
+COMPUTER_ACTIONS = ("apps", "open", "screenshot", *BROWSER_INPUT)
+
+
+def computer_tool(apps: list[str]) -> dict[str, Any]:
+    """The lead's computer tool, offered only while the user switched on Computer use in Options; `apps` are the
+    applications they approved there (the launcher refuses every other)."""
+    return function_tool(
+        "computer", "Use a desktop application on the user's computer with the real mouse and keyboard, as the user would. "
+        f"Only these applications the user approved: {', '.join(apps)}; and only one window per reply: the first you open. "
+        "action 'apps' lists them and their open windows (numbered); 'open' picks the window you work in (`app` = a name from "
+        "that list, which starts it when it has no window, or `window` = a number from 'apps'), brings it to the front and "
+        "returns a screenshot of it; 'screenshot' returns that window again. Then: 'click' (x,y; button left|right|middle; "
+        "clicks 1-3), 'move' (hover at x,y), 'drag' (x,y to to_x,to_y), 'scroll' (dy and dx in wheel notches, positive = "
+        "down/right, at x,y or the middle), 'type' (`text` into the focused field), 'key' (`keys`: a key or chord, or several "
+        "separated by spaces, e.g. Enter, Ctrl+S, Alt+F4, Tab Tab Enter). x and y are pixels of the last screenshot, inside "
+        "the window. Each action returns a new screenshot unless `shot` is false. The user can press Esc at any time to take "
+        "back control: the tool then refuses every action; stop and tell them what you did. Copy, cut and paste are refused "
+        "(the clipboard is the user's). Admin (elevated) windows and other applications cannot be used.",
+        {"action": {"type": "string", "enum": list(COMPUTER_ACTIONS)}, "app": {"type": "string", "description": "open: an approved application's name"},
+         "window": {"type": "integer", "description": "open: a window number from 'apps'"},
+         "x": {"type": "number", "description": "pixels from the left of the last screenshot"},
+         "y": {"type": "number", "description": "pixels from the top of the last screenshot"},
+         "to_x": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+         "to_y": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+         "dx": {"type": "number", "description": "scroll: wheel notches right"}, "dy": {"type": "number", "description": "scroll: wheel notches down"},
+         "button": {"type": "string", "enum": list(BROWSER_BUTTONS)}, "clicks": {"type": "integer", "description": "1 to 3"},
+         "text": {"type": "string", "description": "type: the text to enter"},
+         "keys": {"type": "string", "description": "key: a key or chord, or several separated by spaces"},
+         "shot": {"type": "boolean", "description": "send a screenshot after (default true)"}}, ["action"])
+
+
+def computer_handler(vision: bool = True):
+    """The computer tool: each action, checked here, is one "computer" request the launcher performs with SendInput in
+    the one window it bound for this turn (Options > Computer use: off by default, approved applications only, Esc stops)."""
+    def computer(action: str = "apps", app: str = "", window: Any = 0, x: Any = None, y: Any = None, to_x: Any = None, to_y: Any = None,
+                 dx: Any = None, dy: Any = None, button: str = "left", clicks: Any = 1, text: str = "", keys: str = "", shot: bool = True) -> Any:
+        if action not in COMPUTER_ACTIONS:
+            raise WorkflowError("action must be " + ", ".join(f"'{a}'" for a in COMPUTER_ACTIONS))
+        extra: dict[str, Any] = {}
+        if action == "open":
+            app, number = str(app or "").strip(), int(finite("window", window or 0))
+            if not app and number <= 0:
+                raise WorkflowError("open needs `app` (an approved application's name) or `window` (a number from 'apps')")
+            extra = {"app": app} if app else {"window": number}
+        elif action == "screenshot" and not vision:
+            raise WorkflowError("this model's settings switch vision off, so it cannot see a screenshot")
+        elif action in BROWSER_INPUT:
+            extra = input_args(action, vision, "", x, y, to_x, to_y, dx, dy, button, clicks, text, keys, findable=False)
+        want = action != "apps" and (action == "screenshot" or bool(shot)) and vision
+        answer = launcher_call("computer", action=action, **extra, shot=want)
+        if answer is None:
+            return "ERROR: the computer tool is only there when the app runs this turn"
+        result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+        return ToolResult(result, [image]) if want and image.startswith("data:image/") else result
+
+    return computer
 
 
 def overlaps(path: Path, other: Path) -> bool:
@@ -4686,6 +4755,8 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     handlers["delegate"] = delegator(config, (tools, extra_handlers, note), folders, cap,
                                      (role, "lead", display_name(config, role)), research, runners)
     tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request, not vision_off(config, role))  # the lead's only
+    if apps := [str(a) for a in request.get("computer") or [] if str(a).strip()]:  # Options > Computer use is on
+        tools, handlers["computer"] = tools + [computer_tool(apps)], computer_handler(not vision_off(config, role))
     if asked_to_start(request):
         def start_project() -> str:
             if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():
@@ -4929,7 +5000,7 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
 PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
 PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
-PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "browser", "web_search", "fetch_page", "calculator",
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "browser", "computer", "web_search", "fetch_page", "calculator",
                     "current_time")
 PI_TOOL_RESULT_LIMIT = 6000
 

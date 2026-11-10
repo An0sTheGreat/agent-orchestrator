@@ -162,6 +162,7 @@ public partial class MainWindow
                 "write" or "write_file" => "wrote",
                 "run_command" or "run_checks" or "bash" => "ran",
                 "browser" => "browser",
+                "computer" => "computer",
                 "web_search" or "fetch_page" => "web",
                 "" => "step",
                 _ when kind == kind.ToUpperInvariant() => "thought", // a stage section (DELEGATE, a worker's name)
@@ -181,6 +182,7 @@ public partial class MainWindow
                 "wrote" => "wrote " + N(n, "file", "files"),
                 "ran" => "ran " + N(n, "command", "commands"),
                 "browser" => "used the browser " + N(n, "time", "times"),
+                "computer" => "used the computer " + N(n, "time", "times"),
                 "web" => "searched the web " + N(n, "time", "times"),
                 _ => N(n, "other step", "other steps"),
             });

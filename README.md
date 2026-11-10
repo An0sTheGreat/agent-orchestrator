@@ -54,6 +54,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 
 - **Code view**: point it at a folder and talk to the lead agent, or start an autonomous project run from a `PROJECT.md`.
 - **Built-in browser**: the models can open pages, read them, take screenshots, and click, type, scroll and press keys with a mouse and keyboard of their own (yours stay free; a switch in the browser panel turns this off), and you see the same tabs they do.
+- **Computer use** (off by default): in Options > General, approve the applications the Code lead may use; it then works in one window of one of them per reply with your real mouse and keyboard. Press Esc at any time to stop it.
 - **Sandboxed commands**: the agents run builds and tests in a sandbox that asks before touching the network or other folders.
 - **Skills, tools and web search**: switch each one on per conversation.
 - **Remote access**: use the app from your phone or another computer through a private, password-protected link.

@@ -3198,6 +3198,51 @@ class CodeTests(unittest.TestCase):
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("key", keys="Enter"))
 
+    def test_computer_tool_is_offered_only_with_approved_apps_and_sends_checked_actions(self):
+        # Options > Computer use: the request's "computer" lists the approved applications; without them the lead has no
+        # computer tool. Each action is one "computer" request to the launcher; bad ones never reach it.
+        with patch.object(orchestrator, "vision_off", return_value=False):
+            setup = lambda request: orchestrator.lead_setup({}, self.folders, request, "planner")[0]
+            names = lambda request: [t["function"]["name"] for t in setup(request)]
+            self.assertNotIn("computer", names({}))
+            self.assertNotIn("computer", names({"computer": [" "]}))
+            with_apps = setup({"computer": ["Notepad", "Paint"]})
+        tool = next(t for t in with_apps if t["function"]["name"] == "computer")
+        self.assertIn("Notepad, Paint", tool["function"]["description"])
+        self.assertIn("computer", orchestrator.PI_GATEWAY_TOOLS)
+        asked, image = [], "data:image/png;base64,iVBOR"
+        answer = lambda event, **d: asked.append((event, d)) or {"result": "DONE", "image": image}
+        with patch.object(orchestrator, "launcher_call", answer):
+            use = orchestrator.computer_handler()
+            self.assertEqual(str(use("apps")), "DONE")
+            self.assertNotIsInstance(use("apps"), orchestrator.ToolResult)  # a list, no image
+            self.assertEqual(use("open", app=" Notepad ").images, [image])
+            use("open", window=2)
+            use("screenshot", shot=False)  # a screenshot is always an image
+            use("click", x=5, y=6, clicks=2)
+            use("scroll", dy=-3)
+            use("key", keys="Ctrl+S", shot=False)
+            self.assertEqual([d for _, d in asked[2:]], [
+                {"action": "open", "app": "Notepad", "shot": True}, {"action": "open", "window": 2, "shot": True},
+                {"action": "screenshot", "shot": True}, {"action": "click", "x": 5.0, "y": 6.0, "button": "left", "clicks": 2, "shot": True},
+                {"action": "scroll", "dx": 0.0, "dy": -3.0, "shot": True}, {"action": "key", "keys": "Ctrl+S", "shot": False}])
+            self.assertEqual({e for e, _ in asked}, {"computer"})
+            count = len(asked)
+            for args, why in (({"action": "open"}, "needs `app`"), ({"action": "click"}, "needs x and y \\(pixels of the last screenshot\\)$"),
+                              ({"action": "drag", "x": 1, "y": 1}, "to_x"), ({"action": "type"}, "needs text"),
+                              ({"action": "launch"}, "action must be"), ({"action": "click", "x": 1, "y": float("nan")}, "finite")):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    use(**args)
+            blind = orchestrator.computer_handler(vision=False)
+            for args in ({"action": "screenshot"}, {"action": "click", "x": 1, "y": 1}):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
+                    blind(**args)
+            self.assertEqual(len(asked), count)
+            self.assertNotIsInstance(blind("key", keys="Enter"), orchestrator.ToolResult)
+            self.assertFalse(asked[-1][1]["shot"])
+        with patch.object(orchestrator, "EVENTS", False):
+            self.assertIn("only there when the app runs", orchestrator.computer_handler()("apps"))
+
     def test_compact_command_summarizes_now_without_a_model_turn(self):
         # /compact <focus>: one quiet summary call with the focus in its prompt, a history_compacted event covering the
         # earlier messages, and a reply that says so; with nothing earlier, nothing is called.

@@ -264,6 +264,10 @@ internal sealed class AppSettings
     public string BrowserUrl { get; set; } = "";
     public bool BrowserFollow { get; set; } = true;
     public bool BrowserInput { get; set; } = true; // the model may click, type, scroll and press keys in the browser (MainWindow.BrowserInput.cs)
+    // Computer use (Options > General, MainWindow.Computer.cs): the lead may drive one window of an approved application
+    // with the real mouse and keyboard. Off by default; ComputerApps are the approved programs' full .exe paths.
+    public bool ComputerUse { get; set; }
+    public List<string> ComputerApps { get; set; } = new();
     public string ModelsFolder { get; set; } = ""; // searched for GGUF files besides the Hugging Face cache; "" = none
     // Who runs a Code turn's agent loop: "" (the built-in engine) or "pi" (Pi from <data>\pi, LauncherLogic.PiCli).
     public string CodeEngine { get; set; } = "";

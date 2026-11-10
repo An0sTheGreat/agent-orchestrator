@@ -108,8 +108,9 @@ internal static class LauncherLogic
     // Images: photo paths attached to this message (the engine sends them with it only).
     // Vision: the message box's switch; off, the engine shows no image to the model (orchestrator.vision_problem).
     // Emoji: Settings > Appearance's emoji in replies (none, less, standard, more), an instruction the engine adds.
+    // Computer: the names of the applications the lead may use with the computer tool (empty: Computer use is off).
     public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true,
-        string Emoji = "standard");
+        string Emoji = "standard", IReadOnlyList<string>? Computer = null);
 
     public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
@@ -370,6 +371,7 @@ internal static class LauncherLogic
             images = extras?.Images ?? [],
             vision = extras?.Vision ?? true,
             emoji = extras?.Emoji ?? "standard",
+            computer = extras?.Computer ?? [],
             title,
             effort,
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });

@@ -508,6 +508,9 @@ public partial class MainWindow : Window
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 Forget(AnswerBrowserAsync(ev));
                 break;
+            case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
+                Forget(AnswerComputerAsync(ev, _process));
+                break;
             case "verdict":
                 EndStream(false);
                 Log($"Review round {Num(ev, "round")}: {Str(ev, "verdict")}");
@@ -3308,7 +3311,7 @@ public partial class MainWindow : Window
             return false;
         if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
             return false;
-        if (!await RemoteApiSmoke())
+        if (!await RemoteApiSmoke() || !await ComputerSmoke())
             return false;
         if (!await ModelHubSmoke(Snap))
             return false;

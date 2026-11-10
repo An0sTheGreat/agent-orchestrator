@@ -1676,6 +1676,20 @@
                         </DockPanel>
                         <TextBlock Text="The most browser tabs the model opens on its own when it follows its searches and pages; past that it reuses its oldest. You can always open more yourself."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Computer use (MainWindow.Computer.cs): the lead drives one window of an approved application -->
+                        <TextBlock Text="Computer use" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="ComputerToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ComputerToggle_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Let the model use applications" />
+                            <TextBlock Text="Let the model use applications" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="The Code lead may use one window of an approved application per reply with your real mouse and keyboard: it clicks, types and presses keys as you would, so leave the computer alone while it works. Press Esc at any time to stop it. Admin windows cannot be used."
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,16,0,0">
+                            <Button x:Name="ComputerAddButton" DockPanel.Dock="Right" Content="Add application  ▾" Padding="11,6" VerticalAlignment="Center" Click="ComputerAdd_Click" />
+                            <TextBlock Text="Approved applications" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <StackPanel x:Name="ComputerAppsList" Margin="0,8,0,0" />
                         <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />

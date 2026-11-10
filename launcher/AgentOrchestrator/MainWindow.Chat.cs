@@ -129,6 +129,7 @@ public partial class MainWindow
         InitAttachments();
         InitComposerLanding();
         InitNotify();
+        InitComputer();
         RefreshPonytailSetting();
         if (CardFor(_settings.ChatWorker) is null)
             _settings.ChatWorker = "planner";
@@ -1203,6 +1204,10 @@ public partial class MainWindow
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 SetChatStatus("Looking at the page in the browser…");
                 Forget(AnswerBrowserAsync(ev));
+                break;
+            case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
+                SetChatStatus("Using an application on your computer… (Esc stops it)");
+                Forget(AnswerComputerAsync(ev, _chatProcess));
                 break;
             case "code_project":
                 Log($"[{name}] wrote {Str(ev, "path")}");

@@ -18,7 +18,8 @@ public partial class MainWindow
         new(_settings.UseSearch, _settings.UseTools,
             AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) || InvokesSkill(message, s.Name) ||
                 initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
-                .Select(s => s.Folder).ToList(), Vision: _settings.UseVision, Emoji: _settings.Emoji);
+                .Select(s => s.Folder).ToList(), Vision: _settings.UseVision, Emoji: _settings.Emoji,
+            Computer: _settings.ComputerUse ? _settings.ComputerApps.Select(ComputerLogic.AppName).ToList() : []);
 
     // The user's skills (AppSettings.SkillsRoot) and the ones bundled with the app (<workflow root>\skills).
     private List<LauncherLogic.Skill> AllSkills() =>
