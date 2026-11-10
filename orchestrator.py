@@ -3805,7 +3805,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     title = display_name(config, role)
     lead_extras, research = with_research(handlers)
     handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
-    extras = ([*tools, DELEGATE_TOOL], handlers, note)
+    extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler([], request, not vision_off(turn, role))}, note)  # the answering model's only; no folders, so only web addresses
     if apps := computer_apps(request):  # the answering model's only, as in Code
         extras = ([*extras[0], computer_tool(apps)], {**handlers, "computer": computer_handler(not vision_off(turn, role))}, note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
@@ -3880,6 +3880,8 @@ CODE_TOOLS = [
 def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> Path:
     """Resolve a Code tool path: relative to folders[0]; must stay inside a granted folder (the innermost one
     decides read/write access). api_key.txt and anything inside .git are always refused."""
+    if not folders:
+        raise WorkflowError("No folders are granted here, so there are no local files to open")
     path = Path(str(raw or "").strip() or ".")
     path = (path if path.is_absolute() else Path(folders[0]["path"]) / path).resolve()
     inside = [f for f in folders if path == Path(f["path"]) or Path(f["path"]) in path.parents]
