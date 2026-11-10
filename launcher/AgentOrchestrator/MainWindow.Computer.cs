@@ -73,34 +73,6 @@ internal static class ComputerLogic
     /// <summary>Ease in and out (cubic): 0 at 0, 1 at 1, slow at both ends.</summary>
     public static double Ease(double t) => t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
-    /// <summary>A Windows .cur file's largest image and its hot spot, or null. A .cur is an .ico whose entries carry the hot spot
-    /// where an icon has its planes and bit count, so it is read as an icon with those fields reset.</summary>
-    public static (System.Windows.Media.Imaging.BitmapSource Image, int HotX, int HotY)? ReadCursor(byte[] cur)
-    {
-        if (cur.Length < 22 || BitConverter.ToUInt16(cur, 0) != 0 || BitConverter.ToUInt16(cur, 2) != 2 || BitConverter.ToUInt16(cur, 4) is 0 or > 64 ||
-            cur.Length < 6 + 16 * BitConverter.ToUInt16(cur, 4))
-            return null;
-        var count = BitConverter.ToUInt16(cur, 4);
-        var best = Enumerable.Range(0, count).MaxBy(i => cur[6 + 16 * i] is 0 ? 256 : cur[6 + 16 * i]);
-        var (hotX, hotY) = (BitConverter.ToUInt16(cur, 6 + 16 * best + 4), BitConverter.ToUInt16(cur, 6 + 16 * best + 6));
-        var ico = (byte[])cur.Clone();
-        ico[2] = 1; // an icon
-        for (var i = 0; i < count; i++)
-            Array.Clear(ico, 6 + 16 * i + 4, 4); // planes and bit count: unknown (the image's own header says)
-        try
-        {
-            var decoder = new System.Windows.Media.Imaging.IconBitmapDecoder(new MemoryStream(ico), System.Windows.Media.Imaging.BitmapCreateOptions.None,
-                System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
-            var frame = decoder.Frames.MaxBy(f => f.PixelWidth)!;
-            frame.Freeze();
-            return (frame, hotX, hotY);
-        }
-        catch (Exception e) when (e is NotSupportedException or FileFormatException or ArgumentException or InvalidOperationException)
-        {
-            return null;
-        }
-    }
-
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
     // A screenshot's pixel budget: image tokens grow with the area, so the cap is on the area (a 16:9 window comes out about
     // 1067x600), with a longest side; a wide window keeps its height instead of being squeezed to a strip.
@@ -166,14 +138,17 @@ internal static class ComputerLogic
                 != """Computer: click {"x":512,"y":300} (screenshot 1067x600) -> CLICKED at (512, 300)""" ||
             !LogLine("type", $$"""{"text":"{{new string('a', 500)}}"}""", 0, 0, "ERROR: no window yet").EndsWith("… -> ERROR: no window yet", StringComparison.Ordinal))
             throw new InvalidOperationException("LogLine");
-        // the bundled pointer: one 32x32 image, hot spot at its tip, drawn there (not transparent) and not drawn far from it
-        var (art, hotX, hotY) = MainWindow.PointerArt();
-        var pixels = new byte[art.PixelWidth * art.PixelHeight * 4];
-        new System.Windows.Media.Imaging.FormatConvertedBitmap(art, System.Windows.Media.PixelFormats.Bgra32, null, 0).CopyPixels(pixels, art.PixelWidth * 4, 0);
-        byte Alpha(int x, int y) => pixels[(y * art.PixelWidth + x) * 4 + 3];
-        if (art.PixelWidth != 32 || art.PixelHeight != 32 || (hotX, hotY) != (2, 2) || Alpha(hotX + 1, hotY + 2) == 0 || Alpha(31, 0) != 0 ||
-            ReadCursor([0, 0, 1, 0, 1, 0]) is not null || ReadCursor(new byte[40]) is not null)
-            throw new InvalidOperationException("ReadCursor");
+        // the pointer art, drawn at 4x: painted at its tip (the hot spot), white inside, and clear far from it
+        var art = MainWindow.PointerArt();
+        art.Measure(new Size(32, 32));
+        art.Arrange(new Rect(0, 0, 32, 32));
+        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(128, 128, 384, 384, System.Windows.Media.PixelFormats.Pbgra32);
+        bitmap.Render(art);
+        var pixels = new byte[128 * 128 * 4];
+        bitmap.CopyPixels(pixels, 128 * 4, 0);
+        byte At(double x, double y, int channel) => pixels[((int)(y * 4) * 128 + (int)(x * 4)) * 4 + channel];
+        if (At(2.6, 2.6, 3) < 128 || At(7, 7, 0) < 240 || At(7, 7, 3) < 240 || At(28, 4, 3) != 0 || At(3, 28, 3) != 0)
+            throw new InvalidOperationException("PointerArt");
     }
 }
 
@@ -791,12 +766,8 @@ public partial class MainWindow
     {
         if (_cuPointer is null)
         {
-            var (image, hotX, hotY) = PointerArt();
-            var size = image.PixelWidth * PointerScale;
-            var art = new System.Windows.Controls.Image { Source = image, Width = size, Height = image.PixelHeight * PointerScale, Stretch = Stretch.Fill };
-            RenderOptions.SetBitmapScalingMode(art, BitmapScalingMode.HighQuality);
+            var art = new Viewbox { Width = ArtSize * PointerScale, Height = ArtSize * PointerScale, Child = PointerArt() };
             _cuPointer = Overlay(new Window { Width = art.Width, Height = art.Height, Content = art });
-            (_cuHotX, _cuHotY, _cuArtW) = (hotX, hotY, image.PixelWidth);
             _cuPointerTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Render, (_, _) => MovePointer(), Dispatcher);
         }
         if (!_cuPointer.IsVisible)
@@ -820,21 +791,31 @@ public partial class MainWindow
         _cuPointerAt = at;
         Physical(() =>
         {
-            var per = GetWindowRect(hwnd, out var r) && _cuArtW > 0 ? (r.Right - r.Left) / (double)_cuArtW : 1; // screen pixels per pixel of the art
-            return SetWindowPos(hwnd, new IntPtr(-1), at.X - (int)Math.Round(_cuHotX * per), at.Y - (int)Math.Round(_cuHotY * per), 0, 0, 0x1 | 0x10); // the hot spot on the point
+            var per = GetWindowRect(hwnd, out var r) ? (r.Right - r.Left) / ArtSize : 1; // screen pixels per unit of the art
+            return SetWindowPos(hwnd, new IntPtr(-1), at.X - (int)Math.Round(HotSpot * per), at.Y - (int)Math.Round(HotSpot * per), 0, 0, 0x1 | 0x10); // the tip on the point
         });
     }
 
     private const double PointerScale = 2.0; // the art is drawn larger than a normal cursor, so the model's pointer stands out
-    private int _cuHotX, _cuHotY, _cuArtW;
+    private const double ArtSize = 32, HotSpot = 2; // the art's box and its tip, in the units of a 32-pixel cursor
 
-    // The pointer art: Assets\pointer.cur (the "light" scheme's arrow), read as a cursor file.
-    internal static (System.Windows.Media.Imaging.BitmapSource Image, int HotX, int HotY) PointerArt()
+    // The pointer art: the "light" cursor scheme's arrow (a rounded white arrow, a thin dark rim, a soft shadow) redrawn as
+    // vectors, so it stays sharp at any size and display scale. A dark shape a little larger than the white one is the rim.
+    internal static Canvas PointerArt()
     {
-        using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/pointer.cur"))!.Stream;
-        using var bytes = new MemoryStream();
-        stream.CopyTo(bytes);
-        return ComputerLogic.ReadCursor(bytes.ToArray()) ?? throw new InvalidOperationException("Assets/pointer.cur is not a cursor file");
+        var shape = Geometry.Parse("M 3,3 L 13.4,8.8 L 8.8,10.4 L 5.4,14.6 Z");
+        shape.Freeze();
+        var rim = new SolidColorBrush(Color.FromRgb(0x1B, 0x1B, 0x1F));
+        return new Canvas
+        {
+            Width = ArtSize, Height = ArtSize,
+            Children =
+            {
+                new System.Windows.Shapes.Path { Data = shape, Fill = rim, Stroke = rim, StrokeThickness = 4.4, StrokeLineJoin = PenLineJoin.Round,
+                    Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 3.5, ShadowDepth = 1.4, Direction = 300, Opacity = 0.45 } },
+                new System.Windows.Shapes.Path { Data = shape, Fill = Brushes.White, Stroke = Brushes.White, StrokeThickness = 2.8, StrokeLineJoin = PenLineJoin.Round },
+            },
+        };
     }
 
     private void HidePointer()
