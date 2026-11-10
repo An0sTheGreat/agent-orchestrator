@@ -53,6 +53,34 @@ internal static class ComputerLogic
     /// <summary>Ease in and out (cubic): 0 at 0, 1 at 1, slow at both ends.</summary>
     public static double Ease(double t) => t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
+    /// <summary>A Windows .cur file's largest image and its hot spot, or null. A .cur is an .ico whose entries carry the hot spot
+    /// where an icon has its planes and bit count, so it is read as an icon with those fields reset.</summary>
+    public static (System.Windows.Media.Imaging.BitmapSource Image, int HotX, int HotY)? ReadCursor(byte[] cur)
+    {
+        if (cur.Length < 22 || BitConverter.ToUInt16(cur, 0) != 0 || BitConverter.ToUInt16(cur, 2) != 2 || BitConverter.ToUInt16(cur, 4) is 0 or > 64 ||
+            cur.Length < 6 + 16 * BitConverter.ToUInt16(cur, 4))
+            return null;
+        var count = BitConverter.ToUInt16(cur, 4);
+        var best = Enumerable.Range(0, count).MaxBy(i => cur[6 + 16 * i] is 0 ? 256 : cur[6 + 16 * i]);
+        var (hotX, hotY) = (BitConverter.ToUInt16(cur, 6 + 16 * best + 4), BitConverter.ToUInt16(cur, 6 + 16 * best + 6));
+        var ico = (byte[])cur.Clone();
+        ico[2] = 1; // an icon
+        for (var i = 0; i < count; i++)
+            Array.Clear(ico, 6 + 16 * i + 4, 4); // planes and bit count: unknown (the image's own header says)
+        try
+        {
+            var decoder = new System.Windows.Media.Imaging.IconBitmapDecoder(new MemoryStream(ico), System.Windows.Media.Imaging.BitmapCreateOptions.None,
+                System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+            var frame = decoder.Frames.MaxBy(f => f.PixelWidth)!;
+            frame.Freeze();
+            return (frame, hotX, hotY);
+        }
+        catch (Exception e) when (e is NotSupportedException or FileFormatException or ArgumentException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
     public const int MaxShot = 1280; // smaller images: fewer tokens for the model to read after each action
 
@@ -103,6 +131,14 @@ internal static class ComputerLogic
         if (GlideMs(0.5) != 0 || Math.Abs(GlideMs(100) - 210) > 1e-6 || GlideMs(5000) != 600 || GlideMs(1) < 180 ||
             Ease(0) != 0 || Ease(1) != 1 || Math.Abs(Ease(0.5) - 0.5) > 1e-9 || Ease(0.1) >= 0.1 || Ease(0.9) <= 0.9)
             throw new InvalidOperationException("Glide");
+        // the bundled pointer: one 32x32 image, hot spot at its tip, drawn there (not transparent) and not drawn far from it
+        var (art, hotX, hotY) = MainWindow.PointerArt();
+        var pixels = new byte[art.PixelWidth * art.PixelHeight * 4];
+        new System.Windows.Media.Imaging.FormatConvertedBitmap(art, System.Windows.Media.PixelFormats.Bgra32, null, 0).CopyPixels(pixels, art.PixelWidth * 4, 0);
+        byte Alpha(int x, int y) => pixels[(y * art.PixelWidth + x) * 4 + 3];
+        if (art.PixelWidth != 32 || art.PixelHeight != 32 || (hotX, hotY) != (2, 2) || Alpha(hotX + 1, hotY + 2) == 0 || Alpha(31, 0) != 0 ||
+            ReadCursor([0, 0, 1, 0, 1, 0]) is not null || ReadCursor(new byte[40]) is not null)
+            throw new InvalidOperationException("ReadCursor");
     }
 }
 
@@ -719,13 +755,12 @@ public partial class MainWindow
     {
         if (_cuPointer is null)
         {
-            var arrow = new System.Windows.Shapes.Path
-            {
-                Data = Geometry.Parse("M 2,2 L 2,30 L 9,23.5 L 14,34.5 L 19,32.3 L 14,21.5 L 23.5,21.5 Z"), Fill = Brushes.White,
-                Stroke = new SolidColorBrush(Color.FromRgb(0x12, 0x12, 0x16)), StrokeThickness = 1.8, StrokeLineJoin = PenLineJoin.Round,
-                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 7, ShadowDepth = 2, Opacity = 0.5 },
-            };
-            _cuPointer = Overlay(new Window { Width = 34, Height = 42, Content = new Canvas { Children = { arrow } } });
+            var (image, hotX, hotY) = PointerArt();
+            var size = image.PixelWidth * PointerScale;
+            var art = new System.Windows.Controls.Image { Source = image, Width = size, Height = image.PixelHeight * PointerScale, Stretch = Stretch.Fill };
+            RenderOptions.SetBitmapScalingMode(art, BitmapScalingMode.HighQuality);
+            _cuPointer = Overlay(new Window { Width = art.Width, Height = art.Height, Content = art });
+            (_cuHotX, _cuHotY, _cuArtW) = (hotX, hotY, image.PixelWidth);
             _cuPointerTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Render, (_, _) => MovePointer(), Dispatcher);
         }
         if (!_cuPointer.IsVisible)
@@ -747,7 +782,23 @@ public partial class MainWindow
         if (at.X == _cuPointerAt.X && at.Y == _cuPointerAt.Y)
             return;
         _cuPointerAt = at;
-        Physical(() => SetWindowPos(hwnd, new IntPtr(-1), at.X - 2, at.Y - 2, 0, 0, 0x1 | 0x10)); // the arrow's tip on the hot spot
+        Physical(() =>
+        {
+            var per = GetWindowRect(hwnd, out var r) && _cuArtW > 0 ? (r.Right - r.Left) / (double)_cuArtW : 1; // screen pixels per pixel of the art
+            return SetWindowPos(hwnd, new IntPtr(-1), at.X - (int)Math.Round(_cuHotX * per), at.Y - (int)Math.Round(_cuHotY * per), 0, 0, 0x1 | 0x10); // the hot spot on the point
+        });
+    }
+
+    private const double PointerScale = 1.5; // the art is drawn larger than a normal cursor, so the model's pointer stands out
+    private int _cuHotX, _cuHotY, _cuArtW;
+
+    // The pointer art: Assets\pointer.cur (the "light" scheme's arrow), read as a cursor file.
+    internal static (System.Windows.Media.Imaging.BitmapSource Image, int HotX, int HotY) PointerArt()
+    {
+        using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/pointer.cur"))!.Stream;
+        using var bytes = new MemoryStream();
+        stream.CopyTo(bytes);
+        return ComputerLogic.ReadCursor(bytes.ToArray()) ?? throw new InvalidOperationException("Assets/pointer.cur is not a cursor file");
     }
 
     private void HidePointer()
