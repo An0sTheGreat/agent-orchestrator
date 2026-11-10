@@ -54,7 +54,7 @@ internal static class ComputerLogic
     public static double Ease(double t) => t < 0.5 ? 4 * t * t * t : 1 - Math.Pow(-2 * t + 2, 3) / 2;
 
     /// <summary>The longest side of a screenshot, in pixels (larger windows are scaled down).</summary>
-    public const int MaxShot = 1600;
+    public const int MaxShot = 1280; // smaller images: fewer tokens for the model to read after each action
 
     /// <summary>Why a key may not be pressed in the window, or null: the Windows key and Alt+Tab act on the desktop, not the
     /// window; copy, cut and paste use the user's own clipboard.</summary>
@@ -274,14 +274,21 @@ public partial class MainWindow
     // asker: the engine process that sent the request (a Code reply's or a project run's); the answer goes back to it.
     private async Task AnswerComputerAsync(JsonElement ev, Process? asker)
     {
-        double? Opt(string name) => ev.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
-        var input = new BrowserInput(Opt("x"), Opt("y"), Opt("to_x"), Opt("to_y"), Opt("dx"), Opt("dy"), Str(ev, "button") is { Length: > 0 } button ? button : "left",
-            Math.Max((int)Num(ev, "clicks"), 1), Str(ev, "text"), Str(ev, "keys"), !(ev.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));
+        static BrowserInput Parse(JsonElement e)
+        {
+            double? Opt(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
+            string Text(string name) => e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
+            return new BrowserInput(Opt("x"), Opt("y"), Opt("to_x"), Opt("to_y"), Opt("dx"), Opt("dy"), Text("button") is { Length: > 0 } button ? button : "left",
+                Math.Max((int)(Opt("clicks") ?? 1), 1), Text("text"), Text("keys"), !(e.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));
+        }
+        var input = Parse(ev);
+        var steps = ev.TryGetProperty("steps", out var list) && list.ValueKind == JsonValueKind.Array
+            ? list.EnumerateArray().Where(s => s.ValueKind == JsonValueKind.Object).Select(s => (Str(s, "action"), Parse(s))).ToList() : null;
         string result;
         string? image = null;
         try
         {
-            (result, image) = await ComputerAnswerAsync(asker, Str(ev, "action"), Str(ev, "app"), (int)Num(ev, "window"), input);
+            (result, image) = await ComputerAnswerAsync(asker, Str(ev, "action"), Str(ev, "app"), (int)Num(ev, "window"), input, steps);
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or ExternalException or ArgumentException or IOException)
         {
@@ -291,7 +298,8 @@ public partial class MainWindow
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
 
-    private async Task<(string Result, string? Image)> ComputerAnswerAsync(Process? asker, string action, string app, int window, BrowserInput input)
+    private async Task<(string Result, string? Image)> ComputerAnswerAsync(Process? asker, string action, string app, int window, BrowserInput input,
+        IReadOnlyList<(string Action, BrowserInput Input)>? steps = null)
     {
         if (!ReferenceEquals(asker, _cuOwner)) // a new reply: no window yet, and Esc from the last one no longer applies
         {
@@ -317,49 +325,78 @@ public partial class MainWindow
         if (action == "screenshot")
             return await ShotAsync("SCREENSHOT");
         ShowBanner();
-        string done;
+        ShowPointer();
+        // "batch": several steps in a row, one screenshot after the last (fewer model calls); a step that fails ends it
+        IReadOnlyList<(string Action, BrowserInput Input)> plan = action == "batch" ? steps ?? [] : [(action, input)];
+        if (plan.Count is 0 or > 20)
+            return ("ERROR: steps must hold 1 to 20 actions", null);
+        var lines = new List<string>();
+        for (var i = 0; i < plan.Count; i++)
+        {
+            if (i > 0)
+            {
+                await Task.Delay(300); // the application reacts before the next step
+                if (_cuStopped || !IsWindow(_cuWindow) || !Front())
+                {
+                    lines.Add(_cuStopped ? "ERROR: the user pressed Esc to take back control" : "ERROR: the window closed or could not be brought to the front");
+                    break;
+                }
+            }
+            var done = await ActAsync(plan[i].Action, plan[i].Input);
+            lines.Add(plan.Count > 1 ? $"{i + 1}. {done}" : done);
+            if (done.StartsWith("ERROR", StringComparison.Ordinal))
+            {
+                if (plan.Count == 1)
+                    return (done, null);
+                if (i + 1 < plan.Count)
+                    lines.Add($"(steps {i + 2} to {plan.Count} were not run)");
+                break;
+            }
+        }
+        var report = string.Join("\n", lines);
+        await Task.Delay(450); // the application reacts
+        if (!IsWindow(_cuWindow))
+            return ($"{report}\nthe window closed", null);
+        return input.Shot && !_cuStopped ? await ShotAsync(report) : ($"{report}\nWINDOW: \"{TitleOf(_cuWindow)}\"", null);
+    }
+
+    // One click / move / drag / scroll / type / key in the bound window: what was done, or the error text.
+    private async Task<string> ActAsync(string action, BrowserInput input)
+    {
         switch (action)
         {
             case "type":
                 if (input.Text.Length > 5000)
-                    return ("ERROR: type at most 5000 characters at once", null);
-                if (await TypeTextAsync(input.Text) is { } typeError)
-                    return (typeError, null);
-                done = $"TYPED {input.Text.Length} character{(input.Text.Length == 1 ? "" : "s")}";
-                break;
+                    return "ERROR: type at most 5000 characters at once";
+                return await TypeTextAsync(input.Text) ?? $"TYPED {input.Text.Length} character{(input.Text.Length == 1 ? "" : "s")}";
             case "key":
                 var chords = BrowserInputLogic.Chords(input.Keys);
                 if (chords.Length is 0 or > 30)
-                    return ("ERROR: key needs one to 30 keys, e.g. Enter, Ctrl+S, or Tab Tab Enter", null);
+                    return "ERROR: key needs one to 30 keys, e.g. Enter, Ctrl+S, or Tab Tab Enter";
                 var specs = new List<KeySpec>();
                 foreach (var chord in chords)
                 {
                     if (BrowserInputLogic.ParseKeys(chord) is not { } spec || (!ComputerLogic.Typed(spec) && spec.VirtualKey == 0))
-                        return ($"ERROR: unknown key \"{chord}\"; keys are letters, digits, punctuation, Enter, Tab, Escape, Backspace, Delete, Insert, Space, Arrow*, Home, End, PageUp, PageDown, F1-F24, Numpad0-9, CapsLock, ContextMenu and the media keys, alone or with Ctrl+, Shift+, Alt+", null);
+                        return $"ERROR: unknown key \"{chord}\"; keys are letters, digits, punctuation, Enter, Tab, Escape, Backspace, Delete, Insert, Space, Arrow*, Home, End, PageUp, PageDown, F1-F24, Numpad0-9, CapsLock, ContextMenu and the media keys, alone or with Ctrl+, Shift+, Alt+";
                     if (ComputerLogic.Refusal(spec) is { } why)
-                        return ($"ERROR: {chord}: {why}", null);
+                        return $"ERROR: {chord}: {why}";
                     specs.Add(spec);
                 }
                 foreach (var spec in specs)
                 {
+                    if (_cuStopped)
+                        return "ERROR: the user pressed Esc to take back control";
                     if (!Ours())
-                        return ("ERROR: another window took the keyboard; take a screenshot to see where things are", null);
+                        return "ERROR: another window took the keyboard; take a screenshot to see where things are";
                     PressKey(spec);
                     await Task.Delay(30);
                 }
-                done = $"PRESSED {string.Join(" ", chords)}";
-                break;
+                return $"PRESSED {string.Join(" ", chords)}";
+            case "click" or "move" or "drag" or "scroll":
+                return await PointAtAsync(action, input);
             default:
-                var pointed = await PointAtAsync(action, input);
-                if (pointed.StartsWith("ERROR", StringComparison.Ordinal))
-                    return (pointed, null);
-                done = pointed;
-                break;
+                return $"ERROR: \"{action}\" cannot be a step; steps are click, move, drag, scroll, type and key";
         }
-        await Task.Delay(450); // the application reacts
-        if (!IsWindow(_cuWindow))
-            return ($"{done}\nthe window closed", null);
-        return input.Shot ? await ShotAsync(done) : ($"{done}\nWINDOW: \"{TitleOf(_cuWindow)}\"", null);
     }
 
     private string AppsList()
@@ -617,30 +654,135 @@ public partial class MainWindow
         }
     }
 
-    // A ring that swells and fades where the model clicks: click-through, never focused, left out of screenshots.
+    private static readonly Color Ripple = Color.FromRgb(0x00, 0xD8, 0xFF);
+
+    // Where the model clicks, cyan rings spread out from the point and fade, one after another, like a stone thrown into a
+    // pond. Click-through, never focused, left out of screenshots.
     private void Pulse(POINT at)
     {
         if (_cuPulse is null)
         {
-            var ring = new System.Windows.Shapes.Ellipse
+            var pond = new Grid();
+            for (var i = 0; i < 3; i++)
+                pond.Children.Add(new System.Windows.Shapes.Ellipse
+                {
+                    Width = 160, Height = 160, StrokeThickness = 3 - i * 0.7, Opacity = 0, Stroke = new SolidColorBrush(Ripple),
+                    RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = new ScaleTransform(),
+                });
+            pond.Children.Add(new System.Windows.Shapes.Ellipse // the splash at the centre
             {
-                Width = 56, Height = 56, StrokeThickness = 4, Opacity = 0, Stroke = new SolidColorBrush(Color.FromRgb(0xE5, 0x48, 0x4D)),
-                Fill = new SolidColorBrush(Color.FromArgb(70, 0xE5, 0x48, 0x4D)), RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = new ScaleTransform(),
-            };
-            _cuPulse = Overlay(new Window { Width = 64, Height = 64, Content = new Grid { Children = { ring } } });
+                Width = 18, Height = 18, Opacity = 0, Fill = new SolidColorBrush(Ripple), RenderTransformOrigin = new Point(0.5, 0.5), RenderTransform = new ScaleTransform(),
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { Color = Ripple, BlurRadius = 14, ShadowDepth = 0, Opacity = 0.9 },
+            });
+            _cuPulse = Overlay(new Window { Width = 170, Height = 170, Content = pond });
         }
         _cuPulse.Show();
         var hwnd = new WindowInteropHelper(_cuPulse).Handle;
         Physical(() => GetWindowRect(hwnd, out var r) &&
             SetWindowPos(hwnd, new IntPtr(-1) /* topmost */, at.X - (r.Right - r.Left) / 2, at.Y - (r.Bottom - r.Top) / 2, 0, 0, 0x1 | 0x10 /* no size, no activate */));
-        var shape = (System.Windows.Shapes.Ellipse)((Grid)_cuPulse.Content).Children[0];
-        var time = new Duration(TimeSpan.FromMilliseconds(450));
-        var grow = new System.Windows.Media.Animation.DoubleAnimation(0.3, 1, time) { EasingFunction = new System.Windows.Media.Animation.CubicEase() };
-        var fade = new System.Windows.Media.Animation.DoubleAnimation(1, 0, time);
-        fade.Completed += (_, _) => _cuPulse?.Hide();
-        ((ScaleTransform)shape.RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, grow);
-        ((ScaleTransform)shape.RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, grow);
-        shape.BeginAnimation(UIElement.OpacityProperty, fade);
+        System.Windows.Media.Animation.DoubleAnimation Anim(double from, double to, double ms, double delay = 0, bool ease = false) =>
+            new(from, to, new Duration(TimeSpan.FromMilliseconds(ms))) { BeginTime = TimeSpan.FromMilliseconds(delay),
+                EasingFunction = ease ? new System.Windows.Media.Animation.CubicEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseOut } : null };
+        var shapes = ((Grid)_cuPulse.Content).Children.Cast<System.Windows.Shapes.Ellipse>().ToList();
+        for (var i = 0; i < 3; i++) // the rings: each starts a little later and spreads to the full size as it fades
+        {
+            var grow = Anim(0.08, 1, 700, i * 140, ease: true);
+            var fade = Anim(0.95, 0, 700, i * 140);
+            if (i == 2)
+                fade.Completed += (_, _) => _cuPulse?.Hide(); // before it starts: a handler added later is never called
+            ((ScaleTransform)shapes[i].RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, grow);
+            ((ScaleTransform)shapes[i].RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, grow);
+            shapes[i].BeginAnimation(UIElement.OpacityProperty, fade);
+        }
+        var splash = Anim(1.4, 0.6, 260, ease: true);
+        ((ScaleTransform)shapes[3].RenderTransform).BeginAnimation(ScaleTransform.ScaleXProperty, splash);
+        ((ScaleTransform)shapes[3].RenderTransform).BeginAnimation(ScaleTransform.ScaleYProperty, splash);
+        shapes[3].BeginAnimation(UIElement.OpacityProperty, Anim(1, 0, 320));
+    }
+
+    // ---- the model's pointer: a large white arrow that stands in for the system cursor while computer use is on. The
+    // system cursors are made blank meanwhile (and restored when it ends, when the app closes, and at the next start after a
+    // crash), and the arrow follows the real pointer wherever it is, moved by the model or by the user.
+
+    private Window? _cuPointer;
+    private DispatcherTimer? _cuPointerTimer;
+    private POINT _cuPointerAt = new() { X = int.MinValue };
+    private static bool _cuCursorHidden;
+    private static readonly uint[] CursorIds = [32512, 32513, 32514, 32515, 32516, 32642, 32643, 32644, 32645, 32646, 32648, 32649, 32650, 32651];
+    private static string CursorMarker => Path.Combine(AppSettings.DataRoot, "cursor-hidden");
+
+    [DllImport("user32.dll")] private static extern IntPtr CreateCursor(IntPtr instance, int xHot, int yHot, int width, int height, byte[] and, byte[] xor);
+    [DllImport("user32.dll")] private static extern bool SetSystemCursor(IntPtr cursor, uint id);
+    [DllImport("user32.dll")] private static extern bool SystemParametersInfo(uint action, uint param, IntPtr value, uint winIni);
+
+    private void ShowPointer()
+    {
+        if (_cuPointer is null)
+        {
+            var arrow = new System.Windows.Shapes.Path
+            {
+                Data = Geometry.Parse("M 2,2 L 2,30 L 9,23.5 L 14,34.5 L 19,32.3 L 14,21.5 L 23.5,21.5 Z"), Fill = Brushes.White,
+                Stroke = new SolidColorBrush(Color.FromRgb(0x12, 0x12, 0x16)), StrokeThickness = 1.8, StrokeLineJoin = PenLineJoin.Round,
+                Effect = new System.Windows.Media.Effects.DropShadowEffect { BlurRadius = 7, ShadowDepth = 2, Opacity = 0.5 },
+            };
+            _cuPointer = Overlay(new Window { Width = 34, Height = 42, Content = new Canvas { Children = { arrow } } });
+            _cuPointerTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(10), DispatcherPriority.Render, (_, _) => MovePointer(), Dispatcher);
+        }
+        if (!_cuPointer.IsVisible)
+        {
+            _cuPointer.Show();
+            _cuPointerAt = new POINT { X = int.MinValue };
+        }
+        HideSystemCursor();
+        MovePointer();
+        _cuPointerTimer!.Start();
+    }
+
+    private void MovePointer()
+    {
+        if (_cuPointer is not { IsVisible: true } pointer)
+            return;
+        var hwnd = new WindowInteropHelper(pointer).Handle;
+        var at = Physical(() => GetCursorPos(out CursorPoint p) ? new POINT { X = p.X, Y = p.Y } : _cuPointerAt);
+        if (at.X == _cuPointerAt.X && at.Y == _cuPointerAt.Y)
+            return;
+        _cuPointerAt = at;
+        Physical(() => SetWindowPos(hwnd, new IntPtr(-1), at.X - 2, at.Y - 2, 0, 0, 0x1 | 0x10)); // the arrow's tip on the hot spot
+    }
+
+    private void HidePointer()
+    {
+        _cuPointerTimer?.Stop();
+        _cuPointer?.Hide();
+        RestoreSystemCursor();
+    }
+
+    private static void HideSystemCursor()
+    {
+        if (_cuCursorHidden)
+            return;
+        try
+        {
+            File.WriteAllText(CursorMarker, ""); // a crash leaves this, and the next start restores the cursors
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+        var (and, xor) = (Enumerable.Repeat((byte)0xFF, 128).ToArray(), new byte[128]); // a 32x32 cursor that draws nothing
+        foreach (var id in CursorIds)
+            SetSystemCursor(CreateCursor(IntPtr.Zero, 0, 0, 32, 32, and, xor), id); // the system takes each cursor
+        _cuCursorHidden = true;
+    }
+
+    internal static void RestoreSystemCursor(bool force = false)
+    {
+        if (!_cuCursorHidden && !(force && File.Exists(CursorMarker)))
+            return;
+        SystemParametersInfo(0x57 /* SPI_SETCURSORS: reload the user's cursor scheme */, 0, IntPtr.Zero, 0);
+        _cuCursorHidden = false;
+        try
+        {
+            File.Delete(CursorMarker);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
     }
 
     // A borderless, transparent, topmost window that is click-through, never takes focus and is left out of screen captures.
@@ -800,6 +942,7 @@ public partial class MainWindow
             _cuOwner = null;
         _cuWatch?.Stop();
         _cuBanner?.Hide();
+        HidePointer();
     }
 
     // "Model is using <app>: press Esc to stop" at the top of the screen: click-through, never focused, left out of screenshots.
@@ -830,7 +973,10 @@ public partial class MainWindow
     {
         ComputerToggle.IsChecked = _settings.ComputerUse;
         RenderComputerApps();
-        Closed += (_, _) => { _cuBanner?.Close(); _cuPulse?.Close(); }; // a hidden window would keep the app running after the main one closes
+        Closed += (_, _) => { HidePointer(); _cuBanner?.Close(); _cuPulse?.Close(); _cuPointer?.Close(); }; // a hidden window would keep the app running
+        RestoreSystemCursor(force: true); // the last run crashed while the model's pointer stood in for the cursor
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RestoreSystemCursor();
+        AppDomain.CurrentDomain.UnhandledException += (_, _) => RestoreSystemCursor();
     }
 
     private void ComputerToggle_Click(object sender, RoutedEventArgs e)
@@ -945,7 +1091,7 @@ public partial class MainWindow
             Pulse(new POINT { X = -20000, Y = -20000 }); // off every screen: it shows, then hides itself when the ring has faded
             if (_cuPulse is not { IsVisible: true })
                 return Fail("the click pulse did not show");
-            await Task.Delay(800);
+            await Task.Delay(1400);
             if (_cuPulse.IsVisible)
                 return Fail("the click pulse stayed");
             if (!StartHook() || !StartHook())

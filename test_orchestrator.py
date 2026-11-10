@@ -3235,7 +3235,18 @@ class CodeTests(unittest.TestCase):
                 {"action": "screenshot", "shot": True}, {"action": "click", "x": 5.0, "y": 6.0, "button": "left", "clicks": 2, "shot": True},
                 {"action": "scroll", "dx": 0.0, "dy": -3.0, "shot": True}, {"action": "key", "keys": "Ctrl+S", "shot": False}])
             self.assertEqual({e for e, _ in asked}, {"computer"})
+            # steps: this action and the next ones as one "batch" request, one screenshot after the last
+            self.assertEqual(use("click", x=1, y=2, steps=[{"action": "type", "text": "hi"}, {"action": "key", "keys": "Enter"}]).images, [image])
+            self.assertEqual(asked[-1][1], {"action": "batch", "shot": True, "steps": [
+                {"action": "click", "x": 1.0, "y": 2.0, "button": "left", "clicks": 1}, {"action": "type", "text": "hi"}, {"action": "key", "keys": "Enter"}]})
             count = len(asked)
+            for args, why in (({"action": "screenshot", "steps": [{"action": "key", "keys": "A"}]}, "steps go with"),
+                              ({"action": "key", "keys": "A", "steps": [{"action": "open"}]}, "step 2 needs an action"),
+                              ({"action": "key", "keys": "A", "steps": [{"action": "type"}]}, "step 2: type needs text"),
+                              ({"action": "key", "keys": "A", "steps": [{"action": "key", "keys": "B"}] * 20}, "at most 19")):
+                with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
+                    use(**args)
+            self.assertEqual(len(asked), count)
             for args, why in (({"action": "open"}, "needs `app`"), ({"action": "click"}, "needs x and y \\(pixels of the last screenshot\\)$"),
                               ({"action": "drag", "x": 1, "y": 1}, "to_x"), ({"action": "type"}, "needs text"),
                               ({"action": "launch"}, "action must be"), ({"action": "click", "x": 1, "y": float("nan")}, "finite")):
