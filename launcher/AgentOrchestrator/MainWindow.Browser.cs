@@ -27,7 +27,7 @@ public partial class MainWindow
         // where its pointer is, whether it is acting (its right clicks show no context menu), and what the last action did
         public int ShotW, ShotH;
         public double ShotViewW, ShotViewH, MouseX, MouseY;
-        public bool HasMouse, Driving, Pointer; // Pointer: the model's pointer is on this page (until its reply ends)
+        public bool HasMouse, Driving, Pointer, Capturing; // Pointer: the model's pointer is on this page (until its reply ends)
         public string Done = "", Dialog = ""; // Dialog: a script dialog or file picker the page opened while the model acted
     }
 
@@ -180,7 +180,7 @@ public partial class MainWindow
                     _settings.Save();
                 }
             }
-            if (tab.Pointer && tab.HasMouse && web.CoreWebView2 is { } core) // a new page has no pointer: put it back where it was
+            if (tab.Pointer && tab.HasMouse && !tab.Capturing && web.CoreWebView2 is { } core) // a new page has no pointer: put it back where it was
                 Forget(Ring(core, tab.MouseX, tab.MouseY, tab.MouseX, tab.MouseY, 0, click: false));
             RefreshTab(tab);
             RefreshBrowserButtons();
@@ -415,7 +415,7 @@ public partial class MainWindow
     {
         _pointerWatch?.Stop();
         _pointerOwner = null;
-        foreach (var t in _tabs.Where(t => t.Pointer).ToList())
+        foreach (var t in _tabs.ToList()) // every tab: a drive still in flight may have drawn one after the flag was last read
         {
             t.Pointer = false;
             if (t.Web.CoreWebView2 is { } core)
@@ -453,6 +453,17 @@ public partial class MainWindow
             Math.Max((int)Num(ev, "clicks"), 1), Str(ev, "text"), Str(ev, "keys"), !(ev.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));
         var (result, image) = await BrowserAnswerAsync(Str(ev, "action"), Str(ev, "url"),
             ev.TryGetProperty("new_tab", out var flag) && flag.ValueKind == JsonValueKind.True, (int)Num(ev, "tab"), Str(ev, "find"), input);
+        bool gone;
+        try
+        {
+            gone = asker is null || asker.HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            gone = true;
+        }
+        if (gone)
+            EndBrowserPointer(); // the reply ended while the drive ran: the drive's own pointer must not outlive it
         NoteShot(image);
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }

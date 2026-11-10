@@ -257,6 +257,7 @@ public partial class MainWindow
     private async Task<(string? Image, string Note)> CaptureAsync(BrowserTab tab, CoreWebView2 core)
     {
         using var shot = new MemoryStream();
+        tab.Capturing = true; // a navigation finishing now must not draw the pointer into the shot; it is put back below
         await ShowPointer(core, false);
         try
         {
@@ -271,6 +272,9 @@ public partial class MainWindow
         finally
         {
             await ShowPointer(core, true);
+            if (tab.Pointer && tab.HasMouse) // a page that navigated meanwhile has none: draw it at the last point (a no-op move if it exists)
+                await Ring(core, tab.MouseX, tab.MouseY, tab.MouseX, tab.MouseY, 0, click: false);
+            tab.Capturing = false;
         }
         var bytes = shot.ToArray();
         var view = await ViewAsync(core);
