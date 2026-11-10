@@ -778,6 +778,7 @@ public partial class MainWindow
     {
         ComputerToggle.IsChecked = _settings.ComputerUse;
         RenderComputerApps();
+        Closed += (_, _) => _cuBanner?.Close(); // a hidden window would keep the app running after the main one closes
     }
 
     private void ComputerToggle_Click(object sender, RoutedEventArgs e)
