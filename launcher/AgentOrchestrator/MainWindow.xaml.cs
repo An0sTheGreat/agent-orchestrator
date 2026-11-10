@@ -506,7 +506,7 @@ public partial class MainWindow : Window
                 AnswerApproval(ev);
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
-                Forget(AnswerBrowserAsync(ev));
+                Forget(AnswerBrowserAsync(ev, _process));
                 break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 Forget(AnswerComputerAsync(ev, _process));

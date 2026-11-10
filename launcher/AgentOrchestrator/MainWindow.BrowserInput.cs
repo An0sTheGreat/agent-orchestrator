@@ -433,15 +433,19 @@ public partial class MainWindow
         """;
 
     // The model's pointer: a white arrow whose tip is at (x, y), gliding there from (fromX, fromY) over `ms`; a click adds a cyan ripple.
+    // It stays until RemovePointer (the reply ended).
     private static string CursorScript(double fromX, double fromY, double x, double y, double ms, bool click) =>
         $$"""
         (() => { let d = document.getElementById('__ao_cursor');
                  if (!d) { d = document.createElement('div'); d.id = '__ao_cursor'; const s = d.style;
                      s.position = 'fixed'; s.zIndex = '2147483647'; s.pointerEvents = 'none'; s.left = '{{Num(fromX)}}px'; s.top = '{{Num(fromY)}}px';
-                     const N = 'http://www.w3.org/2000/svg', v = document.createElementNS(N, 'svg'), p = document.createElementNS(N, 'path'); // built with DOM calls: Trusted Types pages reject markup strings
-                     v.setAttribute('width', '16'); v.setAttribute('height', '24'); v.setAttribute('viewBox', '0 0 16 24'); v.style.display = 'block'; v.style.filter = 'drop-shadow(0 1px 2px rgba(0,0,0,.5))';
-                     p.setAttribute('d', 'M1 1 L1 18 L5.5 14 L8.5 21 L11.5 19.7 L8.5 13 L14 13 Z'); p.setAttribute('fill', '#fff'); p.setAttribute('stroke', '#111'); p.setAttribute('stroke-width', '1.4'); p.setAttribute('stroke-linejoin', 'round');
-                     v.appendChild(p); d.appendChild(v); s.margin = '-1px 0 0 -1px'; // the path's tip is at (1, 1)
+                     const N = 'http://www.w3.org/2000/svg', E = (n, a) => { const e = document.createElementNS(N, n); for (const k in a) e.setAttribute(k, a[k]); return e; }; // built with DOM calls: Trusted Types pages reject markup strings
+                     const v = E('svg', { width: '{{Num(ArtSize * PointerScale)}}', height: '{{Num(ArtSize * PointerScale)}}', viewBox: '0 0 {{Num(ArtSize)}} {{Num(ArtSize)}}' }); v.style.display = 'block'; v.style.overflow = 'visible';
+                     const f = E('filter', { id: '__ao_shadow', x: '-50%', y: '-50%', width: '200%', height: '200%' }); f.appendChild(E('feDropShadow', { dx: '0.7', dy: '1.21', stdDeviation: '1.75', 'flood-color': '#000', 'flood-opacity': '.45' }));
+                     const dd = E('defs', {}); dd.appendChild(f); v.appendChild(dd); // the same art as the desktop pointer (PointerArt): a dark rim with a soft shadow under a white arrow
+                     v.appendChild(E('path', { d: '{{PointerShape}}', fill: '#1B1B1F', stroke: '#1B1B1F', 'stroke-width': '4.4', 'stroke-linejoin': 'round', filter: 'url(#__ao_shadow)' }));
+                     v.appendChild(E('path', { d: '{{PointerShape}}', fill: '#fff', stroke: '#fff', 'stroke-width': '2.8', 'stroke-linejoin': 'round' }));
+                     d.appendChild(v); s.margin = '-{{Num(HotSpot * PointerScale)}}px 0 0 -{{Num(HotSpot * PointerScale)}}px'; // the tip is HotSpot units into the art
                      document.documentElement.appendChild(d); d.getBoundingClientRect(); }
                  d.style.transition = {{(ms > 0 ? $"'left {Num(ms)}ms cubic-bezier(.65,0,.35,1), top {Num(ms)}ms cubic-bezier(.65,0,.35,1)'" : "'none'")}};
                  d.style.left = '{{Num(x)}}px'; d.style.top = '{{Num(y)}}px';
@@ -450,7 +454,7 @@ public partial class MainWindow
                      t.margin = '-20px 0 0 -20px'; t.boxSizing = 'border-box'; t.border = '3px solid rgb(0,220,255)'; t.borderRadius = '50%';
                      document.documentElement.appendChild(r);
                      r.animate([{ transform: 'scale(.2)', opacity: .9 }, { transform: 'scale(1)', opacity: 0 }], { duration: 400, easing: 'ease-out' }).onfinish = () => r.remove(); }
-                 clearTimeout(window.__aoCursor); window.__aoCursor = setTimeout(() => d.remove(), 8000); })()
+                 })()
         """;
 
     // The pointer where the model is; a page that rejects scripts (or is mid-navigation) just has none.
@@ -461,6 +465,16 @@ public partial class MainWindow
             await core.ExecuteScriptAsync(CursorScript(fromX, fromY, x, y, ms, click));
         }
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+    }
+
+    // The reply is over: the pointer goes from this page. A closed tab or a page that rejects scripts has nothing to remove.
+    private static async Task RemovePointer(CoreWebView2 core)
+    {
+        try
+        {
+            await core.ExecuteScriptAsync("document.querySelectorAll('#__ao_cursor,.__ao_ripple').forEach(e => e.remove())");
+        }
+        catch (Exception e) when (e is InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException) { }
     }
 
     // The pointer and ripples are hidden while the page is captured, so the model does not see its own cursor. Hiding waits for two painted frames;
@@ -557,6 +571,7 @@ public partial class MainWindow
     {
         var distance = Math.Sqrt((x - fromX) * (x - fromX) + (y - fromY) * (y - fromY));
         var ms = ComputerLogic.GlideMs(distance);
+        tab.Pointer = true;
         await Ring(core, fromX, fromY, x, y, ms, click: false);
         var steps = BrowserInputLogic.Steps(distance);
         for (var i = 1; i <= steps; i++)

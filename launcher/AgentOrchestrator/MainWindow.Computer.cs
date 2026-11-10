@@ -1044,11 +1044,13 @@ public partial class MainWindow
     private const double PointerScale = 2.0; // the art is drawn larger than a normal cursor, so the model's pointer stands out
     private const double ArtSize = 32, HotSpot = 2; // the art's box and its tip, in the units of a 32-pixel cursor
 
+    private const string PointerShape = "M 3,3 L 13.4,8.8 L 8.8,10.4 L 5.4,14.6 Z"; // also the browser pointer's
+
     // The pointer art: the "light" cursor scheme's arrow (a rounded white arrow, a thin dark rim, a soft shadow) redrawn as
     // vectors, so it stays sharp at any size and display scale. A dark shape a little larger than the white one is the rim.
     internal static Canvas PointerArt()
     {
-        var shape = Geometry.Parse("M 3,3 L 13.4,8.8 L 8.8,10.4 L 5.4,14.6 Z");
+        var shape = Geometry.Parse(PointerShape);
         shape.Freeze();
         var rim = new SolidColorBrush(Color.FromRgb(0x1B, 0x1B, 0x1F));
         return new Canvas

@@ -27,7 +27,7 @@ public partial class MainWindow
         // where its pointer is, whether it is acting (its right clicks show no context menu), and what the last action did
         public int ShotW, ShotH;
         public double ShotViewW, ShotViewH, MouseX, MouseY;
-        public bool HasMouse, Driving;
+        public bool HasMouse, Driving, Pointer; // Pointer: the model's pointer is on this page (until its reply ends)
         public string Done = "", Dialog = ""; // Dialog: a script dialog or file picker the page opened while the model acted
     }
 
@@ -180,6 +180,8 @@ public partial class MainWindow
                     _settings.Save();
                 }
             }
+            if (tab.Pointer && tab.HasMouse && web.CoreWebView2 is { } core) // a new page has no pointer: put it back where it was
+                Forget(Ring(core, tab.MouseX, tab.MouseY, tab.MouseX, tab.MouseY, 0, click: false));
             RefreshTab(tab);
             RefreshBrowserButtons();
         };
@@ -405,9 +407,47 @@ public partial class MainWindow
     // address), in the shown tab or (new_tab) a new one; then, or for read (of tab N, which it shows), the page's address,
     // title, script errors and visible text go back to the model (the engine pages through the text). screenshot: tab N
     // shown, scrolled to the first `find` match, as a JPEG data URL in "image". tabs: the open tabs, numbered.
-    private async Task AnswerBrowserAsync(JsonElement ev)
+    private Process? _pointerOwner;
+    private System.Windows.Threading.DispatcherTimer? _pointerWatch;
+
+    // The model's pointer lives as long as the reply that used it: the asking process exiting (as computer use's StartWatch sees it) or a new reply removes it.
+    private void EndBrowserPointer()
     {
-        var asker = _chatProcess ?? _process;
+        _pointerWatch?.Stop();
+        _pointerOwner = null;
+        foreach (var t in _tabs.Where(t => t.Pointer).ToList())
+        {
+            t.Pointer = false;
+            if (t.Web.CoreWebView2 is { } core)
+                Forget(RemovePointer(core));
+        }
+    }
+
+    private void WatchBrowserPointer(Process? asker)
+    {
+        if (!ReferenceEquals(asker, _pointerOwner))
+            EndBrowserPointer(); // a new reply
+        _pointerOwner = asker;
+        _pointerWatch ??= new System.Windows.Threading.DispatcherTimer(TimeSpan.FromSeconds(1), System.Windows.Threading.DispatcherPriority.Background, (_, _) =>
+        {
+            bool ended;
+            try
+            {
+                ended = _pointerOwner is null || _pointerOwner.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                ended = true; // disposed
+            }
+            if (ended)
+                EndBrowserPointer();
+        }, Dispatcher);
+        _pointerWatch.Start();
+    }
+
+    private async Task AnswerBrowserAsync(JsonElement ev, Process? asker)
+    {
+        WatchBrowserPointer(asker);
         double? Opt(string name) => ev.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetDouble() : null;
         var input = new BrowserInput(Opt("x"), Opt("y"), Opt("to_x"), Opt("to_y"), Opt("dx"), Opt("dy"), Str(ev, "button") is { Length: > 0 } button ? button : "left",
             Math.Max((int)Num(ev, "clicks"), 1), Str(ev, "text"), Str(ev, "keys"), !(ev.TryGetProperty("shot", out var shot) && shot.ValueKind == JsonValueKind.False));

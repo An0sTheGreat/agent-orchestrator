@@ -1203,7 +1203,7 @@ public partial class MainWindow
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 SetChatStatus("Looking at the page in the browser…");
-                Forget(AnswerBrowserAsync(ev));
+                Forget(AnswerBrowserAsync(ev, _chatProcess));
                 break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 SetChatStatus("Using an application on your computer… (Esc stops it)");
