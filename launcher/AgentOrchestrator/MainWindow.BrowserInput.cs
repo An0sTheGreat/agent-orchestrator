@@ -257,10 +257,18 @@ public partial class MainWindow
     private async Task<(string? Image, string Note)> CaptureAsync(BrowserTab tab, CoreWebView2 core)
     {
         using var shot = new MemoryStream();
-        var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
-        if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
-            return (null, "");
-        await capture;
+        await ShowPointer(core, false);
+        try
+        {
+            var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
+            if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
+                return (null, "");
+            await capture;
+        }
+        finally
+        {
+            await ShowPointer(core, true);
+        }
         var bytes = shot.ToArray();
         var view = await ViewAsync(core);
         try
@@ -421,24 +429,40 @@ public partial class MainWindow
                  return e.matches('input[type=file]') || (l && l.control && l.control.matches('input[type=file]')) ? 'file' : ''; })()
         """;
 
-    private static string CursorScript(double x, double y, bool click) =>
+    // The model's pointer: a white arrow whose tip is at (x, y), gliding there from (fromX, fromY) over `ms`; a click adds a cyan ripple.
+    private static string CursorScript(double fromX, double fromY, double x, double y, double ms, bool click) =>
         $$"""
         (() => { let d = document.getElementById('__ao_cursor');
                  if (!d) { d = document.createElement('div'); d.id = '__ao_cursor'; const s = d.style;
-                     s.position = 'fixed'; s.zIndex = '2147483647'; s.pointerEvents = 'none'; s.width = s.height = '22px'; s.margin = '-11px 0 0 -11px';
-                     s.boxSizing = 'border-box'; s.border = '3px solid #e5484d'; s.borderRadius = '50%'; s.background = 'rgba(229,72,77,.25)';
-                     s.transition = 'left .12s, top .12s, transform .15s'; document.documentElement.appendChild(d); }
-                 d.style.left = '{{Num(x)}}px'; d.style.top = '{{Num(y)}}px'; d.style.transform = {{(click ? "'scale(1.6)'" : "'scale(1)'")}};
-                 if ({{(click ? "true" : "false")}}) setTimeout(() => { d.style.transform = 'scale(1)'; }, 160);
-                 clearTimeout(window.__aoCursor); window.__aoCursor = setTimeout(() => d.remove(), 2500); })()
+                     s.position = 'fixed'; s.zIndex = '2147483647'; s.pointerEvents = 'none'; s.left = '{{Num(fromX)}}px'; s.top = '{{Num(fromY)}}px';
+                     d.innerHTML = '<svg width="16" height="24" viewBox="0 0 16 24" style="display:block;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))"><path d="M1 1 L1 18 L5.5 14 L8.5 21 L11.5 19.7 L8.5 13 L14 13 Z" fill="#fff" stroke="#111" stroke-width="1.4" stroke-linejoin="round"/></svg>';
+                     document.documentElement.appendChild(d); d.getBoundingClientRect(); }
+                 d.style.transition = {{(ms > 0 ? $"'left {Num(ms)}ms cubic-bezier(.65,0,.35,1), top {Num(ms)}ms cubic-bezier(.65,0,.35,1)'" : "'none'")}};
+                 d.style.left = '{{Num(x)}}px'; d.style.top = '{{Num(y)}}px';
+                 if ({{(click ? "true" : "false")}}) { const r = document.createElement('div'); r.className = '__ao_ripple'; const t = r.style;
+                     t.position = 'fixed'; t.zIndex = '2147483646'; t.pointerEvents = 'none'; t.left = '{{Num(x)}}px'; t.top = '{{Num(y)}}px'; t.width = t.height = '40px';
+                     t.margin = '-20px 0 0 -20px'; t.boxSizing = 'border-box'; t.border = '3px solid rgb(0,220,255)'; t.borderRadius = '50%';
+                     document.documentElement.appendChild(r);
+                     r.animate([{ transform: 'scale(.2)', opacity: .9 }, { transform: 'scale(1)', opacity: 0 }], { duration: 400, easing: 'ease-out' }).onfinish = () => r.remove(); }
+                 clearTimeout(window.__aoCursor); window.__aoCursor = setTimeout(() => d.remove(), 8000); })()
         """;
 
-    // The ring where the model's pointer is; a page that rejects scripts (or is mid-navigation) just has none.
-    private static async Task Ring(CoreWebView2 core, double x, double y, bool click)
+    // The pointer where the model is; a page that rejects scripts (or is mid-navigation) just has none.
+    private static async Task Ring(CoreWebView2 core, double fromX, double fromY, double x, double y, double ms, bool click)
     {
         try
         {
-            await core.ExecuteScriptAsync(CursorScript(x, y, click));
+            await core.ExecuteScriptAsync(CursorScript(fromX, fromY, x, y, ms, click));
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+    }
+
+    // The pointer and ripples are hidden while the page is captured, so the model does not see its own cursor.
+    private static async Task ShowPointer(CoreWebView2 core, bool show)
+    {
+        try
+        {
+            await core.ExecuteScriptAsync($"document.querySelectorAll('#__ao_cursor,.__ao_ripple').forEach(e => e.style.visibility = '{(show ? "visible" : "hidden")}')");
         }
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
     }
@@ -492,7 +516,7 @@ public partial class MainWindow
                 var mask = BrowserInputLogic.ButtonMask(input.Button);
                 for (var n = 1; n <= Math.Clamp(input.Clicks, 1, 3); n++)
                 {
-                    await Ring(core, x, y, click: true);
+                    await Ring(core, x, y, x, y, 0, click: true);
                     await CdpMouse(core, "mousePressed", x, y, input.Button, mask, n);
                     await CdpMouse(core, "mouseReleased", x, y, input.Button, 0, n); // ponytail: a failed press leaves no button down; a failed release means the tab is gone
                 }
@@ -518,11 +542,14 @@ public partial class MainWindow
 
     private static async Task MoveAsync(CoreWebView2 core, BrowserTab tab, double fromX, double fromY, double x, double y, int buttons = 0, string button = "none")
     {
-        var steps = BrowserInputLogic.Steps(Math.Sqrt((x - fromX) * (x - fromX) + (y - fromY) * (y - fromY)));
+        var distance = Math.Sqrt((x - fromX) * (x - fromX) + (y - fromY) * (y - fromY));
+        var ms = ComputerLogic.GlideMs(distance);
+        await Ring(core, fromX, fromY, x, y, ms, click: false);
+        var steps = BrowserInputLogic.Steps(distance);
         for (var i = 1; i <= steps; i++)
             await CdpMouse(core, "mouseMoved", fromX + (x - fromX) * i / steps, fromY + (y - fromY) * i / steps, button, buttons);
         (tab.MouseX, tab.MouseY, tab.HasMouse) = (x, y, true);
-        await Ring(core, x, y, click: false);
+        await Task.Delay((int)ms); // the click lands on arrival
     }
 
     // Press at (x, y), move to (toX, toY), release. An element that is draggable (HTML5 drag and drop) would start the system's drag
