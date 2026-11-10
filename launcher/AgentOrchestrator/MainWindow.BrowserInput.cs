@@ -257,10 +257,10 @@ public partial class MainWindow
     private async Task<(string? Image, string Note)> CaptureAsync(BrowserTab tab, CoreWebView2 core)
     {
         using var shot = new MemoryStream();
-        tab.Capturing = true; // a navigation finishing now must not draw the pointer into the shot; it is put back below
-        await ShowPointer(core, false);
         try
         {
+            tab.Capturing = true; // a navigation finishing now must not draw the pointer into the shot; it is put back below
+            await ShowPointer(core, false);
             var capture = core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, shot);
             if (await Task.WhenAny(capture, Task.Delay(15000)) != capture) // the engine waits for this answer
             {
@@ -272,9 +272,22 @@ public partial class MainWindow
         finally
         {
             await ShowPointer(core, true);
-            if (tab.Pointer && tab.HasMouse) // a page that navigated meanwhile has none: draw it at the last point (a no-op move if it exists)
-                await Ring(core, tab.MouseX, tab.MouseY, tab.MouseX, tab.MouseY, 0, click: false);
-            tab.Capturing = false;
+            try
+            {
+                if (tab.Pointer && tab.HasMouse) // a page that navigated meanwhile has none: draw it at the last point (a no-op move if it exists); bounded like ShowPointer
+                {
+                    var ring = Ring(core, tab.MouseX, tab.MouseY, tab.MouseX, tab.MouseY, 0, click: false);
+                    if (await Task.WhenAny(ring, Task.Delay(1000)) != ring)
+                        Forget(ring.ContinueWith(_ => { }, TaskScheduler.Default)); // its exception, if any, is not unobserved
+                    else
+                        await ring;
+                }
+            }
+            catch (Exception e) when (e is InvalidOperationException or ObjectDisposedException or System.Runtime.InteropServices.COMException) { }
+            finally
+            {
+                tab.Capturing = false;
+            }
         }
         var bytes = shot.ToArray();
         var view = await ViewAsync(core);

@@ -462,7 +462,7 @@ public partial class MainWindow
         {
             gone = true;
         }
-        if (gone)
+        if (gone && (_pointerOwner is null || ReferenceEquals(_pointerOwner, asker)))
             EndBrowserPointer(); // the reply ended while the drive ran: the drive's own pointer must not outlive it
         NoteShot(image);
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
