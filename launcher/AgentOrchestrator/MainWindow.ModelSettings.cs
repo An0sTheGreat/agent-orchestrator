@@ -1437,9 +1437,18 @@ public partial class MainWindow
             await Idle();
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: true } || !prompts.Text.StartsWith("▾") || !_settings.PromptsExpanded)
                 return Fail("the prompts open");
+            // Advanced on: Speed's card shows, so the check below isolates SpeedExpanded's own default from the Advanced switch.
+            if (SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "AdvancedSettings") is not { } advancedSwitch)
+                return Fail("the Advanced switch");
+            advancedSwitch.IsChecked = true;
+            SmokeClick(advancedSwitch);
+            await Idle();
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SamplingBody") is not { IsVisible: true } ||
                 SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SpeedBody") is not { IsVisible: false })
                 return Fail("the option groups' default open/collapsed state");
+            advancedSwitch.IsChecked = false;
+            SmokeClick(advancedSwitch);
+            await Idle();
 
             // Vision: the switch goes in the request; a model that cannot see (Disable vision, or no mmproj beside its GGUF)
             // greys it with the reason as its tip.
