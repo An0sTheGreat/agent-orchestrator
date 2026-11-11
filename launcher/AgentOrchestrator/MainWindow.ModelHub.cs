@@ -25,9 +25,9 @@ public partial class MainWindow
     internal static Func<HttpMessageHandler>? HubHttpHandlerFactory;
     internal static double? HubVramGiBOverride, HubRamGiBOverride; // --ui-smoke: the GPU memory and RAM the fit checks assume
 
-    // Cached: every repo folder in the hub cache (the fit filter keeps them). Downloaded: those whose snapshots hold a GGUF
-    // (the rows' Downloaded badge), plus the downloads finished since.
-    private sealed record HubMachine(double? VramGiB, double RamGiB, HashSet<string> Cached, HashSet<string> Downloaded);
+    // OnDisk: the repos with a GGUF in the hub cache ("org/name"), the Models folder or the download folder ("name"): the
+    // rows' green dot. Plus the downloads finished since.
+    private sealed record HubMachine(double? VramGiB, double RamGiB, HashSet<string> OnDisk);
 
     // The page's one download: its repo and weights, the last progress, and how it ended. Cancelled: back to null.
     private enum HubDlState { Running, Failed, Done }
@@ -51,7 +51,7 @@ public partial class MainWindow
     private HttpClient? _hubHttp;
     private HttpClient HubHttp => _hubHttp ??= NewHubHttp();
     private readonly Dictionary<(string Query, string Sort, HubKind Kinds, string Brands), (DateTime At, List<HubModel> Rows, Uri? Next)> _hubPageCache = new();
-    private Task<HubMachine> _hubMachine = Task.FromResult(new HubMachine(null, 0, [], []));
+    private Task<HubMachine> _hubMachine = Task.FromResult(new HubMachine(null, 0, []));
     private CancellationTokenSource? _hubCts;
     private Task _hubTask = Task.CompletedTask; // smokes await it
     private DispatcherTimer? _hubDebounce;
@@ -61,6 +61,12 @@ public partial class MainWindow
     private int _hubPages;
     private bool _hubLoadingMore;
     private HubModel? _hubSelected;
+    // Repo id -> its smallest weights (HubLogic.SmallestWeights; null: no GGUF), from the detail and, while Fits my GPU is on,
+    // the background fetch (_hubSizeTask, smokes await it); _hubSizeTried: failed fetches, not asked again until reopened.
+    private readonly Dictionary<string, long?> _hubSmallest = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _hubSizeTried = new(StringComparer.OrdinalIgnoreCase);
+    private Task _hubSizeTask = Task.CompletedTask;
+    private CancellationTokenSource? _hubSizeFor;
     private TextBox _hubSearch = new();
     private StackPanel _hubList = new(), _hubStatus = new();
     private TextBlock _hubFooter = new(), _hubSortLabel = new(), _hubKindsLabel = new();
@@ -111,8 +117,25 @@ public partial class MainWindow
     // The Downloaded set's key for a repo: its id in the cache, its folder name (the part after the slash) in a flat folder.
     private static string HubDownloadedKey(string repo, HubLayout layout) => layout == HubLayout.Flat ? repo.Split('/')[^1] : repo;
 
-    private bool HubRowIsDownloaded(string repo) =>
-        _hubMachine.IsCompletedSuccessfully && _hubMachine.Result.Downloaded.Contains(HubDownloadedKey(repo, HubTarget().Layout));
+    private bool HubRowOnDisk(string repo) =>
+        _hubMachine.IsCompletedSuccessfully && _hubMachine.Result.OnDisk is var on && (on.Contains(repo) || on.Contains(repo.Split('/')[^1]));
+
+    private HashSet<string> HubOnDisk()
+    {
+        var on = HubDownloadedAt(LauncherLogic.HubCache(), HubLayout.HfCache);
+        foreach (var folder in new[] { _settings.ModelsFolder, _settings.HubDownloadFolder })
+            if (folder.Length > 0)
+                on.UnionWith(HubDownloadedAt(folder, HubLayout.Flat));
+        return on;
+    }
+
+    // The rows' green dots from OnDisk.
+    private void HubShowOnDisk()
+    {
+        foreach (var row in HubRows())
+            if (SmokeFind<System.Windows.Shapes.Ellipse>(row, e => e.Tag as string == "HubRowOnDisk") is { } dot)
+                dot.Visibility = HubRowOnDisk(((HubModel)row.DataContext).Id) ? Visibility.Visible : Visibility.Collapsed;
+    }
 
     // The repos holding a GGUF at the target (as HubDownloadedKey names them).
     private static HashSet<string> HubDownloadedAt(string root, HubLayout layout)
@@ -136,15 +159,13 @@ public partial class MainWindow
             folder = "";
         _settings.HubDownloadFolder = folder;
         _settings.Save();
-        var (root, layout) = HubTarget();
+        var root = HubTarget().Root;
         _hubMachine = _hubMachine.IsCompletedSuccessfully
-            ? Task.FromResult(_hubMachine.Result with { Downloaded = HubDownloadedAt(root, layout) })
-            : HubReadMachineAsync((root, layout)); // still reading the machine: read it again for this target
+            ? Task.FromResult(_hubMachine.Result with { OnDisk = HubOnDisk() })
+            : HubReadMachineAsync(); // still reading the machine: read it again for this folder
         ((TextBlock)_hubFolderChip.Tag).Text = HubShortPath(root);
         _hubFolderChip.ToolTip = "Downloads go to " + root;
-        foreach (var row in HubRows())
-            if (SmokeFind<Border>(row, b => b.Tag as string == "HubRowDownloaded") is { } badge)
-                badge.Visibility = HubRowIsDownloaded(((HubModel)row.DataContext).Id) ? Visibility.Visible : Visibility.Collapsed;
+        HubShowOnDisk();
         HubShowSaveTo();
         UpdateHubDownloadButton();
     }
@@ -221,8 +242,9 @@ public partial class MainWindow
         CloseModelSettings();
         if (!HubLogic.Sorts.Any(s => s.Id == _settings.HubSort))
             _settings.HubSort = "trending";
-        _hubMachine = HubReadMachineAsync(HubTarget());
+        _hubMachine = HubReadMachineAsync();
         _hubSelected = null;
+        _hubSizeTried.Clear();
 
         // ---- header: title, subtitle, this machine
         var title = new TextBlock { Text = "Model hub", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold };
@@ -237,10 +259,29 @@ public partial class MainWindow
         foreach (var chip in new[] { vram, ram, cpu, _hubFolderChip })
             chips.Children.Add(chip);
         DockPanel.SetDock(chips, Dock.Right);
+        // Fits my GPU: hides the rows whose smallest weights (fetched in the background while on) are larger than the GPU
+        var fits = new Button { Tag = "HubFitsGpu", Style = (Style)FindResource("GhostButton"), Height = 34, Padding = new Thickness(14, 0, 14, 0), Margin = new Thickness(10, 0, 0, 0),
+            ToolTip = "Hide models whose smallest weights are larger than this GPU's memory" };
+        fits.SetResourceReference(BackgroundProperty, "Card");
+        fits.SetResourceReference(ForegroundProperty, "TextPrimary");
+        ToolTipService.SetShowOnDisabled(fits, true);
+        void FitsLabel() => fits.Content = _settings.HubFitsGpu ? "✓ Fits my GPU" : "Fits my GPU";
+        FitsLabel();
+        fits.Click += (_, _) =>
+        {
+            _settings.HubFitsGpu = !_settings.HubFitsGpu;
+            _settings.Save();
+            FitsLabel();
+            HubFillRows();
+            HubFetchSizes();
+        };
+        DockPanel.SetDock(fits, Dock.Right);
         _hubMachine.ContinueWith(t =>
         {
             ((TextBlock)vram.Tag).Text = t.Result.VramGiB is { } v ? $"{v:0} GB" : "n/a";
             ((TextBlock)ram.Tag).Text = $"{t.Result.RamGiB:0} GB";
+            if (t.Result.VramGiB is not > 0)
+                (fits.IsEnabled, fits.ToolTip) = (false, "GPU memory is unknown");
         }, TaskScheduler.FromCurrentSynchronizationContext());
 
         // ---- search box (with a clear button) and the sort pill
@@ -295,7 +336,7 @@ public partial class MainWindow
         var brandButton = Pill("HubBrands", new Grid { Children = { funnel, _hubBrandDot } }, BuildHubBrandMenu);
         (brandButton.Width, brandButton.Padding, brandButton.ToolTip) = (34, new Thickness(0), "Filter by model maker");
         HubFilterLabels();
-        var searchRow = new DockPanel { Margin = new Thickness(0, 20, 0, 0), Children = { sortButton, kindsButton, brandButton, new Grid { Children = { _hubSearch, glass, hint, clear } } } };
+        var searchRow = new DockPanel { Margin = new Thickness(0, 20, 0, 0), Children = { sortButton, kindsButton, brandButton, fits, new Grid { Children = { _hubSearch, glass, hint, clear } } } };
 
         // ---- the running download, whichever row is shown
         _hubStripText = new TextBlock { Tag = "HubStripText", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
@@ -373,22 +414,14 @@ public partial class MainWindow
         Reveal(ModelHubView, false);
     }
 
-    // VRAM (the override, else the first GPU's, read once per run off the UI thread), RAM, the repos already in the cache and
-    // those downloaded at the target.
-    private static async Task<HubMachine> HubReadMachineAsync((string Root, HubLayout Layout) target)
+    // VRAM (the override, else the first GPU's, read once per run off the UI thread), RAM, the repos on disk.
+    private async Task<HubMachine> HubReadMachineAsync()
     {
         double? vram = HubVramGiBOverride;
         if (vram is null && await (_gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes)) is { } bytes and > 0)
             vram = bytes / HubGiB;
         var ram = HubRamGiBOverride ?? GC.GetGCMemoryInfo().TotalAvailableMemoryBytes / HubGiB;
-        var (cached, downloaded) = await Task.Run(() =>
-        {
-            HashSet<string> cached = [];
-            try { cached = Directory.EnumerateDirectories(LauncherLogic.HubCache(), "models--*").Select(HubCacheRepo).ToHashSet(StringComparer.OrdinalIgnoreCase); }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { }
-            return (cached, HubDownloadedAt(target.Root, target.Layout));
-        });
-        return new HubMachine(vram, ram, cached, downloaded);
+        return new HubMachine(vram, ram, await Task.Run(HubOnDisk));
     }
 
     // "C:\Users\me\.cache\huggingface\hub" -> "…\huggingface\hub"
@@ -428,7 +461,7 @@ public partial class MainWindow
     private void HubSortLabel() =>
         _hubSortLabel.Text = $"↑↓  {HubLogic.Sorts.First(s => s.Id == _settings.HubSort).Label}  ▾";
 
-    // The sorts (the current one checked), then "Only show models that fit". --ui-smoke clicks its items without opening it.
+    // The sorts (the current one checked). --ui-smoke clicks its items without opening it.
     private ContextMenu BuildHubSortMenu(UIElement anchor)
     {
         var menu = NewPresetMenu(anchor);
@@ -444,15 +477,6 @@ public partial class MainWindow
             (item.IsChecked, item.Tag) = (sort.Id == _settings.HubSort, "hubsort:" + sort.Id);
             menu.Items.Add(item);
         }
-        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
-        var fit = PresetItem("Only show models that fit", () =>
-        {
-            _settings.HubOnlyFit = !_settings.HubOnlyFit;
-            _settings.Save();
-            HubFillRows();
-        });
-        (fit.IsChecked, fit.Tag, fit.ToolTip) = (_settings.HubOnlyFit, "HubOnlyFit", "Hides models too large for this computer's GPU and RAM; models already downloaded stay.");
-        menu.Items.Add(fit);
         return menu;
     }
 
@@ -682,20 +706,54 @@ public partial class MainWindow
     {
         var (all, key) = (_hubAll.ToList(), _hubKey);
         var shown = await Task.Run(() => HubVisible(all, key), ct);
-        await _hubMachine; // the fit filter needs it
+        await _hubMachine; // the fit filter and the dots need it
         ct.ThrowIfCancellationRequested();
         _hubShown = shown;
         HubFillRows();
+        HubFetchSizes();
     }
 
-    // The rows of _hubShown, less those that do not fit when "Only show models that fit" is on (downloaded ones stay).
+    // Fits my GPU on (and the VRAM known): fetch the shown repos' sizes, unless this search's fetch already runs (it picks up
+    // the rows shown since). Off, nothing is fetched: up to 100 repos a page would invite Hugging Face's 429s.
+    private void HubFetchSizes()
+    {
+        if (!_settings.HubFitsGpu || !_hubMachine.IsCompletedSuccessfully || _hubMachine.Result.VramGiB is not > 0 || _hubCts is not { IsCancellationRequested: false } cts ||
+            !_hubSizeTask.IsCompleted && _hubSizeFor == cts)
+            return;
+        _hubSizeFor = cts;
+        _hubSizeTask = HubFetchSizesAsync(cts.Token);
+    }
+
+    // 8 repos at a time (the 5-minute text cache serves the detail too), the rows refilled after each batch; failures stay shown.
+    private async Task HubFetchSizesAsync(CancellationToken ct)
+    {
+        while (_settings.HubFitsGpu && !ct.IsCancellationRequested &&
+               _hubShown.Where(m => !_hubSmallest.ContainsKey(m.Id) && !_hubSizeTried.Contains(m.Id)).Take(8).ToList() is { Count: > 0 } batch)
+        {
+            await Task.WhenAll(batch.Select(async m =>
+            {
+                try
+                {
+                    var json = await HubGetTextAsync(HubBlobsUrl(m.Id), TimeSpan.FromSeconds(15), ct)
+                        ?? throw new HttpRequestException("Not found", null, HttpStatusCode.NotFound);
+                    _hubSmallest[m.Id] = HubLogic.SmallestWeights(await Task.Run(() => HubLogic.ParseVariants(json), ct));
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+                catch (Exception e) when (e is HttpRequestException or OperationCanceledException or JsonException) { _hubSizeTried.Add(m.Id); }
+            }));
+            if (!ct.IsCancellationRequested)
+                HubFillRows();
+        }
+    }
+
+    private static string HubBlobsUrl(string id) => $"https://huggingface.co/api/models/{id}?blobs=true";
+
+    // The rows of _hubShown less the repos known to have no GGUF and, with Fits my GPU on, those larger than the GPU.
     // ponytail: rebuilds every row on each page (up to 10 x 100); a virtualizing list if that ever drags.
     private void HubFillRows()
     {
         var machine = _hubMachine.IsCompletedSuccessfully ? _hubMachine.Result : null;
-        var rows = _settings.HubOnlyFit && machine is not null
-            ? _hubShown.Where(m => machine.Cached.Contains(m.Id) || HubLogic.ModelFits(m, machine.VramGiB, machine.RamGiB)).ToList()
-            : _hubShown;
+        var rows = HubLogic.FilterFetched(_hubShown, _hubSmallest, _settings.HubFitsGpu, machine?.VramGiB);
         _hubList.Children.Clear();
         var now = DateTimeOffset.UtcNow;
         foreach (var m in rows)
@@ -705,7 +763,7 @@ public partial class MainWindow
             HubStatus("No models match these filters", clearFilters: true);
         else
             HubStatus(rows.Count > 0 ? "" : (query.Length == 0 ? "No GGUF models found" : $"No GGUF models match “{query}”")
-                + (rows.Count == 0 && rows.Count < _hubShown.Count ? " that fit this computer" : ""));
+                + (rows.Count == 0 && _hubShown.Count > 0 && _settings.HubFitsGpu ? " that fit this GPU" : ""));
         // a short list does not scroll: keep loading until it fills (or the pages run out)
         Dispatcher.BeginInvoke(HubLoadMore, DispatcherPriority.Background);
     }
@@ -803,19 +861,19 @@ public partial class MainWindow
                 t.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             return t;
         }
-        var badge = HubBadge(m);
-        badge.VerticalAlignment = VerticalAlignment.Center;
+        // the logo, with a green dot on its top-left corner when the repo is on disk
+        var dot = new System.Windows.Shapes.Ellipse
+        {
+            Tag = "HubRowOnDisk", Width = 7, Height = 7, ToolTip = "Downloaded", HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(-2, -2, 0, 0), Fill = new SolidColorBrush(Color.FromRgb(0x3F, 0xBF, 0x7F)), Visibility = HubRowOnDisk(m.Id) ? Visibility.Visible : Visibility.Collapsed,
+        };
+        var badge = new Grid { VerticalAlignment = VerticalAlignment.Center, Children = { HubBadge(m), dot } };
         var stats = Line(HubStats(m));
         stats.Tag = "hubstats";
         var age = Line(HubLogic.FormatAge(m.LastModified, now));
         var right = new StackPanel { Margin = new Thickness(12, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { stats, age } };
         (stats.HorizontalAlignment, age.HorizontalAlignment) = (HorizontalAlignment.Right, HorizontalAlignment.Right);
-        var done = HubPill("Downloaded", new SolidColorBrush(Color.FromRgb(0x3F, 0xBF, 0x7F)));
-        (done.Tag, done.Margin, done.Padding, done.VerticalAlignment) = ("HubRowDownloaded", new Thickness(8, 0, 0, 0), new Thickness(7, 0, 7, 1), VerticalAlignment.Center);
-        done.Visibility = HubRowIsDownloaded(m.Id) ? Visibility.Visible : Visibility.Collapsed;
-        var nameLine = new DockPanel { Children = { done, Line(m.Name, strong: true) } };
-        DockPanel.SetDock(done, Dock.Right);
-        var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { nameLine, Line(m.Owner) } };
+        var names = new StackPanel { Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Children = { Line(m.Name, strong: true), Line(m.Owner) } };
         var grid = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } } };
         Grid.SetColumn(names, 1);
         Grid.SetColumn(right, 2);
@@ -1023,11 +1081,23 @@ public partial class MainWindow
         _hubWeights.Child = HubNote("Loading weights…", "HubWeightsLoading");
         try
         {
-            var json = await HubGetTextAsync($"https://huggingface.co/api/models/{model.Id}?blobs=true", TimeSpan.FromSeconds(15), ct)
+            var json = await HubGetTextAsync(HubBlobsUrl(model.Id), TimeSpan.FromSeconds(15), ct)
                 ?? throw new HttpRequestException("Not found", null, HttpStatusCode.NotFound);
             var variants = await Task.Run(() => HubLogic.ParseVariants(json), ct);
+            _hubSmallest[model.Id] = HubLogic.SmallestWeights(variants);
             var machine = await _hubMachine;
             ct.ThrowIfCancellationRequested(); // another row was selected meanwhile
+            if (variants.Variants.Count == 0)
+            {
+                // no GGUF: the row goes (HubFillRows drops it) and the one now in its place is shown
+                var at = HubRows().FindIndex(r => ((HubModel)r.DataContext).Id == model.Id);
+                HubFillRows();
+                if (HubRows() is { Count: > 0 } rows)
+                    HubSelect(rows[Math.Clamp(at, 0, rows.Count - 1)]);
+                else
+                    (_hubSelected, _hubDetail.Child) = (null, HubEmptyDetail());
+                return;
+            }
             _hubFitFor = (machine.VramGiB, machine.RamGiB > 0 ? machine.RamGiB : null);
             _hubVariantList = HubLogic.OrderByFit(variants.Variants, _hubFitFor.Vram, _hubFitFor.Ram, v => HubIsDownloaded(model.Id, v));
             (_hubSha, _hubVariant) = (variants.Sha, _hubVariantList.FirstOrDefault());
@@ -1047,10 +1117,7 @@ public partial class MainWindow
     {
         HubFacts();
         if (_hubVariant is not { } v)
-        {
-            _hubWeights.Child = HubNote("No GGUF files in this repository", "HubNoGguf");
             return;
-        }
         var label = new TextBlock { Text = v.Label, Tag = "HubWeightsLabel", FontSize = 13.5, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
         label.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary"); // not the ghost button's muted text
         var gguf = HubPill("GGUF");
@@ -1226,12 +1293,10 @@ public partial class MainWindow
             await Task.Run(() => downloader.DownloadAsync(repo, sha, files, progress, ct), ct);
             _hubDl = new HubDl(repo, label, _hubDl?.Progress, HubDlState.Done);
             if (_hubMachine.IsCompletedSuccessfully)
-                _hubMachine.Result.Downloaded.Add(HubDownloadedKey(repo, layout));
+                _hubMachine.Result.OnDisk.Add(HubDownloadedKey(repo, layout));
             _localModelsVersion++;
             Toast($"{repo} {label} downloaded");
-            foreach (var row in HubRows().Where(r => ((HubModel)r.DataContext).Id == repo))
-                if (SmokeFind<Border>(row, b => b.Tag as string == "HubRowDownloaded") is { } badge)
-                    badge.Visibility = Visibility.Visible;
+            HubShowOnDisk();
             if (_hubSelected?.Id == repo && _hubVariantList.Count > 0)
             {
                 _hubVariantList = HubLogic.OrderByFit(_hubVariantList, _hubFitFor.Vram, _hubFitFor.Ram, v => HubIsDownloaded(repo, v));
@@ -1310,13 +1375,14 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: model hub: {what}"); return false; }
         var fake = new HubFakeHandler();
-        var (factory, vramWas, ramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _settings.HubSort, _settings.HubOnlyFit, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
+        var (factory, vramWas, ramWas, open, sortWas, fitWas, cacheWas) = (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _settings.HubSort, _settings.HubFitsGpu, Environment.GetEnvironmentVariable("HF_HUB_CACHE"));
         var (remoteHttp, helpShown) = (_remoteHttp, _settings.RemoteHelpShown);
         var (kindsWas, brandsWas) = (_settings.HubKinds, _settings.HubBrands);
         var (hubFolderWas, modelsWas, pickWas, choiceWas) = (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice);
         var opened = new List<string>();
         var cache = Path.Combine(AppSettings.DataRoot, "hub-smoke-cache");
         var (saveDir, modelsDir) = (Path.Combine(AppSettings.DataRoot, "hub-smoke-saveto"), Path.Combine(AppSettings.DataRoot, "hub-smoke-models"));
+        var (onDiskDir, tinyCached) = (Path.Combine(AppSettings.DataRoot, "hub-smoke-ondisk"), Path.Combine(cache, "models--zyxlab--Tiny-1B-GGUF"));
         string Url(string query, string sort, string? pipelineTag = null) => HubLogic.SearchUrl(query, sort, pipelineTag: pipelineTag).AbsoluteUri;
         string Rows() => string.Join(", ", HubRows().Select(r => ((HubModel)r.DataContext).Id));
         T? Find<T>(string tag) where T : FrameworkElement => SmokeFind<T>(ModelHubView, e => e.Tag as string == tag);
@@ -1362,7 +1428,7 @@ public partial class MainWindow
             _hubTextCache.Clear();
             _openExternal = opened.Add;
             Environment.SetEnvironmentVariable("HF_HUB_CACHE", cache);
-            (_settings.HubSort, _settings.HubOnlyFit, _settings.HubDownloadFolder, _settings.HubKinds, _settings.HubBrands) = ("trending", false, "", (int)HubKind.Text, []);
+            (_settings.HubSort, _settings.HubFitsGpu, _settings.HubDownloadFolder, _settings.HubKinds, _settings.HubBrands) = ("trending", false, "", (int)HubKind.Text, []);
 
             if (!await OpenFromSidebar())
                 return Fail("no Models Hub right under Remote API in the sidebar");
@@ -1560,15 +1626,45 @@ public partial class MainWindow
                     return Fail($"{sort.Label}: label, check mark or saved sort");
             }
 
-            // only models that fit: 4 GB of VRAM hides the 480B; once downloaded it stays
-            await Menu("HubOnlyFit");
-            if (Rows() != Tiny || !AppSettings.Load().HubOnlyFit || BuildHubSortMenu(this).Items.OfType<MenuItem>().Single(i => i.Tag as string == "HubOnlyFit").IsChecked != true)
-                return Fail($"fit filter: rows [{Rows()}]");
-            Directory.CreateDirectory(Path.Combine(cache, "models--unsloth--Qwen3.8-480B-GGUF"));
+            // the green dot: a GGUF in the hub cache (Tiny) or in a Models folder (Qwen, by its folder name)
+            System.Windows.Shapes.Ellipse? Dot(string id) => Row(id) is { } r ? SmokeFind<System.Windows.Shapes.Ellipse>(r, e => e.Tag as string == "HubRowOnDisk") : null;
+            if (Dot(Qwen) is not { Visibility: Visibility.Collapsed } || Dot(Tiny) is not { Visibility: Visibility.Collapsed })
+                return Fail("a dot on a model not on disk");
+            Directory.CreateDirectory(Path.Combine(tinyCached, "snapshots", "x"));
+            File.WriteAllBytes(Path.Combine(tinyCached, "snapshots", "x", "Tiny-1B-Q8_0.gguf"), [1]);
+            Directory.CreateDirectory(Path.Combine(onDiskDir, "Qwen3.8-480B-GGUF"));
+            File.WriteAllBytes(Path.Combine(onDiskDir, "Qwen3.8-480B-GGUF", "Qwen3.8-480B-Q2_K.gguf"), [1]);
+            _settings.ModelsFolder = onDiskDir;
             await OpenFromSidebar();
-            if (!Rows().Contains(Qwen))
-                return Fail($"a downloaded model was hidden by the fit filter: [{Rows()}]");
-            await Menu("HubOnlyFit");
+            if (Dot(Qwen) is not { Visibility: Visibility.Visible } qwenDot || Dot(Tiny) is not { Visibility: Visibility.Visible } || qwenDot.ToolTip as string != "Downloaded")
+                return Fail($"dots: Qwen {Dot(Qwen)?.Visibility} \"{Dot(Qwen)?.ToolTip}\", Tiny {Dot(Tiny)?.Visibility}");
+            snap("20d-hub-on-disk", null);
+            Directory.Delete(tinyCached, recursive: true);
+            Directory.Delete(onDiskDir, recursive: true);
+            _settings.ModelsFolder = modelsWas;
+
+            // Fits my GPU: off by default; disabled while the GPU memory is unknown
+            Button Fits() => Find<Button>("HubFitsGpu")!;
+            if (Fits().Content as string != "Fits my GPU" || !Fits().IsEnabled)
+                return Fail($"Fits my GPU: \"{Fits().Content}\", enabled {Fits().IsEnabled}");
+            HubVramGiBOverride = 0;
+            await OpenFromSidebar();
+            if (Fits().IsEnabled || Fits().ToolTip as string != "GPU memory is unknown" || !ToolTipService.GetShowOnDisabled(Fits()))
+                return Fail($"Fits my GPU, VRAM unknown: enabled {Fits().IsEnabled}, \"{Fits().ToolTip}\"");
+            // 1.2 GB: on, the sizes fetched hide Qwen (smallest 1.5 GB) and keep Tiny (1.1 GB); off, Qwen is back
+            HubVramGiBOverride = 1.2;
+            await OpenFromSidebar();
+            _hubSmallest.Clear(); // known from the clicks above: the fetch must find them
+            _hubTextCache.Clear();
+            SmokeClick(Fits());
+            await _hubSizeTask;
+            if (Rows() != Tiny || Fits().Content as string != "✓ Fits my GPU" || !AppSettings.Load().HubFitsGpu || !fake.Seen.Contains(HubBlobsUrl(Qwen)))
+                return Fail($"Fits my GPU on: rows [{Rows()}], \"{Fits().Content}\", saved {AppSettings.Load().HubFitsGpu}");
+            SmokeClick(Fits());
+            if (Row(Qwen) is null || Row(Tiny) is null || AppSettings.Load().HubFitsGpu)
+                return Fail($"Fits my GPU off: rows [{Rows()}]");
+            HubVramGiBOverride = 4;
+            await OpenFromSidebar();
 
             // paging: the Link header's next page is fetched while the list is short, its rows appended once each
             fake.Paged = true;
@@ -1578,11 +1674,13 @@ public partial class MainWindow
             if (Rows() != $"{Qwen}, {Tiny}, {HubFakeHandler.PageTwo}" || !fake.Seen.Contains(HubFakeHandler.NextUrl))
                 return Fail($"paging: rows [{Rows()}]");
 
-            // a repo without GGUF files says so; a failing load shows a red notice and Retry loads it
+            // a repo without GGUF files leaves the list and the row now in its place shows; a failing load shows a red notice
+            // and Retry loads it
             SmokeClick(HubRows()[2]);
             await _hubDetailTask;
-            if (Text("HubNoGguf") != "No GGUF files in this repository" || Find<Button>("HubDownload") is not null || _hubVariant is not null)
-                return Fail("no-GGUF repo: " + Text("HubNoGguf"));
+            await _hubDetailTask;
+            if (Rows() != $"{Qwen}, {Tiny}" || _hubSelected?.Id != Tiny || SmokeFind<StackPanel>(_hubDetail, p => p.Tag as string == "HubDetail:" + Tiny) is null || _hubVariant?.Label != "Q8_0")
+                return Fail($"no-GGUF repo: rows [{Rows()}], showing {_hubSelected?.Id} {_hubVariant?.Label}");
             _hubTextCache.Clear();
             fake.Status = HttpStatusCode.InternalServerError;
             SmokeClick(HubRows()[0]);
@@ -1676,10 +1774,10 @@ public partial class MainWindow
             }
             if (File.Exists(Path.Combine(snapshot, "Mini-Q2_K.gguf")) || !File.Exists(Path.Combine(repo, "refs", "main")) || File.ReadAllText(Path.Combine(repo, "refs", "main")) != "minisha")
                 return Fail("the cache layout: refs/main or an extra file");
-            // done: the toast, "Downloaded ✓", the menu's check, the row's badge, the pickers' rescan
+            // done: the toast, "Downloaded ✓", the menu's check, the row's dot, the pickers' rescan
             var checkedItems = BuildHubVariantMenu(this).Items.OfType<MenuItem>().Where(i => ((Panel)i.Header).Children.OfType<TextBlock>().Any(t => t.Tag as string == "hubdownloaded")).Select(i => i.Tag as string);
             if (!ToastsOf("zyxlab/Mini-GGUF Q4_K_M downloaded").Any() || Button() != "Downloaded ✓ False" || string.Join(",", checkedItems) != "hubvariant:Q4_K_M" ||
-                SmokeFind<Border>(Row(Mini)!, b => b.Tag as string == "HubRowDownloaded") is not { Visibility: Visibility.Visible } || _localModelsVersion <= versionWas ||
+                Dot(Mini) is not { Visibility: Visibility.Visible } || _localModelsVersion <= versionWas ||
                 !LauncherLogic.FindLocalGgufs("", cache).Any(g => g.File == Path.Combine(snapshot, "Mini-Q4_K_M.gguf")) || _hubStrip.Visibility == Visibility.Visible)
                 return Fail($"downloaded: button {Button()}, menu ✓ [{string.Join(",", checkedItems)}], models version {_localModelsVersion} (was {versionWas})");
             snap("22-hub-downloaded", null);
@@ -1696,8 +1794,8 @@ public partial class MainWindow
                 return Fail("401: " + Find<TextBlock>("HubDownloadError")?.Text);
             snap("23-hub-download-refused", null);
 
-            // Save to: the cache by default; a chosen folder is flat (folder\Mini-GGUF\<file>) and moves the chip, the badge,
-            // the menu's check and the button with it
+            // Save to: the cache by default; a chosen folder is flat (folder\Mini-GGUF\<file>) and moves the chip, the menu's
+            // check and the button with it (the dot stays: Mini is still in the cache)
             foreach (var dir in new[] { saveDir, modelsDir })
                 if (Directory.Exists(dir))
                     Directory.Delete(dir, recursive: true);
@@ -1705,7 +1803,7 @@ public partial class MainWindow
             string? Chip() => Find<TextBlock>("HubChip:Folder")?.Text;
             string? SaveTo() => Find<TextBlock>("HubSaveToPath")?.ToolTip as string;
             Hyperlink? Reset() => SmokeFind<Hyperlink>(_hubDetail, h => h.Tag as string == "HubSaveToReset");
-            bool Badge() => SmokeFind<Border>(Row(Mini)!, b => b.Tag as string == "HubRowDownloaded") is { Visibility: Visibility.Visible };
+            bool Badge() => Dot(Mini) is { Visibility: Visibility.Visible };
             string Marks() => string.Join(",", BuildHubVariantMenu(this).Items.OfType<MenuItem>().Where(i => ((Panel)i.Header).Children.OfType<TextBlock>().Any(t => t.Tag as string == "hubdownloaded")).Select(i => i.Tag as string));
             if (HubTarget() != (cache, HubLayout.HfCache) || SaveTo() != cache || Chip() != HubShortPath(cache) || Reset() is not null || Find<DockPanel>("HubModelsNotice") is not null)
                 return Fail($"default Save to: target {HubTarget()}, line {SaveTo()}, chip {Chip()}, reset {Reset() is not null}");
@@ -1713,7 +1811,7 @@ public partial class MainWindow
             (_codeFolderPick, _codeChoice, _settings.ModelsFolder) = (() => saveDir, title => { replaceAsked.Add(title); return replaceAsked.Count == 1 ? null : "replace"; }, modelsDir);
             SmokeClick(Find<Button>("HubSaveToChange")!);
             if (HubTarget() != (saveDir, HubLayout.Flat) || SaveTo() != saveDir || Chip() != HubShortPath(saveDir) || _hubFolderChip.ToolTip as string != "Downloads go to " + saveDir ||
-                Reset() is null || Badge() || Marks() != "" || Button() != "Download True" || AppSettings.Load().HubDownloadFolder != saveDir)
+                Reset() is null || !Badge() || Marks() != "" || Button() != "Download True" || AppSettings.Load().HubDownloadFolder != saveDir)
                 return Fail($"chosen folder: target {HubTarget()}, line {SaveTo()}, chip {Chip()} ({_hubFolderChip.ToolTip}), badge {Badge()}, marks [{Marks()}], button {Button()}");
             var notice = Find<DockPanel>("HubModelsNotice");
             if (notice?.Children.OfType<TextBlock>().FirstOrDefault()?.Text != $"The model picker looks in {modelsDir}." || Find<Button>("HubUseAsModels") is null)
@@ -1776,11 +1874,11 @@ public partial class MainWindow
             _hubDlCts?.Cancel();
             (HubHttpHandlerFactory, HubVramGiBOverride, HubRamGiBOverride, _openExternal, _hubHttp, _hubDlHttp) = (factory, vramWas, ramWas, open, null, null);
             _hubTextCache.Clear();
-            (_settings.HubSort, _settings.HubOnlyFit, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
+            (_settings.HubSort, _settings.HubFitsGpu, _remoteHttp, _settings.RemoteHelpShown) = (sortWas, fitWas, remoteHttp, helpShown);
             (_settings.HubKinds, _settings.HubBrands) = (kindsWas, brandsWas);
             (_settings.HubDownloadFolder, _settings.ModelsFolder, _codeFolderPick, _codeChoice) = (hubFolderWas, modelsWas, pickWas, choiceWas);
             _settings.Save();
-            foreach (var dir in new[] { saveDir, modelsDir })
+            foreach (var dir in new[] { saveDir, modelsDir, onDiskDir, tinyCached })
                 try { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             _hubPageCache.Clear();

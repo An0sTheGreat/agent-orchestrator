@@ -276,7 +276,8 @@ internal sealed class AppSettings
     public bool FullAccess { get; set; }
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     public string HubSort { get; set; } = "trending"; // the Models Hub's sort (HubLogic.Sorts id)
-    public bool HubOnlyFit { get; set; } // the Models Hub shows only models that fit this computer
+    public bool HubOnlyFit { get; set; } // unused (replaced by HubFitsGpu); kept so older settings files still load
+    public bool HubFitsGpu { get; set; } // the Models Hub hides models whose smallest weights are larger than the GPU's memory
     public int HubKinds { get; set; } = 1; // the Models Hub's model types (HubLogic.HubKind flags); 1 = Text & vision
     public List<string> HubBrands { get; set; } = new(); // the Models Hub's brand filter (HubBrand keys, "other"); empty = all
     public string HubDownloadFolder { get; set; } = ""; // where the Models Hub saves (root\<repo name>\<file>); "" = the Hugging Face cache
