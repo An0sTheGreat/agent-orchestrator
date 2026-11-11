@@ -1465,7 +1465,7 @@
                 <StackPanel Margin="0,12,0,0">
                     <Button x:Name="RailExpandButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,10"
                             Click="WorkerRailToggle_Click" ToolTip="Model settings" AutomationProperties.Name="Model settings">
-                        <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        <TextBlock Text="&#xE9E9;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
                     <ItemsControl x:Name="RailDots">
                         <ItemsControl.ItemContainerStyle>

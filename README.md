@@ -84,7 +84,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 
 2. Open `agent-orchestrator\dist\Agent Orchestrator.exe`. No installer, nothing else to set up.
 3. Open **Settings** (the gear at the bottom left) **> Models** and press **Download llama-server**. GGUF models already in your Hugging Face cache, or in a models folder you pick there, are found automatically.
-4. Pick a model for each worker on the **Model Settings** page (the left navigation, or the gear at the top of the right-hand worker rail), or start with the defaults.
+4. Pick a model for each worker on the **Model Settings** page (the left navigation, or the settings button at the top of the right-hand worker rail), or start with the defaults.
 5. Press **New** for a chat, or **+** beside CODE to file a conversation under Code. A Code conversation starts with no folder and works like a chat until you press **Add a folder…**; then press **Start project** to run a `PROJECT.md`.
 
 ### Updating
