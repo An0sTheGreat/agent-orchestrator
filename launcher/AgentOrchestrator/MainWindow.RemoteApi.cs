@@ -41,6 +41,7 @@ public partial class MainWindow
     {
         CloseRemoteApi();
         CloseModelHub();
+        CloseModelSettings();
         _settings.RemoteFavorites = RemoteFavoritesKnown(_settings.RemoteFavorites); // saved with the next star
         var red =new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
         var amber = new SolidColorBrush(Color.FromRgb(0xD9, 0x9A, 0x2B));

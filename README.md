@@ -33,7 +33,7 @@ Pick the workflow that fits your hardware under **Settings > Agents**:
 - **Lead + Reviewer** (the default): the Lead does the work, and the Reviewer has to approve every finished item before it counts as done.
 - **Lead + Implementer + Reviewer**: the Lead plans and directs, the Implementer writes every change, and the Reviewer checks each item.
 
-![Agent details: one card per agent, each with its own model](docs/images/workers.png)
+![Model Settings: one tab per agent, each with its own model](docs/images/workers.png)
 
 ### 100% local, and you decide when it updates
 
@@ -84,7 +84,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 
 2. Open `agent-orchestrator\dist\Agent Orchestrator.exe`. No installer, nothing else to set up.
 3. Open **Settings** (the gear at the bottom left) **> Models** and press **Download llama-server**. GGUF models already in your Hugging Face cache, or in a models folder you pick there, are found automatically.
-4. Pick a model for each worker in the right-hand **Agent details** column, or start with the defaults.
+4. Pick a model for each worker on the **Model Settings** page (the left navigation, or the gear at the top of the right-hand worker rail), or start with the defaults.
 5. Press **New** for a chat, or **+** beside CODE to file a conversation under Code. A Code conversation starts with no folder and works like a chat until you press **Add a folder…**; then press **Start project** to run a `PROJECT.md`.
 
 ### Updating

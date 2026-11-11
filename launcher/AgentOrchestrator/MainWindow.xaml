@@ -1171,6 +1171,76 @@
             <Grid x:Name="RemoteApiView" Grid.Column="1" Visibility="Collapsed" />
             <!-- The Models Hub page (the sidebar's Models Hub), built by MainWindow.ModelHub.cs; in place of Code and Chat while open -->
             <Grid x:Name="ModelHubView" Grid.Column="1" Visibility="Collapsed" />
+            <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the worker tabs and the selected
+                 worker's settings (MainWindow.WorkerTabs.cs); in place of Code and Chat while open -->
+            <Grid x:Name="ModelSettingsView" Grid.Column="1" Visibility="Collapsed">
+              <DockPanel x:Name="ModelSettingsPage" Tag="ModelSettingsPage" MaxWidth="1400" Margin="19,28,19,0">
+                <!-- Context: the open conversation's context usage, pinned to the column's bottom (MainWindow.Context.cs) -->
+                <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="13,6,17,10">
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock x:Name="ContextSummary" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" />
+                            <ToggleButton x:Name="ContextSectionToggle" Style="{StaticResource BlockHeaderToggle}" HorizontalAlignment="Left" Click="ContextSection_Click"
+                                          ToolTip="Show or hide the context breakdown" AutomationProperties.Name="Context">
+                                <TextBlock Text="CONTEXT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                            </ToggleButton>
+                        </DockPanel>
+                        <ContentControl x:Name="ContextSectionBody" Margin="4,8,0,0" Visibility="Collapsed" />
+                    </StackPanel>
+                </Border>
+                <DockPanel DockPanel.Dock="Top" Margin="17,0,17,14">
+                    <TextBlock DockPanel.Dock="Left" Text="Model Settings" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
+                    <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
+                            Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
+                            ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
+                    <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontSize="11" Padding="9,3"
+                            Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
+                </DockPanel>
+                <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
+                <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
+                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
+                                  SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
+                        <StackPanel Orientation="Horizontal">
+                            <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
+                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemContainerStyle>
+                                    <Style TargetType="ContentPresenter">
+                                        <Style.Triggers>
+                                            <MultiDataTrigger>
+                                                <MultiDataTrigger.Conditions>
+                                                    <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
+                                                </MultiDataTrigger.Conditions>
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </MultiDataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ItemsControl.ItemContainerStyle>
+                            </ItemsControl>
+                            <!-- Add agent: a card of its own after the last one (custom workers; Chat's "+" also shows or hides agents) -->
+                            <Button x:Name="AddWorkerButton" Width="96" Margin="0,0,0,8" Click="AddWorker_Click" Cursor="Hand"
+                                    ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
+                                <Button.Template>
+                                    <ControlTemplate TargetType="Button">
+                                        <Grid x:Name="AddBox" Background="Transparent" MinHeight="72">
+                                            <Rectangle x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="4 3" RadiusX="8" RadiusY="8" />
+                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                                <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                                <TextBlock Text="Add agent" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
+                                            </StackPanel>
+                                        </Grid>
+                                        <ControlTemplate.Triggers>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="AddBox" Property="Opacity" Value="0.45" /></Trigger>
+                                        </ControlTemplate.Triggers>
+                                    </ControlTemplate>
+                                </Button.Template>
+                            </Button>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+                <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
+              </DockPanel>
+            </Grid>
 
             <!-- Code: a conversation with a worker about a folder (MainWindow.Code.cs), or the project run's output (ShowCodeRun) -->
             <Grid x:Name="CodeView" Grid.Column="1">
@@ -1339,85 +1409,12 @@
             <GridSplitter x:Name="SplitterBar" Grid.Column="2" Width="6" HorizontalAlignment="Stretch" ResizeDirection="Columns"
                           Background="{DynamicResource Hover}" ShowsPreview="False" DragCompleted="Splitter_DragCompleted" />
 
-            <!-- Right column: model details -->
-            <Border x:Name="DetailsPanel" Grid.Column="3" Background="{DynamicResource Panel}">
-              <DockPanel>
-                <!-- Context: the open conversation's context usage, pinned to the column's bottom (MainWindow.Context.cs) -->
-                <Border DockPanel.Dock="Bottom" BorderBrush="{DynamicResource Border}" BorderThickness="0,1,0,0" Padding="13,6,17,10">
-                    <StackPanel>
-                        <DockPanel>
-                            <TextBlock x:Name="ContextSummary" DockPanel.Dock="Right" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" />
-                            <ToggleButton x:Name="ContextSectionToggle" Style="{StaticResource BlockHeaderToggle}" HorizontalAlignment="Left" Click="ContextSection_Click"
-                                          ToolTip="Show or hide the context breakdown" AutomationProperties.Name="Context">
-                                <TextBlock Text="CONTEXT" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                            </ToggleButton>
-                        </DockPanel>
-                        <ContentControl x:Name="ContextSectionBody" Margin="4,8,0,0" Visibility="Collapsed" />
-                    </StackPanel>
-                </Border>
-                <DockPanel DockPanel.Dock="Top" Margin="17,17,17,10">
-                    <Button x:Name="RailCollapseButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="4,0,-6,0"
-                            Click="WorkerRailToggle_Click" ToolTip="Collapse to the worker rail" AutomationProperties.Name="Collapse agent details">
-                        <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
-                    </Button>
-                    <TextBlock DockPanel.Dock="Left" Text="AGENT DETAILS" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
-                    <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
-                            Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
-                            ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
-                    <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontSize="11" Padding="9,3"
-                            Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
-                </DockPanel>
-                <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
-                <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
-                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
-                                  SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
-                        <StackPanel Orientation="Horizontal">
-                            <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
-                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemContainerStyle>
-                                    <Style TargetType="ContentPresenter">
-                                        <Style.Triggers>
-                                            <MultiDataTrigger>
-                                                <MultiDataTrigger.Conditions>
-                                                    <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
-                                                </MultiDataTrigger.Conditions>
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </MultiDataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ItemsControl.ItemContainerStyle>
-                            </ItemsControl>
-                            <!-- Add agent: a card of its own after the last one (custom workers; Chat's "+" also shows or hides agents) -->
-                            <Button x:Name="AddWorkerButton" Width="96" Margin="0,0,0,8" Click="AddWorker_Click" Cursor="Hand"
-                                    ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
-                                <Button.Template>
-                                    <ControlTemplate TargetType="Button">
-                                        <Grid x:Name="AddBox" Background="Transparent" MinHeight="72">
-                                            <Rectangle x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="4 3" RadiusX="8" RadiusY="8" />
-                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
-                                                <TextBlock Text="Add agent" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
-                                            </StackPanel>
-                                        </Grid>
-                                        <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
-                                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="AddBox" Property="Opacity" Value="0.45" /></Trigger>
-                                        </ControlTemplate.Triggers>
-                                    </ControlTemplate>
-                                </Button.Template>
-                            </Button>
-                        </StackPanel>
-                    </ScrollViewer>
-                </DockPanel>
-                <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
-              </DockPanel>
-            </Border>
-            <!-- Browser (MainWindow.Browser.cs): shown in the right column in place of the worker details while open -->
+            <!-- Browser (MainWindow.Browser.cs): shown in the right column in place of the worker rail while open -->
             <Border x:Name="BrowserPanel" Grid.Column="3" Background="{DynamicResource Panel}" Visibility="Collapsed">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
                         <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
-                                Click="BrowserClose_Click" ToolTip="Close the browser (back to the agent details)" AutomationProperties.Name="Close browser">
+                                Click="BrowserClose_Click" ToolTip="Close the browser (back to the worker rail)" AutomationProperties.Name="Close browser">
                             <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
                         <TextBlock DockPanel.Dock="Left" Text="BROWSER" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
@@ -1463,12 +1460,12 @@
                     </Grid>
                 </DockPanel>
             </Border>
-            <!-- Collapsed worker details: one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
+            <!-- The right column (the browser aside): one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->
             <Border x:Name="WorkerRail" Grid.Column="3" Width="44" HorizontalAlignment="Left" Panel.ZIndex="1" Background="{DynamicResource Panel}" Visibility="Collapsed">
                 <StackPanel Margin="0,12,0,0">
                     <Button x:Name="RailExpandButton" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,0,10"
-                            Click="WorkerRailToggle_Click" ToolTip="Show agent details" AutomationProperties.Name="Show agent details">
-                        <TextBlock Text="&#xE76B;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                            Click="WorkerRailToggle_Click" ToolTip="Model settings" AutomationProperties.Name="Model settings">
+                        <TextBlock Text="&#xE713;" Style="{StaticResource RailGlyph}" FontSize="12" />
                     </Button>
                     <ItemsControl x:Name="RailDots">
                         <ItemsControl.ItemContainerStyle>

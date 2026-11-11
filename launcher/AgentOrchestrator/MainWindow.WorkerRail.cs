@@ -7,10 +7,9 @@ using System.Windows.Threading;
 
 namespace AgentOrchestrator;
 
-// The worker details column collapses to a narrow rail: one activity dot per visible worker, in card order. Hovering a dot
-// shows that worker's full card (live, same RoleCard) in a popup left of the rail; it closes shortly after the pointer
-// leaves both the dot and the popup. The rail's top button and the column header's chevron switch between the two; the
-// choice is saved (AppSettings.DetailsCollapsed, collapsed by default).
+// The right column is a narrow rail: one activity dot per visible worker, in card order. Hovering a dot shows that worker's
+// full card (live, same RoleCard) in a popup left of the rail; it closes shortly after the pointer leaves both the dot and
+// the popup. The rail's top button opens the Model Settings page (the worker tabs and their settings, in the centre column).
 public partial class MainWindow
 {
     private readonly DispatcherTimer _railClose = new() { Interval = TimeSpan.FromMilliseconds(250) };
@@ -27,35 +26,25 @@ public partial class MainWindow
         // the Code context stack steps aside while a worker card is open (after layout: the card's place is known then)
         RailPopup.Opened += (_, _) => Dispatcher.InvokeAsync(() => DodgeRailCard(true), System.Windows.Threading.DispatcherPriority.Loaded);
         RailPopup.Closed += (_, _) => DodgeRailCard(false);
-        SetWorkerRail(_settings.DetailsCollapsed);
+        ShowWorkerRail();
     }
 
-    private void WorkerRailToggle_Click(object sender, RoutedEventArgs e)
-    {
-        SetWorkerRail(!_settings.DetailsCollapsed);
-        _settings.Save();
-    }
+    private void WorkerRailToggle_Click(object sender, RoutedEventArgs e) => OpenWorkerTab(_shownWorker ?? FirstVisibleWorker());
 
-    // Collapsed: the rail alone, no splitter; expanded: the column at its saved width (the splitter resizes it as before).
-    // Switching between them on screen slides the column like the sidebar (240 ms, decelerating): the details keep their
-    // full width and are uncovered or clipped as the column grows or shrinks.
-    private void SetWorkerRail(bool collapsed)
+    // The rail alone, no splitter; the browser, when open there, gives the column back (sliding like the sidebar).
+    private void ShowWorkerRail()
     {
         StopColumnTween(); // a slide still running finishes first, before the pages change
-        // what leaves the column when collapsing: the browser when it is open there (it gives the column back), else the details
-        var leaving = BrowserPanel.IsVisible ? BrowserPanel : DetailsPanel;
-        var slide = collapsed ? leaving.IsVisible : WorkerRail.IsVisible;
-        _settings.DetailsCollapsed = collapsed;
-        if (BrowserPanel.IsVisible) // closed by this, not at startup
+        var slide = BrowserPanel.IsVisible;
+        if (slide) // closed by this, not at startup
             _settings.BrowserOpen = false;
         RailPopup.IsOpen = false;
         BrowserPanel.Visibility = Visibility.Collapsed;
-        WorkerRail.Visibility = collapsed ? Visibility.Visible : Visibility.Collapsed;
-        DetailsPanel.Visibility = collapsed ? Visibility.Collapsed : Visibility.Visible;
-        SlideColumn(collapsed ? leaving : DetailsPanel, collapsed, slide);
+        WorkerRail.Visibility = Visibility.Visible;
+        SlideColumn(BrowserPanel, collapsed: true, slide);
     }
 
-    // The right column between the rail (collapsed) and a page at its saved width (the details or the browser). slide: the
+    // The right column between the rail (collapsed) and the browser at its saved width. slide: the
     // switch happens on screen, so it slides like the sidebar (240 ms, decelerating): the page keeps its full width and is
     // uncovered or clipped as the column grows or shrinks; a collapsing page stays under the rail until the slide ends.
     private void SlideColumn(FrameworkElement page, bool collapsed, bool slide)
@@ -149,7 +138,7 @@ public partial class MainWindow
 
     // --ui-smoke, from the Chat view with a custom card among the built-ins: the rail shows one dot per visible
     // card, an active card's dot turns the accent, hovering opens that card in the
-    // popup, and the expand toggle shows the full column and is saved.
+    // popup, and the rail's top button opens the Model Settings page beside the rail.
     private async Task<bool> WorkerRailSmoke(Action<string, FrameworkElement?> snap)
     {
         static Task Idle() => Task.Delay(400);
@@ -165,10 +154,9 @@ public partial class MainWindow
                             Visuals(RailDots).OfType<Grid>().Count(g => g.IsVisible && g.DataContext is RoleCard && g.Height == 32) == _cards.Count(c => !c.Hidden);
         bool Accent(RoleCard card) => Dot(card) is { } d && Equals(Visuals(d).OfType<Ellipse>().Last().Fill, FindResource("Accent")); // the core; the ring is always accent, faded out
 
-        SetWorkerRail(true);
-        _settings.Save();
+        ShowWorkerRail();
         await Idle();
-        if (!WorkerRail.IsVisible || DetailsPanel.IsVisible || SplitterBar.IsVisible || WorkerRail.ActualWidth > 50 || !AppSettings.Load().DetailsCollapsed)
+        if (!WorkerRail.IsVisible || SplitterBar.IsVisible || WorkerRail.ActualWidth > 50)
             return Fail("collapsed layout");
         if (!DotsMatch()) // one dot per shown card (a role not added has none)
             return Fail("Chat view dots");
@@ -200,11 +188,12 @@ public partial class MainWindow
         ApplyTheme();
         implementer.IsActive = false;
 
+        var shown = _shownWorker;
+        RailPopup.IsOpen = false;
         WorkerRailToggle_Click(RailExpandButton, new RoutedEventArgs());
         await Idle();
-        if (RailPopup.IsOpen || WorkerRail.IsVisible || !DetailsPanel.IsVisible || !SplitterBar.IsVisible || DetailsColumn.ActualWidth < 259 ||
-            AppSettings.Load().DetailsCollapsed)
-            return Fail("expand");
+        if (!WorkerRail.IsVisible || !ModelSettingsView.IsVisible || ChatView.IsVisible || _shownWorker != shown)
+            return Fail("the rail's button opens Model Settings");
         return true;
     }
 }
