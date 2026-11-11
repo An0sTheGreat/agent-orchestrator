@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
 
@@ -53,7 +55,7 @@ internal static class ModelOptions
         ["tensor_split"] = "With several GPUs: how much of the model each one holds, as shares, for example 3,1 for a three-to-one split.",
         ["gpu_ids"] = "Which GPUs the model may use, by number. Empty uses every GPU the server can see.",
         ["tensor_parallel"] = "With several GPUs: splits every layer across them instead of giving each GPU whole layers. Can be faster on fast links.",
-        ["speculative_type"] = "Drafts several tokens ahead and checks them in one step, so replies come out faster with the same result.",
+        ["speculative_type"] = "Drafts several tokens ahead and checks them in one step, so replies come out faster with the same result. Auto uses the model's built-in MTP layers when it has them. DFlash and DSpark also need a draft model: add --spec-draft-model \"path\" under Extra llama-server arguments.",
         ["spec_draft_n_max"] = "How many tokens speculative decoding drafts each step. More can be faster when drafts are often right.",
         ["spec_draft_cache_type"] = "Precision of the draft model's conversation memory. Lower precision saves VRAM with little effect on the drafts.",
         ["reasoning_budget"] = "The most tokens a thinking model may spend reasoning before it must answer. -1 is unlimited, 0 turns thinking off.",
@@ -62,7 +64,7 @@ internal static class ModelOptions
         ["mmproj_offload"] = "Runs the vision projector on the GPU: images are read faster, at about 1 GB more VRAM.",
         ["cpu_fallback"] = "Loads the model on the CPU when the GPU lacks memory, instead of failing. Works, but replies are much slower.",
         ["chat_template_override"] = "A Jinja chat template used instead of the one in the model file. For models whose own template is broken.",
-        ["llama_extra_args"] = "Extra command-line arguments for llama-server, for options this page does not list. One per line or space separated.",
+        ["llama_extra_args"] = "Extra command-line arguments for llama-server, for options this page does not list, e.g. --flash-attn on. Put a path with spaces in quotes.",
         ["temperature"] = "Randomness of the reply. Lower is focused and repeatable, higher is more varied and creative; coding suits low values.",
         ["top_p"] = "Samples only from the most likely tokens whose chances add up to this share. Lower values make replies more focused.",
         ["top_k"] = "Samples only from this many of the most likely next tokens. Lower is more focused; -1 or 0 turns it off.",
@@ -109,7 +111,7 @@ internal static class ModelOptions
         new("mmproj_offload", "auto_load", Kind.Bool, "Run the vision projector on the GPU: faster images, about 1 GB more VRAM"),
         new("cpu_fallback", "auto_load", Kind.Bool, "Load on the CPU when the GPU is short of memory"),
         new("chat_template_override", "auto_load", Kind.Multiline, "Jinja chat template used instead of the model's own"),
-        new("llama_extra_args", "auto_load", Kind.ArgList, "Extra llama-server arguments: one per line, or space separated"),
+        new("llama_extra_args", "auto_load", Kind.ArgList, "Extra llama-server arguments, e.g. --flash-attn on. Quote a path with spaces"),
         // Sampling defaults are llama-server's own, so writing one changes nothing.
         new("temperature", "sampling", Kind.Number, "0 to 2", 0, 2, Default: "0.8"),
         new("top_p", "sampling", Kind.Number, "0 to 1", 0, 1, Default: "0.95"),
@@ -150,11 +152,24 @@ internal static class ModelOptions
         return Container(role, o.Target, false)?[o.Key] switch
         {
             null => "",
-            JsonArray a => string.Join(o.Kind is Kind.StopList or Kind.ArgList ? "\n" : ", ", a.Select(Plain)),
+            JsonArray a when o.Kind is Kind.ArgList => ArgLines(a.Select(Plain)),
+            JsonArray a => string.Join(o.Kind is Kind.StopList ? "\n" : ", ", a.Select(Plain)),
             JsonValue v when v.TryGetValue<bool>(out var b) => b ? "on" : "off",
             var n => Plain(n),
         };
     });
+
+    // Arguments as the box shows them: each flag on its own line with its values after it, a value with spaces quoted.
+    private static string ArgLines(IEnumerable<string> args)
+    {
+        var text = new StringBuilder();
+        foreach (var arg in args)
+        {
+            var flag = arg.StartsWith('-') && !double.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out _);
+            text.Append(text.Length == 0 ? "" : flag ? "\n" : " ").Append(arg.Any(char.IsWhiteSpace) || arg.Length == 0 ? $"\"{arg}\"" : arg);
+        }
+        return text.ToString();
+    }
 
     // The model's context window from its GGUF header values (<arch>.context_length), or null.
     public static long? ModelContext(IReadOnlyDictionary<string, string>? meta) =>
@@ -223,10 +238,8 @@ internal static class ModelOptions
             case Kind.StopList:
                 var stops = text.Contains('\n') ? text.Replace("\r", "").Split('\n', StringSplitOptions.RemoveEmptyEntries) : Commas();
                 return (List(stops.Select(s => (JsonNode?)JsonValue.Create(s))), null);
-            default: // ArgList: one token per line, else split on spaces
-                var args = text.Contains('\n')
-                    ? text.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
-                    : t.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            default: // ArgList: split on spaces and lines; "quotes" keep a path with spaces whole
+                var args = Regex.Matches(text, "\"([^\"]*)\"|(\\S+)").Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value);
                 return (List(args.Select(s => (JsonNode?)JsonValue.Create(s))), null);
         }
     }
@@ -316,8 +329,11 @@ internal static class ModelOptions
         Check(shown["tensor_split"] == "3, 1.5" && shown["stop"] == "a\nb" && shown["tensor_parallel"] == "on" && shown["top_k"] == "25" && shown["top_p"] == "", "read back: " + string.Join(" ", shown));
 
         role = Role();
-        Apply(role, new Dictionary<string, string> { ["stop"] = "x\ny, z\n", ["llama_extra_args"] = "--chat-template-file C:\\a b.jinja\n-fa\n" }, true);
-        Check(J(role["sampling"]!["stop"]) == """["x","y, z"]""" && J(role["auto_load"]!["llama_extra_args"]) == """["--chat-template-file C:\\a b.jinja","-fa"]""", "line lists: " + J(role));
+        Apply(role, new Dictionary<string, string> { ["stop"] = "x\ny, z\n", ["llama_extra_args"] = "--chat-template-file \"C:\\a b.jinja\"\n-fa\n--spec-type draft-mtp\n--flash-attn on\n--override-kv x=1 -ts -1" }, true);
+        Check(J(role["sampling"]!["stop"]) == """["x","y, z"]""" && J(role["auto_load"]!["llama_extra_args"]) ==
+              """["--chat-template-file","C:\\a b.jinja","-fa","--spec-type","draft-mtp","--flash-attn","on","--override-kv","x=1","-ts","-1"]""", "line lists: " + J(role));
+        Check(Read(role)["llama_extra_args"] == "--chat-template-file \"C:\\a b.jinja\"\n-fa\n--spec-type draft-mtp\n--flash-attn on\n--override-kv x=1\n-ts -1",
+              "a flag and its value share a line: " + Read(role)["llama_extra_args"]);
 
         role = Role();
         var before = J(role);

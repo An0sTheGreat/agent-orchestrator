@@ -1304,6 +1304,24 @@ def gguf_file(auto_load: dict[str, Any]) -> Path:
                         "Download the model from Hugging Face, or add its models folder in Options.")
 
 
+SPEC_TYPES = {"mtp": "draft-mtp", "dspark": "draft-dspark", "dflash": "draft-dflash", "ngram": "ngram-simple",
+              "mtp+ngram": "draft-mtp,ngram-simple", "off": "none"}
+
+
+def speculative_type(model_file: Path, choice: Any) -> str | None:
+    """llama-server's --spec-type for the Speculative decoding choice. "auto" (or unset) is MTP when the GGUF carries its
+    own MTP layers (<arch>.nextn_predict_layers), else nothing. dflash and dspark also need a draft model (-md) in the
+    extra arguments."""
+    choice = str(choice or "auto").lower()
+    if choice != "auto":
+        return SPEC_TYPES.get(choice)
+    try:
+        meta = gguf_metadata(model_file)
+        return "draft-mtp" if int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0 else None
+    except (OSError, ValueError, KeyError, struct.error):
+        return None
+
+
 def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[str]:
     layers = auto_load.get("gpu_layers", -1)
     args = ["-m", str(model_file), "--host", "127.0.0.1", "--port", str(port), "--alias", str(auto_load["model_path"])]
@@ -1318,6 +1336,12 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
         args += ["-ub", str(auto_load["n_ubatch"])]
     if auto_load.get("reasoning_budget") == 0:
         args += ["--reasoning-budget", "0"]
+    if spec := speculative_type(model_file, auto_load.get("speculative_type")):
+        args += ["--spec-type", spec]
+        if spec != "none" and "spec_draft_n_max" in auto_load:
+            args += ["--spec-draft-n-max", str(auto_load["spec_draft_n_max"])]
+        if spec != "none" and auto_load.get("spec_draft_cache_type"):
+            args += ["-ctkd", str(auto_load["spec_draft_cache_type"]), "-ctvd", str(auto_load["spec_draft_cache_type"])]
     if (projector := vision_projector(model_file)) and str(auto_load.get("disable_vision") or "").lower() not in ("on", "true", "1"):
         args += ["--mmproj", str(projector)]  # the model can see the turn's images
         # at most ~1 megapixel's worth per image: a 2040x1268 screenshot is ~3,300 tokens uncapped (minutes to encode on the

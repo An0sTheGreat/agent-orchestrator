@@ -5743,6 +5743,24 @@ class LlamaCppTests(unittest.TestCase):
             self.assertEqual(args[-5:], ["-c", "4096", "-ngl", layers, "--jinja"])
             self.assertNotIn("--reasoning-budget", args)
 
+    def test_speculative_decoding_choice_reaches_the_server(self):
+        mtp, plain = self.tmp / "mtp.gguf", self.tmp / "plain.gguf"
+        MultiModelTests.gguf(mtp, {"general.architecture": "qwen35", "qwen35.nextn_predict_layers": 1})
+        MultiModelTests.gguf(plain, {"general.architecture": "qwen35"})
+
+        def spec(model, **auto):
+            args = orchestrator.llama_args(model, {"model_path": self.PATH, **auto}, 8899)
+            return args[args.index("--spec-type"):][:2] if "--spec-type" in args else None, args
+
+        self.assertEqual(spec(mtp)[0], ["--spec-type", "draft-mtp"])  # auto: the model's own MTP layers
+        self.assertIsNone(spec(plain)[0])
+        self.assertEqual(spec(mtp, speculative_type="off")[0], ["--spec-type", "none"])
+        self.assertEqual(spec(plain, speculative_type="mtp+ngram")[0], ["--spec-type", "draft-mtp,ngram-simple"])
+        _, args = spec(plain, speculative_type="dflash", spec_draft_n_max=3, spec_draft_cache_type="q8_0")
+        self.assertEqual(args[args.index("--spec-type"):][:8],
+                         ["--spec-type", "draft-dflash", "--spec-draft-n-max", "3", "-ctkd", "q8_0", "-ctvd", "q8_0"])
+        self.assertNotIn("--spec-draft-n-max", spec(mtp, speculative_type="off", spec_draft_n_max=3)[1])
+
     def test_llama_role_needs_no_key_and_uses_the_llama_port(self):
         client = self.client({"llama_port": 9001, "roles": {"planner": self.ROLE}})
         self.assertEqual((client.base_url, client.llama_port, client.remote), ("http://127.0.0.1:9001/v1", 9001, False))
