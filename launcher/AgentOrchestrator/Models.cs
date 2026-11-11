@@ -216,6 +216,13 @@ internal sealed class AppSettings
     public double DetailsWidth { get; set; } = 340;
     public bool PromptsExpanded { get; set; } // the worker settings' system prompts show (collapsed by default)
     public bool ModelAdvanced { get; set; } // the worker settings' Advanced switch: the Memory, Speed, Output and Server groups
+    public bool SamplingExpanded { get; set; } = true; // the worker settings' Sampling group's fields show
+    public bool MemoryExpanded { get; set; } = true; // the worker settings' Memory group's fields show
+    public bool SpeedExpanded { get; set; } // the worker settings' Speed group's fields show (collapsed by default)
+    public bool OutputExpanded { get; set; } // the worker settings' Output group's fields show (collapsed by default)
+    public bool ServerExpanded { get; set; } // the worker settings' Server group's fields show (collapsed by default)
+    public bool RequestExpanded { get; set; } // the worker settings' Request group's fields show (collapsed by default)
+    public bool OtherExpanded { get; set; } // the worker settings' Other group's fields show (collapsed by default)
     public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;

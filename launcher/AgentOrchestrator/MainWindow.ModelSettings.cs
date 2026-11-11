@@ -241,9 +241,9 @@ public partial class MainWindow
         divider.SetResourceReference(Border.BackgroundProperty, "Border");
         var body = new StackPanel { Margin = new Thickness(0, 0, 14, 0), Children = { head, divider, sections } };
         var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var blocks = new Dictionary<string, StackPanel>();
+        var blocks = new Dictionary<string, FrameworkElement>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
-        StackPanel Section(string name, string help, bool showHelp = true)
+        StackPanel Section(string name, string help, bool showHelp = true, bool card = false)
         {
             var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 10) };
             var header = new TextBlock { Text = name.ToUpperInvariant(), FontSize = 11, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0), ToolTip = help };
@@ -251,7 +251,17 @@ public partial class MainWindow
             panel.Children.Add(header);
             if (showHelp)
                 panel.Children.Add(Muted(help));
-            return blocks[name] = panel;
+            if (!card)
+                blocks[name] = panel;
+            else
+            {
+                var border = new Border { Child = panel, BorderThickness = new Thickness(1), Padding = new Thickness(14), Margin = new Thickness(0, 4, 0, 14) };
+                border.SetResourceReference(Border.BackgroundProperty, "Card");
+                border.SetResourceReference(Border.BorderBrushProperty, "Border");
+                border.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+                blocks[name] = border;
+            }
+            return panel;
         }
 
         var editors = new Dictionary<string, Control>();
@@ -519,11 +529,29 @@ public partial class MainWindow
 
         // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups
         // holding nothing else.
-        var loadOnly = new List<StackPanel>();
+        var loadOnly = new List<FrameworkElement>();
         foreach (var (name, help) in SettingsGroups.Where(g => g.Help is not null))
             if (Fields(name) is { Children.Count: > 0 } fields)
             {
-                Section(name, $"{help} {emptyMeans}", showHelp: false).Children.Add(fields);
+                var group = Section(name, $"{help} {emptyMeans}", showHelp: false, card: true);
+                // Each group's fields collapse on their own header (like the prompts); the choice is kept per group.
+                bool Open() => name switch { "Sampling" => _settings.SamplingExpanded, "Memory" => _settings.MemoryExpanded, "Speed" => _settings.SpeedExpanded, "Output" => _settings.OutputExpanded, "Server" => _settings.ServerExpanded, "Request" => _settings.RequestExpanded, _ => _settings.OtherExpanded };
+                void SetOpen(bool on) { switch (name) { case "Sampling": _settings.SamplingExpanded = on; break; case "Memory": _settings.MemoryExpanded = on; break; case "Speed": _settings.SpeedExpanded = on; break; case "Output": _settings.OutputExpanded = on; break; case "Server": _settings.ServerExpanded = on; break; case "Request": _settings.RequestExpanded = on; break; default: _settings.OtherExpanded = on; break; } }
+                var groupBody = new StackPanel { Tag = name + "Body", Visibility = Open() ? Visibility.Visible : Visibility.Collapsed, Children = { fields } };
+                var groupHeader = (TextBlock)group.Children[0];
+                var groupTitle = groupHeader.Text;
+                void ShowGroup() => groupHeader.Text = (groupBody.Visibility == Visibility.Visible ? "▾  " : "▸  ") + groupTitle;
+                groupHeader.Cursor = Cursors.Hand;
+                groupHeader.MouseLeftButtonUp += (_, e) =>
+                {
+                    e.Handled = true;
+                    groupBody.Visibility = groupBody.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
+                    SetOpen(groupBody.Visibility == Visibility.Visible);
+                    _settings.Save();
+                    ShowGroup();
+                };
+                ShowGroup();
+                group.Children.Add(groupBody);
                 if (ModelOptions.All.Where(o => SettingsGroupOf(o.Key) == name).All(o => o.Target == "auto_load"))
                     loadOnly.Add(blocks[name]);
             }
@@ -1409,6 +1437,9 @@ public partial class MainWindow
             await Idle();
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: true } || !prompts.Text.StartsWith("▾") || !_settings.PromptsExpanded)
                 return Fail("the prompts open");
+            if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SamplingBody") is not { IsVisible: true } ||
+                SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SpeedBody") is not { IsVisible: false })
+                return Fail("the option groups' default open/collapsed state");
 
             // Vision: the switch goes in the request; a model that cannot see (Disable vision, or no mmproj beside its GGUF)
             // greys it with the reason as its tip.
