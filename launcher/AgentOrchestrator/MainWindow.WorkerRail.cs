@@ -9,7 +9,9 @@ namespace AgentOrchestrator;
 
 // The right column is a narrow rail: one activity dot per visible worker, in card order. Hovering a dot shows that worker's
 // full card (live, same RoleCard) in a popup left of the rail; it closes shortly after the pointer leaves both the dot and
-// the popup. The rail's top button opens the Model Settings page (the worker tabs and their settings, in the centre column).
+// the popup. The rail's top button opens the Model Settings page (the worker tabs and their settings, in the centre column);
+// pressed again, it closes Model Settings and goes back to whichever of Chat or Code was showing before (NavChat/NavCode's
+// own checked state, which OpenModelSettings leaves alone).
 public partial class MainWindow
 {
     private readonly DispatcherTimer _railClose = new() { Interval = TimeSpan.FromMilliseconds(250) };
@@ -29,7 +31,13 @@ public partial class MainWindow
         ShowWorkerRail();
     }
 
-    private void WorkerRailToggle_Click(object sender, RoutedEventArgs e) => OpenWorkerTab(_shownWorker ?? FirstVisibleWorker());
+    private void WorkerRailToggle_Click(object sender, RoutedEventArgs e)
+    {
+        if (ModelSettingsView.IsVisible)
+            ShowView(chat: NavChat.IsChecked == true); // back to whatever was showing before Model Settings covered it
+        else
+            OpenWorkerTab(_shownWorker ?? FirstVisibleWorker());
+    }
 
     // The rail alone, no splitter; the browser, when open there, gives the column back (sliding like the sidebar).
     private void ShowWorkerRail()
@@ -194,6 +202,10 @@ public partial class MainWindow
         await Idle();
         if (!WorkerRail.IsVisible || !ModelSettingsView.IsVisible || ChatView.IsVisible || _shownWorker != shown)
             return Fail("the rail's button opens Model Settings");
+        WorkerRailToggle_Click(RailExpandButton, new RoutedEventArgs()); // pressed again: closes it, back to the Chat view it covered
+        await Idle();
+        if (ModelSettingsView.IsVisible || !ChatView.IsVisible)
+            return Fail("the rail's button does not close Model Settings again");
         return true;
     }
 }
