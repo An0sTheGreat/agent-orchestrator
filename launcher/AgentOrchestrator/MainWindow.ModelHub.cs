@@ -218,6 +218,7 @@ public partial class MainWindow
     {
         CloseRemoteApi();
         CloseModelHub();
+        CloseModelSettings();
         if (!HubLogic.Sorts.Any(s => s.Id == _settings.HubSort))
             _settings.HubSort = "trending";
         _hubMachine = HubReadMachineAsync(HubTarget());

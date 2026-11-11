@@ -80,6 +80,7 @@ public partial class MainWindow
         {
             SidebarList.Children.Add(SidebarAction("", "New", NewSidebarChat)); // a chat; the CODE section's + starts a Code one
             SidebarList.Children.Add(SidebarAction("", "Search", OpenSearch));
+            SidebarList.Children.Add(SidebarAction("\uE9E9", "Model Settings", () => OpenWorkerTab(_shownWorker ?? FirstVisibleWorker())));
             SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             SidebarList.Children.Add(SidebarAction("", "Models Hub", OpenModelHub));
             AddSidebarSection(view, chat: true, "CHAT");

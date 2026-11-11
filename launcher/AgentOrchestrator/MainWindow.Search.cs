@@ -338,6 +338,21 @@ public partial class MainWindow
             var at = tags.IndexOf("+Search");
             if (at < 1 || tags[at - 1] != "+New" || tags.IndexOf("+Remote API") < at)
                 return Fail("the Search row is not below New: " + string.Join(",", tags));
+            // Model Settings sits between Search and Remote API; it opens the page with the worker tabs and the model selector
+            // in place of the conversation, and the view (as New and every conversation open it) leaves it.
+            if (at + 2 >= tags.Count || tags[at + 1] != "+Model Settings" || tags[at + 2] != "+Remote API")
+                return Fail("the sidebar order is not Search, Model Settings, Remote API: " + string.Join(",", tags));
+            var wasChat = NavChat.IsChecked == true;
+            SelectWorker(CardFor("planner"));
+            SmokeClick(SidebarList.Children.OfType<Button>().First(b => b.Tag as string == "+Model Settings"));
+            await Task.Delay(400); // the views' fades
+            if (!ModelSettingsView.IsVisible || ChatView.IsVisible || CodeView.IsVisible || !WorkerTabs.IsVisible || !AddWorkerButton.IsVisible ||
+                SmokeFind<ComboBox>(WorkerSettingsHost, c => c.Tag as string == "Model") is not { IsVisible: true } || !WorkerRail.IsVisible)
+                return Fail("the Model Settings page");
+            ShowView(wasChat);
+            await Task.Delay(400);
+            if (ModelSettingsView.IsVisible)
+                return Fail("the view did not leave Model Settings");
             SmokeClick(SidebarList.Children.OfType<Button>().First(b => b.Tag as string == "+Search"));
             await _searchRun;
             if (SearchOverlay.Visibility != Visibility.Visible || !SearchBox.IsFocused)

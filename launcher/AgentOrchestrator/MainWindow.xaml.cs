@@ -1095,10 +1095,8 @@ public partial class MainWindow : Window
         }
 
         await Settle();
-        if (!WorkerRail.IsVisible || DetailsPanel.IsVisible) // collapsed to the rail by default; the checks below use the full column
+        if (!WorkerRail.IsVisible || ModelSettingsView.IsVisible) // the right column is the rail
             return Fail();
-        SetWorkerRail(false);
-        await Settle();
         Snap("1-idle");
         SetSidebar(true);
         await Settle();
@@ -1113,6 +1111,8 @@ public partial class MainWindow : Window
         // custom workers; tri (Settings > Agents) shows it with its own config entry. The run's request carries the mode, and the
         // cards go ALWAYS ON (LEAD, COMPACTOR), then HELPERS (IMPLEMENTER, REVIEWER), then the custom workers in the order added.
         // Chat shows the same cards (one set for every conversation, checked below).
+        OpenModelSettings(); // the worker tabs are made when the page is first laid out
+        await Settle();
         ShowView();
         {
             var main = CardFor("planner")!;
@@ -2258,8 +2258,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New, Search, Remote API and Models Hub, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New,+Search,+Remote API,+Models Hub,SECTION:CHAT,?,SECTION:CODE";
+                // New, Search, Model Settings, Remote API and Models Hub, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Search,+Model Settings,+Remote API,+Models Hub,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
@@ -2505,11 +2505,10 @@ public partial class MainWindow : Window
                 await Settle();
                 if (ContextSectionBody.Content is not StackPanel sectionBody || sectionBody.Children.OfType<DockPanel>().Count(d => d.Tag is long) != 7 || !AppSettings.Load().ContextExpanded)
                     return Fail();
-                var railWas = _settings.DetailsCollapsed;
-                SetWorkerRail(false);
+                OpenModelSettings(); // the section is at the foot of the Model Settings page
                 await Settle();
                 Snap("30-context-section");
-                SetWorkerRail(railWas);
+                ShowView(chat: true);
                 // Code: one "<worker> Context" card per worker that worked (a run's events here), the lead's on the header ring;
                 // a model loading keeps each worker's last call, marked unloaded, until its next call replaces it, and leaves the lead's
                 // as it was (its next call resends the conversation).
@@ -2545,8 +2544,8 @@ public partial class MainWindow : Window
                     if (!below)
                         return Fail();
                     // A run's clocks sit top-right; the cards stack 6 below them, right edges flush with theirs, and without room beside
-                    // the conversation it starts below the stack: one card and three, wide and narrow (1100 px, details column open).
-                    var (width, state, rail) = (Width, WindowState, _settings.DetailsCollapsed);
+                    // the conversation it starts below the stack: one card and three, wide and narrow (1100 px).
+                    var (width, state) = (Width, WindowState);
                     RunClocks.Visibility = Visibility.Visible;
                     var underClocks = new List<string>();
                     foreach (var narrow in new[] { false, true })
@@ -2554,7 +2553,6 @@ public partial class MainWindow : Window
                         if (narrow)
                         {
                             (WindowState, Width) = (WindowState.Normal, 1100);
-                            SetWorkerRail(false);
                         }
                         foreach (var cardCount in new[] { 1, 3 })
                             foreach (var center in new[] { true, false })
@@ -2587,7 +2585,6 @@ public partial class MainWindow : Window
                     _settings.CenterChat = centered;
                     RunClocks.Visibility = Visibility.Collapsed;
                     (WindowState, Width) = (state, width);
-                    SetWorkerRail(rail);
                     RefreshContextPins();
                     await Settle();
                     if (underClocks.Count > 0)
@@ -3079,11 +3076,10 @@ public partial class MainWindow : Window
         // The browser: the title bar's globe opens it in the right column in place of the worker details (saved); a model search shows there
         // when it follows the model; the globe again, or opening a worker's settings, gives the column back.
         {
-            var collapsed = _settings.DetailsCollapsed;
             ShowView(chat: true);
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
-            var opened = BrowserPanel.IsVisible && !DetailsPanel.IsVisible && !WorkerRail.IsVisible && _settings.BrowserOpen && BrowserAddress.Text == "https://duckduckgo.com/";
+            var opened = BrowserPanel.IsVisible && !WorkerRail.IsVisible && _settings.BrowserOpen && BrowserAddress.Text == "https://duckduckgo.com/";
             _settings.BrowserFollow = true;
             BrowserFollowTool("web_search", """{"query":"agent orchestrator"}""");
             var followed = BrowserAddress.Text == "https://duckduckgo.com/?q=agent%20orchestrator";
@@ -3248,13 +3244,13 @@ public partial class MainWindow : Window
             }
             BrowserButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
             await Settle();
-            var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && (collapsed ? WorkerRail.IsVisible : DetailsPanel.IsVisible);
+            var closed = !BrowserPanel.IsVisible && !_settings.BrowserOpen && WorkerRail.IsVisible;
             OpenBrowser(null); // no new page: one finishing later would take the focus from the popups below
-            SelectWorker(CardFor("planner"));
-            SetWorkerRail(false);
+            OpenWorkerTab(CardFor("planner"));
             await Settle();
-            var handedBack = !BrowserPanel.IsVisible && DetailsPanel.IsVisible && !_settings.BrowserOpen;
-            SetWorkerRail(collapsed);
+            var handedBack = BrowserPanel.IsVisible && ModelSettingsView.IsVisible && _shownWorker == CardFor("planner"); // the page is beside the browser
+            CloseBrowser();
+            ShowView(chat: true);
             tabbed = tabbed && BrowserMessage.Visibility != Visibility.Visible; // a closed tab's engine start failing is not the browser's
             if (!opened || !followed || !ignored || !tabbed || !closed || !handedBack)
             {
@@ -3335,12 +3331,13 @@ public partial class MainWindow : Window
                 await Settle();
                 Snap("26-settings-window-" + theme, _settingsWindow);
                 _settingsWindow!.Close();
-                if (theme is "Parchment" or "Graphite") // the column with the Planner's tab and its settings
+                if (theme is "Parchment" or "Graphite") // the Model Settings page with the Planner's tab and its settings
                 {
-                    SetWorkerRail(false);
-                    SelectWorker(CardFor("planner"));
+                    var chat = NavChat.IsChecked == true;
+                    OpenWorkerTab(CardFor("planner"));
                     await Settle();
                     Snap("27-model-settings-" + theme);
+                    ShowView(chat);
                 }
             }
         }
@@ -4734,6 +4731,7 @@ public partial class MainWindow : Window
         var code = !chat;
         CloseRemoteApi();
         CloseModelHub();
+        CloseModelSettings();
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         RefreshCardVisibility(); // the run output skips RefreshChatTarget below

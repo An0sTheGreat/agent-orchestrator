@@ -54,10 +54,9 @@ public partial class MainWindow
         if (!BrowserPanel.IsVisible)
         {
             RailPopup.IsOpen = false;
-            var fromRail = WorkerRail.IsVisible; // from the rail the column slides open; from the details it only swaps pages
-            WorkerRail.Visibility = DetailsPanel.Visibility = Visibility.Collapsed;
+            WorkerRail.Visibility = Visibility.Collapsed;
             BrowserPanel.Visibility = Visibility.Visible;
-            SlideColumn(BrowserPanel, collapsed: false, slide: fromRail);
+            SlideColumn(BrowserPanel, collapsed: false, slide: true); // from the rail the column slides open
             BrowserFollowToggle.IsChecked = _settings.BrowserFollow;
             BrowserInputToggle.IsChecked = _settings.BrowserInput;
             _settings.BrowserOpen = true;
@@ -67,12 +66,12 @@ public partial class MainWindow
             Navigate(url ?? (_settings.BrowserUrl.Length > 0 ? _settings.BrowserUrl : BrowserHome), trusted);
     }
 
-    // Back to the worker details (or their rail), as they were.
+    // Back to the worker rail.
     private void CloseBrowser()
     {
         _settings.BrowserOpen = false;
         _settings.Save();
-        SetWorkerRail(_settings.DetailsCollapsed); // hides the browser
+        ShowWorkerRail(); // hides the browser
     }
 
     // In the shown tab (the first one if none is open).

@@ -1107,15 +1107,17 @@ public partial class MainWindow
             chip.ContextMenu.IsOpen = false;
             return items.Select(i => (string)i.Header + (i.IsChecked ? "*" : "")).ToList();
         }
-        // Options… from a collapsed rail: the worker whose tab the column then shows.
+        // Options…: the worker whose tab the Model Settings page then shows (back to the view after).
         async Task<RoleCard?> Open(Button chip)
         {
-            SetWorkerRail(true);
+            var chat = NavChat.IsChecked == true;
             SmokeClick(chip);
             chip.ContextMenu.Items.OfType<MenuItem>().First().RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
             chip.ContextMenu.IsOpen = false;
             await Idle();
-            return DetailsPanel.IsVisible && !_settings.DetailsCollapsed ? _shownWorker : null;
+            var shown = ModelSettingsView.IsVisible ? _shownWorker : null;
+            ShowView(chat);
+            return shown;
         }
         const string chipTip = "Choose the worker to message, or open model Options";
         const string leadTip = "The lead (the Planner) answers and hands parts to your other workers; Options opens its model settings";
@@ -1365,8 +1367,8 @@ public partial class MainWindow
     }
     private void SmokeClickTab(RoleCard card) => SmokeClick(SmokeVisuals(SmokeTab(card)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab"));
 
-    // --ui-smoke: the rail card's gear opens the column on its worker's tab; one tab per shown worker, three fit the default
-    // column, a narrower one scrolls the strip (the wheel too); a tab shows title, model, tok/s and task · turn tokens. The
+    // --ui-smoke: the rail card's gear opens the Model Settings page on its worker's tab; one tab per shown worker, three fit
+    // the page, a narrower one scrolls the strip (the wheel too); a tab shows title, model, tok/s and task · turn tokens. The
     // Planner's tab: its model list loads on the first open (the GGUFs on disk, llama.cpp runtime), a model's defaults never
     // replace an edit, Save writes the role and keeps the tab, Revert and an invalid value write nothing, and the chat system
     // prompt is saved and removed when blank. config: the active config.json, holding roles.planner.
@@ -1377,7 +1379,7 @@ public partial class MainWindow
         static Task Idle() => Task.Delay(400);
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: compactor: {what}"); return false; }
         var (planner, compactor) = (CardFor("planner")!, CardFor(LauncherLogic.Compactor));
-        var (chatWorker, ask, width, expanded) = (_settings.ChatWorker, _codeChoice, DetailsColumn.Width, _settings.PromptsExpanded);
+        var (chatWorker, ask, expanded, chat) = (_settings.ChatWorker, _codeChoice, _settings.PromptsExpanded, NavChat.IsChecked == true);
         _settings.PromptsExpanded = false;
         _codeChoice = _ => null;
         var overridden = PromptOverridePath("compactor.txt");
@@ -1391,9 +1393,8 @@ public partial class MainWindow
                 return Fail("COMPACTOR is listed to chat with or to add");
             _settings.ChatWorker = chatWorker;
 
-            if (Math.Abs(DetailsColumn.MinWidth - DetailsMin()) > 0.5 || DetailsMin() < Math.Min(260, 1) || DetailsColumn.ActualWidth < DetailsMin() - 0.5)
-                return Fail($"the column's least width: {DetailsColumn.MinWidth} / {DetailsMin()}");
-            DetailsColumn.Width = new GridLength(820); // two columns: Model beside the prompts, the options below the line
+            OpenModelSettings();
+            ModelSettingsPage.Width = 820; // two columns: Model beside the prompts, the options below the line
             SmokeClickTab(compactor);
             await Idle();
             if ((double)Resources["WorkerTabWidth"] != WorkerTabMax || WorkerTabsScroll.ScrollableWidth > 1) // capped: all four fit
@@ -1568,7 +1569,9 @@ public partial class MainWindow
         }
         finally
         {
-            (_settings.ChatWorker, _codeChoice, DetailsColumn.Width, _settings.PromptsExpanded) = (chatWorker, ask, width, expanded);
+            (_settings.ChatWorker, _codeChoice, _settings.PromptsExpanded) = (chatWorker, ask, expanded);
+            ModelSettingsPage.ClearValue(WidthProperty);
+            ShowView(chat);
             if (File.Exists(overridden))
                 File.Delete(overridden);
         }
@@ -1597,9 +1600,9 @@ public partial class MainWindow
         _codeChoice = _ => { asked++; return null; }; // nothing below leaves a tab with unsaved edits
         try
         {
-            // The rail card's gear: the column opens on that worker's tab.
+            // The rail card's gear: the Model Settings page opens on that worker's tab, the rail stays.
             var implementer = CardFor("implementer")!;
-            SetWorkerRail(true);
+            ShowWorkerRail();
             await Idle();
             RailDots.UpdateLayout();
             ShowRailCard((FrameworkElement)VisualTreeHelper.GetChild(RailDots.ItemContainerGenerator.ContainerFromItem(implementer), 0));
@@ -1608,10 +1611,10 @@ public partial class MainWindow
                 return Fail("hover card gear");
             SmokeClick(gear);
             await Idle();
-            if (RailPopup.IsOpen || !DetailsPanel.IsVisible || _settings.DetailsCollapsed || _shownWorker != implementer || !implementer.IsSelected)
+            if (RailPopup.IsOpen || !ModelSettingsView.IsVisible || !WorkerRail.IsVisible || _shownWorker != implementer || !implementer.IsSelected)
                 return Fail("the gear opens the tab");
 
-            // One tab per shown worker; three fit the default column.
+            // One tab per shown worker; three fit the page.
             var width = (double)Resources["WorkerTabWidth"];
             if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)) || Math.Abs(width - Math.Clamp(WorkerTabsScroll.ActualWidth / 3 - 6, 88, WorkerTabMax)) > 0.5 ||
                 3 * (width + 6) > WorkerTabsScroll.ActualWidth + 1 || (_cards.Count(c => !c.Hidden) <= 3 && WorkerTabsScroll.ScrollableWidth > 1) ||
@@ -1623,9 +1626,8 @@ public partial class MainWindow
                 return Fail("tab text: " + string.Join(" | ", texts));
             snap("tabs-default", null);
 
-            // A narrow column: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
-            DetailsColumn.MinWidth = 260; // the tab strip at the narrowest column (a small window's)
-            DetailsColumn.Width = new GridLength(260);
+            // A narrow page: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
+            ModelSettingsPage.Width = 260;
             await Idle();
             if (WorkerTabsScroll.ScrollableWidth <= 0 || (double)Resources["WorkerTabWidth"] != 88)
                 return Fail("a narrow column scrolls");
@@ -1634,7 +1636,7 @@ public partial class MainWindow
             if (WorkerTabsScroll.HorizontalOffset <= 0)
                 return Fail("the wheel scrolls the strip");
             snap("tabs-narrow", null);
-            SetWorkerRail(false); // back to the saved width
+            ModelSettingsPage.ClearValue(WidthProperty);
             await Idle();
 
             // Selecting a tab shows that worker's settings; the model list is not loaded until it opens.
@@ -1770,6 +1772,8 @@ public partial class MainWindow
         {
             (_settings.ModelsFolder, _codeChoice) = ("", ask);
             RefreshWorkerTab(force: true);
+            ModelSettingsPage.ClearValue(WidthProperty);
+            ShowView(NavChat.IsChecked == true);
             Directory.Delete(models, recursive: true);
         }
     }

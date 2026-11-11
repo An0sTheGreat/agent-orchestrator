@@ -4,7 +4,7 @@ using System.Windows.Input;
 
 namespace AgentOrchestrator;
 
-// The worker details column: a horizontal strip of worker tabs (WorkerTabTemplate) and, below it, the selected worker's model
+// The Model Settings page: a horizontal strip of worker tabs (WorkerTabTemplate) and, below it, the selected worker's model
 // settings inline (ModelSettingsBody in WorkerSettingsHost). The selection is saved (AppSettings.SelectedWorker); leaving a
 // tab with unsaved edits asks first.
 public partial class MainWindow
@@ -26,6 +26,18 @@ public partial class MainWindow
                 SelectWorker(FirstVisibleWorker());
         };
     }
+
+    // A page in place of Code and Chat, as Remote API and Models Hub are (each closes the others).
+    private void OpenModelSettings()
+    {
+        CloseRemoteApi();
+        CloseModelHub();
+        Reveal(CodeView, false);
+        Reveal(ChatView, false);
+        Reveal(ModelSettingsView, true);
+    }
+
+    private void CloseModelSettings() => Reveal(ModelSettingsView, false);
 
     private RoleCard? FirstVisibleWorker() => _cards.FirstOrDefault(c => !c.Hidden) ?? _cards.FirstOrDefault();
 
@@ -102,16 +114,12 @@ public partial class MainWindow
         return true;
     }
 
-    // The composer's Options… and the rail card's gear: show the column, then the worker's tab.
+    // The sidebar's Model Settings, the composer's Options…, the rail's button and its card's gear: the page on the worker's tab.
     private void OpenWorkerTab(RoleCard? card)
     {
         if (card is null)
             return;
-        if (_settings.DetailsCollapsed)
-        {
-            SetWorkerRail(false);
-            _settings.Save();
-        }
+        OpenModelSettings();
         if (SelectWorker(card))
             (WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) as FrameworkElement)?.BringIntoView();
     }

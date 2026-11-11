@@ -96,7 +96,6 @@ public partial class MainWindow
             Look(theme, accent);
             if (chat is not null)
             {
-                SetWorkerRail(true);
                 OpenChatConversation(chat.Id);
                 ShowView(chat: true);
                 await Settle();
@@ -110,20 +109,18 @@ public partial class MainWindow
         {
             ShowView();
             OpenCodeConversation(code.Id);
-            SetWorkerRail(true);
             await Settle();
             Snap("code");
             await RunPictureAsync(Settle);
             Snap("project");
-            SetWorkerRail(false);
-            SelectWorker(CardFor("planner"));
+            OpenWorkerTab(CardFor("planner"));
             await Settle();
             Snap("workers");
+            ShowView();
             OpenBrowser("https://github.com/ggml-org/llama.cpp");
             await Task.Delay(8000); // the page loads from the network
             await SnapBrowser("browser");
             CloseBrowser();
-            SetWorkerRail(true);
         }
         // Search over the Code view: a seeded word, All conversations.
         OpenSearch();

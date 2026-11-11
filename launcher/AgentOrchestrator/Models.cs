@@ -214,7 +214,6 @@ internal sealed class AppSettings
     public string Theme { get; set; } = "Graphite"; // its default accent is light gray (Silver)
     public Dictionary<string, string> ThemeAccents { get; set; } = new();
     public double DetailsWidth { get; set; } = 340;
-    public bool DetailsCollapsed { get; set; } = true; // the worker details column shows as the dot rail
     public bool PromptsExpanded { get; set; } // the worker settings' system prompts show (collapsed by default)
     public bool ModelAdvanced { get; set; } // the worker settings' Advanced switch: the Memory, Speed, Output and Server groups
     public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
