@@ -470,6 +470,14 @@ internal static class HubLogic
     public static bool ModelFits(HubModel m, double? vramGiB, double? ramGiB) =>
         m.ParamCount is { } p && FitOf((long)(p * 0.4), vramGiB, ramGiB) is Fit.Fits or Fit.Marginal or Fit.Partial;
 
+    // The smallest weights' bytes (split parts summed; mmproj, imatrix, mtp and draft files are not weights), null: none.
+    public static long? SmallestWeights(HubVariants v) => v.Variants.Count == 0 ? null : v.Variants.Min(x => x.SizeBytes);
+
+    // Drops repos known to have no GGUF weights (smallest: id -> SmallestWeights; a repo not in it is unknown and stays) and,
+    // with fitsGpu on and the VRAM known, those whose smallest weights are larger than the whole GPU.
+    public static List<HubModel> FilterFetched(IEnumerable<HubModel> rows, IReadOnlyDictionary<string, long?> smallest, bool fitsGpu, double? vramGiB) =>
+        rows.Where(m => !smallest.TryGetValue(m.Id, out var bytes) || bytes is { } b && !(fitsGpu && vramGiB is > 0 && b > vramGiB * GiB)).ToList();
+
     // ---- display ----
 
     private static string Scaled(double value, string[] units, double step)
@@ -815,6 +823,19 @@ internal static class HubLogic
         var order = OrderByFit([V("oomBig", 90), V("fitsSmall", 5), V("partial", 30), V("oomSmall", 60), V("fitsBig", 20), V("marginal", 23.5), V("got", 100)], 24, 64, v => v.Label == "got");
         Check(string.Join(",", order.Select(v => v.Label)) == "got,fitsBig,fitsSmall,marginal,partial,oomSmall,oomBig", "OrderByFit: " + string.Join(",", order.Select(v => v.Label)));
         Check(ModelFits(q, 24, 64) && !ModelFits(q, 4, 8) && !ModelFits(models[1], 80, 512), "ModelFits from params*0.4");
+
+        // 8. fetched sizes: the smallest weights (shards summed, mmproj/imatrix only: none); no-GGUF repos and, with Fits my
+        // GPU on, repos larger than the whole card are dropped; unknown ones stay
+        Check(SmallestWeights(dup) == 10, "SmallestWeights");
+        var shardOnly = ParseVariants("""{"siblings":[{"rfilename":"x-Q8_0-00001-of-00002.gguf","size":3},{"rfilename":"x-Q8_0-00002-of-00002.gguf","size":4},{"rfilename":"mmproj-F16.gguf","size":1}]}""");
+        Check(SmallestWeights(shardOnly) == 7, "SmallestWeights sums split parts, skips mmproj");
+        Check(SmallestWeights(ParseVariants("""{"siblings":[{"rfilename":"mmproj-F16.gguf","size":5},{"rfilename":"imatrix.gguf","size":5},{"rfilename":"README.md","size":5}]}""")) is null, "mmproj/imatrix only: no weights");
+        var fetchPool = new[] { M("big", 0, 0), M("small", 0, 0), M("none", 0, 0), M("unknown", 0, 0), M("edge", 0, 0) };
+        var sizes = new Dictionary<string, long?> { ["big"] = (long)(8.5 * GiB), ["small"] = 3L << 30, ["none"] = null, ["edge"] = 8L << 30 };
+        string Ids(List<HubModel> l) => string.Join(",", l.Select(m => m.Id));
+        Check(Ids(FilterFetched(fetchPool, sizes, false, 8)) == "big,small,unknown,edge", "FilterFetched off: only no-GGUF dropped");
+        Check(Ids(FilterFetched(fetchPool, sizes, true, 8)) == "small,unknown,edge", "FilterFetched Fits my GPU: larger than the card dropped, equal kept");
+        Check(Ids(FilterFetched(fetchPool, sizes, true, null)) == "big,small,unknown,edge" && Ids(FilterFetched(fetchPool, sizes, true, 0)) == "big,small,unknown,edge", "FilterFetched VRAM unknown: no fit filter");
 
         // display
         Check(FormatSize(7_500_000_000) == "7.5 GB" && FormatSize(71_000_000_000) == "71 GB" && FormatSize(880_000_000) == "880 MB" && FormatSize(9_960_000_000) == "10 GB", "FormatSize");
