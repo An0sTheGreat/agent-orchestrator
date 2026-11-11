@@ -467,9 +467,6 @@ internal static class HubLogic
     }
 
     // "Only show models that fit": the smallest quant guessed as ParamCount * 0.4 bytes.
-    public static bool ModelFits(HubModel m, double? vramGiB, double? ramGiB) =>
-        m.ParamCount is { } p && FitOf((long)(p * 0.4), vramGiB, ramGiB) is Fit.Fits or Fit.Marginal or Fit.Partial;
-
     // The smallest weights' bytes (split parts summed; mmproj, imatrix, mtp and draft files are not weights), null: none.
     public static long? SmallestWeights(HubVariants v) => v.Variants.Count == 0 ? null : v.Variants.Min(x => x.SizeBytes);
 
@@ -822,7 +819,6 @@ internal static class HubLogic
         HubVariant V(string label, double required) => new(label, label, Req(required), Req(required), [], []);
         var order = OrderByFit([V("oomBig", 90), V("fitsSmall", 5), V("partial", 30), V("oomSmall", 60), V("fitsBig", 20), V("marginal", 23.5), V("got", 100)], 24, 64, v => v.Label == "got");
         Check(string.Join(",", order.Select(v => v.Label)) == "got,fitsBig,fitsSmall,marginal,partial,oomSmall,oomBig", "OrderByFit: " + string.Join(",", order.Select(v => v.Label)));
-        Check(ModelFits(q, 24, 64) && !ModelFits(q, 4, 8) && !ModelFits(models[1], 80, 512), "ModelFits from params*0.4");
 
         // 8. fetched sizes: the smallest weights (shards summed, mmproj/imatrix only: none); no-GGUF repos and, with Fits my
         // GPU on, repos larger than the whole card are dropped; unknown ones stay
