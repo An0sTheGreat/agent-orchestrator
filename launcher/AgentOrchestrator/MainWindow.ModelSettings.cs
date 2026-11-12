@@ -337,6 +337,22 @@ public partial class MainWindow
             if (layers != 100 && editors.GetValueOrDefault("gpu_layers") is TextBox gpu && long.TryParse(gpu.Text.Trim(), out var set) && set > layers)
                 gpu.Text = layers.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
+        // Option rows: a fixed name column so every name and every control starts on the same line, a faint rule between
+        // rows, and controls drawn as outlined pills on the "Field" shade so they read against the card in every theme.
+        const double LabelColumn = 190;
+        void Pill(Control c)
+        {
+            c.SetResourceReference(Control.BackgroundProperty, "Field");
+            c.SetResourceReference(Control.BorderBrushProperty, "Border");
+        }
+        void RowLine(StackPanel row, bool first)
+        {
+            if (first)
+                return;
+            var rule = new Border { Height = 1, Margin = new Thickness(0, 0, 0, 6), Opacity = 0.7 };
+            rule.SetResourceReference(Border.BackgroundProperty, "Border");
+            row.Children.Insert(0, rule);
+        }
         StackPanel Fields(string group)
         {
             var fields = new StackPanel();
@@ -375,24 +391,29 @@ public partial class MainWindow
                 hints[o.Key] = Muted(o.Help);
                 if (wide)
                 {
+                    Pill(editor);
                     fields.Children.Add(rows[o.Key] = new StackPanel
                     {
-                        Margin = new Thickness(0, 12, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
+                        Margin = new Thickness(0, 8, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
                     });
+                    RowLine(rows[o.Key], fields.Children.Count == 1);
                     rows[o.Key].ToolTipOpening += (_, _) => rows[o.Key].ToolTip = TipBlock();
                     continue;
                 }
-                // Label left, a compact control right; the help shows on hover.
-                (editor.Width, editor.Margin, editor.HorizontalAlignment) = (o.Kind == ModelOptions.Kind.Text ? 170 : 120, new Thickness(12, 0, 0, 0), HorizontalAlignment.Right);
+                // Two columns, both left-aligned: the name in a fixed column, then a compact pill control; the help shows on hover.
+                (editor.Width, editor.Margin, editor.HorizontalAlignment) = (o.Kind == ModelOptions.Kind.Text ? 170 : 130, new Thickness(0), HorizontalAlignment.Left);
+                Pill(editor);
                 var name = Label(o.Label);
                 name.VerticalAlignment = VerticalAlignment.Center;
                 name.TextTrimming = TextTrimming.CharacterEllipsis;
-                var line = new DockPanel();
-                DockPanel.SetDock(editor, Dock.Right);
-                line.Children.Add(editor);
+                name.Margin = new Thickness(0, 0, 12, 0);
+                var line = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(LabelColumn) }, new ColumnDefinition() } };
+                Grid.SetColumn(editor, 1);
                 line.Children.Add(name);
+                line.Children.Add(editor);
                 hints[o.Key].Visibility = Visibility.Collapsed;
-                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { line }, ToolTip = TipBlock() };
+                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { line }, ToolTip = TipBlock() };
+                RowLine(row, fields.Children.Count == 0);
                 row.ToolTipOpening += (_, _) => row.ToolTip = TipBlock();
                 if (o.Key is "max_seq_length" or "gpu_layers" && editor is TextBox sliderBox)
                     row.Children.Add(SliderFor(o.Key, sliderBox));
