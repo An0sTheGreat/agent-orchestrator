@@ -671,65 +671,8 @@ public partial class MainWindow
             var remote = Selected().HasProviders // the price settings are OpenRouter's
                 ? new LauncherLogic.RemoteRole(url, SavedId(), keyVar, "", string.Join(", ", order), sortPrice.IsChecked == true, maxIn.Text.Trim(), maxOut.Text.Trim())
                 : new LauncherLogic.RemoteRole(url, modelId.Text.Trim(), keyVar, "");
-            if (LauncherLogic.ValidateRemoteRole(remote) is { } problem)
-            {
+            if (ApplyRemoteRole(card, remote, "on this page") is { } problem)
                 Note(errorLine, problem, error: true);
-                return;
-            }
-            var name = ChatName(card, card.Role);
-            if (card.IsCustom)
-            {
-                var w = card.Config;
-                var before = (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, new LauncherLogic.ModelInfo(card.ModelName, card.Weights, card.Quant));
-                SetCustomRemote(card, remote);
-                if (!SyncCustomWorkers() || card.SetupProblem is not null) // not written: the worker stays as it was
-                {
-                    var refused = card.SetupProblem;
-                    (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, _) = before;
-                    card.SetModel(before.Item6);
-                    SyncCustomWorkers();
-                    Note(errorLine, refused is not null ? $"Not applied to {name}: {refused}." : "Could not update config.json: see the log.", error: true);
-                    return;
-                }
-                SaveWorkers();
-            }
-            else
-            {
-                var targets = WorkerConfigTargets();
-                if (targets.Length == 0)
-                {
-                    Note(errorLine, "There is no config.json to write to yet.", error: true);
-                    return;
-                }
-                string? failed;
-                try
-                {
-                    // COMPACTOR following MAIN gets its own copy in the same single write: a refusal or throw writes nothing
-                    failed = WriteConfigs(targets, t => LauncherLogic.WriteRemoteRole(t, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")));
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
-                {
-                    Log($"Could not update config.json: {exception.Message}");
-                    SetStatus("Could not update config.json", "#FF667A");
-                    Note(errorLine, $"Could not update config.json: {exception.Message}", error: true);
-                    return;
-                }
-                if (failed is not null)
-                {
-                    Note(errorLine, failed, error: true);
-                    return;
-                }
-            }
-            Log($"{name}: remote API {remote.BaseUrl}, model {remote.Model}{(remote.Provider.Length > 0 ? $", providers {remote.Provider}" : "")}");
-            if (Environment.GetEnvironmentVariable(remote.KeyEnv) is not { Length: > 0 })
-                Toast($"Applied to {name}: paste the {remote.KeyEnv} key into the API key box on this page", "#F7C873");
-            else
-                Toast($"Applied to {name}");
-            HoldWorkerTab(() =>
-            {
-                PrefillCards();
-                RefreshWorkerTab(force: true);
-            });
         }
 
         // ---- the starting values, then the handlers
@@ -971,6 +914,61 @@ public partial class MainWindow
             _settings.Save();
             ShowRemoteHelp(start.Id);
         }
+    }
+
+    // Puts a worker on a remote model (the Remote API page's Apply, Model Settings' API Model): writes it, logs, toasts and
+    // refreshes the worker views. The problem, or null once applied. keyWhere: where the missing key's toast sends the user.
+    private string? ApplyRemoteRole(RoleCard card, LauncherLogic.RemoteRole remote, string keyWhere)
+    {
+        if (LauncherLogic.ValidateRemoteRole(remote) is { } problem)
+            return problem;
+        var name = ChatName(card, card.Role);
+        if (card.IsCustom)
+        {
+            var w = card.Config;
+            var before = (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, new LauncherLogic.ModelInfo(card.ModelName, card.Weights, card.Quant));
+            SetCustomRemote(card, remote);
+            if (!SyncCustomWorkers() || card.SetupProblem is not null) // not written: the worker stays as it was
+            {
+                var refused = card.SetupProblem;
+                (w.Remote, w.LocalModelId, w.LocalModelVariant, card.ModelId, card.ModelVariant, _) = before;
+                card.SetModel(before.Item6);
+                SyncCustomWorkers();
+                return refused is not null ? $"Not applied to {name}: {refused}." : "Could not update config.json: see the log.";
+            }
+            SaveWorkers();
+        }
+        else
+        {
+            var targets = WorkerConfigTargets();
+            if (targets.Length == 0)
+                return "There is no config.json to write to yet.";
+            string? failed;
+            try
+            {
+                // COMPACTOR following MAIN gets its own copy in the same single write: a refusal or throw writes nothing
+                failed = WriteConfigs(targets, t => LauncherLogic.WriteRemoteRole(t, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")));
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
+            {
+                Log($"Could not update config.json: {exception.Message}");
+                SetStatus("Could not update config.json", "#FF667A");
+                return $"Could not update config.json: {exception.Message}";
+            }
+            if (failed is not null)
+                return failed;
+        }
+        Log($"{name}: remote API {remote.BaseUrl}, model {remote.Model}{(remote.Provider.Length > 0 ? $", providers {remote.Provider}" : "")}");
+        if (Environment.GetEnvironmentVariable(remote.KeyEnv) is not { Length: > 0 })
+            Toast($"Applied to {name}: paste the {remote.KeyEnv} key into the API key box {keyWhere}", "#F7C873");
+        else
+            Toast($"Applied to {name}");
+        HoldWorkerTab(() =>
+        {
+            PrefillCards();
+            RefreshWorkerTab(force: true);
+        });
+        return null;
     }
 
     // A custom worker on a remote model; its local model is kept (the first time) for Switch to Local.

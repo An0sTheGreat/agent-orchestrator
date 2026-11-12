@@ -753,7 +753,7 @@ public partial class MainWindow
                 follow.Children.Add(back);
             }
         }
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, follow, modelFields, source, vramBlock,
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
                      rows["max_seq_length"], advancedRow })
             if (part is not null)
                 top.Children.Add(part);
@@ -1275,6 +1275,72 @@ public partial class MainWindow
                 restored["base_url"]?.ToJsonString() != localReviewer["base_url"]?.ToJsonString() || _workerDirty() || Summary() is not null ||
                 !Shown(SourceButton("UseRemoteApi")) || SmokeField("top_p").Text != "0.95")
                 return Fail("Switch to Local");
+            foreach (var (target, bytes0) in targets)
+                File.WriteAllBytes(target, bytes0);
+
+            // API Model: the Remote API favorites under the model box. Cancel in the provider window writes nothing and the box goes
+            // back; picked providers put the worker on the favorite (in the order ticked), and the box then shows it. The window
+            // itself: OpenRouter's providers load, ticks number the order, Use returns them, Default none, Cancel null.
+            var favoritesWere = _settings.RemoteFavorites;
+            _settings.RemoteFavorites = ["openrouter|z-ai/glm-5.3-flash", "groq|llama-3.3-70b", "nowhere|gone"];
+            RefreshWorkerTab(force: true);
+            await Idle();
+            ComboBox ApiModel() => SmokeFind<ComboBox>(WorkerSettingsHost, c => c.Tag as string == "ApiModel")!;
+            if (ApiModel() is not { IsEnabled: true } apiBox || apiBox.Items.Count != 3 || apiBox.SelectedIndex != 0)
+                return Fail($"API Model list: {ApiModel()?.Items.Count}");
+            var asks = new List<string>();
+            try
+            {
+                _askProvidersTest = (service, model, _) => { asks.Add($"{service.Id}|{model}"); return null; };
+                apiBox.SelectedIndex = 1;
+                await Idle();
+                if (asks.SingleOrDefault() != "openrouter|z-ai/glm-5.3-flash" || ApiModel().SelectedIndex != 0 || LauncherLogic.ReadRemoteRole(config, "reviewer") is not null)
+                    return Fail("API Model cancel");
+                _askProvidersTest = (service, model, _) => FavoriteRole(service, model, ["relace/fp4", "open-inference/fp4"]);
+                ApiModel().SelectedIndex = 1;
+                await Idle();
+                if (LauncherLogic.ReadRemoteRole(config, "reviewer") is not { Model: "z-ai/glm-5.3-flash", BaseUrl: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY",
+                        Provider: "relace/fp4, open-inference/fp4" } || ApiModel().SelectedIndex != 1 || Summary()?.Text != "Remote: z-ai/glm-5.3-flash @ relace/fp4, open-inference/fp4")
+                    return Fail("API Model apply");
+            }
+            finally
+            {
+                _askProvidersTest = null;
+            }
+            var httpWas = _remoteHttp;
+            _remoteHttp = new System.Net.Http.HttpClient(new RemoteApiFakeHandler());
+            try
+            {
+                var openrouter = RemoteCatalog.Services[0];
+                var (shell, result) = BuildProviderDialog(openrouter, "z-ai/glm-5.3-flash", LauncherLogic.ReadRemoteRole(config, "reviewer"));
+                ToggleButton? Provider(string tag) => SmokeFind<ToggleButton>((DependencyObject)shell.Content, t => t.Tag as string == "provider:" + tag);
+                Button Act(string tag) => SmokeFind<Button>((DependencyObject)shell.Content, b => b.Tag as string == tag)!;
+                for (var i = 0; i < 100 && Provider("gmicloud/fp8") is null; i++)
+                    await Task.Delay(20);
+                // the worker's own two start ticked, in its order; unticking the first renumbers, a new tick goes last
+                if (Provider("relace/fp4") is not { IsChecked: true } relace || Provider("open-inference/fp4") is not { IsChecked: true } || Provider("gmicloud/fp8") is not { IsChecked: false } gmi)
+                    return Fail("provider window rows");
+                (relace.IsChecked, gmi.IsChecked) = (false, true);
+                SmokeClick(relace);
+                SmokeClick(gmi);
+                SmokeClick(Act("ProvidersUse"));
+                if (result()?.Provider != "open-inference/fp4, gmicloud/fp8")
+                    return Fail($"provider window Use: {result()?.Provider}");
+                var (shell2, result2) = BuildProviderDialog(openrouter, "qwen/qwen3-coder", null);
+                SmokeClick(SmokeFind<Button>((DependencyObject)shell2.Content, b => b.Tag as string == "ProvidersDefault")!);
+                var (shell3, result3) = BuildProviderDialog(RemoteCatalog.Services.First(s => s.Id == "groq"), "llama-3.3-70b", null);
+                var groqUse = SmokeFind<Button>((DependencyObject)shell3.Content, b => b.Tag as string == "ProvidersUse")!;
+                SmokeClick(SmokeFind<Button>((DependencyObject)shell3.Content, b => b.Tag as string == "ProvidersCancel")!);
+                if (result2() is not { Provider: "", Model: "qwen/qwen3-coder" } || result3() is not null || groqUse.Visibility == Visibility.Visible)
+                    return Fail("provider window Default / Cancel");
+                foreach (var w in new Window[] { shell, shell2, shell3 })
+                    w.Close();
+            }
+            finally
+            {
+                _remoteHttp = httpWas;
+                _settings.RemoteFavorites = favoritesWere;
+            }
             foreach (var (target, bytes0) in targets)
                 File.WriteAllBytes(target, bytes0);
             RefreshWorkerTab(force: true);
