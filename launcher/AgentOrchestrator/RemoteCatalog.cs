@@ -41,9 +41,36 @@ internal static class RemoteCatalog
         return found;
     }
 
-    // The endpoint tag is "<provider slug>/<quantization>" (or just the slug).
-    public static List<ProviderRow> WithPrivacy(List<ProviderRow> rows, Dictionary<string, string> privacy) =>
-        privacy.Count == 0 ? rows : [.. rows.Select(r => privacy.TryGetValue(r.Tag.Split('/')[0], out var p) ? r with { Privacy = p } : r)];
+    // tag -> takes images, for the endpoints of `variant` (the page also lists other variants, ":batch" and the like) on the same page.
+    // The API's endpoints carry no such flag, but an endpoint's "features" there does when it differs from the model: relace/fp4 serves
+    // the image-input GLM-5.3 Flash text-only, and OpenRouter's router drops it for a request with an image. The engine sends images
+    // as base64 data URLs, so supports_base64_image_input decides. An endpoint without the flag takes what the model takes.
+    public static Dictionary<string, bool> ParseImageInput(string page, string variant)
+    {
+        var found = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        var text = page.Replace("\\\"", "\"");
+        const string anchor = "\"model_variant_slug\":\"";
+        var starts = new List<int>();
+        for (var at = text.IndexOf(anchor, StringComparison.Ordinal); at >= 0; at = text.IndexOf(anchor, at + anchor.Length, StringComparison.Ordinal))
+            starts.Add(at + anchor.Length);
+        for (var i = 0; i < starts.Count; i++)
+        {
+            var chunk = text[starts[i]..(i + 1 < starts.Count ? starts[i + 1] : text.Length)]; // one endpoint object, from its variant on
+            if (!chunk.StartsWith(variant + "\"", StringComparison.OrdinalIgnoreCase) ||
+                System.Text.RegularExpressions.Regex.Match(chunk, "\"provider_slug\":\"([^\"]+)\"") is not { Success: true } slug)
+                continue;
+            var features = chunk.IndexOf("\"features\":{", StringComparison.Ordinal);
+            if (features >= 0 && System.Text.RegularExpressions.Regex.Match(chunk.Substring(features, Math.Min(800, chunk.Length - features)),
+                    "\"supports_base64_image_input\":(true|false)") is { Success: true } image)
+                found[slug.Groups[1].Value] = image.Groups[1].Value == "true";
+        }
+        return found;
+    }
+
+    // The endpoint tag is "<provider slug>/<quantization>" (or just the slug): privacy by slug, image input by the whole tag.
+    public static List<ProviderRow> WithPrivacy(List<ProviderRow> rows, Dictionary<string, string> privacy, Dictionary<string, bool>? images = null) =>
+        privacy.Count == 0 && images is not { Count: > 0 } ? rows : [.. rows.Select(r =>
+            (privacy.TryGetValue(r.Tag.Split('/')[0], out var p) ? r with { Privacy = p } : r) is var row && images?.TryGetValue(r.Tag, out var v) == true ? row with { Vision = v } : row)];
 
     // ModelsNeedKey: what an unauthenticated GET {BaseUrl}/models answered on 2026-11-05 (200 => false; 401/403, or Gemini's 404 => true).
     public static IReadOnlyList<Service> Services { get; } =
@@ -131,13 +158,15 @@ internal static class RemoteCatalog
     // Public without a key; latency and throughput come back null unless a key is sent.
     public static async Task<List<ProviderRow>> FetchProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey = null)
     {
-        var privacy = FetchPrivacyAsync(http, modelId.Trim(), ct);
+        var page = FetchPrivacyAsync(http, modelId.Trim(), ct);
         var rows = ParseProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/models/{modelId.Trim()}/endpoints", apiKey, ct).ConfigureAwait(false));
-        return WithPrivacy(rows, await privacy.ConfigureAwait(false));
+        var (privacy, images) = await page.ConfigureAwait(false);
+        return WithPrivacy(rows, privacy, images);
     }
 
-    // Best effort: the shields are a nicety, so a page that is down or reshaped leaves the rows without them. No key goes to the page.
-    private static async Task<Dictionary<string, string>> FetchPrivacyAsync(HttpClient http, string modelId, CancellationToken ct)
+    // Best effort: the shields and per-provider image input are niceties, so a page that is down or reshaped leaves the rows as the API
+    // gave them. No key goes to the page.
+    private static async Task<(Dictionary<string, string> Privacy, Dictionary<string, bool> Images)> FetchPrivacyAsync(HttpClient http, string modelId, CancellationToken ct)
     {
         try
         {
@@ -147,14 +176,17 @@ internal static class RemoteCatalog
             foreach (var id in modelId.Contains(':') ? new[] { modelId, modelId.Split(':')[0] } : [modelId])
             {
                 using var response = await http.GetAsync($"https://openrouter.ai/{id}/providers", timeout.Token).ConfigureAwait(false);
-                if (response.IsSuccessStatusCode && ParsePrivacy(await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false)) is { Count: > 0 } found)
-                    return found;
+                if (!response.IsSuccessStatusCode)
+                    continue;
+                var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+                if (ParsePrivacy(text) is { Count: > 0 } found)
+                    return (found, ParseImageInput(text, id));
             }
-            return [];
+            return ([], []);
         }
         catch (Exception) when (!ct.IsCancellationRequested)
         {
-            return [];
+            return ([], []);
         }
     }
 
@@ -274,6 +306,13 @@ internal static class RemoteCatalog
         var shields = ParsePrivacy(PrivacySample);
         Check(shields.Count == 3 && shields["gmicloud"] == Logs && shields["deepinfra"] == Private && shields["novita"] == Trains, $"privacy levels: {string.Join(",", shields)}");
         Check(ParsePrivacy("").Count == 0 && ParsePrivacy("<html>no data</html>").Count == 0 && PrivacyTip(Private).StartsWith("Private:") && PrivacyTip("") == "", "privacy of nothing");
+        // Per-provider image input: relace says no, together has no flag (the model's), sail says no here but yes in the :batch variant.
+        var images = ParseImageInput(ImageSample, "z-ai/glm-5.3-flash");
+        Check(images.Count == 2 && !images["relace/fp4"] && !images["sail-research/fp4"], $"image input: {string.Join(",", images)}");
+        Check(ParseImageInput(ImageSample, "z-ai/glm-5.3-flash:batch") is { Count: 1 } batch && batch["sail-research/fp4"], "image input of the :batch variant");
+        var visionRows = WithPrivacy(ParseProviders("{\"data\":{\"architecture\":{\"input_modalities\":[\"text\",\"image\"]},\"endpoints\":[" +
+            "{\"tag\":\"relace/fp4\",\"pricing\":{\"prompt\":\"0.00000001\"}},{\"tag\":\"together\",\"pricing\":{\"prompt\":\"0.00000002\"}}]}}"), [], images);
+        Check(visionRows is [{ Tag: "relace/fp4", Vision: false }, { Tag: "together", Vision: true }], $"vision merged: {string.Join(",", visionRows.Select(r => $"{r.Tag}={r.Vision}"))}");
 
         Check(ServiceFor("https://openrouter.ai/api/v1/")?.Id == "openrouter" && ServiceFor("HTTP://OpenRouter.AI/api/v1")?.Id == "openrouter" &&
             ServiceFor("api.groq.com/openai/v1")?.Id == "groq", "ServiceFor a known service");
@@ -330,6 +369,13 @@ internal static class RemoteCatalog
         "x{\\\"displayName\\\":\\\"GMICloud\\\",\\\"slug\\\":\\\"gmicloud\\\",\\\"baseUrl\\\":\\\"https://api.gmi.test\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true,\\\"canPublish\\\":false},\\\"headquarters\\\":\\\"US\\\"}" +
         "{\\\"displayName\\\":\\\"DeepInfra\\\",\\\"slug\\\":\\\"deepinfra\\\",\\\"baseUrl\\\":\\\"https://x.test\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":false}}" +
         "{\\\"slug\\\":\\\"novita\\\",\\\"baseUrl\\\":\\\"\\\",\\\"dataPolicy\\\":{\\\"training\\\":true,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}";
+
+    // Endpoint objects as the page embeds them (quotes escaped), trimmed to the keys ParseImageInput reads.
+    private const string ImageSample =
+        "{\\\"model_variant_slug\\\":\\\"z-ai/glm-5.3-flash\\\",\\\"provider_slug\\\":\\\"relace/fp4\\\",\\\"features\\\":{\\\"supports_base64_image_input\\\":false,\\\"supports_image_urls\\\":false}}" +
+        "{\\\"model_variant_slug\\\":\\\"z-ai/glm-5.3-flash\\\",\\\"provider_slug\\\":\\\"together\\\",\\\"features\\\":{\\\"supports_tool_choice\\\":{\\\"literal_none\\\":true}}}" +
+        "{\\\"model_variant_slug\\\":\\\"z-ai/glm-5.3-flash\\\",\\\"provider_slug\\\":\\\"sail-research/fp4\\\",\\\"features\\\":{\\\"supports_multipart\\\":true,\\\"supports_base64_image_input\\\":false}}" +
+        "{\\\"model_variant_slug\\\":\\\"z-ai/glm-5.3-flash:batch\\\",\\\"provider_slug\\\":\\\"sail-research/fp4\\\",\\\"features\\\":{\\\"supports_base64_image_input\\\":true}}";
 
     private sealed class FakeHandler : HttpMessageHandler
     {
