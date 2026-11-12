@@ -131,7 +131,7 @@ public partial class MainWindow
         LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
             project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage, message: text) with { Images = _turnImages }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0, // write_project reads it all
-            engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess,
+            engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess,
             review: _settings.ReviewEveryTurn);
 
     // A Code turn or run never gets write access to the Agent Orchestrator folder (templates, prompts, orchestrator.py).

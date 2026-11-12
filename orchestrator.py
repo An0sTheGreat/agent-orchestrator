@@ -3901,6 +3901,33 @@ CODE_TOOLS = [
 ]  # the lead writes PROJECT.md itself (init-projMD skill); the autonomous run starts only from the launcher's Start project
 
 
+SYSTEM32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+
+
+def in_system32(path: Path) -> bool:
+    """Windows' System32 folder or anything in it: never open to the file tools, Super access included."""
+    a, b = Path(os.path.normcase(str(path))), Path(os.path.normcase(str(SYSTEM32)))
+    return a == b or b in a.parents
+
+
+def with_super_access(folders: list[dict[str, str]], request: dict[str, Any]) -> list[dict[str, str]]:
+    """The turn's folders, plus every local drive root (write) when the user's Super access is on (the request's
+    sandbox.super_access): the file tools may then open any path on this PC except System32 (code_path). The Agent
+    Orchestrator folder is added read-only, so as the innermost grant it stays unwritable; the folders the user granted
+    read-only stay read-only the same way. Commands are unaffected: the sandbox never grants a drive root (overlaps_root),
+    and Full access alone decides whether they leave it."""
+    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    if settings.get("super_access") is not True:
+        return folders
+    drives = os.listdrives() if hasattr(os, "listdrives") else [f"{c}:\\" for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if os.path.isdir(f"{c}:\\")]
+    have = {os.path.normcase(f["path"]) for f in folders}
+    extra = [{"path": str(Path(d)), "access": "write"} for d in drives
+             if not d.startswith("\\\\") and os.path.isdir(d) and os.path.normcase(str(Path(d))) not in have]
+    if os.path.normcase(str(ROOT)) not in have:
+        extra.append({"path": str(ROOT), "access": "read"})
+    return [*folders, *extra]
+
+
 def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> Path:
     """Resolve a Code tool path: relative to folders[0]; must stay inside a granted folder (the innermost one
     decides read/write access). api_key.txt and anything inside .git are always refused."""
@@ -3912,7 +3939,7 @@ def code_path(raw: str, folders: list[dict[str, str]], write: bool = False) -> P
     if not inside:
         raise WorkflowError(f"Path is outside the granted folders: {raw}")
     parts = [p.lower() for p in path.parts]
-    if "api_key.txt" in parts or ".git" in parts:
+    if "api_key.txt" in parts or ".git" in parts or in_system32(path):
         raise WorkflowError(f"Path is protected: {raw}")
     if write and max(inside, key=lambda f: len(Path(f["path"]).parts))["access"] != "write":
         raise WorkflowError(f"Path is in a read-only folder: {raw}")
@@ -4608,7 +4635,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     home = Path(str(settings.get("home") or Path(tempfile.gettempdir()) / "agent-orchestrator-sandbox"))
     name = sandbox.container_name(f"{request.get('session') or 'default'}{'.ro' if read_only else ''}")
     temp, state = home / "tmp" / name, home / "grants"
-    grants = {f["path"]: "read" if read_only else f["access"] for f in folders if not overlaps_root(f["path"])}
+    # never a drive root (Super access lists them for the file tools): a grant ACLs a whole tree
+    grants = {f["path"]: "read" if read_only else f["access"] for f in folders if not overlaps_root(f["path"]) and Path(f["path"]).parent != Path(f["path"])}
     grants[str(temp)] = "write"
     if skills := skills_root(request):
         grants[str(skills)] = "read"  # read and run, never write: a skill's own files stay as the user made them
@@ -4979,7 +5007,7 @@ def run_lead_project(config: dict[str, Any], project_root: Path, once: bool, req
                             "another --project (the legacy --pipeline can run here)")
     request = request or {}
     extra = request.get("folders") if isinstance(request.get("folders"), list) else []
-    folders = request_folders([{"path": str(project_root), "access": "write"}, *extra[1:]])
+    folders = with_super_access(request_folders([{"path": str(project_root), "access": "write"}, *extra[1:]]), request)
     config = with_effort(config, request)
     title, state = display_name(config, "planner"), project_root / "STATE.md"
     workflow = request.get("workflow") if request.get("workflow") in ("dual", "tri", "solo") else "dual"
@@ -5566,7 +5594,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     if action == "chat" and role not in BUILTIN_ROLES and all(w["id"] != role for w in custom_workers(config)):
         role = "planner"
     chat_worker(config, role)
-    folders = request_folders(request.get("folders"))
+    folders = with_super_access(request_folders(request.get("folders")), request)
     config, plain = with_effort(config, request), config  # the turn's model calls; the quiet title call keeps `plain`
     if action == "write_project":
         target = write_project(config, role, folders, messages, "")

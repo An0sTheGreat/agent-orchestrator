@@ -3044,6 +3044,29 @@ class CodeTests(unittest.TestCase):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "read-only"):
             orchestrator.code_path("vendor/v.js", nested, True)
 
+    def test_super_access_opens_every_drive_but_system32_and_never_reaches_the_sandbox(self):
+        off = orchestrator.with_super_access(self.folders, {"sandbox": {"full_access": True}})
+        self.assertEqual(off, self.folders)  # Full access alone leaves the file tools on the granted folders
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "outside"):
+            orchestrator.code_path(str(self.cfg / "a.txt"), off, True)
+        folders = orchestrator.with_super_access(self.folders, {"sandbox": {"super_access": True}})
+        self.assertEqual(folders[:len(self.folders)], self.folders)
+        self.assertEqual(orchestrator.code_path(str(self.cfg / "a.txt"), folders, True), self.cfg / "a.txt")  # anywhere on this PC
+        self.assertEqual(orchestrator.code_path(str(orchestrator.SYSTEM32.parent / "win.ini"), folders), orchestrator.SYSTEM32.parent / "win.ini")
+        refused = [(str(orchestrator.SYSTEM32), False, "protected"), (str(orchestrator.SYSTEM32 / "drivers" / "etc" / "hosts"), True, "protected"),
+                   (str(orchestrator.SYSTEM32).upper() + "\\x.dll", False, "protected"), (str(orchestrator.ROOT / "orchestrator.py"), True, "read-only"),
+                   (str(self.shared / "x.py"), True, "read-only"), (str(self.cfg / "api_key.txt"), False, "protected")]
+        for raw, write, message in refused:
+            with self.subTest(raw), self.assertRaisesRegex(orchestrator.WorkflowError, message):
+                orchestrator.code_path(raw, folders, write)
+        granted = []
+        with patch.object(sandbox, "container_sid", return_value=("x", "S-1-15-2-1")), patch.object(sandbox, "list_ancestors"), \
+                patch.object(sandbox, "sync_grants", lambda name, sid, wanted, state: granted.append(dict(wanted))), \
+                patch.object(sandbox, "setup_done", return_value=True), patch.object(sandbox, "environment_protected", return_value=True), \
+                patch.object(sandbox, "unprotected_git", return_value=[]), patch.object(sandbox, "run", return_value=(0, "ok")):
+            orchestrator.command_runner(folders, {"session": "s", "sandbox": {"home": str(self.cfg / "sb"), "super_access": True}})("echo", shell="cmd")
+        self.assertTrue(granted and all(Path(p).parent != Path(p) for g in granted for p in g), granted)  # no drive root in the sandbox
+
     def test_list_search_and_read_caps(self):
         for name in ("a.txt", "b.txt", "c.txt", "node_modules/x.txt", ".git/config"):
             (self.root / name).parent.mkdir(parents=True, exist_ok=True)

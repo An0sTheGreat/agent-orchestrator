@@ -350,13 +350,13 @@ internal static class LauncherLogic
     // action "chat" (messages end with the user's) or "write_project" (the conversation so far, possibly empty).
     public static string BuildCodeRequest(string action, string worker, IEnumerable<ChatMessage> messages, string projectFolder, IEnumerable<CodeFolder> extraFolders,
         Extras? extras = null, bool title = false, string effort = "", string summary = "", int summaryCovers = 0,
-        string engine = "", string session = "", string piHome = "", bool sandboxNetwork = false, string permissions = "safe", bool review = false, bool fullAccess = false) =>
+        string engine = "", string session = "", string piHome = "", bool sandboxNetwork = false, string permissions = "safe", bool review = false, bool fullAccess = false, bool superAccess = false) =>
         JsonSerializer.Serialize(new
         {
             action = action == "write_project" ? "write_project" : "chat",
             review, // "Review every turn": the reviewer checks the turn at its end
             engine = engine == "pi" ? "pi" : "",
-            sandbox = new { network = sandboxNetwork, home = SandboxHome, full_access = fullAccess }, // run_command's AppContainer (sandbox.py); full_access: no sandbox
+            sandbox = new { network = sandboxNetwork, home = SandboxHome, full_access = fullAccess, super_access = superAccess }, // run_command's AppContainer (sandbox.py); full_access: no sandbox; super_access: file tools on every drive but System32
             permissions = permissions is "ask" or "all" ? permissions : "safe", // when run_command asks first (orchestrator.command_runner)
             session, // the conversation id: the Pi engine keeps one Pi session per conversation
             pi_home = piHome,
@@ -2083,6 +2083,8 @@ internal static class LauncherLogic
             throw new InvalidOperationException("Sandbox request failed.");
         if ((bool)code["sandbox"]!["full_access"]! || !(bool)JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:\app", [], fullAccess: true))!["sandbox"]!["full_access"]!)
             throw new InvalidOperationException("Full access request failed.");
+        if ((bool)code["sandbox"]!["super_access"]! || !(bool)JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:pp", [], superAccess: true))!["sandbox"]!["super_access"]!)
+            throw new InvalidOperationException("Super access request failed.");
         if (VersionText("1.1.0+0123456789abcdef") != "Version 1.1.0 (0123456)" || VersionText("1.1.0") != "Version 1.1.0" ||
             !VersionText().StartsWith("Version 1.1.0"))
             throw new InvalidOperationException("The version text failed.");

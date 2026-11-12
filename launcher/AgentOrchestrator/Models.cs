@@ -281,6 +281,8 @@ internal sealed class AppSettings
     public bool SandboxNetwork { get; set; }
     // Full access: model commands (run_command) run as the user with no sandbox; CommandPermissions still decides when they ask.
     public bool FullAccess { get; set; }
+    // Super access: the model's file tools may open any path on this PC except System32 (orchestrator.with_super_access); independent of FullAccess.
+    public bool SuperAccess { get; set; }
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     public string HubSort { get; set; } = "trending"; // the Models Hub's sort (HubLogic.Sorts id)
     public bool HubOnlyFit { get; set; } // unused (replaced by HubFitsGpu); kept so older settings files still load

@@ -1839,6 +1839,13 @@
                         <TextBlock Text="Off the sandbox: commands run as you, with your rights, anywhere on this PC and with the network. The permissions button in the Code composer still decides when they ask: Always Ask asks before every command, Allow Safe and Allow All run them without asking. The Reviewer's read-only commands stay in the sandbox."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="SuperAccessToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SuperAccess_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Super access: the model's file tools reach every folder except System32" />
+                            <TextBlock Text="Super access: the model's file tools reach every folder except System32" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock Text="The model can read and write files on every drive of this PC, not only the conversation's folders. Windows\System32, api_key.txt, .git folders and Agent Orchestrator's own folder stay off limits, and folders you added as read-only stay read-only. Works on its own or with Full access: commands stay in the sandbox unless Full access is on too."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Commands may use the network without asking" />
                             <TextBlock Text="Commands may use the network without asking" VerticalAlignment="Center" />
