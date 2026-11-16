@@ -83,6 +83,7 @@ public partial class MainWindow
             SidebarList.Children.Add(SidebarAction("\uE9E9", "Model Settings", () => OpenWorkerTab(_shownWorker ?? FirstVisibleWorker())));
             SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             SidebarList.Children.Add(SidebarAction("", "Models Hub", OpenModelHub));
+            SidebarList.Children.Add(SidebarAction("", "Skills", OpenSkills));
             AddSidebarSection(view, chat: true, "CHAT");
             AddSidebarSection(view, chat: false, "CODE");
         }

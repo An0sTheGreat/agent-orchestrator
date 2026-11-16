@@ -8,7 +8,7 @@ using System.Windows.Controls.Primitives;
 
 namespace AgentOrchestrator;
 
-// The composer's Search / Tools toggles and Skills menu, shared by the Chat and Code views. Each message sends them in its
+// The composer's Search / Tools toggles, shared by the Chat and Code views, and the skills sent (the Skills page sets them). Each message sends them in its
 // request (LauncherLogic.Extras); orchestrator.py turns them into tools.
 public partial class MainWindow
 {
@@ -16,7 +16,7 @@ public partial class MainWindow
     // message: also every skill it names as "/name" or "$name" (skill completion), switched on or not.
     private LauncherLogic.Extras CurrentExtras(bool initProject = false, string? message = null) =>
         new(_settings.UseSearch, _settings.UseTools,
-            AllSkills().Where(s => HasSkill(Path.GetFileName(s.Folder)) || InvokesSkill(message, s.Name) ||
+            AllSkills().Where(s => HasSkill(s) || InvokesSkill(message, s.Name) ||
                 initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
                 .Select(s => s.Folder).ToList(), Vision: _settings.UseVision, Emoji: _settings.Emoji,
             Computer: _settings.ComputerUse ? _settings.ComputerApps.Select(ComputerLogic.AppName).ToList() : []);
@@ -27,14 +27,11 @@ public partial class MainWindow
 
     private void RefreshExtras()
     {
-        var skills = CurrentExtras().Skills.Count;
-        foreach (var (search, tools, skill) in new[] { (ChatSearchToggle, ChatToolsToggle, ChatSkillsButton), (CodeSearchToggle, CodeToolsToggle, CodeSkillsButton) })
+        foreach (var (search, tools) in new[] { (ChatSearchToggle, ChatToolsToggle), (CodeSearchToggle, CodeToolsToggle) })
         {
             search.IsChecked = _settings.UseSearch;
             (search == ChatSearchToggle ? ChatVisionToggle : CodeVisionToggle).IsChecked = _settings.UseVision;
             tools.IsChecked = _settings.UseTools;
-            skill.IsChecked = skills > 0;
-            ((TextBlock)((StackPanel)skill.Content).Children[1]).Text = skills > 0 ? $"Skills · {skills}  ▾" : "Skills  ▾";
         }
         RefreshVision();
     }
@@ -91,41 +88,6 @@ public partial class MainWindow
             return roles?[role]?["auto_load"]?.DeepClone() as JsonObject;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or ArgumentException) { return null; }
-    }
-
-    private void Skills_Click(object sender, RoutedEventArgs e)
-    {
-        RefreshExtras(); // a click toggled the button; its look follows the enabled skills
-        BuildSkillsMenu((FrameworkElement)sender).IsOpen = true;
-    }
-
-    // One checkable item per skill folder (a folder under the skills folder with a SKILL.md), then New skill… and the folder.
-    private ContextMenu BuildSkillsMenu(FrameworkElement target)
-    {
-        var menu = NewPresetMenu(target);
-        menu.Placement = PlacementMode.Top;
-        var skills = AllSkills();
-        foreach (var skill in skills)
-        {
-            var key = Path.GetFileName(skill.Folder);
-            var item = PresetItem(skill.BuiltIn ? $"{skill.Name} (built-in)" : skill.Name, () => { }); // a checkable item toggles itself before Click
-            item.IsCheckable = true;
-            item.IsChecked = HasSkill(key);
-            item.Tag = key;
-            item.ToolTip = skill.Description.Length > 0 ? skill.Description : null;
-            item.Click += (_, _) => SetSkill(key, item.IsChecked);
-            menu.Items.Add(item);
-        }
-        if (skills.Count == 0)
-            menu.Items.Add(PresetItem("No skills yet", () => { }, false));
-        menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
-        menu.Items.Add(PresetItem("New skill…", NewSkill));
-        menu.Items.Add(PresetItem("Open skills folder", () =>
-        {
-            Directory.CreateDirectory(AppSettings.SkillsRoot);
-            Process.Start(new ProcessStartInfo(AppSettings.SkillsRoot) { UseShellExecute = true });
-        }));
-        return menu;
     }
 
     // ---- thinking effort: one choice (_settings.ChatEffort) for Chat and Code, sent only when the model it reaches thinks
@@ -195,14 +157,18 @@ public partial class MainWindow
         return menu;
     }
 
-    // Skill keys are folder names, so they compare like Windows paths: ignoring case.
-    private bool HasSkill(string key) => _settings.Skills.Contains(key, StringComparer.OrdinalIgnoreCase);
+    // Skill keys are folder names, so they compare like Windows paths: ignoring case. The user's skills are on when listed in
+    // Skills; the bundled ones are on unless listed in SkillsOff, so every skill the app ships starts on.
+    private bool HasSkill(LauncherLogic.Skill skill) => skill.BuiltIn
+        ? !_settings.SkillsOff.Contains(Path.GetFileName(skill.Folder), StringComparer.OrdinalIgnoreCase)
+        : _settings.Skills.Contains(Path.GetFileName(skill.Folder), StringComparer.OrdinalIgnoreCase);
 
-    private void SetSkill(string key, bool on)
+    private void SetSkill(string key, bool on, bool builtIn = false)
     {
-        _settings.Skills.RemoveAll(s => string.Equals(s, key, StringComparison.OrdinalIgnoreCase));
-        if (on)
-            _settings.Skills.Add(key);
+        var list = builtIn ? _settings.SkillsOff : _settings.Skills;
+        list.RemoveAll(s => string.Equals(s, key, StringComparison.OrdinalIgnoreCase));
+        if (on != builtIn) // a user skill turned on, or a bundled one turned off
+            list.Add(key);
         _settings.Save();
         RefreshExtras();
     }
@@ -237,6 +203,8 @@ public partial class MainWindow
             return;
         }
         SetSkill(name, true);
+        if (SkillsView.Visibility == Visibility.Visible)
+            RenderSkillsPage();
         if (_codeChoice is null) // not under --ui-smoke
             Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
     }

@@ -1171,6 +1171,8 @@
             <Grid x:Name="RemoteApiView" Grid.Column="1" Visibility="Collapsed" />
             <!-- The Models Hub page (the sidebar's Models Hub), built by MainWindow.ModelHub.cs; in place of Code and Chat while open -->
             <Grid x:Name="ModelHubView" Grid.Column="1" Visibility="Collapsed" />
+            <!-- The Skills page (the sidebar's Skills), built by MainWindow.SkillsPage.cs; in place of Code and Chat while open -->
+            <Grid x:Name="SkillsView" Grid.Column="1" Visibility="Collapsed" />
             <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the worker tabs and the selected
                  worker's settings (MainWindow.WorkerTabs.cs); in place of Code and Chat while open -->
             <Grid x:Name="ModelSettingsView" Grid.Column="1" Visibility="Collapsed">
@@ -1390,10 +1392,6 @@
                                                   ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
                                     </ToggleButton>
-                                    <ToggleButton x:Name="CodeSkillsButton" Style="{StaticResource ChipToggle}" Click="Skills_Click" AutomationProperties.Name="Skills"
-                                                  ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
-                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
-                                    </ToggleButton>
                                     <!-- Reviewer: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn) -->
                                     <ToggleButton x:Name="CodeReviewerToggle" Style="{StaticResource ChipToggle}" Click="ReviewerToggle_Click" AutomationProperties.Name="Reviewer"
                                                   ToolTip="Review every turn: when the lead finishes, the Reviewer checks the work. Problems it finds go back to the lead to fix, up to 2 rounds">
@@ -1583,10 +1581,6 @@
                                 <ToggleButton x:Name="ChatToolsToggle" Style="{StaticResource ChipToggle}" Tag="tools" Click="ExtraToggle_Click" AutomationProperties.Name="Tools"
                                               ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
                                     <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
-                                </ToggleButton>
-                                <ToggleButton x:Name="ChatSkillsButton" Style="{StaticResource ChipToggle}" Click="Skills_Click" AutomationProperties.Name="Skills"
-                                              ToolTip="Skills the worker may load: folders with a SKILL.md in the skills folder">
-                                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE8F1;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Skills  ▾" /></StackPanel>
                                 </ToggleButton>
                             </WrapPanel>
                         </DockPanel>

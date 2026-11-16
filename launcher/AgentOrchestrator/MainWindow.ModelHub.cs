@@ -240,6 +240,7 @@ public partial class MainWindow
         CloseRemoteApi();
         CloseModelHub();
         CloseModelSettings();
+        CloseSkills();
         if (!HubLogic.Sorts.Any(s => s.Id == _settings.HubSort))
             _settings.HubSort = "trending";
         _hubMachine = HubReadMachineAsync();
@@ -1389,6 +1390,8 @@ public partial class MainWindow
         async Task Settled()
         {
             await Task.Delay(450); // the 300 ms debounce
+            for (var i = 0; i < 100 && _hubDebounce?.IsEnabled == true; i++) // a busy dispatcher fires the timer late: wait for it, not a fixed time
+                await Task.Delay(50);
             await _hubTask;
             await Task.Delay(100); // a page the short list asks for next
             await _hubTask;

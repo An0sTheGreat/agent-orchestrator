@@ -314,6 +314,8 @@ internal sealed class AppSettings
     public bool UseVision { get; set; } = true; // off: no image or screenshot reaches a model (the request's "vision")
     public bool UseTools { get; set; }
     public List<string> Skills { get; set; } = new();
+    // The skills bundled with the app start on; these are the ones the user switched off (folder names). A newly bundled skill is on.
+    public List<string> SkillsOff { get; set; } = new();
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by

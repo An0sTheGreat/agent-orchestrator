@@ -2076,16 +2076,18 @@ public partial class MainWindow : Window
                 // (and says why), and neither Start nor the worker's start_project starts anything or asks a model to write the file.
                 // A conversation that starts with the Create message carries the bundled init-projMD skill on every turn.
                 string EmptyState() => $"{CodeEmptyTitle.Text}|{CodeEmptyChoose.Visibility}|{CodeEmptyInit.Visibility}|{CodeEmptyAddMd.Visibility}|{CodeEmptyTemplate.Visibility}|{CodeStartButton.IsEnabled}";
-                string? SkillsOf(string? text) => JsonNode.Parse(CodeRequest("chat", "planner", text, codeProject))!["skills"]!.AsArray().FirstOrDefault()?.ToString();
-                var latestOnly = SkillsOf(InitProjectMessage); // this conversation starts with "Hi": the first message decides
+                bool SendsInit(string? text) => JsonNode.Parse(CodeRequest("chat", "planner", text, codeProject))!["skills"]!.AsArray().Any(s => (string?)s == Path.Combine(_workflowRoot!, "skills", InitProjectSkill));
+                _settings.SkillsOff = [InitProjectSkill]; // switched off on the Skills page: the Create message still brings it
+                var latestOnly = SendsInit(InitProjectMessage); // this conversation starts with "Hi": the first message decides
                 var keptHistory = _code.History.ToList();
                 _code.History[0] = new("user", InitProjectMessage);
-                var initLater = SkillsOf("Hi again");
+                var initLater = SendsInit("Hi again");
+                _settings.SkillsOff = [];
                 _code.History.Clear();
                 _code.History.AddRange(keptHistory);
                 if (EmptyState() != "Add a PROJECT.md to start the project|Collapsed|Visible|Visible|Visible|False" || !ToolTipService.GetShowOnDisabled(CodeStartButton) ||
                     CodeStartButton.ToolTip as string is not { } whyOff || !whyOff.Contains("no PROJECT.md") ||
-                    latestOnly is not null || initLater != Path.Combine(_workflowRoot!, "skills", InitProjectSkill))
+                    latestOnly || !initLater)
                     return Fail();
                 await Settle();
                 Snap("20a-code-no-projectmd");
@@ -2258,8 +2260,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New, Search, Model Settings, Remote API and Models Hub, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New,+Search,+Model Settings,+Remote API,+Models Hub,SECTION:CHAT,?,SECTION:CODE";
+                // New, Search, Model Settings, Remote API, Models Hub and Skills, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Search,+Model Settings,+Remote API,+Models Hub,+Skills,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
@@ -2818,29 +2820,50 @@ public partial class MainWindow : Window
                 NewSkill();
                 var skillFolder = Path.Combine(AppSettings.SkillsRoot, "Smoke skill");
                 var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!;
-                if (!File.Exists(Path.Combine(skillFolder, "SKILL.md")) || _settings.Skills is not ["Smoke skill"] || CodeSkillsButton.IsChecked != true ||
-                    ((TextBlock)((StackPanel)ChatSkillsButton.Content).Children[1]).Text != "Skills · 1  ▾" || !(bool)request["search"]! || !(bool)request["tools"]! ||
-                    (string)request["skills"]![0]! != skillFolder)
+                var builtIns = AllSkills().Count(s => s.BuiltIn); // the app's own skills start on
+                if (!File.Exists(Path.Combine(skillFolder, "SKILL.md")) || _settings.Skills is not ["Smoke skill"] || builtIns == 0 || !(bool)request["search"]! || !(bool)request["tools"]! ||
+                    !request["skills"]!.AsArray().Any(s => (string?)s == skillFolder) || request["skills"]!.AsArray().Count != builtIns + 1)
                     return Fail();
-                ShowView(chat: true);
-                var skillsMenu = BuildSkillsMenu(ChatSkillsButton);
-                skillsMenu.IsOpen = true;
+                // The Skills page (the sidebar's Skills): one switch per skill, the user's and the bundled ones, all on.
+                var sidebarTags = SidebarList.Children.OfType<FrameworkElement>().Select(e => e.Tag as string).ToList();
+                if (sidebarTags.IndexOf("+Skills") != sidebarTags.IndexOf("+Models Hub") + 1)
+                    return Fail();
+                SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Skills")]);
                 await Settle();
-                Snap("24-skills-menu", skillsMenu);
-                var skillItem = skillsMenu.Items.OfType<MenuItem>().First(i => i.Tag as string == "Smoke skill");
-                skillsMenu.IsOpen = false;
-                if (skillItem is not { Header: "Smoke skill", IsChecked: true, ToolTip: "When to use this skill, in one sentence." } ||
-                    !skillsMenu.Items.OfType<MenuItem>().Any(i => i is { Header: "init-projMD (built-in)", IsChecked: false })) // bundled with the app
+                ToggleButton? SkillSwitch(string key) => SmokeFind<ToggleButton>(SkillsView, t => t.Tag as string == "skill:" + key);
+                if (SkillsView.Visibility != Visibility.Visible || ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
+                    SkillSwitch("Smoke skill") is not { IsChecked: true } smokeSwitch || SkillSwitch("init-projMD") is not { IsChecked: true } bundled ||
+                    SmokeFind<TextBlock>(SkillsView, t => t.Text == "When to use this skill, in one sentence.") is null)
+                    return Fail();
+                Snap("24-skills-page");
+                void FlipSkill(ToggleButton t)
+                {
+                    t.IsChecked = t.IsChecked != true;
+                    SmokeClick(t);
+                }
+                // A bundled skill switched off stays off (SkillsOff) and leaves the request; on again, it is back.
+                FlipSkill(bundled);
+                var offNow = CurrentExtras().Skills;
+                RenderSkillsPage();
+                if (_settings.SkillsOff is not ["init-projMD"] || offNow.Count != builtIns || offNow.Any(s => s.EndsWith("init-projMD", StringComparison.OrdinalIgnoreCase)) ||
+                    SkillSwitch("init-projMD")?.IsChecked != false || AppSettings.Load().SkillsOff is not ["init-projMD"])
+                    return Fail();
+                FlipSkill(SkillSwitch("init-projMD")!);
+                if (_settings.SkillsOff.Count != 0 || CurrentExtras().Skills.Count != builtIns + 1)
                     return Fail();
                 SetSkill("SMOKE skill", true); // a key in another case is the same folder: no duplicate, still sent
-                if (_settings.Skills.Count != 1 || CurrentExtras().Skills.Count != 1)
+                if (_settings.Skills.Count != 1 || CurrentExtras().Skills.Count != builtIns + 1)
                     return Fail();
-                skillItem.IsChecked = false;
-                skillItem.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                ChatSkillsButton.IsChecked = true; // a click on Skills toggles it; RefreshExtras ties its look to the enabled skills
-                RefreshExtras();
-                if (_settings.Skills.Count != 0 || CurrentExtras().Skills.Count != 0 || ChatSkillsButton.IsChecked != false || NewSkillRefused("Smoke skill") || NewSkillRefused("SMOKE SKILL") ||
-                    NewSkillRefused("a/b") || NewSkillRefused("notes."))
+                RenderSkillsPage();
+                FlipSkill(SkillSwitch("Smoke skill")!);
+                // off, it is still sent with a message that names it
+                if (_settings.Skills.Count != 0 || CurrentExtras().Skills.Count != builtIns || !CurrentExtras(message: "/Smoke skill please").Skills.Contains(skillFolder) ||
+                    NewSkillRefused("Smoke skill") || NewSkillRefused("SMOKE SKILL") || NewSkillRefused("a/b") || NewSkillRefused("notes."))
+                    return Fail();
+                ShowView(chat: true);
+                await Settle(); // the page fades out
+                await Task.Delay(300);
+                if (SkillsView.Visibility == Visibility.Visible)
                     return Fail();
                 bool NewSkillRefused(string name)
                 {
@@ -4732,6 +4755,7 @@ public partial class MainWindow : Window
         CloseRemoteApi();
         CloseModelHub();
         CloseModelSettings();
+        CloseSkills();
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         RefreshCardVisibility(); // the run output skips RefreshChatTarget below
