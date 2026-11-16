@@ -2548,6 +2548,35 @@ class ChatTests(unittest.TestCase):
             self.chat({"worker": "planner", "messages": self.MSGS})  # the next turn without images sends plain text
             self.assertIs(orchestrator.with_images(framed), framed)
 
+    def test_full_access_gives_a_chat_commands_as_the_user_and_files_on_every_drive(self):
+        def names(entry):
+            return {t["function"]["name"] for t in entry["tools"] or []}
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS})
+        self.assertFalse({"run_command", "write_file"} & names(log[0]))  # neither switch: a chat has no PC reach
+        ran = []
+        with tempfile.TemporaryDirectory() as out, \
+                patch.object(orchestrator, "run_unsandboxed", lambda cmd, shell, cwd, timeout: ran.append((cmd, cwd)) or (0, "hi")):
+            target = Path(out) / "note.txt"
+            replies = {"planner": [tool_call("run_command", command="echo hi"), tool_call("write_file", path=str(target), content="x"),
+                                   tool_call("read_file", path=str(orchestrator.SYSTEM32 / "drivers" / "etc" / "hosts")), "Done."]}
+            code, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS, "sandbox": {"full_access": True}}, replies)
+            self.assertEqual(code, 0)
+            self.assertTrue({"run_command", "write_file", "read_file"} <= names(log[0]))
+            self.assertIn("PC ACCESS", log[0]["system"])
+            self.assertEqual(ran, [("echo hi", str(Path.home().resolve()))])  # as the user, from the home folder
+            self.assertEqual(target.read_text(encoding="utf-8").strip(), "x")  # outside any project
+            self.assertIn("protected", log[3]["input"])  # System32 stays closed
+        # Always Ask still asks before each command; Super access alone: files, no commands
+        asked = []
+        with patch.object(orchestrator, "ask_user", lambda kind, detail, reason, key="": asked.append(kind) or False), \
+                patch.object(orchestrator, "run_unsandboxed", lambda *a: self.fail("ran a denied command")):
+            _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS, "sandbox": {"full_access": True}, "permissions": "ask"},
+                                   {"planner": [tool_call("run_command", command="del x"), "ok"]})
+        self.assertEqual(asked, ["unsandboxed"])
+        self.assertIn("DENIED", log[1]["input"])
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS, "sandbox": {"super_access": True}})
+        self.assertTrue("write_file" in names(log[0]) and "run_command" not in names(log[0]))
+
     def test_single_builtin_uses_own_settings_and_streams_reply(self):
         code, log, events, unloaded, files = self.chat({"mode": "single", "worker": "implementer", "messages": self.MSGS},
                                                        {"implementer": ["<think>hmm</think>the answer"]})

@@ -648,7 +648,8 @@ public partial class MainWindow
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
     private string ChatRequest(string role, string text) =>
         LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(message: text) with { Images = _turnImages }, title: _chatHistory.Count == 0,
-            effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers);
+            effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers,
+            permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.

@@ -3823,6 +3823,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         raise WorkflowError("Chat request needs messages ending with a user message")
     chat = prompt_text("chat.txt").strip()
     tools, handlers, note = request_extras(request)
+    pc_tools, pc_handlers, pc_note = chat_pc_access(request)  # the answering model's only, like the browser below
     turn = with_effort(config, request)  # the model calls of the turn; the quiet title call keeps `config`
     role = str(request.get("worker") or "planner")
     worker = chat_worker(config, role)
@@ -3832,13 +3833,15 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler([], request, not vision_off(turn, role))}, note)  # the answering model's only; no folders, so only web addresses
     if apps := computer_apps(request):  # the answering model's only, as in Code
         extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role))}, note)
+    if pc_tools:
+        extras = ([*extras[0], *pc_tools], {**extras[1], **pc_handlers}, note + pc_note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0
     turn_images(request, messages[-1]["content"])
     messages = blind_images(turn, role, messages)
-    messages = compact_conversation(turn, (role,), system + note, messages, extras[0], request)
+    messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
     text = chat_call(turn, role, "answer", system, messages, extras)
     if not text:
         raise WorkflowError("The model returned an empty reply")
@@ -4171,8 +4174,35 @@ RUN_COMMAND_TOOL = function_tool(
      "outside_sandbox": {"type": "boolean", "description": "Run this one command outside the sandbox, with the user's rights "
                          "(the user is asked first, every time). Only when the sandbox itself is the problem."},
      "reason": {"type": "string", "description": "Why the request is needed (shown to the user)."}}, ["command"])
+PC_COMMAND_TOOL = function_tool(
+    "run_command", "Run one cmd or PowerShell command on this PC as the user (the user turned on Full access): no sandbox, "
+    "the user's rights, the network, any folder. Starts in the user's home folder; use absolute paths or cd. Returns the "
+    "exit code and the output. API keys are left out of its environment.",
+    {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["powershell", "cmd"], "description": "Default: PowerShell."},
+     "timeout_seconds": {"type": "integer", "description": "Default 120, at most 1800."},
+     "reason": {"type": "string", "description": "Why it is needed (shown to the user when they asked to approve commands)."}}, ["command"])
 APPROVAL_LOCK = threading.Lock()
 COMMAND_MAX_TIMEOUT = 1800
+
+
+def chat_pc_access(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    """A Chat turn's reach into the PC, from the user's Command sandbox settings (the request's "sandbox"): Full access
+    gives run_command as the user (no sandbox; the request's "permissions" still decides when it asks) and the file tools
+    on every drive; Super access alone gives the file tools on every drive. Both keep with_super_access's limits (System32,
+    api_key.txt, .git, the Agent Orchestrator folder read-only). Neither: nothing. Returns (tools, handlers, note)."""
+    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+    full, everywhere = settings.get("full_access") is True, settings.get("super_access") is True
+    if not (full or everywhere):
+        return [], {}, ""
+    folders = with_super_access([{"path": str(Path.home().resolve()), "access": "write"}], {"sandbox": {"super_access": True}})
+    tools, handlers = list(CODE_TOOLS), {**code_handlers(folders), **code_write_handlers(folders)}
+    if full:
+        tools.append(PC_COMMAND_TOOL)
+        handlers["run_command"] = command_runner(folders, request)
+    reach = "run commands as the user and read and write files" if full else "read and write files"
+    note = (f"\n\nPC ACCESS: you can {reach} anywhere on this PC except Windows\\System32 (relative paths start in "
+            f"{folders[0]['path']}). Act only as the user asks, and say what you changed.")
+    return tools, handlers, note
 
 
 def command_key(command: str) -> str:

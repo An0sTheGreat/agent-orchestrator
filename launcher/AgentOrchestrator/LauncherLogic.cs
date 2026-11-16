@@ -312,8 +312,10 @@ internal static class LauncherLogic
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
     // effort: thinking effort for every model call of the turn ("" = the model's default; off, low, medium, high, max).
     // summary: the engine's stored summary of the first summaryCovers messages, which are then left out ("": none).
+    // permissions, fullAccess, superAccess: Settings > Command sandbox, as in Code; on, the chat model reaches the PC
+    // (orchestrator.chat_pc_access: Full access runs commands as the user, either one opens the file tools on every drive).
     public static string BuildChatRequest(string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
-        string effort = "", string summary = "", int summaryCovers = 0) =>
+        string effort = "", string summary = "", int summaryCovers = 0, string permissions = "safe", bool fullAccess = false, bool superAccess = false) =>
         JsonSerializer.Serialize(new
         {
             worker,
@@ -329,6 +331,8 @@ internal static class LauncherLogic
             effort,
             summary,
             summary_covers = summary.Length > 0 ? summaryCovers : 0,
+            sandbox = new { network = false, home = SandboxHome, full_access = fullAccess, super_access = superAccess },
+            permissions = permissions is "ask" or "all" ? permissions : "safe",
         }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string requestFile)
@@ -2085,6 +2089,11 @@ internal static class LauncherLogic
             throw new InvalidOperationException("Full access request failed.");
         if ((bool)code["sandbox"]!["super_access"]! || !(bool)JsonNode.Parse(BuildCodeRequest("chat", "planner", chat, @"Y:pp", [], superAccess: true))!["sandbox"]!["super_access"]!)
             throw new InvalidOperationException("Super access request failed.");
+        var chatOff = JsonNode.Parse(BuildChatRequest("planner", chat))!;
+        var chatOn = JsonNode.Parse(BuildChatRequest("planner", chat, permissions: "ask", fullAccess: true, superAccess: true))!;
+        if ((bool)chatOff["sandbox"]!["full_access"]! || (bool)chatOff["sandbox"]!["super_access"]! || (string)chatOff["permissions"]! != "safe" ||
+            !(bool)chatOn["sandbox"]!["full_access"]! || !(bool)chatOn["sandbox"]!["super_access"]! || (string)chatOn["permissions"]! != "ask" || (string)chatOn["sandbox"]!["home"]! != SandboxHome)
+            throw new InvalidOperationException("Chat PC access request failed.");
         if (VersionText("1.1.0+0123456789abcdef") != "Version 1.1.0 (0123456)" || VersionText("1.1.0") != "Version 1.1.0" ||
             !VersionText().StartsWith("Version 1.1.0"))
             throw new InvalidOperationException("The version text failed.");
