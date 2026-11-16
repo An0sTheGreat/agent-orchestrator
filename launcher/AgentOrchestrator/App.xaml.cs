@@ -25,6 +25,7 @@ public partial class App : Application
             RemoteServer.SelfTest();
             RemoteTunnel.SelfTest();
             ApiKeys.SelfTest();
+            AgentOrchestrator.MainWindow.NotifySelfTest();
             Shutdown(0);
             return;
         }
