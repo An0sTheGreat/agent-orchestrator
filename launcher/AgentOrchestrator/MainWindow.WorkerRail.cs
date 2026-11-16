@@ -184,6 +184,18 @@ public partial class MainWindow
             !Visuals(RailCard).OfType<FrameworkElement>().Any(f => f.Tag as string == "CardRoot" && f.DataContext == planner) ||
             !Visuals(RailCard).OfType<Button>().Any(b => b.Tag as string == "ModelSettingsGear"))
             return Fail("hover card");
+        // A context stack the open card does not touch stays put; one it would cover slides left, its top level with the card's.
+        if (RailCardFace() is { } face)
+            foreach (var pin in new FrameworkElement[] { CodeContextPin, ChatContextPin }.Where(p => p.IsVisible && ContextCards(p).Any()))
+            {
+                var shift = pin.RenderTransform as TranslateTransform;
+                var (sx, sy) = (shift?.X ?? 0, shift?.Y ?? 0);
+                var faceTop = face.TranslatePoint(new Point(), this).Y;
+                var cardsBottom = ContextCards(pin).Max(c => c.TranslatePoint(new Point(0, c.ActualHeight), this).Y) - sy;
+                var pinTop = pin.TranslatePoint(new Point(), this).Y;
+                if (cardsBottom <= faceTop ? sx != 0 || sy != 0 : sx >= 0 || Math.Abs(pinTop - faceTop) > 1)
+                    return Fail($"context dodge: cards bottom {cardsBottom:0.#}, card top {faceTop:0.#}, pin top {pinTop:0.#}, slide {sx:0.#},{sy:0.#}");
+            }
         snap("32-worker-rail", null);
         snap("32-worker-rail-card", (FrameworkElement)RailPopup.Child);
         var theme = _settings.Theme;

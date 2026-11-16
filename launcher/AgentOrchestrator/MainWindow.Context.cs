@@ -293,30 +293,61 @@ public partial class MainWindow
     private void CodeContextPin_SizeChanged(object sender, SizeChangedEventArgs e) => ReserveCodeContextStack();
 
     // While a collapsed-rail worker card is open, a context stack (Code's or Chat's) that the card would cover slides left out of
-    // its way, and back when the card closes. A stack the card does not overlap stays where it is.
+    // its way, its top level with the card's, and back when the card closes. A stack the card does not overlap (a collapsed one
+    // above it) stays where it is. The card's bounds are its visible face (CardRoot), not the popup's transparent frame.
     private void DodgeRailCard(bool open)
     {
         foreach (var pin in new FrameworkElement[] { CodeContextPin, ChatContextPin })
         {
             if (pin.RenderTransform is not TranslateTransform shift)
                 pin.RenderTransform = shift = new TranslateTransform();
-            var by = 0.0;
-            if (open && pin.IsVisible && RailPopup.Child is FrameworkElement railCard && railCard.IsVisible)
+            var (byX, byY) = (0.0, 0.0);
+            if (open && pin.IsVisible && RailCardFace() is { } railCard)
             {
                 var scale = VisualTreeHelper.GetDpi(this).DpiScaleX;
                 var card = (Left: railCard.PointToScreen(new Point()).X, Top: railCard.PointToScreen(new Point()).Y,
                             Bottom: railCard.PointToScreen(new Point(0, railCard.ActualHeight)).Y);
-                var rest = shift.X * scale; // where the stack rests: its position without the current slide
-                var left = pin.PointToScreen(new Point()).X - rest;
-                var right = pin.PointToScreen(new Point(pin.ActualWidth, 0)).X - rest;
-                var top = pin.PointToScreen(new Point()).Y;
-                var bottom = pin.PointToScreen(new Point(0, pin.ActualHeight)).Y;
-                var overlaps = card.Left < right && card.Top < bottom && card.Bottom > top;
-                if (overlaps)
-                    by = Math.Min(0, (card.Left - right) / scale - 12);
+                var (restX, restY) = (shift.X * scale, shift.Y * scale); // where the stack rests: its position without the current slide
+                var right = pin.PointToScreen(new Point(pin.ActualWidth, 0)).X - restX;
+                var top = pin.PointToScreen(new Point()).Y - restY;
+                // the cards' own bottom: a stacked card's 6 px gap below it is not the card
+                var faces = ContextCards(pin).ToList();
+                var bottom = (faces.Count > 0 ? faces.Max(f => f.PointToScreen(new Point(0, f.ActualHeight)).Y) : pin.PointToScreen(new Point(0, pin.ActualHeight)).Y) - restY;
+                if (card.Left < right && card.Top < bottom && card.Bottom > top)
+                    (byX, byY) = (Math.Min(0, (card.Left - right) / scale - 12), (card.Top - top) / scale);
             }
-            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(by, TimeSpan.FromMilliseconds(200)) { EasingFunction = Decelerate });
+            var ease = TimeSpan.FromMilliseconds(200);
+            shift.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(byX, ease) { EasingFunction = Decelerate });
+            shift.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(byY, ease) { EasingFunction = Decelerate });
         }
+    }
+
+    private static IEnumerable<FrameworkElement> ContextCards(DependencyObject d)
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+        {
+            var c = VisualTreeHelper.GetChild(d, i);
+            if (c is FrameworkElement { Tag: "ContextCard", IsVisible: true } f)
+                yield return f;
+            else
+                foreach (var inner in ContextCards(c))
+                    yield return inner;
+        }
+    }
+
+    // The open rail worker card's visible face (RailCardTemplate's CardRoot), or null when it is closed.
+    private FrameworkElement? RailCardFace()
+    {
+        if (!RailPopup.IsOpen || RailPopup.Child is not FrameworkElement frame || !frame.IsVisible)
+            return null;
+        static FrameworkElement? Find(DependencyObject d)
+        {
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(d); i++)
+                if (VisualTreeHelper.GetChild(d, i) is var c && (c is FrameworkElement { Tag: "CardRoot" } f ? f : Find(c)) is { } hit)
+                    return hit;
+            return null;
+        }
+        return Find(frame) ?? frame;
     }
 
     private void RefreshContextPins()
