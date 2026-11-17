@@ -5584,6 +5584,7 @@ class ExtrasTests(unittest.TestCase):
             self.assertIn("SKILLS\n", system)
             self.assertIn("- gardening: Plant care steps\n- bare: (no description)\n- noted: Saved with a BOM", system)
             self.assertIn("Water weekly.", handlers["load_skill"]("gardening"))
+            self.assertIn(f"(skill folder: {skill})", handlers["load_skill"]("gardening"))  # so its scripts can be run
             self.assertEqual(handlers["load_skill"]("gardening", "zones.md"), "Zone 3-8")
             for args in (("gardening", "../secret.txt"), ("gardening", str(Path(folder) / "secret.txt")), ("nobody",), ("gardening", "none.md")):
                 with self.subTest(args), self.assertRaises(orchestrator.WorkflowError):

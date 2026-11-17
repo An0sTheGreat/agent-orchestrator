@@ -3732,7 +3732,8 @@ def request_extras(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[
             target = (folder / (str(file or "").strip() or "SKILL.md")).resolve()
             if folder.resolve() not in target.parents or not target.is_file():
                 raise WorkflowError(f"no file {file!r} in skill {name!r}")
-            return target.read_bytes()[:CODE_MAX_READ].decode("utf-8", errors="replace")
+            text = target.read_bytes()[:CODE_MAX_READ].decode("utf-8", errors="replace")
+            return text if file else f"(skill folder: {folder})\n\n{text}"  # where its scripts are
         handlers["load_skill"] = load_skill
     if note := EMOJI_NOTES.get(str(request.get("emoji") or "")):
         notes.append(note)

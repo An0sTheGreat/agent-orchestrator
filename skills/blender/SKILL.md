@@ -1,20 +1,39 @@
 ---
 name: blender
-description: "Use when the user calls blender, /blender or $blender, or asks to model, render, convert or batch-process 3D files (.blend, .glb/.gltf, .fbx, .obj) with Blender, without opening its window."
+description: "Use when the user calls blender, /blender or $blender, or asks to model, render, convert or batch-process 3D files (.blend, .glb/.gltf, .fbx, .obj) with Blender, or to change the scene open in the user's Blender."
 ---
 
 # /blender
 
 ## Purpose
-Drive Blender headless: build or change scenes with a Python (`bpy`) script, render stills or animations, and convert or clean up 3D files.
+Drive Blender with Python (`bpy`): change the scene the user has open, or work headless to build scenes, render, and convert or clean up 3D files.
 
-## Find Blender
+## The scene the user has open
+When the user means the Blender on their screen ("my scene", "the open file", "what I'm looking at"), do NOT start `blender.exe`: a new process has no window and cannot see their scene. Send code to the open Blender instead, through the "MCP for Blender" add-on's server (localhost:9876), with `live.py` from this skill's folder (the folder this SKILL.md is in):
+
+```
+python "<skill folder>\live.py" --ping
+python "<skill folder>\live.py" tools\edit.py
+python "<skill folder>\live.py" -c "import bpy; print(bpy.data.filepath, [o.name for o in bpy.data.objects])"
+```
+
+- Run it with `outside_sandbox` (reason: "talks to the open Blender on localhost"): the command sandbox cannot reach localhost. Not needed when commands already run outside the sandbox (full access).
+- The code runs inside the open Blender, in its live scene, and changes show on screen right away; `print()` output is the reply. Python errors come back with a traceback.
+- If ping fails: ask the user to start the server in Blender (3D view > N panel > BlenderMCP > Connect) or to enable the "MCP for Blender" add-on. Never fall back to a headless run on a copy without saying so.
+- Inspect first (`bpy.data.filepath`, object names, the active object, the mode), then change. Many operators need a mode or a selection: set them explicitly. Prefer the data API over `bpy.ops` for edits.
+- Do not save (`bpy.ops.wm.save_mainfile`) unless the user asks; they can undo or save in Blender themselves.
+- To see the result, render to a file under the project (`scene.render.filepath`, `bpy.ops.render.render(write_still=True)`) or take a screenshot of the screen, and look at it.
+
+## Headless (no window)
+For new files, renders, conversions and batches, run Blender itself in the background:
+
+### Find Blender
 Blender is usually not on PATH. Look, newest version first:
 - `C:\Program Files\Blender Foundation\Blender <version>\blender.exe` (list the folder with `dir`)
 - `%LOCALAPPDATA%\Programs\Blender Foundation\...`, or a Steam copy under `...\steamapps\common\Blender\blender.exe`
 Use the newest unless the project names a version. Say which one you used.
 
-## Run
+### Run
 Write the script into the project, then run (shell `cmd`):
 
 ```
@@ -29,7 +48,7 @@ Write the script into the project, then run (shell `cmd`):
 - "Failed to remove ... extensions" lines come from the user's extensions folder; they are harmless.
 - Rendering on the GPU (Cycles with OptiX or CUDA) may not work in the command sandbox; if a render is very slow or fails there, ask for `outside_sandbox` with that reason.
 
-## Script template
+### Script template
 
 ```python
 import bpy, os, sys
