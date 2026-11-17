@@ -1334,8 +1334,8 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
         args += ["-b", str(auto_load["n_batch"])]
     if "n_ubatch" in auto_load:
         args += ["-ub", str(auto_load["n_ubatch"])]
-    if auto_load.get("reasoning_budget") == 0:
-        args += ["--reasoning-budget", "0"]
+    if isinstance(budget := auto_load.get("reasoning_budget"), int) and budget >= 0:
+        args += ["--reasoning-budget", str(budget)]  # 0: no thinking; N: thinking ends after N tokens (unset or -1: no cap)
     if spec := speculative_type(model_file, auto_load.get("speculative_type")):
         args += ["--spec-type", spec]
         if spec != "none" and "spec_draft_n_max" in auto_load:

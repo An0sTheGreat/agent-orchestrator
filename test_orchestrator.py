@@ -5791,10 +5791,9 @@ class LlamaCppTests(unittest.TestCase):
             "-m", "m.gguf", "--host", "127.0.0.1", "--port", "8899", "--alias", self.PATH, "-c", "32768", "-ngl", "999", "--jinja",
             "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "-b", "1024", "-ub", "256", "--reasoning-budget", "0",
             "--flash-attn", "on"])
-        for auto, layers in (({"gpu_layers": 20, "reasoning_budget": 8192}, "20"), ({}, "999")):
+        for auto, layers, tail in (({"gpu_layers": 20, "reasoning_budget": 8192}, "20", ["--reasoning-budget", "8192"]), ({}, "999", [])):
             args = orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "max_seq_length": 4096, **auto}, 9000)
-            self.assertEqual(args[-5:], ["-c", "4096", "-ngl", layers, "--jinja"])
-            self.assertNotIn("--reasoning-budget", args)
+            self.assertEqual(args[-5 - len(tail):], ["-c", "4096", "-ngl", layers, "--jinja", *tail])  # a budget caps thinking
 
     def test_speculative_decoding_choice_reaches_the_server(self):
         mtp, plain = self.tmp / "mtp.gguf", self.tmp / "plain.gguf"
