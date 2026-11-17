@@ -35,6 +35,7 @@ internal static class ModelOptions
         ["top_p"] = "Top P", ["top_k"] = "Top K", ["min_p"] = "Min P", ["repetition_penalty"] = "Repetition penalty", ["presence_penalty"] = "Presence penalty",
         ["frequency_penalty"] = "Frequency penalty", ["max_tokens"] = "Max tokens", ["seed"] = "Seed", ["stop"] = "Stop strings",
         ["enable_thinking"] = "Thinking", ["reasoning_effort"] = "Reasoning effort", ["timeout_seconds"] = "Timeout (seconds)", ["max_tool_call_chars"] = "Max tool call (characters)",
+        ["max_tool_steps"] = "Tool calls per reply", ["reasoning_max_tokens"] = "Thinking budget (API)", ["send_extra_body"] = "Send all sampling (API)",
     };
 
     // What each option does, for its hover tip in the worker settings (about 20 words; the tip adds the default shown).
@@ -79,6 +80,9 @@ internal static class ModelOptions
         ["reasoning_effort"] = "How hard a model that takes an effort level thinks: low is quick, high is thorough and slower.",
         ["timeout_seconds"] = "How long the orchestrator waits for this worker's reply before it gives up, in seconds.",
         ["max_tool_call_chars"] = "The longest tool call (such as a file write) the model may send, in characters. Past it the call is cut off and the model is told to send the work in smaller pieces. Stops a model looping inside one call. About 60000 suits a small model; empty or 0 = no limit.",
+        ["max_tool_steps"] = "How many tool calls (reads, edits, commands, searches) the model may make in one reply before it is stopped. Raise it for long jobs; each call costs a round trip.",
+        ["reasoning_max_tokens"] = "The most tokens an API model may spend thinking in one reply, sent as reasoning.max_tokens (OpenRouter). Caps cost and wait; replaces Reasoning effort when set.",
+        ["send_extra_body"] = "Also send Top K, Min P, Repetition penalty and the Thinking switch to the API. OpenRouter and llama.cpp-style servers take them; some providers reject unknown fields."
     };
 
     private static readonly string[] CacheTypes = ["f16", "bf16", "q8_0", "q4_0", "q4_1", "q5_0", "q5_1", "iq4_nl", "f32"];
@@ -127,7 +131,13 @@ internal static class ModelOptions
         new("reasoning_effort", "sampling", Kind.Choice, "For models that take an effort level", Choices: ["none", "minimal", "low", "medium", "high", "max", "xhigh"]),
         new("timeout_seconds", "role", Kind.Int, "Seconds to wait for a reply, 1 to 86400", 1, 86400),
         new("max_tool_call_chars", "role", Kind.Int, "Longest tool call, in characters; empty or 0 = no limit", 0, Big),
+        new("max_tool_steps", "role", Kind.Int, "Tool calls in one reply before it stops; empty = the app's setting (30)", 1, 10000),
+        new("reasoning_max_tokens", "sampling", Kind.Int, "API models: most tokens spent thinking per reply (OpenRouter reasoning.max_tokens)", 1, Big),
+        new("send_extra_body", "role", Kind.Bool, "API models: also send Top K, Min P, Repetition penalty and Thinking; empty = off"),
     ];
+
+    // Options that only mean something for a remote API model: the window hides them for a local one.
+    public static readonly HashSet<string> ApiOnly = ["reasoning_max_tokens", "send_extra_body"];
 
     private static JsonObject? Container(JsonObject role, string target, bool create)
     {

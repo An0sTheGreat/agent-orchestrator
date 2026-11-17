@@ -5561,6 +5561,16 @@ class ExtrasTests(unittest.TestCase):
         self.assertIn("Do not use emoji", orchestrator.EMOJI_NOTES["none"])
         self.assertEqual(orchestrator.request_extras({"emoji": "lots"})[2], "")
 
+    def test_model_settings_step_cap_and_api_thinking_budget(self):
+        config = {"max_tool_steps": 30, "roles": {"planner": {"max_tool_steps": 120}, "reviewer": {}}}
+        self.assertEqual(orchestrator.step_cap(config, "planner", "max_tool_steps", 30), 120)  # the role's own wins
+        self.assertEqual(orchestrator.step_cap(config, "reviewer", "max_tool_steps", 30), 30)
+        self.assertEqual(orchestrator.step_cap({}, "x", "max_lead_steps", 200), 200)
+        body = {"model": "m", "reasoning_effort": "high", "reasoning_max_tokens": 4000}
+        self.assertEqual(orchestrator.reasoning_budget(body, True), {"model": "m", "reasoning": {"max_tokens": 4000}})
+        self.assertEqual(orchestrator.reasoning_budget(body, False), {"model": "m", "reasoning_effort": "high"})  # local: the load option
+        self.assertNotIn("reasoning", orchestrator.reasoning_budget({**body, "enable_thinking": False}, True))  # off wins
+
     def test_request_extras_switches_and_skills(self):
         names = lambda request: [t["function"]["name"] for t in orchestrator.request_extras(request)[0]]
         self.assertEqual(orchestrator.request_extras({}), ([], {}, ""))

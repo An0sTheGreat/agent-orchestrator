@@ -843,6 +843,8 @@ public partial class MainWindow
             localPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
                 hidden.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
+            foreach (var key in ModelOptions.ApiOnly.Where(rows.ContainsKey))
+                rows[key].Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
             modelBox.IsEnabled = !remote;
             if (advanced.IsChecked != true) // the Advanced switch shows the load and output groups; Sampling and the prompts always show
                 foreach (var name in AdvancedGroups)

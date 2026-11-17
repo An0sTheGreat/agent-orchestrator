@@ -380,6 +380,7 @@ class ApiClient:
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
         body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))), **sampling}
+        body = reasoning_budget(body, self.remote)
         if self.remote and (urlsplit(self.base_url).hostname or "").endswith("openrouter.ai") and body.get("enable_thinking") is False:
             body.pop("reasoning_effort", None)
             body["reasoning"] = {"effort": "none"}  # OpenRouter's switch for no thinking (enable_thinking is llama.cpp's)
@@ -2673,7 +2674,7 @@ def run_agent(
     model = client.ensure_model(role, interactive)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     tools = IMPLEMENTER_TOOLS if writable else REVIEWER_TOOLS
-    max_steps = int(config.get("max_tool_steps", 30))
+    max_steps = step_cap(config, role, "max_tool_steps", 30)
     validations = config.get("validation_commands", {})
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
@@ -4054,6 +4055,25 @@ def code_write_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
     return {"write_file": write_file, "replace_text": replace_text}
 
 
+def step_cap(config: dict[str, Any], role: str, key: str, default: int) -> int:
+    """A tool-step cap: the role's own (Model settings > Tool calls per reply), else config's, else `default`."""
+    return int(((config.get("roles") or {}).get(role) or {}).get(key) or config.get(key, default))
+
+
+def reasoning_budget(body: dict[str, Any], remote: bool) -> dict[str, Any]:
+    """`body` with its "reasoning_max_tokens" (Model settings > Thinking budget, API) turned into OpenRouter's
+    reasoning.max_tokens for a remote API, in place of reasoning_effort; a local model drops it (llama-server's budget
+    is the load option). Thinking switched off wins."""
+    if "reasoning_max_tokens" not in body:
+        return body
+    body = dict(body)
+    tokens = body.pop("reasoning_max_tokens")
+    if remote and body.get("enable_thinking") is not False and "reasoning" not in body:
+        body.pop("reasoning_effort", None)
+        body["reasoning"] = {"max_tokens": int(tokens)}
+    return body
+
+
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
               stop: Any = None, nudge: Any = "") -> str:
@@ -4065,7 +4085,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
-    max_steps, name, prev_text_calls, cutoffs, nudges = int(config.get(cap[0], cap[1])), display_name(config, role), None, 0, 0
+    max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap), display_name(config, role), None, 0, 0
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -5214,7 +5234,7 @@ def pi_command() -> list[str]:
 def pi_model_config(client: ApiClient, model: str, sampling: dict[str, Any], n_ctx: int) -> dict[str, Any]:
     """models.json for Pi: one provider "ao" at the role's endpoint (the key comes from AO_PI_KEY), serving the loaded
     model with the role's sampling, thinking switch and output limit sent on every request, as this engine sends them."""
-    params = {key: value for key, value in sampling.items() if key != "max_tokens"}
+    params = reasoning_budget({key: value for key, value in sampling.items() if key != "max_tokens"}, client.remote)
     if client.remote and not client.send_extra_body:
         params = {key: value for key, value in params.items() if key not in LOCAL_ONLY_FIELDS}
     if client.thinking_off and not client.remote:
