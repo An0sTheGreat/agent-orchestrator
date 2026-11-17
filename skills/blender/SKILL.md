@@ -9,7 +9,7 @@ description: "Use when the user calls blender, /blender or $blender, or asks to 
 Drive Blender with Python (`bpy`): change the scene the user has open, or work headless to build scenes, render, and convert or clean up 3D files.
 
 ## The scene the user has open
-When the user means the Blender on their screen ("my scene", "the open file", "what I'm looking at"), do NOT start `blender.exe`: a new process has no window and cannot see their scene. Send code to the open Blender instead, through the "MCP for Blender" add-on's server (localhost:9876), with `live.py` from this skill's folder (the folder this SKILL.md is in):
+When the user means the Blender on their screen ("my scene", "the open file", "the open blender scene", "what I'm looking at"), do NOT start `blender.exe`, do NOT open Blender with the computer tool, and do NOT save a copy to work on: each of those is a new, empty or separate scene. "Headless" together with "the open scene" means exactly this: scripts run inside the open Blender through `live.py`, no clicking. Send code to the open Blender instead, through the "MCP for Blender" add-on's server (localhost:9876), with `live.py` from this skill's folder (the folder this SKILL.md is in):
 
 ```
 python "<skill folder>\live.py" --ping

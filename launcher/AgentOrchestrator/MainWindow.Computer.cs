@@ -547,6 +547,10 @@ public partial class MainWindow
                     return ($"ERROR: you already use \"{TitleOf(_cuWindow)}\" in this reply; only one window per reply", null);
                 if (!File.Exists(exe))
                     return ($"ERROR: {exe} is no longer there; ask the user to add the application again", null);
+                // the same program already open from another install (Blender 5.3 open, 5.2 approved): starting a second,
+                // empty copy is never what the user meant
+                if (AppWindows().FirstOrDefault(w => Path.GetFileName(w.Exe).Equals(Path.GetFileName(exe), StringComparison.OrdinalIgnoreCase)) is { Hwnd: not 0 } other)
+                    return ($"ERROR: \"{other.Title}\" is already open, from {other.Exe}, which is not the approved {exe}; do not start another copy. Ask the user to add that one in Options > General > Computer use, or work without the computer tool", null);
                 Process.Start(new ProcessStartInfo(exe) { UseShellExecute = true });
                 for (var i = 0; i < 60 && target == IntPtr.Zero; i++)
                 {
