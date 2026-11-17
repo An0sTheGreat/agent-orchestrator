@@ -4671,6 +4671,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
     grants[str(temp)] = "write"
     if skills := skills_root(request):
         grants[str(skills)] = "read"  # read and run, never write: a skill's own files stay as the user made them
+    if (bundled := ROOT / "skills").is_dir() and not bundled.is_symlink():
+        grants[str(bundled)] = "read"  # the built-in skills: only this subfolder, never the app folder's config or keys
     synced: list[str] = []  # the container's SID and the default shell, once its grants are synced this turn
     key_file = ROOT / "api_key.txt"
     secrets = sandbox.secret_values([load_text(key_file).strip()] if key_file.is_file() else [])
