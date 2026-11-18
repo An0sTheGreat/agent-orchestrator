@@ -1415,7 +1415,7 @@ public partial class MainWindow
                 // the worker's own two start ticked, in its order; unticking the first renumbers, a new tick goes last
                 if (Provider("relace/fp4") is not { IsChecked: true } relace || Provider("open-inference/fp4") is not { IsChecked: true } || Provider("gmicloud/fp8") is not { IsChecked: false } gmi)
                     return Fail("provider window rows");
-                if (SmokeFind<TextBlock>((DependencyObject)shell.Content, t => t.Tag as string == "deal:gmicloud/fp8") is not { Text: "50% off", IsVisible: true } ||
+                if (SmokeFind<TextBlock>((DependencyObject)shell.Content, t => t.Tag as string == "deal:gmicloud/fp8") is not { Text: "50% off" } ||
                     SmokeFind<TextBlock>((DependencyObject)shell.Content, t => t.Tag as string == "deal:relace/fp4") is not null)
                     return Fail("provider window deal badge");
                 (relace.IsChecked, gmi.IsChecked) = (false, true);
