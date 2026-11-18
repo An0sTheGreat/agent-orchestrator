@@ -939,7 +939,8 @@ public partial class MainWindow
             if (_settings.ModelPresets.Any(Mine))
             {
                 menu.Items.Add(new Separator());
-                var delete = new MenuItem { Header = "Delete preset" };
+                // A second menu, not a submenu: the app's menu item template has none (DeletePresetMenu does the same)
+                var deleteMenu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Bottom };
                 foreach (var preset in _settings.ModelPresets.Where(Mine).ToList())
                 {
                     menu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
@@ -953,7 +954,7 @@ public partial class MainWindow
                             promptBox.Text = preset.SystemPrompt;
                         MakeActive(preset.Name);
                     }));
-                    delete.Items.Add(Item(preset.Name, () =>
+                    deleteMenu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
                     {
                         _settings.ModelPresets.Remove(preset);
                         _settings.Save();
@@ -961,7 +962,11 @@ public partial class MainWindow
                     }));
                 }
                 menu.Items.Add(new Separator());
-                menu.Items.Add(delete);
+                menu.Items.Add(Item("Delete preset…", () =>
+                {
+                    presets.ContextMenu = deleteMenu;
+                    Dispatcher.InvokeAsync(() => deleteMenu.IsOpen = true, System.Windows.Threading.DispatcherPriority.Background);
+                }));
             }
             presets.ContextMenu = menu;
             menu.IsOpen = true;
@@ -1391,9 +1396,13 @@ public partial class MainWindow
             {
                 var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
-                var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header);
-                (sub is null ? item : item.Items.OfType<MenuItem>().First(i => (string)i.Header == sub)).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 button.ContextMenu.IsOpen = false;
+                if (sub is not null) // the item opened a second menu
+                {
+                    button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == sub).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                    button.ContextMenu.IsOpen = false;
+                }
             }
             SmokeField("temperature").Text = "0.21";
             SmokeField("top_k").Text = "7";
@@ -1425,7 +1434,7 @@ public partial class MainWindow
             if (SmokeField("temperature").Text != "0.21" || SmokeField("top_k").Text != "7" || SmokeField("n_batch").Text != "" || SmokeField("top_p").Text != "0.95" ||
                 SmokeField("ChatSystemPrompt").Text != "Smoke prompt" || !File.ReadAllBytes(config).SequenceEqual(bytes))
                 return Fail("apply a preset");
-            Preset("Delete preset", "Smoke options");
+            Preset("Delete preset…", "Smoke options");
             if (_settings.ModelPresets.Any(p => p.Name == "Smoke options"))
                 return Fail("delete a preset");
             SmokeClick(SmokeButton("Revert"));
