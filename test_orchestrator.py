@@ -3321,6 +3321,24 @@ class CodeTests(unittest.TestCase):
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("key", keys="Enter"))
 
+    def test_the_leads_reply_is_written_to_the_project_as_it_streams(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        live = orchestrator.ThinkingFile(folder, "planner")
+        target = Path(folder) / ".agent-orchestrator" / "thinking.md"
+        live.on("delta", {"role": "planner", "kind": "thinking", "text": "PLAN A"})
+        live.on("delta", {"role": "implementer", "kind": "thinking", "text": "WORKER"})  # a worker's is not the lead's
+        self.assertIn("PLAN A", target.read_text(encoding="utf-8"))
+        live.on("delta", {"role": "planner", "kind": "text", "text": " and text"})
+        live.on("done", {"role": "planner"})
+        self.assertTrue(target.read_text(encoding="utf-8").rstrip().endswith("PLAN A and text"))
+        live.on("delta", {"role": "planner", "kind": "thinking", "text": "PLAN B"})  # the next reply replaces it
+        live.on("done", {"role": "planner"})
+        text = target.read_text(encoding="utf-8")
+        self.assertTrue("PLAN B" in text and "PLAN A" not in text and "WORKER" not in text)
+        self.assertFalse(orchestrator.looping("\n".join(f"step {n}" for n in range(60))))
+        self.assertTrue(orchestrator.looping(("plan\n" + "<|channel>thought\n" * 60)[-orchestrator.LOOP_SPAN:]))
+
     def test_computer_use_asks_first_unless_the_user_asked_for_it(self):
         # Qwen opened the user's Brave unasked: the first action past 'apps' asks in a popup ("approval", kind computer);
         # yes holds for the reply, no refuses every later call without asking again. Asking for it in words skips the popup.
@@ -4303,11 +4321,20 @@ for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
     elif step == "toolchars":  # a tool call's arguments streaming in: arg characters, 1,000 at a time
         for _ in range(arg // 1000):
             out({"type": "message_update", "assistantMessageEvent": {"type": "toolcall_delta", "contentIndex": 0, "delta": "x" * 1000}})
+    elif step == "think":  # thinking streamed: arg lines, one delta each
+        for line in arg:
+            out({"type": "message_update", "assistantMessageEvent": {"type": "thinking_delta", "delta": line + chr(10)}})
+    elif step == "cutoff":  # a reply that used the whole output limit while thinking
+        out({"type": "message_end", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "..."}],
+                                                "stopReason": "length", "usage": {"output": 32768}}})
     elif step == "aborted":
         out({"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "aborted", "usage": {}}})
     elif step == "note":  # the follow-up Pi delivers after an abort: its user message
         out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": taken["follow_up"]["message"]}]}})
         open(os.environ["FAKE_PI_NOTEFILE"], "w").write(taken["follow_up"]["message"])
+    elif step == "note_prompt":  # the engine's continuation prompt, delivered: its user message
+        out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": taken["prompt"]["message"]}]}})
+        open(os.environ["FAKE_PI_NOTEFILE"], "w").write(taken["prompt"]["message"])
     elif step == "settle":
         out({"type": "agent_settled"})
     elif step == "drain":  # the types of every command the engine sent that no "take" asked for, once it closes Pi's stdin
@@ -4374,6 +4401,42 @@ class PiSteerTests(unittest.TestCase):
         self.assertIn("cut off after 4,000 characters", note)
         self.assertIn("limit of 3,000", note)
         self.assertEqual([d for e, d in events if e == "steered"], [])  # the note is not one of the launcher's steers
+
+    def test_a_looping_reply_is_stopped_saved_and_continued(self):
+        # Gemma 12B thought "<|channel>thought" ~10,000 times until the output limit: the repeating reply is aborted as it
+        # loops, its reasoning saved in the project (repeats collapsed), and the model told to continue from that file
+        steps = [["take", "prompt"], ["user", None], ["start", None], ["think", ["PLAN: write index.html"] + ["<|channel>thought"] * 80],
+                 ["take", "follow_up"], ["take", "abort"], ["aborted", None], ["note", None], ["start", None], ["say", {"text": "Done."}],
+                 ["ctx", None], ["ctx", None], ["settle", None]]
+        code, events, _ = self.run_fake(steps)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+        note = (self.cfg / "note.txt").read_text(encoding="utf-8")
+        self.assertIn("started repeating", note)
+        saved = list((Path(self.folders[0]["path"]) / ".agent-orchestrator").glob("cut-reply-*.md"))
+        self.assertEqual(len(saved), 1)
+        self.assertIn(str(saved[0]), note)
+        text = saved[0].read_text(encoding="utf-8")
+        self.assertIn("PLAN: write index.html", text)
+        self.assertEqual(text.count("<|channel>thought"), 1)
+
+    def test_a_reply_cut_off_while_thinking_is_saved_and_continued(self):
+        # the whole output limit spent thinking, nothing written: once the run settles a new prompt points to the saved reasoning
+        steps = [["take", "prompt"], ["user", None], ["start", None], ["think", ["ARCHITECTURE: js/main.js, js/dungeon.js"]],
+                 ["cutoff", None], ["ctx", None], ["settle", None], ["take", "prompt"], ["note_prompt", None], ["start", None],
+                 ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
+        code, events, _ = self.run_fake(steps)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+        note = (self.cfg / "note.txt").read_text(encoding="utf-8")
+        self.assertIn("whole output limit (32,768 tokens)", note)
+        saved = list((Path(self.folders[0]["path"]) / ".agent-orchestrator").glob("cut-reply-*.md"))
+        self.assertIn("ARCHITECTURE: js/main.js", saved[0].read_text(encoding="utf-8"))
+        self.assertEqual((saved[0].parent / ".gitignore").read_text(encoding="utf-8").strip(), "*")
+        # a third cut-off in a row fails the turn with what to change instead of looping forever
+        cut = [["start", None], ["think", ["x"]], ["cutoff", None], ["ctx", None], ["settle", None]]
+        steps = [["take", "prompt"], ["user", None], *cut, ["take", "prompt"], ["note_prompt", None], *cut, ["take", "prompt"],
+                 ["note_prompt", None], *cut]
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "output limit 3 times"):
+            self.run_fake(steps)
 
     def test_a_tool_call_within_the_role_limit_or_with_no_limit_is_left_alone(self):
         sent = self.cfg / "sent.json"

@@ -24,3 +24,5 @@ PROJECT.md:
 Helpers (optional):
 - delegate hands a self-contained piece to a worker with a fresh context: "reviewer" checks work and reports problems without changing anything, "implementer" makes a change. Use it only when the user asks for it or when an independent check or a separate piece would really improve the result; never just because the work is large or PROJECT.md exists. Keep anything that depends on this conversation for yourself.
 - A worker knows only what you send it, so fill in its fields: the objective, the context (requirements, the user's constraints, your research findings and decisions), the files and the acceptance criteria. Read its report critically; it is not proof. You stay in charge afterwards.
+
+- Your latest reply (thinking, then text) is saved as it streams in .agent-orchestrator/thinking.md in the project, and a reply cut off before it acted in .agent-orchestrator/cut-reply-*.md. After a compaction, an error or a restart, read them to pick up your plan instead of starting over.

@@ -173,7 +173,51 @@ EVENTS = False  # set by --events: structured "@@AO {json}" lines for the launch
 EMIT_LOCK = threading.RLock()  # the Pi engine prints from its reader, stderr and gateway threads: see LineAtomic
 
 
+def notes_dir(folder: str | Path) -> Path:
+    """The project's .agent-orchestrator folder (the lead's live thinking, cut-off replies), ignored by git."""
+    path = Path(folder) / ".agent-orchestrator"
+    path.mkdir(parents=True, exist_ok=True)
+    if not (path / ".gitignore").exists():
+        save_text(path / ".gitignore", "*\n")
+    return path
+
+
+class ThinkingFile:
+    """The lead's current reply (thinking, then text) written to the project as it streams, at most every 2 s, and
+    replaced when its next reply starts: a crash, a cut-off or a compaction leaves the plan where the model can read it."""
+
+    def __init__(self, folder: str, role: str):
+        self.folder, self.role, self.text, self.fresh, self.saved_at = folder, role, "", False, 0.0
+
+    def on(self, event: str, data: dict[str, Any]) -> None:
+        if data.get("role") != self.role:
+            return
+        if event == "done":
+            self.fresh = True
+            self.write()
+        elif event == "delta" and data.get("kind") in ("thinking", "text"):
+            if self.fresh:
+                self.text, self.fresh = "", False
+            self.text += str(data.get("text") or "")
+            if time.time() - self.saved_at > 2:
+                self.write()
+
+    def write(self) -> None:
+        if not self.text.strip():
+            return
+        try:
+            save_text(notes_dir(self.folder) / "thinking.md", "# The lead's latest reply as it was written (thinking, then text)\n\n" + self.text)
+        except OSError:
+            pass
+        self.saved_at = time.time()
+
+
+THINKING: ThinkingFile | None = None  # set for a Code turn's lead
+
+
 def emit(event: str, **data: Any) -> None:
+    if THINKING is not None:
+        THINKING.on(event, data)
     if EVENTS:
         line = "@@AO " + json.dumps({"e": event, **data}, ensure_ascii=False)
         with EMIT_LOCK:
@@ -5379,6 +5423,30 @@ def pi_context_messages(messages: list[dict[str, Any]], system: str) -> list[dic
     return sent
 
 
+PI_RESUMES = 2  # continuations after a reply that wrote nothing (output limit, or a reasoning loop) before the turn fails
+
+
+def save_cut_reply(folder: str, text: str) -> Path | None:
+    """What a reply produced before it was cut off (thinking and text, repeated lines collapsed), saved in the project
+    under .agent-orchestrator so the next attempt continues from it instead of starting over; None if it cannot be written."""
+    kept: list[str] = []
+    for line in text.splitlines():
+        if not kept or line.strip() != kept[-1].strip() or not line.strip():
+            kept.append(line)
+    try:
+        path = notes_dir(folder) / f"cut-reply-{time.strftime('%Y%m%d-%H%M%S')}.md"
+        save_text(path, "# A reply cut off before it acted: its reasoning so far\n\n" + "\n".join(kept).strip() + "\n")
+        return path
+    except OSError:
+        return None
+
+
+def resume_note(why: str, saved: Path | None) -> str:
+    where = f" What you had so far is saved in {saved}: read it and continue from it, do not plan again from the start." if saved else ""
+    return (f"Your last reply {why}, so nothing was written and no tool ran.{where} Act now: keep thinking short and make tool "
+            "calls that write the files, one file or part per call, checking each result before the next.")
+
+
 def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
                  role: str = "planner") -> str:
     """A Code turn on the Pi engine; returns the lead's final answer. The request's "session" (the conversation id) keeps a
@@ -5462,6 +5530,9 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     # which Pi delivers when it continues after the abort) to send the work in pieces. A model stuck inside a call never ends it.
     call_cap = int(((config.get("roles") or {}).get(role) or {}).get("max_tool_call_chars") or 0)
     call_chars, cut, notes = {}, 0, []  # characters so far per call; the size of the call being cut; the follow-ups that are ours
+    # A reply that wrote nothing: one that loops (aborted as it repeats) or hits the output limit while still thinking. Its text is
+    # saved in the project and the model is told to continue from it, at most PI_RESUMES times a turn.
+    streamed, checked, looped, resume, resumes = "", 0, False, "", 0
 
     def write_out() -> None:
         """Pi's stdin has this one writer, so the main thread (the only reader of Pi's stdout) never waits on a write: a big
@@ -5528,6 +5599,7 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 seeded.touch()
             if kind == "message_start" and (event.get("message") or {}).get("role") == "assistant":
                 started, first_out, call_chars, cut = time.time(), None, {}, 0
+                streamed, checked = "", 0
             elif kind == "message_end" and (event.get("message") or {}).get("role") == "user":  # the prompt, then each steer
                 if notes and pi_text((event.get("message") or {}).get("content")).strip() == notes[0]:
                     notes.pop(0)  # our own cut-call note, not one of the launcher's steers
@@ -5541,6 +5613,19 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                     first_out = time.time()  # the prompt (and any image) is read: generation starts
                 if update.get("type") in ("text_delta", "thinking_delta"):
                     emit("delta", role=role, kind="text" if update["type"] == "text_delta" else "thinking", text=update.get("delta", ""))
+                    streamed += str(update.get("delta") or "")
+                    if not looped and len(streamed) - checked > 1000:
+                        checked = len(streamed)
+                        if looping(streamed[-LOOP_SPAN:]):  # (Gemma 12B thought "<|channel>thought" ~10,000 times)
+                            looped, resumes = True, resumes + 1
+                            print(f"[{title}] the reply is repeating itself; stopping it" + (" and asking the model to continue" if resumes <= PI_RESUMES else ""))
+                            if resumes <= PI_RESUMES:
+                                note = resume_note("started repeating the same lines", save_cut_reply(folders[0]["path"], streamed))
+                                notes.append(note)
+                                outbox.put({"type": "follow_up", "message": note})
+                            else:
+                                error = f"the reply kept repeating itself ({resumes} times)"
+                            outbox.put({"type": "abort"})
                 elif update.get("type") == "toolcall_delta":  # a tool call's arguments as they stream (a long write takes minutes);
                     # RPC updates usually carry no partial message, so the name is often unknown here
                     index = int(update.get("contentIndex") or 0)
@@ -5571,8 +5656,18 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                      prompt_tps=round(prompt_tokens / reading, 1) if first_out and reading > 0.05 else None)
                 measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
                 outbox.put({"id": "ctx", "type": "get_messages"})
-                if cut and message.get("stopReason") == "aborted":
-                    cut = 0  # our abort: the follow-up note carries the turn on
+                if (cut or looped) and message.get("stopReason") == "aborted":
+                    cut, looped = 0, False  # our abort: the follow-up note carries the turn on (none after the last loop: error says why)
+                elif message.get("stopReason") == "length" and not calls and not pi_text(message.get("content")).strip():
+                    resumes += 1
+                    print(f"[{title}] the reply hit the output limit ({completion:,} tokens) before writing anything"
+                          + ("; saving it and asking the model to continue" if resumes <= PI_RESUMES else ""))
+                    if resumes <= PI_RESUMES:
+                        resume = resume_note(f"used the whole output limit ({completion:,} tokens) while still thinking",
+                                             save_cut_reply(folders[0]["path"], streamed))
+                    else:
+                        error = (f"the reply hit the output limit {resumes} times without writing anything: raise sampling.max_tokens "
+                                 "or lower the reasoning budget")
                 elif message.get("stopReason") in ("error", "aborted"):
                     error = str(message.get("errorMessage") or message.get("stopReason"))
                 elif not calls:
@@ -5592,6 +5687,11 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
             elif kind == "extension_error":
                 print(f"[pi] extension error in {event.get('event')}: {event.get('error')}")
             elif kind == "agent_settled":
+                if resume:  # the run ended on a reply that wrote nothing: a new prompt continues it
+                    notes.append(resume)
+                    outbox.put({"id": "turn", "type": "prompt", "message": resume})
+                    resume = ""
+                    continue
                 settled = True
                 if not measured:
                     break
@@ -5699,7 +5799,12 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     messages = blind_images(config, role, messages)
     before = project_texts(folders) if request.get("review") else {}
     lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
-    text = lead(config, folders, messages, request, role)
+    global THINKING
+    THINKING = ThinkingFile(folders[0]["path"], role)
+    try:
+        text = lead(config, folders, messages, request, role)
+    finally:
+        THINKING = None
     if not text:
         raise WorkflowError("The model returned an empty reply")
     if request.get("review"):
