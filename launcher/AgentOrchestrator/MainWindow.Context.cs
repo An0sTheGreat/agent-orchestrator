@@ -129,10 +129,7 @@ public partial class MainWindow
         if (role == CodeLead)
             ShowContext(true, s);
         else
-        {
-            RefreshContextSection();
             RefreshCodeContextStack();
-        }
     }
 
     // A model loading (or the models unloaded) leaves no worker anything in its window: each worker's card keeps its last
@@ -144,7 +141,6 @@ public partial class MainWindow
         foreach (var (role, s) in _codeContexts)
             if (role != CodeLead)
                 s.Unloaded = true;
-        RefreshContextSection();
         RefreshCodeContextStack();
     }
 
@@ -157,7 +153,6 @@ public partial class MainWindow
         var ring = code ? CodeContextRing : ChatContextRing;
         ring.Tag = s?.Fraction;
         ring.ToolTip = s?.Summary ?? "Context: no reply yet in this conversation";
-        RefreshContextSection();
         RefreshContextPins();
     }
 
@@ -504,43 +499,6 @@ public partial class MainWindow
                 s.NCtx = n;
                 ShowContext(code, s);
             }
-        RefreshContextSection();
-    }
-
-    // The worker details column's Context section, open or closed as last left (saved). Chat: the conversation's snapshot.
-    // Code: one "<worker> Context" card per worker that worked in it, the lead's first (the summary line is the lead's).
-    private void RefreshContextSection()
-    {
-        var code = NavCode.IsChecked == true;
-        var s = ContextOf(code);
-        var open = _settings.ContextExpanded;
-        ContextSectionToggle.IsChecked = open;
-        ContextSummary.Text = s is null ? "—" : s.NCtx is > 0 ? $"{s.Fraction:0%}  ·  {Tokens(s.Used)} / {Tokens(s.NCtx.Value)}" : $"{Tokens(s.Used)} / ?";
-        var empty = new TextBlock { Text = "No reply yet in this conversation", FontSize = 12 };
-        empty.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        FrameworkElement? body = s is null ? empty : ContextBody(s, title: false);
-        if (code && _codeContexts.Count > 0)
-        {
-            var cards = new StackPanel();
-            foreach (var (role, worker) in _codeContexts.OrderBy(p => p.Key != CodeLead))
-            {
-                var heading = new TextBlock { Text = ContextTitle(role), FontSize = 12, FontWeight = FontWeights.SemiBold, Tag = "ContextTitle",
-                    Margin = new Thickness(0, cards.Children.Count == 0 ? 0 : 14, 0, 6) }.WithForeground("TextPrimary");
-                cards.Children.Add(heading);
-                cards.Children.Add(ContextBody(worker, title: false));
-            }
-            body = cards;
-        }
-        ContextSectionBody.Content = !open ? null : body;
-        ContextSectionBody.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
-        ContextSummary.Visibility = open ? Visibility.Collapsed : Visibility.Visible; // the open body repeats it
-    }
-
-    private void ContextSection_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.ContextExpanded = ContextSectionToggle.IsChecked == true;
-        _settings.Save();
-        RefreshContextSection();
     }
 
     // Blue up to 60%, yellow to 89%, red from 90% (whole percent, as the popup shows it).

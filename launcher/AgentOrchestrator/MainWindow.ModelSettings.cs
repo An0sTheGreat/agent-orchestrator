@@ -172,7 +172,7 @@ public partial class MainWindow
     // closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs from what the
     // body was built with. Save: the Save button; true when it wrote the edits. The radio buttons share fixed group names,
     // so host one body at a time.
-    private (FrameworkElement Body, Func<bool> IsDirty, Func<bool> Save)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
+    private (FrameworkElement Body, FrameworkElement Bar, Func<bool> IsDirty, Func<bool> Save)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
@@ -875,12 +875,52 @@ public partial class MainWindow
             Content = "Presets  ▾", Tag = "ModelPresets", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0),
             ToolTip = "Save these options as a preset, or fill them from one",
         };
+        // Overwrites the preset this worker last applied or saved (shown only while there is one for the model in the picker)
+        var saveTo = new Button { Tag = "ModelPresetSaveTo", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0) };
         // Presets are the model's: the menu (built on each click) lists those of the model in the picker now
         string ShownModel() => (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
         bool Mine(ModelPreset p) => p.Model.Length == 0 || p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
+        ModelPreset? Active() => _settings.ActiveModelPresets.GetValueOrDefault(card.Role) is { Length: > 0 } name
+            ? _settings.ModelPresets.FirstOrDefault(p => Mine(p) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) : null;
+        void SyncSaveTo()
+        {
+            var active = Active();
+            saveTo.Visibility = active is null ? Visibility.Collapsed : Visibility.Visible;
+            if (active is null)
+                return;
+            saveTo.Content = $"Save to “{(active.Name.Length > 18 ? active.Name[..17] + "…" : active.Name)}”";
+            saveTo.ToolTip = $"Overwrite the model preset \"{active.Name}\" with these options";
+        }
+        void MakeActive(string name)
+        {
+            _settings.ActiveModelPresets[card.Role] = name;
+            _settings.Save();
+            SyncSaveTo();
+        }
+        void WritePreset(string name, int same, string model)
+        {
+            var preset = new ModelPreset
+            {
+                Name = name, Model = model, Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
+                SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
+            };
+            if (same >= 0)
+                _settings.ModelPresets[same] = preset;
+            else
+                _settings.ModelPresets.Add(preset);
+            MakeActive(name);
+            Toast($"Preset {name} saved");
+        }
+        saveTo.Click += (_, _) =>
+        {
+            if (Active() is { } active)
+                WritePreset(active.Name, _settings.ModelPresets.IndexOf(active), active.Model);
+        };
+        modelBox.SelectionChanged += (_, _) => SyncSaveTo();
+        SyncSaveTo();
         presets.Click += (_, _) =>
         {
-            var menu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Top };
+            var menu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Bottom };
             MenuItem Item(string header, Action act)
             {
                 var item = new MenuItem { Header = header };
@@ -894,17 +934,7 @@ public partial class MainWindow
                 var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase));
                 if (same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
                     return;
-                var preset = new ModelPreset
-                {
-                    Name = name, Model = ShownModel(), Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
-                    SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
-                };
-                if (same >= 0)
-                    _settings.ModelPresets[same] = preset;
-                else
-                    _settings.ModelPresets.Add(preset);
-                _settings.Save();
-                Toast($"Preset {name} saved");
+                WritePreset(name, same, ShownModel());
             }));
             if (_settings.ModelPresets.Any(Mine))
             {
@@ -921,11 +951,13 @@ public partial class MainWindow
                                 SetValue(editor, value);
                         if (preset.SystemPrompt.Trim().Length > 0)
                             promptBox.Text = preset.SystemPrompt;
+                        MakeActive(preset.Name);
                     }));
                     delete.Items.Add(Item(preset.Name, () =>
                     {
                         _settings.ModelPresets.Remove(preset);
                         _settings.Save();
+                        SyncSaveTo();
                     }));
                 }
                 menu.Items.Add(new Separator());
@@ -934,14 +966,20 @@ public partial class MainWindow
             presets.ContextMenu = menu;
             menu.IsOpen = true;
         };
-        var footer = new StackPanel
+        // The bar goes in the page header, right of the all-workers presets: a divider, then this worker's name, its presets,
+        // Revert and Save. The error line stays at the foot of the settings.
+        var barDivider = new Border { Width = 1, Height = 18, Margin = new Thickness(18, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center };
+        barDivider.SetResourceReference(Border.BackgroundProperty, "Border");
+        var barLabel = new TextBlock
         {
-            Margin = new Thickness(0, 14, 0, 0),
-            Children = { error, new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Children = { presets, cancel, save } } },
+            Text = $"{ChatName(card, card.Role).ToUpperInvariant()} MODEL", Style = (Style)FindResource("SectionHeader"), VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 10, 0), ToolTip = "Presets, Revert and Save for the selected worker's model settings only",
         };
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, Children = { barDivider, barLabel, presets, saveTo, cancel, save } };
+        var footer = new StackPanel { Children = { error } };
         DockPanel.SetDock(footer, Dock.Bottom);
-        footer.Margin = new Thickness(0, 14, 14, 14);
-        foreach (var part in new FrameworkElement[] { body, footer }) // read-only while a run uses the models
+        footer.Margin = new Thickness(0, 8, 14, 14);
+        foreach (var part in new FrameworkElement[] { body, footer, bar }) // read-only while a run uses the models
             part.SetBinding(IsEnabledProperty, new System.Windows.Data.Binding(nameof(RoleCard.Editable)) { Source = card });
         cancel.Click += (_, _) => close();
 
@@ -1111,7 +1149,7 @@ public partial class MainWindow
         _gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes);
         _gpuMemory.ContinueWith(_ => Vram(), TaskScheduler.FromCurrentSynchronizationContext());
         Derive(startLoad, atOpen: true);
-        return (new DockPanel { Children = { footer, scroll } }, () => !State().SequenceEqual(clean), Save);
+        return (new DockPanel { Children = { footer, scroll } }, bar, () => !State().SequenceEqual(clean), Save);
     }
 
     private static Task<long?>? _gpuMemory; // the first GPU's total memory (nvidia-smi), read once
@@ -1225,7 +1263,7 @@ public partial class MainWindow
             // Save of another field, opens the page on itself, and Switch to Local restores its local settings and the defaults.
             if (SmokeField("temperature").Text != "0.8" || SmokeField("top_p").Text != "0.95" || _workerDirty())
                 return Fail("defaults");
-            Button? SourceButton(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag);
+            Button? SourceButton(string tag) => SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == tag) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag);
             TextBlock? Summary() => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Tag as string == "RemoteSummary");
             bool Shown(FrameworkElement? e)
             {
@@ -1351,7 +1389,7 @@ public partial class MainWindow
             // Option presets: save on the Reviewer (with its chat system prompt), apply on the Implementer, delete.
             void Preset(string header, string? sub = null)
             {
-                var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
+                var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
                 var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header);
                 (sub is null ? item : item.Items.OfType<MenuItem>().First(i => (string)i.Header == sub)).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
@@ -1376,7 +1414,7 @@ public partial class MainWindow
                 return Fail("discard the Reviewer's change");
             // presets are the model's: another model's is not listed; the Implementer's model's is
             stored.Model = "Some other model";
-            var listed = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
+            var listed = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
             SmokeClick(listed);
             var others = listed.ContextMenu.Items.OfType<MenuItem>().Any(i => (string)i.Header == "Smoke options");
             listed.ContextMenu.IsOpen = false;
@@ -1476,7 +1514,7 @@ public partial class MainWindow
         d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => SmokeFind(c, match)).FirstOrDefault(r => r is not null);
     private static void SmokeClick(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
     private TextBox SmokeField(string key) => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == key)!;
-    private Button SmokeButton(string label) => SmokeFind<Button>(WorkerSettingsHost, b => b.Content as string == label)!;
+    private Button SmokeButton(string label) => (SmokeFind<Button>(WorkerBarHost, b => b.Content as string == label) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Content as string == label))!;
     private FrameworkElement? SmokeTab(RoleCard card)
     {
         WorkerTabs.UpdateLayout();
@@ -1627,7 +1665,7 @@ public partial class MainWindow
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
                 return Fail("Same as LEAD, no chat prompt");
             TextBox Box() => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "Prompt:compactor.txt")!;
-            Button Icon(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag)!;
+            Button Icon(string tag) => (SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == tag) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag))!;
             var original = DefaultPromptText("compactor.txt");
             if (original.Length == 0 || Box().Text != original || !Box().IsReadOnly)
                 return Fail("the compactor prompt");

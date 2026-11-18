@@ -160,6 +160,25 @@ internal static class LauncherLogic
             prompt >= 0 && template.IndexOf("<think>", prompt, StringComparison.Ordinal) >= 0;
     }
 
+    // The effort levels a chat template takes, besides the default: "off" when it reads enable_thinking, and the quoted levels
+    // it names for reasoning_effort (Qwen3.8 raises on any other); one that reads reasoning_effort without naming levels
+    // (gpt-oss) takes low, medium and high. Null when there is no template to read.
+    internal static readonly string[] EffortValues = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    internal static string[]? EffortLevels(string? template)
+    {
+        if (template is null)
+            return null;
+        var levels = new List<string>();
+        if (template.Contains("enable_thinking", StringComparison.Ordinal))
+            levels.Add("off");
+        if (template.Contains("reasoning_effort", StringComparison.Ordinal))
+        {
+            var named = EffortValues.Skip(1).Where(l => template.Contains($"'{l}'", StringComparison.Ordinal) || template.Contains($"\"{l}\"", StringComparison.Ordinal)).ToList();
+            levels.AddRange(named.Count > 0 ? named : ["low", "medium", "high"]);
+        }
+        return [.. levels];
+    }
+
     // The role's GGUF file: auto_load.gguf_file when it exists, else the local scan (the Change picker's) for the repo in
     // auto_load.model_path, preferring auto_load.gguf_variant. Null when none is found.
     public static string? ResolveGguf(JsonObject? autoLoad, string modelsFolder, string hubCache)
@@ -2174,6 +2193,11 @@ internal static class LauncherLogic
             foreach (var marker in new[] { "enable_thinking", "<|channel|>analysis", "[THINK]", "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}" })
                 if (!IsThinkingModel("Plain", Load(Gguf("m.gguf", "a " + marker + " b"), "Plain"), ""))
                     throw new InvalidOperationException($"Marker {marker} not detected.");
+            // Effort levels: the template's own, and none for a template without a thinking switch.
+            const string qwen38 = "{%- if enable_thinking is true %}{%- set r = reasoning_effort|default('xhigh') %}{%- if r not in ('xhigh', 'medium', 'low') %}{{ raise_exception('x') }}{% endif %}";
+            if (string.Join(",", EffortLevels(qwen38)!) != "off,low,medium,xhigh" || string.Join(",", EffortLevels("{{ reasoning_effort }}")!) != "low,medium,high" ||
+                string.Join(",", EffortLevels("{% if enable_thinking %}<think>{% endif %}")!) != "off" || EffortLevels("plain")!.Length != 0 || EffortLevels(null) is not null)
+                throw new InvalidOperationException("EffortLevels failed.");
             // Qwen3 Instruct 2507: <think> and reasoning_content only to strip earlier reasoning; the reply starts plainly.
             const string instruct = "{% if '</think>' in content %}{% set reasoning_content = content.split('</think>')[0] %}{% endif %}" +
                 "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";

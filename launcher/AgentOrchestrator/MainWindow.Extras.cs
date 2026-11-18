@@ -93,14 +93,16 @@ public partial class MainWindow
     // ---- thinking effort: one choice (_settings.ChatEffort) for Chat and Code, sent only when the model it reaches thinks
 
     private static readonly (string Value, string Label)[] Efforts =
-        [("", "Default"), ("off", "Off (no thinking)"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("max", "Max")];
+        [("", "Default"), ("off", "Off (no thinking)"), ("minimal", "Minimal"), ("low", "Low"), ("medium", "Medium"), ("high", "High"), ("xhigh", "Extra high"), ("max", "Max")];
+    private static readonly string[] AnyEfforts = ["off", "low", "medium", "high", "max"]; // a remote API, or a template that could not be read
 
-    // Whether a worker's model thinks (LauncherLogic.IsThinkingModel), from the active config.json: roles[role] for a
-    // built-in worker, its custom_workers entry for a custom one.
-    private bool Thinks(RoleCard? card)
+    // The effort levels a worker's model takes besides Default (empty: it does not think), from the model saved in the active
+    // config.json (roles[role] for a built-in worker, its custom_workers entry for a custom one), loaded or not: the GGUF's
+    // chat template when it can be read (LauncherLogic.EffortLevels), else IsThinkingModel and every level.
+    private string[] EffortLevels(RoleCard? card)
     {
         if (card is null)
-            return false;
+            return [];
         JsonObject? entry = null;
         try
         {
@@ -115,35 +117,58 @@ public partial class MainWindow
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
         if (LauncherLogic.IsRemote(entry)) // a remote API decides for itself (and ignores a level its model lacks); names say little there
-            return true;
+            return AnyEfforts;
         var load = entry?["auto_load"] as JsonObject;
-        return LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load,
-            _settings.ModelsFolder ?? "");
+        var folder = _settings.ModelsFolder ?? "";
+        if (!LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load, folder))
+            return [];
+        return LauncherLogic.EffortLevels(LauncherLogic.ReadGgufChatTemplate(LauncherLogic.ResolveGguf(load, folder, LauncherLogic.HubCache()))) is { Length: > 0 } own ? own : AnyEfforts;
     }
 
-    // The effort a request carries: "" (the model's default) unless the target worker's model thinks.
-    private string EffortFor(RoleCard? card) => Thinks(card) ? _settings.ChatEffort : "";
+    private bool Thinks(RoleCard? card) => EffortLevels(card).Length > 0;
+
+    // The effort a request carries: the chosen one when the target worker's model takes it, else "" (the model's default).
+    private string EffortFor(RoleCard? card) => _settings.ChatEffort is { Length: > 0 } chosen && EffortLevels(card).Contains(chosen) ? chosen : "";
+
+    private static string EffortLabel(string value) => Efforts.FirstOrDefault(e => e.Value == value).Label ?? "Default";
+
+    // The worker the box talks to and its saved model ("Lead · Qwen3.8 27B"), loaded or not.
+    private string EffortTarget(RoleCard card) => $"{ChatName(card, card.Role)} · {card.ModelName}";
 
     private void RefreshEffort()
     {
         if (_chat is null)
             return; // before InitChat
-        var label = Efforts.FirstOrDefault(e => e.Value == _settings.ChatEffort).Label?.Split(' ')[0] ?? "Default";
-        foreach (var (chip, thinks) in new[] { (ChatEffortChip, Thinks(ChatTarget())), (CodeEffortChip, Thinks(CodeTarget())) })
+        foreach (var (chip, card) in new[] { (ChatEffortChip, ChatTarget()), (CodeEffortChip, CodeTarget()) })
         {
-            chip.Content = $"Effort: {label}  ▾";
-            chip.IsEnabled = thinks;
-            chip.ToolTip = thinks ? "How much the model thinks before it answers" : "This model doesn't think";
+            var levels = EffortLevels(card);
+            var sent = EffortFor(card);
+            chip.Content = $"Effort: {EffortLabel(sent).Split(' ')[0]}  ▾";
+            chip.IsEnabled = levels.Length > 0;
+            chip.ToolTip = levels.Length == 0 ? "This model doesn't think"
+                : $"How much {EffortTarget(card!)} thinks before it answers" +
+                  (sent != _settings.ChatEffort ? $" ({EffortLabel(_settings.ChatEffort)} is not one of its levels: it gets Default)" : "");
         }
     }
 
     private void Effort_Click(object sender, RoutedEventArgs e) => BuildEffortMenu((FrameworkElement)sender).IsOpen = true;
 
+    // Only the levels the target's saved model takes, under a line naming it.
     private ContextMenu BuildEffortMenu(FrameworkElement target)
     {
         var menu = NewPresetMenu(target);
         menu.Placement = PlacementMode.Top;
-        foreach (var (value, label) in Efforts)
+        var card = target == CodeEffortChip ? CodeTarget() : ChatTarget();
+        var levels = EffortLevels(card);
+        if (card is not null)
+        {
+            var heading = new TextBlock { Text = EffortTarget(card), FontSize = 11, Margin = new Thickness(8, 4, 8, 4), Tag = "EffortTarget" };
+            heading.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            menu.Items.Add(heading);
+            menu.Items.Add(new Separator());
+        }
+        var sent = EffortFor(card);
+        foreach (var (value, label) in Efforts.Where(e => e.Value.Length == 0 || levels.Contains(e.Value)))
         {
             var item = PresetItem(label, () =>
             {
@@ -151,7 +176,7 @@ public partial class MainWindow
                 _settings.Save();
                 RefreshEffort();
             });
-            item.IsChecked = value == _settings.ChatEffort;
+            item.IsChecked = value == sent;
             menu.Items.Add(item);
         }
         return menu;

@@ -2674,7 +2674,7 @@ def run_agent(
     model = client.ensure_model(role, interactive)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     tools = IMPLEMENTER_TOOLS if writable else REVIEWER_TOOLS
-    max_steps = step_cap(config, role, "max_tool_steps", 30)
+    max_steps = step_cap(config, role, "max_tool_steps", 30, client.remote)
     validations = config.get("validation_commands", {})
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
@@ -3745,7 +3745,7 @@ def request_extras(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[
 
 
 EFFORT_SAMPLING = {"off": {"enable_thinking": False},
-                   **{level: {"enable_thinking": True, "reasoning_effort": level} for level in ("low", "medium", "high", "max")}}
+                   **{level: {"enable_thinking": True, "reasoning_effort": level} for level in ("minimal", "low", "medium", "high", "xhigh", "max")}}
 
 
 def with_effort(config: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
@@ -4055,9 +4055,14 @@ def code_write_handlers(folders: list[dict[str, str]]) -> dict[str, Any]:
     return {"write_file": write_file, "replace_text": replace_text}
 
 
-def step_cap(config: dict[str, Any], role: str, key: str, default: int) -> int:
-    """A tool-step cap: the role's own (Model settings > Tool calls per reply), else config's, else `default`."""
-    return int(((config.get("roles") or {}).get(role) or {}).get(key) or config.get(key, default))
+def step_cap(config: dict[str, Any], role: str, key: str, default: int, remote: bool = False) -> int:
+    """A tool-step cap: the role's own (Model settings > Tool calls per reply), else 100 tool calls for a remote API model,
+    else config's, else `default`."""
+    own = ((config.get("roles") or {}).get(role) or {}).get(key)
+    return int(own or (REMOTE_TOOL_STEPS if remote and key == "max_tool_steps" else config.get(key, default)))
+
+
+REMOTE_TOOL_STEPS = 100  # remote API models: no local GPU time per step, so a longer leash by default
 
 
 def reasoning_budget(body: dict[str, Any], remote: bool) -> dict[str, Any]:
@@ -4085,7 +4090,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
-    max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap), display_name(config, role), None, 0, 0
+    max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap, remote=client.remote), display_name(config, role), None, 0, 0
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:

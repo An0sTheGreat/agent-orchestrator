@@ -88,10 +88,7 @@ public partial class MainWindow
         if (p.Context is { } lead)
             ShowContext(true, lead);
         else
-        {
-            RefreshContextSection();
             RefreshCodeContextStack();
-        }
         RefreshCodeFolders();
         RefreshChatTarget();
         Jump(view);

@@ -2499,18 +2499,6 @@ public partial class MainWindow : Window
                 ContextLengthSaved("reviewer", "32000");
                 if (!otherKept || !resized)
                     return Fail();
-                // The worker column's Context section: closed (with the summary) until opened; open shows the same rows and is saved.
-                if (ContextSectionBody.Visibility == Visibility.Visible || ContextSummary.Text != "38%  ·  12.3k / 32k")
-                    return Fail();
-                ContextSectionToggle.IsChecked = true;
-                ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
-                await Settle();
-                if (ContextSectionBody.Content is not StackPanel sectionBody || sectionBody.Children.OfType<DockPanel>().Count(d => d.Tag is long) != 7 || !AppSettings.Load().ContextExpanded)
-                    return Fail();
-                OpenModelSettings(); // the section is at the foot of the Model Settings page
-                await Settle();
-                Snap("30-context-section");
-                ShowView(chat: true);
                 // Code: one "<worker> Context" card per worker that worked (a run's events here), the lead's on the header ring;
                 // a model loading keeps each worker's last call, marked unloaded, until its next call replaces it, and leaves the lead's
                 // as it was (its next call resends the conversation).
@@ -2519,11 +2507,7 @@ public partial class MainWindow : Window
                     ShowContext(true, null);
                     DrainContext("""{"e":"context","role":"planner","n_ctx":32000,"prompt_tokens":8000,"completion_tokens":0,"parts":{"messages":8000}}""",
                         """{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":4000,"completion_tokens":0,"parts":{"messages":4000}}""");
-                    var titles = () => (ContextSectionBody.Content as StackPanel)?.Children.OfType<TextBlock>().Where(t => (string?)t.Tag == "ContextTitle").Select(t => t.Text);
-                    ContextSectionToggle.IsChecked = true;
-                    ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
-                    if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9 ||
-                        string.Join("|", titles() ?? []) != "Lead Context|Implementer Context")
+                    if (_codeContexts.Count != 2 || CodeContextRing.Tag is not double leadFill || Math.Abs(leadFill - 0.25) > 1e-9)
                         return Fail();
                     // The cards stack level with the header's Context button, the lead's first, lined up as Chat's (PinMargin).
                     await Settle();
@@ -2595,16 +2579,13 @@ public partial class MainWindow : Window
                         return Fail();
                     }
                     DrainContext("""{"e":"loading","role":"reviewer","path":""}""");
-                    bool UnloadedShown() => SmokeFind<TextBlock>(ContextSectionBody, t => t.Tag as string == "ContextUnloaded") is not null &&
-                        SmokeFind<TextBlock>(CodeContextPin, t => t.Tag as string == "ContextUnloaded") is not null;
+                    bool UnloadedShown() => SmokeFind<TextBlock>(CodeContextPin, t => t.Tag as string == "ContextUnloaded") is not null;
                     if (_codeContexts["implementer"] is not { Used: 4000, NCtx: 16000, Unloaded: true } || _codeContexts["planner"] is not { Used: 8000, Unloaded: false } ||
                         !UnloadedShown())
                         return Fail();
                     DrainContext("""{"e":"context","role":"implementer","n_ctx":16000,"prompt_tokens":5000,"completion_tokens":0,"parts":{"messages":5000}}""");
                     if (_codeContexts["implementer"] is not { Used: 5000, Unloaded: false } || UnloadedShown())
                         return Fail();
-                    ContextSectionToggle.IsChecked = false;
-                    ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                     ShowContext(true, null);
                     _activeRole = null;
                     ShowView(chat: true);
@@ -2615,8 +2596,6 @@ public partial class MainWindow : Window
                         DrainLines();
                     }
                 }
-                ContextSectionToggle.IsChecked = false;
-                ContextSection_Click(ContextSectionToggle, new RoutedEventArgs());
                 if (savedChat is null || _store.Get(savedChat.Id) is not { Kind: "chat", Folder: "", Messages.Count: 2, Title: "Saved chat title" } || _store.View().Ungrouped[0].Id != savedChat.Id)
                     return Fail();
                 StartChatTurn("Follow-up");
@@ -4762,7 +4741,6 @@ public partial class MainWindow : Window
         Reveal(CodeView, code);
         Reveal(ChatView, chat);
         RefreshSidebarList(); // the highlighted row is the open chat of the view shown
-        RefreshContextSection();
         ApplyPromptView();
         if (chat || code)
         {

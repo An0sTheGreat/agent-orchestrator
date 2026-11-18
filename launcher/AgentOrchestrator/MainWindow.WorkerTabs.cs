@@ -155,12 +155,13 @@ public partial class MainWindow
     {
         _workerTabPending = false;
         WorkerSettingsHost.Child = null; // the radio groups are shared by name: never two bodies at once
+        WorkerBarHost.Content = null;
         (_workerDirty, _workerSave) = (() => false, () => true);
         if (_shownWorker is not { } card)
             return;
-        if (ModelSettingsBody(card, () => RefreshWorkerTab(force: true), () => RefreshWorkerTab(force: true), "Revert") is { } built)
+        if (ModelSettingsBody(card, () => { RefreshWorkerTab(force: true); RefreshEffort(); }, () => RefreshWorkerTab(force: true), "Revert") is { } built)
         {
-            (WorkerSettingsHost.Child, _workerDirty, _workerSave) = built;
+            (WorkerSettingsHost.Child, WorkerBarHost.Content, _workerDirty, _workerSave) = built;
             return;
         }
         var note = new TextBlock { Text = $"Could not read config.json for {ChatName(card, card.Role)}", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 14, 0) };

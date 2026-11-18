@@ -131,7 +131,7 @@ internal static class ModelOptions
         new("reasoning_effort", "sampling", Kind.Choice, "For models that take an effort level", Choices: ["none", "minimal", "low", "medium", "high", "max", "xhigh"]),
         new("timeout_seconds", "role", Kind.Int, "Seconds to wait for a reply, 1 to 86400", 1, 86400),
         new("max_tool_call_chars", "role", Kind.Int, "Longest tool call, in characters; empty or 0 = no limit", 0, Big),
-        new("max_tool_steps", "role", Kind.Int, "Tool calls in one reply before it stops; empty = the app's setting (30)", 1, 10000),
+        new("max_tool_steps", "role", Kind.Int, "Tool calls in one reply before it stops; empty = 100 for API models, else the app's setting (30)", 1, 10000),
         new("reasoning_max_tokens", "sampling", Kind.Int, "API models: most tokens spent thinking per reply (OpenRouter reasoning.max_tokens)", 1, Big),
         new("send_extra_body", "role", Kind.Bool, "API models: also send Top K, Min P, Repetition penalty and Thinking; empty = off"),
     ];

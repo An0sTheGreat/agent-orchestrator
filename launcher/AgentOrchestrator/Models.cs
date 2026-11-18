@@ -223,7 +223,6 @@ internal sealed class AppSettings
     public bool ServerExpanded { get; set; } // the worker settings' Server group's fields show (collapsed by default)
     public bool RequestExpanded { get; set; } // the worker settings' Request group's fields show (collapsed by default)
     public bool OtherExpanded { get; set; } // the worker settings' Other group's fields show (collapsed by default)
-    public bool ContextExpanded { get; set; } // the worker details column's Context section (collapsed by default)
     public string LastProject { get; set; } = "";
     public bool Once { get; set; } = true;
     public string SelectedWorker { get; set; } = ""; // the worker tab shown in the details column ("" = the first)
@@ -238,6 +237,7 @@ internal sealed class AppSettings
     public string ChatEffort { get; set; } = "";
     public string ActivePreset { get; set; } = "";     // the Code preset last applied or saved: "Save to current preset" overwrites it
     public string ActiveChatPreset { get; set; } = ""; // the same for Chat's presets
+    public Dictionary<string, string> ActiveModelPresets { get; set; } = new(); // per worker id: the model preset it last applied or saved
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
     public bool ChatKeepLoaded { get; set; } = true;
     // Several models at once (the engine's AGENT_ORCHESTRATOR_MULTI_MODEL): "never" (loading one unloads the other), "fit"

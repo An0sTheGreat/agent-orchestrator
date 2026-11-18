@@ -5566,6 +5566,10 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual(orchestrator.step_cap(config, "planner", "max_tool_steps", 30), 120)  # the role's own wins
         self.assertEqual(orchestrator.step_cap(config, "reviewer", "max_tool_steps", 30), 30)
         self.assertEqual(orchestrator.step_cap({}, "x", "max_lead_steps", 200), 200)
+        self.assertEqual(orchestrator.step_cap(config, "reviewer", "max_tool_steps", 30, remote=True), 100)  # API models: 100
+        self.assertEqual(orchestrator.step_cap(config, "planner", "max_tool_steps", 30, remote=True), 120)
+        self.assertEqual(orchestrator.step_cap(config, "reviewer", "max_lead_steps", 200, remote=True), 200)
+        self.assertEqual(orchestrator.with_effort({}, {"effort": "xhigh"})["turn_effort"]["reasoning_effort"], "xhigh")  # Qwen3.8's top level
         body = {"model": "m", "reasoning_effort": "high", "reasoning_max_tokens": 4000}
         self.assertEqual(orchestrator.reasoning_budget(body, True), {"model": "m", "reasoning": {"max_tokens": 4000}})
         self.assertEqual(orchestrator.reasoning_budget(body, False), {"model": "m", "reasoning_effort": "high"})  # local: the load option
