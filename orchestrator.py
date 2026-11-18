@@ -595,10 +595,9 @@ class ApiClient:
                     for choice in chunk.get("choices") or []:
                         finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
-                        if delta.get("content") or delta.get("reasoning_content") or delta.get("reasoning") or delta.get("tool_calls"):
-                            quiet_since = time.time()
                         thought = delta.get("reasoning_content") or delta.get("reasoning")
                         text = delta.get("content") or ""
+                        progressed = bool(thought or text)  # an empty tool_calls delta is not progress
                         if thought:
                             if not seen_content:  # the server split the reasoning out itself: content is the answer
                                 splitter = ThinkSplitter()
@@ -614,9 +613,12 @@ class ApiClient:
                             slot["id"] = call.get("id") or slot["id"]
                             slot["name"] += function.get("name") or ""
                             fragment = function.get("arguments") or ""
+                            progressed = progressed or bool(function.get("name") or fragment)
                             slot["arguments"] += fragment
                             emit("delta", role=self.role, kind="tool", index=call.get("index", 0), name=slot["name"], text=fragment)
                             watch(f"tool{call.get('index', 0)}", fragment)
+                        if progressed:
+                            quiet_since = time.time()
         except _Loop as loop:  # leaving the stream closes the connection, which stops the server generating
             print(f"[{self.title or self.role}] stopped the model: it kept repeating the same text ({loop.args[0]})")
             calls.clear()  # arguments cut off mid-repetition are not a call to run
