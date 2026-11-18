@@ -17,7 +17,7 @@ internal static class RemoteCatalog
     public sealed record ModelEntry(string Id, string Name, long ContextLength, decimal? InputPerM = null, decimal? OutputPerM = null);
 
     public sealed record ProviderRow(string Name, string Tag, string Quantization, decimal? InputPerM, decimal? OutputPerM, decimal? CacheReadPerM,
-        double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength, string Privacy = "");
+        double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength, string Privacy = "", decimal? Discount = null);
 
     // How a provider treats prompts, as OpenRouter's own provider page shows it (its API does not carry this): Private = no training and no
     // retention; Logs = may retain prompts but does not train; Trains = may train on them; "" = not known.
@@ -150,7 +150,7 @@ internal static class RemoteCatalog
                 Num((e["throughput_last_30m"] as JsonObject)?["p50"] ?? e["throughput_last_30m"]),
                 Num(e["uptime_last_30m"]),
                 modelVision || (e["supports_image_reference"] as JsonValue)?.TryGetValue<bool>(out var image) == true && image,
-                (long)(Num(e["context_length"]) ?? 0));
+                (long)(Num(e["context_length"]) ?? 0), Discount: Num(pricing?["discount"]) is > 0 and var off ? (decimal)off : null); // a fraction; pricing.* stays the listed price
         }).ToList();
         return (List<ProviderRow>)[.. rows.OrderBy(r => r.InputPerM is null).ThenBy(r => r.InputPerM).ThenBy(r => r.Name, StringComparer.OrdinalIgnoreCase)];
     });
@@ -297,7 +297,7 @@ internal static class RemoteCatalog
         Check(providers[0] == new ProviderRow("Relace", "relace/fp4", "fp4", 0.0285m, 0.0923m, 0.0285m, null, null, 93.33333333333333, false, 1048576), $"Relace row: {providers[0]}");
         Check(providers[1].InputPerM == 0.03m && providers[1].OutputPerM == 0.22m && providers[1].CacheReadPerM == 0.02m &&
             providers[1].LatencySeconds == 0.45 && providers[1].ThroughputTps == 85.5 && providers[1].Uptime == 100, $"OpenInference row: {providers[1]}");
-        Check(providers[2].InputPerM == 0.06m && providers[2].CacheReadPerM is null, $"GMICloud row: {providers[2]}");
+        Check(providers[2].InputPerM == 0.06m && providers[2].CacheReadPerM is null && providers[2].Discount == 0.5m && providers[0].Discount is null or 0, $"GMICloud row: {providers[2]}");
         Check(providers[3] is { InputPerM: null, OutputPerM: null, Uptime: null, Vision: true, ContextLength: 65536 }, $"Mystery row: {providers[3]}");
         Check(ParseProviders("{\"data\":{\"architecture\":{\"input_modalities\":[\"text\",\"image\"]},\"endpoints\":[{\"tag\":\"openai\",\"supports_image_reference\":false}]}}")
             is [{ Vision: true, Tag: "openai", InputPerM: null }], "an image-input model is Vision");

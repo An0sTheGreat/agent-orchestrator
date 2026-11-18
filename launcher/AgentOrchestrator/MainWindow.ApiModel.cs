@@ -76,6 +76,18 @@ public partial class MainWindow
         return result();
     }
 
+    private static readonly System.Windows.Media.Brush DealGreen = new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x2F, 0xBF, 0x8A)); // the same green as PrivacyShield's Private
+
+    // A price; with a discount, the listed price struck through and what is paid (listed x (1 - discount)) in green.
+    private static FrameworkElement PriceCell(decimal? perMillion, decimal? discount)
+    {
+        if (perMillion is not { } listed || discount is not > 0)
+            return RemoteMuted(RemotePrice(perMillion));
+        var was = RemoteMuted(RemotePrice(listed));
+        was.TextDecorations = TextDecorations.Strikethrough;
+        return new StackPanel { Orientation = Orientation.Horizontal, Children = { was, new TextBlock { Text = RemotePrice(listed * (1 - discount)), Foreground = DealGreen, Margin = new Thickness(5, 0, 0, 0) } } };
+    }
+
     // Pick providers (tried in the order ticked, no fallbacks), Default (none: the service chooses), or Cancel (null). The
     // worker's own providers start ticked when it already runs this model. OpenRouter's providers load in the background.
     internal (DialogShell Dialog, Func<LauncherLogic.RemoteRole?> Result) BuildProviderDialog(RemoteCatalog.Service service, string model, LauncherLogic.RemoteRole? remoteNow)
@@ -93,7 +105,19 @@ public partial class MainWindow
         status.Margin = new Thickness(0, 8, 0, 0);
         status.Tag = "ProvidersStatus";
         var list = new StackPanel { Tag = "ProvidersList" };
-        var scroll = new ScrollViewer { Content = list, MaxHeight = 340, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 8, 0, 0),
+        // name+tag, In, Out, Cache, Latency, tok/s, Uptime, Vision, order mark (the heads follow the Remote API page's table)
+        Grid Columns() => new() { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(105) }, new ColumnDefinition { Width = new GridLength(105) }, new ColumnDefinition { Width = new GridLength(105) },
+            new ColumnDefinition { Width = new GridLength(62) }, new ColumnDefinition { Width = new GridLength(52) }, new ColumnDefinition { Width = new GridLength(58) }, new ColumnDefinition { Width = new GridLength(76) }, new ColumnDefinition { Width = new GridLength(28) } } };
+        var header = Columns();
+        header.Margin = new Thickness(12, 8, 12, 0);
+        header.Visibility = service.HasProviders ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var (text, column) in new[] { "Provider", "In $/M", "Out $/M", "Cache $/M", "Latency", "tok/s", "Uptime", "Vision" }.Select((t, i) => (t, i)))
+        {
+            var head = RemoteMuted(text);
+            Grid.SetColumn(head, column);
+            header.Children.Add(head);
+        }
+        var scroll = new ScrollViewer { Content = list, MaxHeight = 340, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 2, 0, 0),
             Visibility = service.HasProviders ? Visibility.Visible : Visibility.Collapsed };
         var use = new Button { Content = "Use selected", Tag = "ProvidersUse", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsEnabled = false,
             Visibility = service.HasProviders ? Visibility.Visible : Visibility.Collapsed };
@@ -101,7 +125,7 @@ public partial class MainWindow
             Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0) };
         var cancel = new Button { Content = "Cancel", Tag = "ProvidersCancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0), Children = { cancel, auto, use } };
-        var dialog = new DialogShell(this, $"Providers for {model}", new StackPanel { MinWidth = 460, Children = { message, status, scroll, buttons } });
+        var dialog = new DialogShell(this, $"Providers for {model}", new StackPanel { MinWidth = 820, Children = { message, status, header, scroll, buttons } });
         var orderMarks = new Dictionary<string, TextBlock>();
         void Marks()
         {
@@ -121,14 +145,18 @@ public partial class MainWindow
                 var tag = RemoteMuted(r.Tag);
                 tag.VerticalAlignment = VerticalAlignment.Center;
                 tag.Margin = new Thickness(8, 0, 0, 0);
-                var price = RemoteMuted($"{RemotePrice(r.InputPerM)} / {RemotePrice(r.OutputPerM)} per M");
                 var vision = RemoteMuted(r.Vision ? "images" : "text only");
                 var mark = new TextBlock { FontWeight = FontWeights.SemiBold, Width = 28, TextAlignment = TextAlignment.Right };
                 mark.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
                 orderMarks[r.Tag] = mark;
-                var grid = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = new GridLength(150) }, new ColumnDefinition { Width = new GridLength(70) }, new ColumnDefinition { Width = GridLength.Auto } } };
-                var who = new StackPanel { Orientation = Orientation.Horizontal, Children = { name, tag } };
-                foreach (var (cell, column) in new (FrameworkElement, int)[] { (who, 0), (price, 1), (vision, 2), (mark, 3) })
+                var grid = Columns();
+                var who = new StackPanel { Orientation = Orientation.Horizontal, ClipToBounds = true, Children = { name } };
+                if (r.Discount is > 0)
+                    who.Children.Add(new TextBlock { Text = $"{Math.Round(r.Discount.Value * 100)}% off", Tag = "deal:" + r.Tag, FontSize = 10.5, FontWeight = FontWeights.SemiBold, Foreground = DealGreen,
+                        VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) });
+                who.Children.Add(tag);
+                foreach (var (cell, column) in new (FrameworkElement, int)[] { (who, 0), (PriceCell(r.InputPerM, r.Discount), 1), (PriceCell(r.OutputPerM, r.Discount), 2), (PriceCell(r.CacheReadPerM, r.Discount), 3),
+                    (RemoteMuted(RemoteFigure(r.LatencySeconds, "0.00")), 4), (RemoteMuted(RemoteFigure(r.ThroughputTps, "0")), 5), (RemoteMuted(RemoteFigure(r.Uptime, "0.#")), 6), (vision, 7), (mark, 8) })
                 {
                     cell.VerticalAlignment = VerticalAlignment.Center;
                     Grid.SetColumn(cell, column);
@@ -157,7 +185,8 @@ public partial class MainWindow
                 var key = Environment.GetEnvironmentVariable(service.KeyEnv);
                 var rows = await RemoteCatalog.FetchProvidersAsync(_remoteHttp, model, CancellationToken.None, key);
                 ShowRows(rows);
-                status.Text = rows.Count == 0 ? $"No providers listed for {model}: the default still works." : $"{rows.Count} providers · price in / out, USD per million tokens";
+                status.Text = rows.Count == 0 ? $"No providers listed for {model}: the default still works." : $"{rows.Count} providers · USD per million tokens, struck-through = listed price before the provider's discount" +
+                    (string.IsNullOrEmpty(key) ? " · Latency and throughput show only with an OpenRouter key in the environment." : "");
             }
             catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException)
             {
