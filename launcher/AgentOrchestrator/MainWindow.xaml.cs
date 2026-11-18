@@ -1866,6 +1866,31 @@ public partial class MainWindow : Window
                 return Fail();
             CleanupChatTemp(); // idempotent: SendChat's own cleanup runs after this
             FinishChatTurn(-1, true, null);
+            // Closing while a task runs asks first: No keeps the window and the process, Yes closes and stops it.
+            var askedClose = new List<string>();
+            string? closeAnswer = null;
+            var priorChoice = _codeChoice;
+            _codeChoice = t => { askedClose.Add(t); return closeAnswer; };
+            var sleeper = Process.Start(new ProcessStartInfo("cmd.exe", "/c ping -n 60 127.0.0.1 >nul") { CreateNoWindow = true, UseShellExecute = false })!;
+            try
+            {
+                _process = sleeper;
+                var declined = new CancelEventArgs();
+                OnClosing(this, declined);
+                if (!declined.Cancel || sleeper.HasExited || askedClose.Count != 1 || askedClose[0] != "Task running")
+                    return Fail();
+                (_process, _chatProcess, closeAnswer) = (null, sleeper, "ok");
+                var confirmed = new CancelEventArgs();
+                OnClosing(this, confirmed);
+                if (confirmed.Cancel || askedClose.Count != 2 || !sleeper.WaitForExit(3000))
+                    return Fail();
+            }
+            finally
+            {
+                (_process, _chatProcess, _codeChoice) = (null, null, priorChoice);
+                if (!sleeper.HasExited) sleeper.Kill(entireProcessTree: true);
+                sleeper.Dispose();
+            }
             var realProject = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-project-{Guid.NewGuid():N}");
             Directory.CreateDirectory(realProject);
             try
@@ -5067,6 +5092,12 @@ public partial class MainWindow : Window
         if (!DiscardWorkerEdits())
         {
             e.Cancel = true; // the user kept the worker tab's unsaved edits
+            return;
+        }
+        if ((_process is { HasExited: false } || _chatProcess is { HasExited: false }) &&
+            SidebarAsk("Task running", "A task is still running. Closing the app now will stop it.", "Close and stop") is null)
+        {
+            e.Cancel = true; // the user chose to let the running task finish
             return;
         }
         _tunnel.Stop();
