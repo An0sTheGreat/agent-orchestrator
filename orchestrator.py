@@ -2674,7 +2674,7 @@ def run_agent(
     model = client.ensure_model(role, interactive)
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}, {"role": "user", "content": user}]
     tools = IMPLEMENTER_TOOLS if writable else REVIEWER_TOOLS
-    max_steps = step_cap(config, role, "max_tool_steps", 30, client.remote)
+    max_steps = step_cap(config, role, "max_tool_steps", 30, getattr(client, "remote", False))
     validations = config.get("validation_commands", {})
     tool_names = {tool["function"]["name"] for tool in tools}
     ran_tools = False
@@ -3832,9 +3832,9 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     title = display_name(config, role)
     lead_extras, research = with_research(handlers)
     handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
-    extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler([], request, not vision_off(turn, role))}, note)  # the answering model's only; no folders, so only web addresses
+    extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler(chat_pc_folders(request), request, not vision_off(turn, role))}, note)  # the answering model's only; local files only with Full or Super access
     if apps := computer_apps(request):  # the answering model's only, as in Code
-        extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role))}, note)
+        extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role), computer_asked(request))}, note)
     if pc_tools:
         extras = ([*extras[0], *pc_tools], {**extras[1], **pc_handlers}, note + pc_note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
@@ -4090,7 +4090,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
-    max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap, remote=client.remote), display_name(config, role), None, 0, 0
+    max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap, remote=getattr(client, "remote", False)), display_name(config, role), None, 0, 0
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -4211,16 +4211,26 @@ APPROVAL_LOCK = threading.Lock()
 COMMAND_MAX_TIMEOUT = 1800
 
 
+def chat_sandbox(request: dict[str, Any]) -> dict[str, Any]:
+    return request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
+
+
+def chat_pc_folders(request: dict[str, Any]) -> list[dict[str, str]]:
+    """The folders a Chat turn reaches with Full or Super access (every drive, with with_super_access's limits); else none."""
+    settings = chat_sandbox(request)
+    if settings.get("full_access") is not True and settings.get("super_access") is not True:
+        return []
+    return with_super_access([{"path": str(Path.home().resolve()), "access": "write"}], {"sandbox": {"super_access": True}})
+
+
 def chat_pc_access(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
     """A Chat turn's reach into the PC, from the user's Command sandbox settings (the request's "sandbox"): Full access
     gives run_command as the user (no sandbox; the request's "permissions" still decides when it asks) and the file tools
     on every drive; Super access alone gives the file tools on every drive. Both keep with_super_access's limits (System32,
     api_key.txt, .git, the Agent Orchestrator folder read-only). Neither: nothing. Returns (tools, handlers, note)."""
-    settings = request.get("sandbox") if isinstance(request.get("sandbox"), dict) else {}
-    full, everywhere = settings.get("full_access") is True, settings.get("super_access") is True
-    if not (full or everywhere):
+    full = chat_sandbox(request).get("full_access") is True
+    if not (folders := chat_pc_folders(request)):
         return [], {}, ""
-    folders = with_super_access([{"path": str(Path.home().resolve()), "access": "write"}], {"sandbox": {"super_access": True}})
     tools, handlers = list(CODE_TOOLS), {**code_handlers(folders), **code_write_handlers(folders)}
     if full:
         tools.append(PC_COMMAND_TOOL)
@@ -4501,7 +4511,9 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
         "x and y (most reliable). Games draw their own controls and list none: use the grid and zoom.Each action returns a new screenshot unless `shot` is false; to do several in a row (click a field, type, "
         "press Enter) with one screenshot at the end, add them as `steps`.The user can press Esc at any time to take "
         "back control: the tool then refuses every action; stop and tell them what you did. Copy, cut and paste are refused "
-        "(the clipboard is the user's). Admin (elevated) windows and other applications cannot be used.",
+        "(the clipboard is the user's). Admin (elevated) windows and other applications cannot be used. Prefer the in-app browser "
+        "(browser tool) for web pages and local HTML files; unless the user asked for computer use, your first action asks them "
+        "in a popup, and a no means stop using this tool.",
         {"action": {"type": "string", "enum": list(COMPUTER_ACTIONS)}, "app": {"type": "string", "description": "open: an approved application's name"},
          "window": {"type": "integer", "description": "open: a window number from 'apps'"},
          "x": {"type": "number", "description": "pixels from the left of the last screenshot"},
@@ -4520,9 +4532,23 @@ def computer_tool(apps: list[str]) -> dict[str, Any]:
                    "items": {"type": "object"}}}, ["action"])
 
 
-def computer_handler(vision: bool = True):
+COMPUTER_ASKED = re.compile(r"(?i)\bcomputer[- ]use\b|\buse (?:my|the) (?:computer|pc|desktop|mouse)\b|\bcomputer tool\b|"
+                            r"\b(?:take over|control) (?:my|the) (?:computer|pc|desktop|mouse|screen)\b")
+
+
+def computer_asked(request: dict[str, Any]) -> bool:
+    """The user's latest message asks for computer use in words ("use computer use", "use my computer", ...): then the
+    computer tool works without asking first this turn."""
+    users = [m for m in request.get("messages") or [] if isinstance(m, dict) and m.get("role") == "user"]
+    return bool(users) and bool(COMPUTER_ASKED.search(str(users[-1].get("content") or "")))
+
+
+def computer_handler(vision: bool = True, permitted: bool = False):
     """The computer tool: each action, checked here, is one "computer" request the launcher performs with SendInput in
-    the one window it bound for this turn (Options > Computer use: off by default, approved applications only, Esc stops)."""
+    the one window it bound for this turn (Options > Computer use: off by default, approved applications only, Esc stops).
+    Unless `permitted` (the user asked for computer use this turn), the first action past 'apps' asks the user in a popup;
+    a no refuses the tool for the rest of the turn."""
+    allowed: list[bool | None] = [True if permitted else None]
     def computer(action: str = "apps", app: str = "", window: Any = 0, x: Any = None, y: Any = None, to_x: Any = None, to_y: Any = None,
                  dx: Any = None, dy: Any = None, button: str = "left", clicks: Any = 1, text: str = "", keys: str = "", shot: bool = True,
                  steps: Any = None, element: Any = None) -> Any:
@@ -4568,6 +4594,12 @@ def computer_handler(vision: bool = True):
                 except WorkflowError as e:
                     raise WorkflowError(f"step {n}: {e}") from None
             action, extra = "batch", {"steps": plan}
+        if action != "apps" and allowed[0] is None:
+            what = f"open {app}" if action == "open" and app else f"{action} in window {window}" if action == "open" else action
+            allowed[0] = ask_user("computer", what, "The model wants to use your real mouse and keyboard on your desktop.")
+        if action != "apps" and not allowed[0]:
+            return ("ERROR: the user did not allow computer use for this reply; do not use the computer tool again this reply. "
+                    "Use the in-app browser (browser tool) instead, or tell the user what you need done.")
         want = action != "apps" and (action in ("screenshot", "zoom") or bool(shot)) and vision
         answer = launcher_call("computer", action=action, **extra, shot=want)
         if answer is None:
@@ -4960,7 +4992,7 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
                                      (role, "lead", display_name(config, role)), research, runners)
     tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request, not vision_off(config, role))  # the lead's only
     if apps := computer_apps(request):
-        tools, handlers["computer"] = tools + [computer_tool(apps)], computer_handler(not vision_off(config, role))
+        tools, handlers["computer"] = tools + [computer_tool(apps)], computer_handler(not vision_off(config, role), computer_asked(request))
     if asked_to_start(request):
         def start_project() -> str:
             if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():

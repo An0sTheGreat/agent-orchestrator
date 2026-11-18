@@ -196,6 +196,13 @@ public partial class MainWindow
             }
         }
         var current = role is null ? ModelOptions.Effective(card.Config) : ModelOptions.Read(role);
+        string appSteps = "30"; // config.json's max_tool_steps: what an empty Tool calls field means for a local model
+        try
+        {
+            if (JsonNode.Parse(File.ReadAllText(ActiveConfigPath()))?["max_tool_steps"]?.GetValue<long>() is long steps and > 0)
+                appSteps = steps.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or FormatException) { }
         // Absent keys show their default (ModelOptions.Defaults): the model's own (its GGUF header, read off the UI thread by
         // Derive) or the static one; for a custom worker the Implementer's value first; for a remote role none. auto: the
         // fields showing a default, with that value; while one still shows it, a new model read, model pick or mode switch
@@ -353,6 +360,48 @@ public partial class MainWindow
             rule.SetResourceReference(Border.BackgroundProperty, "Border");
             row.Children.Insert(0, rule);
         }
+        // What an empty field means, shown in it in muted text; a field still showing its default is muted too.
+        string EmptyMeans(ModelOptions.Option o) => Base().GetValueOrDefault(o.Key, "") is { Length: > 0 } d ? d : o.Key switch
+        {
+            "max_tool_steps" => remoteMode() ? "100" : appSteps,
+            "timeout_seconds" => "600",
+            "max_tool_call_chars" or "max_tokens" => "no limit",
+            "seed" => "random",
+            "gpu_layers" => "fit",
+            "gpu_ids" => "all GPUs",
+            "tensor_split" => "even split",
+            "gguf_variant" => "auto",
+            "chat_template_override" => "the model's own template",
+            "stop" or "llama_extra_args" or "reasoning_budget_message" => "none",
+            _ => remoteMode() ? "provider default" : "server default",
+        };
+        FrameworkElement Hinted(Control editor, ModelOptions.Option o, bool wide)
+        {
+            if (editor is not TextBox box)
+                return editor;
+            var hint = new TextBlock
+            {
+                IsHitTestVisible = false, FontSize = box.FontSize, FontFamily = box.FontFamily, TextTrimming = TextTrimming.CharacterEllipsis,
+                VerticalAlignment = wide ? VerticalAlignment.Top : VerticalAlignment.Center,
+                Margin = new Thickness(box.Margin.Left + box.Padding.Left + 2, box.Margin.Top + (wide ? box.Padding.Top + 1 : 0), box.Padding.Right + 2, 0),
+            };
+            hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            void Sync()
+            {
+                var means = EmptyMeans(o);
+                hint.Text = means;
+                hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+                if (box.Text.Length > 0 && box.Text == Base().GetValueOrDefault(o.Key))
+                    box.SetResourceReference(Control.ForegroundProperty, "Muted");
+                else
+                    box.ClearValue(Control.ForegroundProperty);
+            }
+            box.TextChanged += (_, _) => Sync();
+            box.Loaded += (_, _) => Sync();
+            Sync();
+            var host = new Grid { Children = { box, hint }, HorizontalAlignment = wide ? HorizontalAlignment.Stretch : HorizontalAlignment.Left };
+            return host;
+        }
         StackPanel Fields(string group)
         {
             var fields = new StackPanel();
@@ -394,7 +443,7 @@ public partial class MainWindow
                     Pill(editor);
                     fields.Children.Add(rows[o.Key] = new StackPanel
                     {
-                        Margin = new Thickness(0, 8, 0, 0), Children = { Label(o.Label), hints[o.Key], editor, (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
+                        Margin = new Thickness(0, 8, 0, 0), Children = { Label(o.Label), hints[o.Key], Hinted(editor, o, true), (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
                     });
                     RowLine(rows[o.Key], fields.Children.Count == 1);
                     rows[o.Key].ToolTipOpening += (_, _) => rows[o.Key].ToolTip = TipBlock();
@@ -408,9 +457,10 @@ public partial class MainWindow
                 name.TextTrimming = TextTrimming.CharacterEllipsis;
                 name.Margin = new Thickness(0, 0, 12, 0);
                 var line = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(LabelColumn) }, new ColumnDefinition() } };
-                Grid.SetColumn(editor, 1);
+                var hosted = Hinted(editor, o, false);
+                Grid.SetColumn(hosted, 1);
                 line.Children.Add(name);
-                line.Children.Add(editor);
+                line.Children.Add(hosted);
                 hints[o.Key].Visibility = Visibility.Collapsed;
                 var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { line }, ToolTip = TipBlock() };
                 RowLine(row, fields.Children.Count == 0);

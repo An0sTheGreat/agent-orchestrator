@@ -2682,7 +2682,7 @@ class ChatTests(unittest.TestCase):
         calls = [{"id": f"c{n}", "function": {"name": "computer", "arguments": json.dumps({"action": "type", "text": "youtube.com"})}} for n in range(3)]
         asked = []
         with patch.object(orchestrator, "launcher_call", lambda event, **d: asked.append(d) or {"result": "TYPED"}):
-            _, log, *_ = self.chat({"messages": self.MSGS, "computer": ["Brave"]},
+            _, log, *_ = self.chat({"messages": [{"role": "user", "content": "use computer use"}], "computer": ["Brave"]},
                                    {"planner": [{"role": "assistant", "content": "", "tool_calls": calls}, "DONE"]})
         self.assertEqual(len(asked), 1)
         sent = str(log[1]["input"])  # the model's next call sees one result and two refusals
@@ -3321,6 +3321,43 @@ class CodeTests(unittest.TestCase):
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("key", keys="Enter"))
 
+    def test_computer_use_asks_first_unless_the_user_asked_for_it(self):
+        # Qwen opened the user's Brave unasked: the first action past 'apps' asks in a popup ("approval", kind computer);
+        # yes holds for the reply, no refuses every later call without asking again. Asking for it in words skips the popup.
+        for words, asked_for in (("Use computer use to check it", True), ("please use my computer", True), ("Make a page", False)):
+            self.assertEqual(orchestrator.computer_asked({"messages": [{"role": "user", "content": words}]}), asked_for, words)
+        self.assertFalse(orchestrator.computer_asked({"messages": [{"role": "user", "content": "use computer use"}, {"role": "assistant", "content": "x"},
+                                                                   {"role": "user", "content": "thanks"}]}))
+        for allow in (True, False):
+            sent = []
+            answer = lambda event, **d: sent.append((event, d)) or ({"allow": allow} if event == "approval" else {"result": "DONE"})
+            with patch.object(orchestrator, "launcher_call", answer):
+                use = orchestrator.computer_handler()
+                self.assertEqual(use("apps"), "DONE")  # listing needs no approval
+                first, second = use("open", app="Brave", shot=False), use("key", keys="Enter", shot=False)
+            self.assertEqual([e for e, _ in sent], ["computer", "approval"] + (["computer", "computer"] if allow else []), allow)
+            self.assertEqual(sent[1][1]["kind"], "computer")
+            if not allow:
+                self.assertTrue(first.startswith("ERROR: the user did not allow computer use") and second == first)
+        sent = []
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: sent.append(event) or {"result": "DONE"}):
+            orchestrator.computer_handler(permitted=True)("open", app="Brave", shot=False)
+        self.assertEqual(sent, ["computer"])
+
+    def test_chat_browser_opens_local_files_with_full_or_super_access(self):
+        # the chat's run_command wrote a page into Downloads; the browser could not open it (no folders at all in Chat)
+        page = Path(tempfile.mkdtemp()) / "page.html"
+        self.addCleanup(shutil.rmtree, page.parent, True)
+        page.write_text("<p>hi</p>", encoding="utf-8")
+        sent = []
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: sent.append(d) or {"result": "VISIBLE TEXT:" + chr(10) + "hi"}):
+            for sandbox in ({"full_access": True}, {"super_access": True}):
+                with patch.object(orchestrator.Path, "home", return_value=page.parent):
+                    folders = orchestrator.chat_pc_folders({"sandbox": sandbox})
+                orchestrator.browser_handler(folders, {})("open", str(page))
+                self.assertEqual(sent[-1]["url"], page.resolve().as_uri())
+        self.assertEqual(orchestrator.chat_pc_folders({"sandbox": {}}), [])
+
     def test_computer_tool_is_offered_only_with_approved_apps_and_sends_checked_actions(self):
         # Options > Computer use: the request's "computer" lists the approved applications; without them the lead has no
         # computer tool. Each action is one "computer" request to the launcher; bad ones never reach it.
@@ -3336,7 +3373,7 @@ class CodeTests(unittest.TestCase):
         asked, image = [], "data:image/png;base64,iVBOR"
         answer = lambda event, **d: asked.append((event, d)) or {"result": "DONE", "image": image}
         with patch.object(orchestrator, "launcher_call", answer):
-            use = orchestrator.computer_handler()
+            use = orchestrator.computer_handler(permitted=True)
             self.assertEqual(str(use("apps")), "DONE")
             self.assertNotIsInstance(use("apps"), orchestrator.ToolResult)  # a list, no image
             self.assertEqual(use("open", app=" Notepad ").images, [image])
@@ -3353,7 +3390,7 @@ class CodeTests(unittest.TestCase):
             # element: click or move a numbered control of the last screenshot instead of x, y (a blind model may too)
             use("click", element=14, clicks=2)
             self.assertEqual(asked[-1][1], {"action": "click", "button": "left", "clicks": 2, "element": 14, "shot": True})
-            orchestrator.computer_handler(vision=False)("move", element="3")
+            orchestrator.computer_handler(vision=False, permitted=True)("move", element="3")
             self.assertEqual(asked[-1][1], {"action": "move", "element": 3, "shot": False})
             use("click", element=2, steps=[{"action": "click", "element": 5}, {"action": "type", "text": "x"}])
             self.assertEqual(asked[-1][1]["steps"], [{"action": "click", "button": "left", "clicks": 1, "element": 2},
@@ -3369,7 +3406,7 @@ class CodeTests(unittest.TestCase):
                 with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
                     use(**args)
             with self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
-                orchestrator.computer_handler(vision=False)("zoom", x=1, y=1, to_x=2, to_y=2)
+                orchestrator.computer_handler(vision=False, permitted=True)("zoom", x=1, y=1, to_x=2, to_y=2)
             # steps: this action and the next ones as one "batch" request, one screenshot after the last
             self.assertEqual(use("click", x=1, y=2, steps=[{"action": "type", "text": "hi"}, {"action": "key", "keys": "Enter"}]).images, [image])
             self.assertEqual(asked[-1][1], {"action": "batch", "shot": True, "steps": [
@@ -3387,7 +3424,7 @@ class CodeTests(unittest.TestCase):
                               ({"action": "launch"}, "action must be"), ({"action": "click", "x": 1, "y": float("nan")}, "finite")):
                 with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, why):
                     use(**args)
-            blind = orchestrator.computer_handler(vision=False)
+            blind = orchestrator.computer_handler(vision=False, permitted=True)
             for args in ({"action": "screenshot"}, {"action": "click", "x": 1, "y": 1}):
                 with self.subTest(args), self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
                     blind(**args)
