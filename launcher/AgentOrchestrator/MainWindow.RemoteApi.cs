@@ -2021,7 +2021,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "\"pricing\":{\"prompt\":\"0.0000000285\",\"completion\":\"0.0000000923\",\"input_cache_read\":\"0.0000000285\"},\"uptime_last_30m\":93.33333333333333," +
         "\"supports_image_reference\":false,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
         "{\"provider_name\":\"GMICloud\",\"tag\":\"gmicloud/fp8\",\"quantization\":\"fp8\",\"context_length\":202752," +
-        "\"pricing\":{\"prompt\":\"0.00000006\",\"completion\":\"0.00000044\"},\"uptime_last_30m\":99.5,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
+        "\"pricing\":{\"prompt\":\"0.00000006\",\"completion\":\"0.00000044\",\"discount\":0.5},\"uptime_last_30m\":99.5,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
         "{\"provider_name\":\"Mystery\",\"tag\":\"mystery\",\"quantization\":\"unknown\",\"context_length\":65536,\"pricing\":{\"prompt\":\"-1\"}," +
         "\"uptime_last_30m\":null,\"supports_image_reference\":true,\"latency_last_30m\":null,\"throughput_last_30m\":null}," +
         "{\"provider_name\":\"Untagged\",\"quantization\":\"\",\"context_length\":8192,\"pricing\":{\"prompt\":\"0.00000000004\",\"completion\":\"0\"}," +
