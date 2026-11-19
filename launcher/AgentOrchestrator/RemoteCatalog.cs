@@ -19,6 +19,10 @@ internal static class RemoteCatalog
     public sealed record ProviderRow(string Name, string Tag, string Quantization, decimal? InputPerM, decimal? OutputPerM, decimal? CacheReadPerM,
         double? LatencySeconds, double? ThroughputTps, double? Uptime, bool Vision, long ContextLength, string Privacy = "", decimal? Discount = null);
 
+    // An image-generation model from OpenRouter's GET /images/models; a provider's USD price per generated image (null = not priced).
+    public sealed record ImageModelEntry(string Id, string Name);
+    public sealed record ImageProviderRow(string ProviderName, string ProviderTag, decimal? CostPerImage);
+
     // How a provider treats prompts, as OpenRouter's own provider page shows it (its API does not carry this): Private = no training and no
     // retention; Logs = may retain prompts but does not train; Trains = may train on them; "" = not known.
     public const string Private = "private", Logs = "logs", Trains = "trains";
@@ -190,6 +194,24 @@ internal static class RemoteCatalog
         }
     }
 
+    // OpenRouter's GET /images/models: {"data":[{id, name?}]}, image-generation models only, in the server's order.
+    public static List<ImageModelEntry> ParseImageModels(string json) => Reply(json, "OpenRouter's reply is not an image model list.", root =>
+        ((root as JsonObject)?["data"] as JsonArray ?? throw new FormatException()).OfType<JsonObject>()
+            .Select(e => new ImageModelEntry(Str(e["id"]) ?? "", Str(e["name"]) ?? "")).ToList());
+
+    public static async Task<List<ImageModelEntry>> FetchImageModelsAsync(HttpClient http, string? apiKey, CancellationToken ct) =>
+        ParseImageModels(await GetAsync(http, "https://openrouter.ai/api/v1/images/models", apiKey, ct).ConfigureAwait(false));
+
+    // OpenRouter's GET /images/models/{id}/endpoints: {"endpoints":[{provider_name, provider_tag, pricing:[{billable, cost_usd}]}]}, in the server's order.
+    public static List<ImageProviderRow> ParseImageProviders(string json) => Reply(json, "OpenRouter's reply is not an image provider list.", root =>
+        ((root as JsonObject)?["endpoints"] as JsonArray ?? throw new FormatException()).OfType<JsonObject>().Select(e =>
+            new ImageProviderRow(Str(e["provider_name"]) ?? "", Str(e["provider_tag"]) ?? "",
+                (e["pricing"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(p => Str(p["billable"]) == "output_image") is { } priced ? PerUnit(priced["cost_usd"]) : null))
+            .ToList());
+
+    public static async Task<List<ImageProviderRow>> FetchImageProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey) =>
+        ParseImageProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/images/models/{modelId}/endpoints", apiKey, ct).ConfigureAwait(false));
+
     private static async Task<string> GetAsync(HttpClient http, string url, string? apiKey, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -224,17 +246,20 @@ internal static class RemoteCatalog
         : Str(v) is { } s && double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out d) ? d : null;
 
     // OpenRouter prices are USD per token as strings ("0.0000000285"); negative ("-1": priced per request) = unknown.
-    private static decimal? PerMillion(JsonNode? n)
+    private static decimal? PerMillion(JsonNode? n) => PerUnit(n) * 1_000_000m;
+
+    // The same number unscaled: a per-image price (cost_usd) is a JSON number, a per-token one a string; both read here.
+    private static decimal? PerUnit(JsonNode? n)
     {
-        decimal perToken;
+        decimal perUnit;
         if (Str(n) is { } s)
         {
-            if (!decimal.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out perToken))
+            if (!decimal.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out perUnit))
                 return null;
         }
-        else if (n is not JsonValue v || !v.TryGetValue(out perToken))
+        else if (n is not JsonValue v || !v.TryGetValue(out perUnit))
             return null;
-        return perToken < 0 ? null : perToken * 1_000_000m;
+        return perUnit < 0 ? null : perUnit;
     }
 
     // --self-test: canned replies trimmed from the live services (2026-11-05), and the fetcher through a fake handler.
@@ -303,6 +328,15 @@ internal static class RemoteCatalog
             is [{ Vision: true, Tag: "openai", InputPerM: null }], "an image-input model is Vision");
         try { ParseProviders("{\"error\":{\"message\":\"No endpoints found\"}}"); Check(false, "a non-provider reply parsed"); }
         catch (InvalidOperationException e) when (e.Message.Contains("not a provider list")) { }
+        var images1 = ParseImageModels("{\"data\":[{\"id\":\"bytedance-seed/seedream-4.5\",\"name\":\"Seedream 4.5\",\"architecture\":{\"input_modalities\":[\"text\"],\"output_modalities\":[\"image\"]}},{\"id\":\"no-name/x\"}]}");
+        Check(images1 is [{ Id: "bytedance-seed/seedream-4.5", Name: "Seedream 4.5" }, { Id: "no-name/x", Name: "" }], "image models: id and name, name defaults to \"\"");
+        try { ParseImageModels("{\"data\":5}"); Check(false, "junk accepted as image models"); }
+        catch (InvalidOperationException e) when (e.Message.Contains("not a")) { }
+        try { ParseImageProviders("{\"error\":{}}"); Check(false, "junk accepted as image providers"); }
+        catch (InvalidOperationException e) when (e.Message.Contains("not a")) { }
+        var imageProviders1 = ParseImageProviders("{\"id\":\"x\",\"endpoints\":[{\"provider_name\":\"Seed\",\"provider_tag\":\"seed\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"image\",\"cost_usd\":0.04},{\"billable\":\"input_image\",\"unit\":\"image\",\"cost_usd\":0}]},{\"provider_name\":\"NoPricing\",\"provider_tag\":\"np\"}]}");
+        Check(imageProviders1 is [{ ProviderName: "Seed", ProviderTag: "seed", CostPerImage: 0.04m }, { ProviderName: "NoPricing", CostPerImage: null }], "image providers: price from the output_image entry, null when absent");
+
         var shields = ParsePrivacy(PrivacySample);
         Check(shields.Count == 3 && shields["gmicloud"] == Logs && shields["deepinfra"] == Private && shields["novita"] == Trains, $"privacy levels: {string.Join(",", shields)}");
         Check(ParsePrivacy("").Count == 0 && ParsePrivacy("<html>no data</html>").Count == 0 && PrivacyTip(Private).StartsWith("Private:") && PrivacyTip("") == "", "privacy of nothing");
@@ -361,6 +395,19 @@ internal static class RemoteCatalog
             fake.PageOnly = null;
             fake.Page = (HttpStatusCode.InternalServerError, "");
             Check((await FetchProvidersAsync(http, "deepseek/v3", CancellationToken.None)).Count == 2, "rows still shown when the page is down");
+            fake.Reply = (HttpStatusCode.OK, "{\"data\":[{\"id\":\"b\"},{\"id\":\"a\",\"name\":\"A\"}]}");
+            fake.All.Clear();
+            var imageModels = await FetchImageModelsAsync(http, " sk-test ", CancellationToken.None);
+            Check(imageModels is [{ Id: "b", Name: "" }, { Id: "a", Name: "A" }] && fake.All.Single().RequestUri?.ToString() == "https://openrouter.ai/api/v1/images/models" &&
+                fake.All.Single().Headers.Authorization?.ToString() == "Bearer sk-test", "image models fetch");
+            fake.Reply = (HttpStatusCode.Unauthorized, "{\"error\":{\"message\":\"Missing API key\"}}");
+            try { await FetchImageModelsAsync(http, null, CancellationToken.None); Check(false, "image models 401 did not throw"); }
+            catch (HttpRequestException e) when (e.Message.Contains("needs an API key") && e.StatusCode == HttpStatusCode.Unauthorized) { }
+            fake.Reply = (HttpStatusCode.OK, "{\"id\":\"x\",\"endpoints\":[{\"provider_name\":\"Seed\",\"provider_tag\":\"seed\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"image\",\"cost_usd\":0.04}]}]}");
+            fake.All.Clear();
+            var imageProviders = await FetchImageProvidersAsync(http, "bytedance-seed/seedream-4.5", CancellationToken.None, null);
+            Check(imageProviders is [{ ProviderName: "Seed", CostPerImage: 0.04m }] && fake.All.Single().RequestUri?.ToString() ==
+                "https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-4.5/endpoints", "image providers fetch");
         }).GetAwaiter().GetResult();
     }
 
