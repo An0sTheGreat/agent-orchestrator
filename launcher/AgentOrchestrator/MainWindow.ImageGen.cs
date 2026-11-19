@@ -32,6 +32,25 @@ public partial class MainWindow
     private string? _imgResultPath;
     private WrapPanel _imgGallery = null!;
     private bool _imgApplying; // Apply sets the controls: no recipe reset meanwhile
+    // The user's models folder (AppSettings.ImageModelsFolder, else the Hugging Face cache): its image models follow the
+    // recipes in the picker, and its files stand in for a recipe's downloads (a text encoder already there).
+    private List<ImageGen.LocalModel> _imgLocal = [];
+    private List<string> _imgFolderFiles = [];
+    private TextBlock _imgFolderText = null!;
+
+    private string ImageModelsFolder => _settings.ImageModelsFolder.Length > 0 ? _settings.ImageModelsFolder : LauncherLogic.HubCache();
+
+    private void ScanImageFolder()
+    {
+        try { (_imgLocal, _imgFolderFiles) = ImageGen.ScanFolder(ImageModelsFolder); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { (_imgLocal, _imgFolderFiles) = ([], []); }
+    }
+
+    // The picker's item at index: a recipe (downloaded) or a model from the folder (its recipe and path).
+    private (ImageRecipe Recipe, string Local) ImageChoice(int index) =>
+        index >= ImageGen.Recipes.Length && index - ImageGen.Recipes.Length < _imgLocal.Count
+            ? (_imgLocal[index - ImageGen.Recipes.Length].Recipe, _imgLocal[index - ImageGen.Recipes.Length].Path)
+            : (ImageGen.Recipes[Math.Clamp(index, 0, ImageGen.Recipes.Length - 1)], "");
 
     private void OpenImages()
     {
@@ -39,6 +58,7 @@ public partial class MainWindow
         CloseModelHub();
         CloseModelSettings();
         CloseSkills();
+        ScanImageFolder();
         if (ImagesView.Children.Count == 0)
             BuildImagesPage();
         RefreshImageRuntime();
@@ -97,14 +117,33 @@ public partial class MainWindow
         {
             if (_imgApplying || _imgRecipe.SelectedIndex < 0)
                 return;
-            var recipe = ImageGen.Recipes[_imgRecipe.SelectedIndex];
+            var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
             ApplyImageSettings(new ImageSettings
             {
-                RecipeId = recipe.Id, Prompt = _imgPrompt.Text, Negative = _imgNegative.Text, Steps = recipe.Steps, Cfg = recipe.Cfg, Sampler = recipe.Sampler,
+                RecipeId = recipe.Id, LocalModel = local, Prompt = _imgPrompt.Text, Negative = _imgNegative.Text, Steps = recipe.Steps, Cfg = recipe.Cfg, Sampler = recipe.Sampler,
                 Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1, LowVram = _imgLowVram.IsChecked == true, Strength = _imgStrength.Value, InitImage = _imgInit,
             });
         };
         left.Children.Add(_imgRecipe);
+        _imgFolderText = Muted("", 11.5);
+        _imgFolderText.Tag = "ImagesFolder";
+        _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
+        var chooseFolder = new Button { Content = "Choose folder…", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
+            ToolTip = "A folder with image models you already have (searched with its subfolders); only image models are listed" };
+        chooseFolder.Click += (_, _) =>
+        {
+            var dialog = new OpenFolderDialog { Title = "Folder with image models", InitialDirectory = Directory.Exists(ImageModelsFolder) ? ImageModelsFolder : "" };
+            if (dialog.ShowDialog(this) != true)
+                return;
+            _settings.ImageModelsFolder = dialog.FolderName;
+            _settings.Save();
+            ScanImageFolder();
+            RefreshImageRecipes();
+            Toast(_imgLocal.Count == 0 ? "No image models in that folder" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")} found");
+        };
+        var folderRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { chooseFolder, _imgFolderText } };
+        DockPanel.SetDock(chooseFolder, Dock.Left);
+        left.Children.Add(folderRow);
 
         Label("Prompt");
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -224,8 +263,9 @@ public partial class MainWindow
     private void ApplyImageSettings(ImageSettings s)
     {
         _imgApplying = true;
-        var recipe = ImageGen.Recipe(s.RecipeId);
-        _imgRecipe.SelectedIndex = Array.IndexOf(ImageGen.Recipes, recipe);
+        var local = _imgLocal.FindIndex(m => s.LocalModel.Length > 0 && string.Equals(m.Path, s.LocalModel, StringComparison.OrdinalIgnoreCase));
+        var recipe = local >= 0 ? _imgLocal[local].Recipe : ImageGen.Recipe(s.RecipeId);
+        _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe);
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
         _imgAspect.SelectedItem = ImageGen.Aspects.Contains(s.Aspect) ? s.Aspect : "1:1";
@@ -245,12 +285,12 @@ public partial class MainWindow
 
     private ImageSettings ReadImageSettings()
     {
-        var recipe = ImageGen.Recipes[Math.Max(0, _imgRecipe.SelectedIndex)];
+        var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
         var (aspect, longSide) = ((string)_imgAspect.SelectedItem, (int)_imgLongSide.SelectedItem);
         var (w, h) = ImageGen.Size(aspect, longSide, recipe.Multiple);
         return new()
         {
-            RecipeId = recipe.Id, Prompt = _imgPrompt.Text.Trim(), Negative = recipe.Negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
+            RecipeId = recipe.Id, LocalModel = local, Prompt = _imgPrompt.Text.Trim(), Negative = recipe.Negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
             Width = w, Height = h, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
@@ -282,13 +322,21 @@ public partial class MainWindow
     {
         var index = _imgRecipe.SelectedIndex;
         _imgApplying = true;
+        string Gb(long b) => $"{b / (double)(1L << 30):0.0} GB";
+        long Missing(ImageRecipe r, string local) => MissingImageFiles(r, local).Sum(f => f.Size);
         _imgRecipe.ItemsSource = ImageGen.Recipes.Select(r =>
-        {
-            var have = r.Files.All(f => HubDownloader.IsDownloaded(ImageGen.ModelsRoot, HubLayout.Flat, f.Repo, f.Path));
-            var state = have ? "Downloaded" : $"Download ({r.TotalSize / (double)(1L << 30):0.0} GB)";
-            return $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {state}";
-        }).ToList();
-        _imgRecipe.SelectedIndex = Math.Max(0, index);
+            {
+                var missing = Missing(r, "");
+                return $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
+            })
+            .Concat(_imgLocal.Select(m =>
+            {
+                var missing = Missing(m.Recipe, m.Path);
+                return $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
+            })).ToList();
+        _imgRecipe.SelectedIndex = Math.Clamp(index, 0, _imgRecipe.Items.Count - 1);
+        _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
+        _imgFolderText.ToolTip = ImageModelsFolder;
         _imgApplying = false;
     }
 
@@ -397,10 +445,19 @@ public partial class MainWindow
         }
     }
 
-    // The recipe's missing files from Hugging Face, sizes from the hub's tree listing.
-    private async Task DownloadImageModelsAsync(ImageRecipe recipe, CancellationToken ct)
+    // The recipe's files that are neither in the models folder nor downloaded yet.
+    private List<ImageFile> MissingImageFiles(ImageRecipe recipe, string local)
     {
-        var missing = recipe.Files.Where(f => !HubDownloader.IsDownloaded(ImageGen.ModelsRoot, HubLayout.Flat, f.Repo, f.Path)).ToList();
+        var paths = ImageGen.Paths(recipe, local, _imgFolderFiles, ImageGen.ModelsRoot);
+        return [.. recipe.Files.Where((f, i) => paths[i] == ImageGen.LocalPath(ImageGen.ModelsRoot, f) && !HubDownloader.IsDownloaded(ImageGen.ModelsRoot, HubLayout.Flat, f.Repo, f.Path))];
+    }
+
+    // The recipe's missing files from Hugging Face, sizes from the hub's tree listing.
+    private async Task DownloadImageModelsAsync(ImageRecipe recipe, string local, CancellationToken ct)
+    {
+        if (local.Length > 0 && !File.Exists(local))
+            throw new FileNotFoundException($"The model is gone: {local}");
+        var missing = MissingImageFiles(recipe, local);
         if (missing.Count == 0)
             return;
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan };
@@ -444,7 +501,7 @@ public partial class MainWindow
         if (!File.Exists(ImageGen.CliPath))
             await InstallImageRuntimeAsync(ct);
         var recipe = ImageGen.Recipe(s.RecipeId);
-        await DownloadImageModelsAsync(recipe, ct);
+        await DownloadImageModelsAsync(recipe, s.LocalModel, ct);
 
         var run = JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
         if (run.Seed < 0)
@@ -456,7 +513,7 @@ public partial class MainWindow
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = ImageGen.RuntimeFolder,
         };
-        foreach (var arg in ImageGen.Args(recipe, run, ImageGen.ModelsRoot, output))
+        foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
             info.ArgumentList.Add(arg);
         ImageStatus("Loading…", indeterminate: true);
         var tail = new Queue<string>();

@@ -2873,11 +2873,18 @@ public partial class MainWindow : Window
                 sidebarTags = SidebarList.Children.OfType<FrameworkElement>().Select(e => e.Tag as string).ToList();
                 if (sidebarTags.IndexOf("+Images") != sidebarTags.IndexOf("+Skills") + 1)
                     return Fail();
+                // the models folder lists its image models after the recipes, and not a chat GGUF
+                var imageModels = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-images-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(imageModels);
+                File.WriteAllBytes(Path.Combine(imageModels, "MOSS-Image-SFT-Q8_0.gguf"), [1]);
+                File.WriteAllBytes(Path.Combine(imageModels, "gemma-4-E4B-it-Q4_K_M.gguf"), [1]);
+                _settings.ImageModelsFolder = imageModels;
                 SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Images")]);
                 await Settle();
                 if (SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesPage") is not { IsVisible: true } || ImagesView.Visibility != Visibility.Visible ||
                     ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
-                    SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { Items.Count: 4 } recipes ||
+                    SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { } recipes || recipes.Items.Count != ImageGen.Recipes.Length + 1 ||
+                    recipes.Items[^1] is not string mossItem || !mossItem.StartsWith("MOSS-Image-SFT-Q8_0.gguf · MOSS-Image SFT") ||
                     SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
                     return Fail();
                 recipes.SelectedIndex = Array.FindIndex(ImageGen.Recipes, r => r.Id == "z-image-turbo");

@@ -318,6 +318,7 @@ internal sealed class AppSettings
     public List<string> SkillsOff { get; set; } = new();
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");
     public ImageSettings ImageGen { get; set; } = new(); // the Images page's last-used settings (MainWindow.ImageGen.cs)
+    public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).

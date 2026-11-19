@@ -11,9 +11,12 @@ namespace AgentOrchestrator;
 
 // One model file: the sd-cli flag that takes it, its repo and path in the repo, and its size (shown before the download;
 // the download asks the hub for the real size).
-internal sealed record ImageFile(string Flag, string Repo, string Path, long Size);
+// Local: a file of this kind (by name) in the user's models folder is used instead of downloading it, e.g. any Qwen3.5-9B GGUF.
+internal sealed record ImageFile(string Flag, string Repo, string Path, long Size, string Local = "");
 
-internal sealed record ImageRecipe(string Id, string Name, string Note, ImageFile[] Files, int Steps, double Cfg, string Sampler, bool Negative, int Multiple)
+// Family: a model file whose name matches it (the user's models folder) is this recipe's main model (Files[0]); the rest of
+// its files come from the folder (ImageFile.Local) or download.
+internal sealed record ImageRecipe(string Id, string Name, string Note, ImageFile[] Files, int Steps, double Cfg, string Sampler, bool Negative, int Multiple, string Family)
 {
     public long TotalSize => Files.Sum(f => f.Size);
 }
@@ -37,6 +40,7 @@ internal sealed class ImageSettings
     public bool LowVram { get; set; }
     public double Strength { get; set; } = 0.75;
     public string InitImage { get; set; } = ""; // "" = text to image
+    public string LocalModel { get; set; } = ""; // a main model from the user's models folder in place of the recipe's download
 }
 
 internal sealed record ImageProgress(int Step, int Steps, string Speed, bool Loading);
@@ -62,25 +66,32 @@ internal static class ImageGen
         [
             new("--diffusion-model", "leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q4_K.gguf", 3864250304),
             new("--vae", "Comfy-Org/Z-Image-Turbo", "split_files/vae/ae.safetensors", 335304388),
-            new("--llm", "unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2497281120),
-        ], Steps: 8, Cfg: 1.0, Sampler: "", Negative: false, Multiple: 16),
+            new("--llm", "unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2497281120, Local: @"^qwen3-4b.*\.gguf$"),
+        ], Steps: 8, Cfg: 1.0, Sampler: "", Negative: false, Multiple: 16, Family: @"z[-_ ]?image"),
         new("flux3-klein", "FLUX.3 Image Klein", "",
         [
             new("--diffusion-model", "leejet/flux-3-image-klein-GGUF", "flux3-image-klein-Q4_K.gguf", 3514023104),
             new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
-            new("--llm", "Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf", 2497281664),
-        ], Steps: 16, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16),
+            new("--llm", "Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf", 2497281664, Local: @"^qwen3-?vl-4b.*\.gguf$"),
+        ], Steps: 16, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?3"),
         new("qwen-image-2.1", "Qwen-Image 2.1", "Large",
         [
             new("--diffusion-model", "leejet/Qwen-Image-2.1-GGUF", "qwen_image_2.1-Q4_K.gguf", 4197494816),
             new("--vae", "Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors", 675509688),
-            new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800),
-        ], Steps: 20, Cfg: 6.0, Sampler: "euler", Negative: false, Multiple: 32),
+            new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800, Local: @"^qwen3-?vl-8b.*\.gguf$"),
+        ], Steps: 20, Cfg: 6.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image"),
+        new("moss-image-sft", "MOSS-Image SFT", "",
+        [
+            new("--diffusion-model", "leejet/MOSS-Image-SFT-GGUF", "MOSS-Image-SFT-Q4_K.gguf", 3327400800),
+            new("--vae", "Comfy-Org/MOSS-Image", "vae/flux2-vae.safetensors", 336211292),
+            new("--llm", "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf", 5680522464, Local: @"^qwen3\.5-9b.*\.gguf$"),
+            new("--tokenizer", "OpenMOSS-Team/MOSS-Image-Base", "tokenizer/tokenizer.json", 19989325),
+        ], Steps: 20, Cfg: 3.0, Sampler: "", Negative: true, Multiple: 16, Family: @"moss[-_ ]?image"),
         new("sdxl", "SDXL 1.0", "",
         [
             new("-m", "stabilityai/stable-diffusion-xl-base-1.0", "sd_xl_base_1.0.safetensors", 6938078334),
             new("--vae", "madebyollin/sdxl-vae-fp16-fix", "sdxl_vae.safetensors", 334641162),
-        ], Steps: 30, Cfg: 7.0, Sampler: "", Negative: true, Multiple: 64),
+        ], Steps: 30, Cfg: 7.0, Sampler: "", Negative: true, Multiple: 64, Family: @"sd_?xl"),
     ];
 
     public static ImageRecipe Recipe(string id) => Recipes.FirstOrDefault(r => r.Id == id) ?? Recipes[0];
@@ -96,11 +107,44 @@ internal static class ImageGen
         return a >= b ? (Round(longSide), Round(longSide * b / a)) : (Round(longSide * a / b), Round(longSide));
     }
 
-    public static List<string> Args(ImageRecipe recipe, ImageSettings s, string modelsRoot, string output)
+    // An image model in the user's models folder: its recipe and path. Chat GGUFs and an image model's parts (VAE, text
+    // encoder, LoRA...) are not listed; a file found twice (a hub snapshot's copies) is listed once.
+    internal sealed record LocalModel(ImageRecipe Recipe, string Path);
+    private const string Part = @"vae|text[-_]?encoder|mmproj|tokenizer|lora|controlnet|clip|t5xxl|upscal";
+
+    // ponytail: walks the whole folder on each page open; cache by folder timestamp if a huge folder makes that slow.
+    public static (List<LocalModel> Models, List<string> Files) ScanFolder(string folder)
+    {
+        if (folder.Length == 0 || !Directory.Exists(folder))
+            return ([], []);
+        var options = new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true, MaxRecursionDepth = 8 };
+        var files = Directory.EnumerateFiles(folder, "*", options)
+            .Where(f => f.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)).ToList();
+        var models = new List<LocalModel>();
+        var seen = new HashSet<(string, long)>();
+        foreach (var file in files)
+        {
+            var name = System.IO.Path.GetFileName(file);
+            if (Regex.IsMatch(name, Part, RegexOptions.IgnoreCase) || Recipes.FirstOrDefault(r => Regex.IsMatch(name, r.Family, RegexOptions.IgnoreCase)) is not { } recipe)
+                continue;
+            if (seen.Add((name.ToLowerInvariant(), new FileInfo(file).Length)))
+                models.Add(new(recipe, file));
+        }
+        return ([.. models.OrderBy(m => Array.IndexOf(Recipes, m.Recipe)).ThenBy(m => System.IO.Path.GetFileName(m.Path), StringComparer.OrdinalIgnoreCase)], files);
+    }
+
+    // Where each of the recipe's files is: the local main model, a matching file in the models folder, else the download.
+    public static List<string> Paths(ImageRecipe recipe, string localModel, IReadOnlyList<string> folderFiles, string modelsRoot) =>
+        [.. recipe.Files.Select((f, i) => i == 0 && localModel.Length > 0 ? localModel
+            : f.Local.Length > 0 && folderFiles.FirstOrDefault(p => Regex.IsMatch(System.IO.Path.GetFileName(p), f.Local, RegexOptions.IgnoreCase) &&
+                !Regex.IsMatch(System.IO.Path.GetFileName(p), "mmproj", RegexOptions.IgnoreCase)) is { } found ? found
+            : LocalPath(modelsRoot, f))];
+
+    public static List<string> Args(ImageRecipe recipe, ImageSettings s, IReadOnlyList<string> paths, string output)
     {
         var args = new List<string>();
-        foreach (var file in recipe.Files)
-            args.AddRange([file.Flag, LocalPath(modelsRoot, file)]);
+        foreach (var (file, path) in recipe.Files.Zip(paths))
+            args.AddRange([file.Flag, path]);
         static string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
         args.AddRange(["-p", s.Prompt]);
         if (recipe.Negative && s.Negative.Trim().Length > 0)
@@ -168,7 +212,7 @@ internal static class ImageGen
         var z = Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42 };
-        Check(string.Join(" ", Args(z, s, root, @"C:\o\x.png")) ==
+        Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
             @"--diffusion-model C:\m\Z-Image-Turbo-GGUF\z_image_turbo-Q4_K.gguf --vae C:\m\Z-Image-Turbo\split_files\vae\ae.safetensors " +
             @"--llm C:\m\Qwen3-4B-Instruct-2507-GGUF\Qwen3-4B-Instruct-2507-Q4_K_M.gguf -p a cat --cfg-scale 1 --steps 4 -W 512 -H 512 -s 42 -o C:\o\x.png",
             "Z-Image args (no negative prompt for a recipe without one)");
@@ -178,12 +222,32 @@ internal static class ImageGen
         s.Batch = 2;
         s.Sampler = "euler";
         s.Cfg = 7.5;
-        Check(string.Join(" ", Args(sdxl, s, root, "o.png")) ==
+        Check(string.Join(" ", Args(sdxl, s, Paths(sdxl, "", [], root), "o.png")) ==
             @"-m C:\m\stable-diffusion-xl-base-1.0\sd_xl_base_1.0.safetensors --vae C:\m\sdxl-vae-fp16-fix\sdxl_vae.safetensors -p a cat -n blurry " +
             @"--cfg-scale 7.5 --steps 4 -W 512 -H 512 -s 42 -b 2 --sampling-method euler --offload-to-cpu --vae-tiling -i C:\in.png --strength 0.6 -o o.png",
             "SDXL args with negative prompt, Low VRAM, init image");
         s.Negative = "  ";
-        Check(!Args(sdxl, s, root, "o.png").Contains("-n"), "a blank negative prompt is left out");
+        Check(!Args(sdxl, s, Paths(sdxl, "", [], root), "o.png").Contains("-n"), "a blank negative prompt is left out");
+        // the models folder: image models only (no chat GGUF, no parts), one per name and size; their parts found there or downloaded
+        var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-imgscan-{Guid.NewGuid():N}");
+        try
+        {
+            foreach (var (rel, bytes) in new[] { (@"a\MOSS-Image-SFT-Q8_0.gguf", 3), (@"a\diffusion_models\MOSS\MOSS-Image-SFT-Q8_0.gguf", 3), (@"b\Qwen3.5-9B-Q8_0.gguf", 2),
+                (@"b\Qwen3.5-9B-mmproj-F16.gguf", 1), (@"c\gemma-4-E4B-it-Q4_K_M.gguf", 1), (@"d\Qwen-Image-2.1-text_encoder-INT8.safetensors", 1), (@"d\qwen-image-2.1-Q4_K_M.gguf", 1),
+                (@"e\Z-Image-Turbo-FP8.safetensors", 1), (@"e\notes.txt", 1) })
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(folder, rel))!);
+                File.WriteAllBytes(Path.Combine(folder, rel), new byte[bytes]);
+            }
+            var (found, all) = ScanFolder(folder);
+            Check(string.Join(",", found.Select(m => $"{m.Recipe.Id}={Path.GetFileName(m.Path)}")) ==
+                "z-image-turbo=Z-Image-Turbo-FP8.safetensors,qwen-image-2.1=qwen-image-2.1-Q4_K_M.gguf,moss-image-sft=MOSS-Image-SFT-Q8_0.gguf", "the folder's image models");
+            var moss = found[^1];
+            var paths = Paths(moss.Recipe, moss.Path, all, root);
+            Check(paths[0] == moss.Path && paths[2] == Path.Combine(folder, @"b\Qwen3.5-9B-Q8_0.gguf") && paths[1] == LocalPath(root, moss.Recipe.Files[1]) &&
+                paths[3] == LocalPath(root, moss.Recipe.Files[3]), "MOSS: its own model, the folder's Qwen3.5-9B, the rest downloaded");
+        }
+        finally { Directory.Delete(folder, recursive: true); }
         Check(Size("16:9", 1024, 32) == (1024, 576) && Size("16:9", 1024, 64) == (1024, 576), "16:9 at 1024");
         Check(Size("16:9", 1536, 32) == (1536, 864) && Size("16:9", 1536, 64) == (1536, 896), "16:9 at 1536 rounds to the multiple");
         Check(Size("9:16", 1024, 64) == (576, 1024) && Size("3:4", 768, 16) == (576, 768) && Size("1:1", 512, 64) == (512, 512), "portrait and square sizes");
