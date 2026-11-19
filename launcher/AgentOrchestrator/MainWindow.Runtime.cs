@@ -142,7 +142,7 @@ public partial class MainWindow
     }
 
     // Streams url to file; the copy loop resumes on the UI thread between reads, so the status line updates directly.
-    private async Task DownloadAsync(HttpClient http, string url, string file, string name, CancellationToken token)
+    private async Task DownloadAsync(HttpClient http, string url, string file, string name, CancellationToken token, TextBlock? status = null)
     {
         using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
         response.EnsureSuccessStatusCode();
@@ -159,7 +159,7 @@ public partial class MainWindow
             if (done - shown < 1 << 20)
                 continue;
             shown = done;
-            LlamaStatus.Text = total > 0 ? $"Downloading {name}: {done * 100 / total}% of {total / (1 << 20)} MB" : $"Downloading {name}: {done / (1 << 20)} MB";
+            (status ?? LlamaStatus).Text = total > 0 ? $"Downloading {name}: {done * 100 / total}% of {total / (1 << 20)} MB" : $"Downloading {name}: {done / (1 << 20)} MB";
         }
     }
 

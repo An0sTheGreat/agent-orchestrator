@@ -33,6 +33,7 @@ public partial class MainWindow
         CloseRemoteApi();
         CloseModelHub();
         CloseSkills();
+        CloseImages();
         Reveal(CodeView, false);
         Reveal(ChatView, false);
         Reveal(ModelSettingsView, true);

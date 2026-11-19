@@ -84,6 +84,7 @@ public partial class MainWindow
             SidebarList.Children.Add(SidebarAction("", "Remote API", () => OpenRemoteApi()));
             SidebarList.Children.Add(SidebarAction("", "Models Hub", OpenModelHub));
             SidebarList.Children.Add(SidebarAction("", "Skills", OpenSkills));
+            SidebarList.Children.Add(SidebarAction("", "Images", OpenImages));
             AddSidebarSection(view, chat: true, "CHAT");
             AddSidebarSection(view, chat: false, "CODE");
         }
@@ -92,6 +93,7 @@ public partial class MainWindow
             SidebarList.Children.Add(SidebarAction("", "New chat", NewSidebarChat));
             SidebarList.Children.Add(SidebarAction("", "Search", OpenSearch));
             SidebarList.Children.Add(SidebarAction("", "New project", NewSidebarProject));
+            SidebarList.Children.Add(SidebarAction("", "Images", OpenImages));
             AddSidebarSection(view, NavChat.IsChecked == true, null);
         }
         RefreshTitleChat(view);

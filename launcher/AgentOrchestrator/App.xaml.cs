@@ -26,6 +26,7 @@ public partial class App : Application
             RemoteTunnel.SelfTest();
             ApiKeys.SelfTest();
             AgentOrchestrator.MainWindow.NotifySelfTest();
+            ImageGen.ImageGenSelfTest();
             Shutdown(0);
             return;
         }
@@ -104,9 +105,27 @@ public partial class App : Application
     {
         var user = GetForegroundWindow();
         var pid = (uint)Environment.ProcessId;
+        // Popups (menus, tooltips, pickers) are their own windows, which WPF keeps on a monitor: they go off-screen too,
+        // menus and tooltips as they open, any other popup on the next tick.
+        const uint NoSize = 0x0001, NoZOrder = 0x0004, NoActivate = 0x0010;
+        static void OffScreen(IntPtr hwnd) => SetWindowPos(hwnd, IntPtr.Zero, -20000, -20000, 0, 0, NoSize | NoZOrder | NoActivate);
+        RoutedEventHandler opened = (sender, _) =>
+        {
+            if (PresentationSource.FromVisual((System.Windows.Media.Visual)sender) is System.Windows.Interop.HwndSource source)
+                OffScreen(source.Handle);
+        };
+        EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ContextMenu), System.Windows.Controls.ContextMenu.OpenedEvent, opened);
+        EventManager.RegisterClassHandler(typeof(System.Windows.Controls.ToolTip), System.Windows.Controls.ToolTip.OpenedEvent, opened);
         var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         timer.Tick += (_, _) =>
         {
+            var windows = Current.Windows.Cast<Window>().Select(w => new System.Windows.Interop.WindowInteropHelper(w).Handle).ToHashSet();
+            EnumThreadWindows(GetCurrentThreadId(), (hwnd, _) =>
+            {
+                if (!windows.Contains(hwnd) && IsWindowVisible(hwnd) && GetWindowRect(hwnd, out var rect) && rect.Left > -10000)
+                    OffScreen(hwnd);
+                return true;
+            }, IntPtr.Zero);
             foreach (Window w in Current.Windows)
                 if (new System.Windows.Interop.WindowInteropHelper(w).Handle is var hwnd && hwnd != IntPtr.Zero)
                     SetWindowPos(hwnd, new IntPtr(1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010); // HWND_BOTTOM; NOSIZE, NOMOVE, NOACTIVATE
@@ -117,6 +136,12 @@ public partial class App : Application
         timer.Start();
     }
 
+    private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr param);
+    private struct Rect { public int Left, Top, Right, Bottom; }
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool EnumThreadWindows(uint thread, EnumWindowsProc callback, IntPtr param);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);

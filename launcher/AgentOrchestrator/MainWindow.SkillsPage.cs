@@ -17,6 +17,7 @@ public partial class MainWindow
         CloseRemoteApi();
         CloseModelHub();
         CloseModelSettings();
+        CloseImages();
         RenderSkillsPage();
         Reveal(CodeView, false);
         Reveal(ChatView, false);

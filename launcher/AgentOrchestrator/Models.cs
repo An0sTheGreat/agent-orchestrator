@@ -317,6 +317,7 @@ internal sealed class AppSettings
     // The skills bundled with the app start on; these are the ones the user switched off (folder names). A newly bundled skill is on.
     public List<string> SkillsOff { get; set; } = new();
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");
+    public ImageSettings ImageGen { get; set; } = new(); // the Images page's last-used settings (MainWindow.ImageGen.cs)
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).

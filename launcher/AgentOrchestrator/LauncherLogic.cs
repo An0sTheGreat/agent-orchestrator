@@ -726,7 +726,8 @@ internal static class LauncherLogic
     // folder is moved aside and deleted only once the new one is in place, and moved back if that fails.
     // Entry names are cut to their last segment ("..\x.dll" is x.dll) and must still land inside the new folder.
     // moveDirectory is a test seam for a swap that fails.
-    public static void InstallLlamaServer(IEnumerable<string> zips, string target, string version, Action<string, string>? moveDirectory = null)
+    public static void InstallLlamaServer(IEnumerable<string> zips, string target, string version, Action<string, string>? moveDirectory = null,
+        string exe = "llama-server.exe") // the image runtime installs sd-cli.exe the same way (ImageGen)
     {
         moveDirectory ??= Directory.Move;
         CleanLlamaLeftovers(target);
@@ -745,8 +746,8 @@ internal static class LauncherLogic
                         if (name.Length > 0 && destination.StartsWith(Path.GetFullPath(fresh) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                             System.IO.Compression.ZipFileExtensions.ExtractToFile(entry, destination, overwrite: true);
                     }
-            if (!File.Exists(Path.Combine(fresh, "llama-server.exe")))
-                throw new InvalidOperationException("The download has no llama-server.exe.");
+            if (!File.Exists(Path.Combine(fresh, exe)))
+                throw new InvalidOperationException($"The download has no {exe}.");
             File.WriteAllText(Path.Combine(fresh, "version.txt"), version);
             if (Directory.Exists(target))
                 moveDirectory(target, old);

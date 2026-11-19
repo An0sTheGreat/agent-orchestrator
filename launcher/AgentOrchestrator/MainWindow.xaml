@@ -1173,6 +1173,7 @@
             <Grid x:Name="ModelHubView" Grid.Column="1" Visibility="Collapsed" />
             <!-- The Skills page (the sidebar's Skills), built by MainWindow.SkillsPage.cs; in place of Code and Chat while open -->
             <Grid x:Name="SkillsView" Grid.Column="1" Visibility="Collapsed" />
+            <Grid x:Name="ImagesView" Grid.Column="1" Visibility="Collapsed" />
             <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the worker tabs and the selected
                  worker's settings (MainWindow.WorkerTabs.cs); in place of Code and Chat while open -->
             <Grid x:Name="ModelSettingsView" Grid.Column="1" Visibility="Collapsed">

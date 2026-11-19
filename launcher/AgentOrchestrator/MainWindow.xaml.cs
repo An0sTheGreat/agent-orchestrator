@@ -2285,8 +2285,8 @@ public partial class MainWindow : Window
                 // a section header's + and folder buttons ("+new:code", "+project:code")
                 void ClickHeader(string tag) => SidebarList.Children.OfType<Grid>().SelectMany(g => g.Children.OfType<Button>()).Single(b => (string?)b.Tag == tag)
                     .RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                // New, Search, Model Settings, Remote API, Models Hub and Skills, then the CHAT section (no chats yet: its empty line) over the CODE section
-                const string top = "+New,+Search,+Model Settings,+Remote API,+Models Hub,+Skills,SECTION:CHAT,?,SECTION:CODE";
+                // New, Search, Model Settings, Remote API, Models Hub, Skills and Images, then the CHAT section (no chats yet: its empty line) over the CODE section
+                const string top = "+New,+Search,+Model Settings,+Remote API,+Models Hub,+Skills,+Images,SECTION:CHAT,?,SECTION:CODE";
                 await Settle();
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
@@ -2868,6 +2868,28 @@ public partial class MainWindow : Window
                 await Settle(); // the page fades out
                 await Task.Delay(300);
                 if (SkillsView.Visibility == Visibility.Visible)
+                    return Fail();
+                // The Images page (the sidebar's Images, after Skills): four recipes; the negative prompt only for a recipe that takes one.
+                sidebarTags = SidebarList.Children.OfType<FrameworkElement>().Select(e => e.Tag as string).ToList();
+                if (sidebarTags.IndexOf("+Images") != sidebarTags.IndexOf("+Skills") + 1)
+                    return Fail();
+                SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Images")]);
+                await Settle();
+                if (SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesPage") is not { IsVisible: true } || ImagesView.Visibility != Visibility.Visible ||
+                    ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
+                    SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { Items.Count: 4 } recipes ||
+                    SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
+                    return Fail();
+                recipes.SelectedIndex = Array.FindIndex(ImageGen.Recipes, r => r.Id == "z-image-turbo");
+                var zHidden = negative.Visibility != Visibility.Visible;
+                recipes.SelectedIndex = Array.FindIndex(ImageGen.Recipes, r => r.Id == "sdxl");
+                if (!zHidden || negative.Visibility != Visibility.Visible || _imgSteps.Value != 30 ||
+                    SmokeFind<TextBlock>(ImagesView, t => t.Tag as string == "ImagesSize")?.Text != "1024 × 1024")
+                    return Fail();
+                ShowView(chat: true);
+                await Settle();
+                await Task.Delay(300);
+                if (ImagesView.Visibility == Visibility.Visible)
                     return Fail();
                 bool NewSkillRefused(string name)
                 {
@@ -4760,6 +4782,7 @@ public partial class MainWindow : Window
         CloseModelHub();
         CloseModelSettings();
         CloseSkills();
+        CloseImages();
         NavCode.IsChecked = code;
         NavChat.IsChecked = chat;
         RefreshCardVisibility(); // the run output skips RefreshChatTarget below
@@ -5125,6 +5148,7 @@ public partial class MainWindow : Window
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
+        CancelImageGen();
         StopLocalServer();
         _settings.Save();
     }
