@@ -55,7 +55,7 @@ internal static class ImageGen
     public static string ImagesFolder => Path.Combine(AppSettings.DataRoot, "images");
     public const string ReleaseUrl = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
 
-    public static readonly string[] Aspects = ["1:1", "4:3", "3:4", "16:9", "9:16"];
+    public static readonly string[] Aspects = ["1:1", "5:4", "4:5", "4:3", "3:4", "16:9", "9:16"];
     public static readonly int[] LongSides = [512, 768, 1024, 1536];
     // sd-cli --help's --sampling-method list
     public static readonly string[] Samplers = ["euler", "euler_a", "heun", "dpm2", "dpm++2s_a", "dpm++2m", "dpm++2mv2", "ipndm", "ipndm_v", "lcm",
@@ -264,6 +264,7 @@ internal static class ImageGen
         Check(Size("16:9", 1024, 32) == (1024, 576) && Size("16:9", 1024, 64) == (1024, 576), "16:9 at 1024");
         Check(Size("16:9", 1536, 32) == (1536, 864) && Size("16:9", 1536, 64) == (1536, 896), "16:9 at 1536 rounds to the multiple");
         Check(Size("9:16", 1024, 64) == (576, 1024) && Size("3:4", 768, 16) == (576, 768) && Size("1:1", 512, 64) == (512, 512), "portrait and square sizes");
+        Check(Size("4:5", 1024, 16) == (816, 1024) && Size("5:4", 1024, 16) == (1024, 816), "4:5 and 5:4 at 1024");
         Check(ParseProgress("\r  |================>                                 | 3/8 - 1.23s/it\u001b[K") == new ImageProgress(3, 8, "1.23 s/it", false), "a sampling line");
         Check(ParseProgress("  |==================================================| 20/20 -     4.56it/s - ETA 00:01") is { Step: 20, Steps: 20, Speed: "4.56 it/s" }, "it/s");
         Check(ParseProgress("  |#########                                         | 120/662 - 812.40MB/s") is { Loading: true, Step: 120 }, "a loading line");
