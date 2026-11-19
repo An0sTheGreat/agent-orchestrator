@@ -43,6 +43,7 @@ internal sealed class ImageSettings
     public string LocalModel { get; set; } = ""; // a main model from the user's models folder in place of the recipe's download
     public string RemoteModel { get; set; } = ""; // "" = local; an OpenRouter image model id otherwise
     public string RemoteProvider { get; set; } = ""; // comma-separated provider tags to pin, "" = OpenRouter chooses
+    public string SharedModel { get; set; } = ""; // "" = not shared; a model id from the primary PC's /images/models otherwise (ImageShare.cs)
 }
 
 internal sealed record ImageProgress(int Step, int Steps, string Speed, bool Loading);
