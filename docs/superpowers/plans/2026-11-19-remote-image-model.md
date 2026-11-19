@@ -162,6 +162,7 @@ With the fake `_remoteHttp` answering `POST https://openrouter.ai/api/v1/images`
 4. `400` with `{"error":{"message":"bad aspect ratio"}}`: the message surfaces, no file written.
 5. `200` with one image while `_imgBatch` requests 2: succeeds with exactly one new picture, no crash.
 6. Remote mode, blank prompt: the existing "Write a prompt first" toast, nothing posted.
+7. Remote mode switched on but no model chosen yet (`ReadImageSettings().RemoteModel == ""` while `_imgRemoteMode` is true — `_imgRemoteMode` is a private field of this same `MainWindow` partial class, so `GenerateImagesAsync` can read it directly): clicking Generate toasts "Choose an image model first" (same `Toast(..., "#F7C873")` style as the blank-prompt toast), posts nothing, and does NOT fall through to the local sd-cli path. (Task 2 deliberately leaves `RemoteModel` empty in this state; this task owns refusing it.)
 
 - [ ] **Step 2: Run and confirm it fails**
 
@@ -169,7 +170,7 @@ Run: `"launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.ex
 
 - [ ] **Step 3: Branch `GenerateImagesAsync` on `s.RemoteModel`**
 
-After `ImageGen.OutputNames(...)` (`:671`): `if (s.RemoteModel.Length > 0) await GenerateRemoteImageAsync(run, files, ct); else { /* today's local block, unchanged */ }`. Shared tail (`:745-757`) and the prompt-empty check (`:652-655`) stay as they are.
+Right after the existing blank-prompt check (`:652-655`), add: `if (_imgRemoteMode && s.RemoteModel.Length == 0) { Toast("Choose an image model first", "#F7C873"); return; }`. Then, after `ImageGen.OutputNames(...)` (`:671`): `if (s.RemoteModel.Length > 0) await GenerateRemoteImageAsync(run, files, ct); else { /* today's local block, unchanged */ }`. Shared tail (`:745-757`) and the prompt-empty check (`:652-655`) stay as they are.
 
 - [ ] **Step 4: Implement `GenerateRemoteImageAsync(ImageSettings s, List<(string Written, string Final, long Seed)> files, CancellationToken ct)`**
 
