@@ -953,101 +953,33 @@ public partial class MainWindow
         _settings.ImageGen = s;
         _settings.Save();
         RefreshImageRuntime(); // the VRAM hint
-        var recipe = ImageGen.Recipe(s.RecipeId);
-        if (s.RemoteModel.Length == 0) // OpenRouter needs neither the runtime nor the model files
-        {
-            if (!File.Exists(ImageGen.CliPath))
-                await InstallImageRuntimeAsync(ct);
-            await DownloadImageModelsAsync(recipe, s.LocalModel, ct);
-        }
-
         var run = JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
         if (run.Seed < 0)
             run.Seed = Random.Shared.Next(); // chosen here so the sidecar records it
-        Directory.CreateDirectory(ImageGen.ImagesFolder);
-        var (output, files) = ImageGen.OutputNames(ImageGen.ImagesFolder, DateTime.Now, run.Seed, run.Batch);
-        if (s.RemoteModel.Length > 0)
+        List<(string Written, string Final, long Seed)> files;
+        if (s.RemoteModel.Length > 0) // OpenRouter needs neither the runtime nor the model files
         {
+            Directory.CreateDirectory(ImageGen.ImagesFolder);
+            files = ImageGen.OutputNames(ImageGen.ImagesFolder, DateTime.Now, run.Seed, run.Batch).Files;
             // what OpenRouter never read is not recorded beside the pictures (the saved settings above keep it for the way back)
             (run.Negative, run.Sampler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", 0, 0, 0);
             await GenerateRemoteImageAsync(run, files, ct);
         }
         else
-        {
-            var info = new ProcessStartInfo(ImageGen.CliPath)
+            files = await GenerateLocalAsync(run, ImageGen.ImagesFolder, () =>
             {
-                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = ImageGen.RuntimeFolder,
-            };
-            foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
-                info.ArgumentList.Add(arg);
-            ImageStatus("Loading…", indeterminate: true);
-            var tail = new Queue<string>();
-            void Keep(string line)
-            {
-                lock (tail)
-                {
-                    tail.Enqueue(line);
-                    if (tail.Count > 40)
-                        tail.Dequeue();
-                }
-            }
-            using var process = _imgProcess = Process.Start(info) ?? throw new InvalidOperationException("sd-cli did not start");
-            using var kill = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } });
-            // stdout: log lines and the \r-separated progress line
-            var stdout = Task.Run(async () =>
-            {
-                var buffer = new char[4096];
-                var line = new StringBuilder();
-                int read;
-                while ((read = await process.StandardOutput.ReadAsync(buffer)) > 0)
-                    for (var i = 0; i < read; i++)
-                    {
-                        if (buffer[i] is not ('\r' or '\n'))
-                        {
-                            line.Append(buffer[i]);
-                            continue;
-                        }
-                        var text = line.ToString();
-                        line.Clear();
-                        if (text.Trim().Length == 0)
-                            continue;
-                        if (ImageGen.ParseProgress(text) is { } p)
-                            _ = Dispatcher.InvokeAsync(() =>
-                            {
-                                if (p.Loading)
-                                    ImageStatus($"Loading… {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
-                                else
-                                    ImageStatus($"Step {p.Step}/{p.Steps} · {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
-                            });
-                        else
-                            Keep(text);
-                    }
-            });
-            var stderr = Task.Run(async () =>
-            {
-                while (await process.StandardError.ReadLineAsync() is { } text)
-                    Keep(text);
-            });
-            await process.WaitForExitAsync(CancellationToken.None); // a cancel kills it, and this returns
-            await Task.WhenAll(stdout, stderr);
-            ct.ThrowIfCancellationRequested();
-            if (process.ExitCode != 0 || !File.Exists(files[0].Written))
-            {
-                Log($"sd-cli exited with {process.ExitCode}:\n" + string.Join("\n", tail));
-                var outOfMemory = tail.Any(t => t.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || t.Contains("out of memory", StringComparison.OrdinalIgnoreCase));
-                if (outOfMemory && !s.LowVram) // once more with the weights in RAM; Low VRAM stays ticked for next time
-                {
-                    Toast("Not enough GPU memory: trying again with Low VRAM");
-                    _imgLowVram.IsChecked = true;
-                    await GenerateImagesAsync(ct);
-                    return;
-                }
-                throw new InvalidOperationException(outOfMemory
-                    ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
-                    : $"sd-cli failed: {tail.FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim() ?? $"exit code {process.ExitCode}"} (the log has its output)");
-            }
-        }
+                Toast("Not enough GPU memory: trying again with Low VRAM");
+                _imgLowVram.IsChecked = s.LowVram = true; // Low VRAM stays ticked for next time
+                _settings.Save();
+            }, ct);
+        SaveImageFiles(run, files);
+        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
+    }
+
+    // The pictures written by a generation, renamed to their final names, each with its settings beside it as <name>.json;
+    // the gallery shows them and the first goes on the stage.
+    private void SaveImageFiles(ImageSettings run, List<(string Written, string Final, long Seed)> files)
+    {
         string? first = null;
         foreach (var (written, final, seed) in files.Where(f => File.Exists(f.Written)))
         {
@@ -1057,10 +989,93 @@ public partial class MainWindow
             File.WriteAllText(Path.ChangeExtension(final, ".json"), JsonSerializer.Serialize(run, new JsonSerializerOptions { WriteIndented = true }));
             first ??= final;
         }
-        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
         RefreshGallery();
         if (first is not null)
             ShowOnStage(first);
+    }
+
+    // sd-cli on this PC (the Images page and the primary PC's share server): installs the runtime and downloads the model's
+    // missing files first, writes the pictures into folder (run.Seed chosen), progress in the status line. Out of GPU memory
+    // without Low VRAM: once more with it (onLowVram is told). Returns the pictures' names (ImageGen.OutputNames), not renamed.
+    private async Task<List<(string Written, string Final, long Seed)>> GenerateLocalAsync(ImageSettings run, string folder, Action? onLowVram, CancellationToken ct)
+    {
+        var recipe = ImageGen.Recipe(run.RecipeId);
+        if (!File.Exists(ImageGen.CliPath))
+            await InstallImageRuntimeAsync(ct);
+        await DownloadImageModelsAsync(recipe, run.LocalModel, ct);
+        Directory.CreateDirectory(folder);
+        var (output, files) = ImageGen.OutputNames(folder, DateTime.Now, run.Seed, run.Batch);
+        var info = new ProcessStartInfo(ImageGen.CliPath)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = ImageGen.RuntimeFolder,
+        };
+        foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
+            info.ArgumentList.Add(arg);
+        ImageStatus("Loading…", indeterminate: true);
+        var tail = new Queue<string>();
+        void Keep(string line)
+        {
+            lock (tail)
+            {
+                tail.Enqueue(line);
+                if (tail.Count > 40)
+                    tail.Dequeue();
+            }
+        }
+        using var process = _imgProcess = Process.Start(info) ?? throw new InvalidOperationException("sd-cli did not start");
+        using var kill = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } });
+        // stdout: log lines and the \r-separated progress line
+        var stdout = Task.Run(async () =>
+        {
+            var buffer = new char[4096];
+            var line = new StringBuilder();
+            int read;
+            while ((read = await process.StandardOutput.ReadAsync(buffer)) > 0)
+                for (var i = 0; i < read; i++)
+                {
+                    if (buffer[i] is not ('\r' or '\n'))
+                    {
+                        line.Append(buffer[i]);
+                        continue;
+                    }
+                    var text = line.ToString();
+                    line.Clear();
+                    if (text.Trim().Length == 0)
+                        continue;
+                    if (ImageGen.ParseProgress(text) is { } p)
+                        _ = Dispatcher.InvokeAsync(() =>
+                        {
+                            if (p.Loading)
+                                ImageStatus($"Loading… {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
+                            else
+                                ImageStatus($"Step {p.Step}/{p.Steps} · {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
+                        });
+                    else
+                        Keep(text);
+                }
+        });
+        var stderr = Task.Run(async () =>
+        {
+            while (await process.StandardError.ReadLineAsync() is { } text)
+                Keep(text);
+        });
+        await process.WaitForExitAsync(CancellationToken.None); // a cancel kills it, and this returns
+        await Task.WhenAll(stdout, stderr);
+        ct.ThrowIfCancellationRequested();
+        if (process.ExitCode == 0 && File.Exists(files[0].Written))
+            return files;
+        Log($"sd-cli exited with {process.ExitCode}:\n" + string.Join("\n", tail));
+        var outOfMemory = tail.Any(t => t.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || t.Contains("out of memory", StringComparison.OrdinalIgnoreCase));
+        if (outOfMemory && !run.LowVram) // once more with the weights in RAM
+        {
+            run.LowVram = true;
+            onLowVram?.Invoke();
+            return await GenerateLocalAsync(run, folder, onLowVram, ct);
+        }
+        throw new InvalidOperationException(outOfMemory
+            ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
+            : $"sd-cli failed: {tail.FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim() ?? $"exit code {process.ExitCode}"} (the log has its output)");
     }
 
     // POST /images on OpenRouter with the chosen model (and the providers pinned in order, no fallbacks, as the chat side does);
