@@ -2966,10 +2966,12 @@ public partial class MainWindow : Window
                     // Generate on OpenRouter: the request, the key, the pictures, the errors
                     var onePixel = new System.Windows.Media.Imaging.PngBitmapEncoder();
                     onePixel.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(System.Windows.Media.Imaging.BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[] { 0, 0, 255, 255 }, 4)));
+                    string goodPicture;
                     using (var pngBytes = new MemoryStream())
                     {
                         onePixel.Save(pngBytes);
-                        imgFake.ImagesBody = "{\"data\":[{\"b64_json\":\"" + Convert.ToBase64String(pngBytes.ToArray()) + "\"}]}";
+                        goodPicture = Convert.ToBase64String(pngBytes.ToArray());
+                        imgFake.ImagesBody = "{\"data\":[{\"b64_json\":\"" + goodPicture + "\"}]}";
                     }
                     Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "sk-or-smoke");
                     string[] Pictures() => Directory.GetFiles(ImageGen.ImagesFolder, "*.png");
@@ -3012,6 +3014,24 @@ public partial class MainWindow : Window
                     await RunGenerate();
                     if (!Toasted("OpenRouter returned 502") || Pictures().Except(before).Any())
                         return Fail();
+                    // a 200 that cannot be used: one short error and nothing on disk (a bad item fails the whole reply, the good one is not kept)
+                    imgFake.ImagesStatus = System.Net.HttpStatusCode.OK;
+                    foreach (var (badReply, batchIndex) in new[]
+                    {
+                        ("{\"data\":[{\"b64_json\":\"" + goodPicture + "\"},{\"b64_json\":\"!!not base64!!\"}]}", 1), // the second picture is not base64
+                        ("{\"id\":\"gen-1\"}", 0), // no data
+                        ("{\"data\":[{\"b64_json\":\"" + Convert.ToBase64String("hello"u8.ToArray()) + "\"}]}", 0), // not a picture
+                    })
+                    {
+                        ToastStack.Children.Clear();
+                        (imgFake.ImagesBody, _imgBatch.SelectedIndex) = (badReply, batchIndex);
+                        (before, posted) = (Pictures(), imgFake.Posted.Count);
+                        await RunGenerate();
+                        if (imgFake.Posted.Count != posted + 1 || !Toasted("OpenRouter returned an unreadable reply") || Pictures().Except(before).Any() || Pictures().Length != before.Length ||
+                            SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery")?.Children.Count != before.Length)
+                            return Fail();
+                    }
+                    _imgBatch.SelectedIndex = 0;
                     Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null); // no key: the error names the variable, nothing is sent
                     posted = imgFake.Posted.Count;
                     await RunGenerate();

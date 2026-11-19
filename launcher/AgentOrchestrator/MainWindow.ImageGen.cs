@@ -966,18 +966,32 @@ public partial class MainWindow
             catch (Exception e) when (e is JsonException or InvalidOperationException) { } // not {"error":{"message":…}}: the status code says it
             throw new InvalidOperationException(string.IsNullOrEmpty(message) ? $"OpenRouter returned {(int)response.StatusCode}" : message);
         }
-        using var reply = JsonDocument.Parse(text);
-        var pictures = 0;
-        foreach (var item in reply.RootElement.GetProperty("data").EnumerateArray().Take(files.Count))
+        // Decode and check every picture before writing any, so one bad item fails the whole call with nothing left on disk.
+        var pictures = new List<byte[]>();
+        try
         {
-            var bytes = item.TryGetProperty("b64_json", out var b64) && b64.GetString() is { Length: > 0 } data ? Convert.FromBase64String(data)
-                : item.TryGetProperty("url", out var url) && url.GetString() is { Length: > 0 } link ? await _remoteHttp.GetByteArrayAsync(link, ct)
-                : null;
-            if (bytes is null)
-                continue;
-            await File.WriteAllBytesAsync(files[pictures++].Written, bytes, ct);
+            using var reply = JsonDocument.Parse(text);
+            if (!reply.RootElement.TryGetProperty("data", out var list))
+                throw new InvalidOperationException("no data");
+            foreach (var item in list.EnumerateArray().Take(files.Count))
+            {
+                var bytes = item.TryGetProperty("b64_json", out var b64) && b64.GetString() is { Length: > 0 } data ? Convert.FromBase64String(data)
+                    : item.TryGetProperty("url", out var url) && url.GetString() is { Length: > 0 } link ? await _remoteHttp.GetByteArrayAsync(link, ct)
+                    : null;
+                if (bytes is null)
+                    continue;
+                using (var stream = new MemoryStream(bytes))
+                    System.Windows.Media.Imaging.BitmapFrame.Create(stream); // throws when the bytes are not a picture
+                pictures.Add(bytes);
+            }
         }
-        if (pictures == 0)
+        catch (Exception e) when (e is not (OperationCanceledException or HttpRequestException))
+        {
+            throw new InvalidOperationException("OpenRouter returned an unreadable reply", e);
+        }
+        for (var i = 0; i < pictures.Count; i++)
+            await File.WriteAllBytesAsync(files[i].Written, pictures[i], ct);
+        if (pictures.Count == 0)
             throw new InvalidOperationException("OpenRouter returned no pictures");
     }
 }
