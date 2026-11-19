@@ -2028,6 +2028,13 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "{\"provider_name\":\"Untagged\",\"quantization\":\"\",\"context_length\":8192,\"pricing\":{\"prompt\":\"0.00000000004\",\"completion\":\"0\"}," +
         "\"uptime_last_30m\":null,\"supports_image_reference\":false,\"latency_last_30m\":null,\"throughput_last_30m\":null}]}}";
 
+    // /images/models: two image models and one with no id (the picker skips it); /images/models/<id>/endpoints: three providers, the last unpriced.
+    private const string ImageModels = "{\"data\":[{\"id\":\"acme/img-one\",\"name\":\"Acme: Image One\"},{\"id\":\"acme/img-two\",\"name\":\"Acme: Image Two\"},{\"name\":\"No id\"}]}";
+    private const string ImageEndpoints = "{\"endpoints\":[" +
+        "{\"provider_name\":\"Alpha\",\"provider_tag\":\"alpha/fp8\",\"pricing\":[{\"billable\":\"output_image\",\"cost_usd\":\"0.04\"}]}," +
+        "{\"provider_name\":\"Beta\",\"provider_tag\":\"beta\",\"pricing\":[{\"billable\":\"output_image\",\"cost_usd\":\"0.05\"}]}," +
+        "{\"provider_name\":\"Gamma\",\"provider_tag\":\"gamma\"}]}";
+
     // OpenRouter's /{model}/providers page, reduced to the data policies it embeds: Relace private, GMICloud logs, OpenInference trains.
     private const string PrivacyPage =
         "{\\\"slug\\\":\\\"relace\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":false}}" +
@@ -2043,7 +2050,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
             throw Failure;
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
-        var body = Body ?? (url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
+        var body = Body ?? (url.Contains("/images/models", StringComparison.Ordinal) ? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? ImageEndpoints : ImageModels) : url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
         return Task.FromResult(body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });

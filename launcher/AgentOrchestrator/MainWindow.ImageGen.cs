@@ -42,6 +42,13 @@ public partial class MainWindow
     private List<ImageGen.LocalModel> _imgLocal = [];
     private List<string> _imgFolderFiles = [];
     private TextBlock _imgFolderText = null!;
+    // OpenRouter instead of a local model: the panel shown, the model picked (id, name) and its providers in the order ticked.
+    private bool _imgRemoteMode;
+    private StackPanel _imgLocalPanel = null!, _imgRemotePanel = null!;
+    private Button _imgRemoteModelButton = null!, _imgRemoteProvidersButton = null!;
+    private (string Id, string Name) _imgRemoteModel = ("", "");
+    private List<string> _imgRemoteProviders = [];
+    internal Action<DialogShell>? _imgDialogTest; // --ui-smoke: gets the popup instead of showing it
 
     private string ImageModelsFolder => _settings.ImageModelsFolder.Length > 0 ? _settings.ImageModelsFolder : LauncherLogic.HubCache();
 
@@ -129,7 +136,27 @@ public partial class MainWindow
                 Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1, LowVram = _imgLowVram.IsChecked == true, Strength = _imgStrength.Value, InitImage = _imgInit,
             });
         };
-        left.Children.Add(_imgRecipe);
+        // The local model (the picker and its folder) or an OpenRouter one: the two panels swap; the local pick is never touched on the way.
+        Button SourceButton(string text, string tag, Action click)
+        {
+            var b = new Button { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+            b.Click += (_, _) => click();
+            return b;
+        }
+        _imgLocalPanel = new StackPanel { Children = { _imgRecipe } };
+        _imgRemoteModelButton = SourceButton("", "ImagesRemoteModelButton", ChooseImageModel);
+        _imgRemoteProvidersButton = SourceButton("", "ImagesRemoteProvidersButton", ChooseImageProviders);
+        _imgRemotePanel = new StackPanel
+        {
+            Visibility = Visibility.Collapsed,
+            Children =
+            {
+                Muted($"Runs on OpenRouter with the key in {RemoteCatalog.Services[0].KeyEnv}."), _imgRemoteModelButton, _imgRemoteProvidersButton,
+                SourceButton("Switch to Local", "ImagesSwitchToLocal", () => { _imgRemoteMode = false; ShowImageSource(); }),
+            },
+        };
+        left.Children.Add(_imgLocalPanel);
+        left.Children.Add(_imgRemotePanel);
         _imgFolderText = Muted("", 11.5);
         _imgFolderText.Tag = "ImagesFolder";
         _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
@@ -148,7 +175,8 @@ public partial class MainWindow
         };
         var folderRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { chooseFolder, _imgFolderText } };
         DockPanel.SetDock(chooseFolder, Dock.Left);
-        left.Children.Add(folderRow);
+        _imgLocalPanel.Children.Add(folderRow);
+        _imgLocalPanel.Children.Add(SourceButton("Use OpenRouter…", "ImagesUseRemoteApi", () => { _imgRemoteMode = true; ShowImageSource(); }));
 
         Label("Prompt");
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -367,7 +395,15 @@ public partial class MainWindow
         _imgApplying = true;
         var local = _imgLocal.FindIndex(m => s.LocalModel.Length > 0 && string.Equals(m.Path, s.LocalModel, StringComparison.OrdinalIgnoreCase));
         var recipe = local >= 0 ? _imgLocal[local].Recipe : ImageGen.Recipe(s.RecipeId);
-        _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe);
+        _imgRemoteMode = s.RemoteModel.Length > 0;
+        if (_imgRemoteMode) // the local pick stays for the way back
+        {
+            recipe = ImageChoice(_imgRecipe.SelectedIndex).Recipe;
+            (_imgRemoteModel, _imgRemoteProviders) = ((s.RemoteModel, ""), s.RemoteProvider.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList());
+        }
+        else
+            _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe);
+        ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
         _imgAspect.SelectedItem = ImageGen.Aspects.Contains(s.Aspect) ? s.Aspect : "1:1";
@@ -396,7 +432,142 @@ public partial class MainWindow
             Width = w, Height = h, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
+            RemoteModel = _imgRemoteMode ? _imgRemoteModel.Id.Trim() : "", RemoteProvider = _imgRemoteMode ? string.Join(", ", _imgRemoteProviders) : "",
         };
+    }
+
+    // The panel for the source in use; the model button shows the name (the id until the list has been fetched), the providers button the ticks.
+    private void ShowImageSource()
+    {
+        _imgLocalPanel.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+        _imgRemotePanel.Visibility = _imgRemoteMode ? Visibility.Visible : Visibility.Collapsed;
+        _imgRemoteModelButton.Content = _imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id;
+        _imgRemoteProvidersButton.Content = "Providers: " + (_imgRemoteProviders.Count == 0 ? "any" : string.Join(", ", _imgRemoteProviders));
+    }
+
+    private void ShowImagePopup(DialogShell popup)
+    {
+        if (_imgDialogTest is { } test)
+            test(popup);
+        else
+            popup.ShowDialog();
+    }
+
+    // A filterable list of OpenRouter's image models; a pick keeps its id and name and closes it. A model with no id is skipped.
+    private void ChooseImageModel()
+    {
+        var filter = new TextBox { Tag = "ImagesModelFilter", Margin = new Thickness(0, 0, 0, 8) };
+        var status = RemoteMuted("Loading models…");
+        var list = new StackPanel();
+        var popup = new DialogShell(this, "OpenRouter image models", new StackPanel { MinWidth = 420, Children = { filter, status, new ScrollViewer { Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } });
+        var models = new List<(string Id, string Name)>();
+        void Show()
+        {
+            list.Children.Clear();
+            foreach (var (id, name) in models.Where(m => $"{m.Name} {m.Id}".Contains(filter.Text.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                var row = new Button
+                {
+                    Content = new StackPanel { Children = { new TextBlock { Text = name }, RemoteMuted(id) } }, Tag = "imgmodel:" + id, Style = (Style)FindResource("GhostButton"),
+                    HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 0, 2),
+                };
+                row.Click += (_, _) =>
+                {
+                    if (_imgRemoteModel.Id != id)
+                        _imgRemoteProviders = []; // providers belong to a model
+                    _imgRemoteModel = (id, name);
+                    ShowImageSource();
+                    popup.Close();
+                };
+                list.Children.Add(row);
+            }
+        }
+        async void Load()
+        {
+            try
+            {
+                var got = await RemoteCatalog.FetchImageModelsAsync(_remoteHttp, Environment.GetEnvironmentVariable(RemoteCatalog.Services[0].KeyEnv), CancellationToken.None);
+                models = [.. got.Where(m => m.Id.Trim().Length > 0).Select(m => (m.Id.Trim(), m.Name.Trim().Length > 0 ? m.Name.Trim() : m.Id.Trim()))];
+                status.Text = $"{models.Count} image models";
+                Show();
+            }
+            catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException)
+            {
+                status.Text = $"Could not load the models ({x.Message}).";
+            }
+        }
+        filter.TextChanged += (_, _) => Show();
+        Load();
+        ShowImagePopup(popup);
+    }
+
+    // The chosen model's providers, a tick each with its order number (tried in that order); ticking edits the page's choice at once.
+    private void ChooseImageProviders()
+    {
+        var model = _imgRemoteModel.Id.Trim();
+        if (model.Length == 0)
+        {
+            Toast("Choose a model first");
+            return;
+        }
+        var status = RemoteMuted("Loading providers…");
+        status.Margin = new Thickness(0, 8, 0, 0);
+        var list = new StackPanel();
+        var done = new Button { Content = "Done", Tag = "ImagesProvidersDone", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
+        var popup = new DialogShell(this, $"Providers for {model}", new StackPanel
+        {
+            MinWidth = 460,
+            Children = { RemoteMuted("Tick the providers to use; they are tried in the order you tick them. None ticked: OpenRouter chooses."), status, new ScrollViewer { Content = list, MaxHeight = 340, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, done },
+        });
+        var orderMarks = new Dictionary<string, TextBlock>();
+        void Marks()
+        {
+            foreach (var (tag, mark) in orderMarks)
+                mark.Text = _imgRemoteProviders.IndexOf(tag) is >= 0 and var at ? $"#{at + 1}" : "";
+            ShowImageSource();
+        }
+        async void Load()
+        {
+            try
+            {
+                var rows = (await RemoteCatalog.FetchImageProvidersAsync(_remoteHttp, model, CancellationToken.None, Environment.GetEnvironmentVariable(RemoteCatalog.Services[0].KeyEnv))).Where(r => r.ProviderTag.Length > 0).ToList();
+                _imgRemoteProviders.RemoveAll(t => rows.All(r => r.ProviderTag != t)); // a provider gone since it was ticked
+                status.Text = rows.Count == 0 ? $"No providers listed for {model}: OpenRouter chooses." : $"{rows.Count} providers · USD per image";
+                foreach (var r in rows)
+                {
+                    var tag = r.ProviderTag;
+                    var mark = new TextBlock { FontWeight = FontWeights.SemiBold, Width = 28, TextAlignment = TextAlignment.Right };
+                    mark.SetResourceReference(TextBlock.ForegroundProperty, "AccentLight");
+                    orderMarks[tag] = mark;
+                    var who = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = r.ProviderName, FontWeight = FontWeights.SemiBold }, RemoteMuted(tag) } };
+                    who.Children[1].SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 0, 0));
+                    var cost = RemoteMuted(r.CostPerImage is { } c ? RemotePrice(c) : "—");
+                    cost.Width = 70;
+                    cost.TextAlignment = TextAlignment.Right;
+                    var row = new ToggleButton { Content = new DockPanel { Children = { mark, cost, who } }, Tag = "provider:" + tag, IsChecked = _imgRemoteProviders.Contains(tag), Height = 34, Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(0, 0, 0, 1), HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                    DockPanel.SetDock(mark, Dock.Right);
+                    DockPanel.SetDock(cost, Dock.Right);
+                    row.SetResourceReference(StyleProperty, "NavToggle");
+                    row.Click += (_, _) =>
+                    {
+                        if (row.IsChecked == true && !_imgRemoteProviders.Contains(tag))
+                            _imgRemoteProviders.Add(tag);
+                        else if (row.IsChecked != true)
+                            _imgRemoteProviders.Remove(tag);
+                        Marks();
+                    };
+                    list.Children.Add(row);
+                }
+                Marks();
+            }
+            catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException)
+            {
+                status.Text = $"Could not load the providers ({x.Message}). OpenRouter chooses.";
+            }
+        }
+        done.Click += (_, _) => popup.Close();
+        Load();
+        ShowImagePopup(popup);
     }
 
     private void ShowImageSize()

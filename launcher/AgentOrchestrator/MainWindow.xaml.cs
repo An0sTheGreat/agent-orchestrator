@@ -2921,6 +2921,54 @@ public partial class MainWindow : Window
                 if (!zHidden || negative.Visibility != Visibility.Visible || _imgSteps.Value != 30 ||
                     SmokeFind<TextBlock>(ImagesView, t => t.Tag as string == "ImagesSize")?.Text != "1024 × 1024")
                     return Fail();
+                // OpenRouter image models (a fake OpenRouter answers): the toggle, the model popup, the provider popup; the local pick survives the round trip
+                var imgHttp = _remoteHttp;
+                _remoteHttp = new HttpClient(new RemoteApiFakeHandler());
+                DialogShell? imgPopup = null;
+                try
+                {
+                    FrameworkElement? ImgFind(string tag) => SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == tag);
+                    FrameworkElement? PopupFind(string tag) => imgPopup is null ? null : SmokeFind<FrameworkElement>((DependencyObject)imgPopup.Content, e => e.Tag as string == tag);
+                    async Task<bool> PopupHas(string tag)
+                    {
+                        for (var i = 0; i < 100 && PopupFind(tag) is null; i++)
+                            await Task.Delay(20);
+                        return PopupFind(tag) is not null;
+                    }
+                    if (ImgFind("ImagesUseRemoteApi") is not Button { IsVisible: true } useRemote || ImgFind("ImagesRemoteModelButton") is not Button modelButton || modelButton.IsVisible ||
+                        ImgFind("ImagesRemoteProvidersButton") is not Button providersButton || providersButton.IsVisible)
+                        return Fail();
+                    var recipeWas = recipes.SelectedIndex;
+                    SmokeClick(useRemote);
+                    if (recipes.IsVisible || !modelButton.IsVisible || !providersButton.IsVisible || useRemote.IsVisible || modelButton.Content as string != "Choose a model…")
+                        return Fail();
+                    _imgDialogTest = d => imgPopup = d;
+                    SmokeClick(modelButton);
+                    if (!await PopupHas("imgmodel:acme/img-two") || PopupFind("imgmodel:") is not null) // the entry with no id is skipped
+                        return Fail();
+                    SmokeClick((Button)PopupFind("imgmodel:acme/img-two")!);
+                    if (ReadImageSettings().RemoteModel != "acme/img-two" || modelButton.Content as string != "Acme: Image Two")
+                        return Fail();
+                    imgPopup.Close();
+                    imgPopup = null;
+                    SmokeClick(providersButton);
+                    if (!await PopupHas("provider:alpha/fp8") || !await PopupHas("provider:beta") || PopupFind("provider:") is not null)
+                        return Fail();
+                    var (beta, alpha) = ((ToggleButton)PopupFind("provider:beta")!, (ToggleButton)PopupFind("provider:alpha/fp8")!);
+                    (beta.IsChecked, alpha.IsChecked) = (true, true);
+                    SmokeClick(beta);
+                    SmokeClick(alpha);
+                    if (ReadImageSettings().RemoteProvider != "beta, alpha/fp8")
+                        return Fail();
+                    imgPopup.Close();
+                    SmokeClick((Button)ImgFind("ImagesSwitchToLocal")!);
+                    if (ReadImageSettings() is not { RemoteModel: "" } || recipes.SelectedIndex != recipeWas || !recipes.IsVisible || modelButton.IsVisible || !useRemote.IsVisible)
+                        return Fail();
+                }
+                finally
+                {
+                    (_remoteHttp, _imgDialogTest) = (imgHttp, null);
+                }
                 ShowView(chat: true);
                 await Settle();
                 await Task.Delay(300);

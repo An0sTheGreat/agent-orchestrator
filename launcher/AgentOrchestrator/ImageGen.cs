@@ -41,6 +41,8 @@ internal sealed class ImageSettings
     public double Strength { get; set; } = 0.75;
     public string InitImage { get; set; } = ""; // "" = text to image
     public string LocalModel { get; set; } = ""; // a main model from the user's models folder in place of the recipe's download
+    public string RemoteModel { get; set; } = ""; // "" = local; an OpenRouter image model id otherwise
+    public string RemoteProvider { get; set; } = ""; // comma-separated provider tags to pin, "" = OpenRouter chooses
 }
 
 internal sealed record ImageProgress(int Step, int Steps, string Speed, bool Loading);
