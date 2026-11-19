@@ -217,7 +217,7 @@ internal static class ImageGen
                 throw new InvalidOperationException($"Image generation self-test: {what}");
         }
         var root = @"C:\m";
-        var z =Recipe("z-image-turbo");
+        var z = Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
