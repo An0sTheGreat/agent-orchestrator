@@ -144,7 +144,8 @@ public partial class MainWindow
 
     // Idempotent; the key is read on every request, so New key signs other PCs out at once. Also --image-share-loopback (App.xaml.cs).
     internal void StartImageShare(IPAddress ip, int port) =>
-        _imageShare ??= new ImageShare.Server(ip, port, ModelShare.ChatPort, () => Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "", ServeImageShareAsync);
+        _imageShare ??= new ImageShare.Server(ip, port, ModelShare.ChatPort, () => Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "", ServeImageShareAsync)
+            { Progress = () => _shareProgress };
 
     // On the server's thread: the model list scans the folder here; a generation runs on the UI thread like the page's own.
     private async Task<ImageShare.Response> ServeImageShareAsync(ImageShare.Request request, CancellationToken ct)
@@ -178,6 +179,9 @@ public partial class MainWindow
         catch (Exception x) when (x is System.Net.Http.HttpRequestException or System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException or TaskCanceledException) { }
     }
 
+    // The generation for another PC: its latest {"progress","status"} line (ImageShare.Server.Progress reads it off the UI thread).
+    private volatile string? _shareProgress;
+
     // One generation for the other PC through the Images page's job (409 while one runs), in a temp folder that is deleted after.
     private async Task<ImageShare.Response> GenerateForShareAsync(ImageSettings asked, CancellationToken ct)
     {
@@ -198,6 +202,9 @@ public partial class MainWindow
             await RunImageJob(async jobCt =>
             {
                 using var stop = ct.Register(CancelImageGen); // sharing turned off meanwhile
+                _shareProgress = null;
+                var fraction = 0.0;
+                _imgStatusTap = (text, progress) => _shareProgress = ImageShare.ProgressJson(fraction = progress ?? fraction, text);
                 ImageStatus("Generating for another PC…", indeterminate: true);
                 await UnloadSharedChatModelsAsync(jobCt); // the GPU for the picture: the next chat request loads its model again
                 var pictures = new List<ImageShare.Picture>();
@@ -209,6 +216,7 @@ public partial class MainWindow
         }
         finally
         {
+            _imgStatusTap = null;
             try { Directory.Delete(folder, recursive: true); }
             catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
         }

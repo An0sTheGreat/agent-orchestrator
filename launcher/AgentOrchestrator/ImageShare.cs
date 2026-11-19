@@ -30,11 +30,18 @@ internal static class ImageShare
     private sealed record ModelList(List<Model> Models);
     private sealed record PictureList(List<Picture> Images);
     // Status: set when the error rides in a 200 reply whose head went out before the outcome was known (/images/generate).
+    private sealed class Sync<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); } // the self-test's, without a context
+
     private sealed record ErrorReply(string Error, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] int? Status = null);
 
     // Cloudflare drops a reply that has not started within ~100 s (524): /images/generate sends its 200 head at once and a
     // space every Heartbeat until the outcome (JSON allows leading whitespace), and an error goes in the body with its status.
     internal static TimeSpan Heartbeat = TimeSpan.FromSeconds(15);
+    // While it runs, a {"progress","status"} line goes out each ProgressTick the primary PC's status changed (Server.Progress), so
+    // the other PC shows the real step and percentage; the outcome is the last line.
+    internal static TimeSpan ProgressTick = TimeSpan.FromSeconds(1);
+    public sealed record ProgressLine(double Progress, string Status);
+    public static string ProgressJson(double fraction, string status) => JsonSerializer.Serialize(new ProgressLine(Math.Clamp(fraction, 0, 1), status), Web);
 
     // The request line, the headers and a Content-Length body (chunked bodies are not read). HttpError: 400, 413 or 431.
     public static async Task<Request> ReadRequestAsync(Stream stream, CancellationToken ct)
@@ -161,7 +168,7 @@ internal static class ImageShare
     public static ImageSettings Run(ImageSettings s, ImageRecipe recipe, string local) => new()
     {
         RecipeId = recipe.Id, LocalModel = local, Prompt = s.Prompt.Trim(), Negative = s.Negative, Aspect = s.Aspect, LongSide = s.LongSide,
-        Width = Math.Clamp(s.Width, 64, 2048), Height = Math.Clamp(s.Height, 64, 2048), Steps = Math.Clamp(s.Steps, 1, 60), Cfg = Math.Clamp(s.Cfg, 0, 20),
+        Width = Math.Clamp(s.Width, 64, 2048), Height = Math.Clamp(s.Height, 64, 2048), Steps = Math.Clamp(s.Steps, 1, 100), Cfg = Math.Clamp(s.Cfg, 0, 20),
         Seed = s.Seed >= 0 ? s.Seed : Random.Shared.Next(), Sampler = ImageGen.Samplers.Contains(s.Sampler) ? s.Sampler : "", Scheduler = ImageGen.Schedulers.Contains(s.Scheduler) ? s.Scheduler : "", Batch = Math.Clamp(s.Batch, 1, 4), LowVram = s.LowVram,
     };
 
@@ -194,10 +201,39 @@ internal static class ImageShare
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
 
-    // The reply is 200 from its first byte (Server.HeartbeatAsync): a failure is {"error","status"} in its body.
-    public static async Task<List<Picture>> GenerateAsync(HttpClient http, string baseUrl, string key, ImageSettings settings, CancellationToken ct)
+    // The reply is 200 from its first byte (Server.HeartbeatAsync): progress lines as the primary PC works (reported to progress),
+    // then the outcome on the last line; a failure is {"error","status"} there.
+    public static async Task<List<Picture>> GenerateAsync(HttpClient http, string baseUrl, string key, ImageSettings settings, CancellationToken ct,
+        IProgress<ProgressLine>? progress = null)
     {
-        var body = await SendAsync(http, new(HttpMethod.Post, baseUrl + GeneratePath) { Content = new StringContent(JsonSerializer.Serialize(settings), Encoding.UTF8, "application/json") }, key, ct);
+        string body = "";
+        using (var request = new HttpRequestMessage(HttpMethod.Post, baseUrl + GeneratePath) { Content = new StringContent(JsonSerializer.Serialize(settings), Encoding.UTF8, "application/json") })
+        {
+            request.Headers.Authorization = new("Bearer", key);
+            try
+            {
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(ErrorText((int)response.StatusCode, await response.Content.ReadAsStringAsync(ct)));
+                using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(ct), Encoding.UTF8);
+                while (await reader.ReadLineAsync(ct) is { } line)
+                {
+                    if (line.Trim().Length == 0)
+                        continue;
+                    if (line.TrimStart().StartsWith("{\"progress\"", StringComparison.Ordinal))
+                    {
+                        try { if (JsonSerializer.Deserialize<ProgressLine>(line, Web) is { } p) progress?.Report(p); }
+                        catch (JsonException) { }
+                        continue;
+                    }
+                    body = line;
+                }
+            }
+            catch (HttpRequestException x) when (x.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError)
+            {
+                throw new InvalidOperationException(CannotReach, x);
+            }
+        }
         ErrorReply? failed = null;
         try { failed = JsonSerializer.Deserialize<ErrorReply>(body, Web); }
         catch (JsonException) { }
@@ -233,6 +269,8 @@ internal static class ImageShare
         public int Port { get; }
 
         private readonly int _upstream;
+        // The current {"progress","status"} line of the generation in progress (null: none yet); read from the accept loop's threads.
+        public Func<string?>? Progress { get; set; }
 
         // upstream: llama-server's port on 127.0.0.1, for /v1/.
         public Server(IPAddress ip, int port, int upstream, Func<string> key, Func<Request, CancellationToken, Task<Response>> handle)
@@ -278,7 +316,7 @@ internal static class ImageShare
                     response = request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal)
                         ? Unauthorized(request, key()) ?? await ProxyAsync(stream, lines, rest, _upstream, _stop.Token)
                         : Check(request, key()) ?? (request.Path == GeneratePath
-                            ? await HeartbeatAsync(stream, handle(request, _stop.Token), _stop.Token)
+                            ? await HeartbeatAsync(stream, handle(request, _stop.Token), Progress, _stop.Token)
                             : await handle(request, _stop.Token));
                     if (response is null)
                         return;
@@ -291,13 +329,25 @@ internal static class ImageShare
             }
         }
 
-        // The 200 head now, a space every Heartbeat while the handler runs, then its JSON (an error as {"error","status"}); null:
-        // the reply is written.
-        private static async Task<Response?> HeartbeatAsync(Stream stream, Task<Response> work, CancellationToken ct)
+        // The 200 head now; while the handler runs, a progress line whenever the status changed (checked each ProgressTick) and a
+        // blank line at least every Heartbeat; then its JSON on the last line (an error as {"error","status"}). Null: the reply is written.
+        private static async Task<Response?> HeartbeatAsync(Stream stream, Task<Response> work, Func<string?>? progress, CancellationToken ct)
         {
-            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n"), ct);
-            while (await Task.WhenAny(work, Task.Delay(Heartbeat, ct)) != work)
-                await stream.WriteAsync(" "u8.ToArray(), ct);
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson; charset=utf-8\r\nConnection: close\r\n\r\n"), ct);
+            string? sent = null;
+            var quiet = System.Diagnostics.Stopwatch.StartNew();
+            while (await Task.WhenAny(work, Task.Delay(ProgressTick, ct)) != work)
+            {
+                var line = progress?.Invoke();
+                if (line is not null && line != sent)
+                    await stream.WriteAsync(Encoding.UTF8.GetBytes((sent = line) + "\n"), ct);
+                else if (quiet.Elapsed < Heartbeat)
+                    continue;
+                else
+                    await stream.WriteAsync("\n"u8.ToArray(), ct);
+                quiet.Restart();
+            }
+            await stream.WriteAsync("\n"u8.ToArray(), ct);
             Response result;
             try { result = await work; }
             catch (HttpError x) { result = Error(x.Status, x.Message); }
@@ -402,7 +452,10 @@ internal static class ImageShare
         Heartbeat = TimeSpan.FromMilliseconds(40);
         try
         {
-            using var slow = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", async (_, ct) => { await Task.Delay(300, ct); return new Response(200, PicturesJson([new("AA==", 9)])); });
+            var tick = ProgressTick;
+            ProgressTick = TimeSpan.FromMilliseconds(20);
+            using var slow = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", async (_, ct) => { await Task.Delay(300, ct); return new Response(200, PicturesJson([new("AA==", 9)])); })
+                { Progress = () => ProgressJson(0.5, "Step 1/2") };
             using var raw = new TcpClient();
             raw.Connect(IPAddress.Loopback, slow.Port);
             var wire = raw.GetStream();
@@ -411,8 +464,11 @@ internal static class ImageShare
             var head = new byte[64];
             var read = wire.Read(head);
             Assert(started.ElapsedMilliseconds < 250 && Encoding.ASCII.GetString(head, 0, read).StartsWith("HTTP/1.1 200"), "a slow generation's head goes out before the outcome");
-            Assert(Task.Run(() => GenerateAsync(http, $"http://127.0.0.1:{slow.Port}", "k", new() { Prompt = "x" }, default)).GetAwaiter().GetResult() is [{ Seed: 9 }],
-                "a slow generation's spaced reply parses");
+            var reported = new List<ProgressLine>();
+            Assert(Task.Run(() => GenerateAsync(http, $"http://127.0.0.1:{slow.Port}", "k", new() { Prompt = "x" }, default, new Sync<ProgressLine>(reported.Add))).GetAwaiter().GetResult() is [{ Seed: 9 }],
+                "a slow generation's reply parses after its progress lines");
+            Assert(reported.Count > 0 && reported[0] == new ProgressLine(0.5, "Step 1/2"), "the primary PC's progress reaches the other PC");
+            ProgressTick = tick;
         }
         finally { Heartbeat = heartbeat; }
         var closed = new TcpListener(IPAddress.Loopback, 0);

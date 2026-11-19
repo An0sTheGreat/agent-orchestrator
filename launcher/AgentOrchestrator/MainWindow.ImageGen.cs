@@ -243,7 +243,7 @@ public partial class MainWindow
 
         var localFrom = left.Children.Count;
         Label("Steps");
-        _imgSteps = NewSlider(1, 60, 1, "0", left);
+        _imgSteps = NewSlider(1, 100, 1, "0", left);
         Label("Guidance");
         _imgCfg = NewSlider(0, 20, 0.5, "0.0", left);
         Label("Seed");
@@ -918,8 +918,12 @@ public partial class MainWindow
         _imgStage.ScrollToVerticalOffset(_imgStage.VerticalOffset + moved.Y - onStage.Y);
     }
 
+    // Each status the page shows also goes here while a generation for another PC runs (its progress lines).
+    private Action<string, double?>? _imgStatusTap;
+
     private void ImageStatus(string text, double? progress = null, bool indeterminate = false)
     {
+        _imgStatusTap?.Invoke(text, indeterminate ? null : progress);
         _imgStatus.Text = text;
         _imgProgress.IsIndeterminate = indeterminate;
         if (progress is { } p)
@@ -1181,7 +1185,8 @@ public partial class MainWindow
             throw new InvalidOperationException("Not connected to a primary PC: paste its connection code under Settings > Models");
         ImageStatus($"Generating on {_settings.ShareHost}…", indeterminate: true);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
-        var pictures = await ImageShare.GenerateAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", run, ct);
+        var shown = new Progress<ImageShare.ProgressLine>(p => ImageStatus($"Primary PC: {p.Status} · {p.Progress * 100:0}%", p.Progress)); // posts to the UI thread
+        var pictures = await ImageShare.GenerateAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", run, ct, shown);
         if (pictures.Count == 0)
             throw new InvalidOperationException("The primary PC returned no pictures");
         for (var i = 0; i < Math.Min(pictures.Count, files.Count); i++)
