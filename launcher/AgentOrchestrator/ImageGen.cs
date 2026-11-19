@@ -37,7 +37,7 @@ internal sealed class ImageSettings
     public long Seed { get; set; } = -1;
     public string Sampler { get; set; } = ""; // "" = sd-cli's default for the model
     public int Batch { get; set; } = 1;
-    public bool LowVram { get; set; }
+    public bool LowVram { get; set; } = true; // one model on the GPU at a time: the text encoder, then the image model
     public double Strength { get; set; } = 0.75;
     public string InitImage { get; set; } = ""; // "" = text to image
     public string LocalModel { get; set; } = ""; // a main model from the user's models folder in place of the recipe's download
@@ -211,7 +211,7 @@ internal static class ImageGen
         var root = @"C:\m";
         var z = Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
-        var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42 };
+        var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
             @"--diffusion-model C:\m\Z-Image-Turbo-GGUF\z_image_turbo-Q4_K.gguf --vae C:\m\Z-Image-Turbo\split_files\vae\ae.safetensors " +
             @"--llm C:\m\Qwen3-4B-Instruct-2507-GGUF\Qwen3-4B-Instruct-2507-Q4_K_M.gguf -p a cat --cfg-scale 1 --steps 4 -W 512 -H 512 -s 42 -o C:\o\x.png",

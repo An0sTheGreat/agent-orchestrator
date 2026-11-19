@@ -128,7 +128,7 @@ public partial class MainWindow
         _imgFolderText = Muted("", 11.5);
         _imgFolderText.Tag = "ImagesFolder";
         _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
-        var chooseFolder = new Button { Content = "Choose folder…", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
+        var chooseFolder = new Button { Content = "Choose folderâ€¦", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
             ToolTip = "A folder with image models you already have (searched with its subfolders); only image models are listed" };
         chooseFolder.Click += (_, _) =>
         {
@@ -178,23 +178,23 @@ public partial class MainWindow
         left.Children.Add(_imgBatch);
 
         var advanced = new StackPanel { Visibility = Visibility.Collapsed };
-        var toggle = new Button { Content = "▸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
+        var toggle = new Button { Content = "â–¸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
             advanced.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            toggle.Content = (show ? "▾" : "▸") + " Advanced";
+            toggle.Content = (show ? "â–¾" : "â–¸") + " Advanced";
         };
         left.Children.Add(toggle);
         left.Children.Add(advanced);
         advanced.Children.Add(new TextBlock { Text = "Sampler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
         _imgSampler = new ComboBox { ItemsSource = ImageGen.Samplers.Prepend("Default").ToList() };
         advanced.Children.Add(_imgSampler);
-        _imgLowVram = new CheckBox { Content = "Low VRAM (weights in RAM, tiled VAE)", Margin = new Thickness(0, 12, 0, 0) };
+        _imgLowVram = new CheckBox { Content = "Low VRAM: one model on the GPU at a time", ToolTip = "Runs the text encoder, then swaps in the image model, then the decoder (weights wait in RAM). Slower to load; needed when the models together are bigger than the GPU", Margin = new Thickness(0, 12, 0, 0) };
         advanced.Children.Add(_imgLowVram);
         advanced.Children.Add(new TextBlock { Text = "Start from image", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) });
         _imgInitText = Muted("None", 11.5);
-        var pick = new Button { Content = "Choose…", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
+        var pick = new Button { Content = "Chooseâ€¦", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
         var clear = new Button { Content = "Clear", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0) };
         pick.Click += (_, _) =>
         {
@@ -302,7 +302,7 @@ public partial class MainWindow
         if (_imgApplying || _imgAspect.SelectedItem is null || _imgLongSide.SelectedItem is null)
             return;
         var s = ReadImageSettings();
-        _imgSizeText.Text = $"{s.Width} × {s.Height}";
+        _imgSizeText.Text = $"{s.Width} Ã— {s.Height}";
     }
 
     private void RefreshImageRuntime()
@@ -327,12 +327,12 @@ public partial class MainWindow
         _imgRecipe.ItemsSource = ImageGen.Recipes.Select(r =>
             {
                 var missing = Missing(r, "");
-                return $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
+                return $"{r.Name}{(r.Note.Length > 0 ? " Â· " + r.Note : "")} â€” {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
             })
             .Concat(_imgLocal.Select(m =>
             {
                 var missing = Missing(m.Recipe, m.Path);
-                return $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
+                return $"{Path.GetFileName(m.Path)} Â· {m.Recipe.Name} â€” {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
             })).ToList();
         _imgRecipe.SelectedIndex = Math.Clamp(index, 0, _imgRecipe.Items.Count - 1);
         _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
@@ -401,7 +401,7 @@ public partial class MainWindow
         catch (Exception e)
         {
             Log($"Image generation failed: {e.Message}");
-            Toast(e.Message.Length > 120 ? e.Message[..120] + "…" : e.Message, "#FF667A");
+            Toast(e.Message.Length > 120 ? e.Message[..120] + "â€¦" : e.Message, "#FF667A");
             ImageStatus("Failed: " + e.Message.Split('\n')[0]);
         }
         finally
@@ -420,7 +420,7 @@ public partial class MainWindow
     {
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
-        ImageStatus("Looking up the latest stable-diffusion.cpp release…", indeterminate: true);
+        ImageStatus("Looking up the latest stable-diffusion.cpp releaseâ€¦", indeterminate: true);
         var nvidia = await Task.Run(LauncherLogic.HasNvidiaGpu, ct);
         var assets = ImageGen.PickAssets(await http.GetStringAsync(ImageGen.ReleaseUrl, ct), nvidia);
         var zips = new List<string>();
@@ -433,7 +433,7 @@ public partial class MainWindow
                 zips.Add(zip);
                 await DownloadAsync(http, url, zip, Path.GetFileName(url), ct, _imgStatus);
             }
-            ImageStatus("Installing the image runtime…", indeterminate: true);
+            ImageStatus("Installing the image runtimeâ€¦", indeterminate: true);
             await Task.Run(() => LauncherLogic.InstallLlamaServer(zips, ImageGen.RuntimeFolder, $"{assets.Tag}\n{assets.Flavour}", exe: "sd-cli.exe"), ct);
             Log($"stable-diffusion.cpp {assets.Tag} ({assets.Flavour}) installed in {ImageGen.RuntimeFolder}");
             ImageStatus($"Image runtime {assets.Tag} installed", 1);
@@ -479,7 +479,7 @@ public partial class MainWindow
         foreach (var group in sized.GroupBy(s => s.Repo))
         {
             var offset = before;
-            var progress = new Progress<HubProgress>(p => ImageStatus($"Downloading model… {Gb(offset + p.DoneBytes)}/{Gb(total)} GB", (offset + p.DoneBytes) / (double)total));
+            var progress = new Progress<HubProgress>(p => ImageStatus($"Downloading modelâ€¦ {Gb(offset + p.DoneBytes)}/{Gb(total)} GB", (offset + p.DoneBytes) / (double)total));
             await downloader.DownloadAsync(group.Key, "main", group.Select(g => g.File).ToList(), progress, ct);
             before += group.Sum(g => g.File.Size);
         }
@@ -515,7 +515,7 @@ public partial class MainWindow
         };
         foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
             info.ArgumentList.Add(arg);
-        ImageStatus("Loading…", indeterminate: true);
+        ImageStatus("Loadingâ€¦", indeterminate: true);
         var tail = new Queue<string>();
         void Keep(string line)
         {
@@ -550,9 +550,9 @@ public partial class MainWindow
                         _ = Dispatcher.InvokeAsync(() =>
                         {
                             if (p.Loading)
-                                ImageStatus($"Loading… {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
+                                ImageStatus($"Loadingâ€¦ {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
                             else
-                                ImageStatus($"Step {p.Step}/{p.Steps} · {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
+                                ImageStatus($"Step {p.Step}/{p.Steps} Â· {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
                         });
                     else
                         Keep(text);
@@ -569,7 +569,17 @@ public partial class MainWindow
         if (process.ExitCode != 0 || !File.Exists(files[0].Written))
         {
             Log($"sd-cli exited with {process.ExitCode}:\n" + string.Join("\n", tail));
-            throw new InvalidOperationException($"sd-cli failed (exit code {process.ExitCode}); the log has its output");
+            var outOfMemory = tail.Any(t => t.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || t.Contains("out of memory", StringComparison.OrdinalIgnoreCase));
+            if (outOfMemory && !s.LowVram) // once more with the weights in RAM; Low VRAM stays ticked for next time
+            {
+                Toast("Not enough GPU memory: trying again with Low VRAM");
+                _imgLowVram.IsChecked = true;
+                await GenerateImagesAsync(ct);
+                return;
+            }
+            throw new InvalidOperationException(outOfMemory
+                ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
+                : $"sd-cli failed: {tail.FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim() ?? $"exit code {process.ExitCode}"} (the log has its output)");
         }
         string? first = null;
         foreach (var (written, final, seed) in files.Where(f => File.Exists(f.Written)))
@@ -582,7 +592,7 @@ public partial class MainWindow
         }
         _imgResultPath = first;
         _imgResult.Source = first is null ? null : LoadPicture(first);
-        ImageStatus($"Done · seed {files[0].Seed}", 1);
+        ImageStatus($"Done Â· seed {files[0].Seed}", 1);
         RefreshGallery();
     }
 }
