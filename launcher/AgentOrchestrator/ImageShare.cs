@@ -17,7 +17,7 @@ internal static class ImageShare
 {
     public const int MaxBody = 1 << 20, MaxHead = 16 << 10;
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
-    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", ChatPrefix = "/v1/";
+    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", ChatPrefix = "/v1/";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
@@ -92,7 +92,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -186,6 +186,10 @@ internal static class ImageShare
     // The other PC's calls to baseUrl (ModelShare.ImagesUrl). A refusal throws InvalidOperationException(ErrorText), a connection
     // or DNS failure InvalidOperationException(CannotReach).
     public const string CannotReach = "Cannot reach the primary PC: is sharing on there? Its address changes each time sharing starts; paste the new code under Settings > Models.";
+
+    // The primary PC unloads its shared chat model (the other PC's Unload models button).
+    public static async Task UnloadAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
+        await SendAsync(http, new(HttpMethod.Post, baseUrl + UnloadPath) { Content = new StringContent("{}", Encoding.UTF8, "application/json") }, key, ct);
 
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));

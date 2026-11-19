@@ -149,6 +149,11 @@ public partial class MainWindow
     // On the server's thread: the model list scans the folder here; a generation runs on the UI thread like the page's own.
     private async Task<ImageShare.Response> ServeImageShareAsync(ImageShare.Request request, CancellationToken ct)
     {
+        if (request.Path == ImageShare.UnloadPath)
+        {
+            await UnloadSharedChatModelsAsync(ct);
+            return new(200, "{}");
+        }
         if (request.Path == ImageShare.ModelsPath)
             return new(200, ImageShare.ModelsJson(ImageShare.Models(ImageGen.ScanFolder(await Dispatcher.InvokeAsync(() => ImageModelsFolder)).Models)));
         ImageSettings? asked;

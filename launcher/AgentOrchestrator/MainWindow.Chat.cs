@@ -240,7 +240,7 @@ public partial class MainWindow
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
         MultiModelOptions.IsEnabled = !_chatBusy && !runActive; // the engine reads it when it starts
-        ChatUnloadButton.IsEnabled = CodeUnloadButton.IsEnabled = !_chatBusy && !runActive && ModelsLoaded;
+        UnloadButton.IsEnabled = !_chatBusy && !runActive && (ModelsLoaded || _settings.ShareHost.Length > 0); // the primary PC's state is not known here
         CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
@@ -431,14 +431,32 @@ public partial class MainWindow
         RefreshContextPins();
     }
 
-    // Unload model (under CHAT and CODE): stops the local llama-server now; with Keep models loaded on, this frees the
-    // memory without the round trip through Settings. Greyed out with nothing loaded or while working.
-    private void UnloadModels_Click(object sender, RoutedEventArgs e)
+    // Unload models (the title bar's top left): stops the local llama-server now and, when this PC is connected to a primary
+    // PC, asks it to unload its shared chat model; with Keep models loaded on, this frees the memory without the round trip
+    // through Settings. Greyed out with nothing to unload or while working.
+    private async void UnloadModels_Click(object sender, RoutedEventArgs e)
     {
         if (_process is null) // a run may be using the local server
             StopLocalServer();
         WorkerContextsCleared();
-        Toast("Models unloaded");
+        var remote = "";
+        if (_settings.ShareHost.Length > 0)
+        {
+            UnloadButton.IsEnabled = false;
+            try
+            {
+                using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                await ImageShare.UnloadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
+                remote = " here and on the primary PC";
+            }
+            catch (Exception x) when (x is InvalidOperationException or System.Net.Http.HttpRequestException or TaskCanceledException)
+            {
+                Toast("Unloaded here; the primary PC: " + x.Message, "#F7C873");
+                RefreshChatInput();
+                return;
+            }
+        }
+        Toast("Models unloaded" + remote);
         RefreshChatInput();
     }
 

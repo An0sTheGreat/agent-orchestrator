@@ -1027,6 +1027,12 @@
                 <!-- The open chat's title, like other chat apps; its menu is the sidebar row's (RefreshTitleChat). -->
                 <!-- The Code view's Start button sits right of the title; it slides over when the title appears (MainWindow.Landing.cs). -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0">
+                <!-- Unload models: this PC's llama-server and, when connected, the primary PC's shared model (UnloadModels_Click) -->
+                <Button x:Name="UnloadButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0" Padding="7,3"
+                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload models"
+                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, here and on the primary PC this PC is connected to, freeing their memory; the next message loads them again">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload models" /></StackPanel>
+                </Button>
                 <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Padding="8,3" Visibility="Collapsed" Click="TitleChat_Click" ToolTip="Chat options">
                     <StackPanel Orientation="Horizontal">
@@ -1289,12 +1295,6 @@
                     <Button x:Name="CodeFolderMissing" Tag="CodeFolderMissing" Style="{StaticResource GhostButton}" Content="Choose a folder" FontSize="11" Padding="9,3" Margin="10,0,0,0"
                             VerticalAlignment="Center" Click="CodeChooseFolder_Click" />
                 </StackPanel>
-                <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
-                <Button x:Name="CodeUnloadButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="-6,6,0,0" Padding="6,3"
-                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload model"
-                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, freeing their memory; the next message loads them again">
-                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload model" /></StackPanel>
-                </Button>
                 </StackPanel>
                 <Grid x:Name="CodeChat" Grid.Row="1">
                     <Grid.RowDefinitions>
@@ -1500,12 +1500,6 @@
                     <Button x:Name="ChatContextRing" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="0" Margin="0,0,12,0" VerticalAlignment="Center"
                             Click="ContextRing_Click" AutomationProperties.Name="Context usage" />
                 </DockPanel>
-                <!-- Unload model: frees the models now, for Keep models loaded (greyed out when none is loaded) -->
-                <Button x:Name="ChatUnloadButton" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="-6,6,0,0" Padding="6,3"
-                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload model"
-                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, freeing their memory; the next message loads them again">
-                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload model" /></StackPanel>
-                </Button>
                 </StackPanel>
                 <Grid Grid.Row="1">
                     <ScrollViewer x:Name="ChatScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,2,0" ScrollChanged="ChatScroll_ScrollChanged"
