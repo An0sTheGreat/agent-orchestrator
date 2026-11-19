@@ -2923,7 +2923,9 @@ public partial class MainWindow : Window
                     return Fail();
                 // OpenRouter image models (a fake OpenRouter answers): the toggle, the model popup, the provider popup; the local pick survives the round trip
                 var imgHttp = _remoteHttp;
-                _remoteHttp = new HttpClient(new RemoteApiFakeHandler());
+                var imgFake = new RemoteApiFakeHandler();
+                _remoteHttp = new HttpClient(imgFake);
+                var imgKeyWas = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
                 DialogShell? imgPopup = null;
                 try
                 {
@@ -2961,6 +2963,70 @@ public partial class MainWindow : Window
                     if (ReadImageSettings().RemoteProvider != "beta, alpha/fp8")
                         return Fail();
                     imgPopup.Close();
+                    // Generate on OpenRouter: the request, the key, the pictures, the errors
+                    var onePixel = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    onePixel.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(System.Windows.Media.Imaging.BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, new byte[] { 0, 0, 255, 255 }, 4)));
+                    using (var pngBytes = new MemoryStream())
+                    {
+                        onePixel.Save(pngBytes);
+                        imgFake.ImagesBody = "{\"data\":[{\"b64_json\":\"" + Convert.ToBase64String(pngBytes.ToArray()) + "\"}]}";
+                    }
+                    Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "sk-or-smoke");
+                    string[] Pictures() => Directory.GetFiles(ImageGen.ImagesFolder, "*.png");
+                    async Task RunGenerate()
+                    {
+                        SmokeClick(_imgGenerate);
+                        for (var i = 0; i < 250 && !_imgGenerate.IsEnabled; i++)
+                            await Task.Delay(20);
+                    }
+                    System.Text.Json.Nodes.JsonNode? Request(int index) => System.Text.Json.Nodes.JsonNode.Parse(imgFake.Posted[index]);
+                    _imgPrompt.Text = "a red fox";
+                    _imgBatch.SelectedIndex = 0;
+                    var (before, posted) = (Pictures(), imgFake.Posted.Count);
+                    await RunGenerate(); // two providers pinned: they go in order, with no fallbacks
+                    var created = Pictures().Except(before).ToList();
+                    if (imgFake.Posted.Count != posted + 1 || Request(posted) is not { } pinned || (string?)pinned["model"] != "acme/img-two" || (string?)pinned["prompt"] != "a red fox" ||
+                        (int?)pinned["n"] != 1 || (string?)pinned["aspect_ratio"] != (string)_imgAspect.SelectedItem || (string?)pinned["response_format"] != "b64_json" ||
+                        pinned["provider"]?.ToJsonString() != "{\"order\":[\"beta\",\"alpha/fp8\"],\"allow_fallbacks\":false}" ||
+                        imgFake.Seen.Last(r => r.Url == "https://openrouter.ai/api/v1/images").Auth != "Bearer sk-or-smoke" ||
+                        created.Count != 1 || JsonSerializer.Deserialize<ImageSettings>(File.ReadAllText(Path.ChangeExtension(created[0], ".json")))?.RemoteModel != "acme/img-two" ||
+                        SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery")?.Children.Count != 4)
+                        return Fail();
+                    _imgRemoteProviders.Clear(); // none pinned: no provider object at all
+                    (before, posted) = (Pictures(), imgFake.Posted.Count);
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted + 1 || Request(posted) is not { } open || (string?)open["model"] != "acme/img-two" || open.AsObject().ContainsKey("provider") || Pictures().Except(before).Count() != 1)
+                        return Fail();
+                    _imgBatch.SelectedIndex = 1; // two asked for, one comes back: the one is kept
+                    (before, posted) = (Pictures(), imgFake.Posted.Count);
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted + 1 || (int?)Request(posted)?["n"] != 2 || Pictures().Except(before).Count() != 1)
+                        return Fail();
+                    _imgBatch.SelectedIndex = 0;
+                    (imgFake.ImagesStatus, imgFake.ImagesBody) = (System.Net.HttpStatusCode.BadRequest, "{\"error\":{\"message\":\"bad aspect ratio\"}}"); // the server's message reaches the user
+                    (before, posted) = (Pictures(), imgFake.Posted.Count);
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted + 1 || !Toasted("bad aspect ratio") || Pictures().Except(before).Any())
+                        return Fail();
+                    (imgFake.ImagesStatus, imgFake.ImagesBody) = (System.Net.HttpStatusCode.BadGateway, "<html>oops</html>"); // not OpenRouter's error shape: the status code
+                    await RunGenerate();
+                    if (!Toasted("OpenRouter returned 502") || Pictures().Except(before).Any())
+                        return Fail();
+                    Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null); // no key: the error names the variable, nothing is sent
+                    posted = imgFake.Posted.Count;
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted || !Toasted("Missing API key for OpenRouter: set OPENROUTER_API_KEY"))
+                        return Fail();
+                    _imgPrompt.Text = " "; // no prompt: asked for, nothing sent
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted || !Toasted("Write a prompt first"))
+                        return Fail();
+                    _imgPrompt.Text = "a red fox";
+                    _imgRemoteModel = ("", ""); // remote with no model chosen: refused, and it does not run the local model instead
+                    await RunGenerate();
+                    if (imgFake.Posted.Count != posted || !Toasted("Choose an image model first") || _imgStatus.Text.StartsWith("Looking up") || !_imgGenerate.IsEnabled)
+                        return Fail();
+                    _imgRemoteModel = ("acme/img-two", "Acme: Image Two");
                     SmokeClick((Button)ImgFind("ImagesSwitchToLocal")!);
                     if (ReadImageSettings() is not { RemoteModel: "" } || recipes.SelectedIndex != recipeWas || !recipes.IsVisible || modelButton.IsVisible || !useRemote.IsVisible)
                         return Fail();
@@ -2968,6 +3034,7 @@ public partial class MainWindow : Window
                 finally
                 {
                     (_remoteHttp, _imgDialogTest) = (imgHttp, null);
+                    Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", imgKeyWas);
                 }
                 ShowView(chat: true);
                 await Settle();

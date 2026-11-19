@@ -2041,18 +2041,28 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "{\\\"slug\\\":\\\"gmicloud\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":false,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}" +
         "{\\\"slug\\\":\\\"open-inference\\\",\\\"baseUrl\\\":\\\"x\\\",\\\"dataPolicy\\\":{\\\"training\\\":true,\\\"trainingOpenRouter\\\":false,\\\"retainsPrompts\\\":true}}";
 
-    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    // POST /images (image generation): the body is kept in Posted and the reply is ImagesStatus with ImagesBody.
+    public List<string> Posted { get; } = [];
+    public HttpStatusCode ImagesStatus = HttpStatusCode.OK;
+    public string ImagesBody = "";
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         var url = request.RequestUri!.ToString();
         lock (Seen)
             Seen.Add((url, request.Headers.Authorization?.ToString()));
         if (Failure is not null)
             throw Failure;
+        if (request.Method == HttpMethod.Post && url == "https://openrouter.ai/api/v1/images")
+        {
+            Posted.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+            return new HttpResponseMessage(ImagesStatus) { Content = new StringContent(ImagesBody) };
+        }
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
         var body = Body ?? (url.Contains("/images/models", StringComparison.Ordinal) ? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? ImageEndpoints : ImageModels) : url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
-        return Task.FromResult(body is null
+        return body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
-            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
     }
 }
