@@ -2879,6 +2879,19 @@ public partial class MainWindow : Window
                 File.WriteAllBytes(Path.Combine(imageModels, "MOSS-Image-SFT-Q8_0.gguf"), [1]);
                 File.WriteAllBytes(Path.Combine(imageModels, "gemma-4-E4B-it-Q4_K_M.gguf"), [1]);
                 _settings.ImageModelsFolder = imageModels;
+                // three pictures in the gallery (portrait, landscape, square), the newest last
+                Directory.CreateDirectory(ImageGen.ImagesFolder);
+                foreach (var (name, w, h) in new[] { ("a", 384, 512), ("b", 640, 360), ("c", 400, 400) })
+                {
+                    var pixels = new byte[w * h * 4];
+                    for (var i = 0; i < pixels.Length; i += 4)
+                        (pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]) = ((byte)(i / 4 % w * 255 / w), (byte)(i / 4 / w * 255 / h), (byte)(name[0] * 40), 255);
+                    var png = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                    png.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(System.Windows.Media.Imaging.BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, pixels, w * 4)));
+                    using (var file = File.Create(Path.Combine(ImageGen.ImagesFolder, $"smoke-{name}.png")))
+                        png.Save(file);
+                    File.SetLastWriteTimeUtc(Path.Combine(ImageGen.ImagesFolder, $"smoke-{name}.png"), DateTime.UtcNow.AddMinutes(name[0] - 'd'));
+                }
                 SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Images")]);
                 await Settle();
                 if (SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesPage") is not { IsVisible: true } || ImagesView.Visibility != Visibility.Visible ||
@@ -2886,6 +2899,21 @@ public partial class MainWindow : Window
                     SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { } recipes || recipes.Items.Count != ImageGen.Recipes.Length + 1 ||
                     recipes.Items[^1] is not string mossItem || !mossItem.StartsWith("MOSS-Image-SFT-Q8_0.gguf · MOSS-Image SFT") ||
                     SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
+                    return Fail();
+                // the gallery: a strip of the three, the newest on the stage and outlined; the wheel zooms at the cursor, Fit undoes it
+                Snap("40-images-page");
+                var strip = SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery");
+                var zoom = SmokeFind<TextBlock>(ImagesView, t => t.Tag as string == "ImagesZoom");
+                if (strip?.Children.Count != 3 || !(_imgResultPath ?? "").EndsWith("smoke-c.png") || ((Border)strip.Children[0]).BorderThickness.Left != 2 || zoom?.Text != "100%")
+                    return Fail();
+                ShowOnStage(((Border)strip.Children[1]).Tag as string);
+                ZoomStage(2, new Point(10, 10), new Point(10, 10));
+                await Settle();
+                Snap("41-images-zoomed");
+                if (!(_imgResultPath ?? "").EndsWith("smoke-b.png") || ((Border)strip.Children[0]).BorderThickness.Left != 1 || zoom.Text != "200%" || _imgStage.ScrollableWidth <= 0)
+                    return Fail();
+                FitStage();
+                if (zoom.Text != "100%" || Math.Abs(_imgScale.ScaleX - 1) > 1e-9)
                     return Fail();
                 recipes.SelectedIndex = Array.FindIndex(ImageGen.Recipes, r => r.Id == "z-image-turbo");
                 var zHidden = negative.Visibility != Visibility.Visible;

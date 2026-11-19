@@ -30,7 +30,12 @@ public partial class MainWindow
     private ProgressBar _imgProgress = null!;
     private Image _imgResult = null!;
     private string? _imgResultPath;
-    private WrapPanel _imgGallery = null!;
+    private StackPanel _imgGallery = null!;
+    private TextBlock _imgGalleryHead = null!, _imgZoomText = null!, _imgPlaceholder = null!;
+    private ScrollViewer _imgStage = null!;
+    private readonly ScaleTransform _imgScale = new();
+    private Point? _imgPanFrom;
+    private (double X, double Y) _imgPanOffset;
     private bool _imgApplying; // Apply sets the controls: no recipe reset meanwhile
     // The user's models folder (AppSettings.ImageModelsFolder, else the Hugging Face cache): its image models follow the
     // recipes in the picker, and its files stand in for a recipe's downloads (a text encoder already there).
@@ -128,7 +133,7 @@ public partial class MainWindow
         _imgFolderText = Muted("", 11.5);
         _imgFolderText.Tag = "ImagesFolder";
         _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
-        var chooseFolder = new Button { Content = "Choose folderâ€¦", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
+        var chooseFolder = new Button { Content = "Choose folder…", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
             ToolTip = "A folder with image models you already have (searched with its subfolders); only image models are listed" };
         chooseFolder.Click += (_, _) =>
         {
@@ -178,12 +183,12 @@ public partial class MainWindow
         left.Children.Add(_imgBatch);
 
         var advanced = new StackPanel { Visibility = Visibility.Collapsed };
-        var toggle = new Button { Content = "â–¸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
+        var toggle = new Button { Content = "▸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
             advanced.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            toggle.Content = (show ? "â–¾" : "â–¸") + " Advanced";
+            toggle.Content = (show ? "▾" : "▸") + " Advanced";
         };
         left.Children.Add(toggle);
         left.Children.Add(advanced);
@@ -194,7 +199,7 @@ public partial class MainWindow
         advanced.Children.Add(_imgLowVram);
         advanced.Children.Add(new TextBlock { Text = "Start from image", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) });
         _imgInitText = Muted("None", 11.5);
-        var pick = new Button { Content = "Chooseâ€¦", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
+        var pick = new Button { Content = "Choose…", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
         var clear = new Button { Content = "Clear", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0) };
         pick.Click += (_, _) =>
         {
@@ -212,28 +217,125 @@ public partial class MainWindow
         _imgGenerate.Click += async (_, _) => await RunImageJob(GenerateImagesAsync);
         left.Children.Add(_imgGenerate);
 
-        // right: the current picture with its progress, the gallery below
-        _imgResult = new Image { Stretch = Stretch.Uniform, Cursor = Cursors.Hand, Margin = new Thickness(0, 0, 0, 8) };
-        _imgResult.MouseLeftButtonUp += (_, _) => { if (_imgResultPath is { } p) ShowImage(p); };
-        _imgProgress = new ProgressBar { Height = 4, Maximum = 1, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 0, 0, 6) };
+        // right: the stage (the picture centred and fitted; the wheel zooms at the cursor, a drag pans, a double-click fits it
+        // again), the progress under it, and the gallery as a strip along the bottom (a click puts a picture on the stage)
+        _imgResult = new Image { Stretch = Stretch.Uniform, Tag = "ImagesResult", LayoutTransform = _imgScale };
+        RenderOptions.SetBitmapScalingMode(_imgResult, BitmapScalingMode.HighQuality);
+        _imgStage = new ScrollViewer
+        {
+            Content = _imgResult, HorizontalScrollBarVisibility = ScrollBarVisibility.Hidden, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            HorizontalContentAlignment = HorizontalAlignment.Center, VerticalContentAlignment = VerticalAlignment.Center, Focusable = false,
+        };
+        // at 100% the picture fits the stage; zooming scales that
+        _imgResult.SetBinding(WidthProperty, new System.Windows.Data.Binding(nameof(ActualWidth)) { Source = _imgStage });
+        _imgResult.SetBinding(HeightProperty, new System.Windows.Data.Binding(nameof(ActualHeight)) { Source = _imgStage });
+        _imgStage.PreviewMouseWheel += (_, e) =>
+        {
+            if (_imgResult.Source is null)
+                return;
+            e.Handled = true;
+            ZoomStage(e.Delta > 0 ? 1.15 : 1 / 1.15, e.GetPosition(_imgResult), e.GetPosition(_imgStage));
+        };
+        _imgStage.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (e.ClickCount == 2)
+            {
+                FitStage();
+                e.Handled = true;
+                return;
+            }
+            if (_imgStage.ScrollableWidth <= 0 && _imgStage.ScrollableHeight <= 0)
+                return;
+            _imgPanFrom = e.GetPosition(_imgStage);
+            _imgPanOffset = (_imgStage.HorizontalOffset, _imgStage.VerticalOffset);
+            _imgStage.Cursor = Cursors.SizeAll;
+            _imgStage.CaptureMouse();
+            e.Handled = true;
+        };
+        _imgStage.PreviewMouseMove += (_, e) =>
+        {
+            if (_imgPanFrom is not { } from || e.LeftButton != MouseButtonState.Pressed)
+                return;
+            var at = e.GetPosition(_imgStage);
+            _imgStage.ScrollToHorizontalOffset(_imgPanOffset.X - (at.X - from.X));
+            _imgStage.ScrollToVerticalOffset(_imgPanOffset.Y - (at.Y - from.Y));
+        };
+        void EndPan()
+        {
+            _imgPanFrom = null;
+            _imgStage.Cursor = null;
+            if (_imgStage.IsMouseCaptured)
+                _imgStage.ReleaseMouseCapture();
+        }
+        _imgStage.PreviewMouseLeftButtonUp += (_, _) => EndPan();
+        _imgStage.LostMouseCapture += (_, _) => EndPan();
+        _imgPlaceholder = Muted("Generated pictures appear here", 13);
+        _imgPlaceholder.HorizontalAlignment = HorizontalAlignment.Center;
+        _imgPlaceholder.VerticalAlignment = VerticalAlignment.Center;
+        _imgPlaceholder.IsHitTestVisible = false;
+        // the stage's corner: zoom, Fit, Full size
+        _imgZoomText = Muted("100%", 11.5);
+        _imgZoomText.Tag = "ImagesZoom";
+        _imgZoomText.VerticalAlignment = VerticalAlignment.Center;
+        _imgZoomText.Margin = new Thickness(4, 0, 8, 0);
+        _imgZoomText.MinWidth = 34;
+        Button StageButton(string text, string tip, Action click)
+        {
+            var button = new Button { Content = text, ToolTip = tip, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 2, 9, 2), Margin = new Thickness(0, 0, 4, 0), FontSize = 11.5 };
+            button.Click += (_, _) => click();
+            return button;
+        }
+        var tools = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 10, 10), Padding = new Thickness(4),
+            CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1),
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children =
+                {
+                    _imgZoomText, StageButton("Fit", "Fit the picture to the stage (or double-click it)", FitStage),
+                    StageButton("Full size", "Open the picture over the whole window", () => { if (_imgResultPath is { } p) ShowImage(p); }),
+                },
+            },
+        };
+        tools.SetResourceReference(Border.BackgroundProperty, "Card");
+        tools.SetResourceReference(Border.BorderBrushProperty, "Border");
+        tools.SetBinding(VisibilityProperty, new System.Windows.Data.Binding(nameof(Image.Source)) { Source = _imgResult, Converter = new NullToCollapsed() });
+        var stage = new Border { BorderThickness = new Thickness(1), Padding = new Thickness(12), ClipToBounds = true, Child = new Grid { Children = { _imgStage, _imgPlaceholder, tools } } };
+        stage.SetResourceReference(Border.BackgroundProperty, "Card");
+        stage.SetResourceReference(Border.BorderBrushProperty, "Border");
+        stage.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
+
+        _imgProgress = new ProgressBar { Height = 4, Maximum = 1, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
         _imgStatus = Muted("", 12);
         _imgStatus.Tag = "ImagesStatus";
+        _imgStatus.VerticalAlignment = VerticalAlignment.Center;
         _imgCancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 3, 12, 3), Visibility = Visibility.Collapsed, Margin = new Thickness(10, 0, 0, 0) };
         _imgCancel.Click += (_, _) => CancelImageGen();
         DockPanel.SetDock(_imgCancel, Dock.Right);
-        var statusRow = new DockPanel { Children = { _imgCancel, _imgStatus } };
-        _imgGallery = new WrapPanel();
-        var galleryHead = Muted("GALLERY", 11);
-        galleryHead.FontWeight = FontWeights.SemiBold;
-        galleryHead.Margin = new Thickness(0, 14, 0, 6);
-        var right = new Grid { Margin = new Thickness(16, 24, 24, 24) };
-        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3, GridUnitType.Star) });
+        var statusRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { _imgCancel, _imgStatus } };
+        _imgGallery = new StackPanel { Orientation = Orientation.Horizontal, Tag = "ImagesGallery" };
+        _imgGalleryHead = Muted("GALLERY", 11);
+        _imgGalleryHead.FontWeight = FontWeights.SemiBold;
+        _imgGalleryHead.Margin = new Thickness(0, 14, 0, 6);
+        // one row of thumbnails, always in view; the wheel scrolls it sideways
+        var galleryScroll = new ScrollViewer
+        {
+            Content = _imgGallery, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Height = 128,
+        };
+        galleryScroll.PreviewMouseWheel += (_, e) =>
+        {
+            galleryScroll.ScrollToHorizontalOffset(galleryScroll.HorizontalOffset - e.Delta);
+            e.Handled = true;
+        };
+        var right = new Grid { Margin = new Thickness(16, 24, 24, 20) };
+        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 160 });
         right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(2, GridUnitType.Star) });
-        var galleryScroll = new ScrollViewer { Content = _imgGallery, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        foreach (var (element, row) in new (UIElement, int)[] { (_imgResult, 0), (_imgProgress, 1), (statusRow, 2), (galleryHead, 3), (galleryScroll, 4) })
+        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        foreach (var (element, row) in new (UIElement, int)[] { (stage, 0), (_imgProgress, 1), (statusRow, 2), (_imgGalleryHead, 3), (galleryScroll, 4) })
         {
             Grid.SetRow(element, row);
             right.Children.Add(element);
@@ -302,7 +404,7 @@ public partial class MainWindow
         if (_imgApplying || _imgAspect.SelectedItem is null || _imgLongSide.SelectedItem is null)
             return;
         var s = ReadImageSettings();
-        _imgSizeText.Text = $"{s.Width} Ã— {s.Height}";
+        _imgSizeText.Text = $"{s.Width} × {s.Height}";
     }
 
     private void RefreshImageRuntime()
@@ -327,12 +429,12 @@ public partial class MainWindow
         _imgRecipe.ItemsSource = ImageGen.Recipes.Select(r =>
             {
                 var missing = Missing(r, "");
-                return $"{r.Name}{(r.Note.Length > 0 ? " Â· " + r.Note : "")} â€” {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
+                return $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
             })
             .Concat(_imgLocal.Select(m =>
             {
                 var missing = Missing(m.Recipe, m.Path);
-                return $"{Path.GetFileName(m.Path)} Â· {m.Recipe.Name} â€” {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
+                return $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
             })).ToList();
         _imgRecipe.SelectedIndex = Math.Clamp(index, 0, _imgRecipe.Items.Count - 1);
         _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
@@ -344,13 +446,32 @@ public partial class MainWindow
     private void RefreshGallery()
     {
         _imgGallery.Children.Clear();
-        if (!Directory.Exists(ImageGen.ImagesFolder))
-            return;
-        foreach (var path in new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName))
+        var pictures = Directory.Exists(ImageGen.ImagesFolder)
+            ? new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName).ToList()
+            : [];
+        _imgGalleryHead.Text = pictures.Count == 0 ? "GALLERY · nothing yet" : $"GALLERY · {pictures.Count}{(pictures.Count == 200 ? "+" : "")}";
+        if (_imgResultPath is not null && !File.Exists(_imgResultPath))
+            ShowOnStage(null);
+        if (_imgResultPath is null && pictures.Count > 0)
+            ShowOnStage(pictures[0]); // the newest, until one is picked
+        foreach (var path in pictures)
         {
-            if (Thumb(path, 112) is not { } thumb)
+            if (LoadPicture(path, 208) is not { } bitmap)
                 continue;
-            thumb.Margin = new Thickness(0, 0, 8, 8);
+            var thumb = new Border
+            {
+                Width = 104, Height = 104, Margin = new Thickness(0, 0, 8, 0), CornerRadius = new CornerRadius(10), Tag = path, Cursor = Cursors.Hand,
+                Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill }, ToolTip = Path.GetFileName(path),
+            };
+            MarkThumb(thumb);
+            thumb.MouseLeftButtonDown += (_, e) =>
+            {
+                if (e.ClickCount == 2)
+                    ShowImage(path);
+                else
+                    ShowOnStage(path);
+                e.Handled = true;
+            };
             var menu = new ContextMenu();
             void Item(string header, Action click)
             {
@@ -366,7 +487,7 @@ public partial class MainWindow
                     catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { Toast("Could not read the settings", "#F7C873"); }
                 });
             Item("Show in folder", () => Process.Start("explorer.exe", $"/select,\"{path}\""));
-            Item("Copy image", () => { if (LoadPicture(path) is { } bitmap) Clipboard.SetImage(bitmap); });
+            Item("Copy image", () => { if (LoadPicture(path) is { } picture) Clipboard.SetImage(picture); });
             Item("Delete", () =>
             {
                 if (SidebarAsk("Delete picture", $"Move {Path.GetFileName(path)} to the Recycle Bin?", "Delete") is null)
@@ -378,6 +499,46 @@ public partial class MainWindow
             thumb.ContextMenu = menu;
             _imgGallery.Children.Add(thumb);
         }
+    }
+
+    // The stage's picture is outlined in the gallery.
+    private void MarkThumb(Border thumb)
+    {
+        var shown = string.Equals(thumb.Tag as string, _imgResultPath, StringComparison.OrdinalIgnoreCase);
+        thumb.BorderThickness = new Thickness(shown ? 2 : 1);
+        thumb.SetResourceReference(Border.BorderBrushProperty, shown ? "Accent" : "Border");
+    }
+
+    private void ShowOnStage(string? path)
+    {
+        _imgResultPath = path;
+        _imgResult.Source = path is null ? null : LoadPicture(path);
+        _imgPlaceholder.Visibility = _imgResult.Source is null ? Visibility.Visible : Visibility.Collapsed;
+        FitStage();
+        foreach (var thumb in _imgGallery.Children.OfType<Border>())
+            MarkThumb(thumb);
+    }
+
+    private void FitStage()
+    {
+        _imgScale.ScaleX = _imgScale.ScaleY = 1;
+        _imgZoomText.Text = "100%";
+        _imgStage.ScrollToHorizontalOffset(0);
+        _imgStage.ScrollToVerticalOffset(0);
+    }
+
+    // Zoom by factor (fit .. 8x), keeping the picture's point under the cursor where it is (as the Image Parser does).
+    private void ZoomStage(double factor, Point onImage, Point onStage)
+    {
+        var next = Math.Clamp(_imgScale.ScaleX * factor, 1, 8);
+        if (Math.Abs(next - _imgScale.ScaleX) < 0.001)
+            return;
+        _imgScale.ScaleX = _imgScale.ScaleY = next;
+        _imgZoomText.Text = $"{next * 100:0}%";
+        _imgStage.UpdateLayout();
+        var moved = _imgResult.TranslatePoint(onImage, _imgStage);
+        _imgStage.ScrollToHorizontalOffset(_imgStage.HorizontalOffset + moved.X - onStage.X);
+        _imgStage.ScrollToVerticalOffset(_imgStage.VerticalOffset + moved.Y - onStage.Y);
     }
 
     private void ImageStatus(string text, double? progress = null, bool indeterminate = false)
@@ -401,7 +562,7 @@ public partial class MainWindow
         catch (Exception e)
         {
             Log($"Image generation failed: {e.Message}");
-            Toast(e.Message.Length > 120 ? e.Message[..120] + "â€¦" : e.Message, "#FF667A");
+            Toast(e.Message.Length > 120 ? e.Message[..120] + "…" : e.Message, "#FF667A");
             ImageStatus("Failed: " + e.Message.Split('\n')[0]);
         }
         finally
@@ -420,7 +581,7 @@ public partial class MainWindow
     {
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
-        ImageStatus("Looking up the latest stable-diffusion.cpp releaseâ€¦", indeterminate: true);
+        ImageStatus("Looking up the latest stable-diffusion.cpp release…", indeterminate: true);
         var nvidia = await Task.Run(LauncherLogic.HasNvidiaGpu, ct);
         var assets = ImageGen.PickAssets(await http.GetStringAsync(ImageGen.ReleaseUrl, ct), nvidia);
         var zips = new List<string>();
@@ -433,7 +594,7 @@ public partial class MainWindow
                 zips.Add(zip);
                 await DownloadAsync(http, url, zip, Path.GetFileName(url), ct, _imgStatus);
             }
-            ImageStatus("Installing the image runtimeâ€¦", indeterminate: true);
+            ImageStatus("Installing the image runtime…", indeterminate: true);
             await Task.Run(() => LauncherLogic.InstallLlamaServer(zips, ImageGen.RuntimeFolder, $"{assets.Tag}\n{assets.Flavour}", exe: "sd-cli.exe"), ct);
             Log($"stable-diffusion.cpp {assets.Tag} ({assets.Flavour}) installed in {ImageGen.RuntimeFolder}");
             ImageStatus($"Image runtime {assets.Tag} installed", 1);
@@ -479,7 +640,7 @@ public partial class MainWindow
         foreach (var group in sized.GroupBy(s => s.Repo))
         {
             var offset = before;
-            var progress = new Progress<HubProgress>(p => ImageStatus($"Downloading modelâ€¦ {Gb(offset + p.DoneBytes)}/{Gb(total)} GB", (offset + p.DoneBytes) / (double)total));
+            var progress = new Progress<HubProgress>(p => ImageStatus($"Downloading model… {Gb(offset + p.DoneBytes)}/{Gb(total)} GB", (offset + p.DoneBytes) / (double)total));
             await downloader.DownloadAsync(group.Key, "main", group.Select(g => g.File).ToList(), progress, ct);
             before += group.Sum(g => g.File.Size);
         }
@@ -515,7 +676,7 @@ public partial class MainWindow
         };
         foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
             info.ArgumentList.Add(arg);
-        ImageStatus("Loadingâ€¦", indeterminate: true);
+        ImageStatus("Loading…", indeterminate: true);
         var tail = new Queue<string>();
         void Keep(string line)
         {
@@ -550,9 +711,9 @@ public partial class MainWindow
                         _ = Dispatcher.InvokeAsync(() =>
                         {
                             if (p.Loading)
-                                ImageStatus($"Loadingâ€¦ {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
+                                ImageStatus($"Loading… {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
                             else
-                                ImageStatus($"Step {p.Step}/{p.Steps} Â· {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
+                                ImageStatus($"Step {p.Step}/{p.Steps} · {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
                         });
                     else
                         Keep(text);
@@ -590,9 +751,16 @@ public partial class MainWindow
             File.WriteAllText(Path.ChangeExtension(final, ".json"), JsonSerializer.Serialize(run, new JsonSerializerOptions { WriteIndented = true }));
             first ??= final;
         }
-        _imgResultPath = first;
-        _imgResult.Source = first is null ? null : LoadPicture(first);
-        ImageStatus($"Done Â· seed {files[0].Seed}", 1);
+        ImageStatus($"Done · seed {files[0].Seed}", 1);
         RefreshGallery();
+        if (first is not null)
+            ShowOnStage(first);
     }
+}
+
+// Collapsed while the bound value is null (the stage's tools have no picture to act on).
+internal sealed class NullToCollapsed : System.Windows.Data.IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) => value is null ? Visibility.Collapsed : Visibility.Visible;
+    public object ConvertBack(object? value, Type targetType, object? parameter, System.Globalization.CultureInfo culture) => throw new NotSupportedException();
 }
