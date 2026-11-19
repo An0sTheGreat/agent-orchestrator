@@ -1,7 +1,10 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -17,6 +20,7 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     private Process? _shareProcess;
+    private ImageShare.Server? _imageShare; // the images half, on ModelShare.ImagePort; it keeps running across llama-server restarts
     private int _shareGeneration, _shareFailures; // a new generation for every launch and stop: stale exits and restarts are ignored
     private string? _shareIp;
     private string _shareState = "Off";
@@ -81,9 +85,10 @@ public partial class MainWindow
         {
             Directory.CreateDirectory(ModelShare.Folder);
             File.WriteAllText(ModelShare.IniPath, ModelShare.Ini(models));
+            StartImageShare(IPAddress.Parse(_shareIp!), ModelShare.ImagePort);
             process.Start();
         }
-        catch (Exception x) when (x is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException)
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException or SocketException)
         {
             process.Dispose();
             StopShare();
@@ -94,7 +99,7 @@ public partial class MainWindow
         var started = DateTime.Now;
         _shareProcess = process;
         Log($"Share models: llama-server (pid {process.Id}) on {_shareIp}:{ModelShare.ChatPort}, {models.Count} models");
-        _shareState = $"Sharing on {_shareIp} · chat port {ModelShare.ChatPort} · Windows may ask to allow llama-server through the firewall the first time";
+        _shareState = $"Sharing on {_shareIp} · chat port {ModelShare.ChatPort} · images port {ModelShare.ImagePort} · Windows may ask to allow llama-server and this app through the firewall the first time";
         RefreshShare();
         process.Exited += (_, _) => Dispatcher.InvokeAsync(async () =>
         {
@@ -115,6 +120,8 @@ public partial class MainWindow
     // Idempotent: the server stops by its own pid, and any pending restart is dropped.
     private void StopShare()
     {
+        _imageShare?.Dispose();
+        _imageShare = null;
         _shareGeneration++;
         if (_shareProcess is not { } process)
             return;
@@ -125,6 +132,57 @@ public partial class MainWindow
             process.WaitForExit(3000);
         }
         catch (Exception x) when (x is InvalidOperationException or Win32Exception) { } // already gone
+    }
+
+    // Idempotent; the key is read on every request, so New key signs other PCs out at once. Also --image-share-loopback (App.xaml.cs).
+    internal void StartImageShare(IPAddress ip, int port) =>
+        _imageShare ??= new ImageShare.Server(ip, port, () => Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "", ServeImageShareAsync);
+
+    // On the server's thread: the model list scans the folder here; a generation runs on the UI thread like the page's own.
+    private async Task<ImageShare.Response> ServeImageShareAsync(ImageShare.Request request, CancellationToken ct)
+    {
+        if (request.Path == ImageShare.ModelsPath)
+            return new(200, ImageShare.ModelsJson(ImageShare.Models(ImageGen.ScanFolder(await Dispatcher.InvokeAsync(() => ImageModelsFolder)).Models)));
+        ImageSettings? asked;
+        try { asked = JsonSerializer.Deserialize<ImageSettings>(request.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
+        catch (JsonException) { asked = null; }
+        return asked is null ? ImageShare.Error(400, "The body is not image settings JSON") : await await Dispatcher.InvokeAsync(() => GenerateForShareAsync(asked, ct));
+    }
+
+    // One generation for the other PC through the Images page's job (409 while one runs), in a temp folder that is deleted after.
+    private async Task<ImageShare.Response> GenerateForShareAsync(ImageSettings asked, CancellationToken ct)
+    {
+        ScanImageFolder();
+        if (ImagesView.Children.Count == 0)
+            BuildImagesPage();
+        if (ImageBusy)
+            return ImageShare.Error(409, "Busy generating another picture");
+        if (ImageShare.Resolve(asked.RecipeId, _imgLocal) is not var (recipe, local))
+            return ImageShare.Error(400, $"No such model: {asked.RecipeId}");
+        var run = ImageShare.Run(asked, recipe, local);
+        if (run.Prompt.Length == 0)
+            return ImageShare.Error(400, "The prompt is empty");
+        var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-share-{Guid.NewGuid():N}");
+        ImageShare.Response? reply = null;
+        try
+        {
+            await RunImageJob(async jobCt =>
+            {
+                using var stop = ct.Register(CancelImageGen); // sharing turned off meanwhile
+                ImageStatus("Generating for another PC…", indeterminate: true);
+                var pictures = new List<ImageShare.Picture>();
+                foreach (var (written, _, seed) in (await GenerateLocalAsync(run, folder, null, jobCt)).Where(f => File.Exists(f.Written)))
+                    pictures.Add(new(Convert.ToBase64String(await File.ReadAllBytesAsync(written, jobCt)), seed));
+                reply = new(200, ImageShare.PicturesJson(pictures));
+                ImageStatus($"Done for another PC · seed {run.Seed}", 1);
+            });
+        }
+        finally
+        {
+            try { Directory.Delete(folder, recursive: true); }
+            catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
+        }
+        return reply ?? ImageShare.Error(500, _imgStatus.Text); // RunImageJob showed the failure: "Failed: …" or "Cancelled"
     }
 
     private void SaveShare(bool on)
