@@ -226,6 +226,17 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
+    def test_tok_s_comes_from_llama_servers_timings_when_it_sends_them(self):
+        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+        client.role = "planner"
+        usage = {"prompt_tokens": 30, "completion_tokens": 400}
+        with patch.object(orchestrator, "emit") as emit, patch.object(orchestrator.time, "time", lambda: 1032.0):
+            # a turn of 32 s that spent 3.3 s generating: llama-server says 122 tok/s, the turn alone would say 12.5
+            client._emit_turn({"content": "x"}, {"usage": usage, "timings": {"predicted_per_second": 122.07, "prompt_per_second": 7.46}}, 1000.0, streamed=True)
+            client._emit_turn({"content": "x"}, {"usage": usage}, 1000.0, streamed=True)
+        sent = [c.kwargs for c in emit.call_args_list if c.args and c.args[0] == "usage"]
+        self.assertEqual([(u["tps"], u["prompt_tps"]) for u in sent], [(122.07, 7.5), (12.5, None)])
+
     def test_answer_text_strips_every_think_block_and_only_a_trailing_open_one(self):
         def answer(content):
             return orchestrator.answer_text({"content": content})

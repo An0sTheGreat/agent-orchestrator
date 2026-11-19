@@ -559,6 +559,7 @@ class ApiClient:
         reasoning: list[str] = []
         calls: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] = {}
+        timings: dict[str, Any] = {}  # llama-server's own speeds (also through a shared primary PC)
         finish = None
         splitter = ThinkSplitter(self._starts_thinking(body))
         seen_content = False
@@ -592,6 +593,7 @@ class ApiClient:
                     if chunk.get("error"):
                         raise WorkflowError(f"API stream error: {chunk['error']}")
                     usage = chunk.get("usage") or usage
+                    timings = chunk.get("timings") or timings
                     for choice in chunk.get("choices") or []:
                         finish = choice.get("finish_reason") or finish
                         delta = choice.get("delta") or {}
@@ -642,7 +644,7 @@ class ApiClient:
                 {"id": slot["id"] or f"call_{index}", "type": "function", "function": {"name": slot["name"], "arguments": slot["arguments"]}}
                 for index, slot in sorted(calls.items())
             ]
-        return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage, "_streamed": True}
+        return {"choices": [{"message": message, "finish_reason": finish}], "usage": usage, "timings": timings, "_streamed": True}
 
     def _starts_thinking(self, body: dict[str, Any]) -> bool | None:
         """Whether streamed content begins inside reasoning (ThinkSplitter's start_thinking): False when thinking is off
@@ -712,13 +714,17 @@ class ApiClient:
         elapsed = max(time.time() - started, 1e-3)
         completion = usage.get("completion_tokens") or 0
         prompt = usage.get("prompt_tokens") or 0
+        # llama-server's timings (a local server, or a primary PC's through its share) measure generation alone; otherwise
+        # the whole turn, which counts loading the model, reading the prompt and the network as well
+        timings = payload.get("timings") or {}
+        generating, reading = timings.get("predicted_per_second"), timings.get("prompt_per_second")
         emit(
             "usage",
             role=self.role,
             prompt=prompt,
             completion=completion,
-            tps=round(completion / elapsed, 2),
-            prompt_tps=None,
+            tps=round(generating, 2) if isinstance(generating, (int, float)) and generating > 0 else round(completion / elapsed, 2),
+            prompt_tps=round(reading, 1) if isinstance(reading, (int, float)) and reading > 0 else None,
         )
         if EVENTS and body is not None:  # the launcher's per-worker context cards (chat, Code turns and project runs)
             emit("context", role=self.role, n_ctx=self.context_size(), prompt_tokens=prompt, completion_tokens=completion,
