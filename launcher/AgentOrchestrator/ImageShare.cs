@@ -29,7 +29,12 @@ internal static class ImageShare
     public sealed record Picture(string Png, long Seed);
     private sealed record ModelList(List<Model> Models);
     private sealed record PictureList(List<Picture> Images);
-    private sealed record ErrorReply(string Error);
+    // Status: set when the error rides in a 200 reply whose head went out before the outcome was known (/images/generate).
+    private sealed record ErrorReply(string Error, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] int? Status = null);
+
+    // Cloudflare drops a reply that has not started within ~100 s (524): /images/generate sends its 200 head at once and a
+    // space every Heartbeat until the outcome (JSON allows leading whitespace), and an error goes in the body with its status.
+    internal static TimeSpan Heartbeat = TimeSpan.FromSeconds(15);
 
     // The request line, the headers and a Content-Length body (chunked bodies are not read). HttpError: 400, 413 or 431.
     public static async Task<Request> ReadRequestAsync(Stream stream, CancellationToken ct)
@@ -185,8 +190,17 @@ internal static class ImageShare
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
 
-    public static async Task<List<Picture>> GenerateAsync(HttpClient http, string baseUrl, string key, ImageSettings settings, CancellationToken ct) =>
-        ParsePictures(await SendAsync(http, new(HttpMethod.Post, baseUrl + GeneratePath) { Content = new StringContent(JsonSerializer.Serialize(settings), Encoding.UTF8, "application/json") }, key, ct));
+    // The reply is 200 from its first byte (Server.HeartbeatAsync): a failure is {"error","status"} in its body.
+    public static async Task<List<Picture>> GenerateAsync(HttpClient http, string baseUrl, string key, ImageSettings settings, CancellationToken ct)
+    {
+        var body = await SendAsync(http, new(HttpMethod.Post, baseUrl + GeneratePath) { Content = new StringContent(JsonSerializer.Serialize(settings), Encoding.UTF8, "application/json") }, key, ct);
+        ErrorReply? failed = null;
+        try { failed = JsonSerializer.Deserialize<ErrorReply>(body, Web); }
+        catch (JsonException) { }
+        if (failed is { Error.Length: > 0 })
+            throw new InvalidOperationException(ErrorText(failed.Status ?? 500, body));
+        return ParsePictures(body);
+    }
 
     private static async Task<string> SendAsync(HttpClient http, HttpRequestMessage request, string key, CancellationToken ct)
     {
@@ -259,7 +273,9 @@ internal static class ImageShare
                     }
                     response = request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal)
                         ? Unauthorized(request, key()) ?? await ProxyAsync(stream, lines, rest, _upstream, _stop.Token)
-                        : Check(request, key()) ?? await handle(request, _stop.Token);
+                        : Check(request, key()) ?? (request.Path == GeneratePath
+                            ? await HeartbeatAsync(stream, handle(request, _stop.Token), _stop.Token)
+                            : await handle(request, _stop.Token));
                     if (response is null)
                         return;
                 }
@@ -269,6 +285,23 @@ internal static class ImageShare
                 try { await stream.WriteAsync(Bytes(response), _stop.Token); }
                 catch (Exception x) when (x is OperationCanceledException or IOException or SocketException or ObjectDisposedException) { }
             }
+        }
+
+        // The 200 head now, a space every Heartbeat while the handler runs, then its JSON (an error as {"error","status"}); null:
+        // the reply is written.
+        private static async Task<Response?> HeartbeatAsync(Stream stream, Task<Response> work, CancellationToken ct)
+        {
+            await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nConnection: close\r\n\r\n"), ct);
+            while (await Task.WhenAny(work, Task.Delay(Heartbeat, ct)) != work)
+                await stream.WriteAsync(" "u8.ToArray(), ct);
+            Response result;
+            try { result = await work; }
+            catch (HttpError x) { result = Error(x.Status, x.Message); }
+            catch (Exception x) when (x is not OperationCanceledException) { result = Error(500, x.Message); }
+            var json = result.Status == 200 ? result.Json
+                : JsonSerializer.Serialize(new ErrorReply(JsonSerializer.Deserialize<ErrorReply>(result.Json, Web)?.Error ?? $"failed ({result.Status})", result.Status), Web);
+            await stream.WriteAsync(Encoding.UTF8.GetBytes(json), ct);
+            return null;
         }
 
         public void Dispose()
@@ -339,7 +372,8 @@ internal static class ImageShare
         var upstreamPort = ((IPEndPoint)upstream.LocalEndpoint).Port;
         // the fake primary PC: generate knows z-image-turbo only, as ServeImageShareAsync resolves RecipeId
         using var server = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", (r, _) => Task.FromResult(r.Path == ModelsPath ? new Response(200, ModelsJson([models[0]]))
-            : JsonSerializer.Deserialize<ImageSettings>(r.Body) is { RecipeId: "z-image-turbo", Prompt: "a fox" } ? new(200, PicturesJson([new("AA==", 7)])) : Error(400, "No such model: nope")));
+            : JsonSerializer.Deserialize<ImageSettings>(r.Body) is { RecipeId: "z-image-turbo", Prompt: "a fox" } ? new(200, PicturesJson([new("AA==", 7)]))
+            : JsonSerializer.Deserialize<ImageSettings>(r.Body) is { Prompt: "busy" } ? Error(409, "busy") : Error(400, "No such model: nope")));
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var url = $"http://127.0.0.1:{server.Port}{ModelsPath}";
         Assert((int)http.GetAsync(url).GetAwaiter().GetResult().StatusCode == 401, "the server refuses a request without the key");
@@ -358,6 +392,25 @@ internal static class ImageShare
         Assert(Task.Run(() => GenerateAsync(http, baseUrl, "k", new() { RecipeId = "z-image-turbo", Prompt = "a fox" }, default)).GetAwaiter().GetResult() is [{ Png: "AA==", Seed: 7 }], "the client generates");
         Assert(Thrown(() => GenerateAsync(http, baseUrl, "k", new() { RecipeId = "nope", Prompt = "a fox" }, default)) == "The primary PC: No such model: nope", "an unknown model: ErrorText");
         Assert(Thrown(() => FetchModelsAsync(http, baseUrl, "wrong", default)) == ErrorText(401, ""), "a wrong key: ErrorText");
+        Assert(Thrown(() => GenerateAsync(http, baseUrl, "k", new() { RecipeId = "z-image-turbo", Prompt = "busy" }, default)) == ErrorText(409, ""), "a 409 in the body: busy");
+        // a generation slower than the heartbeat: its reply starts with the head and spaces at once, and still parses
+        var heartbeat = Heartbeat;
+        Heartbeat = TimeSpan.FromMilliseconds(40);
+        try
+        {
+            using var slow = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", async (_, ct) => { await Task.Delay(300, ct); return new Response(200, PicturesJson([new("AA==", 9)])); });
+            using var raw = new TcpClient();
+            raw.Connect(IPAddress.Loopback, slow.Port);
+            var wire = raw.GetStream();
+            wire.Write(Encoding.ASCII.GetBytes($"POST {GeneratePath} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k\r\nContent-Length: 2\r\n\r\n{{}}"));
+            var started = System.Diagnostics.Stopwatch.StartNew();
+            var head = new byte[64];
+            var read = wire.Read(head);
+            Assert(started.ElapsedMilliseconds < 250 && Encoding.ASCII.GetString(head, 0, read).StartsWith("HTTP/1.1 200"), "a slow generation's head goes out before the outcome");
+            Assert(Task.Run(() => GenerateAsync(http, $"http://127.0.0.1:{slow.Port}", "k", new() { Prompt = "x" }, default)).GetAwaiter().GetResult() is [{ Seed: 9 }],
+                "a slow generation's spaced reply parses");
+        }
+        finally { Heartbeat = heartbeat; }
         var closed = new TcpListener(IPAddress.Loopback, 0);
         closed.Start();
         var closedPort = ((IPEndPoint)closed.LocalEndpoint).Port;
