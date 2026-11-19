@@ -294,6 +294,19 @@ public partial class MainWindow
             return Fail($"a bad code: {ShareConnectState.Text}");
         ShareCodeInput.Clear();
         ShareNote("");
+        // the Images page offers the primary PC only while connected
+        if (ImagesView.Children.Count == 0)
+            BuildImagesPage();
+        var useShared = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesUseShared");
+        _settings.ShareHost = "smoke.trycloudflare.com";
+        ShowImageSource();
+        var connected = useShared?.Visibility;
+        _settings.ShareHost = "";
+        ShowImageSource();
+        _settings.ShareHost = host;
+        if (connected != Visibility.Visible || useShared!.Visibility != Visibility.Collapsed)
+            return Fail($"\"Use the primary PC…\" is {connected} connected and {useShared?.Visibility} not");
+        ShowImageSource();
         return true;
     }
 

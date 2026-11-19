@@ -178,6 +178,34 @@ internal static class ImageShare
         return string.IsNullOrEmpty(message) ? $"The primary PC returned {status}" : "The primary PC: " + message;
     }
 
+    // The other PC's calls to baseUrl (ModelShare.ImagesUrl). A refusal throws InvalidOperationException(ErrorText), a connection
+    // or DNS failure InvalidOperationException(CannotReach).
+    public const string CannotReach = "Cannot reach the primary PC: is sharing on there? Its address changes each time sharing starts; paste the new code under Settings > Models.";
+
+    public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
+        ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
+
+    public static async Task<List<Picture>> GenerateAsync(HttpClient http, string baseUrl, string key, ImageSettings settings, CancellationToken ct) =>
+        ParsePictures(await SendAsync(http, new(HttpMethod.Post, baseUrl + GeneratePath) { Content = new StringContent(JsonSerializer.Serialize(settings), Encoding.UTF8, "application/json") }, key, ct));
+
+    private static async Task<string> SendAsync(HttpClient http, HttpRequestMessage request, string key, CancellationToken ct)
+    {
+        using (request)
+        {
+            request.Headers.Authorization = new("Bearer", key);
+            try
+            {
+                using var response = await http.SendAsync(request, ct);
+                var body = await response.Content.ReadAsStringAsync(ct);
+                return response.IsSuccessStatusCode ? body : throw new InvalidOperationException(ErrorText((int)response.StatusCode, body));
+            }
+            catch (HttpRequestException x) when (x.HttpRequestError is HttpRequestError.ConnectionError or HttpRequestError.NameResolutionError)
+            {
+                throw new InvalidOperationException(CannotReach, x);
+            }
+        }
+    }
+
     // ponytail: a task per connection, no cap; a request without the key is dropped after ReadTimeout or answered 401 at once.
     // Add a cap if the tunnel address leaking ever becomes a load problem.
     public sealed class Server : IDisposable
@@ -309,13 +337,32 @@ internal static class ImageShare
         using var upstream = new TcpListener(IPAddress.Loopback, 0);
         upstream.Start();
         var upstreamPort = ((IPEndPoint)upstream.LocalEndpoint).Port;
-        using var server = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", (r, _) => Task.FromResult(new Response(200, ModelsJson([models[0]]))));
+        // the fake primary PC: generate knows z-image-turbo only, as ServeImageShareAsync resolves RecipeId
+        using var server = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", (r, _) => Task.FromResult(r.Path == ModelsPath ? new Response(200, ModelsJson([models[0]]))
+            : JsonSerializer.Deserialize<ImageSettings>(r.Body) is { RecipeId: "z-image-turbo", Prompt: "a fox" } ? new(200, PicturesJson([new("AA==", 7)])) : Error(400, "No such model: nope")));
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var url = $"http://127.0.0.1:{server.Port}{ModelsPath}";
         Assert((int)http.GetAsync(url).GetAwaiter().GetResult().StatusCode == 401, "the server refuses a request without the key");
         using var get = new HttpRequestMessage(HttpMethod.Get, url) { Headers = { Authorization = new("Bearer", "k") } };
         using var ok = http.SendAsync(get).GetAwaiter().GetResult();
         Assert((int)ok.StatusCode == 200 && ParseModels(ok.Content.ReadAsStringAsync().GetAwaiter().GetResult()) is [{ Id: "z-image-turbo" }], "the server answers with the key");
+
+        // the other PC's client: the list, a generation, and each failure as its message
+        static string Thrown(Func<Task> call)
+        {
+            try { Task.Run(call).GetAwaiter().GetResult(); return ""; } // off the dispatcher: the client's awaits would wait for it
+            catch (InvalidOperationException x) { return x.Message; }
+        }
+        var baseUrl = $"http://127.0.0.1:{server.Port}";
+        Assert(Task.Run(() => FetchModelsAsync(http, baseUrl, "k", default)).GetAwaiter().GetResult() is [{ Id: "z-image-turbo", Multiple: 16 }], "the client lists the models");
+        Assert(Task.Run(() => GenerateAsync(http, baseUrl, "k", new() { RecipeId = "z-image-turbo", Prompt = "a fox" }, default)).GetAwaiter().GetResult() is [{ Png: "AA==", Seed: 7 }], "the client generates");
+        Assert(Thrown(() => GenerateAsync(http, baseUrl, "k", new() { RecipeId = "nope", Prompt = "a fox" }, default)) == "The primary PC: No such model: nope", "an unknown model: ErrorText");
+        Assert(Thrown(() => FetchModelsAsync(http, baseUrl, "wrong", default)) == ErrorText(401, ""), "a wrong key: ErrorText");
+        var closed = new TcpListener(IPAddress.Loopback, 0);
+        closed.Start();
+        var closedPort = ((IPEndPoint)closed.LocalEndpoint).Port;
+        closed.Stop();
+        Assert(Thrown(() => FetchModelsAsync(http, $"http://127.0.0.1:{closedPort}", "k", default)) == CannotReach, "nothing listening: CannotReach");
 
         // /v1/ through the proxy: 401 without the key (llama-server never asked); with it the request arrives unchanged but for
         // Connection: close, and the reply streams: the client reads the first chunk before the fake llama-server sends the second.

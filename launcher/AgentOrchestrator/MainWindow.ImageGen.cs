@@ -49,6 +49,16 @@ public partial class MainWindow
     private Button _imgRemoteModelButton = null!, _imgRemoteProvidersButton = null!;
     private (string Id, string Name) _imgRemoteModel = ("", "");
     private List<string> _imgRemoteProviders = [];
+    // The primary PC (sharing its models, MainWindow.Share.cs) instead: its panel, the model id picked (kept before the list
+    // loads) and its /images/models list. Offered only while connected (AppSettings.ShareHost).
+    private bool _imgSharedMode;
+    private StackPanel _imgSharedPanel = null!;
+    private ComboBox _imgSharedModel = null!;
+    private TextBlock _imgSharedNote = null!;
+    private Button _imgUseShared = null!;
+    private string _imgSharedId = "";
+    private List<ImageShare.Model> _imgShared = [];
+    private ImageShare.Model? SharedPick => _imgShared.FirstOrDefault(m => m.Id == _imgSharedId);
     private readonly List<UIElement> _imgLocalOnly = []; // the controls only a local run reads (hidden in OpenRouter mode)
     private static string ImageKeyEnv => RemoteCatalog.Services.First(x => x.Id == "openrouter").KeyEnv;
     internal Action<DialogShell>? _imgDialogTest; // --ui-smoke: gets the popup instead of showing it
@@ -79,6 +89,9 @@ public partial class MainWindow
         RefreshImageRuntime();
         RefreshImageRecipes();
         RefreshGallery();
+        ShowImageSource(); // connected or disconnected since
+        if (_imgSharedMode)
+            LoadSharedModels();
         Reveal(CodeView, false);
         Reveal(ChatView, false);
         Reveal(ImagesView, true);
@@ -158,8 +171,31 @@ public partial class MainWindow
                 SourceButton("Switch to Local", "ImagesSwitchToLocal", () => { _imgRemoteMode = false; ShowImageSource(); }),
             },
         };
+        _imgSharedModel = new ComboBox { Tag = "ImagesSharedModel" };
+        _imgSharedModel.SelectionChanged += (_, _) =>
+        {
+            if (_imgApplying || _imgSharedModel.SelectedIndex < 0)
+                return;
+            var m = _imgShared[_imgSharedModel.SelectedIndex];
+            _imgSharedId = m.Id;
+            (_imgSteps.Value, _imgCfg.Value, _imgSampler.SelectedIndex) = (m.Steps, m.Cfg, Array.IndexOf(ImageGen.Samplers, m.Sampler) + 1);
+            ShowImageSource(); // the negative row
+            ShowImageSize(); // the multiple
+        };
+        _imgSharedNote = Muted("", 11.5);
+        _imgSharedNote.Margin = new Thickness(0, 4, 0, 0);
+        _imgSharedPanel = new StackPanel
+        {
+            Visibility = Visibility.Collapsed,
+            Children =
+            {
+                Muted("Runs on the primary PC this PC is connected to (Settings > Models)."), _imgSharedModel, _imgSharedNote,
+                SourceButton("Switch to Local", "ImagesSharedToLocal", () => { _imgSharedMode = false; ShowImageSource(); }),
+            },
+        };
         left.Children.Add(_imgLocalPanel);
         left.Children.Add(_imgRemotePanel);
+        left.Children.Add(_imgSharedPanel);
         _imgFolderText = Muted("", 11.5);
         _imgFolderText.Tag = "ImagesFolder";
         _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
@@ -180,6 +216,8 @@ public partial class MainWindow
         DockPanel.SetDock(chooseFolder, Dock.Left);
         _imgLocalPanel.Children.Add(folderRow);
         _imgLocalPanel.Children.Add(SourceButton("Use OpenRouter…", "ImagesUseRemoteApi", () => { _imgRemoteMode = true; ShowImageSource(); }));
+        _imgUseShared = SourceButton("Use the primary PC…", "ImagesUseShared", () => { _imgSharedMode = true; ShowImageSource(); LoadSharedModels(); });
+        _imgLocalPanel.Children.Add(_imgUseShared);
 
         Label("Prompt");
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -404,10 +442,17 @@ public partial class MainWindow
         _imgApplying = true;
         var local = _imgLocal.FindIndex(m => s.LocalModel.Length > 0 && string.Equals(m.Path, s.LocalModel, StringComparison.OrdinalIgnoreCase));
         var recipe = local >= 0 ? _imgLocal[local].Recipe : ImageGen.Recipe(s.RecipeId);
-        _imgRemoteMode = s.RemoteModel.Length > 0;
+        _imgSharedMode = s.SharedModel.Length > 0;
+        _imgRemoteMode = !_imgSharedMode && s.RemoteModel.Length > 0;
         if (_imgRemoteMode)
             (_imgRemoteModel, _imgRemoteProviders) = ((s.RemoteModel, ""), s.RemoteProvider.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList());
-        _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe); // the local pick is kept in OpenRouter mode too, for the way back
+        if (_imgSharedMode)
+        {
+            _imgSharedId = s.SharedModel;
+            _imgSharedModel.SelectedIndex = _imgShared.FindIndex(m => m.Id == s.SharedModel);
+        }
+        else // in shared mode RecipeId is the primary PC's id: the local pick stays as it was
+            _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe); // the local pick is kept in OpenRouter mode too, for the way back
         ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
@@ -429,10 +474,13 @@ public partial class MainWindow
     {
         var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
         var (aspect, longSide) = ((string)_imgAspect.SelectedItem, (int)_imgLongSide.SelectedItem);
-        var (w, h) = ImageGen.Size(aspect, longSide, recipe.Multiple);
+        // the primary PC resolves its model from RecipeId; before its list loads, the local recipe stands in for the multiple and negative
+        var (multiple, negative) = _imgSharedMode && SharedPick is { } shared ? (shared.Multiple, shared.Negative) : (recipe.Multiple, recipe.Negative);
+        var (w, h) = ImageGen.Size(aspect, longSide, multiple);
         return new()
         {
-            RecipeId = recipe.Id, LocalModel = local, Prompt = _imgPrompt.Text.Trim(), Negative = recipe.Negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
+            RecipeId = _imgSharedMode ? _imgSharedId : recipe.Id, LocalModel = _imgSharedMode ? "" : local, SharedModel = _imgSharedMode ? _imgSharedId : "",
+            Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
             Width = w, Height = h, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
@@ -482,15 +530,47 @@ public partial class MainWindow
     }
 
     // The panel for the source in use; the model button shows the name (the id until the list has been fetched), the providers button the ticks.
+    // Never loads the primary PC's list: a failed load shows the source again, which would load again.
     private void ShowImageSource()
     {
-        _imgLocalPanel.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
-        _imgRemotePanel.Visibility = _imgRemoteMode ? Visibility.Visible : Visibility.Collapsed;
-        foreach (var control in _imgLocalOnly)
-            control.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
-        _imgNegativeRow.Visibility = !_imgRemoteMode && _imgRecipe.SelectedIndex >= 0 && ImageChoice(_imgRecipe.SelectedIndex).Recipe.Negative ? Visibility.Visible : Visibility.Collapsed;
+        static Visibility Shown(bool shown) => shown ? Visibility.Visible : Visibility.Collapsed;
+        _imgSharedMode &= _settings.ShareHost.Length > 0; // disconnected since: back to Local
+        _imgLocalPanel.Visibility = Shown(!_imgRemoteMode && !_imgSharedMode);
+        _imgRemotePanel.Visibility = Shown(_imgRemoteMode);
+        _imgSharedPanel.Visibility = Shown(_imgSharedMode);
+        _imgUseShared.Visibility = Shown(_settings.ShareHost.Length > 0);
+        foreach (var control in _imgLocalOnly) // the primary PC takes the settings, but not this PC's runtime
+            control.Visibility = Shown(!_imgRemoteMode && !(_imgSharedMode && control == _imgRuntimeText.Parent));
+        _imgNegativeRow.Visibility = Shown(_imgSharedMode ? SharedPick?.Negative == true
+            : !_imgRemoteMode && _imgRecipe.SelectedIndex >= 0 && ImageChoice(_imgRecipe.SelectedIndex).Recipe.Negative);
         _imgRemoteModelButton.Content = (_imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id) + " ▾";
         _imgRemoteProvidersButton.Content = "Providers: " + (_imgRemoteProviders.Count == 0 ? "any" : string.Join(", ", _imgRemoteProviders));
+    }
+
+    // The primary PC's /images/models into the picker, the pick kept by id; a failure shows in the note under it.
+    private async void LoadSharedModels()
+    {
+        var host = _settings.ShareHost;
+        _imgSharedNote.Text = $"Loading the models of {host}…";
+        List<ImageShare.Model> models;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            models = await ImageShare.FetchModelsAsync(http, ModelShare.ImagesUrl(host), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
+            _imgSharedNote.Text = models.Count == 0 ? $"{host} has no image models" : $"{models.Count} models on {host}";
+        }
+        catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException)
+        {
+            models = [];
+            _imgSharedNote.Text = x is TaskCanceledException ? $"No answer from {host} in 30 s" : x.Message;
+        }
+        _imgApplying = true;
+        _imgShared = models;
+        _imgSharedModel.ItemsSource = models.Select(m => m.Note.Length > 0 ? $"{m.Name} · {m.Note}" : m.Name).ToList();
+        _imgSharedModel.SelectedIndex = models.FindIndex(m => m.Id == _imgSharedId);
+        _imgApplying = false;
+        ShowImageSource();
+        ShowImageSize();
     }
 
     private void ShowImagePopup(DialogShell popup)
@@ -943,12 +1023,12 @@ public partial class MainWindow
             Toast("Write a prompt first", "#F7C873");
             return;
         }
-        if (_imgRemoteMode && s.RemoteModel.Length == 0)
+        if ((_imgRemoteMode && s.RemoteModel.Length == 0) || (_imgSharedMode && s.SharedModel.Length == 0))
         {
             Toast("Choose an image model first", "#F7C873");
             return;
         }
-        if (s.RemoteModel.Length == 0 && s.InitImage.Length > 0 && !File.Exists(s.InitImage))
+        if (s.RemoteModel.Length == 0 && s.SharedModel.Length == 0 && s.InitImage.Length > 0 && !File.Exists(s.InitImage))
             throw new FileNotFoundException($"The start image is gone: {s.InitImage}");
         _settings.ImageGen = s;
         _settings.Save();
@@ -957,13 +1037,21 @@ public partial class MainWindow
         if (run.Seed < 0)
             run.Seed = Random.Shared.Next(); // chosen here so the sidecar records it
         List<(string Written, string Final, long Seed)> files;
-        if (s.RemoteModel.Length > 0) // OpenRouter needs neither the runtime nor the model files
+        if (s.RemoteModel.Length > 0 || s.SharedModel.Length > 0) // OpenRouter and the primary PC need neither the runtime nor the model files here
         {
             Directory.CreateDirectory(ImageGen.ImagesFolder);
             files = ImageGen.OutputNames(ImageGen.ImagesFolder, DateTime.Now, run.Seed, run.Batch).Files;
-            // what OpenRouter never read is not recorded beside the pictures (the saved settings above keep it for the way back)
-            (run.Negative, run.Sampler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", 0, 0, 0);
-            await GenerateRemoteImageAsync(run, files, ct);
+            if (s.SharedModel.Length > 0)
+            {
+                run.InitImage = ""; // the primary PC takes no start image
+                await GenerateSharedAsync(run, files, ct);
+            }
+            else
+            {
+                // what OpenRouter never read is not recorded beside the pictures (the saved settings above keep it for the way back)
+                (run.Negative, run.Sampler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", 0, 0, 0);
+                await GenerateRemoteImageAsync(run, files, ct);
+            }
         }
         else
             files = await GenerateLocalAsync(run, ImageGen.ImagesFolder, () =>
@@ -1076,6 +1164,20 @@ public partial class MainWindow
         throw new InvalidOperationException(outOfMemory
             ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
             : $"sd-cli failed: {tail.FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim() ?? $"exit code {process.ExitCode}"} (the log has its output)");
+    }
+
+    // POST /images/generate on the primary PC (no progress: an indeterminate bar); each returned PNG goes to the next of files.
+    private async Task GenerateSharedAsync(ImageSettings run, List<(string Written, string Final, long Seed)> files, CancellationToken ct)
+    {
+        if (_settings.ShareHost.Length == 0)
+            throw new InvalidOperationException("Not connected to a primary PC: paste its connection code under Settings > Models");
+        ImageStatus($"Generating on {_settings.ShareHost}…", indeterminate: true);
+        using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+        var pictures = await ImageShare.GenerateAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", run, ct);
+        if (pictures.Count == 0)
+            throw new InvalidOperationException("The primary PC returned no pictures");
+        for (var i = 0; i < Math.Min(pictures.Count, files.Count); i++)
+            await File.WriteAllBytesAsync(files[i].Written, Convert.FromBase64String(pictures[i].Png), ct);
     }
 
     // POST /images on OpenRouter with the chosen model (and the providers pinned in order, no fallbacks, as the chat side does);
