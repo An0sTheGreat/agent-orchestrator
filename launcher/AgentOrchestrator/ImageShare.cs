@@ -162,7 +162,7 @@ internal static class ImageShare
     {
         RecipeId = recipe.Id, LocalModel = local, Prompt = s.Prompt.Trim(), Negative = s.Negative, Aspect = s.Aspect, LongSide = s.LongSide,
         Width = Math.Clamp(s.Width, 64, 2048), Height = Math.Clamp(s.Height, 64, 2048), Steps = Math.Clamp(s.Steps, 1, 60), Cfg = Math.Clamp(s.Cfg, 0, 20),
-        Seed = s.Seed >= 0 ? s.Seed : Random.Shared.Next(), Sampler = ImageGen.Samplers.Contains(s.Sampler) ? s.Sampler : "", Batch = Math.Clamp(s.Batch, 1, 4), LowVram = s.LowVram,
+        Seed = s.Seed >= 0 ? s.Seed : Random.Shared.Next(), Sampler = ImageGen.Samplers.Contains(s.Sampler) ? s.Sampler : "", Scheduler = ImageGen.Schedulers.Contains(s.Scheduler) ? s.Scheduler : "", Batch = Math.Clamp(s.Batch, 1, 4), LowVram = s.LowVram,
     };
 
     public static string ModelsJson(List<Model> models) => JsonSerializer.Serialize(new ModelList(models), Web);

@@ -20,7 +20,7 @@ public partial class MainWindow
 {
     private CancellationTokenSource? _imgCts; // the download or generation in progress; Cancel and OnClosing cancel it
     private Process? _imgProcess;
-    private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgLongSide = null!, _imgBatch = null!, _imgSampler = null!;
+    private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgLongSide = null!, _imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
     private TextBox _imgPrompt = null!, _imgNegative = null!, _imgSeed = null!;
     private FrameworkElement _imgNegativeRow = null!;
     private Slider _imgSteps = null!, _imgCfg = null!, _imgStrength = null!;
@@ -257,6 +257,7 @@ public partial class MainWindow
         var advancedHost = new StackPanel(); // the toggle and Advanced (Sampler, Low VRAM, start image): hidden as one in OpenRouter mode
         var advanced = new StackPanel { Visibility = Visibility.Collapsed };
         var toggle = new Button { Content = "▸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
+        toggle.SetResourceReference(ForegroundProperty, "TextPrimary"); // BareButton's own is dark on the dark theme
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
@@ -270,7 +271,12 @@ public partial class MainWindow
         advanced.Children.Add(new TextBlock { Text = "Sampler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
         _imgSampler = new ComboBox { ItemsSource = ImageGen.Samplers.Prepend("Default").ToList() };
         advanced.Children.Add(_imgSampler);
+        advanced.Children.Add(new TextBlock { Text = "Scheduler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
+        _imgScheduler = new ComboBox { ItemsSource = ImageGen.Schedulers.Prepend("Default").ToList(), Tag = "ImagesScheduler",
+            ToolTip = "How the noise level steps down over the steps; Default is the model's own" };
+        advanced.Children.Add(_imgScheduler);
         _imgLowVram = new CheckBox { Content = "Low VRAM: one model on the GPU at a time", ToolTip = "Runs the text encoder, then swaps in the image model, then the decoder (weights wait in RAM). Slower to load; needed when the models together are bigger than the GPU", Margin = new Thickness(0, 12, 0, 0) };
+        _imgLowVram.SetResourceReference(ForegroundProperty, "TextPrimary");
         advanced.Children.Add(_imgLowVram);
         advanced.Children.Add(new TextBlock { Text = "Start from image", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) });
         _imgInitText = Muted("None", 11.5);
@@ -463,6 +469,7 @@ public partial class MainWindow
         _imgSeed.Text = s.Seed >= 0 ? s.Seed.ToString() : "";
         _imgBatch.SelectedIndex = Math.Clamp(s.Batch, 1, 4) - 1;
         _imgSampler.SelectedIndex = Array.IndexOf(ImageGen.Samplers, s.Sampler) + 1; // not found: Default
+        _imgScheduler.SelectedIndex = Array.IndexOf(ImageGen.Schedulers, s.Scheduler) + 1;
         _imgLowVram.IsChecked = s.LowVram;
         _imgStrength.Value = s.Strength;
         SetInitImage(s.InitImage);
@@ -483,6 +490,7 @@ public partial class MainWindow
             Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
             Width = w, Height = h, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
+            Scheduler = _imgScheduler.SelectedIndex > 0 ? ImageGen.Schedulers[_imgScheduler.SelectedIndex - 1] : "",
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
             RemoteModel = _imgRemoteMode ? _imgRemoteModel.Id.Trim() : "", RemoteProvider = _imgRemoteMode ? string.Join(", ", _imgRemoteProviders) : "",
         };
@@ -1049,7 +1057,7 @@ public partial class MainWindow
             else
             {
                 // what OpenRouter never read is not recorded beside the pictures (the saved settings above keep it for the way back)
-                (run.Negative, run.Sampler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", 0, 0, 0);
+                (run.Negative, run.Sampler, run.Scheduler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", "", 0, 0, 0);
                 await GenerateRemoteImageAsync(run, files, ct);
             }
         }

@@ -36,6 +36,7 @@ internal sealed class ImageSettings
     public double Cfg { get; set; } = 1.0;
     public long Seed { get; set; } = -1;
     public string Sampler { get; set; } = ""; // "" = sd-cli's default for the model
+    public string Scheduler { get; set; } = ""; // "" = sd-cli's default for the model (--scheduler)
     public int Batch { get; set; } = 1;
     public bool LowVram { get; set; } = true; // one model on the GPU at a time: the text encoder, then the image model
     public double Strength { get; set; } = 0.75;
@@ -59,6 +60,9 @@ internal static class ImageGen
     public static readonly string[] Aspects = ["1:1", "5:4", "4:5", "4:3", "3:4", "16:9", "9:16"];
     public static readonly int[] LongSides = [512, 768, 1024, 1536];
     // sd-cli --help's --sampling-method list
+    // sd-cli --help's --scheduler list (normal is an alias of discrete)
+    public static readonly string[] Schedulers = ["discrete", "karras", "exponential", "ays", "gits", "sgm_uniform", "simple", "smoothstep", "kl_optimal",
+        "lcm", "bong_tangent", "beta", "logit_normal", "flux", "flux2"];
     public static readonly string[] Samplers = ["euler", "euler_a", "heun", "dpm2", "dpm++2s_a", "dpm++2m", "dpm++2mv2", "ipndm", "ipndm_v", "lcm",
         "ddim_trailing", "tcd", "res_multistep", "res_2s", "er_sde", "euler_cfg_pp", "euler_a_cfg_pp", "euler_ge", "dpm++2m_sde", "dpm++2m_sde_bt", "lms"];
 
@@ -163,6 +167,8 @@ internal static class ImageGen
             args.AddRange(["-b", s.Batch.ToString()]);
         if (s.Sampler.Length > 0)
             args.AddRange(["--sampling-method", s.Sampler]);
+        if (s.Scheduler.Length > 0)
+            args.AddRange(["--scheduler", s.Scheduler]);
         if (s.LowVram)
             args.AddRange(["--offload-to-cpu", "--vae-tiling"]);
         if (s.InitImage.Length > 0)
@@ -230,6 +236,9 @@ internal static class ImageGen
         s.Strength = 0.6;
         s.Batch = 2;
         s.Sampler = "euler";
+        Check(Args(z, new() { Prompt = "p", Scheduler = "karras" }, Paths(z, "", [], root), "o.png") is var withScheduler &&
+            withScheduler[withScheduler.IndexOf("--scheduler") + 1] == "karras" && !Args(z, new() { Prompt = "p" }, Paths(z, "", [], root), "o.png").Contains("--scheduler"),
+            "the scheduler goes as --scheduler, and only when chosen");
         s.Cfg = 7.5;
         Check(string.Join(" ", Args(sdxl, s, Paths(sdxl, "", [], root), "o.png")) ==
             @"-m C:\m\stable-diffusion-xl-base-1.0\sd_xl_base_1.0.safetensors --vae C:\m\sdxl-vae-fp16-fix\sdxl_vae.safetensors -p a cat -n blurry " +
