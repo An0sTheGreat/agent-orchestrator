@@ -157,6 +157,22 @@ public partial class MainWindow
         return asked is null ? ImageShare.Error(400, "The body is not image settings JSON") : await await Dispatcher.InvokeAsync(() => GenerateForShareAsync(asked, ct));
     }
 
+    // The shared llama-server's loaded chat models, unloaded (its router's POST /models/unload); best effort: a failure leaves
+    // them and the generation's own Low VRAM retry and memory message follow.
+    private static async Task UnloadSharedChatModelsAsync(CancellationToken ct)
+    {
+        try
+        {
+            using var http = new System.Net.Http.HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{ModelShare.ChatPort}"), Timeout = TimeSpan.FromSeconds(30) };
+            http.DefaultRequestHeaders.Authorization = new("Bearer", Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "");
+            using var list = System.Text.Json.JsonDocument.Parse(await http.GetStringAsync("/models", ct));
+            foreach (var model in list.RootElement.GetProperty("data").EnumerateArray())
+                if (model.TryGetProperty("status", out var status) && status.TryGetProperty("value", out var value) && value.GetString() is "loaded" or "loading")
+                    (await http.PostAsync("/models/unload", System.Net.Http.Json.JsonContent.Create(new { model = model.GetProperty("id").GetString() }), ct)).Dispose();
+        }
+        catch (Exception x) when (x is System.Net.Http.HttpRequestException or System.Text.Json.JsonException or InvalidOperationException or KeyNotFoundException or TaskCanceledException) { }
+    }
+
     // One generation for the other PC through the Images page's job (409 while one runs), in a temp folder that is deleted after.
     private async Task<ImageShare.Response> GenerateForShareAsync(ImageSettings asked, CancellationToken ct)
     {
@@ -178,6 +194,7 @@ public partial class MainWindow
             {
                 using var stop = ct.Register(CancelImageGen); // sharing turned off meanwhile
                 ImageStatus("Generating for another PC…", indeterminate: true);
+                await UnloadSharedChatModelsAsync(jobCt); // the GPU for the picture: the next chat request loads its model again
                 var pictures = new List<ImageShare.Picture>();
                 foreach (var (written, _, seed) in (await GenerateLocalAsync(run, folder, null, jobCt)).Where(f => File.Exists(f.Written)))
                     pictures.Add(new(Convert.ToBase64String(await File.ReadAllBytesAsync(written, jobCt)), seed));
