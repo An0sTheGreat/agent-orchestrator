@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let the Images page generate with a remote API image model (service + model id) instead of only a local stable-diffusion.cpp recipe.
+**Goal:** Let the Images page generate with an OpenRouter image-generation model (model + optional pinned providers) instead of only a local recipe.
 
-**Architecture:** A new pure-logic file (`RemoteImageGen.cs`) builds the OpenAI-shaped `/images/generations` request and parses its reply; `ImageSettings` gains a nullable `Remote` field that, when set, makes `GenerateImagesAsync` skip the local runtime/recipe/sd-cli path entirely and POST through the app's existing swappable `_remoteHttp` client instead, converging back onto the existing file-naming/gallery/sidecar code.
+**Architecture:** `RemoteCatalog.cs` gains OpenRouter-specific fetch/parse functions for the dedicated image-models and image-provider endpoints, mirroring its existing text-model functions. `ImageSettings` gains two plain string fields (model id, pinned providers). `GenerateImagesAsync` branches: when a remote model is chosen, it skips the local runtime/recipe/sd-cli path and POSTs to OpenRouter's image endpoint through the app's existing `_remoteHttp`, converging back onto the existing file-naming/gallery/sidecar code.
 
 **Tech Stack:** C#/.NET 8, WPF (existing launcher). No new dependencies.
 
@@ -12,81 +12,73 @@
 
 ## Global Constraints
 
-- No Python/orchestrator.py involvement — stays launcher-only (spec, Constraints).
-- Reuse `_remoteHttp` (`MainWindow.RemoteApi.cs:22`) for the HTTP call; don't create a new `HttpClient`.
-- Don't hardcode which of `RemoteCatalog.Services` support image generation — offer all of them (plus Custom), let an unsupported one fail with a clear message (spec, Non-goals).
-- `ImageSettings` round-trips through `System.Text.Json` to `AppSettings.ImageGen` and each picture's sidecar `.json` — a new property needs no extra (de)serialization code.
+- OpenRouter only — no other remote service, no generic service picker (spec, Non-goals).
+- `OPENROUTER_API_KEY` is the fixed key env var (spec, Constraints).
+- Reuse `_remoteHttp` (`MainWindow.RemoteApi.cs:22`) for every HTTP call in this plan.
+- `MainWindow.ModelPicker.cs` is **not** reused for the image-model list — it's built around
+  local GGUF files on disk (`DescribeChoices`, `ModelChoice`), not an HTTP list of ~70 remote
+  models. Build a plain picker instead (see Task 2).
+- `ImageSettings` round-trips whole through `System.Text.Json` — new string fields need no extra
+  (de)serialization code.
 
 ## Review Focus
 
-- A chosen remote service has no API key set in the environment: must give a clear, specific error (which env var is missing), not a null-reference exception. (Task 3)
-- A service's `/images/generations` doesn't exist or rejects the request (4xx/5xx, or an OpenAI-style `{"error":{"message":...}}` body): the message reaches the user, generation doesn't silently do nothing. (Task 3)
-- The service returns fewer images than the requested batch size (e.g. it only supports `n=1`): no crash; only the images actually returned are shown/saved. (Task 3)
-- An empty prompt with "Use a Remote API…" selected: same "Write a prompt first" toast as the local path, not a different code path that skips the check. (Task 3)
-- Switching "Switch to Local" after using Remote restores the previously selected local recipe/model, not a reset to the first recipe. (Task 2)
+- `OPENROUTER_API_KEY` not set in the environment: a clear error naming it, not a null-reference
+  exception, both when listing models/providers and when generating. (Tasks 1, 3)
+- OpenRouter returns an error body (e.g. the model/provider combination doesn't support a
+  requested parameter): the message reaches the user, not a silent no-op. (Task 3)
+- Fewer images returned than the requested batch size (a provider that only supports `n=1`): no
+  crash; only the images actually returned are shown/saved. (Task 3)
+- An empty prompt with the remote model selected: same "Write a prompt first" toast as the local
+  path. (Task 3)
+- Switching back to local after using remote restores the previously selected local recipe, not a
+  reset to the first one. (Task 2)
 
 ---
 
-## Task 1: Remote image request/response logic
+## Task 1: Fetch and parse OpenRouter's image models and their providers
 
 **Files:**
-- Create: `launcher/AgentOrchestrator/RemoteImageGen.cs`
-- Modify: `launcher/AgentOrchestrator/App.xaml.cs` (call the new self-test alongside the existing `ImageGen.ImageGenSelfTest()`, in the same `--self-test` block, `App.xaml.cs:29` per the design doc)
+- Modify: `launcher/AgentOrchestrator/RemoteCatalog.cs`
 
 **Interfaces:**
-- Produces: `internal sealed record RemoteModel(string BaseUrl, string Model, string KeyEnv)`; `internal sealed record RemoteImage(byte[]? Bytes, string? Url)`; `internal static class RemoteImageGen { public static string BuildRequest(RemoteModel model, ImageSettings s); public static List<RemoteImage> ParseResponse(string json); }`
-- Consumes: `ImageSettings` (`ImageGen.cs`) — existing `Prompt`, `Batch`, `Width`, `Height` properties, read-only here.
+- Produces: `public sealed record ImageModelEntry(string Id, string Name)`; `public sealed record ImageProviderRow(string ProviderName, string ProviderTag, decimal? CostPerImage)`; `public static List<ImageModelEntry> ParseImageModels(string json)`; `public static async Task<List<ImageModelEntry>> FetchImageModelsAsync(HttpClient http, string? apiKey, CancellationToken ct)`; `public static List<ImageProviderRow> ParseImageProviders(string json)`; `public static async Task<List<ImageProviderRow>> FetchImageProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey)`.
+- Consumes: this file's existing private `GetAsync(http, url, apiKey, ct)` helper (used by `FetchModelsAsync`/`FetchProvidersAsync` already — reuse it, don't duplicate it) and `Reply(json, errorMessage, read)` helper (used by `ParseModels`/`ParseProviders`).
 
-This repo's own convention (see `ImageGen.ImageGenSelfTest()` in `ImageGen.cs:204-279`) is a single in-process self-test method with `Check(bool, string)` assertions, wired into `--self-test`, not a separate test framework. Follow that pattern exactly: a `RemoteImageGenSelfTest()` method in the new file.
+This file's own `RemoteCatalog.SelfTest()` (search for it; the existing `ParseModels`/`ParseProviders` checks around `:249-350` are the pattern to extend) is where the new checks go — follow its existing `Check(bool, string)` style, not a new test file.
 
-- [ ] **Step 1: Write `RemoteImageGenSelfTest()` in `RemoteImageGen.cs`, called nowhere yet**
+- [ ] **Step 1: Add the new Check(...) assertions to `RemoteCatalog.SelfTest()`, calling functions that don't exist yet**
 
 ```csharp
-internal static void RemoteImageGenSelfTest()
-{
-    static void Check(bool ok, string what)
-    {
-        if (!ok)
-            throw new InvalidOperationException($"Remote image generation self-test: {what}");
-    }
-    var model = new RemoteModel("https://api.example.com/v1", "gen-1", "X_API_KEY");
-    var s = new ImageSettings { Prompt = "a cat", Batch = 2, Width = 512, Height = 768 };
-    var req = System.Text.Json.Nodes.JsonNode.Parse(RemoteImageGen.BuildRequest(model, s))!;
-    Check((string)req["model"]! == "gen-1" && (string)req["prompt"]! == "a cat" && (int)req["n"]! == 2 &&
-        (string)req["size"]! == "512x768" && (string)req["response_format"]! == "b64_json", "request body");
+var images = ParseImageModels("""{"data":[{"id":"bytedance-seed/seedream-4.5","name":"Seedream 4.5","architecture":{"input_modalities":["text"],"output_modalities":["image"]}},{"id":"no-name/x"}]}""");
+Check(images is [{ Id: "bytedance-seed/seedream-4.5", Name: "Seedream 4.5" }, { Id: "no-name/x", Name: "" }], "image models: id and name, name defaults to \"\"");
+try { ParseImageModels("{\"data\":5}"); Check(false, "junk accepted as image models"); }
+catch (InvalidOperationException e) when (e.Message.Contains("not a")) { }
 
-    var b64 = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("hello"));
-    var one = RemoteImageGen.ParseResponse($$"""{"data":[{"b64_json":"{{b64}}"}]}""");
-    Check(one is [{ Url: null, Bytes: { } bytes }] && System.Text.Encoding.UTF8.GetString(bytes) == "hello", "a b64_json image");
-
-    var byUrl = RemoteImageGen.ParseResponse("""{"data":[{"url":"https://x/y.png"}]}""");
-    Check(byUrl is [{ Bytes: null, Url: "https://x/y.png" }], "a url image");
-
-    var two = RemoteImageGen.ParseResponse($$"""{"data":[{"b64_json":"{{b64}}"},{"url":"https://x/y.png"}]}""");
-    Check(two.Count == 2 && two[0].Bytes is not null && two[1].Url == "https://x/y.png", "two images, order kept");
-
-    try { RemoteImageGen.ParseResponse("""{"error":{"message":"bad request"}}"""); Check(false, "an error reply did not throw"); }
-    catch (InvalidOperationException e) { Check(e.Message.Contains("bad request"), "error message: " + e.Message); }
-
-    try { RemoteImageGen.ParseResponse("{}"); Check(false, "an empty reply did not throw"); }
-    catch (InvalidOperationException e) { Check(e.Message.Contains("unexpected reply"), "empty-reply message: " + e.Message); }
-}
+var providers = ParseImageProviders("""{"id":"x","endpoints":[{"provider_name":"Seed","provider_tag":"seed","pricing":[{"billable":"output_image","unit":"image","cost_usd":0.04},{"billable":"input_image","unit":"image","cost_usd":0}]},{"provider_name":"NoPricing","provider_tag":"np"}]}""");
+Check(providers is [{ ProviderName: "Seed", ProviderTag: "seed", CostPerImage: 0.04m }, { ProviderName: "NoPricing", CostPerImage: null }], "image providers: price from the output_image entry, null when absent");
 ```
 
-- [ ] **Step 2: Run and confirm it fails to compile** (the types/methods don't exist yet)
+Also add a `FetchImageModelsAsync`/`FetchImageProvidersAsync` case to the existing `FakeHandler`-based async test (find where `FetchModelsAsync`/`FetchProvidersAsync` are already exercised against a fake `HttpClient`, e.g. around `:330-345`) asserting: a 401 throws with a message naming the missing key, and a successful fake reply round-trips through `ParseImageModels`/`ParseImageProviders` as above, called with the exact URLs `https://openrouter.ai/api/v1/images/models` and `https://openrouter.ai/api/v1/images/models/{modelId}/endpoints`.
+
+- [ ] **Step 2: Run and confirm it fails to compile**
 
 Run: `dotnet build launcher/AgentOrchestrator`
-Expected: errors naming `RemoteModel`, `RemoteImage`, `RemoteImageGen`, `BuildRequest`, `ParseResponse` as not found.
+Expected: errors naming `ParseImageModels`, `ParseImageProviders`, `FetchImageModelsAsync`, `FetchImageProvidersAsync`, `ImageModelEntry`, `ImageProviderRow` as not found.
 
-- [ ] **Step 3: Implement `RemoteModel`, `RemoteImage`, and `RemoteImageGen.BuildRequest`/`ParseResponse` in `RemoteImageGen.cs`**
+- [ ] **Step 3: Implement the four functions and two records**
 
-`BuildRequest`: serialize an anonymous object `{ model = model.Model, prompt = s.Prompt, n = s.Batch, size = $"{s.Width}x{s.Height}", response_format = "b64_json" }` with `System.Text.Json.JsonSerializer.Serialize`.
+`ImageModelEntry`/`ImageProviderRow`: plain records as above, `Name` and `ProviderName`/`ProviderTag` default to `""` when the JSON field is absent (mirror `ParseModels`' existing null-coalescing style for `Name`).
 
-`ParseResponse`: parse with `JsonNode.Parse`. If the root has an `"error"` object, throw `InvalidOperationException((string)root["error"]!["message"]! ?? "the image API returned an error")`. If it has no `"data"` array, throw `InvalidOperationException("unexpected reply from the image API")`. Otherwise map each element of `data` to a `RemoteImage`: `b64_json` present → `new(Convert.FromBase64String((string)item["b64_json"]!), null)`; else `url` present → `new(null, (string)item["url"]!)`; neither → skip the item (don't throw per-item; an empty resulting list is caught by the caller in Task 3's "fewer images than requested" handling).
+`ParseImageModels(json)`: parse with the same `Reply(json, "...is not an image model list.", root => ...)` helper `ParseModels` uses; read `(root as JsonObject)?["data"] as JsonArray`, map each object to `new ImageModelEntry(Str(e["id"]) ?? "", Str(e["name"]) ?? "")`. The server already returns only image-generation models (verified live) — no client-side modality filtering needed.
 
-- [ ] **Step 4: Wire the self-test into `--self-test` and run it**
+`FetchImageModelsAsync`: `ParseImageModels(await GetAsync(http, "https://openrouter.ai/api/v1/images/models", apiKey, ct))`.
 
-Add `RemoteImageGen.RemoteImageGenSelfTest();` next to the existing `ImageGen.ImageGenSelfTest();` call in `App.xaml.cs` (`:29`).
+`ParseImageProviders(json)`: `(root as JsonObject)?["endpoints"] as JsonArray`, map each to `new ImageProviderRow(Str(e["provider_name"]) ?? "", Str(e["provider_tag"]) ?? "", (e["pricing"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(p => Str(p["billable"]) == "output_image") is { } priced ? PerUnit(priced["cost_usd"]) : null)` — add a small `PerUnit` (or reuse `PerMillion`'s numeric-parsing half without the ÷1,000,000; check `PerMillion`'s body before deciding whether to factor out a shared numeric-parse helper or write a 1-line duplicate — this file already has small single-purpose numeric helpers, follow that style).
+
+`FetchImageProvidersAsync`: `ParseImageProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/images/models/{modelId}/endpoints", apiKey, ct))`.
+
+- [ ] **Step 4: Run and confirm it passes**
 
 Run: `dotnet build launcher/AgentOrchestrator && "launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.exe" --self-test`
 Expected: exit 0.
@@ -94,112 +86,99 @@ Expected: exit 0.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add launcher/AgentOrchestrator/RemoteImageGen.cs launcher/AgentOrchestrator/App.xaml.cs
-git commit -F <message file: "Remote image generation: request body and reply parsing">
+git add launcher/AgentOrchestrator/RemoteCatalog.cs
+git commit -F <message file: "RemoteCatalog: fetch and parse OpenRouter's image models and their providers">
 ```
 
 ---
 
-## Task 2: Model-source toggle on the Images page
+## Task 2: Model-source toggle, model picker, and provider picker on the Images page
 
 **Files:**
-- Modify: `launcher/AgentOrchestrator/ImageGen.cs` (`ImageSettings`: add `public RemoteImageGen.RemoteModel? Remote { get; set; }`)
+- Modify: `launcher/AgentOrchestrator/ImageGen.cs` (`ImageSettings`: add `RemoteModel`, `RemoteProvider`)
 - Modify: `launcher/AgentOrchestrator/MainWindow.ImageGen.cs` (`BuildImagesPage`, `ApplyImageSettings`, `ReadImageSettings`)
-- Test: the existing Images `--ui-smoke` block (`MainWindow.xaml.cs`, around `:2872-2930` per today's recon — find its enclosing method first; it already checks `ImagesPage`/`ImagesRecipe`/etc. tags)
+- Test: the existing Images `--ui-smoke` block (`MainWindow.xaml.cs`, around `:2872-2930`)
 
 **Interfaces:**
-- Consumes: Task 1's `RemoteImageGen.RemoteModel`; `RemoteCatalog.Services` (`RemoteCatalog.cs:76-90`, the existing `IReadOnlyList<Service>`, each with `.Id`, `.Name`, `.BaseUrl`, `.KeyEnv`).
-- Produces: new tags `ImagesUseRemoteApi` (button, switches to remote), `ImagesSwitchToLocal` (button, switches back), `ImagesRemoteService` (ComboBox of service names), `ImagesRemoteModel` (TextBox, the model id). `ImageSettings.Remote` (consumed by Task 3).
+- Consumes: Task 1's `RemoteCatalog.ImageModelEntry`/`ImageProviderRow`/`FetchImageModelsAsync`/`FetchImageProvidersAsync`; `RemoteCatalog.Services[0]` (OpenRouter's `Service`, for its `KeyEnv`) — or just the literal `"OPENROUTER_API_KEY"` string; check which this file already does elsewhere for consistency before picking.
+- Produces: `ImageSettings.RemoteModel`/`RemoteProvider` (consumed by Task 3); tags `ImagesUseRemoteApi` (switch to remote), `ImagesSwitchToLocal` (switch back), `ImagesRemoteModelButton` (opens the model-pick popup, its `Content` shows the chosen model's name or "Choose a model…"), `ImagesRemoteProvidersButton` (opens the provider-pick popup).
 
-Mirror `MainWindow.ModelSettings.cs`'s existing "Model source" block exactly (`SourceButton` helper `:573`, `localPanel`/`remotePanel` pair and their visibility swap `:891-893`, `switchLocal` handler `:1057`) — same two-panel-with-a-toggle shape, adapted for images instead of chat models. Place it in `BuildImagesPage` right after the existing folder row (`MainWindow.ImageGen.cs:149-151`).
+Mirror `MainWindow.ModelSettings.cs`'s "Model source" shape (`SourceButton` `:573`, `localPanel`/`remotePanel` pair `:891-893`, `switchLocal` `:1057`) for the toggle. For the model list itself (~70 items with no local file metadata), a plain searchable popup is enough — not `ModelPicker.cs` (see Global Constraints) and not the full `MainWindow.ApiModel.cs` `BuildProviderDialog` dialog (that one's columns — price per token, latency, uptime — don't apply here); a smaller version listing `ImageProviderRow.ProviderName`/`ProviderTag`/`CostPerImage` with a tick per row, following that dialog's tick/order pattern at a glance but without copying its token-pricing columns.
 
-- [ ] **Step 1: Extend the existing Images ui-smoke block with the new checks (written to fail first)**
+- [ ] **Step 1: Extend the Images ui-smoke block with the new checks (written to fail first)**
 
-Add, after whatever it already checks for the folder scan: open Images, confirm `ImagesUseRemoteApi` is visible and `ImagesRemoteService`/`ImagesRemoteModel` are not; click `ImagesUseRemoteApi`; confirm `ImagesRemoteService` is now visible and `_imgRecipe`'s row (`ImagesRecipe`) is hidden; set the service combo to its first item and type a model id into `ImagesRemoteModel`; call `ReadImageSettings()` and assert `.Remote is { } r && r.Model == <the typed id> && r.BaseUrl == RemoteCatalog.Services[0].BaseUrl && r.KeyEnv == RemoteCatalog.Services[0].KeyEnv`; click `ImagesSwitchToLocal`; assert `ReadImageSettings().Remote is null` and the local recipe selection is back to what it was before switching to remote (not reset to index 0 — capture `_imgRecipe.SelectedIndex` before switching and compare after switching back).
+Using a fake `_remoteHttp` (mirror `MainWindow.RemoteApi.cs:1305-1309`'s save/replace/restore pattern) that answers `images/models` and `images/models/*/endpoints` with small fixed lists: open Images, confirm `ImagesUseRemoteApi` is visible and the remote controls are not; click it; confirm the local `ImagesRecipe` row is hidden and `ImagesRemoteModelButton`/`ImagesRemoteProvidersButton` are visible; open the model popup, pick the second fixture model, confirm `ReadImageSettings().RemoteModel` equals its id and `ImagesRemoteModelButton.Content` shows its name; open the provider popup, tick two of the fixture's providers in order, confirm `ReadImageSettings().RemoteProvider` equals their tags comma-joined in tick order (mirror the existing text-model provider dialog's own order-tracking test, `MainWindow.ModelSettings.cs` around `:1416-1422`); note the current `_imgRecipe.SelectedIndex`, click `ImagesSwitchToLocal`, confirm `ReadImageSettings().RemoteModel == ""` and `_imgRecipe.SelectedIndex` is back to the noted value.
 
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `"launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.exe" --ui-smoke`
-Expected: fails at the new assertions (the tags/behavior don't exist yet) — confirm the failure message names the new check, not an unrelated earlier one.
+Expected: fails at the new assertions.
 
-- [ ] **Step 3: Add `Remote` to `ImageSettings`**
+- [ ] **Step 3: Add the two fields to `ImageSettings`**
 
-`public RemoteImageGen.RemoteModel? Remote { get; set; }` in `ImageGen.cs`, next to `LocalModel`.
+```csharp
+public string RemoteModel { get; set; } = ""; // "" = local; an OpenRouter image model id otherwise
+public string RemoteProvider { get; set; } = ""; // comma-separated provider tags to pin, "" = OpenRouter chooses
+```
 
-- [ ] **Step 4: Build the toggle UI in `BuildImagesPage`**
+- [ ] **Step 4: Build the toggle, model popup, and provider popup in `BuildImagesPage`**
 
-Wrap the existing "Model" label + `_imgRecipe` + folder row in a `localPanel` `StackPanel`. Add a `remotePanel` `StackPanel` with: a `ComboBox` (Tag `ImagesRemoteService`, `ItemsSource = RemoteCatalog.Services.Select(s => s.Name)`) and a `TextBox` (Tag `ImagesRemoteModel`). Add the two toggle buttons (`ImagesUseRemoteApi`, `ImagesSwitchToLocal`) following `SourceButton`'s style. A local bool/field (e.g. `_imgRemoteMode`) tracks which panel is active; both buttons flip it and set `localPanel`/`remotePanel`'s `Visibility` accordingly (mirroring `MainWindow.ModelSettings.cs:891-893`'s pattern).
+Wrap the existing "Model" label + `_imgRecipe` + folder row in a `localPanel`. Add a `remotePanel` with the two buttons above. `ImagesRemoteModelButton`'s click fetches `RemoteCatalog.FetchImageModelsAsync(_remoteHttp, key, ct)` (key via `Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")`) and shows them in a simple filterable popup (a `TextBox` filter + a `ListBox`, following this file's existing `Muted`/button-style helpers); picking one stores the id+name and closes it. `ImagesRemoteProvidersButton`'s click fetches `RemoteCatalog.FetchImageProvidersAsync(_remoteHttp, <chosen model id>, ct, key)` and shows a tick-list (name, tag, `CostPerImage` formatted like `RemoteApi.cs`'s existing `RemotePrice`-style helper — reuse `RemotePrice` if its signature fits a plain `decimal?`, it already does) with order numbers, mirroring `MainWindow.ApiModel.cs`'s `BuildProviderDialog` tick/order mechanics (`orderMarks`, `picked` list) at a smaller scale. A local bool field (e.g. `_imgRemoteMode`) tracks which panel is showing, same as Task 2 of the original plan draft — toggled by the two buttons, driving `localPanel`/`remotePanel` visibility.
 
 - [ ] **Step 5: Wire `ApplyImageSettings` and `ReadImageSettings`**
 
-`ApplyImageSettings`: if `s.Remote is { } remote`, set `_imgRemoteMode = true`, select the matching service in `ImagesRemoteService` (by `BaseUrl`+`KeyEnv`, falling back to the first item if none matches — e.g. a custom/removed service), set `ImagesRemoteModel.Text = remote.Model`, show `remotePanel`/hide `localPanel`; else do today's local-recipe apply and show `localPanel`/hide `remotePanel`. `ReadImageSettings`: if `_imgRemoteMode`, build `Remote` from the selected service's `BaseUrl`/`KeyEnv` and the typed model id, leaving the local fields (`RecipeId`, `LocalModel`) as whatever they last were (harmless — Task 3 ignores them when `Remote` is set); else `Remote = null` as today.
+`ApplyImageSettings`: if `s.RemoteModel.Length > 0`, set `_imgRemoteMode = true`, show `remotePanel`/hide `localPanel`, set the model button's content/stored id from `s.RemoteModel` (name unknown until the list is fetched — show the id until then), store `s.RemoteProvider` for the provider popup to pre-tick next time it opens; else do today's local apply and show `localPanel`/hide `remotePanel`. `ReadImageSettings`: if `_imgRemoteMode`, `RemoteModel`/`RemoteProvider` from the stored picks; else both `""` as today.
 
 - [ ] **Step 6: Run the ui-smoke check again**
 
 Run: `"launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.exe" --ui-smoke`
-Expected: exit 0, including the new assertions from Step 1.
+Expected: exit 0, including the new assertions.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add launcher/AgentOrchestrator/ImageGen.cs launcher/AgentOrchestrator/MainWindow.ImageGen.cs launcher/AgentOrchestrator/MainWindow.xaml.cs
-git commit -F <message file: "Images page: a Model source toggle for a remote API model">
+git commit -F <message file: "Images page: pick an OpenRouter image model and its providers">
 ```
 
 ---
 
-## Task 3: Generate with the remote model
+## Task 3: Generate via OpenRouter's image endpoint
 
 **Files:**
 - Modify: `launcher/AgentOrchestrator/MainWindow.ImageGen.cs` (`GenerateImagesAsync`, `:649-758`)
-- Test: same Images ui-smoke block as Task 2
+- Test: same Images ui-smoke block
 
 **Interfaces:**
-- Consumes: `RemoteImageGen.BuildRequest`/`ParseResponse`/`RemoteModel` (Task 1); `ImageSettings.Remote` (Task 2); `_remoteHttp` (`MainWindow.RemoteApi.cs:22`); `ImageGen.OutputNames` (existing, `ImageGen.cs:194-202`).
-- Produces: nothing new for later tasks — this is the last task.
+- Consumes: `ImageSettings.RemoteModel`/`RemoteProvider` (Task 2); `_remoteHttp`; `ImageGen.OutputNames` (existing).
+- Produces: nothing for later tasks — last task.
 
 - [ ] **Step 1: Extend the ui-smoke block with the generation checks (written to fail first)**
 
-Swap `_remoteHttp` for a fake handler the way the existing Remote API self-test does (`MainWindow.RemoteApi.cs:1305-1309` shows the pattern: save `_remoteHttp`, replace with `new HttpClient(fake)`, restore in a `finally`). Cases to add:
-1. Fake handler returns `200` with `{"data":[{"b64_json":"<1x1 PNG bytes, base64>"}]}` for a POST to `.../images/generations`. Select Remote mode, set a service+model, type a prompt, click `ImagesGenerate` (await its handler). Assert: the request the fake handler received had an `Authorization: Bearer <value of the service's KeyEnv>` header (set the env var to a known test value first), the posted body's `prompt` matches what was typed, a new file exists under `ImageGen.ImagesFolder`, and `RefreshGallery`'s result shows one more picture than before.
-2. No value set for the selected service's `KeyEnv`: clicking Generate throws/toasts an error naming that env var, and nothing is posted.
-3. Fake handler returns `400` with `{"error":{"message":"model not found"}}`: clicking Generate surfaces "model not found" (in a toast or thrown message), no file is written.
-4. Fake handler returns `200` with only one image while `_imgBatch` is set to 2: clicking Generate succeeds with exactly one new gallery picture, no crash.
-5. Remote mode selected, prompt left blank: clicking Generate shows the same "Write a prompt first" toast as the local path, and the fake handler receives no request.
+With the fake `_remoteHttp` answering `POST https://openrouter.ai/api/v1/images`:
+1. `200` with `{"data":[{"b64_json":"<base64 1x1 PNG>"}]}`: remote model+no provider pinned, a prompt typed, click `ImagesGenerate`. Assert the posted body has `model`/`prompt` matching the UI, no `provider` key (none pinned), an `Authorization: Bearer <OPENROUTER_API_KEY value>` header, a new gallery picture, and its sidecar `.json`'s `RemoteModel` matches.
+2. With two providers pinned in order: the posted body's `provider` equals `{"order":["<tag1>","<tag2>"],"allow_fallbacks":false}` (same shape the existing text-model provider pinning already produces — compare against that exact JSON structure).
+3. `OPENROUTER_API_KEY` unset: clicking Generate throws/toasts an error naming it, nothing posted.
+4. `400` with `{"error":{"message":"bad aspect ratio"}}`: the message surfaces, no file written.
+5. `200` with one image while `_imgBatch` requests 2: succeeds with exactly one new picture, no crash.
+6. Remote mode, blank prompt: the existing "Write a prompt first" toast, nothing posted.
 
 - [ ] **Step 2: Run and confirm it fails**
 
 Run: `"launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.exe" --ui-smoke`
-Expected: fails at the new generation assertions.
 
-- [ ] **Step 3: Branch `GenerateImagesAsync` on `s.Remote`**
+- [ ] **Step 3: Branch `GenerateImagesAsync` on `s.RemoteModel`**
 
-After `ImageGen.OutputNames(...)` (`:671`), replace the local-only block (`:662-744`, the runtime install, model download, `ImageGen.Args`/`ImageGen.Paths`, `Process.Start`, stdout/stderr pumps, exit-code handling) with:
+After `ImageGen.OutputNames(...)` (`:671`): `if (s.RemoteModel.Length > 0) await GenerateRemoteImageAsync(run, files, ct); else { /* today's local block, unchanged */ }`. Shared tail (`:745-757`) and the prompt-empty check (`:652-655`) stay as they are.
 
-```csharp
-if (s.Remote is { } remote)
-    await GenerateRemoteImageAsync(remote, run, files, ct);
-else
-{
-    // today's existing block, unchanged
-}
-```
+- [ ] **Step 4: Implement `GenerateRemoteImageAsync(ImageSettings s, List<(string Written, string Final, long Seed)> files, CancellationToken ct)`**
 
-Keep the shared tail (`:745-757`: rename, sidecar `.json`, `ImageStatus("Done…")`, `RefreshGallery`, `ShowOnStage`) and the prompt-empty check (`:652-655`) exactly as they are — both already run before/after the branch regardless of `Remote`.
-
-- [ ] **Step 4: Implement `GenerateRemoteImageAsync`**
-
-```csharp
-private async Task GenerateRemoteImageAsync(RemoteImageGen.RemoteModel remote, ImageSettings s,
-    List<(string Written, string Final, long Seed)> files, CancellationToken ct)
-```
-
-- Read the key: `Environment.GetEnvironmentVariable(remote.KeyEnv)`; if empty, `throw new InvalidOperationException($"Missing API key for {remote.BaseUrl}: set {remote.KeyEnv}")` (mirrors `orchestrator.py`'s `ApiClient.__init__` wording for the same situation on the chat side).
+- Key: `Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")`; empty → `throw new InvalidOperationException("Missing API key for OpenRouter: set OPENROUTER_API_KEY")`.
 - `ImageStatus("Generating…", indeterminate: true)`.
-- Build the request via `RemoteImageGen.BuildRequest(remote, s)`; POST it to `$"{remote.BaseUrl.TrimEnd('/')}/images/generations"` through `_remoteHttp`, with `Authorization: Bearer {key}` and `Content-Type: application/json`, passing `ct`.
-- If the response isn't successful, read the body as text and try `RemoteImageGen.ParseResponse` on it purely to surface its `error.message` if present (it'll throw `InvalidOperationException` with that message — let it propagate); if that itself throws for an unrelated reason (not JSON at all), throw `InvalidOperationException($"the image API returned {(int)response.StatusCode}")` instead.
-- On success, `var images = RemoteImageGen.ParseResponse(await response.Content.ReadAsStringAsync(ct));`
-- For `(image, i)` in `images.Select((img, i) => (img, i))` where `i < files.Count`: bytes = `image.Bytes ?? await _remoteHttp.GetByteArrayAsync(image.Url!, ct)`; `File.WriteAllBytes(files[i].Written, bytes)`.
+- Build the JSON body: `model = s.RemoteModel`, `prompt = s.Prompt`, `n = s.Batch`, `aspect_ratio = s.Aspect`, `response_format = "b64_json"`, and when `s.RemoteProvider.Length > 0` a `provider = { order = s.RemoteProvider.Split(','), allow_fallbacks = false }` object — same shape as the existing chat-side provider pinning (`MainWindow.RemoteApi.cs` builds the identical `{"order":[...],"allow_fallbacks":false}` object already; find that exact code and mirror its construction rather than inventing new JSON-building code).
+- POST to `https://openrouter.ai/api/v1/images` via `_remoteHttp`, `Authorization: Bearer {key}`, passing `ct`.
+- Non-success: read the body as text; try parsing it as `{"error":{"message":...}}` and throw with that message; if it isn't that shape, throw `InvalidOperationException($"OpenRouter returned {(int)response.StatusCode}")`.
+- Success: parse `data[]` (same per-item `b64_json`/`url` shape as the original plan's `RemoteImageGen.ParseResponse` — write that parsing inline here or as a small private helper in this file; it's a few lines, doesn't need its own file now that there's only one caller and one endpoint). For each image with index `i < files.Count`: bytes from `b64_json` (base64-decode) or download `url` via `_remoteHttp.GetByteArrayAsync`; `File.WriteAllBytes(files[i].Written, bytes)`.
 
 - [ ] **Step 5: Run the ui-smoke check again**
 
@@ -208,11 +187,11 @@ Expected: exit 0, including every case from Step 1.
 
 - [ ] **Step 6: Full regression**
 
-Run: `dotnet build launcher/AgentOrchestrator` (0 errors) then `"launcher/AgentOrchestrator/bin/Debug/net8.0-windows/Agent Orchestrator.exe" --self-test` (exit 0) then `--ui-smoke` once more in full (exit 0, no new failures beyond this plan's own changes).
+Run: `dotnet build launcher/AgentOrchestrator` (0 errors), `--self-test` (exit 0), `--ui-smoke` once more in full (exit 0).
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add launcher/AgentOrchestrator/MainWindow.ImageGen.cs
-git commit -F <message file: "Images page: generate with the remote model when one is chosen">
+git commit -F <message file: "Images page: generate with the chosen OpenRouter model">
 ```

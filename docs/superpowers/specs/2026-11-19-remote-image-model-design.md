@@ -1,137 +1,127 @@
-# Remote image generation model — design
+# Remote image generation model — design (revised: OpenRouter only)
 
 ## Intent and why
 
-The Images page (added in commits `8493e04`, `be1c170`, `4553ab1`, `42a5774`) only generates
-pictures with a local model run through stable-diffusion.cpp's `sd-cli.exe`. The user wants the
-option to pick a remote API image model instead, selectable from the Images tab, the same way a
-chat worker can already pick "Runs on this computer" or "Use a Remote API…" in Model Settings.
+The Images page (commits `8493e04`, `be1c170`, `4553ab1`, `42a5774`) only generates with a local
+model via stable-diffusion.cpp. The user wants to generate with an OpenRouter image model instead
+— the same remote API this app already uses everywhere else — picked from a list that shows only
+OpenRouter's image-generation-capable models, with the same provider-pinning the text-model picker
+already offers.
+
+**Revision note:** an earlier version of this doc proposed a generic "any remote service" design
+(OpenAI, Together, Fireworks, etc., via a guessed `/images/generations` shape). The user corrected
+that: OpenRouter only, reusing the app's existing OpenRouter integration, and pointed at a
+"definer" for image-capable models that turned out to be real. Verified live against OpenRouter's
+API before writing this revision (not guessed):
+
+- `GET https://openrouter.ai/api/v1/images/models` — dedicated list of image-generation models
+  only (confirmed live: 70 models, each `{id, name, description, created, architecture:
+  {input_modalities, output_modalities}, supported_parameters, supports_streaming, endpoints}`).
+- `GET https://openrouter.ai/api/v1/images/models/{id}/endpoints` — that model's providers.
+  Confirmed live for `bytedance-seed/seedream-4.5`: `{id, endpoints: [{provider_name,
+  provider_slug, provider_tag, supported_parameters, allowed_passthrough_parameters,
+  supports_streaming, pricing: [{billable, unit, cost_usd}, ...]}]}` — **not** the same shape as
+  the text-model endpoints response (`RemoteCatalog.ProviderRow`): priced per image
+  (`billable: "output_image"`, `unit: "image"`, `cost_usd`), no `latency_last_30m` /
+  `throughput_last_30m` / `uptime_last_30m` fields.
+- `POST https://openrouter.ai/api/v1/images` — generates. Request: `model`, `prompt` (required);
+  optional `n` (1-10), `aspect_ratio` (or `size`/`resolution`), `output_format`, `response_format`
+  (`b64_json` default, or `url`), `provider` (`{order, allow_fallbacks, only, ignore, sort,
+  data_collection}` — the **same shape** the app's text-model provider pinning already builds,
+  e.g. the existing `{"order":["relace/fp4","open-inference/fp4"],"allow_fallbacks":false}`
+  pattern). Response: `{created, data: [{b64_json | url, media_type}], usage, expires_at?}`.
+  Errors: `{error: {code, message, metadata?}}`.
+
+Confirmed via OpenRouter's own docs (`openrouter.ai/docs/api/api-reference/images/generate-an-image`)
+and a live request to both GET endpoints above.
 
 ## Goals
 
-- From the Images page, choose a remote image-generation API (service + model id) instead of a
-  local recipe, and generate with it.
-- Reuse this app's existing remote-service list and API-key plumbing (`RemoteCatalog.Services`,
-  `Environment.GetEnvironmentVariable(KeyEnv)`) rather than inventing new credential storage.
-- The choice persists the same way local settings already do (`AppSettings.ImageGen`).
-- A remote request that a given service doesn't actually support fails with a clear message,
-  rather than silently producing nothing.
+- From the Images page, pick an OpenRouter image-generation model (filtered to only those —
+  `architecture.output_modalities` contains `"image"`) and, optionally, pin one or more providers
+  for it, the same way a chat worker already can.
+- Generate with it: `POST /api/v1/images`, write the returned image(s) into the existing gallery.
+- Reuse `OPENROUTER_API_KEY` (already how every other OpenRouter call in this app authenticates)
+  — no new credential concept.
 
-## Non-goals / anti-goals
+## Non-goals
 
-- Not verifying in advance which of `RemoteCatalog.Services` actually serve image generation —
-  that isn't knowable from this codebase, and hardcoding a guess would be worse than a clear
-  error from the service itself.
-- Not building a "pick providers" sub-dialog like OpenRouter's chat routing — that concept
-  (order, fallbacks, price sort) is chat-specific and nothing in this codebase shows an
-  equivalent for images.
-- Not changing the local generation path, the gallery, or the stage at all.
+- No other remote service (OpenAI, Together, etc.) — OpenRouter only.
+- No latency/uptime/throughput columns in the image provider picker — that data isn't in the
+  image endpoints response; price per image is what's available.
+- Not changing the local generation path, gallery, or stage.
 
 ## Constraints
 
-- No Python/orchestrator.py involvement — image generation is launcher-only today and stays that
-  way.
-- Reuse the existing swappable `_remoteHttp` field (`MainWindow.RemoteApi.cs:22`) for the new
-  HTTP call, so it can be faked in tests the same way `RemoteCatalog.FetchModelsAsync` already is.
-- `ImageSettings` (`ImageGen.cs`) is serialized whole to `AppSettings.ImageGen`
-  (`Models.cs:320`) and to each picture's sidecar `.json` — a new field on it round-trips for
-  free through `System.Text.Json`; no separate settings schema work needed.
-
-## Approaches considered
-
-1. **Reuse `LauncherLogic.RemoteRole`** (the chat-worker remote-model record: `BaseUrl, Model,
-   KeyEnv, Timeout, Provider, SortPrice, MaxInput, MaxOutput`). Rejected: most of those fields
-   are chat-specific (OpenRouter provider routing, per-token price caps) and don't mean anything
-   for an image request; forcing them in would leave dead fields or awkward reinterpretation.
-2. **A new minimal record, `RemoteImageGen.RemoteModel(BaseUrl, Model, KeyEnv)`** — only the three
-   fields an image request actually needs. **Chosen.** Smallest type that fits; no unused fields.
-3. **Fold remote image generation into the existing `ImageRecipe`/`ImageChoice` picker** (treat a
-   remote model as another dropdown entry like a local file). Rejected: every downstream local
-   function (`ImageGen.Args`, `Paths`, `MissingImageFiles`) takes an `ImageRecipe` and builds
-   sd-cli arguments; a remote model has no recipe, no files, no sd-cli args at all. Forcing it
-   through that shape would mean stubbing fake recipe fields. Instead, remote is a **separate
-   source**, chosen via a toggle (mirroring Model Settings' "Model source" toggle), which skips
-   the recipe/runtime/download logic entirely when active.
+- Reuse `_remoteHttp` (`MainWindow.RemoteApi.cs:22`) for the HTTP calls.
+- `OPENROUTER_API_KEY` is the fixed key env var — `RemoteCatalog.Services[0]` is already
+  OpenRouter (`Id: "openrouter"`, `KeyEnv: "OPENROUTER_API_KEY"`); read the key the same way
+  text-model fetches already do (`Environment.GetEnvironmentVariable(service.KeyEnv)`).
+- `ImageSettings` round-trips whole through `AppSettings.ImageGen` and each picture's sidecar
+  `.json` — new string fields need no extra serialization work.
 
 ## Design
 
-### Model source toggle (Images page)
-
-Mirrors `MainWindow.ModelSettings.cs`'s existing "Model source" block (`SourceButton` helper at
-`:573`, `localPanel`/`remotePanel` pair toggled by `remoteMode()` at `:891-893`, `switchLocal`
-click handler at `:1057`). In `BuildImagesPage` (`MainWindow.ImageGen.cs:88+`), right after the
-existing folder row (`:149-151`):
-
-```
-Model source
-  [Runs on this computer]   [Use a Remote API…]
-```//one is the active state, shown as plain text; the other as a button, exactly like Model
-Settings already does it (`Muted("Runs on this computer.")` vs `SourceButton("Use a Remote API…", ...)`)
-
-- `localPanel`: wraps the existing "Model" label, `_imgRecipe`, and the folder row — unchanged
-  internals, just now hideable as a group.
-- `remotePanel`: a service `ComboBox` (`RemoteCatalog.Services`, Tag `ImagesRemoteService`) and a
-  model-id `TextBox` (Tag `ImagesRemoteModel`), plus a `switchLocal`-style button back to local.
-- Visibility of the two panels is driven by whether `ImageSettings.Remote` is set, the same way
-  `remoteMode()` drives `localPanel`/`remotePanel` today.
-
-### `ImageSettings.Remote` (`ImageGen.cs`)
+### New data (mirrors `RemoteCatalog.cs`'s existing `ModelEntry`/`ParseModels`/`FetchModelsAsync`
+and `ProviderRow`/`ParseProviders`/`FetchProvidersAsync`, but OpenRouter-only and image-shaped)
 
 ```csharp
-public RemoteImageGen.RemoteModel? Remote { get; set; }
+// RemoteCatalog.cs additions
+public sealed record ImageModelEntry(string Id, string Name);
+public sealed record ImageProviderRow(string ProviderName, string ProviderTag, decimal? CostPerImage);
+
+public static List<ImageModelEntry> ParseImageModels(string json);
+public static async Task<List<ImageModelEntry>> FetchImageModelsAsync(HttpClient http, string? apiKey, CancellationToken ct);
+
+public static List<ImageProviderRow> ParseImageProviders(string json);
+public static async Task<List<ImageProviderRow>> FetchImageProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey);
 ```
 
-`null` = local (today's behavior, unchanged). Non-null = this remote model.
+`FetchImageModelsAsync` hits `https://openrouter.ai/api/v1/images/models` directly (fixed URL, no
+`baseUrl` parameter needed — unlike the text-model fetch, there's only ever one service).
+`FetchImageProvidersAsync` hits `https://openrouter.ai/api/v1/images/models/{modelId}/endpoints`.
+`ParseImageProviders` reads each endpoint's `pricing` array for the entry where
+`billable == "output_image"`, taking its `cost_usd` as `CostPerImage` (`null` if absent).
 
-### `RemoteImageGen.cs` (new file — pure logic, no WPF types, mirrors `ImageGen.cs`'s style)
+### `ImageSettings` (`ImageGen.cs`)
 
 ```csharp
-internal sealed record RemoteModel(string BaseUrl, string Model, string KeyEnv);
-internal sealed record RemoteImage(byte[]? Bytes, string? Url); // exactly one is set
-
-internal static class RemoteImageGen
-{
-    public static string BuildRequest(RemoteModel model, ImageSettings s);
-    public static List<RemoteImage> ParseResponse(string json);
-}
+public string RemoteModel { get; set; } = ""; // "" = local (today's behavior); an OpenRouter image model id otherwise
+public string RemoteProvider { get; set; } = ""; // comma-separated provider tags to pin, "" = let OpenRouter choose
 ```
 
-- `BuildRequest`: JSON body `{"model": model.Model, "prompt": s.Prompt, "n": s.Batch, "size":
-  $"{s.Width}x{s.Height}", "response_format": "b64_json"}`.
-- `ParseResponse`: reads a `{"data": [...]}` reply; each item's `b64_json` (base64-decoded to
-  `Bytes`) or `url` becomes one `RemoteImage`. A top-level `{"error": {"message": "..."}}` throws
-  `InvalidOperationException(message)`. A reply with neither `data` nor `error` throws
-  `InvalidOperationException("unexpected reply from the image API")`.
+Two plain strings, not a nullable record — matches this file's own existing sentinel style
+(`InitImage: "" = text to image"`) and needs no new type for "local vs remote."
 
-### Generation (`MainWindow.ImageGen.cs`, `GenerateImagesAsync`)
+### UI (Images page, `MainWindow.ImageGen.cs`)
 
-Today (`:649-758`) the function reads settings, saves them, ensures the local runtime and model
-files are present, builds sd-cli args, runs the process, then (shared tail, `:745-757`) renames
-each produced file, writes its sidecar JSON, refreshes the gallery, and shows the first picture.
+Same "Model source" toggle shape as before (mirrors `MainWindow.ModelSettings.cs`'s `SourceButton`
+/ `localPanel` / `remotePanel` pattern), but the remote side is now: a searchable model picker
+listing `FetchImageModelsAsync`'s results (reuse the existing `ModelPicker` control
+(`MainWindow.ModelPicker.cs`) if its API takes a plain list of `(Id, Label)` pairs — check its
+signature before deciding whether to reuse it directly or build a simpler `ComboBox`), and a
+"Pick providers…" button opening a compact popup listing `FetchImageProvidersAsync`'s rows (name,
+tag, price per image, a tick to pin it) — this is a smaller version of
+`MainWindow.ApiModel.cs`'s existing `BuildProviderDialog`, reusable in spirit but without the
+latency/throughput/uptime columns that endpoint doesn't have.
 
-Change: after `ImageGen.OutputNames(...)` (`:671`), branch:
+### Generation (`GenerateImagesAsync`)
 
-- `s.Remote is { } remote`: skip the runtime/download/sd-cli block entirely (`:662-744`). POST
-  `RemoteImageGen.BuildRequest(remote, run)` to `{remote.BaseUrl.TrimEnd('/')}/images/generations`
-  via `_remoteHttp`, bearer token from `Environment.GetEnvironmentVariable(remote.KeyEnv)`
-  (missing key: throw clearly, mirroring `ApiClient.__init__`'s "Missing API key for {base_url}:
-  set {source}" wording). A non-2xx response throws with the body's error message if present,
-  else the status code. On success, `RemoteImageGen.ParseResponse` the body; for each image with
-  `Url` set, download it (`_remoteHttp.GetByteArrayAsync`); write each image's bytes to the
-  matching `files[i].Written`. Fewer images than `files.Count` is fine — the existing shared tail
-  already only processes files that exist (`files.Where(f => File.Exists(f.Written))`,
-  unchanged).
-- otherwise: today's local block, unchanged.
-
-The random-seed assignment (`:668-669`) stays unconditional — it's only used for file naming and
-the sidecar, which remote pictures still want.
+Same branch point as before: `s.RemoteModel.Length > 0` skips the local runtime/recipe/sd-cli
+block entirely. Build the request body `{model: s.RemoteModel, prompt: s.Prompt, n: s.Batch,
+aspect_ratio: s.Aspect, response_format: "b64_json", provider: {order: s.RemoteProvider.Split(','),
+allow_fallbacks: false}}` (omit `provider` when `RemoteProvider` is empty — mirrors how the
+text-model side omits provider pinning when none is chosen). POST to
+`https://openrouter.ai/api/v1/images` via `_remoteHttp`, bearer token from
+`OPENROUTER_API_KEY`. Parse `data[]`: `b64_json` (base64-decode) or `url` (download); write each
+to the matching `OutputNames` file path; the existing shared tail (rename, sidecar, gallery
+refresh) is unchanged and already tolerates fewer files than requested.
 
 ## What's left to the builder
 
-- Exact WPF layout/styling of the new toggle row (follow `BuildImagesPage`'s existing helpers:
-  `Muted`, `Label`, `SourceButton`-equivalent) — the plan fixes the Tags and behavior, not pixel
-  layout.
-- Exact wording of error messages beyond what's specified above.
-- Whether `ApplyImageSettings`/`ReadImageSettings` need a small helper to read the two new
-  controls — mechanical, follows the existing pattern for every other field in those two
-  functions.
+- Whether to reuse `MainWindow.ModelPicker.cs`'s existing control for the model list, or build a
+  plain `ComboBox` with a text filter — check that file's signature first.
+- Exact layout/styling of the new toggle row and provider popup, following this file's existing
+  helpers.
+- Exact error wording beyond what's specified (missing key, a 4xx/5xx reply, fewer images than
+  requested).
