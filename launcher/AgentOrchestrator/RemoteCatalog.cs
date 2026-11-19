@@ -80,7 +80,16 @@ internal static class RemoteCatalog
             (privacy.TryGetValue(r.Tag.Split('/')[0], out var p) ? r with { Privacy = p } : r) is var row && images?.TryGetValue(r.Tag, out var v) == true ? row with { Vision = v } : row)];
 
     // ModelsNeedKey: what an unauthenticated GET {BaseUrl}/models answered on 2026-11-05 (200 => false; 401/403, or Gemini's 404 => true).
-    public static IReadOnlyList<Service> Services { get; } =
+    // The primary PC (Settings > Models > Connect to another PC) while connected: its llama-server router on its Tailscale
+    // address, keyed by ModelShare.KeyEnv. Listed before Custom URL, which stays last.
+    public static IReadOnlyList<Service> Services => ShareHost.Length == 0 ? Fixed :
+        [.. Fixed.SkipLast(1), new("primary-pc", "Primary PC", $"http://{ShareHost}:{ModelShare.ChatPort}/v1", ModelShare.KeyEnv, "",
+            "Paste the primary PC's connection code in Settings > Models > Connect to another PC.", true, false), Fixed[^1]];
+
+    // AppSettings.ShareHost, set by the window when it loads and when it connects or disconnects ("" = not connected).
+    public static string ShareHost { get; set; } = "";
+
+    private static readonly Service[] Fixed =
     [
         S("openrouter", "OpenRouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY", "https://openrouter.ai/settings/keys", "openrouter.ai", false, true),
         S("openai", "OpenAI", "https://api.openai.com/v1", "OPENAI_API_KEY", "https://platform.openai.com/api-keys", "platform.openai.com", true),

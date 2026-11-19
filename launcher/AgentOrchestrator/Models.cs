@@ -319,6 +319,10 @@ internal sealed class AppSettings
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");
     public ImageSettings ImageGen { get; set; } = new(); // the Images page's last-used settings (MainWindow.ImageGen.cs)
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
+    // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models on its
+    // Tailscale address. ShareHost: on the other PC, the primary PC's Tailscale IP while connected ("" = not). Keys: ApiKeys.
+    public bool ShareModels { get; set; }
+    public string ShareHost { get; set; } = "";
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
     // UI tests so real data stays untouched).

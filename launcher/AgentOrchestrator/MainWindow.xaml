@@ -1793,6 +1793,30 @@
                         <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Checked="MultiModel_Checked" />
                         <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
                         </StackPanel>
+                        <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on this PC's Tailscale address; Connect on the other PC -->
+                        <TextBlock Text="Share models with my other PCs" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="ShareToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ShareToggle_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Share models with my other PCs" />
+                            <TextBlock Text="Run this PC's models for the app on your other PCs, over Tailscale" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock x:Name="ShareStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <DockPanel x:Name="ShareCodePanel" Visibility="Collapsed" Margin="0,12,0,0">
+                        <Button DockPanel.Dock="Right" Content="New key" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareNewKey_Click" />
+                        <Button DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareCopy_Click" />
+                        <TextBox x:Name="ShareCodeBox" IsReadOnly="True" AutomationProperties.Name="Connection code" />
+                        </DockPanel>
+                        <TextBlock Text="Paste the connection code on your other PC, below. It holds the key: anyone with it can use these models. New key signs the other PCs out."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Connect to another PC" Margin="0,22,0,0" />
+                        <DockPanel Margin="0,10,0,0">
+                        <Button DockPanel.Dock="Right" Content="Disconnect" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareDisconnect_Click" />
+                        <Button x:Name="ShareConnectButton" DockPanel.Dock="Right" Content="Connect" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareConnect_Click" />
+                        <TextBox x:Name="ShareCodeInput" AutomationProperties.Name="Connection code from the primary PC" />
+                        </DockPanel>
+                        <TextBlock x:Name="ShareConnectState" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Connected, the Remote API page lists the primary PC's models under Primary PC, for any agent."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Agents" Visibility="Collapsed">
                         <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />

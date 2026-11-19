@@ -87,6 +87,7 @@ public partial class MainWindow : Window
         StoreDo(_store.Load);
         RestoreWindowBounds();
         InitRemote();
+        InitShare();
 
         Closing += OnClosing;
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
@@ -3666,7 +3667,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LocalRuntimeSmoke())
             return false;
-        if (!await RemoteSmoke() || !await RemoteTunnelSmoke())
+        if (!await RemoteSmoke() || !await RemoteTunnelSmoke() || !ShareSmoke())
             return false;
         if (!await RemoteApiSmoke() || !await ComputerSmoke())
             return false;
@@ -5072,7 +5073,7 @@ public partial class MainWindow : Window
                 if (g.Repo.Length > 0)
                 {
                     var tail = g.Repo.Split('/')[^1];
-                    return new ModelChoice($"{tail}  ·  {(g.Variant.Length > 0 ? g.Variant : Path.GetFileName(g.File))}", g.Repo, g.Repo, g.Variant.Length > 0 ? g.Variant : null, tail);
+                    return new ModelChoice(ModelShare.DisplayId(g), g.Repo, g.Repo, g.Variant.Length > 0 ? g.Variant : null, tail);
                 }
                 var name = Path.GetFileNameWithoutExtension(g.File);
                 return new ModelChoice(name, name, name, g.Variant.Length > 0 ? g.Variant : null, name, g.File);
@@ -5437,6 +5438,7 @@ public partial class MainWindow : Window
         }
         _tunnel.Stop();
         StopRemoteServer();
+        StopShare();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))

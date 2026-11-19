@@ -27,6 +27,7 @@ public partial class App : Application
             ApiKeys.SelfTest();
             AgentOrchestrator.MainWindow.NotifySelfTest();
             ImageGen.ImageGenSelfTest();
+            ModelShare.SelfTest();
             Shutdown(0);
             return;
         }
