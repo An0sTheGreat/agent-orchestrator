@@ -21,7 +21,10 @@ internal static class RemoteCatalog
 
     // An image-generation model from OpenRouter's GET /images/models; a provider's USD price per generated image (null = not priced).
     public sealed record ImageModelEntry(string Id, string Name);
-    public sealed record ImageProviderRow(string ProviderName, string ProviderTag, decimal? CostPerImage);
+    // Unit is the price's own: "image" (CostPerImage is USD per picture) or "token" (CostPerImage is USD per token, whatever the name).
+    public sealed record ImageProviderRow(string ProviderName, string ProviderTag, decimal? CostPerImage, string Unit = "image");
+    // A model's price from OpenRouter's model list: USD per picture, or USD per million image tokens when that is all it has; both null = unpriced.
+    public sealed record ImagePrice(decimal? PerImage, decimal? PerMillionTokens);
 
     // How a provider treats prompts, as OpenRouter's own provider page shows it (its API does not carry this): Private = no training and no
     // retention; Logs = may retain prompts but does not train; Trains = may train on them; "" = not known.
@@ -202,12 +205,50 @@ internal static class RemoteCatalog
     public static async Task<List<ImageModelEntry>> FetchImageModelsAsync(HttpClient http, string? apiKey, CancellationToken ct) =>
         ParseImageModels(await GetAsync(http, "https://openrouter.ai/api/v1/images/models", apiKey, ct).ConfigureAwait(false));
 
-    // OpenRouter's GET /images/models/{id}/endpoints: {"endpoints":[{provider_name, provider_tag, pricing:[{billable, cost_usd}]}]}, in the server's order.
+    // OpenRouter's GET /images/models/{id}/endpoints: {"endpoints":[{provider_name, provider_tag, pricing:[{billable, unit, cost_usd}]}]}, in the server's order.
+    // A model can list several output_image entries (a resolution variant); the first is the one shown.
     public static List<ImageProviderRow> ParseImageProviders(string json) => Reply(json, "OpenRouter's reply is not an image provider list.", root =>
         ((root as JsonObject)?["endpoints"] as JsonArray ?? throw new FormatException()).OfType<JsonObject>().Select(e =>
-            new ImageProviderRow(Str(e["provider_name"]) ?? "", Str(e["provider_tag"]) ?? "",
-                (e["pricing"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(p => Str(p["billable"]) == "output_image") is { } priced ? PerUnit(priced["cost_usd"]) : null))
-            .ToList());
+        {
+            var priced = (e["pricing"] as JsonArray)?.OfType<JsonObject>().FirstOrDefault(p => Str(p["billable"]) == "output_image");
+            return new ImageProviderRow(Str(e["provider_name"]) ?? "", Str(e["provider_tag"]) ?? "", priced is null ? null : PerUnit(priced["cost_usd"]), priced is null ? "image" : Str(priced["unit"]) ?? "image");
+        }).ToList());
+
+    // OpenRouter's GET /models?output_modalities=image: id -> price. "image" is USD per picture; models that only bill image tokens
+    // ("image_output", else "image_token", USD per token) are priced per million tokens, since a picture's token count is not known here.
+    public static Dictionary<string, ImagePrice> ParseImagePrices(string json) => Reply(json, "OpenRouter's reply is not a model list.", root =>
+    {
+        var prices = new Dictionary<string, ImagePrice>();
+        foreach (var e in ((root as JsonObject)?["data"] as JsonArray ?? throw new FormatException()).OfType<JsonObject>())
+        {
+            if (Str(e["id"])?.Trim() is not { Length: > 0 } id || e["pricing"] is not JsonObject pricing)
+                continue;
+            var perImage = PerUnit(pricing["image"]) is > 0 and var i ? i : (decimal?)null;
+            var perToken = perImage is null ? (PerUnit(pricing["image_output"]) is > 0 and var o ? o : PerUnit(pricing["image_token"]) is > 0 and var t ? t : (decimal?)null) : null;
+            if (perImage is not null || perToken is not null)
+                prices[id] = new ImagePrice(perImage, perToken * 1_000_000m);
+        }
+        return prices;
+    });
+
+    public static async Task<Dictionary<string, ImagePrice>> FetchImagePricesAsync(HttpClient http, string? apiKey, CancellationToken ct) =>
+        ParseImagePrices(await GetAsync(http, "https://openrouter.ai/api/v1/models?output_modalities=image", apiKey, ct).ConfigureAwait(false));
+
+    // USD: "—" unknown, "$0" free, "<$0.0001" any other price the format would round down to $0.00; whole amounts have no cents ("$10").
+    public static string Usd(decimal? v) => v switch
+    {
+        null => "—",
+        0 => "$0",
+        < 0.0001m => "<$0.0001",
+        { } x => "$" + (x.ToString("0.00##", CultureInfo.InvariantCulture) is var s && s.EndsWith(".00", StringComparison.Ordinal) ? s[..^3] : s),
+    };
+
+    public static string ImagePriceText(ImagePrice? price) =>
+        price?.PerImage is { } image ? Usd(image) + " / image" : price?.PerMillionTokens is { } tokens ? Usd(tokens) + " / M tokens" : "—";
+
+    // A provider's price in its own unit (USD per token is shown per million, like the model list).
+    public static string ImageCostText(decimal? cost, string unit) =>
+        cost is not { } c ? "—" : unit == "token" ? Usd(c * 1_000_000m) + " / M tokens" : Usd(c) + " / image";
 
     public static async Task<List<ImageProviderRow>> FetchImageProvidersAsync(HttpClient http, string modelId, CancellationToken ct, string? apiKey) =>
         ParseImageProviders(await GetAsync(http, $"https://openrouter.ai/api/v1/images/models/{modelId}/endpoints", apiKey, ct).ConfigureAwait(false));
@@ -337,6 +378,17 @@ internal static class RemoteCatalog
         var imageProviders1 = ParseImageProviders("{\"id\":\"x\",\"endpoints\":[{\"provider_name\":\"Seed\",\"provider_tag\":\"seed\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"image\",\"cost_usd\":0.04},{\"billable\":\"input_image\",\"unit\":\"image\",\"cost_usd\":0}]},{\"provider_name\":\"NoPricing\",\"provider_tag\":\"np\"}]}");
         Check(imageProviders1 is [{ ProviderName: "Seed", ProviderTag: "seed", CostPerImage: 0.04m }, { ProviderName: "NoPricing", CostPerImage: null }], "image providers: price from the output_image entry, null when absent");
 
+        var imageRows = ParseImageProviders("{\"endpoints\":[{\"provider_name\":\"Tok\",\"provider_tag\":\"tok\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"token\",\"cost_usd\":1e-05}]},{\"provider_name\":\"Img\",\"provider_tag\":\"img\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"image\",\"cost_usd\":0.04}]},{\"provider_name\":\"Bare\",\"provider_tag\":\"bare\",\"pricing\":[{\"billable\":\"output_image\",\"cost_usd\":\"0.05\"}]}]}");
+        Check(imageRows is [{ Unit: "token", CostPerImage: 0.00001m }, { Unit: "image", CostPerImage: 0.04m }, { Unit: "image", CostPerImage: 0.05m }], "image provider units");
+        Check(ImageCostText(0.04m, "image") == "$0.04 / image" && ImageCostText(0.00001m, "token") == "$10 / M tokens" && ImageCostText(null, "image") == "—" && ImageCostText(1.5m, "image") == "$1.50 / image", "image cost text");
+        var imagePrices = ParseImagePrices("{\"data\":[{\"id\":\"a/img\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image\":\"0.008\",\"image_output\":\"0.00001\"}},{\"id\":\"b/tok\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image_output\":\"0.00001\"}}," +
+            "{\"id\":\"c/none\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}},{\"id\":\"d/free:free\"},{\"id\":\"e/zero\",\"pricing\":{\"image\":\"0\",\"image_token\":\"0.000002\"}}]}");
+        Check(imagePrices["a/img"] == new ImagePrice(0.008m, null) && imagePrices["b/tok"] == new ImagePrice(null, 10m) && imagePrices["e/zero"] == new ImagePrice(null, 2m) &&
+            !imagePrices.ContainsKey("c/none") && !imagePrices.ContainsKey("d/free:free"), "image prices");
+        Check(ImagePriceText(new ImagePrice(0.008m, null)) == "$0.008 / image" && ImagePriceText(new ImagePrice(null, 10m)) == "$10 / M tokens" && ImagePriceText(null) == "—", "image price text");
+        try { ParseImagePrices("{\"error\":{}}"); Check(false, "junk accepted as image prices"); }
+        catch (InvalidOperationException e) when (e.Message.Contains("not a")) { }
+
         var shields = ParsePrivacy(PrivacySample);
         Check(shields.Count == 3 && shields["gmicloud"] == Logs && shields["deepinfra"] == Private && shields["novita"] == Trains, $"privacy levels: {string.Join(",", shields)}");
         Check(ParsePrivacy("").Count == 0 && ParsePrivacy("<html>no data</html>").Count == 0 && PrivacyTip(Private).StartsWith("Private:") && PrivacyTip("") == "", "privacy of nothing");
@@ -408,6 +460,11 @@ internal static class RemoteCatalog
             var imageProviders = await FetchImageProvidersAsync(http, "bytedance-seed/seedream-4.5", CancellationToken.None, null);
             Check(imageProviders is [{ ProviderName: "Seed", CostPerImage: 0.04m }] && fake.All.Single().RequestUri?.ToString() ==
                 "https://openrouter.ai/api/v1/images/models/bytedance-seed/seedream-4.5/endpoints", "image providers fetch");
+            fake.Reply = (HttpStatusCode.OK, "{\"data\":[{\"id\":\"a/img\",\"pricing\":{\"image\":\"0.008\"}}]}");
+            fake.All.Clear();
+            var fetchedPrices = await FetchImagePricesAsync(http, "sk-test", CancellationToken.None);
+            Check(fetchedPrices["a/img"] == new ImagePrice(0.008m, null) && fake.All.Single().RequestUri?.ToString() == "https://openrouter.ai/api/v1/models?output_modalities=image" &&
+                fake.All.Single().Headers.Authorization?.ToString() == "Bearer sk-test", "image prices fetch");
         }).GetAwaiter().GetResult();
     }
 

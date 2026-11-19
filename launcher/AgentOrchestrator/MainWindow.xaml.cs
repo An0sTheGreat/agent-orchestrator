@@ -2942,19 +2942,57 @@ public partial class MainWindow : Window
                         return Fail();
                     var recipeWas = recipes.SelectedIndex;
                     SmokeClick(useRemote);
-                    if (recipes.IsVisible || !modelButton.IsVisible || !providersButton.IsVisible || useRemote.IsVisible || modelButton.Content as string != "Choose a model…")
+                    if (recipes.IsVisible || !modelButton.IsVisible || !providersButton.IsVisible || useRemote.IsVisible || modelButton.Content as string != "Choose a model… ▾")
                         return Fail();
                     _imgDialogTest = d => imgPopup = d;
+                    // the model dropdown: a Popup under the button (the button keeps its text), a priced row per model, closed by a pick or a press anywhere else
+                    FrameworkElement? ModelFind(string tag) => _imgModelPopupTest is { IsOpen: true, Child: DependencyObject card } ? SmokeFind<FrameworkElement>(card, e => e.Tag as string == tag) : null;
+                    async Task<bool> ModelHas(string tag)
+                    {
+                        for (var i = 0; i < 100 && ModelFind(tag) is null; i++)
+                            await Task.Delay(20);
+                        return ModelFind(tag) is not null;
+                    }
+                    string ModelPrice(string id) => ((TextBlock)((DockPanel)((Button)ModelFind("imgmodel:" + id)!).Content).Children[0]).Text;
+                    void PressElsewhere() => RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent });
+                    imgFake.ImagePricesDown = true; // no prices: the list works, every price is a dash, and a model can still be picked
                     SmokeClick(modelButton);
-                    if (!await PopupHas("imgmodel:acme/img-two") || PopupFind("imgmodel:") is not null) // the entry with no id is skipped
+                    if (!await ModelHas("imgmodel:acme/img-one") || !await ModelHas("imgmodel:acme/img-three") || ModelPrice("acme/img-one") != "—" || ModelPrice("acme/img-two") != "—" || modelButton.Content as string != "Choose a model… ▾")
                         return Fail();
-                    SmokeClick((Button)PopupFind("imgmodel:acme/img-two")!);
-                    if (ReadImageSettings().RemoteModel != "acme/img-two" || modelButton.Content as string != "Acme: Image Two")
+                    PressElsewhere();
+                    if (_imgModelPopupTest is not { IsOpen: false })
                         return Fail();
-                    imgPopup.Close();
-                    imgPopup = null;
+                    await Task.Delay(450); // past the press-closed guard
+                    imgFake.ImagePricesDown = false;
+                    SmokeClick(modelButton);
+                    if (!await ModelHas("imgmodel:acme/img-two") || ModelFind("imgmodel:") is not null || modelButton.Content as string != "Choose a model… ▾" || // the entry with no id is skipped
+                        ModelPrice("acme/img-one") != "$0.008 / image" || ModelPrice("acme/img-two") != "$10 / M tokens" || ModelPrice("acme/img-three") != "—")
+                        return Fail();
+                    var modelPopup = _imgModelPopupTest!;
+                    ((TextBox)ModelFind("ImagesModelFilter")!).Text = "one"; // the filter keeps working with the popup holding the focus
+                    if (ModelFind("imgmodel:acme/img-one") is null || ModelFind("imgmodel:acme/img-two") is not null)
+                        return Fail();
+                    ((TextBox)ModelFind("ImagesModelFilter")!).Text = "";
+                    PressElsewhere(); // a press elsewhere in the window, while the filter box has the focus
+                    if (modelPopup.IsOpen)
+                        return Fail();
+                    await Task.Delay(450);
+                    SmokeClick(modelButton);
+                    if (!await ModelHas("imgmodel:acme/img-two"))
+                        return Fail();
+                    SmokeClick((Button)ModelFind("imgmodel:acme/img-two")!);
+                    if (ReadImageSettings().RemoteModel != "acme/img-two" || modelButton.Content as string != "Acme: Image Two ▾" || _imgModelPopupTest.IsOpen)
+                        return Fail();
+                    SmokeClick(modelButton); // reopening straight after a pick works
+                    if (!await ModelHas("imgmodel:acme/img-one"))
+                        return Fail();
+                    _imgModelPopupTest.IsOpen = false;
                     SmokeClick(providersButton);
-                    if (!await PopupHas("provider:alpha/fp8") || !await PopupHas("provider:beta") || PopupFind("provider:") is not null)
+                    if (!await PopupHas("provider:alpha/fp8") || !await PopupHas("provider:beta") || PopupFind("provider:") is not null ||
+                        ((TextBlock)((DockPanel)((ToggleButton)PopupFind("provider:alpha/fp8")!).Content).Children[1]).Text != "$0.04 / image" ||
+                        ((TextBlock)((DockPanel)((ToggleButton)PopupFind("provider:beta")!).Content).Children[1]).Text != "$0.05 / image" ||
+                        ((TextBlock)((DockPanel)((ToggleButton)PopupFind("provider:delta")!).Content).Children[1]).Text != "$10 / M tokens" ||
+                        ((TextBlock)((DockPanel)((ToggleButton)PopupFind("provider:gamma")!).Content).Children[1]).Text != "—")
                         return Fail();
                     var (beta, alpha) = ((ToggleButton)PopupFind("provider:beta")!, (ToggleButton)PopupFind("provider:alpha/fp8")!);
                     (beta.IsChecked, alpha.IsChecked) = (true, true);

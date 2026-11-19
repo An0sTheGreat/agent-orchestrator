@@ -448,7 +448,7 @@ public partial class MainWindow
         foreach (var control in _imgLocalOnly)
             control.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         _imgNegativeRow.Visibility = !_imgRemoteMode && _imgRecipe.SelectedIndex >= 0 && ImageChoice(_imgRecipe.SelectedIndex).Recipe.Negative ? Visibility.Visible : Visibility.Collapsed;
-        _imgRemoteModelButton.Content = _imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id;
+        _imgRemoteModelButton.Content = (_imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id) + " ▾";
         _imgRemoteProvidersButton.Content = "Providers: " + (_imgRemoteProviders.Count == 0 ? "any" : string.Join(", ", _imgRemoteProviders));
     }
 
@@ -460,23 +460,71 @@ public partial class MainWindow
             popup.ShowDialog();
     }
 
-    // A filterable list of OpenRouter's image models; a pick keeps its id and name and closes it. A model with no id is skipped.
+    internal Popup? _imgModelPopupTest; // --ui-smoke: the model dropdown opened last
+    private DateTime _imgModelPressClosedAt;
+
+    // A dropdown under the model button: a filterable list of OpenRouter's image models, each with its price; a pick keeps its id and name and
+    // closes it. A model with no id is skipped. A failed price lookup only leaves the prices as "—".
     private void ChooseImageModel()
     {
+        // StaysOpen=false closes only while the popup holds the mouse, which the filter box takes: a press anywhere in the window closes it
+        // (technique of ModelPicker). A press on the button closes it, and that same click's release must not open it again.
+        if (_imgModelPopupTest is { IsOpen: true } open)
+        {
+            open.IsOpen = false;
+            return;
+        }
+        if (DateTime.UtcNow - _imgModelPressClosedAt < TimeSpan.FromMilliseconds(400))
+            return;
         var filter = new TextBox { Tag = "ImagesModelFilter", Margin = new Thickness(0, 0, 0, 8) };
         var status = RemoteMuted("Loading models…");
         var list = new StackPanel();
-        var popup = new DialogShell(this, "OpenRouter image models", new StackPanel { MinWidth = 420, Children = { filter, status, new ScrollViewer { Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } });
+        var card = new Border
+        {
+            BorderThickness = new Thickness(1), Padding = new Thickness(8), MinWidth = 420, Width = Math.Max(_imgRemoteModelButton.ActualWidth, 420),
+            Child = new StackPanel { Children = { filter, status, new ScrollViewer { Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } },
+        };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        var popup = _imgModelPopupTest = new Popup { Child = card, PlacementTarget = _imgRemoteModelButton, Placement = PlacementMode.Bottom, VerticalOffset = 4, AllowsTransparency = true, StaysOpen = false };
+        void OnPress(object sender, MouseButtonEventArgs e)
+        {
+            _imgModelPressClosedAt = DateTime.UtcNow;
+            popup.IsOpen = false;
+        }
+        popup.Opened += (_, _) => filter.Focus();
+        void OnGone(object sender, RoutedEventArgs e) => popup.IsOpen = false; // the page left the screen
+        popup.Closed += (_, _) =>
+        {
+            PreviewMouseDown -= OnPress;
+            _imgRemoteModelButton.Unloaded -= OnGone;
+        };
+        card.PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                popup.IsOpen = false;
+                e.Handled = true;
+            }
+        };
         var models = new List<(string Id, string Name)>();
+        var prices = new Dictionary<string, RemoteCatalog.ImagePrice>();
         void Show()
         {
             list.Children.Clear();
             foreach (var (id, name) in models.Where(m => $"{m.Name} {m.Id}".Contains(filter.Text.Trim(), StringComparison.OrdinalIgnoreCase)))
             {
+                var price = RemoteMuted(RemoteCatalog.ImagePriceText(prices.GetValueOrDefault(id)));
+                price.VerticalAlignment = VerticalAlignment.Center;
+                price.Margin = new Thickness(12, 0, 0, 0);
+                var who = new StackPanel { Children = { new TextBlock { Text = name }, RemoteMuted(id) } };
+                var cells = new DockPanel { Children = { price, who } };
+                DockPanel.SetDock(price, Dock.Right);
                 var row = new Button
                 {
-                    Content = new StackPanel { Children = { new TextBlock { Text = name }, RemoteMuted(id) } }, Tag = "imgmodel:" + id, Style = (Style)FindResource("GhostButton"),
-                    HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 0, 2),
+                    Content = cells, Tag = "imgmodel:" + id, Style = (Style)FindResource("GhostButton"),
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(0, 0, 0, 2),
                 };
                 row.Click += (_, _) =>
                 {
@@ -484,7 +532,7 @@ public partial class MainWindow
                         _imgRemoteProviders = []; // providers belong to a model
                     _imgRemoteModel = (id, name);
                     ShowImageSource();
-                    popup.Close();
+                    popup.IsOpen = false;
                 };
                 list.Children.Add(row);
             }
@@ -493,7 +541,13 @@ public partial class MainWindow
         {
             try
             {
-                var got = await RemoteCatalog.FetchImageModelsAsync(_remoteHttp, Environment.GetEnvironmentVariable(ImageKeyEnv), CancellationToken.None);
+                var key = Environment.GetEnvironmentVariable(ImageKeyEnv);
+                var priced = RemoteCatalog.FetchImagePricesAsync(_remoteHttp, key, CancellationToken.None);
+                var listed = RemoteCatalog.FetchImageModelsAsync(_remoteHttp, key, CancellationToken.None);
+                try { await Task.WhenAll(priced, listed); }
+                catch when (priced.IsFaulted && !listed.IsFaulted) { } // prices are a nicety: the list still works
+                var got = await listed;
+                prices = priced.IsCompletedSuccessfully ? priced.Result : [];
                 models = [.. got.Where(m => m.Id.Trim().Length > 0).Select(m => (m.Id.Trim(), m.Name.Trim().Length > 0 ? m.Name.Trim() : m.Id.Trim()))];
                 status.Text = $"{models.Count} image models";
                 Show();
@@ -504,8 +558,11 @@ public partial class MainWindow
             }
         }
         filter.TextChanged += (_, _) => Show();
+        _imgRemoteModelButton.Unloaded += OnGone;
         Load();
-        ShowImagePopup(popup);
+        popup.IsOpen = true;
+        if (popup.IsOpen)
+            PreviewMouseDown += OnPress; // presses in the popup go to its own window, not this one
     }
 
     // The chosen model's providers, a tick each with its order number (tried in that order); ticking edits the page's choice at once.
@@ -542,7 +599,7 @@ public partial class MainWindow
                     return; // another model was picked while this loaded: its ticks are not ours to clear
                 if (rows.Count > 0)
                     _imgRemoteProviders.RemoveAll(t => rows.All(r => r.ProviderTag != t)); // a provider gone since it was ticked
-                status.Text = rows.Count == 0 ? $"No providers listed for {model}: OpenRouter chooses." : $"{rows.Count} providers · USD per image";
+                status.Text = rows.Count == 0 ? $"No providers listed for {model}: OpenRouter chooses." : $"{rows.Count} providers · USD, in each provider's own unit";
                 foreach (var r in rows)
                 {
                     var tag = r.ProviderTag;
@@ -551,8 +608,8 @@ public partial class MainWindow
                     orderMarks[tag] = mark;
                     var who = new StackPanel { Orientation = Orientation.Horizontal, Children = { new TextBlock { Text = r.ProviderName, FontWeight = FontWeights.SemiBold }, RemoteMuted(tag) } };
                     who.Children[1].SetValue(FrameworkElement.MarginProperty, new Thickness(8, 0, 0, 0));
-                    var cost = RemoteMuted(r.CostPerImage is { } c ? RemotePrice(c) : "—");
-                    cost.Width = 70;
+                    var cost = RemoteMuted(RemoteCatalog.ImageCostText(r.CostPerImage, r.Unit));
+                    cost.Width = 110;
                     cost.TextAlignment = TextAlignment.Right;
                     var row = new ToggleButton { Content = new DockPanel { Children = { mark, cost, who } }, Tag = "provider:" + tag, IsChecked = _imgRemoteProviders.Contains(tag), Height = 34, Padding = new Thickness(12, 0, 12, 0), Margin = new Thickness(0, 0, 0, 1), HorizontalContentAlignment = HorizontalAlignment.Stretch };
                     DockPanel.SetDock(mark, Dock.Right);

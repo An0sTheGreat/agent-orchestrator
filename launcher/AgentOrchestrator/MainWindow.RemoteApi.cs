@@ -2029,11 +2029,16 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         "\"uptime_last_30m\":null,\"supports_image_reference\":false,\"latency_last_30m\":null,\"throughput_last_30m\":null}]}}";
 
     // /images/models: two image models and one with no id (the picker skips it); /images/models/<id>/endpoints: three providers, the last unpriced.
-    private const string ImageModels = "{\"data\":[{\"id\":\"acme/img-one\",\"name\":\"Acme: Image One\"},{\"id\":\"acme/img-two\",\"name\":\"Acme: Image Two\"},{\"name\":\"No id\"}]}";
+    private const string ImageModels = "{\"data\":[{\"id\":\"acme/img-one\",\"name\":\"Acme: Image One\"},{\"id\":\"acme/img-two\",\"name\":\"Acme: Image Two\"},{\"id\":\"acme/img-three\",\"name\":\"Acme: Image Three\"},{\"name\":\"No id\"}]}";
     private const string ImageEndpoints = "{\"endpoints\":[" +
-        "{\"provider_name\":\"Alpha\",\"provider_tag\":\"alpha/fp8\",\"pricing\":[{\"billable\":\"output_image\",\"cost_usd\":\"0.04\"}]}," +
+        "{\"provider_name\":\"Alpha\",\"provider_tag\":\"alpha/fp8\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"image\",\"cost_usd\":0.04}]}," +
         "{\"provider_name\":\"Beta\",\"provider_tag\":\"beta\",\"pricing\":[{\"billable\":\"output_image\",\"cost_usd\":\"0.05\"}]}," +
-        "{\"provider_name\":\"Gamma\",\"provider_tag\":\"gamma\"}]}";
+        "{\"provider_name\":\"Gamma\",\"provider_tag\":\"gamma\"}," +
+        "{\"provider_name\":\"Delta\",\"provider_tag\":\"delta\",\"pricing\":[{\"billable\":\"output_image\",\"unit\":\"token\",\"cost_usd\":1e-05}]}]}";
+    // GET /models?output_modalities=image: img-one priced per picture, img-two per token only, img-three not at all (and an entry with no id).
+    private const string ImagePrices = "{\"data\":[{\"id\":\"acme/img-one\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image\":\"0.008\"}}," +
+        "{\"id\":\"acme/img-two\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image_output\":\"0.00001\"}},{\"id\":\"acme/img-three\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}},{\"pricing\":{\"image\":\"1\"}}]}";
+    public bool ImagePricesDown; // the price lookup answers 500 (the model list must still work)
 
     // OpenRouter's /{model}/providers page, reduced to the data policies it embeds: Relace private, GMICloud logs, OpenInference trains.
     private const string PrivacyPage =
@@ -2060,7 +2065,9 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         }
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
-        var body = Body ?? (url.Contains("/images/models", StringComparison.Ordinal) ? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? ImageEndpoints : ImageModels) : url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
+        if (Body is null && url.Contains("/models?output_modalities=image", StringComparison.Ordinal))
+            return ImagePricesDown ? new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("") } : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ImagePrices) };
+        var body = Body ?? (url.Contains("/images/models",StringComparison.Ordinal) ? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? ImageEndpoints : ImageModels) : url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);
         return body is null
             ? new HttpResponseMessage(HttpStatusCode.NotFound) { Content = new StringContent("") }
             : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
