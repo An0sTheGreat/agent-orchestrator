@@ -2921,6 +2921,63 @@ public partial class MainWindow : Window
                 if (!zHidden || negative.Visibility != Visibility.Visible || _imgSteps.Value != 30 ||
                     SmokeFind<TextBlock>(ImagesView, t => t.Tag as string == "ImagesSize")?.Text != "1024 × 1024")
                     return Fail();
+                // the prompt boxes cap their height with a fading bottom edge and an expand/collapse toggle; no toggle when the text fits
+                {
+                    TextBox promptBox = _imgPrompt, negBox = _imgNegative;
+                    Button? PromptToggle(string tag) => SmokeFind<Button>(ImagesView, b => b.Tag as string == tag);
+                    string Lines(int n) => string.Join("\n", Enumerable.Range(1, n).Select(i => "line " + i));
+                    async Task<bool> FadeCheck(TextBox box, string tag, double max)
+                    {
+                        box.Text = "one line";
+                        await Settle();
+                        if (PromptToggle(tag) is not { } toggle || toggle.IsVisible || box.OpacityMask is not null || box.ActualHeight > max)
+                            return false;
+                        box.Text = Lines(40);
+                        await Settle();
+                        if (!toggle.IsVisible || toggle.Content as string != "Show more ▾" || box.ActualHeight > max + 0.5 || !(box.ExtentHeight > box.ViewportHeight) || box.OpacityMask is null)
+                            return false;
+                        var line = box.ExtentHeight / 40;
+                        var fitLines = (int)Math.Floor((max - (box.ActualHeight - box.ViewportHeight)) / line);
+                        SmokeClick(toggle);
+                        await Settle();
+                        if (box.ActualHeight <= max + 1 || box.OpacityMask is not null || toggle.Content as string != "Show less ▴" || !toggle.IsVisible)
+                            return false;
+                        SmokeClick(toggle);
+                        await Settle();
+                        if (box.ActualHeight > max + 0.5 || box.OpacityMask is null || toggle.Content as string != "Show more ▾")
+                            return false;
+                        box.Text = Lines(fitLines); // exactly what fits: no toggle
+                        await Settle();
+                        if (toggle.IsVisible || box.OpacityMask is not null)
+                            return false;
+                        box.Text = Lines(fitLines + 1); // one line more: the toggle
+                        await Settle();
+                        if (!toggle.IsVisible)
+                            return false;
+                        box.Text = "x " + new string('w', 4000); // one very long wrapped line
+                        await Settle();
+                        if (!toggle.IsVisible || box.ActualHeight > max + 0.5)
+                            return false;
+                        box.Text = "one line";
+                        await Settle();
+                        return !toggle.IsVisible && box.OpacityMask is null && box.ActualHeight <= max;
+                    }
+                    if (!await FadeCheck(promptBox, "ImagesPromptToggle", 150) || !await FadeCheck(negBox, "ImagesNegativeToggle", 90))
+                        return Fail();
+                    negBox.Text = Lines(40);
+                    await Settle();
+                    _imgRemoteMode = true; // OpenRouter hides the negative row and its toggle; the state is intact on the way back
+                    ShowImageSource();
+                    await Settle();
+                    var hiddenInRemote = !negative.IsVisible && !PromptToggle("ImagesNegativeToggle")!.IsVisible;
+                    _imgRemoteMode = false;
+                    ShowImageSource();
+                    await Settle();
+                    if (!hiddenInRemote || !PromptToggle("ImagesNegativeToggle")!.IsVisible || negBox.ActualHeight > 90.5 || negBox.OpacityMask is null)
+                        return Fail();
+                    Snap("42-images-prompt-fade");
+                    (negBox.Text, promptBox.Text) = ("", "");
+                }
                 // OpenRouter image models (a fake OpenRouter answers): the toggle, the model popup, the provider popup; the local pick survives the round trip
                 var imgHttp = _remoteHttp;
                 var imgFake = new RemoteApiFakeHandler();

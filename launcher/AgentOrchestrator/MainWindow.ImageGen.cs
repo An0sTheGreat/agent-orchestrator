@@ -183,12 +183,12 @@ public partial class MainWindow
 
         Label("Prompt");
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        left.Children.Add(_imgPrompt);
+        left.Children.Add(AttachPromptFade(_imgPrompt, 150, "ImagesPromptToggle"));
         _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 44 };
         _imgNegativeRow = new StackPanel
         {
             Tag = "ImagesNegative",
-            Children = { new TextBlock { Text = "Negative prompt", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) }, _imgNegative },
+            Children = { new TextBlock { Text = "Negative prompt", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) }, AttachPromptFade(_imgNegative, 90, "ImagesNegativeToggle") },
         };
         left.Children.Add(_imgNegativeRow);
 
@@ -438,6 +438,46 @@ public partial class MainWindow
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
             RemoteModel = _imgRemoteMode ? _imgRemoteModel.Id.Trim() : "", RemoteProvider = _imgRemoteMode ? string.Join(", ", _imgRemoteProviders) : "",
         };
+    }
+
+    // A prompt box that stops at collapsedMax: when its text is taller, the bottom edge fades out (an opacity mask, so any theme's
+    // background shows through) and a ghost toggle below expands it to ExpandedMax (the box's own scrollbar takes over beyond that).
+    private const double ExpandedMax = 420, FadeHeight = 20;
+
+    private FrameworkElement AttachPromptFade(TextBox box, double collapsedMax, string toggleTag)
+    {
+        var toggle = new Button { Tag = toggleTag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(8, 1, 8, 1), FontSize = 11.5, Margin = new Thickness(0, 4, 0, 0),
+            HorizontalAlignment = HorizontalAlignment.Left, Focusable = false, Visibility = Visibility.Collapsed };
+        var (expanded, tall) = (false, false);
+        void Update()
+        {
+            if (!box.IsVisible || box.ViewportHeight <= 0)
+                return; // hidden (the negative row in OpenRouter mode) or not laid out yet: keep the state
+            var chrome = box.ActualHeight - box.ViewportHeight;
+            var nowTall = box.ExtentHeight > collapsedMax - chrome + 1;
+            if (!nowTall)
+                expanded = false;
+            tall = nowTall;
+            box.MaxHeight = expanded ? ExpandedMax : collapsedMax;
+            toggle.Visibility = tall ? Visibility.Visible : Visibility.Collapsed;
+            toggle.Content = expanded ? "Show less ▴" : "Show more ▾";
+            if (!tall || expanded)
+            {
+                box.OpacityMask = null;
+                return;
+            }
+            var fade = Math.Min(FadeHeight, collapsedMax / 2) / collapsedMax;
+            box.OpacityMask = new LinearGradientBrush(new GradientStopCollection
+            {
+                new GradientStop(Colors.Black, 0), new GradientStop(Colors.Black, 1 - fade), new GradientStop(Color.FromArgb(0x10, 0, 0, 0), 1),
+            }, new Point(0, 0), new Point(0, 1));
+        }
+        box.MaxHeight = collapsedMax;
+        box.TextChanged += (_, _) => box.Dispatcher.BeginInvoke(Update, System.Windows.Threading.DispatcherPriority.Loaded);
+        box.SizeChanged += (_, _) => Update();
+        box.IsVisibleChanged += (_, _) => box.Dispatcher.BeginInvoke(Update, System.Windows.Threading.DispatcherPriority.Loaded);
+        toggle.Click += (_, _) => { expanded = !expanded; Update(); };
+        return new StackPanel { Children = { box, toggle } };
     }
 
     // The panel for the source in use; the model button shows the name (the id until the list has been fetched), the providers button the ticks.
