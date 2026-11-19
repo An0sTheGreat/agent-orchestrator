@@ -49,6 +49,8 @@ public partial class MainWindow
     private Button _imgRemoteModelButton = null!, _imgRemoteProvidersButton = null!;
     private (string Id, string Name) _imgRemoteModel = ("", "");
     private List<string> _imgRemoteProviders = [];
+    private readonly List<UIElement> _imgLocalOnly = []; // the controls only a local run reads (hidden in OpenRouter mode)
+    private static string ImageKeyEnv => RemoteCatalog.Services.First(x => x.Id == "openrouter").KeyEnv;
     internal Action<DialogShell>? _imgDialogTest; // --ui-smoke: gets the popup instead of showing it
 
     private string ImageModelsFolder => _settings.ImageModelsFolder.Length > 0 ? _settings.ImageModelsFolder : LauncherLogic.HubCache();
@@ -116,13 +118,13 @@ public partial class MainWindow
         left.Children.Add(new TextBlock { Text = "Images", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold });
         _imgRuntimeText = Muted("", 11.5);
         _imgRuntimeText.Margin = new Thickness(0, 6, 0, 4);
-        left.Children.Add(_imgRuntimeText);
         _imgRuntimeButton = new Button { Tag = "ImagesRuntime", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left };
         _imgRuntimeButton.Click += async (_, _) => await RunImageJob(InstallImageRuntimeAsync);
-        left.Children.Add(_imgRuntimeButton);
         _imgVramHint = Muted("Chat models are loaded and using VRAM; image generation may be slower or run out of memory.", 11.5);
         _imgVramHint.Margin = new Thickness(0, 6, 0, 0);
-        left.Children.Add(_imgVramHint);
+        var runtime = new StackPanel { Children = { _imgRuntimeText, _imgRuntimeButton, _imgVramHint } }; // one panel: hidden as a whole in OpenRouter mode
+        left.Children.Add(runtime);
+        _imgLocalOnly.Add(runtime);
 
         Label("Model");
         _imgRecipe = new ComboBox { Tag = "ImagesRecipe" };
@@ -152,7 +154,7 @@ public partial class MainWindow
             Visibility = Visibility.Collapsed,
             Children =
             {
-                Muted($"Runs on OpenRouter with the key in {RemoteCatalog.Services[0].KeyEnv}."), _imgRemoteModelButton, _imgRemoteProvidersButton,
+                Muted($"Runs on OpenRouter with the key in {ImageKeyEnv}."), _imgRemoteModelButton, _imgRemoteProvidersButton,
                 SourceButton("Switch to Local", "ImagesSwitchToLocal", () => { _imgRemoteMode = false; ShowImageSource(); }),
             },
         };
@@ -199,7 +201,9 @@ public partial class MainWindow
         _imgAspect.SelectionChanged += (_, _) => ShowImageSize();
         _imgLongSide.SelectionChanged += (_, _) => ShowImageSize();
         left.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { _imgAspect, _imgLongSide, _imgSizeText } });
+        _imgLocalOnly.Add(_imgSizeText); // OpenRouter is sent the aspect ratio only, not this size
 
+        var localFrom = left.Children.Count;
         Label("Steps");
         _imgSteps = NewSlider(1, 60, 1, "0", left);
         Label("Guidance");
@@ -207,10 +211,12 @@ public partial class MainWindow
         Label("Seed");
         _imgSeed = new TextBox { ToolTip = "Empty: a random seed (recorded with the picture)" };
         left.Children.Add(_imgSeed);
+        _imgLocalOnly.AddRange(left.Children.Cast<UIElement>().Skip(localFrom)); // Steps, Guidance, Seed with their labels
         Label("Images");
         _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 }, Width = 90, HorizontalAlignment = HorizontalAlignment.Left };
         left.Children.Add(_imgBatch);
 
+        var advancedHost = new StackPanel(); // the toggle and Advanced (Sampler, Low VRAM, start image): hidden as one in OpenRouter mode
         var advanced = new StackPanel { Visibility = Visibility.Collapsed };
         var toggle = new Button { Content = "▸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
         toggle.Click += (_, _) =>
@@ -219,8 +225,10 @@ public partial class MainWindow
             advanced.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
             toggle.Content = (show ? "▾" : "▸") + " Advanced";
         };
-        left.Children.Add(toggle);
-        left.Children.Add(advanced);
+        advancedHost.Children.Add(toggle);
+        advancedHost.Children.Add(advanced);
+        left.Children.Add(advancedHost);
+        _imgLocalOnly.Add(advancedHost);
         advanced.Children.Add(new TextBlock { Text = "Sampler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
         _imgSampler = new ComboBox { ItemsSource = ImageGen.Samplers.Prepend("Default").ToList() };
         advanced.Children.Add(_imgSampler);
@@ -397,13 +405,9 @@ public partial class MainWindow
         var local = _imgLocal.FindIndex(m => s.LocalModel.Length > 0 && string.Equals(m.Path, s.LocalModel, StringComparison.OrdinalIgnoreCase));
         var recipe = local >= 0 ? _imgLocal[local].Recipe : ImageGen.Recipe(s.RecipeId);
         _imgRemoteMode = s.RemoteModel.Length > 0;
-        if (_imgRemoteMode) // the local pick stays for the way back
-        {
-            recipe = ImageChoice(_imgRecipe.SelectedIndex).Recipe;
+        if (_imgRemoteMode)
             (_imgRemoteModel, _imgRemoteProviders) = ((s.RemoteModel, ""), s.RemoteProvider.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList());
-        }
-        else
-            _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe);
+        _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe); // the local pick is kept in OpenRouter mode too, for the way back
         ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
@@ -417,7 +421,6 @@ public partial class MainWindow
         _imgLowVram.IsChecked = s.LowVram;
         _imgStrength.Value = s.Strength;
         SetInitImage(s.InitImage);
-        _imgNegativeRow.Visibility = recipe.Negative ? Visibility.Visible : Visibility.Collapsed;
         _imgApplying = false;
         ShowImageSize();
     }
@@ -442,6 +445,9 @@ public partial class MainWindow
     {
         _imgLocalPanel.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
         _imgRemotePanel.Visibility = _imgRemoteMode ? Visibility.Visible : Visibility.Collapsed;
+        foreach (var control in _imgLocalOnly)
+            control.Visibility = _imgRemoteMode ? Visibility.Collapsed : Visibility.Visible;
+        _imgNegativeRow.Visibility = !_imgRemoteMode && _imgRecipe.SelectedIndex >= 0 && ImageChoice(_imgRecipe.SelectedIndex).Recipe.Negative ? Visibility.Visible : Visibility.Collapsed;
         _imgRemoteModelButton.Content = _imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id;
         _imgRemoteProvidersButton.Content = "Providers: " + (_imgRemoteProviders.Count == 0 ? "any" : string.Join(", ", _imgRemoteProviders));
     }
@@ -487,7 +493,7 @@ public partial class MainWindow
         {
             try
             {
-                var got = await RemoteCatalog.FetchImageModelsAsync(_remoteHttp, Environment.GetEnvironmentVariable(RemoteCatalog.Services[0].KeyEnv), CancellationToken.None);
+                var got = await RemoteCatalog.FetchImageModelsAsync(_remoteHttp, Environment.GetEnvironmentVariable(ImageKeyEnv), CancellationToken.None);
                 models = [.. got.Where(m => m.Id.Trim().Length > 0).Select(m => (m.Id.Trim(), m.Name.Trim().Length > 0 ? m.Name.Trim() : m.Id.Trim()))];
                 status.Text = $"{models.Count} image models";
                 Show();
@@ -531,8 +537,11 @@ public partial class MainWindow
         {
             try
             {
-                var rows = (await RemoteCatalog.FetchImageProvidersAsync(_remoteHttp, model, CancellationToken.None, Environment.GetEnvironmentVariable(RemoteCatalog.Services[0].KeyEnv))).Where(r => r.ProviderTag.Length > 0).ToList();
-                _imgRemoteProviders.RemoveAll(t => rows.All(r => r.ProviderTag != t)); // a provider gone since it was ticked
+                var rows = (await RemoteCatalog.FetchImageProvidersAsync(_remoteHttp, model, CancellationToken.None, Environment.GetEnvironmentVariable(ImageKeyEnv))).Where(r => r.ProviderTag.Length > 0).ToList();
+                if (model != _imgRemoteModel.Id.Trim())
+                    return; // another model was picked while this loaded: its ticks are not ours to clear
+                if (rows.Count > 0)
+                    _imgRemoteProviders.RemoveAll(t => rows.All(r => r.ProviderTag != t)); // a provider gone since it was ticked
                 status.Text = rows.Count == 0 ? $"No providers listed for {model}: OpenRouter chooses." : $"{rows.Count} providers · USD per image";
                 foreach (var r in rows)
                 {
@@ -831,7 +840,7 @@ public partial class MainWindow
             Toast("Choose an image model first", "#F7C873");
             return;
         }
-        if (s.InitImage.Length > 0 && !File.Exists(s.InitImage))
+        if (s.RemoteModel.Length == 0 && s.InitImage.Length > 0 && !File.Exists(s.InitImage))
             throw new FileNotFoundException($"The start image is gone: {s.InitImage}");
         _settings.ImageGen = s;
         _settings.Save();
@@ -850,7 +859,11 @@ public partial class MainWindow
         Directory.CreateDirectory(ImageGen.ImagesFolder);
         var (output, files) = ImageGen.OutputNames(ImageGen.ImagesFolder, DateTime.Now, run.Seed, run.Batch);
         if (s.RemoteModel.Length > 0)
+        {
+            // what OpenRouter never read is not recorded beside the pictures (the saved settings above keep it for the way back)
+            (run.Negative, run.Sampler, run.InitImage, run.Steps, run.Cfg, run.Strength) = ("", "", "", 0, 0, 0);
             await GenerateRemoteImageAsync(run, files, ct);
+        }
         else
         {
             var info = new ProcessStartInfo(ImageGen.CliPath)
@@ -932,11 +945,11 @@ public partial class MainWindow
         {
             if (written != final)
                 File.Move(written, final, overwrite: true);
-            run.Seed = seed;
+            run.Seed = run.RemoteModel.Length > 0 ? -1 : seed; // OpenRouter was not sent one: -1, random
             File.WriteAllText(Path.ChangeExtension(final, ".json"), JsonSerializer.Serialize(run, new JsonSerializerOptions { WriteIndented = true }));
             first ??= final;
         }
-        ImageStatus($"Done · seed {files[0].Seed}", 1);
+        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
         RefreshGallery();
         if (first is not null)
             ShowOnStage(first);
@@ -946,7 +959,7 @@ public partial class MainWindow
     // each returned picture is written to the next of files, so fewer pictures than asked for is fine.
     private async Task GenerateRemoteImageAsync(ImageSettings s, List<(string Written, string Final, long Seed)> files, CancellationToken ct)
     {
-        var keyEnv = RemoteCatalog.Services[0].KeyEnv;
+        var keyEnv = ImageKeyEnv;
         var key = Environment.GetEnvironmentVariable(keyEnv);
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException($"Missing API key for OpenRouter: set {keyEnv}");
