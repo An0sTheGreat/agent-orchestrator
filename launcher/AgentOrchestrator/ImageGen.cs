@@ -76,6 +76,12 @@ internal static class ImageGen
             new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
             new("--llm", "Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf", 2497281664, Local: @"^qwen3-?vl-4b.*\.gguf$"),
         ], Steps: 16, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?3"),
+        new("flux2-klein-4b", "FLUX.2 Klein 4B", "",
+        [
+            new("--diffusion-model", "leejet/FLUX.2-klein-4B-GGUF", "flux-2-klein-4b-Q4_0.gguf", 2460378560),
+            new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
+            new("--llm", "unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf", 2497281312, Local: @"^qwen3-4b-(?!instruct).*\.gguf$"),
+        ], Steps: 4, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?2[-_.]?klein[-_.]?(?:base[-_.]?)?4b"),
         new("qwen-image-2.1", "Qwen-Image 2.1", "Large",
         [
             new("--diffusion-model", "leejet/Qwen-Image-2.1-GGUF", "qwen_image_2.1-Q4_K.gguf", 4197494816),
@@ -211,7 +217,7 @@ internal static class ImageGen
                 throw new InvalidOperationException($"Image generation self-test: {what}");
         }
         var root = @"C:\m";
-        var z = Recipe("z-image-turbo");
+        var z =Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
@@ -236,14 +242,19 @@ internal static class ImageGen
         {
             foreach (var (rel, bytes) in new[] { (@"a\MOSS-Image-SFT-Q8_0.gguf", 3), (@"a\diffusion_models\MOSS\MOSS-Image-SFT-Q8_0.gguf", 3), (@"b\Qwen3.5-9B-Q8_0.gguf", 2),
                 (@"b\Qwen3.5-9B-mmproj-F16.gguf", 1), (@"c\gemma-4-E4B-it-Q4_K_M.gguf", 1), (@"d\Qwen-Image-2.1-text_encoder-INT8.safetensors", 1), (@"d\qwen-image-2.1-Q4_K_M.gguf", 1),
-                (@"e\Z-Image-Turbo-FP8.safetensors", 1), (@"e\notes.txt", 1) })
+                (@"e\Z-Image-Turbo-FP8.safetensors", 1), (@"e\notes.txt", 1), (@"f\flux-2-klein-4b-Q5_K_M.gguf", 1), (@"f\flux-2-klein-9b-Q4_0.gguf", 1),
+                (@"g\Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 1) })
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(folder, rel))!);
                 File.WriteAllBytes(Path.Combine(folder, rel), new byte[bytes]);
             }
             var (found, all) = ScanFolder(folder);
             Check(string.Join(",", found.Select(m => $"{m.Recipe.Id}={Path.GetFileName(m.Path)}")) ==
-                "z-image-turbo=Z-Image-Turbo-FP8.safetensors,qwen-image-2.1=qwen-image-2.1-Q4_K_M.gguf,moss-image-sft=MOSS-Image-SFT-Q8_0.gguf", "the folder's image models");
+                "z-image-turbo=Z-Image-Turbo-FP8.safetensors,flux2-klein-4b=flux-2-klein-4b-Q5_K_M.gguf,qwen-image-2.1=qwen-image-2.1-Q4_K_M.gguf,moss-image-sft=MOSS-Image-SFT-Q8_0.gguf", "the folder's image models");
+            var klein = found.First(m => m.Recipe.Id == "flux2-klein-4b");
+            var kleinPaths = Paths(klein.Recipe, klein.Path, all, root);
+            Check(kleinPaths[0] == klein.Path && kleinPaths[1] == LocalPath(root, klein.Recipe.Files[1]) && kleinPaths[2] == LocalPath(root, klein.Recipe.Files[2]),
+                "Klein: its own model, VAE and Qwen3-4B downloaded (the Instruct-2507 file is not its text encoder)");
             var moss = found[^1];
             var paths = Paths(moss.Recipe, moss.Path, all, root);
             Check(paths[0] == moss.Path && paths[2] == Path.Combine(folder, @"b\Qwen3.5-9B-Q8_0.gguf") && paths[1] == LocalPath(root, moss.Recipe.Files[1]) &&
