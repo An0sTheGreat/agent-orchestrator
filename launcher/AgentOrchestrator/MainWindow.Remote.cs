@@ -379,7 +379,9 @@ public partial class MainWindow
             SaveRemoteAccess(false);
             return;
         }
-        if (string.IsNullOrEmpty(_settings.RemotePasswordHash) || (!File.Exists(_tunnel.Exe) && !await DownloadCloudflared()))
+        if (string.IsNullOrEmpty(_settings.RemotePasswordHash) || (!File.Exists(_tunnel.Exe) && !await DownloadCloudflared(_tunnel.Exe,
+                percent => { (_remoteDownload, RemoteToggle.IsEnabled) = (percent, percent is null); RefreshRemote(); },
+                failure => { _remoteFailure = failure; Log($"Remote access: {failure}"); })))
         {
             SaveRemoteAccess(false); // the password line says why; a failed download, the state line
             return;
@@ -401,14 +403,14 @@ public partial class MainWindow
         RefreshRemote();
     }
 
-    // Asks, then downloads to a temporary name beside it (progress in the state line) and moves it into place when complete.
-    private async Task<bool> DownloadCloudflared()
+    // Asks, then downloads to a temporary name beside `exe` (progress: the percent, null when done) and moves it into place when
+    // complete and signed by Cloudflare. Remote access and Share models (MainWindow.Share.cs) both use it.
+    private async Task<bool> DownloadCloudflared(string exe, Action<int?> progress, Action<string> failed)
     {
         if (Choose("Download cloudflared?", "Download cloudflared (about 60 MB) from github.com/cloudflare/cloudflared?", ("Download", "download")) != "download")
             return false;
-        var temp = _tunnel.Exe + ".download";
-        (_remoteDownload, RemoteToggle.IsEnabled) = (0, false);
-        RefreshRemote();
+        var temp = exe + ".download";
+        progress(0);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(temp)!);
@@ -421,38 +423,34 @@ public partial class MainWindow
             {
                 var buffer = new byte[81920];
                 long done = 0;
+                var shown = 0;
                 for (int read; (read = await source.ReadAsync(buffer)) > 0;)
                 {
                     await file.WriteAsync(buffer.AsMemory(0, read));
                     done += read;
-                    if (total > 0 && (int)(done * 100 / total) != _remoteDownload)
-                    {
-                        _remoteDownload = (int)(done * 100 / total);
-                        RefreshRemote();
-                    }
+                    if (total > 0 && (int)(done * 100 / total) != shown)
+                        progress(shown = (int)(done * 100 / total));
                 }
             }
             if (!RemoteTunnel.SignedBy(temp, "Cloudflare"))
             {
                 File.Delete(temp);
-                _remoteFailure = "the download is not signed by Cloudflare";
-                Log($"Remote access: {_remoteFailure}");
+                failed("the download is not signed by Cloudflare");
                 return false;
             }
-            File.Move(temp, _tunnel.Exe, overwrite: true);
-            Log($"Remote access: downloaded cloudflared to {_tunnel.Exe}");
+            File.Move(temp, exe, overwrite: true);
+            Log($"Downloaded cloudflared to {exe}");
             return true;
         }
         catch (Exception x) when (x is HttpRequestException or IOException or TaskCanceledException or UnauthorizedAccessException)
         {
-            _remoteFailure = "could not download cloudflared: " + x.Message;
-            Log($"Remote access: {_remoteFailure}");
+            failed("could not download cloudflared: " + x.Message);
             try { File.Delete(temp); } catch (Exception y) when (y is IOException or UnauthorizedAccessException) { }
             return false;
         }
         finally
         {
-            (_remoteDownload, RemoteToggle.IsEnabled) = (null, true);
+            progress(null);
         }
     }
 

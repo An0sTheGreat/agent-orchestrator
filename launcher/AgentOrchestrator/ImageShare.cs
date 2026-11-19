@@ -9,15 +9,15 @@ using System.Text.Json;
 
 namespace AgentOrchestrator;
 
-// The image half of sharing this PC's models (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md): a
-// minimal HTTP/1.1 server on ModelShare.ImagePort (a raw TcpListener: HttpListener on a non-loopback address needs a URL ACL,
-// which needs admin). GET /images/models lists the recipes and the local image models; POST /images/generate runs one
-// (MainWindow.Share.cs). Every request needs the share key as a bearer token; one request per connection, then it closes.
+// The front door of sharing this PC's models (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md): a
+// minimal HTTP/1.1 server on 127.0.0.1:ModelShare.ImagePort, the Cloudflare tunnel's target. GET /images/models lists the
+// recipes and the local image models; POST /images/generate runs one (MainWindow.Share.cs); /v1/... is proxied to llama-server
+// on 127.0.0.1:<upstream>. Every request needs the share key as a bearer token; one request per connection, then it closes.
 internal static class ImageShare
 {
     public const int MaxBody = 1 << 20, MaxHead = 16 << 10;
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
-    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate";
+    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", ChatPrefix = "/v1/";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
@@ -34,6 +34,13 @@ internal static class ImageShare
     // The request line, the headers and a Content-Length body (chunked bodies are not read). HttpError: 400, 413 or 431.
     public static async Task<Request> ReadRequestAsync(Stream stream, CancellationToken ct)
     {
+        var (request, _, rest) = await ReadHeadAsync(stream, ct);
+        return await ReadBodyAsync(stream, request, rest, ct);
+    }
+
+    // The request (no body yet), its head's lines as sent (Latin-1: byte for byte), and the bytes read past the head.
+    public static async Task<(Request Request, string[] Lines, byte[] Remainder)> ReadHeadAsync(Stream stream, CancellationToken ct)
+    {
         var buffer = new byte[MaxHead];
         int filled = 0, end;
         while ((end = buffer.AsSpan(0, filled).IndexOf("\r\n\r\n"u8)) < 0)
@@ -45,7 +52,7 @@ internal static class ImageShare
                 throw new HttpError(400, "Incomplete request");
             filled += read;
         }
-        var lines = Encoding.ASCII.GetString(buffer, 0, end).Split("\r\n");
+        var lines = Encoding.Latin1.GetString(buffer, 0, end).Split("\r\n");
         var first = lines[0].Split(' ');
         if (first.Length != 3 || !first[2].StartsWith("HTTP/1.", StringComparison.Ordinal) || !first[1].StartsWith('/'))
             throw new HttpError(400, "Bad request line");
@@ -57,27 +64,63 @@ internal static class ImageShare
                 throw new HttpError(400, "Bad header");
             headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
         }
+        return (new(first[0], first[1].Split('?')[0], headers, []), lines, buffer[(end + 4)..filled]);
+    }
+
+    public static async Task<Request> ReadBodyAsync(Stream stream, Request request, byte[] rest, CancellationToken ct)
+    {
         long length = 0;
-        if (headers.TryGetValue("Content-Length", out var text) && !long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out length))
+        if (request.Headers.TryGetValue("Content-Length", out var text) && !long.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out length))
             throw new HttpError(400, "Bad Content-Length");
         if (length > MaxBody)
             throw new HttpError(413, $"The body is over {MaxBody} bytes");
         var body = new byte[length];
-        var have = (int)Math.Min(filled - end - 4, length);
-        buffer.AsSpan(end + 4, have).CopyTo(body);
+        var have = (int)Math.Min(rest.Length, length);
+        rest.AsSpan(0, have).CopyTo(body);
         try { await stream.ReadExactlyAsync(body.AsMemory(have), ct); }
         catch (EndOfStreamException) { throw new HttpError(400, "The body is shorter than its Content-Length"); }
-        return new(first[0], first[1].Split('?')[0], headers, body);
+        return request with { Body = body };
     }
 
     // 401 without the key (checked first, so the paths stay hidden), 404 for an unknown path, 405 for the wrong method; null = go on.
     public static Response? Check(Request request, string key)
     {
+        if (Unauthorized(request, key) is { } refused)
+            return refused;
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", _ => null };
+        return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
+    }
+
+    // 401 unless the bearer token is the key (constant-time compare); null = go on.
+    public static Response? Unauthorized(Request request, string key)
+    {
         var given = request.Headers.GetValueOrDefault("Authorization") is { } auth && auth.StartsWith("Bearer ", StringComparison.Ordinal) ? auth[7..].Trim() : "";
         if (key.Length == 0 || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(given), Encoding.UTF8.GetBytes(key)))
             return Error(401, "Wrong or missing share key");
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", _ => null };
-        return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
+        return null;
+    }
+
+    // A /v1/ request to llama-server on 127.0.0.1:upstream: its head as sent (Connection: close in place of the client's), then
+    // whatever the client sends, unchanged; llama-server's reply goes back as it arrives (SSE streaming) until it closes the
+    // connection. 502 when llama-server is not listening (it is restarting); null = answered.
+    public static async Task<Response?> ProxyAsync(Stream client, string[] lines, byte[] rest, int upstream, CancellationToken ct)
+    {
+        using var tcp = new TcpClient();
+        try { await tcp.ConnectAsync(IPAddress.Loopback, upstream, ct); }
+        catch (SocketException) { return Error(502, "llama-server is not running on the primary PC (it restarts by itself): try again shortly"); }
+        var server = tcp.GetStream();
+        var head = string.Join("\r\n", lines.Where((line, i) => i == 0 || !line[..line.IndexOf(':')].Trim().Equals("Connection", StringComparison.OrdinalIgnoreCase)));
+        await server.WriteAsync(Encoding.Latin1.GetBytes(head + "\r\nConnection: close\r\n\r\n"), ct);
+        await server.WriteAsync(rest, ct);
+        _ = Upload();
+        await server.CopyToAsync(client, ct);
+        return null;
+
+        async Task Upload() // the rest of the body; it ends with an error when the connection closes
+        {
+            try { await client.CopyToAsync(server, ct); }
+            catch (Exception x) when (x is OperationCanceledException or IOException or SocketException or ObjectDisposedException) { }
+        }
     }
 
     public static Response Error(int status, string message) => new(status, JsonSerializer.Serialize(new ErrorReply(message), Web));
@@ -87,7 +130,7 @@ internal static class ImageShare
         var reason = response.Status switch
         {
             200 => "OK", 400 => "Bad Request", 401 => "Unauthorized", 404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict",
-            413 => "Content Too Large", 431 => "Request Header Fields Too Large", 503 => "Service Unavailable", _ => "Internal Server Error",
+            413 => "Content Too Large", 431 => "Request Header Fields Too Large", 502 => "Bad Gateway", 503 => "Service Unavailable", _ => "Internal Server Error",
         };
         var body = Encoding.UTF8.GetBytes(response.Json);
         var head = $"HTTP/1.1 {response.Status} {reason}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n";
@@ -135,15 +178,20 @@ internal static class ImageShare
         return string.IsNullOrEmpty(message) ? $"The primary PC returned {status}" : "The primary PC: " + message;
     }
 
-    // ponytail: a task per connection, no cap; the server is on the Tailscale address only, add a cap if that ever widens.
+    // ponytail: a task per connection, no cap; a request without the key is dropped after ReadTimeout or answered 401 at once.
+    // Add a cap if the tunnel address leaking ever becomes a load problem.
     public sealed class Server : IDisposable
     {
         private readonly TcpListener _listener;
         private readonly CancellationTokenSource _stop = new();
         public int Port { get; }
 
-        public Server(IPAddress ip, int port, Func<string> key, Func<Request, CancellationToken, Task<Response>> handle)
+        private readonly int _upstream;
+
+        // upstream: llama-server's port on 127.0.0.1, for /v1/.
+        public Server(IPAddress ip, int port, int upstream, Func<string> key, Func<Request, CancellationToken, Task<Response>> handle)
         {
+            _upstream = upstream;
             _listener = new TcpListener(ip, port);
             _listener.Start();
             Port = ((IPEndPoint)_listener.LocalEndpoint).Port;
@@ -168,16 +216,24 @@ internal static class ImageShare
             using (client)
             {
                 var stream = client.GetStream();
-                Response response;
+                Response? response;
                 try
                 {
                     Request request;
+                    string[] lines;
+                    byte[] rest;
                     using (var read = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token))
                     {
                         read.CancelAfter(ReadTimeout); // a stalled client is dropped
-                        request = await ReadRequestAsync(stream, read.Token);
+                        (request, lines, rest) = await ReadHeadAsync(stream, read.Token);
+                        if (!request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal))
+                            request = await ReadBodyAsync(stream, request, rest, read.Token);
                     }
-                    response = Check(request, key()) ?? await handle(request, _stop.Token);
+                    response = request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal)
+                        ? Unauthorized(request, key()) ?? await ProxyAsync(stream, lines, rest, _upstream, _stop.Token)
+                        : Check(request, key()) ?? await handle(request, _stop.Token);
+                    if (response is null)
+                        return;
                 }
                 catch (HttpError x) { response = Error(x.Status, x.Message); }
                 catch (Exception x) when (x is OperationCanceledException or IOException or SocketException or ObjectDisposedException) { return; }
@@ -250,12 +306,52 @@ internal static class ImageShare
             "a request runs only the resolved model, with no start image and clamped numbers");
 
         // the server over loopback: the key gates it, the handler answers
-        using var server = new Server(IPAddress.Loopback, 0, () => "k", (r, _) => Task.FromResult(new Response(200, ModelsJson([models[0]]))));
+        using var upstream = new TcpListener(IPAddress.Loopback, 0);
+        upstream.Start();
+        var upstreamPort = ((IPEndPoint)upstream.LocalEndpoint).Port;
+        using var server = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", (r, _) => Task.FromResult(new Response(200, ModelsJson([models[0]]))));
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var url = $"http://127.0.0.1:{server.Port}{ModelsPath}";
         Assert((int)http.GetAsync(url).GetAwaiter().GetResult().StatusCode == 401, "the server refuses a request without the key");
         using var get = new HttpRequestMessage(HttpMethod.Get, url) { Headers = { Authorization = new("Bearer", "k") } };
         using var ok = http.SendAsync(get).GetAwaiter().GetResult();
         Assert((int)ok.StatusCode == 200 && ParseModels(ok.Content.ReadAsStringAsync().GetAwaiter().GetResult()) is [{ Id: "z-image-turbo" }], "the server answers with the key");
+
+        // /v1/ through the proxy: 401 without the key (llama-server never asked); with it the request arrives unchanged but for
+        // Connection: close, and the reply streams: the client reads the first chunk before the fake llama-server sends the second.
+        Assert((int)http.GetAsync($"http://127.0.0.1:{server.Port}/v1/models").GetAwaiter().GetResult().StatusCode == 401, "the proxy refuses a request without the key");
+        const string sent = "{\"stream\":true}";
+        var gotFirst = new TaskCompletionSource();
+        var fake = Task.Run(async () =>
+        {
+            using var llama = await upstream.AcceptTcpClientAsync();
+            var s = llama.GetStream();
+            var head = new MemoryStream();
+            var buffer = new byte[4096];
+            while (!Encoding.Latin1.GetString(head.ToArray()).EndsWith(sent))
+                head.Write(buffer, 0, await s.ReadAsync(buffer) is > 0 and var n ? n : throw new IOException("the request ended early"));
+            await s.WriteAsync("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: one\n\n"u8.ToArray());
+            var streamed = await Task.WhenAny(gotFirst.Task, Task.Delay(5000)) == gotFirst.Task;
+            await s.WriteAsync("data: two\n\n"u8.ToArray());
+            return (Encoding.Latin1.GetString(head.ToArray()), streamed);
+        });
+        using var chat = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{server.Port}/v1/chat/completions?x=1")
+            { Headers = { Authorization = new("Bearer", "k"), Connection = { "keep-alive" } }, Content = new StringContent(sent) };
+        using var answer = http.SendAsync(chat, HttpCompletionOption.ResponseHeadersRead).GetAwaiter().GetResult();
+        using var body = answer.Content.ReadAsStream();
+        var got = "";
+        var chunk = new byte[4096];
+        for (int n; !got.Contains("two") && (n = body.Read(chunk)) > 0;)
+        {
+            got += Encoding.UTF8.GetString(chunk, 0, n);
+            if (got.Contains("data: one"))
+                gotFirst.TrySetResult();
+        }
+        var (forwarded, streamedFirst) = fake.GetAwaiter().GetResult();
+        Assert((int)answer.StatusCode == 200 && got == "data: one\n\ndata: two\n\n", $"the proxied reply: {got}");
+        Assert(forwarded.StartsWith("POST /v1/chat/completions?x=1 HTTP/1.1\r\n") && forwarded.Contains("\r\nAuthorization: Bearer k\r\n") &&
+            forwarded.Contains("\r\nConnection: close\r\n") && !forwarded.Contains("keep-alive", StringComparison.OrdinalIgnoreCase) && forwarded.EndsWith("\r\n\r\n" + sent),
+            $"the forwarded request: {forwarded}");
+        Assert(streamedFirst, "the proxy streams: the first chunk reached the client before the second was sent");
     }
 }

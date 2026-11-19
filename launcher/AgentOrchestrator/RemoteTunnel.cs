@@ -11,13 +11,14 @@ namespace AgentOrchestrator;
 // The Cloudflare quick tunnel (docs/remote-access.md): cloudflared forwards a random https://*.trycloudflare.com address
 // to RemoteServer on 127.0.0.1. Online once its output names the address; when it exits while on, it restarts after a
 // backoff (5 s doubling to 1 min). Stop kills it by its own pid with its tree, never by name. Its pid is kept in a file
-// so a cloudflared left by an app instance that crashed is killed on the next start (only if that pid is cloudflared).
-internal sealed partial class RemoteTunnel(string exe)
+// so a cloudflared left by an app instance that crashed is killed on the next start (only if that pid is cloudflared); each
+// tunnel has its own file in the tools folder (Remote access and Share models run side by side).
+internal sealed partial class RemoteTunnel(string exe, string pidName = "cloudflared.pid")
 {
     internal enum Status { Off, Starting, Online, Failed }
 
     internal static string DefaultExe => Path.Combine(AppSettings.DataRoot, "tools", "cloudflared.exe");
-    private static string PidFile => Path.Combine(AppSettings.DataRoot, "tools", "cloudflared.pid");
+    private string PidFile => Path.Combine(AppSettings.DataRoot, "tools", pidName);
 
     internal string Exe => exe; // --ui-smoke points a tunnel at a fake cloudflared
     internal Status State { get; private set; }
@@ -163,7 +164,7 @@ internal sealed partial class RemoteTunnel(string exe)
         return true;
     }
 
-    private static void KillLeftover()
+    private void KillLeftover()
     {
         try
         {
