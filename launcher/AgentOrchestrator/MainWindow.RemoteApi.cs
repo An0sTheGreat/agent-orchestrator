@@ -2039,6 +2039,7 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
     private const string ImagePrices = "{\"data\":[{\"id\":\"acme/img-one\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image\":\"0.008\"}}," +
         "{\"id\":\"acme/img-two\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\",\"image_output\":\"0.00001\"}},{\"id\":\"acme/img-three\",\"pricing\":{\"prompt\":\"0\",\"completion\":\"0\"}},{\"pricing\":{\"image\":\"1\"}}]}";
     public bool ImagePricesDown; // the price lookup answers 500 (the model list must still work)
+    public TaskCompletionSource? ImagePricesHold; // the price lookup waits until this is completed (the model list must not)
 
     // OpenRouter's /{model}/providers page, reduced to the data policies it embeds: Relace private, GMICloud logs, OpenInference trains.
     private const string PrivacyPage =
@@ -2065,6 +2066,8 @@ internal sealed class RemoteApiFakeHandler : HttpMessageHandler
         }
         var endpoints = Endpoints[..^3] + string.Concat(Enumerable.Range(1, ExtraProviders).Select(i => $",{{\"provider_name\":\"Extra {i}\",\"tag\":\"extra/{i}\",\"quantization\":\"fp8\"," +
             $"\"context_length\":131072,\"pricing\":{{\"prompt\":\"0.000001\",\"completion\":\"0.000002\"}},\"uptime_last_30m\":90}}")) + "]}}";
+        if (Body is null && url.Contains("/models?output_modalities=image", StringComparison.Ordinal) && ImagePricesHold is { } hold)
+            await hold.Task;
         if (Body is null && url.Contains("/models?output_modalities=image", StringComparison.Ordinal))
             return ImagePricesDown ? new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("") } : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ImagePrices) };
         var body = Body ?? (url.Contains("/images/models",StringComparison.Ordinal) ? (url.EndsWith("/endpoints", StringComparison.Ordinal) ? ImageEndpoints : ImageModels) : url.EndsWith("/providers", StringComparison.Ordinal) && !url.Contains("/api/", StringComparison.Ordinal) ? PrivacyPage : url.EndsWith("/endpoints", StringComparison.Ordinal) ? endpoints : url.EndsWith("/models", StringComparison.Ordinal) ? (PricedModels ? Models[..^2] + Priced + "]}" : Models) : null);

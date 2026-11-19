@@ -184,7 +184,7 @@ public partial class MainWindow
         Label("Prompt");
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         left.Children.Add(AttachPromptFade(_imgPrompt, 150, "ImagesPromptToggle"));
-        _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 44 };
+        _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 44, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         _imgNegativeRow = new StackPanel
         {
             Tag = "ImagesNegative",
@@ -449,6 +449,11 @@ public partial class MainWindow
         var toggle = new Button { Tag = toggleTag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(8, 1, 8, 1), FontSize = 11.5, Margin = new Thickness(0, 4, 0, 0),
             HorizontalAlignment = HorizontalAlignment.Left, Focusable = false, Visibility = Visibility.Collapsed };
         var (expanded, tall) = (false, false);
+        var fade = Math.Min(FadeHeight, collapsedMax / 2) / collapsedMax;
+        var fadeMask = new LinearGradientBrush(new GradientStopCollection
+        {
+            new GradientStop(Colors.Black, 0), new GradientStop(Colors.Black, 1 - fade), new GradientStop(Color.FromArgb(0x10, 0, 0, 0), 1),
+        }, new Point(0, 0), new Point(0, 1));
         void Update()
         {
             if (!box.IsVisible || box.ViewportHeight <= 0)
@@ -461,17 +466,13 @@ public partial class MainWindow
             box.MaxHeight = expanded ? ExpandedMax : collapsedMax;
             toggle.Visibility = tall ? Visibility.Visible : Visibility.Collapsed;
             toggle.Content = expanded ? "Show less ▴" : "Show more ▾";
-            if (!tall || expanded)
-            {
-                box.OpacityMask = null;
-                return;
-            }
-            var fade = Math.Min(FadeHeight, collapsedMax / 2) / collapsedMax;
-            box.OpacityMask = new LinearGradientBrush(new GradientStopCollection
-            {
-                new GradientStop(Colors.Black, 0), new GradientStop(Colors.Black, 1 - fade), new GradientStop(Color.FromArgb(0x10, 0, 0, 0), 1),
-            }, new Point(0, 0), new Point(0, 1));
+            // nothing below to hint at once the end of the text is in view: the line being typed must not sit in the fade
+            var atEnd = box.VerticalOffset + box.ViewportHeight >= box.ExtentHeight - 1;
+            var mask = !tall || expanded || atEnd ? null : fadeMask;
+            if (!ReferenceEquals(box.OpacityMask, mask))
+                box.OpacityMask = mask;
         }
+        box.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => Update()));
         box.MaxHeight = collapsedMax;
         box.TextChanged += (_, _) => box.Dispatcher.BeginInvoke(Update, System.Windows.Threading.DispatcherPriority.Loaded);
         box.SizeChanged += (_, _) => Update();
@@ -519,10 +520,11 @@ public partial class MainWindow
         var filter = new TextBox { Tag = "ImagesModelFilter", Margin = new Thickness(0, 0, 0, 8) };
         var status = RemoteMuted("Loading models…");
         var list = new StackPanel();
+        var scroll = new ScrollViewer { Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         var card = new Border
         {
             BorderThickness = new Thickness(1), Padding = new Thickness(8), MinWidth = 420, Width = Math.Max(_imgRemoteModelButton.ActualWidth, 420),
-            Child = new StackPanel { Children = { filter, status, new ScrollViewer { Content = list, MaxHeight = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } } },
+            Child = new StackPanel { Children = { filter, status, scroll } },
         };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
         card.SetResourceReference(Border.BorderBrushProperty, "Border");
@@ -534,11 +536,18 @@ public partial class MainWindow
             popup.IsOpen = false;
         }
         popup.Opened += (_, _) => filter.Focus();
-        void OnGone(object sender, RoutedEventArgs e) => popup.IsOpen = false; // the page left the screen
+        void OnGone(object sender, DependencyPropertyChangedEventArgs e) // the page was switched away from (collapsed, not unloaded)
+        {
+            if (!_imgRemoteModelButton.IsVisible)
+                popup.IsOpen = false;
+        }
         popup.Closed += (_, _) =>
         {
             PreviewMouseDown -= OnPress;
-            _imgRemoteModelButton.Unloaded -= OnGone;
+            _imgRemoteModelButton.IsVisibleChanged -= OnGone;
+            // closed by WPF itself with the button held down (our own press handler was not the one): its release must not reopen it
+            if (Mouse.LeftButton == MouseButtonState.Pressed)
+                _imgModelPressClosedAt = DateTime.UtcNow;
         };
         card.PreviewKeyDown += (_, e) =>
         {
@@ -583,14 +592,16 @@ public partial class MainWindow
             {
                 var key = Environment.GetEnvironmentVariable(ImageKeyEnv);
                 var priced = RemoteCatalog.FetchImagePricesAsync(_remoteHttp, key, CancellationToken.None);
-                var listed = RemoteCatalog.FetchImageModelsAsync(_remoteHttp, key, CancellationToken.None);
-                try { await Task.WhenAll(priced, listed); }
-                catch when (priced.IsFaulted && !listed.IsFaulted) { } // prices are a nicety: the list still works
-                var got = await listed;
-                prices = priced.IsCompletedSuccessfully ? priced.Result : [];
+                var got = await RemoteCatalog.FetchImageModelsAsync(_remoteHttp, key, CancellationToken.None); // the list never waits for the prices
                 models = [.. got.Where(m => m.Id.Trim().Length > 0).Select(m => (m.Id.Trim(), m.Name.Trim().Length > 0 ? m.Name.Trim() : m.Id.Trim()))];
                 status.Text = $"{models.Count} image models";
                 Show();
+                try { prices = await priced; }
+                catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException) { return; } // prices are a nicety: the dashes stay
+                var at = scroll.VerticalOffset;
+                Show(); // the same rows, now priced (the filter text and focus are untouched)
+                scroll.UpdateLayout();
+                scroll.ScrollToVerticalOffset(at);
             }
             catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException)
             {
@@ -598,7 +609,7 @@ public partial class MainWindow
             }
         }
         filter.TextChanged += (_, _) => Show();
-        _imgRemoteModelButton.Unloaded += OnGone;
+        _imgRemoteModelButton.IsVisibleChanged += OnGone;
         Load();
         popup.IsOpen = true;
         if (popup.IsOpen)

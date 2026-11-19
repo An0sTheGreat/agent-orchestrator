@@ -2936,6 +2936,14 @@ public partial class MainWindow : Window
                         await Settle();
                         if (!toggle.IsVisible || toggle.Content as string != "Show more ▾" || box.ActualHeight > max + 0.5 || !(box.ExtentHeight > box.ViewportHeight) || box.OpacityMask is null)
                             return false;
+                        box.ScrollToEnd(); // at the end of the text nothing is below: no fade over the line being typed
+                        await Settle();
+                        if (box.OpacityMask is not null)
+                            return false;
+                        box.ScrollToHome();
+                        await Settle();
+                        if (box.OpacityMask is null)
+                            return false;
                         var line = box.ExtentHeight / 40;
                         var fitLines = (int)Math.Floor((max - (box.ActualHeight - box.ViewportHeight)) / line);
                         SmokeClick(toggle);
@@ -3034,6 +3042,20 @@ public partial class MainWindow : Window
                     if (modelPopup.IsOpen)
                         return Fail();
                     await Task.Delay(450);
+                    // a price lookup that hangs must not hold the list back: rows with dashes first, the prices when they arrive, the filter kept
+                    imgFake.ImagePricesHold = new TaskCompletionSource();
+                    SmokeClick(modelButton);
+                    if (!await ModelHas("imgmodel:acme/img-one") || ModelPrice("acme/img-one") != "—")
+                        return Fail();
+                    ((TextBox)ModelFind("ImagesModelFilter")!).Text = "one";
+                    imgFake.ImagePricesHold.SetResult();
+                    for (var i = 0; i < 100 && ModelFind("imgmodel:acme/img-one") is not null &&ModelPrice("acme/img-one") == "—"; i++)
+                        await Task.Delay(20);
+                    if (ModelPrice("acme/img-one") != "$0.008 / image" || ModelFind("imgmodel:acme/img-two") is not null)
+                        return Fail();
+                    imgFake.ImagePricesHold = null;
+                    PressElsewhere();
+                    await Task.Delay(450);
                     SmokeClick(modelButton);
                     if (!await ModelHas("imgmodel:acme/img-two"))
                         return Fail();
@@ -3042,6 +3064,13 @@ public partial class MainWindow : Window
                         return Fail();
                     SmokeClick(modelButton); // reopening straight after a pick works
                     if (!await ModelHas("imgmodel:acme/img-one"))
+                        return Fail();
+                    ImagesView.Visibility = Visibility.Collapsed; // the page is switched away from: the open dropdown goes with it
+                    await Settle();
+                    var floating = _imgModelPopupTest.IsOpen;
+                    ImagesView.Visibility = Visibility.Visible;
+                    await Settle();
+                    if (floating)
                         return Fail();
                     _imgModelPopupTest.IsOpen = false;
                     SmokeClick(providersButton);
