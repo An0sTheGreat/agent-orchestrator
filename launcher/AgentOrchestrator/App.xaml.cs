@@ -86,15 +86,15 @@ public partial class App : Application
             return;
         }
 
-        // --image-share-loopback <port>: the window off-screen and behind, with the image share server on 127.0.0.1:<port> (a live
-        // test of MainWindow.Share.cs; the key is AO_SHARE_OWN_KEY). It runs until its process is stopped.
+        // --image-share-loopback <port> [ip]: the window off-screen and behind, with the image share server on 127.0.0.1:<port>, or
+        // on <ip> (a Tailscale address) (a live test of MainWindow.Share.cs; the key is AO_SHARE_OWN_KEY). It runs until its process is stopped.
         if (Array.FindIndex(e.Args, a => a.Equals("--image-share-loopback", StringComparison.OrdinalIgnoreCase)) is var share and >= 0 && share + 1 < e.Args.Length &&
             int.TryParse(e.Args[share + 1], out var port))
         {
             var window = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false };
             window.Show();
             KeepBehind();
-            window.StartImageShare(System.Net.IPAddress.Loopback, port);
+            window.StartImageShare(share + 2 < e.Args.Length ? System.Net.IPAddress.Parse(e.Args[share + 2]) : System.Net.IPAddress.Loopback, port);
             return;
         }
 

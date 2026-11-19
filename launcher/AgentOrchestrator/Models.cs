@@ -321,7 +321,9 @@ internal sealed class AppSettings
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
     // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models through a
     // Cloudflare quick tunnel. ShareHost: on the other PC, the primary PC's tunnel host while connected ("" = not). Keys: ApiKeys.
+    // ShareNetwork: the user's pick, ModelShare.Tailscale or .Cloudflare ("" = not picked: ModelShare.Network decides on start).
     public bool ShareModels { get; set; }
+    public string ShareNetwork { get; set; } = "";
     public string ShareHost { get; set; } = "";
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
