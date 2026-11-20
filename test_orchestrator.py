@@ -227,11 +227,13 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
     def test_a_router_models_context_size_is_read_from_its_command_line(self):
-        listed = {"data": [{"id": "big", "status": {"value": "loaded", "args": ["llama-server", "--ctx-size", "65536", "--n-cpu-moe", "40"]}},
+        listed = {"data": [{"id": "big", "context_length": 262144, "status": {"value": "loaded", "args": ["llama-server", "--ctx-size", "65536", "--n-cpu-moe", "40"]}},
+                           {"id": "live", "context_length": 262144, "meta": {"n_ctx": 49152}, "status": {"args": ["llama-server"]}},
                            {"id": "plain", "status": {"value": "unloaded", "args": ["llama-server", "--model", "x.gguf"]}},
                            {"id": "api", "context_length": 32768}]}
         request_at = lambda *_: listed
-        self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "big"), 65536)
+        self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "big"), 65536)  # not the trained 262144
+        self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "live"), 49152)  # the loaded n_ctx wins
         self.assertIsNone(orchestrator.remote_context(request_at, "http://h/v1", "plain"))  # the server's own default: unknown
         self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "api"), 32768)
 

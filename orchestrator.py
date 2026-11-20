@@ -742,14 +742,18 @@ def remote_context(request_at: Any, base_url: str, model: str) -> int | None:
         return None
     for entry in listed:
         if isinstance(entry, dict) and entry.get("id") == model:
-            for name in ("context_length", "max_model_len", "context_window"):
-                if isinstance(entry.get(name), int) and entry[name] > 0:
-                    return entry[name]
-            # a llama-server router (a primary PC's shared models) lists each model's own command line instead
+            # a llama-server router (a primary PC's shared models) gives context_length as the model's trained maximum;
+            # the context it is loaded with is meta.n_ctx (while loaded) or --ctx-size in its command line (status.args)
+            meta = entry.get("meta") if isinstance(entry.get("meta"), dict) else {}
+            if isinstance(meta.get("n_ctx"), int) and meta["n_ctx"] > 0:
+                return meta["n_ctx"]
             args = [str(a) for a in ((entry.get("status") or {}).get("args") or [])] if isinstance(entry.get("status"), dict) else []
             for flag in ("--ctx-size", "-c"):
                 if flag in args and args.index(flag) + 1 < len(args) and args[args.index(flag) + 1].isdigit() and int(args[args.index(flag) + 1]) > 0:
                     return int(args[args.index(flag) + 1])
+            for name in ("context_length", "max_model_len", "context_window"):
+                if isinstance(entry.get(name), int) and entry[name] > 0:
+                    return entry[name]
     return None
 LOADED_NOW: dict[Any, str] = {}  # llama port -> the model path this process last ensured there
 THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)

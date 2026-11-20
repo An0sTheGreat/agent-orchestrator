@@ -130,7 +130,12 @@ internal static class RemoteCatalog
                 continue;
             if (id.StartsWith("models/", StringComparison.Ordinal)) // Gemini
                 id = id["models/".Length..];
-            var context = m["context_length"] ?? m["context_window"] ?? m["max_model_len"] ?? (m["metadata"] as JsonObject)?["context_length"]; // the last: DeepInfra
+            // A llama-server router (a primary PC's shared models) gives context_length as the model's trained maximum: the
+            // context it is loaded with is meta.n_ctx (loaded) or --ctx-size in its command line (status.args)
+            var args = ((m["status"] as JsonObject)?["args"] as JsonArray)?.Select(a => a?.ToString() ?? "").ToList() ?? [];
+            var ctxAt = args.FindIndex(a => a is "--ctx-size" or "-c");
+            JsonNode? loadedCtx = (m["meta"] as JsonObject)?["n_ctx"] ?? (ctxAt >= 0 && ctxAt + 1 < args.Count && long.TryParse(args[ctxAt + 1], out var c) && c > 0 ? JsonValue.Create((double)c) : null);
+            var context = loadedCtx ?? m["context_length"] ?? m["context_window"] ?? m["max_model_len"] ?? (m["metadata"] as JsonObject)?["context_length"]; // the last: DeepInfra
             var pricing = m["pricing"] as JsonObject;
             models.Add(new ModelEntry(id, Str(m["name"]) is { Length: > 0 } name ? name : id, (long)(Num(context) ?? 0),
                 PerMillion(pricing?["prompt"]), PerMillion(pricing?["completion"])));
@@ -327,6 +332,9 @@ internal static class RemoteCatalog
         Check(openAi.Select(m => m.Id).SequenceEqual(["Alpha/b", "ByteDance/Seed-2.0-pro", "c", "tencent/hy4"]), "OpenAI-style ids or order");
         Check(openAi[3] == new ModelEntry("tencent/hy4", "Tencent: Hy4", 262144) && openAi[0] == new ModelEntry("Alpha/b", "Alpha/b", 8192) &&
             openAi[2].ContextLength == 32768 && openAi[1].ContextLength == 256000, "OpenAI-style names or context lengths");
+        var router = ParseModels("{\"data\":[{\"id\":\"loaded\",\"context_length\":262144,\"meta\":{\"n_ctx\":65536},\"status\":{\"args\":[\"x\",\"--ctx-size\",\"65536\"]}}," +
+            "{\"id\":\"unloaded\",\"context_length\":262144,\"status\":{\"args\":[\"x\",\"--ctx-size\",\"32768\"]}},{\"id\":\"plain\",\"context_length\":262144,\"status\":{\"args\":[\"x\"]}}]}");
+        Check(router.Select(m => m.ContextLength).SequenceEqual([65536L, 262144L, 32768L]), $"router context: {string.Join(",", router.Select(m => $"{m.Id}={m.ContextLength}"))}");
         var bare = ParseModels("[{\"id\":\"meta-llama/Llama-3.3-70B-Instruct-Turbo\",\"display_name\":\"Llama\",\"context_length\":131072},{\"id\":\"\"}]");
         Check(bare is [{ Id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", ContextLength: 131072 }], "bare array");
         var gemini = ParseModels("{\"object\":\"list\",\"data\":[{\"id\":\"models/gemini-2.0-flash\",\"object\":\"model\",\"owned_by\":\"google\"}]}");
