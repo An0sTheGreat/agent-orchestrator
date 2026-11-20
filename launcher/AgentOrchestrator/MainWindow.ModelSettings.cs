@@ -218,6 +218,12 @@ public partial class MainWindow
         (long Model, long Vision) files = (0, 0);
         var toLocal = false; // Switch to Local, until a Save writes it
         var remoteMode = () => remoteNow is not null && !toLocal;
+        // A worker on the primary PC's shared model: its load options live there, read once the page is built (GET /share/load)
+        // and the changed ones posted on Save (POST /share/load). primaryLoad: as read or last saved; null until read, and while
+        // null the load rows stay hidden as for any remote worker. The quantization is the primary PC's file, so not offered.
+        var onPrimary = remoteNow is not null && _settings.ShareHost is { Length: > 0 } && remoteNow.BaseUrl.Trim().TrimEnd('/') == ModelShare.ChatUrl(_settings.ShareHost);
+        Dictionary<string, string>? primaryLoad = null;
+        var primaryKeys = ModelOptions.All.Where(o => o.Target == "auto_load" && o.Key != "gguf_variant").Select(o => o.Key).ToList();
         Dictionary<string, string> Base() => remoteMode() ? new() : ModelOptions.Defaults(meta, hasModel, inherited);
         var shownAtStart = ModelOptions.Prefill(current, Base());
         var auto = ModelOptions.All.Where(o => current.GetValueOrDefault(o.Key, "").Trim().Length == 0).ToDictionary(o => o.Key, o => shownAtStart[o.Key]);
@@ -578,6 +584,8 @@ public partial class MainWindow
         }
         var switchLocal = SourceButton("Switch to Local", "SwitchToLocal", () => { });
         var remotePanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        var primaryNote = Muted("Reading the load options from the primary PC…");
+        primaryNote.Margin = new Thickness(0, 6, 0, 0);
         if (remoteNow is not null)
         {
             var summary = new TextBlock { Text = RemoteSummary(remoteNow), Tag = "RemoteSummary", FontSize = 12, TextWrapping = TextWrapping.Wrap };
@@ -585,6 +593,8 @@ public partial class MainWindow
             hint.Margin = new Thickness(0, 2, 0, 0);
             remotePanel.Children.Add(summary);
             remotePanel.Children.Add(hint);
+            if (onPrimary)
+                remotePanel.Children.Add(primaryNote);
             remotePanel.Children.Add(new WrapPanel
             {
                 Margin = new Thickness(0, 8, 0, 0),
@@ -892,7 +902,7 @@ public partial class MainWindow
             remotePanel.Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
             localPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
-                hidden.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
+                hidden.Visibility = remote && (primaryLoad is null || hidden == rows["gguf_variant"]) ? Visibility.Collapsed : Visibility.Visible;
             foreach (var key in ModelOptions.ApiOnly.Where(rows.ContainsKey))
                 rows[key].Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
             modelBox.IsEnabled = !remote;
@@ -1059,6 +1069,9 @@ public partial class MainWindow
         switchLocal.Click += (_, _) =>
         {
             toLocal = true;
+            if (primaryLoad is not null) // the primary PC's load options are not this PC's
+                foreach (var key in primaryKeys)
+                    SetValue(editors[key], shownAtStart[key]);
             SyncMode();
             Rederive(); // a local role shows the local defaults
             Vram();
@@ -1076,9 +1089,19 @@ public partial class MainWindow
                 close();
                 return false;
             }
+            // The primary PC's load options first (checked here with the rest); this Save runs again once it took them.
+            if (primaryLoad is not null && remoteMode() && ModelShare.LoadChanges(primaryLoad, primaryKeys.ToDictionary(k => k, k => fields[k])) is { Count: > 0 } changes)
+            {
+                if (!ShowErrors(ModelOptions.Apply(new JsonObject { ["auto_load"] = new JsonObject { ["model_path"] = remoteNow!.Model } }, fields, includeLoad: true)))
+                    SavePrimaryLoad(changes);
+                return false;
+            }
             if (card.IsCustom)
             {
                 var w = card.Config;
+                if (primaryLoad is not null && remoteMode()) // the primary PC keeps its load options; the worker keeps its own
+                    foreach (var key in primaryKeys)
+                        fields[key] = current.GetValueOrDefault(key, "");
                 var probe = new JsonObject();
                 if ((choice?.LoadPath ?? w.ModelPath) is { } modelPath)
                     probe["auto_load"] = new JsonObject { ["model_path"] = modelPath };
@@ -1206,6 +1229,58 @@ public partial class MainWindow
         _gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes);
         _gpuMemory.ContinueWith(_ => Vram(), TaskScheduler.FromCurrentSynchronizationContext());
         Derive(startLoad, atOpen: true);
+        // The primary PC's values count as the clean state, as Derive's at open do.
+        void Absorb(IEnumerable<string> keys)
+        {
+            var all = editors.Keys.ToList();
+            foreach (var key in keys)
+                clean[all.IndexOf(key)] = StateOf(editors[key]);
+        }
+        async void FetchPrimaryLoad()
+        {
+            try
+            {
+                if (ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
+                    throw new InvalidOperationException("Not connected: paste the primary PC's connection code under Settings > Models.");
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                var got = await ImageShare.FetchLoadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), key, remoteNow!.Model.Trim(), CancellationToken.None);
+                foreach (var k in primaryKeys)
+                    SetValue(editors[k], got.GetValueOrDefault(k, ""));
+                Absorb(primaryKeys);
+                primaryLoad = primaryKeys.ToDictionary(k => k, k => Value(editors[k]));
+                primaryNote.Text = "These run on the primary PC: saving reloads the model there.";
+                SyncMode();
+            }
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException)
+            {
+                primaryNote.Text = "The load options run on the primary PC and could not be read: " + x.Message;
+            }
+        }
+        async void SavePrimaryLoad(Dictionary<string, string> changes)
+        {
+            save.IsEnabled = false;
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                await ImageShare.SaveLoadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "", remoteNow!.Model.Trim(), changes, CancellationToken.None);
+            }
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException)
+            {
+                ShowErrors(new() { [""] = "Not saved on the primary PC: " + x.Message });
+                return;
+            }
+            finally
+            {
+                save.IsEnabled = true;
+            }
+            foreach (var (key, value) in changes)
+                primaryLoad![key] = value;
+            Absorb(changes.Keys);
+            Save(); // the rest, as without the primary PC
+            Toast("Saved on the primary PC: the model reloads there on its next use");
+        }
+        if (onPrimary)
+            FetchPrimaryLoad();
         return (new DockPanel { Children = { footer, scroll } }, bar, () => !State().SequenceEqual(clean), Save);
     }
 

@@ -151,6 +151,10 @@ internal static class ModelShare
     public static string LoadJson(IReadOnlyDictionary<string, string> options) => JsonSerializer.Serialize(new LoadReply(options.ToDictionary()), Web);
     public static Dictionary<string, string> ParseLoad(string json) => JsonSerializer.Deserialize<LoadReply>(json, Web)?.Options ?? [];
 
+    // What the other PC posts on Save: each shown option whose value differs from the one read (spaces at the ends aside), "" for one cleared.
+    public static Dictionary<string, string> LoadChanges(IReadOnlyDictionary<string, string> read, IReadOnlyDictionary<string, string> shown) =>
+        shown.Where(p => p.Value.Trim() != read.GetValueOrDefault(p.Key, "").Trim()).ToDictionary(p => p.Key, p => p.Value.Trim().Length == 0 ? "" : p.Value);
+
     // POST /share/load {"model":id,"options":{key:value}}: the options ("" removes one) over the model's saved ones (saved: its
     // SavedOptions, null = not a shared model) become its entry in overrides. 400 for a bad body, a key that is not a load option
     // or a bad value, 404 for an unknown model; overrides changes only on 200 {"ok":true}.
@@ -306,6 +310,10 @@ internal static class ModelShare
         var reloaded = SavedLoad(@"W:\m\Big-MoE.gguf", "Big-MoE", workers, [], overrides);
         Check(reloaded.SequenceEqual([("cache-type-k", "q8_0"), ("cache-type-v", "q8_0"), ("n-cpu-moe", "20")]), "the saved load options come first: " + string.Join("; ", reloaded));
         Check(ParseLoad(LoadJson(Saved("Big-MoE")!)) is { Count: 2 } back && back["n_cpu_moe"] == "20" && back["cache_type_kv"] == "q8_0", "the load JSON round trip");
+        var changed = LoadChanges(new Dictionary<string, string> { ["n_cpu_moe"] = "20", ["max_seq_length"] = "65536", ["cache_type_kv"] = "q8_0" },
+            new Dictionary<string, string> { ["n_cpu_moe"] = "24", ["max_seq_length"] = " 65536 ", ["cache_type_kv"] = "  ", ["flash_attn"] = "on", ["mlock"] = "" });
+        Check(changed.Count == 3 && changed["n_cpu_moe"] == "24" && changed["cache_type_kv"] == "" && changed["flash_attn"] == "on",
+            "the changed load options: " + string.Join("; ", changed.Select(p => $"{p.Key}={p.Value}")));
         // /share/presets: shared models' presets (by id or file name) and any-model ones, named by the shared id, request options only
         SharedModel[] shared = [new("Qwen3-GGUF  ·  Q4_K_M", @"C:\hub\qwen3-Q4_K_M.gguf", null), new("gemma", @"D:\m\gemma.gguf", null)];
         var sent = ParsePresets(PresetsJson([
