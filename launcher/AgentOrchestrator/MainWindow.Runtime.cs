@@ -163,22 +163,22 @@ public partial class MainWindow
         }
     }
 
+    // Settings > Models > Model runtime: the Models folders, each with Remove, and Add models folder… (AppSettings.ModelsFolder
+    // holds them joined by ';').
     private void ModelsFolder_Click(object sender, RoutedEventArgs e)
     {
+        var folders = LauncherLogic.ModelFolders(_settings.ModelsFolder);
         var dialog = new OpenFolderDialog { Title = "Folder with GGUF models" };
-        if (Directory.Exists(_settings.ModelsFolder))
-            dialog.InitialDirectory = _settings.ModelsFolder;
+        if (folders.LastOrDefault(Directory.Exists) is { } last)
+            dialog.InitialDirectory = last;
         if (dialog.ShowDialog(this) != true)
             return;
-        _settings.ModelsFolder = dialog.FolderName;
-        _settings.Save();
-        _localModelsVersion++;
-        ShowModelsFolder();
+        SetModelFolders([.. folders, dialog.FolderName]);
     }
 
-    private void ModelsFolderClear_Click(object sender, RoutedEventArgs e)
+    private void SetModelFolders(IEnumerable<string> folders)
     {
-        _settings.ModelsFolder = "";
+        _settings.ModelsFolder = LauncherLogic.JoinModelFolders(folders);
         _settings.Save();
         _localModelsVersion++;
         ShowModelsFolder();
@@ -186,8 +186,18 @@ public partial class MainWindow
 
     private void ShowModelsFolder()
     {
-        ModelsFolderText.Text = _settings.ModelsFolder.Length > 0 ? _settings.ModelsFolder : "No folder chosen";
-        ModelsFolderText.ToolTip = _settings.ModelsFolder.Length > 0 ? _settings.ModelsFolder : null;
-        ModelsFolderClear.Visibility = _settings.ModelsFolder.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        ModelsFoldersList.Children.Clear();
+        var folders = LauncherLogic.ModelFolders(_settings.ModelsFolder);
+        if (folders.Length == 0)
+            ModelsFoldersList.Children.Add(new TextBlock { Text = "No folder added", Margin = new Thickness(0, 4, 0, 4), Opacity = 0.7 });
+        foreach (var folder in folders)
+        {
+            var remove = new Button { Content = "Remove", Padding = new Thickness(11, 4, 11, 4), Tag = "ModelsFolderRemove", ToolTip = "Stop looking for models in this folder (nothing is deleted)" };
+            remove.Click += (_, _) => SetModelFolders(LauncherLogic.ModelFolders(_settings.ModelsFolder).Where(f => !f.Equals(folder, StringComparison.OrdinalIgnoreCase)));
+            DockPanel.SetDock(remove, Dock.Right);
+            var text = new TextBlock { Text = folder, ToolTip = folder, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis, Margin = new Thickness(0, 0, 10, 0),
+                Opacity = Directory.Exists(folder) ? 1 : 0.5 };
+            ModelsFoldersList.Children.Add(new DockPanel { Margin = new Thickness(0, 0, 0, 6), Children = { remove, text } });
+        }
     }
 }

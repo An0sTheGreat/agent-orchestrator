@@ -203,9 +203,9 @@ public partial class MainWindow
         var panel = new StackPanel { Children = { line } };
         if (custom.Length > 0 && !HubInside(root, _settings.ModelsFolder))
         {
-            var where = RemoteMuted($"The model picker looks in {(_settings.ModelsFolder.Length > 0 ? _settings.ModelsFolder : "the Hugging Face cache")}.");
+            var where = RemoteMuted($"The model picker looks in {(_settings.ModelsFolder.Length > 0 ? string.Join(", ", LauncherLogic.ModelFolders(_settings.ModelsFolder)) : "the Hugging Face cache")}.");
             (where.VerticalAlignment, where.TextWrapping) = (VerticalAlignment.Center, TextWrapping.Wrap);
-            var use = new Button { Content = "Use this folder as the Models folder", Tag = "HubUseAsModels", Style = (Style)FindResource("GhostButton"), FontSize = 11.5, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+            var use = new Button { Content = "Add this folder to the Models folders", Tag = "HubUseAsModels", Style = (Style)FindResource("GhostButton"), FontSize = 11.5, Padding = new Thickness(10, 2, 10, 2), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             use.SetResourceReference(BackgroundProperty, "Panel");
             use.Click += (_, _) => HubUseAsModelsFolder(root);
             DockPanel.SetDock(use, Dock.Right);
@@ -215,20 +215,17 @@ public partial class MainWindow
         _hubSaveTo.IsEnabled = _hubDl is not { State: HubDlState.Running };
     }
 
-    // folder is models or inside it (full paths, any case)
+    // folder is one of the Models folders or inside one (full paths, any case)
     private static bool HubInside(string folder, string models)
     {
         static string Full(string p) => Path.GetFullPath(p).TrimEnd('\\') + "\\";
-        return models.Length > 0 && Full(folder).StartsWith(Full(models), StringComparison.OrdinalIgnoreCase);
+        return LauncherLogic.ModelFolders(models).Any(m => Full(folder).StartsWith(Full(m), StringComparison.OrdinalIgnoreCase));
     }
 
-    // The model picker scans the Models folder: point it here (asking before replacing another one).
+    // The model picker scans the Models folders: add this one to them.
     private void HubUseAsModelsFolder(string folder)
     {
-        if (_settings.ModelsFolder.Length > 0 && Choose("Replace the Models folder?",
-                $"The model picker looks in {_settings.ModelsFolder}. Look in {folder} instead?", ("Use " + HubShortPath(folder), "replace")) != "replace")
-            return;
-        _settings.ModelsFolder = folder;
+        _settings.ModelsFolder = LauncherLogic.JoinModelFolders([.. LauncherLogic.ModelFolders(_settings.ModelsFolder), folder]);
         _settings.Save();
         _localModelsVersion++;
         ShowModelsFolder();
@@ -1833,13 +1830,10 @@ public partial class MainWindow
                     return Fail($"flat download {file}: missing or different");
             if (!_hubSaveTo.IsEnabled || !Badge() || Marks() != "hubvariant:Q4_K_M" || Button() != "Downloaded ✓ False")
                 return Fail($"flat downloaded: save to {_hubSaveTo.IsEnabled}, badge {Badge()}, marks [{Marks()}], button {Button()}");
-            // the notice: replacing another Models folder asks first (cancelled: nothing changes), then takes it
+            // the notice adds the folder to the Models folders (the one already there stays), with no question
             var modelsVersion = _localModelsVersion;
             SmokeClick(Find<Button>("HubUseAsModels")!);
-            if (replaceAsked.FirstOrDefault() != "Replace the Models folder?" || _settings.ModelsFolder != modelsDir || _localModelsVersion != modelsVersion || Find<DockPanel>("HubModelsNotice") is null)
-                return Fail($"cancelled replacing the Models folder: replaceAsked [{string.Join(", ", replaceAsked)}], folder {_settings.ModelsFolder}");
-            SmokeClick(Find<Button>("HubUseAsModels")!);
-            if (_settings.ModelsFolder != saveDir || _localModelsVersion <= modelsVersion || Find<DockPanel>("HubModelsNotice") is not null ||
+            if (replaceAsked.Count != 0 || _settings.ModelsFolder != modelsDir + ";" + saveDir || _localModelsVersion <= modelsVersion || Find<DockPanel>("HubModelsNotice") is not null ||
                 !LauncherLogic.FindLocalGgufs(saveDir, cache).Any(g => g.File == Path.Combine(saveDir, "Mini-GGUF", "Mini-Q4_K_M.gguf")))
                 return Fail($"accepted the Models folder: folder {_settings.ModelsFolder}, version {_localModelsVersion} (was {modelsVersion}), notice {Find<DockPanel>("HubModelsNotice") is not null}");
             // a folder inside the Models folder needs no notice

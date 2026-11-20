@@ -1350,6 +1350,14 @@ internal static class LauncherLogic
 
     // Every loadable GGUF the engine's lookup would find: the models folder (empty = none) and each cached repo's snapshots.
     // Vision projectors (mmproj) and later parts of a split model are skipped, as the engine does.
+    // The Models folders: AppSettings.ModelsFolder holds them joined by ';' (the engine reads the same string as
+    // AGENT_ORCHESTRATOR_GGUF_DIRS and splits it the same way).
+    public static string[] ModelFolders(string? modelsFolder) =>
+        (modelsFolder ?? "").Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+
+    public static string JoinModelFolders(IEnumerable<string> folders) =>
+        string.Join(";", folders.Select(f => f.Trim()).Where(f => f.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase));
+
     public static List<LocalGguf> FindLocalGgufs(string modelsFolder, string hubCache)
     {
         var found = new List<LocalGguf>();
@@ -1360,8 +1368,8 @@ internal static class LauncherLogic
             : [];
         static bool FirstPart(string name) => SplitPart.Match(name) is not { Success: true } part || part.Groups[1].Value == "00001";
         static string Variant(string file) => QuantOf(file);
-        if (modelsFolder.Length > 0)
-            found.AddRange(Files(modelsFolder).Select(f => new LocalGguf("", Variant(f), f)));
+        // a file under two listed folders (one inside the other) is one choice
+        found.AddRange(ModelFolders(modelsFolder).SelectMany(Files).Distinct(StringComparer.OrdinalIgnoreCase).Select(f => new LocalGguf("", Variant(f), f)));
         if (Directory.Exists(hubCache))
             foreach (var repoDir in Directory.EnumerateDirectories(hubCache, "models--*").Order(StringComparer.OrdinalIgnoreCase))
             {
@@ -2315,6 +2323,12 @@ internal static class LauncherLogic
             if (shown != ":Q8_0:My-Model-Q8_0.gguf|org/Big-GGUF:Q4_K_M:Big-Q4_K_M-00001-of-00002.gguf|unsloth/Qwen3-4B-GGUF:UD-Q4_K_XL:Qwen3-4B-UD-Q4_K_XL.gguf" ||
                 !Path.IsPathRooted(ggufs[0].File) || FindLocalGgufs("", Path.Combine(ggufArea, "none")).Count != 0)
                 throw new InvalidOperationException($"Local GGUF scan failed: {shown}");
+            // several Models folders (';'-joined, with blanks and a repeat): each is scanned, a file once
+            Touch("more", "Other-Q4_K_M.gguf");
+            var several = FindLocalGgufs($"{Path.Combine(ggufArea, "models")}; ;{Path.Combine(ggufArea, "more")};{Path.Combine(ggufArea, "models")}", Path.Combine(ggufArea, "none"));
+            if (string.Join("|", several.Select(g => Path.GetFileName(g.File))) != "My-Model-Q8_0.gguf|Other-Q4_K_M.gguf" ||
+                JoinModelFolders([@"C:\a", " ", @"c:\A", @"D:\b"]) != @"C:\a;D:\b")
+                throw new InvalidOperationException($"Several Models folders: {string.Join("|", several.Select(g => g.File))}");
         }
         finally
         {
