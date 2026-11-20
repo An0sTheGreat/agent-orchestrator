@@ -20,13 +20,15 @@ public partial class MainWindow
 {
     private CancellationTokenSource? _imgCts; // the download or generation in progress; Cancel and OnClosing cancel it
     private Process? _imgProcess;
-    private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgLongSide = null!, _imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
+    private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgWidth = null!, _imgHeight = null!,_imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
     private TextBox _imgPrompt = null!, _imgNegative = null!, _imgSeed = null!;
+    private bool _imgFlipped; // the swap button: the presets show and give their ratios flipped (portrait)
+    private int _imgLastRatio = 1; // the preset whose recommended size Custom keeps showing
     private FrameworkElement _imgNegativeRow = null!;
     private Slider _imgSteps = null!, _imgCfg = null!, _imgStrength = null!;
     private CheckBox _imgLowVram = null!;
     private string _imgInit = "";
-    private TextBlock _imgSizeText = null!, _imgRuntimeText = null!, _imgStatus = null!, _imgVramHint = null!, _imgInitText = null!;
+    private TextBlock _imgWidthHint = null!, _imgHeightHint = null!,_imgRuntimeText = null!, _imgStatus = null!, _imgVramHint = null!, _imgInitText = null!;
     private Button _imgRuntimeButton = null!, _imgGenerate = null!, _imgCancel = null!;
     private ProgressBar _imgProgress = null!;
     private Image _imgResult = null!;
@@ -230,16 +232,62 @@ public partial class MainWindow
         };
         left.Children.Add(_imgNegativeRow);
 
-        Label("Aspect ratio and size");
-        _imgAspect = new ComboBox { ItemsSource = ImageGen.Aspects, Width = 90, Margin = new Thickness(0, 0, 8, 0) };
-        _imgLongSide = new ComboBox { ItemsSource = ImageGen.LongSides, Width = 90, Margin = new Thickness(0, 0, 8, 0) };
-        _imgSizeText = Muted("");
-        _imgSizeText.VerticalAlignment = VerticalAlignment.Center;
-        _imgSizeText.Tag = "ImagesSize";
-        _imgAspect.SelectionChanged += (_, _) => ShowImageSize();
-        _imgLongSide.SelectionChanged += (_, _) => ShowImageSize();
-        left.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { _imgAspect, _imgLongSide, _imgSizeText } });
-        _imgLocalOnly.Add(_imgSizeText); // OpenRouter is sent the aspect ratio only, not this size
+        Label("Aspect ratio");
+        _imgAspect = new ComboBox { Tag = "ImagesAspect", Width = 200, Margin = new Thickness(0, 0, 8, 0) };
+        _imgAspect.SelectionChanged += (_, _) => ImageAspectChanged();
+        var swap = new Button { Content = "↑↓", Tag = "ImagesSwapSize", ToolTip = "Swap width and height (portrait or landscape)", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand };
+        swap.Click += (_, _) => SwapImageSize();
+        left.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { _imgAspect, swap } });
+        Label("Resolution");
+        var resolutionLabel = left.Children[left.Children.Count - 1];
+        // Width and height: editable lists. Empty shows the recommended value greyed where typed text starts (the caret sits at its left
+        // edge); a typed or picked value is rounded to the model's multiple when the box loses focus, and with a ratio chosen the other follows.
+        var editable = ParseTemplate(EditableComboXaml);
+        StackPanel SizeBox(string tag, bool width, out ComboBox box, out TextBlock hint)
+        {
+            var b = box = new ComboBox { Tag = tag, Width = 100, IsEditable = true, IsTextSearchEnabled = false, Template = editable, ItemsSource = ImageGen.SizeChoices,
+                ToolTip = $"Any {(width ? "width" : "height")}, rounded to the model's multiple; empty: the aspect ratio's recommended one" };
+            var h = hint = new TextBlock { IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Tag = tag + "Hint" };
+            h.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            b.Loaded += (_, _) =>
+            {
+                // the template's text box sits at the combo's left padding; WPF draws text 2 px inside a text box
+                (h.FontSize, h.FontFamily, h.Margin) = (b.FontSize, b.FontFamily, new Thickness(b.Padding.Left + 2, 0, 0, 0));
+                h.Visibility = b.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            };
+            b.AddHandler(TextBoxBase.TextChangedEvent, new TextChangedEventHandler((_, e) =>
+            {
+                var t = (TextBox)e.OriginalSource;
+                var digits = new string(t.Text.Where(char.IsAsciiDigit).ToArray()); // typed or pasted
+                if (digits != t.Text)
+                {
+                    var caret = Math.Max(0, t.CaretIndex - (t.Text.Length - digits.Length));
+                    t.Text = digits; // raises TextChanged again
+                    t.CaretIndex = caret;
+                    return;
+                }
+                h.Visibility = t.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            }));
+            b.LostKeyboardFocus += (_, _) =>
+            {
+                if (!b.IsKeyboardFocusWithin && !b.IsDropDownOpen)
+                    CommitImageSize(width);
+            };
+            b.DropDownClosed += (_, _) => CommitImageSize(width); // a value picked from the list
+            b.KeyDown += (_, e) =>
+            {
+                if (e.Key == Key.Enter)
+                    CommitImageSize(width);
+            };
+            var icon = Muted(width ? "⇆" : "⇅");
+            (icon.VerticalAlignment, icon.Margin, icon.ToolTip) = (VerticalAlignment.Center, new Thickness(0, 0, 6, 0), width ? "Width" : "Height");
+            return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, width ? 12 : 0, 0), Children = { icon, new Grid { Children = { b, h } } } };
+        }
+        var sizeBoxes = new StackPanel { Orientation = Orientation.Horizontal,
+            Children = { SizeBox("ImagesWidth", true, out _imgWidth, out _imgWidthHint), SizeBox("ImagesHeight", false, out _imgHeight, out _imgHeightHint) } };
+        left.Children.Add(sizeBoxes);
+        _imgLocalOnly.Add(resolutionLabel);
+        _imgLocalOnly.Add(sizeBoxes); // OpenRouter is sent the nearest aspect ratio only, not this size
 
         var localFrom = left.Children.Count;
         Label("Steps");
@@ -462,8 +510,13 @@ public partial class MainWindow
         ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
-        _imgAspect.SelectedItem = ImageGen.Aspects.Contains(s.Aspect) ? s.Aspect : "1:1";
-        _imgLongSide.SelectedItem = ImageGen.LongSides.Contains(s.LongSide) ? s.LongSide : 1024;
+        var preset = Array.FindIndex(ImageGen.Presets, p => p.Ratio.Length > 0 && (p.Ratio == s.Aspect || ImageGen.Flip(p.Ratio) == s.Aspect));
+        (_imgFlipped, _imgLastRatio) = (preset > 0 && ImageGen.Presets[preset].Ratio != s.Aspect, Math.Max(preset, 1));
+        _imgAspect.ItemsSource = AspectLabels();
+        _imgAspect.SelectedIndex = s.Aspect == "Custom" ? 0 : _imgLastRatio; // unknown: Square
+        var before = s.CustomWidth == 0 && s.CustomHeight == 0 && s.LongSide != ImageGen.RecommendedLongSide; // saved with the old long side list: its size, typed
+        _imgWidth.Text = before ? s.Width.ToString() : s.CustomWidth > 0 ? s.CustomWidth.ToString() : "";
+        _imgHeight.Text = before ? s.Height.ToString() : s.CustomHeight > 0 ? s.CustomHeight.ToString() : "";
         _imgSteps.Value = s.Steps;
         _imgCfg.Value = s.Cfg;
         _imgSeed.Text = s.Seed >= 0 ? s.Seed.ToString() : "";
@@ -475,20 +528,24 @@ public partial class MainWindow
         SetInitImage(s.InitImage);
         _imgApplying = false;
         ShowImageSize();
+        if (ImageRatio() is { Length: > 0 } ratio && TypedSize(_imgWidth) is > 0 and var w && TypedSize(_imgHeight) is > 0 and var h &&
+            !ImageGen.Matches(w, h, ratio, RecommendedImageSize().Multiple))
+            _imgAspect.SelectedIndex = 0; // a saved pair that is not its ratio: Custom
     }
 
     private ImageSettings ReadImageSettings()
     {
         var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
-        var (aspect, longSide) = ((string)_imgAspect.SelectedItem, (int)_imgLongSide.SelectedItem);
-        // the primary PC resolves its model from RecipeId; before its list loads, the local recipe stands in for the multiple and negative
-        var (multiple, negative) = _imgSharedMode && SharedPick is { } shared ? (shared.Multiple, shared.Negative) : (recipe.Multiple, recipe.Negative);
-        var (w, h) = ImageGen.Size(aspect, longSide, multiple);
+        var negative = _imgSharedMode && SharedPick is { } shared ? shared.Negative : recipe.Negative;
+        var (multiple, rw, rh) = RecommendedImageSize();
+        var (cw, ch) = (TypedSize(_imgWidth), TypedSize(_imgHeight));
+        int w = ImageGen.Pick(cw, rw, multiple), h = ImageGen.Pick(ch, rh, multiple);
+        var custom = _imgAspect.SelectedIndex == 0; // saves both sizes: Custom's recommended one is not restored
         return new()
         {
             RecipeId = _imgSharedMode ? _imgSharedId : recipe.Id, LocalModel = _imgSharedMode ? "" : local, SharedModel = _imgSharedMode ? _imgSharedId : "",
-            Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = aspect, LongSide = longSide,
-            Width = w, Height = h, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
+            Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = custom ? "Custom" : ImageRatio(),
+            Width = w, Height = h, CustomWidth = custom || cw > 0 ? w : 0, CustomHeight = custom || ch > 0 ? h : 0, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
             Scheduler = _imgScheduler.SelectedIndex > 0 ? ImageGen.Schedulers[_imgScheduler.SelectedIndex - 1] : "",
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
@@ -778,11 +835,119 @@ public partial class MainWindow
 
     private void ShowImageSize()
     {
-        if (_imgApplying || _imgAspect.SelectedItem is null || _imgLongSide.SelectedItem is null)
+        if (_imgApplying || _imgAspect.SelectedIndex < 0)
             return;
-        var s = ReadImageSettings();
-        _imgSizeText.Text = $"{s.Width} × {s.Height}";
+        var (_, w, h) = RecommendedImageSize();
+        (_imgWidthHint.Text, _imgHeightHint.Text) = (w.ToString(), h.ToString());
     }
+
+    // The chosen preset's (Custom: the last preset's) width and height, and the multiple a typed size rounds to. The primary PC resolves
+    // its model from RecipeId; before its list loads, the local recipe stands in for the multiple (and in ReadImageSettings for the negative).
+    private (int Multiple, int Width, int Height) RecommendedImageSize()
+    {
+        var multiple = _imgSharedMode && SharedPick is { } shared ? shared.Multiple : ImageChoice(_imgRecipe.SelectedIndex).Recipe.Multiple;
+        var (w, h) = ImageGen.Size(PresetRatio(_imgAspect.SelectedIndex > 0 ? _imgAspect.SelectedIndex : _imgLastRatio), ImageGen.RecommendedLongSide, multiple);
+        return (multiple, w, h);
+    }
+
+    private string PresetRatio(int index) => _imgFlipped ? ImageGen.Flip(ImageGen.Presets[index].Ratio) : ImageGen.Presets[index].Ratio;
+    private string ImageRatio() => _imgAspect.SelectedIndex > 0 ? PresetRatio(_imgAspect.SelectedIndex) : ""; // "" = Custom
+    private List<string> AspectLabels() => ImageGen.Presets.Select(p => ImageGen.PresetLabel(p, _imgFlipped)).ToList();
+
+    // digits only (the boxes drop anything else) and far below int.MaxValue in practice; 0 = empty
+    private static int TypedSize(ComboBox box) => int.TryParse(box.Text, out var v) ? v : 0;
+
+    // A box is done (focus left, Enter, or a value picked): round it and, with a ratio chosen, make the other follow. A pair that
+    // cannot keep the ratio (one side clamped at 4096) turns the preset to Custom. Clearing a linked box clears both: the recommended size.
+    private void CommitImageSize(bool width)
+    {
+        if (_imgApplying || _imgAspect.SelectedIndex < 0)
+            return;
+        var (box, other) = width ? (_imgWidth, _imgHeight) : (_imgHeight, _imgWidth);
+        var multiple = RecommendedImageSize().Multiple;
+        var typed = TypedSize(box);
+        var value = ImageGen.Pick(typed, 0, multiple);
+        box.Text = typed > 0 ? value.ToString() : "";
+        if (ImageRatio() is not { Length: > 0 } ratio)
+            return;
+        other.Text = typed > 0 ? ImageGen.Linked(value, ratio, width, multiple).ToString() : "";
+        if (typed > 0 && !ImageGen.Matches(TypedSize(_imgWidth), TypedSize(_imgHeight), ratio, multiple))
+            _imgAspect.SelectedIndex = 0;
+    }
+
+    private void ImageAspectChanged()
+    {
+        if (_imgApplying || _imgAspect.SelectedIndex < 0)
+            return;
+        if (_imgAspect.SelectedIndex > 0) // a preset: typed sizes take its ratio (from the width first); Custom keeps them as they are
+        {
+            _imgLastRatio = _imgAspect.SelectedIndex;
+            if (TypedSize(_imgWidth) > 0)
+                CommitImageSize(true);
+            else if (TypedSize(_imgHeight) > 0)
+                CommitImageSize(false);
+        }
+        ShowImageSize();
+    }
+
+    // The ↑↓ button: width and height trade places, and the presets show their flipped ratios ("Photo (2:3)").
+    private void SwapImageSize()
+    {
+        var index = _imgAspect.SelectedIndex;
+        _imgFlipped = !_imgFlipped;
+        _imgApplying = true;
+        _imgAspect.ItemsSource = AspectLabels();
+        _imgAspect.SelectedIndex = index;
+        (_imgWidth.Text, _imgHeight.Text) = (_imgHeight.Text, _imgWidth.Text);
+        _imgApplying = false;
+        ShowImageSize();
+    }
+
+    private static ControlTemplate ParseTemplate(string xaml) => (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
+        xaml.Replace("<ControlTemplate ", "<ControlTemplate xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" ", StringComparison.Ordinal));
+
+    // MainWindow.xaml's ComboBox template has no text box, so IsEditable needs its own: the same look, with PART_EditableTextBox at the
+    // left padding (the chevron's 28 px stay the drop-down button). Keep it in step with that template.
+    private const string EditableComboXaml = """
+        <ControlTemplate TargetType="ComboBox">
+            <Grid>
+                <Border x:Name="Field" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="{DynamicResource ControlRadius}" />
+                <TextBlock Text="&#xE70D;" FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets" FontSize="10" Foreground="{DynamicResource Muted}"
+                           HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0" IsHitTestVisible="False" />
+                <ToggleButton Focusable="False" ClickMode="Press" HorizontalAlignment="Right" Width="28"
+                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="Transparent" /></ControlTemplate></ToggleButton.Template>
+                </ToggleButton>
+                <TextBox x:Name="PART_EditableTextBox" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" MaxLength="5">
+                    <TextBox.Template><ControlTemplate TargetType="TextBox"><ScrollViewer x:Name="PART_ContentHost" Focusable="False" VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Hidden" /></ControlTemplate></TextBox.Template>
+                </TextBox>
+                <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False">
+                    <Border Background="{DynamicResource Card}" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource SmallRadius}"
+                            Padding="5" Margin="0,2,0,0" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+                        <ScrollViewer MaxHeight="{TemplateBinding MaxDropDownHeight}" VerticalScrollBarVisibility="Auto">
+                            <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained" />
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+            </Grid>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="Field" Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
+                <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.5" /></Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """;
+
+    private const string RoundButtonXaml = """
+        <ControlTemplate TargetType="Button">
+            <Border x:Name="Round" Width="30" Height="30" CornerRadius="15" Background="{DynamicResource Card}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1">
+                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+            </Border>
+            <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Round" Property="BorderBrush" Value="{DynamicResource Accent}" /></Trigger>
+            </ControlTemplate.Triggers>
+        </ControlTemplate>
+        """;
 
     private void RefreshImageRuntime()
     {
@@ -1202,7 +1367,7 @@ public partial class MainWindow
         if (string.IsNullOrEmpty(key))
             throw new InvalidOperationException($"Missing API key for OpenRouter: set {keyEnv}");
         ImageStatus("Generating…", indeterminate: true);
-        var body = new JsonObject { ["model"] = s.RemoteModel, ["prompt"] = s.Prompt, ["n"] = s.Batch, ["aspect_ratio"] = s.Aspect, ["response_format"] = "b64_json" };
+        var body = new JsonObject { ["model"] = s.RemoteModel, ["prompt"] = s.Prompt, ["n"] = s.Batch, ["aspect_ratio"] = ImageGen.RemoteAspect(s.Width, s.Height), ["response_format"] = "b64_json" };
         var order = s.RemoteProvider.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (order.Length > 0)
             body["provider"] = new JsonObject { ["order"] = new JsonArray(order.Select(n => (JsonNode)JsonValue.Create(n)!).ToArray()), ["allow_fallbacks"] = false };

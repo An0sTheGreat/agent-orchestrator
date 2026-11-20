@@ -22,7 +22,8 @@ internal sealed record ImageRecipe(string Id, string Name, string Note, ImageFil
 }
 
 // What one generation used: saved as the last-used settings (AppSettings.ImageGen, Seed -1 = random) and beside each
-// picture as <name>.json (Seed then that picture's own seed). Aspect and LongSide are the page's choices that made Width/Height.
+// picture as <name>.json (Seed then that picture's own seed). Aspect ("16:9", "2:3" after the swap, or "Custom") and the Width and
+// Height boxes (CustomWidth/CustomHeight, 0 = empty) are the page's choices that made Width/Height. LongSide is from before the boxes.
 internal sealed class ImageSettings
 {
     public string RecipeId { get; set; } = ImageGen.Recipes[0].Id;
@@ -32,6 +33,8 @@ internal sealed class ImageSettings
     public int LongSide { get; set; } = 1024;
     public int Width { get; set; } = 1024;
     public int Height { get; set; } = 1024;
+    public int CustomWidth { get; set; } // the Width box (0 = empty: the preset's recommended width)
+    public int CustomHeight { get; set; }
     public int Steps { get; set; } = 8;
     public double Cfg { get; set; } = 1.0;
     public long Seed { get; set; } = -1;
@@ -57,8 +60,6 @@ internal static class ImageGen
     public static string ImagesFolder => Path.Combine(AppSettings.DataRoot, "images");
     public const string ReleaseUrl = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
 
-    public static readonly string[] Aspects = ["1:1", "5:4", "4:5", "4:3", "3:4", "16:9", "9:16"];
-    public static readonly int[] LongSides = [512, 768, 1024, 1536];
     // sd-cli --help's --sampling-method list
     // sd-cli --help's --scheduler list (normal is an alias of discrete)
     public static readonly string[] Schedulers = ["discrete", "karras", "exponential", "ays", "gits", "sgm_uniform", "simple", "smoothstep", "kl_optimal",
@@ -114,11 +115,54 @@ internal static class ImageGen
     // Width and height for an aspect ("16:9") and long side, each rounded to the nearest multiple (at least one multiple).
     public static (int Width, int Height) Size(string aspect, int longSide, int multiple)
     {
-        var parts = aspect.Split(':');
-        double a = double.Parse(parts[0], CultureInfo.InvariantCulture), b = double.Parse(parts[1], CultureInfo.InvariantCulture);
+        var (a, b) = Parts(aspect);
         int Round(double x) => Math.Max(multiple, (int)Math.Round(x / multiple, MidpointRounding.AwayFromZero) * multiple);
         return a >= b ? (Round(longSide), Round(longSide * b / a)) : (Round(longSide * a / b), Round(longSide));
     }
+
+    private static (double A, double B) Parts(string ratio)
+    {
+        var parts = ratio.Split(':');
+        return (double.Parse(parts[0], CultureInfo.InvariantCulture), double.Parse(parts[1], CultureInfo.InvariantCulture));
+    }
+
+    // A typed width or height (0 = the box is empty: the recommended one), rounded to the nearest multiple and kept to 64-4096.
+    public static int Pick(int typed, int recommended, int multiple) =>
+        typed <= 0 ? recommended : Math.Clamp((int)Math.Round((double)typed / multiple, MidpointRounding.AwayFromZero) * multiple, 64, 4096);
+
+    // The Aspect ratio presets, Custom first. The swap button shows them flipped ("Photo (2:3)"): that is how 4:5 and the portraits are picked.
+    public static readonly (string Name, string Ratio)[] Presets =
+        [("Custom", ""), ("Square", "1:1"), ("", "5:4"), ("Photo", "3:2"), ("Landscape", "4:3"), ("Widescreen", "16:9"), ("Ultrawide", "21:9")];
+    public const int RecommendedLongSide = 1024; // a preset's recommended size, the grey text in the empty Width and Height boxes
+    public static readonly int[] SizeChoices = Enumerable.Range(0, 29).Select(i => 256 + 64 * i).ToArray(); // the boxes' lists: 256-2048
+
+    public static string Flip(string ratio) => ratio.Length == 0 ? "" : string.Join(':', ratio.Split(':').Reverse());
+
+    public static string PresetLabel((string Name, string Ratio) preset, bool flipped)
+    {
+        var ratio = flipped ? Flip(preset.Ratio) : preset.Ratio;
+        return ratio.Length == 0 ? preset.Name : preset.Name.Length == 0 ? ratio : $"{preset.Name} ({ratio})";
+    }
+
+    // With a ratio chosen, the other box follows: from a width the height (fromWidth), else the width, rounded and kept like a typed one.
+    public static int Linked(int value, string ratio, bool fromWidth, int multiple)
+    {
+        var (a, b) = Parts(ratio);
+        return Pick(Math.Max(1, (int)Math.Round(value * (fromWidth ? b / a : a / b))), 0, multiple);
+    }
+
+    // Whether a width and height are the ratio, give or take the rounding to the multiple (a 21:9 height of 4096 whose width stops at 4096 is not).
+    public static bool Matches(int width, int height, string ratio, int multiple)
+    {
+        var (a, b) = Parts(ratio);
+        return Math.Abs(width * b - height * a) <= (a + b) * multiple / 2;
+    }
+
+    // OpenRouter is sent an aspect_ratio, not a size: the nearest of the ones it takes.
+    public static readonly string[] RemoteAspects = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
+
+    public static string RemoteAspect(int width, int height) =>
+        RemoteAspects.MinBy(r => Parts(r) is var (a, b) ? Math.Abs(Math.Log((double)width / height) - Math.Log(a / b)) : 0)!;
 
     // An image model in the user's models folder: its recipe and path. Chat GGUFs and an image model's parts (VAE, text
     // encoder, LoRA...) are not listed; a file found twice (a hub snapshot's copies) is listed once.
@@ -275,6 +319,13 @@ internal static class ImageGen
         Check(Size("16:9", 1536, 32) == (1536, 864) && Size("16:9", 1536, 64) == (1536, 896), "16:9 at 1536 rounds to the multiple");
         Check(Size("9:16", 1024, 64) == (576, 1024) && Size("3:4", 768, 16) == (576, 768) && Size("1:1", 512, 64) == (512, 512), "portrait and square sizes");
         Check(Size("4:5", 1024, 16) == (816, 1024) && Size("5:4", 1024, 16) == (1024, 816), "4:5 and 5:4 at 1024");
+        Check(Pick(0, 832, 16) == 832 && Pick(1000, 832, 16) == 1008 && Pick(50, 832, 16) == 64 && Pick(99999, 832, 16) == 4096,
+            "typed sizes: empty is the recommended one, others round to the multiple within 64-4096");
+        Check(Linked(1024, "16:9", true, 16) == 576 && Linked(576, "16:9", false, 16) == 1024 && Linked(4096, "21:9", false, 16) == 4096, "a ratio links width and height");
+        Check(Matches(1024, 448, "21:9", 16) && Matches(576, 1024, "9:16", 64) && !Matches(4096, 4096, "21:9", 16) && !Matches(1024, 1024, "4:3", 16), "a size matches its ratio within the rounding");
+        Check(PresetLabel(Presets[3], true) == "Photo (2:3)" && PresetLabel(Presets[2], true) == "4:5" && PresetLabel(Presets[1], true) == "Square (1:1)" && PresetLabel(Presets[0], true) == "Custom",
+            "the swap flips the presets' ratios");
+        Check(RemoteAspect(1024, 576) == "16:9" && RemoteAspect(1000, 1000) == "1:1" && RemoteAspect(448, 1024) == "9:16" && RemoteAspect(1024, 448) == "21:9", "OpenRouter gets the nearest aspect ratio");
         Check(ParseProgress("\r  |================>                                 | 3/8 - 1.23s/it\u001b[K") == new ImageProgress(3, 8, "1.23 s/it", false), "a sampling line");
         Check(ParseProgress("  |==================================================| 20/20 -     4.56it/s - ETA 00:01") is { Step: 20, Steps: 20, Speed: "4.56 it/s" }, "it/s");
         Check(ParseProgress("  |#########                                         | 120/662 - 812.40MB/s") is { Loading: true, Step: 120 }, "a loading line");
