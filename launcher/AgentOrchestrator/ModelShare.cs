@@ -98,10 +98,14 @@ internal static class ModelShare
         return ini;
     }
 
-    // This PC's saved load options for a GGUF: the auto_load of a worker in worker-config.json whose gguf_file is that file
-    // (or whose model_path names it), else a model preset saved for that model, else none.
-    public static List<(string Key, string Value)> SavedLoad(string file, string id, JsonNode? workerConfig, IEnumerable<ModelPreset> presets)
+    // This PC's saved load options for a shared model as the Model Settings editors show them (auto_load keys, non-empty):
+    // its own entry in overrides (POST /share/load, OverridesPath), else the auto_load of a worker in worker-config.json whose
+    // gguf_file is that file (or whose model_path names it), else a model preset saved for that model, else none.
+    public static Dictionary<string, string> SavedOptions(string file, string id, JsonNode? workerConfig, IEnumerable<ModelPreset> presets,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? overrides = null)
     {
+        static Dictionary<string, string> Kept(IEnumerable<KeyValuePair<string, string>> options) =>
+            options.Where(p => IsLoadKey(p.Key) && p.Value.Trim().Length > 0).ToDictionary();
         static IEnumerable<JsonObject> AutoLoads(JsonNode? node) => node switch
         {
             JsonObject o => (o["auto_load"] is JsonObject a ? [a] : Enumerable.Empty<JsonObject>()).Concat(o.Where(p => p.Key != "auto_load").SelectMany(p => AutoLoads(p.Value))),
@@ -109,16 +113,74 @@ internal static class ModelShare
             _ => [],
         };
         static string Text(JsonNode? v) => v is JsonArray list ? string.Join(",", list.Select(x => x?.ToString())) : v?.ToString() ?? "";
+        if (overrides?.GetValueOrDefault(id) is { } own)
+            return Kept(own);
         var name = Path.GetFileNameWithoutExtension(file);
         bool Same(string? path) => path is { Length: > 0 } && (path.Equals(file, StringComparison.OrdinalIgnoreCase) || path.Equals(name, StringComparison.OrdinalIgnoreCase));
         if (AutoLoads(workerConfig).FirstOrDefault(a => Same(Text(a["gguf_file"])) || Same(Text(a["model_path"]))) is { } load)
-            return LoadOptions(load.ToDictionary(p => p.Key, p => Text(p.Value)),
-                load["llama_extra_args"] is JsonArray extra ? [.. extra.Select(x => x?.ToString() ?? "")] : []);
-        if (presets.FirstOrDefault(p => IsFor(p, id, file)) is { } preset)
-            return LoadOptions(preset.Options, preset.Options.GetValueOrDefault("llama_extra_args")?.Trim() is { Length: > 0 } args
-                ? args.StartsWith('[') ? JsonSerializer.Deserialize<List<string>>(args) ?? [] : args.Split(' ', StringSplitOptions.RemoveEmptyEntries)
-                : []);
-        return [];
+            return Kept(ModelOptions.Read(new JsonObject { ["auto_load"] = load.DeepClone() }));
+        return presets.FirstOrDefault(p => IsFor(p, id, file)) is { } preset ? Kept(preset.Options) : [];
+    }
+
+    private static bool IsLoadKey(string key) => ModelOptions.All.Any(o => o.Key == key && o.Target == "auto_load");
+
+    // SavedOptions as llama-server preset keys (LoadOptions): a list's ", " joined with "," and llama_extra_args split as the
+    // editor splits it ("quotes" keep a value with spaces whole; a JSON list, as older presets kept it, is read as one).
+    public static List<(string Key, string Value)> SavedLoad(string file, string id, JsonNode? workerConfig, IEnumerable<ModelPreset> presets,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? overrides = null)
+    {
+        var options = SavedOptions(file, id, workerConfig, presets, overrides);
+        var args = options.GetValueOrDefault("llama_extra_args")?.Trim() ?? "";
+        return LoadOptions(options.ToDictionary(p => p.Key, p => Regex.Replace(p.Value.Trim(), @"\s*,\s*", ",")),
+            args.StartsWith('[') ? JsonSerializer.Deserialize<List<string>>(args) ?? []
+            : [.. Regex.Matches(args, "\"([^\"]*)\"|(\\S+)").Select(m => m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value)]);
+    }
+
+    public static string OverridesPath => Path.Combine(Folder, "overrides.json");
+
+    // <data>\share\overrides.json: shared model id -> its load options as saved from another PC; empty when missing or unreadable.
+    public static Dictionary<string, Dictionary<string, string>> ReadOverrides()
+    {
+        try { return JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllText(OverridesPath)) ?? []; }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or JsonException) { return []; }
+    }
+
+    private sealed record LoadReply(Dictionary<string, string> Options);
+
+    // GET /share/load?model=<id>: {"options":{key:value}}, the model's SavedOptions.
+    public static string LoadJson(IReadOnlyDictionary<string, string> options) => JsonSerializer.Serialize(new LoadReply(options.ToDictionary()), Web);
+    public static Dictionary<string, string> ParseLoad(string json) => JsonSerializer.Deserialize<LoadReply>(json, Web)?.Options ?? [];
+
+    // POST /share/load {"model":id,"options":{key:value}}: the options ("" removes one) over the model's saved ones (saved: its
+    // SavedOptions, null = not a shared model) become its entry in overrides. 400 for a bad body, a key that is not a load option
+    // or a bad value, 404 for an unknown model; overrides changes only on 200 {"ok":true}.
+    public static ImageShare.Response SaveLoad(string body, Dictionary<string, Dictionary<string, string>> overrides, Func<string, Dictionary<string, string>?> saved)
+    {
+        JsonObject? asked;
+        try { asked = JsonNode.Parse(body) as JsonObject; }
+        catch (JsonException) { asked = null; }
+        if (asked?["model"] is not JsonValue model || !model.TryGetValue<string>(out var id) || asked["options"] is not JsonObject given)
+            return ImageShare.Error(400, "The body is not {\"model\",\"options\"} JSON");
+        var changes = new Dictionary<string, string>();
+        foreach (var (key, value) in given)
+        {
+            if (!IsLoadKey(key))
+                return ImageShare.Error(400, $"Not a load option: {key}");
+            if (value is not JsonValue v || !v.TryGetValue<string>(out var text))
+                return ImageShare.Error(400, $"{key}: the value is not a string");
+            changes[key] = text;
+        }
+        if (saved(id) is not { } options)
+            return ImageShare.Error(404, $"No such shared model: {id}");
+        if (ModelOptions.Apply(new JsonObject { ["auto_load"] = new JsonObject { ["model_path"] = id } }, changes, includeLoad: true) is { Count: > 0 } errors)
+            return ImageShare.Error(400, string.Join(" ", errors.Select(e => $"{e.Key}: {e.Value}")));
+        foreach (var (key, text) in changes)
+            if (text.Trim().Length == 0)
+                options.Remove(key);
+            else
+                options[key] = text;
+        overrides[id] = options;
+        return new(200, """{"ok":true}""");
     }
 
     // A model preset saved for this shared model: by its id or its file name.
@@ -178,10 +240,11 @@ internal static class ModelShare
 
     // The local chat GGUFs (FindLocalGgufs skips mmproj files): image models (no tokenizer) left out, each with its vision
     // projector, named as the model picker names them (MainWindow.FetchModelChoicesAsync).
-    public static List<SharedModel> LocalModels(string modelsFolder, string hubCache, JsonNode? workerConfig, IEnumerable<ModelPreset> presets) =>
+    public static List<SharedModel> LocalModels(string modelsFolder, string hubCache, JsonNode? workerConfig, IEnumerable<ModelPreset> presets,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? overrides = null) =>
         [.. LauncherLogic.FindLocalGgufs(modelsFolder, hubCache)
             .Where(g => LauncherLogic.ReadGgufMetadata(g.File)?.ContainsKey("tokenizer.ggml.model") == true)
-            .Select(g => new SharedModel(DisplayId(g), g.File, LauncherLogic.VisionProjector(g.File), SavedLoad(g.File, DisplayId(g), workerConfig, presets)))
+            .Select(g => new SharedModel(DisplayId(g), g.File, LauncherLogic.VisionProjector(g.File), SavedLoad(g.File, DisplayId(g), workerConfig, presets, overrides)))
             .DistinctBy(m => m.Id)];
 
     // The model picker's label for a local GGUF: "<repo name>  ·  <quant>" for a Hugging Face cache file, the file name otherwise.
@@ -230,6 +293,19 @@ internal static class ModelShare
             "tensor-split = 3,1\nflash-attn = on\nthreads = 8\n", "a shared model's own load options: " + string.Join("; ", moe));
         Check(SavedLoad(@"D:\x\Q.gguf", "Q  ·  Q4", null, [new() { Model = "Q  ·  Q4", Options = { ["n_cpu_moe"] = "12", ["llama_extra_args"] = "--threads 6" } }])
             .SequenceEqual([("n-cpu-moe", "12"), ("threads", "6")]) && SavedLoad(@"D:\x\Q.gguf", "Q", null, []).Count == 0, "load options from a model preset, and none");
+        // /share/load: the options over the saved ones become this PC's own for that model, and SavedLoad takes them before the worker's
+        var overrides = new Dictionary<string, Dictionary<string, string>>();
+        var workers = JsonNode.Parse("""{"custom_workers":[{"auto_load":{"model_path":"Big-MoE","gguf_file":"W:\\m\\Big-MoE.gguf","n_cpu_moe":39,"max_seq_length":65536}}]}""");
+        Dictionary<string, string>? Saved(string id) => id == "Big-MoE" ? SavedOptions(@"W:\m\Big-MoE.gguf", id, workers, [], overrides) : null;
+        Check(LoadJson(Saved("Big-MoE")!) == """{"options":{"max_seq_length":"65536","n_cpu_moe":"39"}}""", "GET /share/load: " + LoadJson(Saved("Big-MoE")!));
+        foreach (var (bad, status) in new[] { ("""{"model":"Big-MoE","options":{"temperature":"0.5"}}""", 400), ("""{"model":"Big-MoE","options":{"n_cpu_moe":"x"}}""", 400),
+                     ("""{"model":"Big-MoE","options":{"n_cpu_moe":20}}""", 400), ("""{"model":"Other","options":{"n_cpu_moe":"20"}}""", 404), ("nope", 400), ("""{"model":"Big-MoE"}""", 400) })
+            Check(SaveLoad(bad, overrides, Saved).Status == status && overrides.Count == 0, $"POST /share/load refused {bad} with {SaveLoad(bad, overrides, Saved).Status}, not {status}");
+        var saved = SaveLoad("""{"model":"Big-MoE","options":{"n_cpu_moe":"20","cache_type_kv":"q8_0","max_seq_length":""}}""", overrides, Saved);
+        Check(saved is { Status: 200, Json: """{"ok":true}""" }, "POST /share/load: " + saved.Json);
+        var reloaded = SavedLoad(@"W:\m\Big-MoE.gguf", "Big-MoE", workers, [], overrides);
+        Check(reloaded.SequenceEqual([("cache-type-k", "q8_0"), ("cache-type-v", "q8_0"), ("n-cpu-moe", "20")]), "the saved load options come first: " + string.Join("; ", reloaded));
+        Check(ParseLoad(LoadJson(Saved("Big-MoE")!)) is { Count: 2 } back && back["n_cpu_moe"] == "20" && back["cache_type_kv"] == "q8_0", "the load JSON round trip");
         // /share/presets: shared models' presets (by id or file name) and any-model ones, named by the shared id, request options only
         SharedModel[] shared = [new("Qwen3-GGUF  ·  Q4_K_M", @"C:\hub\qwen3-Q4_K_M.gguf", null), new("gemma", @"D:\m\gemma.gguf", null)];
         var sent = ParsePresets(PresetsJson([

@@ -17,10 +17,11 @@ internal static class ImageShare
 {
     public const int MaxBody = 1 << 20, MaxHead = 16 << 10;
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
-    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", PresetsPath = "/share/presets", ChatPrefix = "/v1/";
+    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", PresetsPath = "/share/presets", LoadPath = "/share/load", ChatPrefix = "/v1/";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
+    // Query: what follows the path's "?" ("" = none).
+    public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body, string Query = "");
     public sealed record Response(int Status, string Json);
     public sealed class HttpError(int status, string message) : Exception(message) { public int Status => status; }
 
@@ -76,7 +77,8 @@ internal static class ImageShare
                 throw new HttpError(400, "Bad header");
             headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
         }
-        return (new(first[0], first[1].Split('?')[0], headers, []), lines, buffer[(end + 4)..filled]);
+        var target = first[1].Split('?', 2);
+        return (new(first[0], target[0], headers, [], target.Length > 1 ? target[1] : ""), lines, buffer[(end + 4)..filled]);
     }
 
     public static async Task<Request> ReadBodyAsync(Stream stream, Request request, byte[] rest, CancellationToken ct)
@@ -99,7 +101,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", LoadPath => request.Method == "POST" ? "POST" : "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -201,6 +203,14 @@ internal static class ImageShare
     // The primary PC's model presets for its shared models (ModelShare.PresetsJson), as sent.
     public static Task<string> FetchPresetsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         SendAsync(http, new(HttpMethod.Get, baseUrl + PresetsPath), key, ct);
+
+    // The primary PC's saved load options for one of its shared models (ModelShare.LoadJson), and saving changed ones there.
+    public static async Task<Dictionary<string, string>> FetchLoadAsync(HttpClient http, string baseUrl, string key, string model, CancellationToken ct) =>
+        ModelShare.ParseLoad(await SendAsync(http, new(HttpMethod.Get, $"{baseUrl}{LoadPath}?model={Uri.EscapeDataString(model)}"), key, ct));
+
+    public static async Task SaveLoadAsync(HttpClient http, string baseUrl, string key, string model, IReadOnlyDictionary<string, string> options, CancellationToken ct) =>
+        await SendAsync(http, new(HttpMethod.Post, baseUrl + LoadPath)
+            { Content = new StringContent(JsonSerializer.Serialize(new { model, options }), Encoding.UTF8, "application/json") }, key, ct);
 
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
@@ -400,6 +410,11 @@ internal static class ImageShare
         Assert(Check(R("POST", ModelsPath, "Bearer key"), "key")?.Status == 405 && Check(R("GET", GeneratePath, "Bearer key"), "key")?.Status == 405, "405 for a wrong method");
         Assert(Check(R("GET", ModelsPath, "Bearer key"), "key") is null && Check(R("POST", GeneratePath, "Bearer key"), "key") is null, "the key lets a request through");
         Assert(Check(R("GET", PresetsPath, null), "key")?.Status == 401 && Check(R("GET", PresetsPath, "Bearer key"), "key") is null, "/share/presets takes the key");
+        Assert(Check(R("GET", LoadPath, null), "key")?.Status == 401 && Check(R("POST", LoadPath, "Bearer nope"), "key")?.Status == 401 &&
+            Check(R("GET", LoadPath, "Bearer key"), "key") is null && Check(R("POST", LoadPath, "Bearer key"), "key") is null && Check(R("PUT", LoadPath, "Bearer key"), "key")?.Status == 405,
+            "/share/load: GET and POST with the key, 401 without");
+        Assert(Parse("GET /share/load?model=Qwen%20%C2%B7%20Q4 HTTP/1.1\r\n\r\n") is { Path: LoadPath, Query: "model=Qwen%20%C2%B7%20Q4" } && Parse("GET /x HTTP/1.1\r\n\r\n").Query == "",
+            "the query"); 
 
         var moss = ImageGen.Recipe("moss-image-sft");
         ImageGen.LocalModel[] locals = [new(moss, @"D:\m\MOSS-Image-SFT-Q8_0.gguf"), new(ImageGen.Recipe("sdxl"), @"E:\x\sd_xl_turbo.safetensors")];

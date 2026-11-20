@@ -124,7 +124,7 @@ public partial class MainWindow
         _shareState = "Starting llama-server…";
         RefreshShare();
         var presets = _settings.ModelPresets.ToList();
-        var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache(), WorkerConfigForShare(), presets));
+        var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache(), WorkerConfigForShare(), presets, ModelShare.ReadOverrides()));
         if (generation != _shareGeneration)
             return;
         _sharedModels = models;
@@ -186,6 +186,22 @@ public partial class MainWindow
         _imageShare?.Dispose();
         _imageShare = null;
         _shareGeneration++;
+        KillShareProcess();
+    }
+
+    // llama-server again with a new models.ini (ImageShare and the tunnel stay up): changed load options apply at its next load.
+    private void RestartShareServer()
+    {
+        if (!_settings.ShareModels)
+            return;
+        _shareGeneration++; // its exit is not a crash to restart from
+        KillShareProcess();
+        _shareFailures = 0;
+        LaunchShare(++_shareGeneration);
+    }
+
+    private void KillShareProcess()
+    {
         if (_shareProcess is not { } process)
             return;
         _shareProcess = null;
@@ -212,12 +228,35 @@ public partial class MainWindow
         }
         if (request.Path == ImageShare.PresetsPath)
             return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
+        if (request.Path == ImageShare.LoadPath)
+            return await Dispatcher.InvokeAsync(() => ServeShareLoad(request));
         if (request.Path == ImageShare.ModelsPath)
             return new(200, ImageShare.ModelsJson(ImageShare.Models(ImageGen.ScanFolder(await Dispatcher.InvokeAsync(() => ImageModelsFolder)).Models)));
         ImageSettings? asked;
         try { asked = JsonSerializer.Deserialize<ImageSettings>(request.Body, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); }
         catch (JsonException) { asked = null; }
         return asked is null ? ImageShare.Error(400, "The body is not image settings JSON") : await await Dispatcher.InvokeAsync(() => GenerateForShareAsync(asked, ct));
+    }
+
+    // GET /share/load?model=<id>: a shared model's saved load options (ModelShare.SavedOptions). POST: saves them as this PC's own
+    // (<data>\share\overrides.json), then llama-server restarts with the new models.ini. On the UI thread: one save at a time.
+    private ImageShare.Response ServeShareLoad(ImageShare.Request request)
+    {
+        var overrides = ModelShare.ReadOverrides();
+        var config = WorkerConfigForShare();
+        Dictionary<string, string>? Saved(string id) => _sharedModels.FirstOrDefault(m => m.Id == id) is { } m
+            ? ModelShare.SavedOptions(m.Model, m.Id, config, _settings.ModelPresets, overrides) : null;
+        if (request.Method == "GET")
+            return Saved(System.Web.HttpUtility.ParseQueryString(request.Query)["model"] ?? "") is { } options
+                ? new(200, ModelShare.LoadJson(options)) : ImageShare.Error(404, "No such shared model");
+        var reply = ModelShare.SaveLoad(System.Text.Encoding.UTF8.GetString(request.Body), overrides, Saved);
+        if (reply.Status != 200)
+            return reply;
+        try { File.WriteAllText(ModelShare.OverridesPath, JsonSerializer.Serialize(overrides)); }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException) { return ImageShare.Error(500, "Could not save the settings: " + x.Message); }
+        Log("Share models: load options saved from another PC");
+        RestartShareServer();
+        return reply;
     }
 
     // The shared llama-server's loaded chat models, unloaded (its router's POST /models/unload); best effort: a failure leaves
