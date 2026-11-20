@@ -4,6 +4,8 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
@@ -56,7 +58,68 @@ internal static class ModelShare
         (m.Groups[1].Value.EndsWith(".trycloudflare.com", StringComparison.Ordinal) || IsTailscaleHost(m.Groups[1].Value))
             ? (m.Groups[1].Value, m.Groups[2].Value) : null;
 
-    public sealed record SharedModel(string Id, string Model, string? Mmproj);
+    // Load: this PC's own load settings for the model as llama-server preset keys (LoadOptions), so the router loads it as
+    // this PC would (a MoE model's experts on the CPU, its context, its threads) instead of everything on the GPU.
+    public sealed record SharedModel(string Id, string Model, string? Mmproj, IReadOnlyList<(string Key, string Value)>? Load = null);
+
+    // auto_load keys -> llama-server long option names, as orchestrator.py llama_args passes them.
+    private static readonly (string Key, string[] Names, Func<string, bool> Keep)[] LoadKeys =
+    [
+        ("max_seq_length", ["ctx-size"], v => int.TryParse(v, out var n) && n > 0),
+        ("gpu_layers", ["n-gpu-layers"], v => int.TryParse(v, out var n) && n >= 0), // -1 (all) is llama-server's own default
+        ("cache_type_kv", ["cache-type-k", "cache-type-v"], v => true),
+        ("n_batch", ["batch-size"], v => int.TryParse(v, out var n) && n > 0),
+        ("n_ubatch", ["ubatch-size"], v => int.TryParse(v, out var n) && n > 0),
+        ("n_cpu_moe", ["n-cpu-moe"], v => int.TryParse(v, out var n) && n > 0),
+        ("n_parallel", ["parallel"], v => int.TryParse(v, out var n) && n > 0),
+        ("ctx_checkpoints", ["ctx-checkpoints"], v => int.TryParse(v, out var n) && n >= 0),
+        ("cache_ram", ["cache-ram"], v => int.TryParse(v, out _)),
+        ("load_mode", ["load-mode"], v => v is "none" or "mmap" or "mlock" or "mmap+mlock" or "dio"),
+        ("tensor_split", ["tensor-split"], v => true),
+        ("reasoning_budget", ["reasoning-budget"], v => int.TryParse(v, out var n) && n >= 0),
+        ("speculative_type", ["spec-type"], v => v == "none" || v.StartsWith("draft-", StringComparison.Ordinal)), // the app's off/auto/mtp need the model: left out
+    ];
+
+    // The preset keys for saved load options (auto_load key -> value, a list comma-joined) and llama_extra_args: -t N and
+    // --long value pairs become keys (they win, as in llama_args); anything else (short flags, bare switches) is skipped.
+    public static List<(string Key, string Value)> LoadOptions(IReadOnlyDictionary<string, string> options, IReadOnlyList<string> extraArgs)
+    {
+        var ini = new List<(string Key, string Value)>();
+        foreach (var (key, names, keep) in LoadKeys)
+            if (options.GetValueOrDefault(key)?.Trim() is { Length: > 0 } value && keep(value))
+                ini.AddRange(names.Select(n => (n, value)));
+        for (var i = 0; i + 1 < extraArgs.Count; i++)
+            if ((extraArgs[i] == "-t" ? "threads" : extraArgs[i].StartsWith("--", StringComparison.Ordinal) && extraArgs[i].Length > 2 ? extraArgs[i][2..] : null) is { } name &&
+                (!extraArgs[i + 1].StartsWith('-') || double.TryParse(extraArgs[i + 1], out _)))
+            {
+                ini.RemoveAll(o => o.Key == name);
+                ini.Add((name, extraArgs[++i]));
+            }
+        return ini;
+    }
+
+    // This PC's saved load options for a GGUF: the auto_load of a worker in worker-config.json whose gguf_file is that file
+    // (or whose model_path names it), else a model preset saved for that model, else none.
+    public static List<(string Key, string Value)> SavedLoad(string file, string id, JsonNode? workerConfig, IEnumerable<ModelPreset> presets)
+    {
+        static IEnumerable<JsonObject> AutoLoads(JsonNode? node) => node switch
+        {
+            JsonObject o => (o["auto_load"] is JsonObject a ? [a] : Enumerable.Empty<JsonObject>()).Concat(o.Where(p => p.Key != "auto_load").SelectMany(p => AutoLoads(p.Value))),
+            JsonArray list => list.SelectMany(AutoLoads),
+            _ => [],
+        };
+        static string Text(JsonNode? v) => v is JsonArray list ? string.Join(",", list.Select(x => x?.ToString())) : v?.ToString() ?? "";
+        var name = Path.GetFileNameWithoutExtension(file);
+        bool Same(string? path) => path is { Length: > 0 } && (path.Equals(file, StringComparison.OrdinalIgnoreCase) || path.Equals(name, StringComparison.OrdinalIgnoreCase));
+        if (AutoLoads(workerConfig).FirstOrDefault(a => Same(Text(a["gguf_file"])) || Same(Text(a["model_path"]))) is { } load)
+            return LoadOptions(load.ToDictionary(p => p.Key, p => Text(p.Value)),
+                load["llama_extra_args"] is JsonArray extra ? [.. extra.Select(x => x?.ToString() ?? "")] : []);
+        if (presets.FirstOrDefault(p => p.Model.Equals(id, StringComparison.OrdinalIgnoreCase) || p.Model.Equals(name, StringComparison.OrdinalIgnoreCase)) is { } preset)
+            return LoadOptions(preset.Options, preset.Options.GetValueOrDefault("llama_extra_args")?.Trim() is { Length: > 0 } args
+                ? args.StartsWith('[') ? JsonSerializer.Deserialize<List<string>>(args) ?? [] : args.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                : []);
+        return [];
+    }
 
     // llama-server's --models-preset file: one section per model, named by the id the other PC picks it by.
     public static string Ini(IEnumerable<SharedModel> models)
@@ -67,16 +130,18 @@ internal static class ModelShare
             text.Append($"\n[{m.Id}]\nmodel = {m.Model}\n");
             if (m.Mmproj is { Length: > 0 } mmproj)
                 text.Append($"mmproj = {mmproj}\n");
+            foreach (var (key, value) in m.Load ?? [])
+                text.Append($"{key} = {value}\n");
         }
         return text.ToString();
     }
 
     // The local chat GGUFs (FindLocalGgufs skips mmproj files): image models (no tokenizer) left out, each with its vision
     // projector, named as the model picker names them (MainWindow.FetchModelChoicesAsync).
-    public static List<SharedModel> LocalModels(string modelsFolder, string hubCache) =>
+    public static List<SharedModel> LocalModels(string modelsFolder, string hubCache, JsonNode? workerConfig, IEnumerable<ModelPreset> presets) =>
         [.. LauncherLogic.FindLocalGgufs(modelsFolder, hubCache)
             .Where(g => LauncherLogic.ReadGgufMetadata(g.File)?.ContainsKey("tokenizer.ggml.model") == true)
-            .Select(g => new SharedModel(DisplayId(g), g.File, LauncherLogic.VisionProjector(g.File)))
+            .Select(g => new SharedModel(DisplayId(g), g.File, LauncherLogic.VisionProjector(g.File), SavedLoad(g.File, DisplayId(g), workerConfig, presets)))
             .DistinctBy(m => m.Id)];
 
     // The model picker's label for a local GGUF: "<repo name>  ·  <quant>" for a Hugging Face cache file, the file name otherwise.
@@ -114,6 +179,17 @@ internal static class ModelShare
         Check(Ini([new("Qwen3-GGUF  ·  Q4_K_M", @"C:\hub\qwen3-Q4_K_M.gguf", null), new("gemma-vision", @"D:\models\gemma.gguf", @"D:\models\mmproj-gemma.gguf")]) ==
             "version = 1\n\n[Qwen3-GGUF  ·  Q4_K_M]\nmodel = C:\\hub\\qwen3-Q4_K_M.gguf\n\n[gemma-vision]\nmodel = D:\\models\\gemma.gguf\nmmproj = D:\\models\\mmproj-gemma.gguf\n",
             "the models.ini contents");
+        // a MoE model loads as this PC loads it: experts on the CPU, its context, KV cache type and threads
+        var moe = SavedLoad(@"W:\m\Big-MoE.gguf", "Big-MoE", JsonNode.Parse("""
+            {"roles":{"lead":{"auto_load":{"model_path":"Other","gguf_file":"W:\\m\\other.gguf","n_cpu_moe":5}}},
+             "custom_workers":[{"auto_load":{"model_path":"Big-MoE","gguf_file":"W:\\m\\Big-MoE.gguf","max_seq_length":65536,"cache_type_kv":"q8_0",
+               "n_cpu_moe":39,"gpu_layers":-1,"speculative_type":"off","tensor_split":[3,1],"llama_extra_args":["--flash-attn","on","-t","8","--no-mmap"]}}]}
+            """), []);
+        Check(Ini([new("Big-MoE", @"W:\m\Big-MoE.gguf", null, moe)]) ==
+            "version = 1\n\n[Big-MoE]\nmodel = W:\\m\\Big-MoE.gguf\nctx-size = 65536\ncache-type-k = q8_0\ncache-type-v = q8_0\nn-cpu-moe = 39\n" +
+            "tensor-split = 3,1\nflash-attn = on\nthreads = 8\n", "a shared model's own load options: " + string.Join("; ", moe));
+        Check(SavedLoad(@"D:\x\Q.gguf", "Q  ·  Q4", null, [new() { Model = "Q  ·  Q4", Options = { ["n_cpu_moe"] = "12", ["llama_extra_args"] = "--threads 6" } }])
+            .SequenceEqual([("n-cpu-moe", "12"), ("threads", "6")]) && SavedLoad(@"D:\x\Q.gguf", "Q", null, []).Count == 0, "load options from a model preset, and none");
         Check(DisplayId(new("unsloth/Qwen3-GGUF", "Q4_K_M", @"C:\x\q.gguf")) == "Qwen3-GGUF  ·  Q4_K_M" && DisplayId(new("", "", @"D:\m\My Model.gguf")) == "My Model",
             "display ids");
     }

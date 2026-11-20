@@ -106,7 +106,11 @@ public partial class MainWindow
             SaveShare(false);
             return;
         }
-        if (!ApiKeys.Has(ModelShare.OwnKeyEnv))
+        // The saved key, read from the store itself (not the environment, which can hold another value), so the same key
+        // serves across restarts; a new one only when none can be read.
+        if (ApiKeys.Get(ModelShare.OwnKeyEnv) is { Length: > 0 } saved)
+            Environment.SetEnvironmentVariable(ModelShare.OwnKeyEnv, saved);
+        else
             ApiKeys.Save(ModelShare.OwnKeyEnv, "Default", ModelShare.NewKey());
         _shareFailures = 0;
         SaveShare(true);
@@ -117,7 +121,8 @@ public partial class MainWindow
     {
         _shareState = "Starting llama-server…";
         RefreshShare();
-        var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache()));
+        var presets = _settings.ModelPresets.ToList();
+        var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache(), WorkerConfigForShare(), presets));
         if (generation != _shareGeneration)
             return;
         var info = new ProcessStartInfo(LauncherLogic.LlamaServerPath) { UseShellExecute = false, CreateNoWindow = true };
@@ -162,6 +167,13 @@ public partial class MainWindow
             if (next == _shareGeneration && _settings.ShareModels)
                 LaunchShare(next);
         });
+    }
+
+    // <data>\worker-config.json, where this PC's workers keep their load options; null when missing or unreadable.
+    private static System.Text.Json.Nodes.JsonNode? WorkerConfigForShare()
+    {
+        try { return System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(Path.Combine(AppSettings.DataRoot, "worker-config.json"))); }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
 
     // Idempotent: the tunnel and the server stop by their own pids, and any pending restart is dropped.

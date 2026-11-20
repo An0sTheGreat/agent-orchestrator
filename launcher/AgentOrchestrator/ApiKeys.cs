@@ -89,6 +89,9 @@ public static class ApiKeys
 
     public static bool Has(string name) => Active(name) is not null;
 
+    // The active saved key itself, decrypted; null when none is saved or it cannot be read.
+    public static string? Get(string name) => ActiveKey(Load().GetValueOrDefault(name));
+
     // At startup: every variable's active key into the process's environment (a saved key wins over a variable of the same name).
     public static void ApplyAll()
     {
@@ -197,6 +200,9 @@ public static class ApiKeys
             Environment.SetEnvironmentVariable(Name, null);
             ApplyAll(); // a restart
             Check(Env() == "sk-test-value-123", "The active key did not come back.");
+            Environment.SetEnvironmentVariable(Name, "sk-other");
+            Check(Get(Name) == "sk-test-value-123" && Get("AO_SELFTEST_NONE_KEY") is null, "Get did not read the saved key.");
+            Environment.SetEnvironmentVariable(Name, "sk-test-value-123");
             try { Select(Name, "Nope"); throw new InvalidOperationException("A missing key was selected."); } catch (ArgumentException) { }
 
             // Rename: the active one stays active; a name in use is refused.
