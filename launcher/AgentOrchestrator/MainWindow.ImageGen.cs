@@ -148,8 +148,10 @@ public partial class MainWindow
             if (_imgApplying || _imgRecipe.SelectedIndex < 0)
                 return;
             var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
+            var now = ReadImageSettings(); // the aspect and sizes stay with a new model; its own steps, guidance and sampler come in
             ApplyImageSettings(new ImageSettings
             {
+                Aspect = now.Aspect, CustomWidth = now.CustomWidth, CustomHeight = now.CustomHeight, Width = now.Width, Height = now.Height,
                 RecipeId = recipe.Id, LocalModel = local, Prompt = _imgPrompt.Text, Negative = _imgNegative.Text, Steps = recipe.Steps, Cfg = recipe.Cfg, Sampler = recipe.Sampler,
                 Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1, LowVram = _imgLowVram.IsChecked == true, Strength = _imgStrength.Value, InitImage = _imgInit,
             });
