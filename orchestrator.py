@@ -1387,6 +1387,19 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
         args += ["-b", str(auto_load["n_batch"])]
     if "n_ubatch" in auto_load:
         args += ["-ub", str(auto_load["n_ubatch"])]
+    # Model Settings options llama-server takes as they are (a flag the user put in llama_extra_args wins)
+    own = {str(a) for a in auto_load.get("llama_extra_args") or []}
+    for key, flag, keep in (
+        ("n_cpu_moe", "--n-cpu-moe", lambda v: isinstance(v, int) and v > 0),  # experts of the first N layers stay in RAM
+        ("n_parallel", "-np", lambda v: isinstance(v, int) and v > 0),
+        ("cache_ram", "-cram", lambda v: isinstance(v, int)),
+        ("ctx_checkpoints", "-ctxcp", lambda v: isinstance(v, int) and v >= 0),
+        ("load_mode", "-lm", lambda v: v in ("none", "mmap", "mlock", "mmap+mlock", "dio")),
+        ("tensor_split", "-ts", lambda v: bool(v)),
+    ):
+        value = auto_load.get(key)
+        if keep(value) and flag not in own:
+            args += [flag, ",".join(str(x) for x in value) if isinstance(value, list) else str(value)]
     if isinstance(budget := auto_load.get("reasoning_budget"), int) and budget >= 0:
         args += ["--reasoning-budget", str(budget)]  # 0: no thinking; N: thinking ends after N tokens (unset or -1: no cap)
     if spec := speculative_type(model_file, auto_load.get("speculative_type")):

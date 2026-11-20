@@ -5914,6 +5914,19 @@ class LlamaCppTests(unittest.TestCase):
         self.assertEqual(sent(), ("look", image[1]))
         self.assertEqual(messages, [{"role": "user", "content": "look"}])  # the history keeps its text
 
+    def test_model_settings_memory_options_reach_llama_server(self):
+        model = self.tmp / "moe-IQ3_XXS.gguf"
+        model.write_bytes(b"x")
+        args = orchestrator.llama_args(model, {"model_path": self.PATH, "n_cpu_moe": 40, "n_parallel": 1, "cache_ram": 8192, "ctx_checkpoints": 32,
+                                               "load_mode": "mmap", "tensor_split": [3, 1]}, 8899)
+        flags = {flag: args[args.index(flag) + 1] for flag in ("--n-cpu-moe", "-np", "-cram", "-ctxcp", "-lm", "-ts")}
+        self.assertEqual(flags, {"--n-cpu-moe": "40", "-np": "1", "-cram": "8192", "-ctxcp": "32", "-lm": "mmap", "-ts": "3,1"})
+        bare = orchestrator.llama_args(model, {"model_path": self.PATH, "n_cpu_moe": 0, "load_mode": "auto"}, 8899)
+        self.assertNotIn("--n-cpu-moe", bare)  # 0 and auto are llama-server's own defaults: nothing is sent
+        self.assertNotIn("-lm", bare)
+        own = orchestrator.llama_args(model, {"model_path": self.PATH, "n_cpu_moe": 40, "llama_extra_args": ["--n-cpu-moe", "30"]}, 8899)
+        self.assertEqual(own.count("--n-cpu-moe"), 1)  # the user's extra argument wins
+
     def test_a_vision_projector_beside_the_model_is_loaded_unless_vision_is_off(self):
         folder = self.tmp / "vision"
         folder.mkdir()
