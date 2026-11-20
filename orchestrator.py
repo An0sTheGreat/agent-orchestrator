@@ -745,6 +745,11 @@ def remote_context(request_at: Any, base_url: str, model: str) -> int | None:
             for name in ("context_length", "max_model_len", "context_window"):
                 if isinstance(entry.get(name), int) and entry[name] > 0:
                     return entry[name]
+            # a llama-server router (a primary PC's shared models) lists each model's own command line instead
+            args = [str(a) for a in ((entry.get("status") or {}).get("args") or [])] if isinstance(entry.get("status"), dict) else []
+            for flag in ("--ctx-size", "-c"):
+                if flag in args and args.index(flag) + 1 < len(args) and args[args.index(flag) + 1].isdigit() and int(args[args.index(flag) + 1]) > 0:
+                    return int(args[args.index(flag) + 1])
     return None
 LOADED_NOW: dict[Any, str] = {}  # llama port -> the model path this process last ensured there
 THINK_TEMPLATES: dict[tuple[Any, str], bool | None] = {}  # same key -> template opens <think> itself (None: unknown)

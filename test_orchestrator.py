@@ -226,6 +226,15 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(payload["usage"], {"completion_tokens": 3})
         self.assertEqual([c.kwargs["kind"] for c in emit.call_args_list], ["thinking", "text", "tool", "tool"])
 
+    def test_a_router_models_context_size_is_read_from_its_command_line(self):
+        listed = {"data": [{"id": "big", "status": {"value": "loaded", "args": ["llama-server", "--ctx-size", "65536", "--n-cpu-moe", "40"]}},
+                           {"id": "plain", "status": {"value": "unloaded", "args": ["llama-server", "--model", "x.gguf"]}},
+                           {"id": "api", "context_length": 32768}]}
+        request_at = lambda *_: listed
+        self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "big"), 65536)
+        self.assertIsNone(orchestrator.remote_context(request_at, "http://h/v1", "plain"))  # the server's own default: unknown
+        self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "api"), 32768)
+
     def test_tok_s_comes_from_llama_servers_timings_when_it_sends_them(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role = "planner"
