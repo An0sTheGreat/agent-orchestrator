@@ -237,6 +237,23 @@ class OrchestratorTests(unittest.TestCase):
         self.assertIsNone(orchestrator.remote_context(request_at, "http://h/v1", "plain"))  # the server's own default: unknown
         self.assertEqual(orchestrator.remote_context(request_at, "http://h/v1", "api"), 32768)
 
+    def test_load_role_loads_the_roles_model_and_warms_a_remote_one(self):
+        class Fake:
+            def __init__(self, port):
+                self.llama_port, self.title, self.sent, self.ensured = port, "LEAD", [], []
+            def ensure_model(self, role, interactive):
+                self.ensured.append((role, interactive))
+                return "m1"
+            def _request(self, method, path, body):
+                self.sent.append((method, path, body["model"], body["max_tokens"]))
+        for port, warmed in ((8781, []), (0, [("POST", "/chat/completions", "m1", 1)])):
+            fake = Fake(port)
+            with patch.object(orchestrator, "role_settings", lambda config, role: (fake, {})), \
+                    patch.object(orchestrator, "custom_workers", lambda config, warn=False: []), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(orchestrator.load_role({"roles": {}}, "reviewer"), 0)
+            self.assertEqual(fake.ensured, [("reviewer", False)])
+            self.assertEqual(fake.sent, warmed)  # a local model loads on llama-server; a remote one gets one token
+
     def test_tok_s_comes_from_llama_servers_timings_when_it_sends_them(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role = "planner"

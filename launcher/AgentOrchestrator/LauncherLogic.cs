@@ -366,6 +366,15 @@ internal static class LauncherLogic
         return info;
     }
 
+    // Load models (the title bar): the engine loads one role's model with folder's config.json and leaves it loaded.
+    public static ProcessStartInfo BuildLoadRoleStartInfo(string python, string workflowRoot, string folder, string role)
+    {
+        var info = NewStartInfo(python, workflowRoot);
+        foreach (var arg in new[] { "--project", folder, "--load-role", role })
+            info.ArgumentList.Add(arg);
+        return info;
+    }
+
     // ---- code: like chat, but the worker gets file tools over folders[0] (the project, always write) and the extra folders
 
     public sealed record CodeFolder(string Path, string Access); // Access: "read" | "write"
@@ -2056,6 +2065,10 @@ internal static class LauncherLogic
         var runArgs = BuildStartInfo("python.exe", root, @"Y:\Example Project", false, @"Y:\run.json").ArgumentList;
         if (runArgs.IndexOf("--request") < 0 || runArgs[runArgs.IndexOf("--request") + 1] != @"Y:\run.json")
             throw new InvalidOperationException("A project run must pass its Code request.");
+
+        var loadArgs = BuildLoadRoleStartInfo("python.exe", root, @"Y:\p", "reviewer").ArgumentList;
+        if (loadArgs.IndexOf("--load-role") < 0 || loadArgs[loadArgs.IndexOf("--load-role") + 1] != "reviewer" || loadArgs[loadArgs.IndexOf("--project") + 1] != @"Y:\p")
+            throw new InvalidOperationException("Load models must pass the role and the folder holding config.json.");
 
         var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", @"Y:\req.json");
         var chatArgs = chatInfo.ArgumentList;

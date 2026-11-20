@@ -5862,11 +5862,16 @@ def _run() -> int:
     parser.add_argument("--request", type=Path, help="Lead project run: a Code request JSON (folders, search, tools, skills, sandbox, "
                         "session, effort) for the run's tools")
     parser.add_argument("--unload-local", action="store_true", help="Stop the llama-servers this app started, then exit")
+    parser.add_argument("--load-role", help="Load this role's model (planner, implementer, reviewer, compactor or a custom worker id) "
+                        "with the project's config.json and leave it loaded, then exit")
     args = parser.parse_args()
     if args.unload_local:
         llama_stop()
         return 0
     global PROJECT_ROOT_ARG, EVENTS, CHAT_MODE
+    if args.load_role:
+        CHAT_MODE = True  # main() leaves the model loaded
+        return load_role(json.loads(load_text(args.project.resolve() / "config.json")), args.load_role)
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
     CHAT_MODE = args.chat is not None or args.code is not None
@@ -5976,6 +5981,19 @@ def unload_models() -> None:
         if client.llama_port and llama_stop(client.llama_port):
             print(f"[{client.title or client.role}] stopped llama-server")
     LOADED_BY_RUN.clear()
+
+
+def load_role(config: dict[str, Any], role: str) -> int:
+    """The launcher's Load models: the role's model loaded now, ready for the next message. A local model starts on this app's
+    llama-server (replacing what it serves); a remote one (a primary PC's shared model, an API) gets a one-token request, so a
+    primary PC's router loads it and a wrong key or address shows now."""
+    custom_workers(config, warn=True)
+    client, _ = role_settings(config, role)
+    model = client.ensure_model(role, False)
+    if not client.llama_port:
+        client._request("POST", "/chat/completions", {"model": model, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1})
+    print(f"[{client.title or role}] loaded {model}")
+    return 0
 
 
 def main() -> int:

@@ -1027,11 +1027,13 @@
                 <!-- The open chat's title, like other chat apps; its menu is the sidebar row's (RefreshTitleChat). -->
                 <!-- The Code view's Start button sits right of the title; it slides over when the title appears (MainWindow.Landing.cs). -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0">
-                <!-- Unload models: this PC's llama-server and, when connected, the primary PC's shared model (UnloadModels_Click) -->
-                <Button x:Name="UnloadButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0" Padding="7,3"
-                        FontSize="11" Click="UnloadModels_Click" IsEnabled="False" AutomationProperties.Name="Unload models"
-                        ToolTipService.ShowOnDisabled="True" ToolTip="Unload the loaded models now, here and on the primary PC this PC is connected to, freeing their memory; the next message loads them again">
-                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE7E8;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock Text="Unload models" /></StackPanel>
+                <!-- Load models: a menu to load one role's model now (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR) or unload all,
+                     here and on the primary PC this PC is connected to (LoadModels_Click) -->
+                <Button x:Name="LoadModelsButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0" Padding="7,3"
+                        FontSize="11" Click="LoadModels_Click" IsEnabled="False" AutomationProperties.Name="Load models"
+                        ToolTipService.ShowOnDisabled="True" ToolTip="Load a worker's model now (Lead, Implementer, Reviewer or Compactor), or unload them all">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock x:Name="LoadModelsText" Text="Load models" />
+                        <TextBlock Text="&#xE70D;" Style="{StaticResource RailGlyph}" FontSize="9" Margin="6,1,0,0" /></StackPanel>
                 </Button>
                 <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Padding="8,3" Visibility="Collapsed" Click="TitleChat_Click" ToolTip="Chat options">

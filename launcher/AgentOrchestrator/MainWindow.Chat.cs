@@ -240,7 +240,7 @@ public partial class MainWindow
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
         MultiModelOptions.IsEnabled = !_chatBusy && !runActive; // the engine reads it when it starts
-        UnloadButton.IsEnabled = !_chatBusy && !runActive && (ModelsLoaded || _settings.ShareHost.Length > 0); // the primary PC's state is not known here
+        LoadModelsButton.IsEnabled = !_chatBusy && !runActive && _loadingRole is null;
         CodeFoldersList.IsEnabled = AddCodeFolderButton.IsEnabled = !_chatBusy && !runActive;
         var hasMd = HasProjectMd();
         CodeStartButton.IsEnabled = !_chatBusy && !runActive && _workflowRoot is not null && hasMd;
@@ -431,9 +431,83 @@ public partial class MainWindow
         RefreshContextPins();
     }
 
-    // Unload models (the title bar's top left): stops the local llama-server now and, when this PC is connected to a primary
-    // PC, asks it to unload its shared chat model; with Keep models loaded on, this frees the memory without the round trip
-    // through Settings. Greyed out with nothing to unload or while working.
+    // Load models (the title bar's top left): a menu to load one worker's model now, before the first message, so a 3-model,
+    // 2-model or Lead-only setup has the model it is about to use ready; and Unload all models. Greyed out while working.
+    private void LoadModels_Click(object sender, RoutedEventArgs e)
+    {
+        var menu = new ContextMenu { PlacementTarget = LoadModelsButton, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+        foreach (var role in Roles)
+        {
+            var card = CardFor(role);
+            // a worker not set up (its tab hidden) or a Compactor on the Lead's model has nothing of its own to load
+            var shared = role != "planner" && (card is null || card.Hidden || role == "compactor" && card.FollowsMain);
+            var item = new MenuItem { Header = $"Load {card?.Title ?? role.ToUpperInvariant()}" + (shared ? " (uses the Lead's model)" : ""), IsEnabled = !shared };
+            item.Click += (_, _) => Forget(LoadRoleAsync(role, card?.Title ?? role.ToUpperInvariant()));
+            menu.Items.Add(item);
+        }
+        menu.Items.Add(new Separator());
+        var unload = new MenuItem { Header = "Unload all models", IsEnabled = ModelsLoaded || _settings.ShareHost.Length > 0 }; // the primary PC's state is not known here
+        unload.Click += UnloadModels_Click;
+        menu.Items.Add(unload);
+        menu.IsOpen = true;
+    }
+
+    private string? _loadingRole; // the role Load models is loading; null: none
+
+    // One engine process loads the role's model with the chat's config.json (as a message would) and leaves it loaded.
+    private async Task LoadRoleAsync(string role, string title)
+    {
+        if (_chatBusy || _process is not null || _loadingRole is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
+            return;
+        if (!SyncCustomWorkers(new List<string>()))
+        {
+            Toast("Not loaded: config.json could not be updated", "#FF667A");
+            return;
+        }
+        _loadingRole = role;
+        LoadModelsText.Text = $"Loading {title}…";
+        RefreshChatInput();
+        string? folder = null, temp = null, error = null;
+        try
+        {
+            var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out _);
+            (folder, temp) = (prepared.Path, prepared.IsTemp ? prepared.Path : null);
+            var info = LauncherLogic.BuildLoadRoleStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, role);
+            ApplyRuntime(info);
+            using var process = new Process { StartInfo = info };
+            var output = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            process.OutputDataReceived += (_, a) => { if (a.Data is not null) output.Enqueue(a.Data); };
+            process.ErrorDataReceived += (_, a) => { if (a.Data is not null) output.Enqueue(a.Data); };
+            Log($"Loading {title} in {folder}");
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+            foreach (var line in output)
+                Log(line);
+            if (process.ExitCode != 0)
+                error = output.LastOrDefault(l => l.StartsWith("ERROR:")) ?? $"the engine exited with code {process.ExitCode}";
+        }
+        catch (Exception x) when (x is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            error = x.Message;
+        }
+        finally
+        {
+            if (temp is not null)
+                try { Directory.Delete(temp, true); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
+            _loadingRole = null;
+            LoadModelsText.Text = "Load models";
+            RefreshChatInput();
+        }
+        if (error is null)
+            Toast($"{title} loaded");
+        else
+            Toast($"{title} not loaded: {error}", "#FF667A");
+    }
+
+    // Unload all models: stops the local llama-server now and, when this PC is connected to a primary PC, asks it to unload
+    // its shared chat model; with Keep models loaded on, this frees the memory without the round trip through Settings.
     private async void UnloadModels_Click(object sender, RoutedEventArgs e)
     {
         if (_process is null) // a run may be using the local server
@@ -442,7 +516,7 @@ public partial class MainWindow
         var remote = "";
         if (_settings.ShareHost.Length > 0)
         {
-            UnloadButton.IsEnabled = false;
+            LoadModelsButton.IsEnabled = false;
             try
             {
                 using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(30) };
@@ -675,6 +749,11 @@ public partial class MainWindow
     private async Task<bool> RunTurn(Conversation c, string? text, string role, Func<string, string> buildRequest,
         Func<string, string, string, string, ProcessStartInfo> buildStartInfo, string label, bool queued = false)
     {
+        if (_loadingRole is not null)
+        {
+            Toast("Wait for the model to finish loading", "#F7C873");
+            return false;
+        }
         if (_chatBusy || _process is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
             return false;
         var skipped = new List<string>();
