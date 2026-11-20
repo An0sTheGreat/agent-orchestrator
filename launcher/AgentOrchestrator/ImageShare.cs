@@ -17,7 +17,7 @@ internal static class ImageShare
 {
     public const int MaxBody = 1 << 20, MaxHead = 16 << 10;
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
-    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", ChatPrefix = "/v1/";
+    public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", PresetsPath = "/share/presets", ChatPrefix = "/v1/";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body);
@@ -99,7 +99,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -197,6 +197,10 @@ internal static class ImageShare
     // The primary PC unloads its shared chat model (the other PC's Unload models button).
     public static async Task UnloadAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         await SendAsync(http, new(HttpMethod.Post, baseUrl + UnloadPath) { Content = new StringContent("{}", Encoding.UTF8, "application/json") }, key, ct);
+
+    // The primary PC's model presets for its shared models (ModelShare.PresetsJson), as sent.
+    public static Task<string> FetchPresetsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
+        SendAsync(http, new(HttpMethod.Get, baseUrl + PresetsPath), key, ct);
 
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
@@ -395,6 +399,7 @@ internal static class ImageShare
         Assert(Check(R("GET", "/images/other", "Bearer key"), "key")?.Status == 404, "404 for an unknown path");
         Assert(Check(R("POST", ModelsPath, "Bearer key"), "key")?.Status == 405 && Check(R("GET", GeneratePath, "Bearer key"), "key")?.Status == 405, "405 for a wrong method");
         Assert(Check(R("GET", ModelsPath, "Bearer key"), "key") is null && Check(R("POST", GeneratePath, "Bearer key"), "key") is null, "the key lets a request through");
+        Assert(Check(R("GET", PresetsPath, null), "key")?.Status == 401 && Check(R("GET", PresetsPath, "Bearer key"), "key") is null, "/share/presets takes the key");
 
         var moss = ImageGen.Recipe("moss-image-sft");
         ImageGen.LocalModel[] locals = [new(moss, @"D:\m\MOSS-Image-SFT-Q8_0.gguf"), new(ImageGen.Recipe("sdxl"), @"E:\x\sd_xl_turbo.safetensors")];

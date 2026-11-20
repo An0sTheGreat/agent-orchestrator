@@ -928,7 +928,9 @@ public partial class MainWindow
         // Overwrites the preset this worker last applied or saved (shown only while there is one for the model in the picker)
         var saveTo = new Button { Tag = "ModelPresetSaveTo", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 0, 8, 0) };
         // Presets are the model's: the menu (built on each click) lists those of the model in the picker now
-        string ShownModel() => (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
+        // A remote worker's is its remote model id (as the Remote API lists it; the card's name can be a run's reported id), until a local pick
+        string ShownModel() => remoteMode() && modelBox.SelectedItem is not ComboBoxItem { Tag: ModelChoice } ? remoteNow!.Model.Trim()
+            : (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
         bool Mine(ModelPreset p) => p.Model.Length == 0 || p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
         ModelPreset? Active() => _settings.ActiveModelPresets.GetValueOrDefault(card.Role) is { Length: > 0 } name
             ? _settings.ModelPresets.FirstOrDefault(p => Mine(p) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) : null;

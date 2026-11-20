@@ -20,11 +20,13 @@ namespace AgentOrchestrator;
 // llama-server restarts after a backoff (5 s doubling to 1 min) when it exits while on, the tunnel likewise (RemoteTunnel);
 // all stop by pid when the switch goes off or the app closes. Other PC: Connect checks a connection code against
 // ModelShare.ChatUrl's /models and keeps its host
-// (AppSettings.ShareHost) and key (ApiKeys, ModelShare.KeyEnv); the Remote API page then lists "Primary PC".
+// (AppSettings.ShareHost) and key (ApiKeys, ModelShare.KeyEnv); the Remote API page then lists "Primary PC". Connect (and
+// Copy presets) also copies the primary PC's model presets for its shared models (GET /share/presets, ModelShare.PresetsJson).
 public partial class MainWindow
 {
     private Process? _shareProcess;
     private ImageShare.Server? _imageShare; // the images half, on ModelShare.ImagePort; it keeps running across llama-server restarts
+    private volatile List<ModelShare.SharedModel> _sharedModels = []; // the models.ini of the last launch: /share/presets lists their presets
     private int _shareGeneration, _shareFailures; // a new generation for every launch and stop: stale exits and restarts are ignored
     private readonly RemoteTunnel _shareTunnel = new(RemoteTunnel.DefaultExe, "cloudflared-share.pid");
     private string _shareState = "Off"; // off: why; on: llama-server's state ("" = running)
@@ -125,7 +127,8 @@ public partial class MainWindow
         var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache(), WorkerConfigForShare(), presets));
         if (generation != _shareGeneration)
             return;
-        var info = new ProcessStartInfo(LauncherLogic.LlamaServerPath) { UseShellExecute = false, CreateNoWindow = true };
+        _sharedModels = models;
+        var info =new ProcessStartInfo(LauncherLogic.LlamaServerPath) { UseShellExecute = false, CreateNoWindow = true };
         foreach (var arg in new[] { "--host", "127.0.0.1", "--port", $"{ModelShare.ChatPort}", "--api-key", Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "",
                      "--models-preset", ModelShare.IniPath, "--models-max", "1" })
             info.ArgumentList.Add(arg);
@@ -207,6 +210,8 @@ public partial class MainWindow
             await UnloadSharedChatModelsAsync(ct);
             return new(200, "{}");
         }
+        if (request.Path == ImageShare.PresetsPath)
+            return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
         if (request.Path == ImageShare.ModelsPath)
             return new(200, ImageShare.ModelsJson(ImageShare.Models(ImageGen.ScanFolder(await Dispatcher.InvokeAsync(() => ImageModelsFolder)).Models)));
         ImageSettings? asked;
@@ -349,7 +354,7 @@ public partial class MainWindow
             _settings.ShareHost = RemoteCatalog.ShareHost = host;
             _settings.Save();
             ShareCodeInput.Clear();
-            ShareNote($"Connected to {host}: {models.Count} models");
+            ShareNote($"Connected to {host}: {models.Count} models · {await CopySharedPresetsAsync(http, host, key)}");
         }
         catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
@@ -362,6 +367,38 @@ public partial class MainWindow
         {
             ShareConnectButton.IsEnabled = true;
         }
+    }
+
+    // The primary PC's presets for its shared models into this PC's (ModelShare.MergePresets): "N presets copied", or why not.
+    private async Task<string> CopySharedPresetsAsync(HttpClient http, string host, string key)
+    {
+        try
+        {
+            var count = ModelShare.MergePresets(_settings.ModelPresets,
+                ModelShare.ParsePresets(await ImageShare.FetchPresetsAsync(http, ModelShare.ImagesUrl(host), key, CancellationToken.None)));
+            _settings.Save();
+            return $"{count} presets copied";
+        }
+        catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+        {
+            return "presets not copied: " + (x is TaskCanceledException ? "no answer in 10 s" : x.Message);
+        }
+    }
+
+    private async void ShareCopyPresets_Click(object sender, RoutedEventArgs e)
+    {
+        if (_settings.ShareHost is not { Length: > 0 } host || ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
+        {
+            ShareNote("Not connected: paste the primary PC's connection code and Connect first.", error: true);
+            return;
+        }
+        var button = (Button)sender;
+        button.IsEnabled = false;
+        ShareNote($"Copying presets from {host}…");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        var result = await CopySharedPresetsAsync(http, host, key);
+        ShareNote(char.ToUpperInvariant(result[0]) + result[1..], error: result.StartsWith("presets not", StringComparison.Ordinal));
+        button.IsEnabled = true;
     }
 
     private void ShareDisconnect_Click(object sender, RoutedEventArgs e)

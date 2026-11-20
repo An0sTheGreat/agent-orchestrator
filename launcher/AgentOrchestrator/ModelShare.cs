@@ -114,11 +114,51 @@ internal static class ModelShare
         if (AutoLoads(workerConfig).FirstOrDefault(a => Same(Text(a["gguf_file"])) || Same(Text(a["model_path"]))) is { } load)
             return LoadOptions(load.ToDictionary(p => p.Key, p => Text(p.Value)),
                 load["llama_extra_args"] is JsonArray extra ? [.. extra.Select(x => x?.ToString() ?? "")] : []);
-        if (presets.FirstOrDefault(p => p.Model.Equals(id, StringComparison.OrdinalIgnoreCase) || p.Model.Equals(name, StringComparison.OrdinalIgnoreCase)) is { } preset)
+        if (presets.FirstOrDefault(p => IsFor(p, id, file)) is { } preset)
             return LoadOptions(preset.Options, preset.Options.GetValueOrDefault("llama_extra_args")?.Trim() is { Length: > 0 } args
                 ? args.StartsWith('[') ? JsonSerializer.Deserialize<List<string>>(args) ?? [] : args.Split(' ', StringSplitOptions.RemoveEmptyEntries)
                 : []);
         return [];
+    }
+
+    // A model preset saved for this shared model: by its id or its file name.
+    private static bool IsFor(ModelPreset p, string id, string file) =>
+        p.Model.Equals(id, StringComparison.OrdinalIgnoreCase) || p.Model.Equals(Path.GetFileNameWithoutExtension(file), StringComparison.OrdinalIgnoreCase);
+
+    private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
+    private sealed record PresetList(List<ModelPreset> Presets);
+
+    // GET /share/presets: {"presets":[{"name","model","options","systemPrompt"}]}, the presets of the shared models (an any-model
+    // preset too), each model named by its id in /v1/models, with request options only (the primary PC loads with its own).
+    public static string PresetsJson(IEnumerable<ModelPreset> presets, IReadOnlyList<SharedModel> models) =>
+        JsonSerializer.Serialize(new PresetList([.. presets
+            .Select(p => (Preset: p, Id: p.Model.Length == 0 ? "" : models.FirstOrDefault(m => IsFor(p, m.Id, m.Model))?.Id))
+            .Where(x => x.Id is not null)
+            .Select(x => new ModelPreset
+            {
+                Name = x.Preset.Name, Model = x.Id!, SystemPrompt = x.Preset.SystemPrompt,
+                Options = x.Preset.Options.Where(o => ModelOptions.All.Any(k => k.Key == o.Key && k.Target != "auto_load")).ToDictionary(),
+            })]), Web);
+
+    public static List<ModelPreset> ParsePresets(string json) => JsonSerializer.Deserialize<PresetList>(json, Web)?.Presets ?? [];
+
+    // The primary PC's presets into this PC's, named "<name> (Primary PC)": one of the same name and model is replaced. The count copied.
+    public static int MergePresets(List<ModelPreset> mine, IEnumerable<ModelPreset?> copied)
+    {
+        var count = 0;
+        foreach (var p in copied)
+        {
+            if (p is not { Name.Length: > 0 })
+                continue;
+            var named = new ModelPreset { Name = $"{p.Name} (Primary PC)", Model = p.Model ?? "", Options = p.Options ?? [], SystemPrompt = p.SystemPrompt ?? "" };
+            var same = mine.FindIndex(m => m.Name.Equals(named.Name, StringComparison.OrdinalIgnoreCase) && m.Model.Equals(named.Model, StringComparison.OrdinalIgnoreCase));
+            if (same >= 0)
+                mine[same] = named;
+            else
+                mine.Add(named);
+            count++;
+        }
+        return count;
     }
 
     // llama-server's --models-preset file: one section per model, named by the id the other PC picks it by.
@@ -190,6 +230,23 @@ internal static class ModelShare
             "tensor-split = 3,1\nflash-attn = on\nthreads = 8\n", "a shared model's own load options: " + string.Join("; ", moe));
         Check(SavedLoad(@"D:\x\Q.gguf", "Q  ·  Q4", null, [new() { Model = "Q  ·  Q4", Options = { ["n_cpu_moe"] = "12", ["llama_extra_args"] = "--threads 6" } }])
             .SequenceEqual([("n-cpu-moe", "12"), ("threads", "6")]) && SavedLoad(@"D:\x\Q.gguf", "Q", null, []).Count == 0, "load options from a model preset, and none");
+        // /share/presets: shared models' presets (by id or file name) and any-model ones, named by the shared id, request options only
+        SharedModel[] shared = [new("Qwen3-GGUF  ·  Q4_K_M", @"C:\hub\qwen3-Q4_K_M.gguf", null), new("gemma", @"D:\m\gemma.gguf", null)];
+        var sent = ParsePresets(PresetsJson([
+            new() { Name = "Coder", Model = "qwen3-Q4_K_M", Options = { ["temperature"] = "0.2", ["n_cpu_moe"] = "30", ["max_seq_length"] = "65536" }, SystemPrompt = "Be terse" },
+            new() { Name = "Any", Options = { ["top_p"] = "0.9" } },
+            new() { Name = "Other", Model = "Llama-70B", Options = { ["temperature"] = "1" } },
+            new() { Name = "G", Model = "GEMMA" },
+        ], shared));
+        Check(sent.Select(p => $"{p.Name}|{p.Model}").SequenceEqual(["Coder|Qwen3-GGUF  ·  Q4_K_M", "Any|", "G|gemma"]), "the shared presets: " + string.Join("; ", sent.Select(p => p.Name + "|" + p.Model)));
+        Check(sent[0].Options.Count == 1 && sent[0].Options["temperature"] == "0.2" && sent[0].SystemPrompt == "Be terse" && sent[1].Options["top_p"] == "0.9",
+            "the shared presets' request options only: " + string.Join("; ", sent[0].Options));
+        Check(PresetsJson([new() { Name = "Any" }], []) == """{"presets":[{"name":"Any","options":{},"systemPrompt":"","model":""}]}""", "the presets JSON: " + PresetsJson([new() { Name = "Any" }], []));
+        List<ModelPreset> mine = [new() { Name = "Coder (Primary PC)", Model = "Qwen3-GGUF  ·  Q4_K_M", SystemPrompt = "old" }, new() { Name = "Coder", Model = "Qwen3-GGUF  ·  Q4_K_M" },
+            new() { Name = "Coder (Primary PC)", Model = "gemma" }];
+        Check(MergePresets(mine, sent) == 3 && mine.Select(p => $"{p.Name}|{p.Model}|{p.SystemPrompt}").SequenceEqual(["Coder (Primary PC)|Qwen3-GGUF  ·  Q4_K_M|Be terse",
+            "Coder|Qwen3-GGUF  ·  Q4_K_M|", "Coder (Primary PC)|gemma|", "Any (Primary PC)||", "G (Primary PC)|gemma|"]),
+            "the merge (rename, replace the same name and model, keep the others): " + string.Join("; ", mine.Select(p => p.Name + "|" + p.Model)));
         Check(DisplayId(new("unsloth/Qwen3-GGUF", "Q4_K_M", @"C:\x\q.gguf")) == "Qwen3-GGUF  ·  Q4_K_M" && DisplayId(new("", "", @"D:\m\My Model.gguf")) == "My Model",
             "display ids");
     }

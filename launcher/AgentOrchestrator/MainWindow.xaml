@@ -1812,6 +1812,8 @@
                         <TextBox x:Name="ShareCodeInput" AutomationProperties.Name="Connection code from the primary PC" />
                         </DockPanel>
                         <TextBlock x:Name="ShareConnectState" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Button Content="Copy presets from the primary PC" HorizontalAlignment="Left" Padding="11,6" Margin="0,8,0,0" Click="ShareCopyPresets_Click"
+                        ToolTip="Copy the primary PC's model presets for its shared models, named &quot;… (Primary PC)&quot;" />
                         <TextBlock Text="Connected, the Remote API page lists the primary PC's models under Primary PC, for any agent."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
