@@ -2920,7 +2920,7 @@ public partial class MainWindow : Window
                 var zHidden = negative.Visibility != Visibility.Visible;
                 recipes.SelectedIndex = Array.FindIndex(ImageGen.Recipes, r => r.Id == "sdxl");
                 if (!zHidden || negative.Visibility != Visibility.Visible || _imgSteps.Value != 30 ||
-                    SmokeFind<TextBlock>(ImagesView, t => t.Tag as string == "ImagesSize")?.Text != "1024 × 1024")
+                    _imgWidthHint.Text != "1024" || _imgHeightHint.Text != "1024")
                     return Fail();
                 // the prompt boxes cap their height with a fading bottom edge and an expand/collapse toggle; no toggle when the text fits
                 {
@@ -3115,7 +3115,7 @@ public partial class MainWindow : Window
                     await RunGenerate(); // two providers pinned: they go in order, with no fallbacks
                     var created = Pictures().Except(before).ToList();
                     if (imgFake.Posted.Count != posted + 1 || Request(posted) is not { } pinned || (string?)pinned["model"] != "acme/img-two" || (string?)pinned["prompt"] != "a red fox" ||
-                        (int?)pinned["n"] != 1 || (string?)pinned["aspect_ratio"] != (string)_imgAspect.SelectedItem || (string?)pinned["response_format"] != "b64_json" ||
+                        (int?)pinned["n"] != 1 || (string?)pinned["aspect_ratio"] != ImageGen.RemoteAspect(ReadImageSettings().Width, ReadImageSettings().Height) || (string?)pinned["response_format"] != "b64_json" ||
                         pinned["provider"]?.ToJsonString() != "{\"order\":[\"beta\",\"alpha/fp8\"],\"allow_fallbacks\":false}" ||
                         imgFake.Seen.Last(r => r.Url == "https://openrouter.ai/api/v1/images").Auth != "Bearer sk-or-smoke" ||
                         created.Count != 1 || JsonSerializer.Deserialize<ImageSettings>(File.ReadAllText(Path.ChangeExtension(created[0], ".json"))) is not { RemoteModel: "acme/img-two", InitImage: "", Seed: -1 } ||
@@ -3177,12 +3177,12 @@ public partial class MainWindow : Window
                         return Fail();
                     _imgRemoteModel = ("acme/img-two", "Acme: Image Two");
                     // the controls OpenRouter never reads are hidden (steps, guidance, seed, runtime, size, Advanced, negative prompt) and back after Switch to Local
-                    if (_imgLocalOnly.Count < 7 || _imgLocalOnly.Any(e => e.Visibility == Visibility.Visible) || _imgSteps.IsVisible || _imgSeed.IsVisible || _imgSizeText.IsVisible || _imgRuntimeText.IsVisible || negative.IsVisible)
+                    if (_imgLocalOnly.Count < 7 || _imgLocalOnly.Any(e => e.Visibility == Visibility.Visible) || _imgSteps.IsVisible || _imgSeed.IsVisible || _imgWidth.IsVisible || _imgRuntimeText.IsVisible || negative.IsVisible)
                         return Fail();
                     SmokeClick((Button)ImgFind("ImagesSwitchToLocal")!);
                     if (ReadImageSettings() is not { RemoteModel: "" } || recipes.SelectedIndex != recipeWas || !recipes.IsVisible || modelButton.IsVisible || !useRemote.IsVisible)
                         return Fail();
-                    if (_imgLocalOnly.Any(e => e.Visibility != Visibility.Visible) || !_imgSteps.IsVisible || !_imgSeed.IsVisible || !_imgSizeText.IsVisible || !_imgRuntimeText.IsVisible || !negative.IsVisible)
+                    if (_imgLocalOnly.Any(e => e.Visibility != Visibility.Visible) || !_imgSteps.IsVisible || !_imgSeed.IsVisible || !_imgWidth.IsVisible || !_imgRuntimeText.IsVisible || !negative.IsVisible)
                         return Fail();
                     // a restart in OpenRouter mode: the saved local pick (a recipe that is not the first) comes back with Switch to Local, and is what the next run saves
                     var flux = Array.FindIndex(ImageGen.Recipes, r => r.Id == "flux3-klein");
