@@ -1032,8 +1032,11 @@
                 <Button x:Name="LoadModelsButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0" Padding="7,3"
                         FontSize="11" Click="LoadModels_Click" IsEnabled="False" AutomationProperties.Name="Load models"
                         ToolTipService.ShowOnDisabled="True" ToolTip="Load a worker's model now (Lead, Implementer, Reviewer or Compactor), or unload them all">
-                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock x:Name="LoadModelsText" Text="Load models" />
+                    <Grid><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock x:Name="LoadModelsText" Text="Load models" />
                         <TextBlock Text="&#xE70D;" Style="{StaticResource RailGlyph}" FontSize="9" Margin="6,1,0,0" /></StackPanel>
+                        <!-- shown while a model loads; llama-server reports no progress, so it only shows that the load is running -->
+                        <ProgressBar x:Name="LoadModelsProgress" IsIndeterminate="True" Height="2" VerticalAlignment="Bottom" Margin="0,0,0,-3"
+                                     Background="Transparent" BorderThickness="0" Foreground="{DynamicResource Accent}" Visibility="Collapsed" /></Grid>
                 </Button>
                 <Button x:Name="TitleChatButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0"
                         Padding="8,3" Visibility="Collapsed" Click="TitleChat_Click" ToolTip="Chat options">

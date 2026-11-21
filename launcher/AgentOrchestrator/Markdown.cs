@@ -41,7 +41,7 @@ internal static class Markdown
         var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left, FontWeight = TextWeight,
             LineHeight = Roomy ? Math.Round(fontSize * 1.5) : double.NaN }; // Claude's 1.5; a minimum: a taller line (a heading) keeps its own
         doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
-        var lines = markdown.Replace("\r\n", "\n").Split('\n');
+        var lines = markdown.Replace("\r\n", "\n").Split('\n').ToList();
         var paragraph = new List<string>();
         var lists = new List<(int Indent, List List)>(); // the open lists, outermost first
         void EndParagraph()
@@ -66,24 +66,30 @@ internal static class Markdown
                 doc.Blocks.Add(block);
         }
 
-        for (var i = 0; i < lines.Length; i++)
+        for (var i = 0; i < lines.Count; i++)
         {
             var line = lines[i];
+            // "4. ```python": the item, then the fence on a line of its own
+            if (Item.Match(line) is { Success: true } fenced && Fence.IsMatch(fenced.Groups[3].Value))
+            {
+                lines.Insert(i + 1, fenced.Groups[3].Value);
+                line = lines[i] = fenced.Groups[1].Value + fenced.Groups[2].Value + " ";
+            }
             if (Fence.Match(line) is { Success: true } fence)
             {
                 EndParagraph();
                 var code = new List<string>();
-                while (++i < lines.Length && !lines[i].TrimStart().StartsWith(fence.Groups[1].Value))
+                while (++i < lines.Count && !lines[i].TrimStart().StartsWith(fence.Groups[1].Value))
                     code.Add(lines[i]);
                 lists.Clear();
-                doc.Blocks.Add(CodeBlock(string.Join("\n", code), fence.Groups[2].Value, closed: i < lines.Length));
+                doc.Blocks.Add(CodeBlock(string.Join("\n", code), fence.Groups[2].Value, closed: i < lines.Count));
                 continue;
             }
             if (line.Trim().Length == 0)
             {
                 EndParagraph();
                 // a blank line ends the lists unless an indented or list line follows
-                if (i + 1 < lines.Length && !Item.IsMatch(lines[i + 1]) && !lines[i + 1].StartsWith("  "))
+                if (i + 1 < lines.Count && !Item.IsMatch(lines[i + 1]) && !lines[i + 1].StartsWith("  "))
                     lists.Clear();
                 continue;
             }
@@ -117,7 +123,7 @@ internal static class Markdown
                 EndParagraph();
                 lists.Clear();
                 var quote = new List<string>();
-                for (; i < lines.Length && lines[i].TrimStart().StartsWith('>'); i++)
+                for (; i < lines.Count && lines[i].TrimStart().StartsWith('>'); i++)
                     quote.Add(lines[i].TrimStart()[1..].TrimStart());
                 i--;
                 var section = new Section { Margin = new Thickness(0, 4, 0, 8), Padding = new Thickness(10, 0, 0, 0), BorderThickness = new Thickness(3, 0, 0, 0) };
@@ -132,12 +138,12 @@ internal static class Markdown
                 doc.Blocks.Add(section);
                 continue;
             }
-            if (line.Contains('|') && i + 1 < lines.Length && TableRule.IsMatch(lines[i + 1]))
+            if (line.Contains('|') && i + 1 < lines.Count && TableRule.IsMatch(lines[i + 1]))
             {
                 EndParagraph();
                 lists.Clear();
                 var rows = new List<string> { line };
-                for (i += 2; i < lines.Length && lines[i].Contains('|') && lines[i].Trim().Length > 0; i++)
+                for (i += 2; i < lines.Count && lines[i].Contains('|') && lines[i].Trim().Length > 0; i++)
                     rows.Add(lines[i]);
                 i--;
                 doc.Blocks.Add(TableOf(rows));
@@ -608,6 +614,11 @@ internal static class Markdown
         var colored = Everything(emoji.Blocks).OfType<InlineUIContainer>().Select(e => (string)e.Tag).ToList();
         if (!colored.SequenceEqual(["✅", "📁", "🚀", "🎮", "💡"]))
             throw new InvalidOperationException($"Markdown emoji: {string.Join(" ", colored.Select(e => char.ConvertToUtf32(e, 0).ToString("X")))}");
+        // a fence opened on a list item's line is a code block, and the text after its closing fence is not code
+        var listed = ToDocument("4. ```python\ndef f():\n    return 1\n```\n\n5. after", 14);
+        if (listed.Blocks.Count != 3 || listed.Blocks.ElementAt(1) is List or Paragraph || PlainText(listed).Contains("```") ||
+            listed.Blocks.LastBlock is not List { ListItems.Count: 1 } last || last.ListItems.FirstListItem.Blocks.FirstBlock is not Paragraph { Inlines.FirstInline: Run { Text: "after" } })
+            throw new InvalidOperationException($"Markdown: a fence on a list item's line: {string.Join(", ", listed.Blocks.Select(b => b.GetType().Name))} '{PlainText(listed)}'");
         // replies are Light, their bold and headings Regular
         var weights = ToDocument("## Head\n\nPlain **bold**", 14);
         if (weights.FontWeight != FontWeights.Light || ((Paragraph)weights.Blocks.FirstBlock).FontWeight != FontWeights.Normal ||

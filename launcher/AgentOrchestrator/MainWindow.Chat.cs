@@ -467,6 +467,7 @@ public partial class MainWindow
         }
         _loadingRole = role;
         LoadModelsText.Text = $"Loading {title}…";
+        LoadModelsProgress.Visibility = Visibility.Visible;
         RefreshChatInput();
         string? folder = null, temp = null, error = null;
         try
@@ -499,6 +500,7 @@ public partial class MainWindow
                 try { Directory.Delete(temp, true); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
             _loadingRole = null;
             LoadModelsText.Text = "Load models";
+            LoadModelsProgress.Visibility = Visibility.Collapsed;
             RefreshChatInput();
         }
         if (error is null)
