@@ -4259,6 +4259,7 @@ CHAT_DELEGATIONS, SUB_REPORT_LIMIT, CHECKS_LIMIT, RESEARCH_LIMIT = 3, 4000, 3000
 
 # ---- run_command: a model's shell commands, always inside the host-side sandbox (sandbox.py: a Windows AppContainer)
 
+BACKGROUND_PARAM = {"type": "boolean", "description": "Leave it running after this call (a dev server, a file watcher) instead of stopping it at the timeout: the reply comes after a few seconds (timeout_seconds up to 30) with its first output, such as the server's address, and it keeps running until this reply ends."}
 RUN_COMMAND_TOOL = function_tool(
     "run_command", "Run one cmd or PowerShell command in a sandbox, starting in the project root: build, test, "
     "run scripts, use git. It can write the granted write folders and read the read-only ones; the rest of the disk is "
@@ -4273,6 +4274,7 @@ RUN_COMMAND_TOOL = function_tool(
      "request_network": {"type": "boolean"}, "request_write": {"type": "array", "items": {"type": "string"}},
      "outside_sandbox": {"type": "boolean", "description": "Run this one command outside the sandbox, with the user's rights "
                          "(the user is asked first, every time). Only when the sandbox itself is the problem."},
+     "background": BACKGROUND_PARAM | {"description": BACKGROUND_PARAM["description"] + " Needs outside_sandbox."},
      "reason": {"type": "string", "description": "Why the request is needed (shown to the user)."}}, ["command"])
 PC_COMMAND_TOOL = function_tool(
     "run_command", "Run one cmd or PowerShell command on this PC as the user (the user turned on Full access): no sandbox, "
@@ -4280,6 +4282,7 @@ PC_COMMAND_TOOL = function_tool(
     "exit code and the output. API keys are left out of its environment.",
     {"command": {"type": "string"}, "shell": {"type": "string", "enum": ["powershell", "cmd"], "description": "Default: PowerShell."},
      "timeout_seconds": {"type": "integer", "description": "Default 120, at most 1800."},
+     "background": BACKGROUND_PARAM,
      "reason": {"type": "string", "description": "Why it is needed (shown to the user when they asked to approve commands)."}}, ["command"])
 APPROVAL_LOCK = threading.Lock()
 COMMAND_MAX_TIMEOUT = 1800
@@ -4533,7 +4536,9 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
                     raise WorkflowError("web addresses need web search or utilities switched on; local files work without")
                 target = raw
             else:
-                path = code_path(re.sub(r"(?i)^file:/{0,3}", "", raw), folders)
+                # a file:// URL spells a space %20 (and other characters %XX): the path on disk has the characters themselves
+                local = unquote(re.sub(r"(?i)^file:/{0,3}", "", raw)) if re.match(r"(?i)file:", raw) else raw
+                path = code_path(local, folders)
                 if not path.is_file():
                     raise WorkflowError(f"No such file: {raw}")
                 target = path.as_uri()
@@ -4783,6 +4788,40 @@ def run_unsandboxed(command: str, shell: str, cwd: str, timeout: float) -> tuple
     return code, output
 
 
+BACKGROUND: list[subprocess.Popen] = []  # run_command background processes: stopped, with their children, when the engine exits
+BACKGROUND_WAIT = 8  # seconds a background command gets to print its first output (a dev server's address)
+
+
+def run_background(command: str, shell: str, cwd: str, wait: float) -> str:
+    """Starts `command` as the user (outside the sandbox) and leaves it running: a dev server, a watcher. Returns its first
+    output after `wait` seconds, or its exit code and output if it ended by then. It is stopped when the engine exits."""
+    argv = ["cmd", "/d", "/c", command] if shell == "cmd" else ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+    env = {k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}
+    log = tempfile.NamedTemporaryFile(prefix="ao-background-", suffix=".log", delete=False)
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    log.close()
+    BACKGROUND.append(proc)
+    try:
+        proc.wait(timeout=wait)
+    except subprocess.TimeoutExpired:
+        pass
+    output = Path(log.name).read_text(encoding="utf-8", errors="replace")[-sandbox.OUTPUT_LIMIT:].strip() or "(no output yet)"
+    if proc.poll() is not None:
+        BACKGROUND.remove(proc)
+        return f"EXIT {proc.returncode}: it ended within {wait:g}s, so nothing is running\n{output}"
+    return (f"STARTED in the background (pid {proc.pid}) and still running; it is stopped when this reply ends. "
+            f"Output so far:\n{output}")
+
+
+def stop_background() -> None:
+    """Stops what run_command left running in the background, with its child processes."""
+    for proc in BACKGROUND:
+        if proc.poll() is None:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    BACKGROUND.clear()
+
+
 def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_only: bool = False):
     """The run_command handler for one turn. Every command runs in the conversation's AppContainer (the request's
     "session"; read_only roles get their own, granted every folder read-only, and cannot ask for more) whose grants are
@@ -4821,11 +4860,15 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
             synced.extend([sid, "powershell" if sandbox.setup_done() and not sandbox.environment_protected() else "cmd"])
         return synced[0]
 
-    def run_command(command: str, shell: str = "", timeout_seconds: Any = 120, request_network: bool = False,
-                    request_write: Any = None, reason: str = "", outside_sandbox: bool = False) -> str:
+    def run_command(command: str, shell: str = "", timeout_seconds: Any = None, request_network: bool = False,
+                    request_write: Any = None, reason: str = "", outside_sandbox: bool = False, background: bool = False) -> str:
         command = str(command or "").strip()
         if not command:
             raise WorkflowError("the command is empty")
+        full_access = settings.get("full_access") is True and not read_only
+        if background is True and not (outside_sandbox is True or full_access):
+            return ("ERROR: background commands run outside the sandbox (a server inside it cannot be reached on localhost): "
+                    "call again with outside_sandbox: true and a reason")
         if shell not in ("", "powershell", "cmd"):
             raise WorkflowError("shell must be 'powershell' or 'cmd'")
         timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
@@ -4839,6 +4882,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
             # with Full access on there is no sandbox left to ask about, so only "ask" asks (before every command)
             if (mode == "ask" or not full) and not ask_user("unsandboxed", command, reason, "" if key in SHELL_KEYS else key):
                 return "DENIED: the user did not allow this command" + ("" if full else " outside the sandbox") + "."
+            if background is True:
+                return sandbox.redact(run_background(command, shell or "powershell", folders[0]["path"], min(timeout, 30) if timeout_seconds else BACKGROUND_WAIT), secrets)
             with RUN_LOCK:
                 code, output = run_unsandboxed(command, shell or "powershell", folders[0]["path"], timeout)
             output = sandbox.redact(output, secrets)
@@ -6002,6 +6047,7 @@ def main() -> int:
     try:
         return _run()
     finally:
+        stop_background()  # a dev server a command left running
         if not CHAT_MODE:
             unload_models()
 

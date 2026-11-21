@@ -3234,6 +3234,25 @@ class CodeTests(unittest.TestCase):
                                         {"role": "user", "content": "What now?"}]}, {"planner": ["ok"]})
             self.assertNotIn("start_project", {t["function"]["name"] for t in log[0]["tools"]}, later)
 
+    def test_a_background_command_keeps_running_until_stopped(self):
+        # a dev server: the reply comes with its first output while it keeps running; stop_background ends it (engine exit)
+        (self.root / "serve.py").write_text("import time\nprint('ready on 5173', flush=True)\ntime.sleep(60)\n", encoding="utf-8")
+        (self.root / "once.py").write_text("print('done')\n", encoding="utf-8")
+        started = orchestrator.run_background("python serve.py", "cmd", str(self.root), 4)
+        self.assertIn("STARTED in the background", started)
+        self.assertIn("ready on 5173", started)
+        proc = orchestrator.BACKGROUND[-1]
+        self.assertIsNone(proc.poll())
+        orchestrator.stop_background()
+        proc.wait(timeout=10)
+        self.assertEqual(orchestrator.BACKGROUND, [])
+        ended = orchestrator.run_background("python once.py", "cmd", str(self.root), 8)
+        self.assertTrue(ended.startswith("EXIT 0") and "done" in ended, ended)  # one that ends by itself is not kept
+        self.assertEqual(orchestrator.BACKGROUND, [])
+        # inside the sandbox it is refused before anything runs: a sandboxed server cannot be reached on localhost
+        run = orchestrator.command_runner(self.folders, {})
+        self.assertIn("outside_sandbox: true", run("npx vite", background=True))
+
     def test_browser_tool_opens_granted_files_and_web_only_with_search(self):
         # The lead's browser: a "browser" request to the launcher with the checked file:// URI; web addresses need Search or
         # Tools; files outside the grants and missing files are refused before the launcher is asked.
@@ -3257,6 +3276,13 @@ class CodeTests(unittest.TestCase):
                                  ("browser", {"action": "read", "url": ""}), ("browser", {"action": "open", "url": "https://example.org"}),
                                  ("browser", {"action": "open", "url": page, "new_tab": True}), ("browser", {"action": "read", "url": "", "tab": 2}),
                                  ("browser", {"action": "tabs", "url": ""})])
+        spaced = self.root / "my game" / "index.html"  # a file:// URL with %20 for the spaces opens the file
+        spaced.parent.mkdir()
+        spaced.write_text("<h1>Hi</h1>", encoding="utf-8")
+        with patch.object(orchestrator, "launcher_call", answer):
+            self.assertEqual(orchestrator.browser_handler(self.folders, {})("open", spaced.as_uri()), "TITLE Hi")
+        self.assertEqual(asked[-1], ("browser", {"action": "open", "url": spaced.as_uri()}))
+        self.assertIn("%20", spaced.as_uri())
         with patch.object(orchestrator, "EVENTS", False):
             self.assertIn("only there when the app runs", orchestrator.browser_handler(self.folders, {})("read"))
 
