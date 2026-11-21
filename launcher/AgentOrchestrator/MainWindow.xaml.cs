@@ -3588,7 +3588,7 @@ public partial class MainWindow : Window
             var off = await InpAct("click", bx, by);
             _settings.BrowserInput = true;
             var clicks = log.Split(',').Count(e => e == "click");
-            var inputOk = r1.StartsWith("CLICKED") && r2.StartsWith("DOUBLE-CLICKED") && r3.StartsWith("RIGHT-CLICKED") && r4.StartsWith("CLICKED") && clicks >= 4 &&
+            var inputOk = r1.StartsWith("CLICKED") && r1.Contains("on <button#b> \"Press me\"") && !r1.Contains("not a link") && r2.StartsWith("DOUBLE-CLICKED") && r3.StartsWith("RIGHT-CLICKED") && r4.StartsWith("CLICKED") && clicks >= 4 &&
                           log.Contains("dbl") && log.Contains("ctx") && log.Contains("hover") && log.Contains("dropped") && log.Contains("mmove") && log.Contains("mup") &&
                           typed == "Hi 1" && replaced == "x" && emptied.StartsWith("|") && emptied.EndsWith("Enter") &&
                           scrolledTo > 20 && selNote.Contains("<select>") && picked == "b" &&

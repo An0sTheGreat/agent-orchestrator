@@ -446,7 +446,13 @@ public partial class MainWindow
         (() => { const e = document.elementFromPoint({{Num(x)}}, {{Num(y)}}); if (!e) return ''; const s = e.closest('select');
                  if (s && !s.multiple && s.size <= 1) { s.focus(); return 'select'; }
                  const l = e.closest('label'); // a styled upload button is a label for a file input
-                 return e.matches('input[type=file]') || (l && l.control && l.control.matches('input[type=file]')) ? 'file' : ''; })()
+                 if (e.matches('input[type=file]') || (l && l.control && l.control.matches('input[type=file]'))) return 'file';
+                 // what the click lands on, so a model that aimed at the wrong spot sees it (a heading, not the button)
+                 const t = e.closest('a,button,input,textarea,select,summary,label,[role=button],[role=link],[role=tab],[role=menuitem],[onclick],[tabindex]'), n = t || e;
+                 const text = String(n.innerText || n.value || n.getAttribute('aria-label') || n.placeholder || n.alt || '').trim().replace(/\s+/g, ' ');
+                 const plain = !t && n.tagName !== 'CANVAS' && getComputedStyle(e).cursor !== 'pointer';
+                 return 'on:<' + n.tagName.toLowerCase() + (n.id ? '#' + n.id : '') + '>' + (text ? ' "' + (text.length > 60 ? text.slice(0, 60) + '…' : text) + '"' : '')
+                        + (plain ? ' (not a link, button or field)' : ''); })()
         """;
 
     // The model's pointer: a white arrow whose tip is at (x, y), gliding there from (fromX, fromY) over `ms`; a click adds a cyan ripple.
@@ -564,7 +570,8 @@ public partial class MainWindow
                     await CdpMouse(core, "mousePressed", x, y, input.Button, mask, n);
                     await CdpMouse(core, "mouseReleased", x, y, input.Button, 0, n); // ponytail: a failed press leaves no button down; a failed release means the tab is gone
                 }
-                tab.Done = $"{(input.Clicks > 1 ? input.Clicks == 2 ? "DOUBLE-" : "TRIPLE-" : "")}{(input.Button == "left" ? "CLICKED" : input.Button.ToUpperInvariant() + "-CLICKED")} at ({Num(x / scaleX)}, {Num(y / scaleY)}) of the screenshot";
+                tab.Done = $"{(input.Clicks > 1 ? input.Clicks == 2 ? "DOUBLE-" : "TRIPLE-" : "")}{(input.Button == "left" ? "CLICKED" : input.Button.ToUpperInvariant() + "-CLICKED")} at ({Num(x / scaleX)}, {Num(y / scaleY)}) of the screenshot" +
+                            (probe.StartsWith("on:") ? ", on " + probe[3..] : "");
                 break;
             case "drag":
                 var toX = (input.ToX ?? 0) * scaleX;
