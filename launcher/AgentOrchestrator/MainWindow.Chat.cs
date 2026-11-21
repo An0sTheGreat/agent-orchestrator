@@ -113,6 +113,7 @@ public partial class MainWindow
         public TextBox? Answer; // the answer as it streams (plain text); hidden once the final reply is rendered
         public RichTextBox? Rendered; // the answer as formatted Markdown, re-rendered as it streams
         public readonly StringBuilder AnswerText = new();
+        public readonly List<string> Earlier = new(); // answer text that streamed before a tool call: shown, and saved with the final reply
         public int ToolCalls; // the turn's tool calls, and the lines each file got (name -> added, removed): the chips under the work
         public readonly Dictionary<string, (int Added, int Removed)> Files = new();
         public string? Final;
@@ -1044,6 +1045,8 @@ public partial class MainWindow
             stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
             string? problem = stopped ? null : failure is not null || exitCode != 0 ? failure ?? _chatError ?? $"The chat failed (exit code {exitCode})."
                 : answer is null ? "The worker returned no reply." : null;
+            // what the reply showed: the engine's final reply is only the text after the last tool call
+            var shownText = LauncherLogic.ShownReply(reply.Earlier, answer);
             var stats = answer is not null && (reply.Pending ?? reply.Last) is { } call ? $"{call} · {LauncherLogic.TotalsLine(reply.TurnTokens, c.Tokens)}" : null;
             if (stopped)
                 AddChatNote(reply, "Stopped.");
@@ -1053,7 +1056,7 @@ public partial class MainWindow
             {
                 var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
                 c.History.AddRange(TurnMessages(lost));
-                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now(), TurnShots(), stats));
+                c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText is { Length: > 0 } ? $"{shownText.TrimEnd()}\n\n{note}" : note, Now(), TurnShots(), stats));
                 kept = true;
             }
             if (!stopped && problem is null)
@@ -1063,7 +1066,7 @@ public partial class MainWindow
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
                     c.History.AddRange(TurnMessages(user));
-                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now(), TurnShots(), stats));
+                    c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText!, Now(), TurnShots(), stats));
                 }
                 completed = true;
             }
@@ -1562,6 +1565,8 @@ public partial class MainWindow
     {
         if (r.Answer is null || r.Final is not null)
             return;
+        if (r.AnswerText.ToString().Trim() is { Length: > 0 } shown)
+            r.Earlier.Add(shown);
         (r.Answer, r.Rendered) = (null, null);
         r.AnswerText.Clear();
     }

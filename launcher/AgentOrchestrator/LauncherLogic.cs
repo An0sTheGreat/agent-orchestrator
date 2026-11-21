@@ -367,6 +367,11 @@ internal static class LauncherLogic
         return info;
     }
 
+    // A reply as it was shown, to save: the answer text that streamed before each tool call, then the final reply (which is
+    // only the text after the last call). Null when there is no final reply.
+    public static string? ShownReply(IReadOnlyList<string> earlier, string? final) =>
+        final is null ? null : string.Join("\n\n", earlier.Append(final.Trim()).Where(t => t.Length > 0));
+
     // Load models (the title bar): the engine loads one role's model with folder's config.json and leaves it loaded.
     public static ProcessStartInfo BuildLoadRoleStartInfo(string python, string workflowRoot, string folder, string role)
     {
@@ -2066,6 +2071,10 @@ internal static class LauncherLogic
         var runArgs = BuildStartInfo("python.exe", root, @"Y:\Example Project", false, @"Y:\run.json").ArgumentList;
         if (runArgs.IndexOf("--request") < 0 || runArgs[runArgs.IndexOf("--request") + 1] != @"Y:\run.json")
             throw new InvalidOperationException("A project run must pass its Code request.");
+
+        if (ShownReply(["## Plan 🧪\n```ts\nx\n```", "Ran it."], "Risk: none") != "## Plan 🧪\n```ts\nx\n```\n\nRan it.\n\nRisk: none" ||
+            ShownReply([], " Only ") != "Only" || ShownReply(["a"], null) is not null)
+            throw new InvalidOperationException("A saved reply must keep the answer text shown before its tool calls.");
 
         var loadArgs = BuildLoadRoleStartInfo("python.exe", root, @"Y:\p", "reviewer").ArgumentList;
         if (loadArgs.IndexOf("--load-role") < 0 || loadArgs[loadArgs.IndexOf("--load-role") + 1] != "reviewer" || loadArgs[loadArgs.IndexOf("--project") + 1] != @"Y:\p")
