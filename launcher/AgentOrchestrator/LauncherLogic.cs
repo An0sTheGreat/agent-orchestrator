@@ -459,10 +459,10 @@ internal static class LauncherLogic
     {
         dataRoot ??= AppSettings.DataRoot;
         var path = Path.Combine(dataRoot, "worker-config.json");
-        if (!File.Exists(path))
+        if (!File.Exists(path) || new FileInfo(path).Length == 0) // an emptied file (a write cut off) would leave every worker tab unreadable
         {
             Directory.CreateDirectory(dataRoot);
-            File.Copy(Path.Combine(workflowRoot, "config.json"), path);
+            File.Copy(Path.Combine(workflowRoot, "config.json"), path, overwrite: true);
         }
         return path;
     }
@@ -2380,6 +2380,9 @@ internal static class LauncherLogic
             if (ActiveConfigPath("", rootDir, dataDir) != workerConfig || ActiveConfigPath(rootDir, rootDir, dataDir) != workerConfig ||
                 ActiveConfigPath(testArea, rootDir, dataDir) != workerConfig || !File.ReadAllBytes(workerConfig).SequenceEqual(rootBytes))
                 throw new InvalidOperationException("Without a project config the active config must be a copy of the template in the data folder.");
+            File.WriteAllText(workerConfig, "");
+            if (EnsureWorkerConfig(rootDir, dataDir) != workerConfig || !File.ReadAllBytes(workerConfig).SequenceEqual(rootBytes))
+                throw new InvalidOperationException("An empty worker config must be made again from the template.");
             File.WriteAllText(workerConfig, "{\"keep\":2,\"roles\":{\"implementer\":{\"base_url\":\"http://h/v1\"}}}");
             if (EnsureWorkerConfig(rootDir, dataDir) != workerConfig || !File.ReadAllText(workerConfig).Contains("\"keep\":2"))
                 throw new InvalidOperationException("An existing worker config must be kept.");
