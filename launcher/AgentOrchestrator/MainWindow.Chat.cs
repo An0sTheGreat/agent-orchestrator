@@ -706,6 +706,8 @@ public partial class MainWindow
                 }
                 reply.Status.Visibility = Visibility.Collapsed;
                 SetStamp(reply.Stamp, message.Time);
+                if (message.Stats is { } stats)
+                    reply.Stats.ToolTip = reply.Stats.Text = stats;
                 reply.Footer.Visibility = Visibility.Visible;
             }
         (_turn, _reply) = keep;
@@ -1042,6 +1044,7 @@ public partial class MainWindow
             stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
             string? problem = stopped ? null : failure is not null || exitCode != 0 ? failure ?? _chatError ?? $"The chat failed (exit code {exitCode})."
                 : answer is null ? "The worker returned no reply." : null;
+            var stats = answer is not null && (reply.Pending ?? reply.Last) is { } call ? $"{call} · {LauncherLogic.TotalsLine(reply.TurnTokens, c.Tokens)}" : null;
             if (stopped)
                 AddChatNote(reply, "Stopped.");
             else if (problem is not null)
@@ -1050,7 +1053,7 @@ public partial class MainWindow
             {
                 var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
                 c.History.AddRange(TurnMessages(lost));
-                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now(), TurnShots()));
+                c.History.Add(new LauncherLogic.ChatMessage("assistant", answer is { Length: > 0 } ? $"{answer.TrimEnd()}\n\n{note}" : note, Now(), TurnShots(), stats));
                 kept = true;
             }
             if (!stopped && problem is null)
@@ -1060,15 +1063,15 @@ public partial class MainWindow
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
                     c.History.AddRange(TurnMessages(user));
-                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now(), TurnShots()));
+                    c.History.Add(new LauncherLogic.ChatMessage("assistant", answer, Now(), TurnShots(), stats));
                 }
                 completed = true;
             }
             if (answer is not null)
             {
                 SetStamp(reply.Stamp, Now());
-                if ((reply.Pending ?? reply.Last) is { } call)
-                    reply.Stats.ToolTip = reply.Stats.Text = $"{call} · {LauncherLogic.TotalsLine(reply.TurnTokens, c.Tokens)}";
+                if (stats is not null)
+                    reply.Stats.ToolTip = reply.Stats.Text = stats;
             }
             reply.Footer.Visibility = answer is null ? Visibility.Collapsed : Visibility.Visible;
         }

@@ -519,13 +519,13 @@ internal sealed class ConversationStore
             // Hand-edited conversation: null lists load empty, invalid messages and folders are dropped, unknown access is read.
             var edited = new string('e', 32);
             File.WriteAllText(Path.Combine(conversations, edited + ".json"), """
-                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"}],
+                {"messages":[null,{"role":"system","content":"x"},{"role":"user"},{"role":"user","content":"ok"},{"role":"assistant","content":"a","stats":"30 tok/s"}],
                  "folders":[null,{"path":""},{"path":"Y:\\lib","access":"bogus"},{"path":"Y:\\w","access":"write"}],"worker":null,"folder":null,
                  "summary":"S","summaryCovers":1}
                 """);
             File.WriteAllText(Path.Combine(conversations, c.Id + ".json"), """{"messages":null,"folders":null,"summary":"S","summaryCovers":1}""");
             s = Reload();
-            Check(s.Get(edited) is { Folder: "", Worker: "implementer", Summary: "S", SummaryCovers: 1 } e && e.Messages.SequenceEqual([new LauncherLogic.ChatMessage("user", "ok")]) &&
+            Check(s.Get(edited) is { Folder: "", Worker: "implementer", Summary: "S", SummaryCovers: 1 } e && e.Messages.SequenceEqual([new LauncherLogic.ChatMessage("user", "ok"), new LauncherLogic.ChatMessage("assistant", "a", Stats: "30 tok/s")]) &&
                   e.Folders.SequenceEqual([new LauncherLogic.CodeFolder(@"Y:\lib", "read"), new LauncherLogic.CodeFolder(@"Y:\w", "write")]) &&
                   s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0, Summary: null, SummaryCovers: 0 }, "hand-edited conversation cleaned");
             s.Delete(edited);
