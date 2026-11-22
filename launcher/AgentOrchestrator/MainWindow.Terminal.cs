@@ -210,6 +210,20 @@ public partial class MainWindow
         lock (got) text = got.ToString();
         if (!text.Contains("terminal-ok") || !text.Contains(folder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Terminal: a pseudo console's output did not come back: '{text}'");
+        // the editor colours its text as a reply's code block: the same pieces at the same offsets, a block comment across lines whole
+        const string code = "def f():\n    /* a\n b */ return \"s\"  # note\n";
+        var spans = CodeColorizer.Spans(code, "py");
+        var pieces = Markdown.Highlight(code, "py");
+        var expected = new List<(int, int, string)>();
+        var at = 0;
+        foreach (var (piece, key) in pieces)
+        {
+            if (key is not null && piece.Length > 0)
+                expected.Add((at, at + piece.Length, key));
+            at += piece.Length;
+        }
+        if (at != code.Length || spans.Count == 0 || !spans.SequenceEqual(expected) || spans.Any(s => code[s.Start..s.End] != pieces.First(p => p.Color == s.Key && code.IndexOf(p.Text, s.Start, StringComparison.Ordinal) == s.Start).Text))
+            throw new InvalidOperationException("Editor: its colours must be the code block's pieces at their offsets");
         var page = TerminalPage("CSS", "JS", "FIT", """{"background":"#000"}""");
         if (!page.Contains("<style>CSS") || !page.Contains("<script>JS</script><script>FIT</script>") || !page.Contains("""theme: {"background":"#000"}"""))
             throw new InvalidOperationException("Terminal: the page must carry xterm.js, its fit add-on and the theme inline");

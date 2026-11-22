@@ -1492,8 +1492,11 @@
                                 <TextBlock Text="Text" />
                             </ToggleButton>
                         </StackPanel>
-                        <Button x:Name="EditorEditButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="10,3" Margin="0,0,6,0" Click="EditorEdit_Click"
-                                Content="Edit" ToolTip="Edit this file (Ctrl+S saves)" />
+                        <!-- shown once the file is changed: Save writes it (Ctrl+S), Cancel puts back what is on disk -->
+                        <Button x:Name="EditorSaveButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Padding="12,3" Margin="0,0,8,0" Click="EditorSave_Click"
+                                Content="Save" ToolTip="Save the changes (Ctrl+S)" Visibility="Collapsed" />
+                        <Button x:Name="EditorCancelButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="10,3" Margin="0,0,6,0" Click="EditorCancel_Click"
+                                Content="Cancel" ToolTip="Undo the changes: back to the file on disk" Visibility="Collapsed" />
                         <TextBlock x:Name="EditorTitle" Margin="12,0,8,0" FontSize="12" VerticalAlignment="Center"
                                    Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis" />
                     </DockPanel>
@@ -1502,9 +1505,8 @@
                             <ScrollViewer x:Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="0,8">
                                 <ContentControl x:Name="EditorView" />
                             </ScrollViewer>
-                            <TextBox x:Name="EditorBox" Visibility="Collapsed" AcceptsReturn="True" AcceptsTab="True" BorderThickness="0" Background="Transparent"
-                                     FontSize="12.5" Padding="12,8" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                                     PreviewKeyDown="EditorBox_PreviewKeyDown" AutomationProperties.Name="File text" />
+                            <!-- the file's text, coloured and editable (an AvalonEdit TextEditor, made in MainWindow.Editor.cs) -->
+                            <Grid x:Name="EditorTextHost" Visibility="Collapsed" />
                             <TextBlock x:Name="EditorMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"
                                        Text="Click a file under a reply (the chips after &quot;files changed&quot;) to open it here." />
                         </Grid>

@@ -352,6 +352,10 @@ internal static class Markdown
         return lineCount <= MaxNumbered ? NumberedLines(pieces, lineCount) : CodeText(pieces, gutter: false);
     }
 
+    // Code's size and its line-number gutter's width (the editor panel draws its text and gutter with these too).
+    public static double CodeFontSize => R(12.5, 13.5);
+    public static double GutterWidth(int lineCount) => Math.Max(2, lineCount.ToString().Length) * 7 + 22;
+
     private const int MaxNumbered = 1500; // longer listings stay one block of text: a row each would slow a render
 
     // The copy button's content: the copy glyph and "Copy", or a check and "Copied" in green.
@@ -366,7 +370,7 @@ internal static class Markdown
 
     private static TextBlock CodeText(IEnumerable<(string Text, string? Color)> pieces, bool gutter = true)
     {
-        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = R(12.5, 13.5), TextWrapping = TextWrapping.Wrap, Tag = "codetext",
+        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = CodeFontSize, TextWrapping = TextWrapping.Wrap, Tag = "codetext",
             Margin = new Thickness(gutter ? 10 : 14, 1, 14, 1) };
         text.SetResourceReference(TextBlock.ForegroundProperty, "CodeText");
         if (Roomy)
@@ -398,7 +402,7 @@ internal static class Markdown
             }
         }
         var rows = new StackPanel();
-        var width = Math.Max(2, lineCount.ToString().Length) * 7 + 22;
+        var width = GutterWidth(lineCount);
         for (var n = 0; n < lines.Count; n++)
         {
             var number = new TextBlock
