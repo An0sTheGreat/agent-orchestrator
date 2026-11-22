@@ -1464,6 +1464,10 @@
             </Border>
             <!-- File viewer (MainWindow.Editor.cs): a file from a reply's chips, coloured as code; Edit switches to a plain text box -->
             <Border x:Name="EditorPanel" Grid.Column="3" Background="{DynamicResource Panel}" Visibility="Collapsed">
+                <Border.Resources>
+                    <!-- the square where the two scroll bars meet: the system's light grey otherwise -->
+                    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="Transparent" />
+                </Border.Resources>
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
                         <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
@@ -1479,6 +1483,15 @@
                                 ToolTip="Open in the app that opens your .txt files" AutomationProperties.Name="Open in text app">
                             <TextBlock Text="&#xE8A7;" Style="{StaticResource RailGlyph}" FontSize="12" />
                         </Button>
+                        <!-- a Markdown file: shown formatted, or as its text (MainWindow.Editor.cs) -->
+                        <StackPanel x:Name="EditorModes" DockPanel.Dock="Right" Orientation="Horizontal" Margin="0,0,8,0" Visibility="Collapsed">
+                            <ToggleButton x:Name="EditorMarkdownMode" Style="{StaticResource ChipToggle}" Click="EditorMode_Click" Margin="0,0,4,0" ToolTip="Show the Markdown formatted">
+                                <TextBlock Text="Markdown" />
+                            </ToggleButton>
+                            <ToggleButton x:Name="EditorTextMode" Style="{StaticResource ChipToggle}" Click="EditorMode_Click" ToolTip="Show the file's text">
+                                <TextBlock Text="Text" />
+                            </ToggleButton>
+                        </StackPanel>
                         <Button x:Name="EditorEditButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="10,3" Margin="0,0,6,0" Click="EditorEdit_Click"
                                 Content="Edit" ToolTip="Edit this file (Ctrl+S saves)" />
                         <TextBlock x:Name="EditorTitle" Margin="12,0,8,0" FontSize="12" VerticalAlignment="Center"

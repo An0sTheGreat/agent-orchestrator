@@ -14,6 +14,16 @@ public partial class MainWindow
 {
     private const int EditorMaxBytes = 2_000_000; // bigger files open in the text app instead
     private string? _editorFile;
+    private bool _editorAsText; // a Markdown file shown as its text instead of formatted (kept for the next one)
+
+    private void EditorMode_Click(object sender, RoutedEventArgs e)
+    {
+        _editorAsText = sender == EditorTextMode;
+        if (_editorFile is { } path && !EditorBox.IsVisible)
+            ShowEditorFile(path);
+        else
+            (EditorMarkdownMode.IsChecked, EditorTextMode.IsChecked) = (!_editorAsText, _editorAsText);
+    }
 
     private void Editor_Click(object sender, RoutedEventArgs e)
     {
@@ -63,7 +73,17 @@ public partial class MainWindow
                 EditorMessage.Text = $"{info.Name} is not a text file.";
                 return;
             }
-            EditorView.Content = Markdown.CodeListing(text.Replace("\r\n", "\n").TrimEnd('\n'), LanguageOf(path));
+            var markdown = LanguageOf(path) is "md" or "markdown";
+            EditorModes.Visibility = markdown ? Visibility.Visible : Visibility.Collapsed;
+            EditorMarkdownMode.IsChecked = markdown && !_editorAsText;
+            EditorTextMode.IsChecked = markdown && _editorAsText;
+            var formatted = markdown && !_editorAsText;
+            // formatted Markdown wraps to the panel, as a reply does; text keeps its lines
+            EditorScroll.HorizontalScrollBarVisibility = formatted ? ScrollBarVisibility.Disabled : ScrollBarVisibility.Auto;
+            EditorView.Content = formatted
+                ? new RichTextBox { Document = Markdown.ToDocument(text, 14), IsReadOnly = true, BorderThickness = new Thickness(0), Background = null,
+                    Padding = new Thickness(14, 2, 14, 8), IsDocumentEnabled = true }
+                : Markdown.CodeListing(text.Replace("\r\n", "\n").TrimEnd('\n'), LanguageOf(path));
             EditorScroll.ScrollToHome();
             EditorMessage.Visibility = Visibility.Collapsed;
             EditorEditButton.IsEnabled = true;
