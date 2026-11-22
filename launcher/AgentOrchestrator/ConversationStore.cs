@@ -530,10 +530,10 @@ internal sealed class ConversationStore
                   s.Get(c.Id) is { Messages.Count: 0, Folders.Count: 0, Summary: null, SummaryCovers: 0 }, "hand-edited conversation cleaned");
             // a reply's tool calls, changed files and their folders come back after a restart (its file chips)
             var chips = s.Create("", "chat")!;
-            chips.Messages = [new("user", "u"), new("assistant", "a", Changes: new(3, [new("a.py", 2, 1)], [@"C:\p"]))];
+            chips.Messages = [new("user", "u"), new("assistant", "a", Changes: new(3, [new("a.py", 2, 1, [new("x", "y\nz")])], [@"C:\p"]))];
             s.Save(chips);
             s = Reload();
-            Check(s.Get(chips.Id)?.Messages[1].Changes is { ToolCalls: 3, Files: [{ Path: "a.py", Added: 2, Removed: 1 }], Folders: [@"C:\p"] }, "a reply's file chips saved");
+            Check(s.Get(chips.Id)?.Messages[1].Changes is { ToolCalls: 3, Files: [{ Path: "a.py", Added: 2, Removed: 1, Edits: [{ Old: "x", New: "y\nz" }] }], Folders: [@"C:\p"] }, "a reply's file chips saved");
             s.Delete(chips.Id);
             s.Delete(edited);
             s.Delete(c.Id);

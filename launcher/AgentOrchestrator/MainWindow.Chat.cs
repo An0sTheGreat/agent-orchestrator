@@ -118,6 +118,7 @@ public partial class MainWindow
         public readonly List<string> Earlier = new(); // answer text that streamed before a tool call: shown, and saved with the final reply
         public int ToolCalls; // the turn's tool calls, and the lines each file got (name -> added, removed): the chips under the work
         public readonly Dictionary<string, (int Added, int Removed)> Files = new();
+        public readonly Dictionary<string, List<LauncherLogic.FileEdit>> Edits = new(); // each file's replaces, in order
         public string? Final;
     }
 
@@ -1465,7 +1466,13 @@ public partial class MainWindow
         var wrote = ToolFileChanges("write_file", """{"path":"src/app.js","content":"a\nb\nc"}""");
         var replaced = ToolFileChanges("replace_text", """{"path":"C:\\x\\app.js","old":"a\nb","new":"c"}""");
         var edited = ToolFileChanges("edit", """{"path":"m.ts","edits":[{"oldText":"x","newText":"y\nz"},{"oldText":"p\nq","newText":"r"}]}""");
-        Check(wrote.SequenceEqual([(@"src\app.js", 3, 0)]) && replaced.SequenceEqual([(@"C:\x\app.js", 1, 2)]) && edited.SequenceEqual([("m.ts", 3, 3)]) &&
+        var diff = DiffView("a\r\nB x\r\nc\r\nd\r\n", [new("b x", "B x")]);
+        Check(diff.Text == "a\nb x\nB x\nc\nd" && new string(diff.Kinds) == " -+  " && diff.Numbers.SequenceEqual([1, 0, 2, 3, 4]) &&
+              new string(DiffView("x\ny", [new("", "x\ny")]).Kinds) == "++" && new string(DiffView("q", [new("a", "zz")]).Kinds) == " " &&
+              new string(DiffView("k\nm\nn", [new("k\nl\nm", "k\nm")]).Kinds) == " -  ", "the Changes view: removed lines above, added green, whole lines, gone edits left out");
+        static IEnumerable<(string, int, int)> Counts(List<(string File, int Added, int Removed, List<LauncherLogic.FileEdit> Edits)> c) => c.Select(x => (x.File, x.Added, x.Removed));
+        Check(Counts(wrote).SequenceEqual([(@"src\app.js", 3, 0)]) && Counts(replaced).SequenceEqual([(@"C:\x\app.js", 1, 2)]) && Counts(edited).SequenceEqual([("m.ts", 3, 3)]) &&
+              edited[0].Edits.SequenceEqual([new LauncherLogic.FileEdit("x", "y\nz"), new("p\nq", "r")]) && wrote[0].Edits.SequenceEqual([new LauncherLogic.FileEdit("", "a\nb\nc")]) &&
               ToolFileChanges("read_file", """{"path":"a"}""").Count == 0 && ToolFileChanges("write", "not json").Count == 0, "the lines each tool call changed");
         Check(AutoScrollSpeed(0) == 0 && AutoScrollSpeed(12) == 0 && AutoScrollSpeed(-12) == 0 && AutoScrollSpeed(40) > 0 && AutoScrollSpeed(-40) < 0 &&
               AutoScrollSpeed(100) > AutoScrollSpeed(40) && AutoScrollSpeed(5000) == 6000 && AutoScrollSpeed(-5000) == -6000, "middle-click scroll speed: dead zone, direction, faster further out, capped");

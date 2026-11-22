@@ -57,7 +57,8 @@ internal static class LauncherLogic
 
     // A reply's tool calls and the files they changed (the chips under it), with the folders their relative paths are under.
     public sealed record ChatChanges(int ToolCalls, IReadOnlyList<FileChange> Files, IReadOnlyList<string> Folders);
-    public sealed record FileChange(string Path, int Added, int Removed);
+    public sealed record FileChange(string Path, int Added, int Removed, IReadOnlyList<FileEdit>? Edits = null);
+    public sealed record FileEdit(string Old, string New); // one replace (Old "" for a whole-file write): the editor's Changes view
 
     // The stats under a model call's output: "Planner · 42.1 tok/s · 1,234 generated · 5,678 prompt" (no tok/s when unknown).
     // The chat status line while llama-server works and nothing is on screen yet: reading the prompt, then writing (a quiet

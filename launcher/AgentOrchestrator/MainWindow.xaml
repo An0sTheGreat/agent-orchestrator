@@ -1491,6 +1491,10 @@
                             <ToggleButton x:Name="EditorTextMode" Style="{StaticResource ChipToggle}" Click="EditorMode_Click" ToolTip="Show the file's text">
                                 <TextBlock Text="Text" />
                             </ToggleButton>
+                            <!-- opened from a reply's file chip: the lines that turn added (green) and removed (red) -->
+                            <ToggleButton x:Name="EditorChangesMode" Style="{StaticResource ChipToggle}" Click="EditorMode_Click" Margin="4,0,0,0" ToolTip="Show the lines the model added and removed">
+                                <TextBlock Text="Changes" />
+                            </ToggleButton>
                         </StackPanel>
                         <!-- shown once the file is changed: Save writes it (Ctrl+S), Cancel puts back what is on disk -->
                         <Button x:Name="EditorSaveButton" DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Padding="12,3" Margin="0,0,8,0" Click="EditorSave_Click"

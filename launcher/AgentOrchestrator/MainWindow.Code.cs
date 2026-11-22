@@ -159,8 +159,11 @@ public partial class MainWindow
         if (_reply is not { } r)
             return;
         r.ToolCalls++;
-        foreach (var (file, added, removed) in ToolFileChanges(name, args))
+        foreach (var (file, added, removed, edits) in ToolFileChanges(name, args))
+        {
             r.Files[file] = r.Files.TryGetValue(file, out var so) ? (so.Added + added, so.Removed + removed) : (added, removed);
+            (r.Edits.TryGetValue(file, out var list) ? list : r.Edits[file] = []).AddRange(edits);
+        }
         var live = EndToolBlock(); // the code the call streamed is already a section: the result joins it
         var body = BodyText(result, mono: true, muted: false, conv: _turn);
         Expander expander;
@@ -191,9 +194,9 @@ public partial class MainWindow
 
     // The lines a file-writing tool call added and removed: a whole-file write adds its lines; a replace adds the new text's lines
     // and removes the old text's (`edits` arrays too). Other tools change no file.
-    internal static List<(string File, int Added, int Removed)> ToolFileChanges(string name, string args)
+    internal static List<(string File, int Added, int Removed, List<LauncherLogic.FileEdit> Edits)> ToolFileChanges(string name, string args)
     {
-        var changes = new List<(string, int, int)>();
+        var changes = new List<(string, int, int, List<LauncherLogic.FileEdit>)>();
         if (name is not ("write_file" or "replace_text" or "write" or "edit" or "str_replace"))
             return changes;
         static int Lines(string? text) => string.IsNullOrEmpty(text) ? 0 : text.Count(c => c == (char)10) + (text.EndsWith((char)10) ? 0 : 1);
@@ -207,13 +210,19 @@ public partial class MainWindow
                 return changes;
             var file = path.Replace('/', '\\'); // as given (relative to the folders the model works in); the chip shows its name
             (int Added, int Removed) total = (0, 0);
+            var pairs = new List<LauncherLogic.FileEdit>();
+            void Add(string? old, string? now)
+            {
+                total = (total.Added + Lines(now), total.Removed + Lines(old));
+                pairs.Add(new(old ?? "", now ?? ""));
+            }
             if (root.TryGetProperty("edits", out var edits) && edits.ValueKind == JsonValueKind.Array)
                 foreach (var e in edits.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object))
-                    total = (total.Added + Lines(Get(e, "newText", "new_string", "new")), total.Removed + Lines(Get(e, "oldText", "old_string", "old")));
+                    Add(Get(e, "oldText", "old_string", "old"), Get(e, "newText", "new_string", "new"));
             else
-                total = (Lines(Get(root, "content", "newText", "new_string", "new_str", "new")), Lines(Get(root, "oldText", "old_string", "old_str", "old")));
+                Add(Get(root, "oldText", "old_string", "old_str", "old"), Get(root, "content", "newText", "new_string", "new_str", "new"));
             if (total != (0, 0))
-                changes.Add((file, total.Added, total.Removed));
+                changes.Add((file, total.Added, total.Removed, pairs));
         }
         catch (JsonException) { }
         return changes;
@@ -221,7 +230,9 @@ public partial class MainWindow
 
     // A finished turn's changes: its tool calls, files and the folders the model works in (saved with the reply). Null: no calls.
     private LauncherLogic.ChatChanges? TurnChanges(ChatReply r) => r.ToolCalls == 0 ? null
-        : new(r.ToolCalls, r.Files.Select(f => new LauncherLogic.FileChange(f.Key, f.Value.Added, f.Value.Removed)).ToList(),
+        : new(r.ToolCalls, r.Files.Select(f => new LauncherLogic.FileChange(f.Key, f.Value.Added, f.Value.Removed,
+                // ponytail: edits over 300k characters are not kept (the file opens without its Changes view)
+                r.Edits.TryGetValue(f.Key, out var e) && e.Sum(x => x.Old.Length + x.New.Length) <= 300_000 ? e : null)).ToList(),
             new[] { SelectedProjectPath() }.Concat(CodeExtraFolders.Select(f => f.Path)).Append(_turnFolder ?? "").Where(f => f.Length > 0).ToList());
 
     // The files a turn changed, as the site's file chips under a "N tool calls" line: the name, +added in green, −removed in red.
@@ -230,7 +241,7 @@ public partial class MainWindow
         if (changes is null || changes.ToolCalls == 0 || content.Children.OfType<Border>().Any(b => b.Tag as string == "file-chips"))
             return;
         var wrap = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        foreach (var (file, added, removed) in changes.Files.Take(6))
+        foreach (var (file, added, removed, edits) in changes.Files.Take(6))
         {
             var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center };
             text.Inlines.Add(new Run(Path.GetFileName(file)));
@@ -253,7 +264,7 @@ public partial class MainWindow
             chip.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                OpenEditor(Full());
+                OpenEditor(Full(), edits); // its lines this turn changed, green and red
             };
             chip.MouseRightButtonUp += (_, e) =>
             {
