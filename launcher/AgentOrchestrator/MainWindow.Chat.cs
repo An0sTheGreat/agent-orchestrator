@@ -1454,7 +1454,7 @@ public partial class MainWindow
         var wrote = ToolFileChanges("write_file", """{"path":"src/app.js","content":"a\nb\nc"}""");
         var replaced = ToolFileChanges("replace_text", """{"path":"C:\\x\\app.js","old":"a\nb","new":"c"}""");
         var edited = ToolFileChanges("edit", """{"path":"m.ts","edits":[{"oldText":"x","newText":"y\nz"},{"oldText":"p\nq","newText":"r"}]}""");
-        Check(wrote.SequenceEqual([("app.js", 3, 0)]) && replaced.SequenceEqual([("app.js", 1, 2)]) && edited.SequenceEqual([("m.ts", 3, 3)]) &&
+        Check(wrote.SequenceEqual([(@"src\app.js", 3, 0)]) && replaced.SequenceEqual([(@"C:\x\app.js", 1, 2)]) && edited.SequenceEqual([("m.ts", 3, 3)]) &&
               ToolFileChanges("read_file", """{"path":"a"}""").Count == 0 && ToolFileChanges("write", "not json").Count == 0, "the lines each tool call changed");
         Check(AutoScrollSpeed(0) == 0 && AutoScrollSpeed(12) == 0 && AutoScrollSpeed(-12) == 0 && AutoScrollSpeed(40) > 0 && AutoScrollSpeed(-40) < 0 &&
               AutoScrollSpeed(100) > AutoScrollSpeed(40) && AutoScrollSpeed(5000) == 6000 && AutoScrollSpeed(-5000) == -6000, "middle-click scroll speed: dead zone, direction, faster further out, capped");

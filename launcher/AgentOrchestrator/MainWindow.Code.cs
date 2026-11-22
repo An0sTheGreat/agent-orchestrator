@@ -205,7 +205,7 @@ public partial class MainWindow
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object || Get(root, "path", "file_path") is not { Length: > 0 } path)
                 return changes;
-            var file = System.IO.Path.GetFileName(path.Replace('/', '\\'));
+            var file = path.Replace('/', '\\'); // as given (relative to the folders the model works in); the chip shows its name
             (int Added, int Removed) total = (0, 0);
             if (root.TryGetProperty("edits", out var edits) && edits.ValueKind == JsonValueKind.Array)
                 foreach (var e in edits.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object))
@@ -233,7 +233,7 @@ public partial class MainWindow
         foreach (var (file, added, removed) in changes.Files.Take(6))
         {
             var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center };
-            text.Inlines.Add(new Run(file));
+            text.Inlines.Add(new Run(Path.GetFileName(file)));
             if (added > 0)
                 text.Inlines.Add(new Run("  +" + added) { Foreground = new SolidColorBrush(Color.FromRgb(0x3C, 0xBB, 0x72)) });
             if (removed > 0)
