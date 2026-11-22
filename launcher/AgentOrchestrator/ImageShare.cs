@@ -18,10 +18,12 @@ internal static class ImageShare
     public const int MaxBody = 1 << 20, MaxHead = 16 << 10;
     public static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(10);
     public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", PresetsPath = "/share/presets", LoadPath = "/share/load", ChatPrefix = "/v1/";
+    // GET without the key: the key itself, for a PC signed in to this PC's Tailscale account (Server.Pair, Tailscale.MayPair).
+    public const string PairPath = "/share/pair";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
-    // Query: what follows the path's "?" ("" = none).
-    public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body, string Query = "");
+    // Query: what follows the path's "?" ("" = none). Remote: the caller's address (set by Server).
+    public sealed record Request(string Method, string Path, Dictionary<string, string> Headers, byte[] Body, string Query = "", IPAddress? Remote = null);
     public sealed record Response(int Status, string Json);
     public sealed class HttpError(int status, string message) : Exception(message) { public int Status => status; }
 
@@ -285,6 +287,8 @@ internal static class ImageShare
         private readonly int _upstream;
         // The current {"progress","status"} line of the generation in progress (null: none yet); read from the accept loop's threads.
         public Func<string?>? Progress { get; set; }
+        // GET /share/pair, answered without the key (it checks the caller itself); null = 401 like any path without the key.
+        public Func<Request, Task<Response>>? Pair { get; set; }
 
         // upstream: llama-server's port on 127.0.0.1, for /v1/.
         public Server(IPAddress ip, int port, int upstream, Func<string> key, Func<Request, CancellationToken, Task<Response>> handle)
@@ -327,8 +331,12 @@ internal static class ImageShare
                         if (!request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal))
                             request = await ReadBodyAsync(stream, request, rest, read.Token);
                     }
+                    var remote = (client.Client.RemoteEndPoint as IPEndPoint)?.Address;
+                    request = request with { Remote = remote is { IsIPv4MappedToIPv6: true } ? remote.MapToIPv4() : remote };
                     response = request.Path.StartsWith(ChatPrefix, StringComparison.Ordinal)
                         ? Unauthorized(request, key()) ?? await ProxyAsync(stream, lines, rest, _upstream, _stop.Token)
+                        : request.Path == PairPath && Pair is { } pair
+                        ? request.Method == "GET" ? await pair(request) : Error(405, $"{PairPath} takes GET")
                         : Check(request, key()) ?? (request.Path == GeneratePath
                             ? await HeartbeatAsync(stream, handle(request, _stop.Token), Progress, _stop.Token)
                             : await handle(request, _stop.Token));

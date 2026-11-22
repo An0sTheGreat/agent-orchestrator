@@ -42,6 +42,7 @@ public partial class MainWindow
             StartShare();
         else
             RefreshShare();
+        InitTailnet(); // PCs on the same Tailscale account connect by themselves (MainWindow.Tailnet.cs)
     }
 
     private async void ShareToggle_Click(object sender, RoutedEventArgs e)
@@ -216,7 +217,7 @@ public partial class MainWindow
     // Idempotent; the key is read on every request, so New key signs other PCs out at once. Also --image-share-loopback (App.xaml.cs).
     internal void StartImageShare(IPAddress ip, int port) =>
         _imageShare ??= new ImageShare.Server(ip, port, ModelShare.ChatPort, () => Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "", ServeImageShareAsync)
-            { Progress = () => _shareProgress };
+            { Progress = () => _shareProgress, Pair = ServePairAsync };
 
     // On the server's thread: the model list scans the folder here; a generation runs on the UI thread like the page's own.
     private async Task<ImageShare.Response> ServeImageShareAsync(ImageShare.Request request, CancellationToken ct)

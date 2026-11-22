@@ -28,6 +28,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.NotifySelfTest();
             ImageGen.ImageGenSelfTest();
             ModelShare.SelfTest();
+            Tailscale.SelfTest();
             AgentOrchestrator.MainWindow.TerminalSelfTest();
             ImageShare.SelfTest();
             Shutdown(0);

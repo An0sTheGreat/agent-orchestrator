@@ -94,8 +94,9 @@ public partial class MainWindow
         return _picture;
     }
 
-    private void Profile_Click(object sender, RoutedEventArgs e)
+    private async void Profile_Click(object sender, RoutedEventArgs e)
     {
+        _tailnet = await Tailscale.StatusAsync(); // the card's Tailscale part as it is now (well under a second)
         _profilePopup = ProfilePopup((FrameworkElement)sender);
         _profilePopup.IsOpen = true;
     }
@@ -156,6 +157,7 @@ public partial class MainWindow
         activity.Margin = new Thickness(2, 12, 0, 6);
         panel.Children.Add(activity);
         panel.Children.Add(Heatmap(26));
+        panel.Children.Add(TailnetSection(() => popup.IsOpen = false));
 
         var card = new Border { Child = panel, Padding = new Thickness(16, 16, 16, 14), BorderThickness = new Thickness(1) };
         card.SetResourceReference(Border.BackgroundProperty, "Card");
