@@ -21,6 +21,7 @@ public partial class MainWindow
     private bool _chatBusy, _chatStopRequested; // _chatBusy: a conversation turn (Chat or Code) is running
     private bool _turnCompleted; // the last turn ended with a reply (not stopped or failed)
     private string? _chatError;
+    private string? _turnFolder; // the folder the running (or last) turn worked in: its file chips' paths are relative to it
     private string? _chatRequestFile, _chatTempFolder; // the current turn's temp files; _chatTempFolder only when PrepareChatFolder made it
     private ChatReply? _reply;
 
@@ -39,6 +40,7 @@ public partial class MainWindow
         public long Tokens; // all turns of this conversation (saved with it)
         public string? Summary; // the engine's summary of History[..SummaryCovers] (history_compacted; saved with it)
         public int SummaryCovers;
+        public string? Scratch; // the temp folder a chat without a project works in: kept across its turns, so its files stay
         public bool Owns(object o) => o == Input || o == Send || o == Scroll || o == Jump || o == Plus || o == Chip;
     }
 
@@ -747,6 +749,7 @@ public partial class MainWindow
         c.History.Clear();
         c.Tokens = 0;
         (c.Summary, c.SummaryCovers) = (null, 0);
+        c.Scratch = null;
         if (c == _turn) // a running turn elsewhere keeps its reply
             _reply = null;
         c.Empty.Visibility = Visibility.Visible;
@@ -807,11 +810,13 @@ public partial class MainWindow
             c.Input.Clear();
         try
         {
-            var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out var tempSkipped);
-            var folder = prepared.Path;
+            // without a project the chat works in its own temp folder (named for the saved conversation when it has one), kept
+            // after the turn so the files the model wrote stay there
+            c.Scratch ??= Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{(c.IsCode ? _codeConv?.Id : _chatConv?.Id) ?? Guid.NewGuid().ToString("N")}");
+            var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out var tempSkipped, keep: c.Scratch);
+            var folder = _turnFolder = prepared.Path;
             if (prepared.IsTemp)
             {
-                _chatTempFolder = folder;
                 foreach (var reason in tempSkipped)
                     Log($"Not written to config.json, so it will not take part: {reason}");
             }

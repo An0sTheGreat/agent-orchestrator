@@ -502,24 +502,27 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException or System.Security.SecurityException) { return false; }
     }
 
-    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped, string? dataRoot = null)
+    // keep: a chat's own temp folder, used again on each of its turns (the files the model writes there stay; its config.json
+    // is written afresh); the caller does not delete it.
+    public static ChatFolder PrepareChatFolder(string selectedProject, string workflowRoot, IEnumerable<WorkerSetting> workers, out string[] skipped, string? dataRoot = null, string? keep = null)
     {
         skipped = [];
         var projectConfig = Path.Combine(selectedProject, "config.json");
         if (selectedProject.Length > 0 && File.Exists(projectConfig) && !IsTemplateConfig(projectConfig, workflowRoot))
             return new ChatFolder(selectedProject, false);
-        var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
+        var folder = keep ?? Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");
         try
         {
             Directory.CreateDirectory(folder);
             var copy = Path.Combine(folder, "config.json");
-            File.Copy(EnsureWorkerConfig(workflowRoot, dataRoot), copy);
+            File.Copy(EnsureWorkerConfig(workflowRoot, dataRoot), copy, overwrite: keep is not null);
             skipped = WriteCustomWorkers(copy, workers, Path.Combine(workflowRoot, "config.json"));
             return new ChatFolder(folder, true);
         }
         catch
         {
-            try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+            if (keep is null) // a kept folder holds the chat's files
+                try { Directory.Delete(folder, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
             throw;
         }
     }
@@ -2407,6 +2410,15 @@ internal static class LauncherLogic
                     throw new InvalidOperationException("Chat folder without a project must be a temp copy of the worker config.");
             }
             finally { Directory.Delete(chatFolder, true); }
+            // a chat's kept folder: the second turn finds the first turn's files, and config.json written afresh
+            var kept = Path.Combine(testArea, "kept-chat");
+            PrepareChatFolder(testArea, rootDir, chatWorkers, out _, dataDir, keep: kept);
+            File.WriteAllText(Path.Combine(kept, "game.py"), "x");
+            File.WriteAllText(Path.Combine(kept, "config.json"), "{}");
+            if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _, dataDir, keep: kept) is not { IsTemp: true } again || again.Path != kept ||
+                !File.Exists(Path.Combine(kept, "game.py")) || (int?)JsonNode.Parse(File.ReadAllText(Path.Combine(kept, "config.json")))?["keep"] != 2)
+                throw new InvalidOperationException("A chat's kept folder must keep its files and get the worker config again.");
+            Directory.Delete(kept, true);
             File.WriteAllText(Path.Combine(testArea, "config.json"), "{}");
             if (PrepareChatFolder(testArea, rootDir, chatWorkers, out _, dataDir) is not { Path: var initialized, IsTemp: false } || initialized != testArea ||
                 ActiveConfigPath(testArea, rootDir, dataDir) != Path.Combine(testArea, "config.json"))

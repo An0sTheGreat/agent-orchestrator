@@ -234,9 +234,28 @@ public partial class MainWindow
             if (removed > 0)
                 text.Inlines.Add(new Run("  −" + removed) { Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x5C, 0x61)) });
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-            var chip = new Border { Child = text, Height = 28, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1), ToolTip = file };
+            // a click opens the file in the editor; a right click offers the text app and the file's folder
+            var full = Path.IsPathRooted(file) || _turnFolder is null ? file : Path.GetFullPath(Path.Combine(_turnFolder, file));
+            var chip = new Border { Child = text, Height = 28, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
+                ToolTip = full, Cursor = System.Windows.Input.Cursors.Hand, Tag = "file-chip" };
             chip.SetResourceReference(Border.BackgroundProperty, "Card");
             chip.SetResourceReference(Border.BorderBrushProperty, "BorderStrong");
+            chip.MouseEnter += (_, _) => chip.SetResourceReference(Border.BackgroundProperty, "Hover");
+            chip.MouseLeave += (_, _) => chip.SetResourceReference(Border.BackgroundProperty, "Card");
+            chip.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                OpenEditor(full);
+            };
+            chip.MouseRightButtonUp += (_, e) =>
+            {
+                e.Handled = true;
+                var menu = NewPresetMenu(chip);
+                menu.Items.Add(PresetItem("Open in editor", () => OpenEditor(full)));
+                menu.Items.Add(PresetItem("Open in text app", () => OpenInTextApp(full), File.Exists(full)));
+                menu.Items.Add(PresetItem("Open containing folder", () => ShowInFolder(full), Directory.Exists(Path.GetDirectoryName(full))));
+                menu.IsOpen = true;
+            };
             wrap.Children.Add(chip);
         }
         if (r.Files.Count > 6)

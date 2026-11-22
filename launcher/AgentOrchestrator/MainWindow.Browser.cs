@@ -55,8 +55,11 @@ public partial class MainWindow
         {
             RailPopup.IsOpen = false;
             WorkerRail.Visibility = Visibility.Collapsed;
+            var fromEditor = EditorPanel.IsVisible; // the editor shares the column: the pages swap
+            EditorPanel.Visibility = Visibility.Collapsed;
             BrowserPanel.Visibility = Visibility.Visible;
-            SlideColumn(BrowserPanel, collapsed: false, slide: true); // from the rail the column slides open
+            if (!fromEditor)
+                SlideColumn(BrowserPanel, collapsed: false, slide: true); // from the rail the column slides open
             BrowserFollowToggle.IsChecked = _settings.BrowserFollow;
             BrowserInputToggle.IsChecked = _settings.BrowserInput;
             _settings.BrowserOpen = true;

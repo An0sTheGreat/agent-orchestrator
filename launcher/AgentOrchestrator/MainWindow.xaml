@@ -1070,6 +1070,10 @@
                     </StackPanel>
                 </Border>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="EditorButton" Style="{StaticResource TitleButton}" Click="Editor_Click"
+                            ToolTip="Editor: files from the replies open here" AutomationProperties.Name="Editor">
+                        <TextBlock Text="&#xE70F;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                    </Button>
                     <Button x:Name="BrowserButton" Style="{StaticResource TitleButton}" Click="Browser_Click"
                             ToolTip="Browser: links and the pages the model reads open here" AutomationProperties.Name="Browser">
                         <TextBlock Text="&#xE774;" Style="{StaticResource RailGlyph}" FontSize="13" />
@@ -1452,6 +1456,42 @@
                         <Grid x:Name="BrowserHost" />
                         <TextBlock x:Name="BrowserMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Visibility="Collapsed" />
                     </Grid>
+                </DockPanel>
+            </Border>
+            <!-- File viewer (MainWindow.Editor.cs): a file from a reply's chips, coloured as code; Edit switches to a plain text box -->
+            <Border x:Name="EditorPanel" Grid.Column="3" Background="{DynamicResource Panel}" Visibility="Collapsed">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
+                        <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
+                                Click="EditorClose_Click" ToolTip="Close the editor (back to the worker rail)" AutomationProperties.Name="Close editor">
+                            <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <TextBlock DockPanel.Dock="Left" Text="EDITOR" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Click="EditorFolder_Click"
+                                ToolTip="Open the folder this file is in" AutomationProperties.Name="Open folder">
+                            <TextBlock Text="&#xE838;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Width="28" Height="28" Padding="0" Margin="0,0,4,0" Click="EditorExternal_Click"
+                                ToolTip="Open in the app that opens your .txt files" AutomationProperties.Name="Open in text app">
+                            <TextBlock Text="&#xE8A7;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <Button x:Name="EditorEditButton" DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="10,3" Margin="0,0,6,0" Click="EditorEdit_Click"
+                                Content="Edit" ToolTip="Edit this file (Ctrl+S saves)" />
+                        <TextBlock x:Name="EditorTitle" Margin="12,0,8,0" FontSize="12" VerticalAlignment="Center"
+                                   Foreground="{DynamicResource TextPrimary}" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                    <Border Margin="10,0,10,10" BorderThickness="1" BorderBrush="{DynamicResource Border}" Background="{DynamicResource Card}" CornerRadius="{DynamicResource ControlRadius}">
+                        <Grid>
+                            <ScrollViewer x:Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="0,8">
+                                <ContentControl x:Name="EditorView" />
+                            </ScrollViewer>
+                            <TextBox x:Name="EditorBox" Visibility="Collapsed" AcceptsReturn="True" AcceptsTab="True" BorderThickness="0" Background="Transparent"
+                                     FontSize="12.5" Padding="12,8" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                     PreviewKeyDown="EditorBox_PreviewKeyDown" AutomationProperties.Name="File text" />
+                            <TextBlock x:Name="EditorMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"
+                                       Text="Click a file under a reply (the chips after &quot;files changed&quot;) to open it here." />
+                        </Grid>
+                    </Border>
                 </DockPanel>
             </Border>
             <!-- The right column (the browser aside): one activity dot per visible worker; hovering a dot shows its card (MainWindow.WorkerRail.cs) -->

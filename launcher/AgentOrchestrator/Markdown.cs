@@ -344,6 +344,14 @@ internal static class Markdown
         return new BlockUIContainer(card) { Margin = new Thickness(0, R(2, 6), 0, R(10, 16)) };
     }
 
+    // A whole file, coloured as a code block's listing (the file viewer): numbered rows unless it is huge.
+    public static UIElement CodeListing(string code, string language)
+    {
+        var pieces = Highlight(code, language);
+        var lineCount = code.Count(c => c == (char)10) + 1;
+        return lineCount <= MaxNumbered ? NumberedLines(pieces, lineCount) : CodeText(pieces, gutter: false);
+    }
+
     private const int MaxNumbered = 1500; // longer listings stay one block of text: a row each would slow a render
 
     // The copy button's content: the copy glyph and "Copy", or a check and "Copied" in green.

@@ -43,13 +43,14 @@ public partial class MainWindow
     private void ShowWorkerRail()
     {
         StopColumnTween(); // a slide still running finishes first, before the pages change
-        var slide = BrowserPanel.IsVisible;
-        if (slide) // closed by this, not at startup
+        var page = EditorPanel.IsVisible ? EditorPanel : BrowserPanel; // the editor shares the column
+        var slide = page.IsVisible;
+        if (BrowserPanel.IsVisible) // closed by this, not at startup
             _settings.BrowserOpen = false;
         RailPopup.IsOpen = false;
-        BrowserPanel.Visibility = Visibility.Collapsed;
+        BrowserPanel.Visibility = EditorPanel.Visibility = Visibility.Collapsed;
         WorkerRail.Visibility = Visibility.Visible;
-        SlideColumn(BrowserPanel, collapsed: true, slide);
+        SlideColumn(page, collapsed: true, slide);
     }
 
     // The right column between the rail (collapsed) and the browser at its saved width. slide: the
