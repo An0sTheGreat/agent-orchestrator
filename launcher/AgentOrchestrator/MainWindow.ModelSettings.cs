@@ -1113,8 +1113,6 @@ public partial class MainWindow
         var footer = new StackPanel { Children = { error } };
         DockPanel.SetDock(footer, Dock.Bottom);
         footer.Margin = new Thickness(0, 8, 14, 14);
-        foreach (var part in new FrameworkElement[] { body, footer, bar }) // read-only while a run uses the models
-            part.SetBinding(IsEnabledProperty, new System.Windows.Data.Binding(nameof(RoleCard.Editable)) { Source = card });
         cancel.Click += (_, _) => close();
 
         // Shows the errors under their fields (the rest above the buttons); true when there were any.
@@ -1200,7 +1198,7 @@ public partial class MainWindow
                 SyncCustomWorkers();
                 ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
                 Log($"{card.Title}: model settings saved");
-                Toast($"{card.Title}: settings saved");
+                SavedToast(card.Title);
                 saved();
                 return true;
             }
@@ -1213,7 +1211,7 @@ public partial class MainWindow
             // COMPACTOR on MAIN's model keeps following it until a model or option of its own is saved.
             if (followsMain && choice is null && !toLocal && editors.Values.Select(StateOf).SequenceEqual(clean.Take(editors.Count)))
             {
-                Toast($"{card.Title}: settings saved");
+                SavedToast(card.Title);
                 HoldWorkerTab(saved);
                 return true;
             }
@@ -1274,7 +1272,7 @@ public partial class MainWindow
             if (remote is not null && Environment.GetEnvironmentVariable(remote.KeyEnv.Trim()) is null)
                 Toast($"{card.Title}: no key for {remote.KeyEnv.Trim()} yet; paste it on the Remote API page", "#F7C873");
             else
-                Toast($"{card.Title}: settings saved");
+                SavedToast(card.Title);
             HoldWorkerTab(() =>
             {
                 PrefillCards();
@@ -1349,6 +1347,15 @@ public partial class MainWindow
         if (onPrimary)
             FetchPrimaryLoad();
         return (new DockPanel { Children = { footer, scroll } }, bar, () => !State().SequenceEqual(clean), Save);
+    }
+
+    // A model's Save: while a reply or run uses the models, a dialog says when the settings take effect (MainWindow.SavedWhileWorking).
+    private void SavedToast(string title)
+    {
+        if (ModelsWorking)
+            AskDialog("Settings saved", SavedWhileWorking(title), "OK", cancel: false);
+        else
+            Toast($"{title}: settings saved");
     }
 
     private static Task<long?>? _gpuMemory; // the first GPU's total memory (nvidia-smi), read once

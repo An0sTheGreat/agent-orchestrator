@@ -10,7 +10,7 @@ namespace AgentOrchestrator;
 internal sealed class RoleCard : INotifyPropertyChanged
 {
     private string _modelName = "Not loaded", _weights = "—", _quant = "—", _status = "Idle", _tps = "—";
-    private bool _isActive, _selected, _editable = true;
+    private bool _isActive, _selected;
     private string _title;
     private long _bankedPrompt, _bankedCompletion, _livePrompt, _liveCompletion;
 
@@ -35,7 +35,6 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public bool IsCustom { get; }
     public bool IsBuiltIn => !IsCustom;
     public string Title { get => _title; set => Set(ref _title, IsCustom ? value : _title); }
-    public bool Editable { get => _editable; set => Set(ref _editable, value); }
     // The worker tab whose settings the column shows (MainWindow.WorkerTabs.cs); a selected tab stays shown even when Hidden.
     public bool IsSelected { get => _selected; set => Set(ref _selected, value); }
     // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: an implementer or reviewer not added).

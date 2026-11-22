@@ -299,7 +299,7 @@ public partial class MainWindow
         var chip = (Button)sender;
         var c = ConvOf(sender);
         var menu = chip.ContextMenu = BuildWorkerMenu(chip, c, c.IsCode ? CodeTarget() is { } lead ? [lead] : [] : ListedWorkers(c));
-        var options = new MenuItem { Header = "Options…", ToolTip = "Model settings for these workers", IsEnabled = _process is null };
+        var options = new MenuItem { Header = "Options…", ToolTip = "Model settings for these workers" }; // open while they work: Save applies from the next load
         options.Click += (_, _) => Dispatcher.InvokeAsync(() => OpenModelOptions(c), System.Windows.Threading.DispatcherPriority.Background);
         menu.Items.Insert(0, options);
         menu.Items.Insert(1, new Separator { Style = (Style)FindResource("MenuSeparator") });
@@ -1202,10 +1202,8 @@ public partial class MainWindow
         if (!busy)
             _steering.Clear(); // never delivered: queued rows again, sent as the next turn (or back in the input) as usual
         RefreshQueue(_code); // Send now while a Pi Code turn runs
-        AddWorkerButton.IsEnabled = PresetsButton.IsEnabled = !busy;
+        AddWorkerButton.IsEnabled = !busy; // model settings and presets stay open: a Save applies from the next load (ModelsWorking)
         RefreshPresetButtons();
-        foreach (var card in _cards)
-            card.Editable = !busy;
         SetStatus(busy ? "Replying" : "Ready", busy ? "#8B7CFF" : "#667085");
         SetActivity(busy);
         TimeTask(busy);

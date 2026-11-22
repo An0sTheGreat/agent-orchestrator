@@ -3217,7 +3217,13 @@ def configure_project(config: dict[str, Any], project_root: Path, project: str, 
     _, response = extract_json_with_repair(config, "planner", response, interactive, system=system, user=user)
     configured = apply_project_configuration(config, response)
     configured["configuration_fingerprint"] = fingerprint
-    write_atomic(project_root / "config.json", json.dumps(configured, indent=2))
+    try:  # the file as it is now: model settings the user saved since the run started are kept (they apply at the next load)
+        on_disk = json.loads(load_text(project_root / "config.json"))
+    except (OSError, ValueError):
+        on_disk = config
+    saved = apply_project_configuration(on_disk, response) if isinstance(on_disk, dict) else configured
+    saved["configuration_fingerprint"] = fingerprint
+    write_atomic(project_root / "config.json", json.dumps(saved, indent=2))
     names = ", ".join(configured["validation_commands"]) or "none"
     print(f"[configurator] saved validation commands: {names}")
     return configured

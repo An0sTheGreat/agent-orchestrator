@@ -2194,6 +2194,20 @@ class OrchestratorTests(unittest.TestCase):
             self.assertIn(root / "config.json", [call.args[0] for call in atomic.call_args_list])
             self.assertEqual(json.loads((root / "config.json").read_text(encoding="utf-8"))["project_configured"], True)
 
+    def test_configure_project_keeps_model_settings_saved_during_the_run(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
+            root = self.make_project(folder)
+            started = {"roles": {"planner": {"auto_load": {"max_seq_length": 8192}}}, "validation_commands": {}}
+            saved_since = {"roles": {"planner": {"auto_load": {"max_seq_length": 32768}}}, "validation_commands": {}}
+            (root / "config.json").write_text(json.dumps(saved_since), encoding="utf-8")  # the user's Save while the run works
+            reply = '{"validation_commands":{"t":["python","-m","unittest"]}}'
+            with patch.object(orchestrator, "ask_once", return_value=reply):
+                used = orchestrator.configure_project(started, root, "proj", False)
+            written = json.loads((root / "config.json").read_text(encoding="utf-8"))
+            self.assertEqual(written["roles"]["planner"]["auto_load"]["max_seq_length"], 32768)  # kept for the next load
+            self.assertEqual(written["validation_commands"]["t"], ["python", "-m", "unittest"])
+            self.assertEqual(used["roles"]["planner"]["auto_load"]["max_seq_length"], 8192)  # this run keeps what it loaded with
+
     def test_stale_handoff_is_refreshed_when_no_checkpoint(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as folder:
             root = self.make_project(folder)

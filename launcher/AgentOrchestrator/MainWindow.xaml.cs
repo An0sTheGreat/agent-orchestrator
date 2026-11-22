@@ -297,11 +297,8 @@ public partial class MainWindow : Window
 
     private void SetRunning(bool running, bool preserveStatus = false)
     {
-        AddWorkerButton.IsEnabled = !running;
-        PresetsButton.IsEnabled = !running;
+        AddWorkerButton.IsEnabled = !running; // model settings and presets stay open: a Save applies from the next load (ModelsWorking)
         RefreshPresetButtons();
-        foreach (var card in _cards)
-            card.Editable = !running;
         if (running)
             SetStatus("Running", "#8B7CFF");
         else if (!preserveStatus)
@@ -4658,11 +4655,17 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private void Presets_Click(object sender, RoutedEventArgs e)
-    {
-        if (_process is null)
-            BuildPresetsMenu().IsOpen = true;
-    }
+    private void Presets_Click(object sender, RoutedEventArgs e) => BuildPresetsMenu().IsOpen = true;
+
+    // A run or a reply is using the models: settings and presets can still be edited and saved, and take effect at the next
+    // load (each turn's engine reads config.json when it starts, and reloads a model whose load settings changed); switching
+    // to another preset waits, as it rewrites the workers the turn is using.
+    private bool ModelsWorking => _process is not null || _chatBusy;
+
+    // What a model's Save while the models work tells the user.
+    private string SavedWhileWorking(string title) =>
+        $"{title}: settings saved. They take effect the next time the model loads, not in this {(_process is not null ? "run" : "reply")}: " +
+        $"if it is loaded, it reloads when you next {(_process is not null ? "start a run or send a message" : "send it a message")}.";
 
     private ContextMenu NewPresetMenu(UIElement? target = null) =>
         new() { Style = (Style)FindResource(typeof(ContextMenu)), PlacementTarget = target ?? PresetsButton, Placement = PlacementMode.Bottom };
@@ -4698,12 +4701,11 @@ public partial class MainWindow : Window
             SavePresetButton.Content = $"Save to “{(active.Name.Length > 18 ? active.Name[..17] + "…" : active.Name)}”";
             SavePresetButton.ToolTip = $"Overwrite the preset \"{active.Name}\" with the workers and settings as they are now";
         }
-        SavePresetButton.IsEnabled = PresetsButton.IsEnabled;
     }
 
     private void SavePreset_Click(object sender, RoutedEventArgs e)
     {
-        if (_process is null && ActivePreset is { } active)
+        if (ActivePreset is { } active)
             SavePreset(active.Name);
     }
 
@@ -4713,7 +4715,15 @@ public partial class MainWindow : Window
         menu.Items.Add(PresetItem("+ New preset…", NewPresetPrompt));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
         foreach (var preset in PresetList)
-            menu.Items.Add(PresetItem(preset.Name, () => ApplyPreset(preset)));
+        {
+            var item = PresetItem(preset.Name, () => ApplyPreset(preset), !ModelsWorking);
+            if (ModelsWorking)
+            {
+                item.ToolTip = "Switch presets once the reply or run finishes";
+                ToolTipService.SetShowOnDisabled(item, true);
+            }
+            menu.Items.Add(item);
+        }
         if (PresetList.Count == 0)
             menu.Items.Add(PresetItem("No saved presets", () => { }, enabled: false));
         menu.Items.Add(new Separator { Style = (Style)FindResource("MenuSeparator") });
@@ -4740,21 +4750,22 @@ public partial class MainWindow : Window
 
     // Themed prompt: a name box when input is not null (empty names rejected), otherwise a plain confirmation.
     // Returns the entered text ("" for a confirmation), or null when cancelled.
-    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60, Func<string, string?>? validate = null)
+    private string? AskDialog(string title, string message, string okLabel, string? input = null, int maxLength = 60, Func<string, string?>? validate = null, bool cancel = true)
     {
-        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength, validate);
+        var (dialog, result) = BuildAskDialog(title, message, okLabel, input, maxLength, validate, cancel);
         dialog.ShowDialog();
         return result();
     }
 
-    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60, Func<string, string?>? validate = null)
+    private (DialogShell Dialog, Func<string?> Result) BuildAskDialog(string title, string message, string okLabel, string? input, int maxLength = 60, Func<string, string?>? validate = null, bool cancel = true)
     {
         var box = input is null ? null : new TextBox { Text = input, MaxLength = maxLength, Margin = new Thickness(0, 10, 0, 0) };
         var error = new TextBlock { Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), Margin = new Thickness(0, 8, 0, 0), Visibility = Visibility.Collapsed };
         var ok = new Button { Content = okLabel, Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 5, 16, 5), IsDefault = true };
-        var cancel = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        var cancelButton = new Button { Content = "Cancel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 5, 12, 5), Margin = new Thickness(0, 0, 8, 0), IsCancel = true,
+            Visibility = cancel ? Visibility.Visible : Visibility.Collapsed }; // a notice: OK alone (Esc still closes it)
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
-        buttons.Children.Add(cancel);
+        buttons.Children.Add(cancelButton);
         buttons.Children.Add(ok);
         var panel = new StackPanel { MinWidth = 320 };
         panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap, MaxWidth = 380 });
@@ -4791,7 +4802,7 @@ public partial class MainWindow : Window
 
     private void SavePresetPrompt()
     {
-        if (_process is not null || AskDialog("Save preset", "Name this set of workers and their settings.", "Save", "") is not { } name)
+        if (AskDialog("Save preset", "Name this set of workers and their settings.", "Save", "") is not { } name)
             return;
         if (PresetList.Any(p => SamePreset(p, name)) &&
             AskDialog("Overwrite preset", $"A preset named \"{name}\" already exists. Replace it?", "Overwrite") is null)
@@ -4804,7 +4815,7 @@ public partial class MainWindow : Window
     // in a preset they were saved to.
     private void NewPresetPrompt()
     {
-        if (_process is not null || _workflowRoot is null || AskDialog("New preset",
+        if (_workflowRoot is null || AskDialog("New preset",
                 "Name the new preset. It starts from the default workers and settings; edit them, then Save current as preset to keep your changes.",
                 "Create", "") is not { } name)
             return;
@@ -4835,6 +4846,12 @@ public partial class MainWindow : Window
         else
             PresetList.Add(preset);
         _settings.Save();
+        if (ModelsWorking) // switching rewrites the workers the turn uses: kept for later
+        {
+            Log($"Preset created: {name} (not applied while the models work)");
+            Toast($"Preset \"{name}\" created: pick it from Presets once the reply or run finishes to edit it", "#F7C873");
+            return;
+        }
         ApplyPreset(preset);
     }
 
