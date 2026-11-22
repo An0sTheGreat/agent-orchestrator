@@ -341,6 +341,7 @@ class ApiClient:
         self.title = ""  # human-readable name for log lines (a custom worker's title); events keep `role`
         self.thinking_off = False  # set once a thinking-truncation fallback worked; later requests skip the wasted attempt
         self.cut_off = False  # the last reply stopped at max_tokens
+        self.slimmed: int | None = None  # results the last request left out (slim_notice); None before the first
         self.llama_port = 0  # set by role_settings when this role runs on our llama-server (a role with auto_load)
         self.llama_base = 0  # the configured llama_port; llama_ensure moves llama_port to the server that serves the role
         self.compactor = None  # set by role_settings: () -> (client, sampling) of a separate Compactor role
@@ -423,7 +424,9 @@ class ApiClient:
             if estimate_tokens(slim_tool_results(messages, n_ctx), tools) > compact_limit(n_ctx, sampling):
                 self._compact(model, messages, sampling, tools)
         compacted_on_error = False
-        body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(slim_tool_results(messages, n_ctx or DEFAULT_WINDOW))), **sampling}
+        sent = slim_tool_results(messages, n_ctx or DEFAULT_WINDOW)
+        self.slimmed = slim_notice(self.slimmed, messages, sent, self.role)
+        body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(sent)), **sampling}
         body = reasoning_budget(body, self.remote)
         if self.remote and (urlsplit(self.base_url).hostname or "").endswith("openrouter.ai") and body.get("enable_thinking") is False:
             body.pop("reasoning_effort", None)
@@ -873,7 +876,7 @@ def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any
     return [*messages[:-1], {**messages[-1], "content": str(messages[-1].get("content") or "") + note}]
 
 
-KEEP_TOOL_ROUNDS, STUB_OVER = 2, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
+KEEP_TOOL_ROUNDS, STUB_OVER = 6, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
 SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
 
@@ -904,6 +907,15 @@ def slim_tool_results(messages: list[dict[str, Any]], n_ctx: int | None = None) 
                                  "call the tool again if you need it]"}
         sent.append(m)
     return sent
+
+
+def slim_notice(before: int | None, messages: list[dict[str, Any]], sent: list[dict[str, Any]], role: str = "") -> int:
+    """How many results `sent` leaves out; a "slimmed" event when that starts after a request that left none out (the
+    context ring drops then). None before: the first request (a chat already past SLIM_AT shows no drop)."""
+    stubbed = sum(a is not b for a, b in zip(messages, sent))
+    if stubbed and before == 0:
+        emit("slimmed", role=role, results=stubbed, before=estimate_tokens(messages), after=estimate_tokens(sent))
+    return stubbed
 
 
 IMAGE_TOKENS = 2500  # ponytail: one screenshot's estimated prompt size; vision models differ (fixed 256 to ~4,500 by resolution)
@@ -5441,7 +5453,10 @@ class PiGateway:
                     if self.headers.get("x-ao-token") != gateway.token:
                         raise PermissionError("bad token")
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-                    if "guard" in body:
+                    if "slimmed" in body:  # the extension's context handler started leaving older results out
+                        emit("slimmed", role="planner", results=int(body["slimmed"]), before=int(body.get("before") or 0), after=int(body.get("after") or 0))
+                        reply = {"result": "ok"}
+                    elif "guard" in body:
                         reply = {"result": str(pi_guard(str(body.get("guard") or ""), folders, bool(body.get("write")),
                                                         bool(body.get("existing"))))}
                     else:

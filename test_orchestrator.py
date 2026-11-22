@@ -290,6 +290,7 @@ class OrchestratorTests(unittest.TestCase):
         self.assertNotIn("enable_thinking", bodies[0])
         self.assertIs(bodies[2]["enable_thinking"], False)
 
+    @patch.object(orchestrator, "KEEP_TOOL_ROUNDS", 2)
     def test_older_tool_results_go_to_the_model_as_a_note(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client._stream_chat, bodies = self._fake_stream([self._reply("stop", content="ok")] * 2)
@@ -3030,6 +3031,7 @@ class CodeTests(unittest.TestCase):
         self.assertIn("(8% of the context window)", result)
         self.assertLess(len(result), 400)
 
+    @patch.object(orchestrator, "KEEP_TOOL_ROUNDS", 2)
     def test_older_tool_results_are_sent_as_a_note(self):
         big = "x = 1\n" * 200
         messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "task"}]
@@ -3047,6 +3049,25 @@ class CodeTests(unittest.TestCase):
         self.assertTrue(sent[4]["content"].startswith("[older tool results of read_file, list_files ("), sent[4]["content"])
         short = messages[:5]  # one assistant message: nothing is old yet
         self.assertIs(orchestrator.slim_tool_results(short), short)
+
+    def test_slimming_is_announced_when_it_starts(self):
+        events = []
+        with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))):
+            whole = [{"content": "a" * 700}, {"content": "b"}]
+            cut = [{"content": "[older result]"}, whole[1]]
+            self.assertEqual(orchestrator.slim_notice(None, whole, cut), 1)  # the turn's first request: no drop to explain
+            self.assertEqual(orchestrator.slim_notice(0, whole, whole), 0)
+            self.assertEqual(orchestrator.slim_notice(0, whole, cut, "planner"), 1)  # after a request that kept everything
+            self.assertEqual(orchestrator.slim_notice(1, whole, cut), 1)  # still slimmed: said once
+        self.assertEqual(events, [("slimmed", {"role": "planner", "results": 1, "before": orchestrator.estimate_tokens(whole),
+                                               "after": orchestrator.estimate_tokens(cut)})])
+        gateway = orchestrator.PiGateway({}, self.folders, 1000)  # Pi's extension reports its own slimming through the gateway
+        self.addCleanup(gateway.close)
+        request = urllib.request.Request(gateway.url, json.dumps({"slimmed": 3, "before": 900, "after": 400}).encode(),
+                                         {"Content-Type": "application/json", "x-ao-token": gateway.token})
+        with patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))), urllib.request.urlopen(request) as response:
+            self.assertEqual(json.loads(response.read()), {"result": "ok"})
+        self.assertEqual(events[-1], ("slimmed", {"role": "planner", "results": 3, "before": 900, "after": 400}))
 
     def test_builtin_roles_keep_the_fixed_lead_prompt(self):
         # chat_system_prompt is for the Chat view: a Code turn's lead keeps prompts/lead.txt.
@@ -3308,6 +3329,7 @@ class CodeTests(unittest.TestCase):
             self.assertIn(f"TEXT FROM CHARACTER 0 OF {len(page)}:\nnav menu", cut)
             self.assertRegex(cut, r"read on with offset=\d+ \(without find\)")
 
+    @patch.object(orchestrator, "KEEP_TOOL_ROUNDS", 2)
     def test_a_browser_screenshot_goes_to_the_model_as_an_image(self):
         asked, image = [], "data:image/jpeg;base64,/9j/AAAA"
         answer = lambda event, **d: asked.append(d) or {"result": "TAB: 1 of 1\nSCREENSHOT: scrolled to the first \"Screens\"", "image": image}

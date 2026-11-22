@@ -67,7 +67,7 @@ export default function (pi: ExtensionAPI) {
 	// orchestrator.py's slim_tool_results for Pi: once the conversation passes AO_SLIM_CHARS (estimated as the engine does:
 	// its text, and 2,500 tokens an image), a tool result older than the last KEEP_TOOL_ROUNDS assistant messages and
 	// longer than STUB_OVER characters becomes a one-line note in each request. Pi's session keeps the full result.
-	const KEEP_TOOL_ROUNDS = 2, STUB_OVER = 600, slimChars = Number(process.env.AO_SLIM_CHARS) || 0;
+	const KEEP_TOOL_ROUNDS = 6, STUB_OVER = 600, slimChars = Number(process.env.AO_SLIM_CHARS) || 0;
 	const size = (content: unknown): number =>
 		typeof content === "string" ? content.length : Array.isArray(content)
 			? content.reduce((n: number, c: { type?: string; text?: string; thinking?: string; arguments?: unknown }) =>
@@ -93,6 +93,13 @@ export default function (pi: ExtensionAPI) {
 		"arguments were malformed (usually the content was too long and was cut off, so a required field such as path was missing). " +
 		"Do not say the work is complete and do not just reopen the file. Retry in smaller pieces: write a short skeleton file first, " +
 		"then add each section with its own edit, always sending path and content in a complete, well-formed call.";
+	// as orchestrator.slim_notice: the chat shows a line when older results start being left out after a request that kept them
+	let slimmed: number | undefined;
+	const noteSlim = (stubbed: number, before: unknown[], after: unknown[]) => {
+		const tokens = (ms: unknown[]) => Math.round(ms.reduce((n: number, m) => n + size((m as { content?: unknown }).content), 0) / 3.5);
+		if (stubbed > 0 && slimmed === 0) void call({ slimmed: stubbed, before: tokens(before), after: tokens(after) });
+		slimmed = stubbed;
+	};
 	pi.on("context", async (event) => {
 		const refused = new Set(event.messages.flatMap((m) => notWritten(m as Parameters<typeof notWritten>[0]) ? [(m as { toolCallId: string }).toolCallId] : []));
 		// a call the engine cut off for passing the role's max_tool_call_chars stays in the session with its partial arguments
@@ -112,8 +119,10 @@ export default function (pi: ExtensionAPI) {
 		if (noImages && event.messages.some((m) => unseen((m as { content?: unknown }).content)))
 			event = { ...event, messages: event.messages.map((m) => textOnly(m as typeof m & { content: unknown })) };
 		const rounds = event.messages.flatMap((m, i) => (m.role === "assistant" ? [i] : []));
-		if (rounds.length <= KEEP_TOOL_ROUNDS) return changed ? { messages: event.messages } : undefined;
-		if (event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) return changed ? { messages: event.messages } : undefined;
+		if (rounds.length <= KEEP_TOOL_ROUNDS || event.messages.reduce((n, m) => n + size((m as { content?: unknown }).content), 0) <= slimChars) {
+			noteSlim(0, [], []);
+			return changed ? { messages: event.messages } : undefined;
+		}
 		const keepFrom = rounds[rounds.length - KEEP_TOOL_ROUNDS];
 		const calls = new Map<string, string>();
 		for (const m of event.messages.slice(0, keepFrom))
@@ -129,6 +138,7 @@ export default function (pi: ExtensionAPI) {
 				`${text.split("\n").length} lines) left out to save context; call the tool again if you need it]`;
 			return { ...m, content: [{ type: "text" as const, text: note }] };
 		});
+		noteSlim(messages.filter((m, i) => m !== event.messages[i]).length, event.messages, messages);
 		return { messages };
 	});
 

@@ -1332,6 +1332,14 @@ public partial class MainWindow
                     compactReply.Content.Children.Add(CompactionRule());
                 }
                 break;
+            case "slimmed": // older tool results now go to the model as one-line notes: the ring's drop is explained
+                EndChatBlock();
+                if (_reply is { } slimReply)
+                {
+                    DetachAnswer(slimReply);
+                    slimReply.Content.Children.Add(CompactionNote(SlimmedLine(ev)));
+                }
+                break;
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 SetChatStatus("Waiting for your approval…");
                 AnswerApproval(ev);
@@ -1354,6 +1362,9 @@ public partial class MainWindow
                 break;
         }
     }
+
+    private static string SlimmedLine(JsonElement ev) =>
+        $"Older tool results left out to save context · {Num(ev, "results"):0} results · {Tokens((long)Num(ev, "before"))} → {Tokens((long)Num(ev, "after"))} tokens";
 
     private static string CompactedLine(JsonElement ev) => $"Context compacted · {Tokens((long)Num(ev, "before"))} → {Tokens((long)Num(ev, "after"))} tokens";
 

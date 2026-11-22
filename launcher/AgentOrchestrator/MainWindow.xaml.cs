@@ -464,6 +464,10 @@ public partial class MainWindow : Window
                     AddStatsLine(ended, LauncherLogic.StatsLine(ChatName(card, role), Num(ev, "tps"), (long)Num(ev, "completion"), (long)Num(ev, "prompt")), Num(ev, "tps"));
                 }
                 break;
+            case "slimmed":
+                EndStream(false);
+                AddNote("CONTEXT", $"{card?.Title ?? role}: {SlimmedLine(ev)}");
+                break;
             case "compacted": // its print line is already in the log
                 EndStream(false);
                 AddNote("CONTEXT", $"{card?.Title ?? role}: {CompactedLine(ev)}");
