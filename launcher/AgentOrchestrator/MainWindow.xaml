@@ -1502,9 +1502,8 @@
                     </DockPanel>
                     <Border Margin="10,0,10,10" BorderThickness="1" BorderBrush="{DynamicResource Border}" Background="{DynamicResource Card}" CornerRadius="{DynamicResource ControlRadius}">
                         <Grid>
-                            <ScrollViewer x:Name="EditorScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" Padding="0,8">
-                                <ContentControl x:Name="EditorView" />
-                            </ScrollViewer>
+                            <!-- a Markdown file shown formatted (MarkdownView: it scrolls itself, so it wraps to the panel) -->
+                            <ContentControl x:Name="EditorView" Visibility="Collapsed" />
                             <!-- the file's text, coloured and editable (an AvalonEdit TextEditor, made in MainWindow.Editor.cs) -->
                             <Grid x:Name="EditorTextHost" Visibility="Collapsed" />
                             <TextBlock x:Name="EditorMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"

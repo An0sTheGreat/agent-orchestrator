@@ -224,6 +224,17 @@ public partial class MainWindow
         }
         if (at != code.Length || spans.Count == 0 || !spans.SequenceEqual(expected) || spans.Any(s => code[s.Start..s.End] != pieces.First(p => p.Color == s.Key && code.IndexOf(p.Text, s.Start, StringComparison.Ordinal) == s.Start).Text))
             throw new InvalidOperationException("Editor: its colours must be the code block's pieces at their offsets");
+        // a Markdown file formatted in a narrow editor wraps by word: a paragraph's first letters share a line
+        var view = MarkdownView("# Endless Descent — PROJECT.md\n\nWorking title: Endless Descent, a roguelite reimagining told in plain words.");
+        var host = new System.Windows.Controls.ContentControl { Content = view };
+        host.Measure(new Size(270, 600));
+        host.Arrange(new Rect(0, 0, 270, 600));
+        host.UpdateLayout();
+        var body = (System.Windows.Documents.Paragraph)view.Document.Blocks.LastBlock;
+        var first = body.ContentStart.GetInsertionPosition(System.Windows.Documents.LogicalDirection.Forward);
+        var (a, b) = (first.GetCharacterRect(System.Windows.Documents.LogicalDirection.Forward), first.GetPositionAtOffset(6)!.GetCharacterRect(System.Windows.Documents.LogicalDirection.Forward));
+        if (a.IsEmpty || b.IsEmpty || Math.Abs(a.Top - b.Top) > 1 || b.Left - a.Left < 20)
+            throw new InvalidOperationException($"Editor: a formatted Markdown file must wrap by word at 270 px (letters 1 and 7 at {a} and {b})");
         var page = TerminalPage("CSS", "JS", "FIT", """{"background":"#000"}""");
         if (!page.Contains("<style>CSS") || !page.Contains("<script>JS</script><script>FIT</script>") || !page.Contains("""theme: {"background":"#000"}"""))
             throw new InvalidOperationException("Terminal: the page must carry xterm.js, its fit add-on and the theme inline");

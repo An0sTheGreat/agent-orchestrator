@@ -104,7 +104,7 @@ public partial class MainWindow
         EditorTitle.Text = Path.GetFileName(path);
         EditorTitle.ToolTip = path;
         EditorView.Content = null;
-        EditorScroll.Visibility = EditorTextHost.Visibility = Visibility.Collapsed;
+        EditorView.Visibility = EditorTextHost.Visibility = Visibility.Collapsed;
         EditorModes.Visibility = Visibility.Collapsed;
         EditorMessage.Visibility = Visibility.Visible;
         try
@@ -132,10 +132,8 @@ public partial class MainWindow
             if (markdown && !_editorAsText)
             {
                 // formatted, as a reply is: wrapped to the panel; Text shows (and edits) the source
-                EditorView.Content = new RichTextBox { Document = Markdown.ToDocument(text, 14), IsReadOnly = true, BorderThickness = new Thickness(0), Background = null,
-                    Padding = new Thickness(14, 2, 14, 8), IsDocumentEnabled = true };
-                EditorScroll.ScrollToHome();
-                EditorScroll.Visibility = Visibility.Visible;
+                EditorView.Content = MarkdownView(text);
+                EditorView.Visibility = Visibility.Visible;
             }
             else
             {
@@ -154,6 +152,14 @@ public partial class MainWindow
         }
         finally { SyncEditorButtons(); }
     }
+
+    // A Markdown file formatted, as a reply is. It scrolls itself (no horizontal scrolling), so its text wraps to the panel's
+    // width: inside a scroller that offered unlimited width it laid out one letter per line.
+    internal static RichTextBox MarkdownView(string text) => new()
+    {
+        Document = Markdown.ToDocument(text, 14), IsReadOnly = true, IsDocumentEnabled = true, BorderThickness = new Thickness(0), Background = null,
+        Padding = new Thickness(14, 10, 14, 8), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+    };
 
     private bool EditorChanged => _editorText is { } editor && EditorTextHost.IsVisible && editor.Text != _editorOnDisk;
 
