@@ -155,11 +155,28 @@ public partial class MainWindow
 
     // A Markdown file formatted, as a reply is. It scrolls itself (no horizontal scrolling), so its text wraps to the panel's
     // width: inside a scroller that offered unlimited width it laid out one letter per line.
-    internal static RichTextBox MarkdownView(string text) => new()
+    // Styled as Notepad++'s Markdown sheet, in the theme's colours: the text at most PageWidth wide and centred (its margins
+    // are the page's padding, so the scroll bar stays at the panel's edge and the wheel scrolls anywhere over it).
+    internal static RichTextBox MarkdownView(string text)
     {
-        Document = Markdown.ToDocument(text, 14), IsReadOnly = true, IsDocumentEnabled = true, BorderThickness = new Thickness(0), Background = null,
-        Padding = new Thickness(14, 10, 14, 8), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-    };
+        var view = new RichTextBox
+        {
+            Document = Markdown.ToDocument(text, 15, page: true), IsReadOnly = true, IsDocumentEnabled = true, BorderThickness = new Thickness(0), Background = null,
+            Padding = new Thickness(0), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+        view.SizeChanged += (_, e) => view.Document.PagePadding = PageMargin(e.NewSize.Width);
+        return view;
+    }
+
+    private const double PageWidth = 1250;
+
+    // Notepad++'s body: 44 px either side (14 in a narrow panel), more once the panel is wider than the page, 34 above.
+    private static Thickness PageMargin(double width)
+    {
+        var narrow = width < 700;
+        var side = Math.Max(narrow ? 14 : 44, (width - PageWidth) / 2);
+        return new Thickness(side, narrow ? 10 : 34, side, 40);
+    }
 
     private bool EditorChanged => _editorText is { } editor && EditorTextHost.IsVisible && editor.Text != _editorOnDisk;
 

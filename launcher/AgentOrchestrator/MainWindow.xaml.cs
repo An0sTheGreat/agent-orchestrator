@@ -5304,6 +5304,18 @@ public partial class MainWindow : Window
             SetThemeBrush("CodeLineNumber", "#6C6F75");
         else
             Resources["CodeLineNumber"] = Resources["Muted"];
+        // The Markdown viewer's page shades (Notepad++'s dark sheet, made from this theme): body text a step dimmer than the
+        // headings, bands and tables a step darker than the window (lighter on Parchment's paper), code blocks a blue tint of it.
+        {
+            Color Of(string key) => ((SolidColorBrush)Resources[key]).Color;
+            static Color Toward(Color from, Color to, double share) => Color.FromRgb((byte)Math.Round(from.R + (to.R - from.R) * share),
+                (byte)Math.Round(from.G + (to.G - from.G) * share), (byte)Math.Round(from.B + (to.B - from.B) * share));
+            var (window, text) = (Of("AppBackground"), Of("TextPrimary"));
+            var band = Toward(window, parchment ? Colors.White : Colors.Black, parchment ? 0.6 : 0.25);
+            foreach (var (key, color) in new[] { ("MdBody", Toward(text, window, 0.14)), ("MdBand", band), ("MdBandAlt", Toward(band, text, 0.025)),
+                         ("MdTableHead", Toward(band, text, 0.06)), ("MdCode", Toward(window, Of("CodeKeyword"), 0.07)) })
+                Resources[key] = new SolidColorBrush(color);
+        }
         SetBrush("EdgeHighlight",new LinearGradientBrush(Color.FromArgb(rim, 255, 255, 255), Color.FromArgb(0, 255, 255, 255), new Point(0, 0), new Point(0, 24))
             { MappingMode = BrushMappingMode.Absolute });
         ApplyAccent();

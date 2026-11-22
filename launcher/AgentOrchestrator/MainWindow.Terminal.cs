@@ -235,6 +235,13 @@ public partial class MainWindow
         var (a, b) = (first.GetCharacterRect(System.Windows.Documents.LogicalDirection.Forward), first.GetPositionAtOffset(6)!.GetCharacterRect(System.Windows.Documents.LogicalDirection.Forward));
         if (a.IsEmpty || b.IsEmpty || Math.Abs(a.Top - b.Top) > 1 || b.Left - a.Left < 20)
             throw new InvalidOperationException($"Editor: a formatted Markdown file must wrap by word at 270 px (letters 1 and 7 at {a} and {b})");
+        // wide, its text is a centred column of at most PageWidth, as Notepad++'s sheet
+        host.Measure(new Size(2000, 600));
+        host.Arrange(new Rect(0, 0, 2000, 600));
+        host.UpdateLayout();
+        var left = body.ContentStart.GetInsertionPosition(System.Windows.Documents.LogicalDirection.Forward).GetCharacterRect(System.Windows.Documents.LogicalDirection.Forward).Left;
+        if (Math.Abs(left - (2000 - PageWidth) / 2) > 4)
+            throw new InvalidOperationException($"Editor: a formatted Markdown file must be centred in a wide panel (text starts at {left})");
         var page = TerminalPage("CSS", "JS", "FIT", """{"background":"#000"}""");
         if (!page.Contains("<style>CSS") || !page.Contains("<script>JS</script><script>FIT</script>") || !page.Contains("""theme: {"background":"#000"}"""))
             throw new InvalidOperationException("Terminal: the page must carry xterm.js, its fit add-on and the theme inline");

@@ -34,13 +34,25 @@ internal static class Markdown
         @"\[(?<label>[^\]]+)\]\((?<url>[^)\s]+)(?:\s+""[^""]*"")?\)|(?<!\*)\*(?![\s*])(?<em>.+?)(?<!\s)\*|(?<!\w)_(?![\s_])(?<em2>.+?)(?<!\s)_(?!\w)|" +
         @"(?<bare>https?://[^\s<>()]+[^\s<>().,;:!?'""])");
 
-    // muted: thinking text, in the theme's muted colour.
-    public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false)
+    // The document being built is the viewer's page (the editor's formatted Markdown), styled after Notepad++'s dark sheet in
+    // the theme's colours: banded and accent-barred headings, quotes and code, striped tables, accent list markers.
+    private static bool _page;
+
+    // muted: thinking text, in the theme's muted colour. page: the Markdown viewer's look, not a reply's.
+    public static FlowDocument ToDocument(string markdown, double fontSize, bool muted = false, bool page = false)
+    {
+        var outer = _page;
+        _page = page || outer; // a quote's inner document keeps its page's look
+        try { return Build(markdown, fontSize, muted); }
+        finally { _page = outer; }
+    }
+
+    private static FlowDocument Build(string markdown, double fontSize, bool muted)
     {
         // Text weights are about 0.7 of the usual (Light body, Regular bold and headings): a lighter, smoother page
         var doc = new FlowDocument { PagePadding = new Thickness(0), FontSize = fontSize, TextAlignment = TextAlignment.Left, FontWeight = TextWeight,
-            LineHeight = Roomy ? Math.Round(fontSize * 1.5) : double.NaN }; // Claude's 1.5; a minimum: a taller line (a heading) keeps its own
-        doc.SetResourceReference(FlowDocument.ForegroundProperty, muted ? "Muted" : "TextPrimary");
+            LineHeight = _page ? Math.Round(fontSize * 1.65) : Roomy ? Math.Round(fontSize * 1.5) : double.NaN }; // Claude's 1.5; a minimum: a taller line (a heading) keeps its own
+        doc.SetResourceReference(FlowDocument.ForegroundProperty, _page ? "MdBody" : muted ? "Muted" : "TextPrimary");
         var lines = markdown.Replace("\r\n", "\n").Split('\n').ToList();
         var paragraph = new List<string>();
         var lists = new List<(int Indent, List List)>(); // the open lists, outermost first
@@ -61,7 +73,11 @@ internal static class Markdown
         void Add(Block block)
         {
             if (lists.Count > 0 && block is not List)
+            {
+                if (_page)
+                    block.SetResourceReference(TextElement.ForegroundProperty, "MdBody"); // the list's accent is for its markers
                 lists[^1].List.ListItems.LastOrDefault()?.Blocks.Add(block); // a paragraph continuing the open list item
+            }
             else
                 doc.Blocks.Add(block);
         }
@@ -106,6 +122,25 @@ internal static class Markdown
                 p.LineHeight = Roomy ? Math.Round(p.FontSize * 1.3) : double.NaN;
                 // more room above than below: a heading belongs to the section under it (a reply's first block has none: NoTopMargin)
                 p.Margin = new Thickness(0, level <= 2 ? R(14, 26) : R(10, 20), 0, R(4, 8));
+                if (_page) // the viewer's: the app's font, # underlined, ## on a band with the accent bar at its left
+                {
+                    p.FontSize = fontSize * (level switch { 1 => 1.6, 2 => 1.3, 3 => 1.12, _ => 1.0 });
+                    p.ClearValue(TextElement.FontFamilyProperty);
+                    p.LineHeight = Math.Round(p.FontSize * 1.35);
+                    p.SetResourceReference(TextElement.ForegroundProperty, "TextPrimary");
+                    p.Margin = new Thickness(0, level <= 2 ? 26 : 20, 0, level == 2 ? 14 : 10);
+                    if (level == 1)
+                    {
+                        (p.BorderThickness, p.Padding) = (new Thickness(0, 0, 0, 1), new Thickness(0, 0, 0, 8));
+                        p.SetResourceReference(Block.BorderBrushProperty, "Border");
+                    }
+                    else if (level == 2)
+                    {
+                        (p.BorderThickness, p.Padding) = (new Thickness(4, 0, 0, 0), new Thickness(10, 6, 10, 6));
+                        p.SetResourceReference(Block.BorderBrushProperty, "Accent");
+                        p.SetResourceReference(TextElement.BackgroundProperty, "MdBand");
+                    }
+                }
                 AddInlines(p.Inlines, heading.Groups[2].Value);
                 doc.Blocks.Add(p);
                 continue;
@@ -113,7 +148,7 @@ internal static class Markdown
             if (Rule.IsMatch(line) && paragraph.Count == 0)
             {
                 lists.Clear();
-                var rule = new Paragraph { Margin = new Thickness(0, R(8, 20), 0, R(8, 22)), BorderThickness = new Thickness(0, 0, 0, 1), FontSize = 2, LineHeight = 2 };
+                var rule = new Paragraph { Margin = _page ? new Thickness(0, 28, 0, 28) : new Thickness(0, R(8, 20), 0, R(8, 22)), BorderThickness = new Thickness(0, 0, 0, 1), FontSize = 2, LineHeight = 2 };
                 rule.SetResourceReference(Block.BorderBrushProperty, "Border");
                 doc.Blocks.Add(rule);
                 continue;
@@ -127,8 +162,13 @@ internal static class Markdown
                     quote.Add(lines[i].TrimStart()[1..].TrimStart());
                 i--;
                 var section = new Section { Margin = new Thickness(0, 4, 0, 8), Padding = new Thickness(10, 0, 0, 0), BorderThickness = new Thickness(3, 0, 0, 0) };
-                section.SetResourceReference(Block.BorderBrushProperty, "Muted");
-                section.SetResourceReference(TextElement.ForegroundProperty, "Muted");
+                section.SetResourceReference(Block.BorderBrushProperty, _page ? "Accent" : "Muted");
+                section.SetResourceReference(TextElement.ForegroundProperty, _page ? "MdBody" : "Muted");
+                if (_page) // the viewer's: on a band, behind the accent bar
+                {
+                    (section.Margin, section.Padding, section.BorderThickness) = (new Thickness(0, 16, 0, 16), new Thickness(16, 10, 16, 0), new Thickness(4, 0, 0, 0));
+                    section.SetResourceReference(TextElement.BackgroundProperty, "MdBand");
+                }
                 var inner = ToDocument(string.Join("\n", quote), fontSize);
                 foreach (var block in inner.Blocks.ToList())
                 {
@@ -161,6 +201,8 @@ internal static class Markdown
                     if (lists.Count > 0 && lists[^1].Indent == indent)
                         lists.RemoveAt(lists.Count - 1); // the other kind of list at the same depth starts a new one
                     var list = new List { MarkerStyle = ordered ? TextMarkerStyle.Decimal : TextMarkerStyle.Disc, Margin = new Thickness(0, 2, 0, R(6, 14)), Padding = new Thickness(R(22, 26), 0, 0, 0) };
+                    if (_page)
+                        list.SetResourceReference(TextElement.ForegroundProperty, "Accent"); // the markers; the items' text is MdBody
                     if (ordered && int.TryParse(item.Groups[2].Value.TrimEnd('.', ')'), out var start) && start > 1)
                         list.StartIndex = start;
                     if (lists.Count > 0 && lists[^1].List.ListItems.LastOrDefault() is { } parent)
@@ -174,6 +216,8 @@ internal static class Markdown
                 }
                 var p = Para();
                 p.Margin = new Thickness(0, R(1, 3), 0, R(1, 3));
+                if (_page)
+                    p.SetResourceReference(TextElement.ForegroundProperty, "MdBody");
                 AddInlines(p.Inlines, item.Groups[3].Value);
                 lists[^1].List.ListItems.Add(new ListItem(p));
                 continue;
@@ -306,8 +350,8 @@ internal static class Markdown
 
     private static Paragraph Para()
     {
-        var p = new Paragraph { Margin = new Thickness(0, 0, 0, R(8, 14)) };
-        if (!Roomy)
+        var p = new Paragraph { Margin = new Thickness(0, 0, 0, _page ? 12 : R(8, 14)) };
+        if (!Roomy && !_page)
             p.LineHeight = double.NaN;
         return p;
     }
@@ -318,6 +362,15 @@ internal static class Markdown
     private static Block CodeBlock(string code, string language, bool closed = true)
     {
         var pieces = Highlight(code, language);
+        if (_page) // the viewer's: the listing alone on a blue-tinted card, the accent bar down its left edge
+        {
+            var inner = new Border { Child = CodeText(pieces, gutter: false), Padding = new Thickness(2, 13, 2, 13), BorderThickness = new Thickness(0, 1, 1, 1), CornerRadius = new CornerRadius(0, 4, 4, 0) };
+            inner.SetResourceReference(Border.BackgroundProperty, "MdCode");
+            inner.SetResourceReference(Border.BorderBrushProperty, "Border");
+            var bar = new Border { Child = inner, Padding = new Thickness(4, 0, 0, 0), CornerRadius = new CornerRadius(4) };
+            bar.SetResourceReference(Border.BackgroundProperty, "Accent");
+            return new BlockUIContainer(bar) { Margin = new Thickness(0, 6, 0, 16) };
+        }
         var lineCount = code.Count(c => c == (char)10) + 1;
         // numbered rows only once the block is closed (a streaming one is re-rendered every frame) and not huge
         UIElement body = closed && lineCount is >= 2 and <= MaxNumbered ? NumberedLines(pieces, lineCount) : CodeText(pieces, gutter: false);
@@ -511,10 +564,17 @@ internal static class Markdown
     {
         static string[] Cells(string row) => row.Trim().Trim('|').Split('|').Select(c => c.Trim()).ToArray();
         var header = Cells(rows[0]);
-        var table = new Table { CellSpacing = 0, Margin = new Thickness(0, R(2, 6), 0, R(10, 16)), BorderThickness = new Thickness(1, 1, 0, 0) };
+        var table = new Table { CellSpacing = 0, Margin = _page ? new Thickness(0, 16, 0, 16) : new Thickness(0, R(2, 6), 0, R(10, 16)), BorderThickness = new Thickness(1, 1, 0, 0) };
         table.SetResourceReference(Table.BorderBrushProperty, "Border");
-        foreach (var _ in header)
-            table.Columns.Add(new TableColumn());
+        // the viewer's columns share the width by their longest cell, as a browser's do (a short ID column stays narrow)
+        // (shares of 1: star values that sum past about 100 can leave the last column nearly no width)
+        var widths = header.Select((_, c) =>
+        {
+            var texts = rows.Select(r => Cells(r).ElementAtOrDefault(c) ?? "").ToList();
+            return (double)Math.Max(Math.Min(texts.Max(t => t.Length), 60), texts.SelectMany(t => t.Split(' ')).Max(w => w.Length) + 5);
+        }).ToArray();
+        foreach (var width in widths)
+            table.Columns.Add(_page ? new TableColumn { Width = new GridLength(width / widths.Sum(), GridUnitType.Star) } : new TableColumn());
         var group = new TableRowGroup();
         table.RowGroups.Add(group);
         for (var r = 0; r < rows.Count; r++)
@@ -527,9 +587,18 @@ internal static class Markdown
                 AddInlines(p.Inlines, c < cells.Length ? cells[c] : "");
                 if (r == 0)
                     p.FontWeight = StrongWeight;
-                var cell = new TableCell(p) { Padding = Roomy ? new Thickness(12, 7, 12, 7) : new Thickness(8, 4, 8, 4), BorderThickness = new Thickness(0, 0, 1, 1) };
+                var cell = new TableCell(p) { Padding = _page ? new Thickness(10, 8, 10, 8) : Roomy ? new Thickness(12, 7, 12, 7) : new Thickness(8, 4, 8, 4), BorderThickness = new Thickness(0, 0, 1, 1) };
                 cell.SetResourceReference(TableCell.BorderBrushProperty, "Border");
-                if (r == 0)
+                if (_page) // the viewer's: a centred, brighter header on its own shade, striped rows on the band
+                {
+                    cell.SetResourceReference(TableCell.BackgroundProperty, r == 0 ? "MdTableHead" : r % 2 == 0 ? "MdBandAlt" : "MdBand");
+                    if (r == 0)
+                    {
+                        p.TextAlignment = TextAlignment.Center;
+                        p.SetResourceReference(TextElement.ForegroundProperty, "TextPrimary");
+                    }
+                }
+                else if (r == 0)
                     cell.SetResourceReference(TableCell.BackgroundProperty, "Hover");
                 row.Cells.Add(cell);
             }
@@ -558,17 +627,23 @@ internal static class Markdown
                 // inline code keeps the text colour on a light chip, like other AI chat apps
                 var code = new Run(m.Groups["codetext"].Value.Trim()) { FontFamily = AppFonts.Mono };
                 code.SetResourceReference(TextElement.BackgroundProperty, "InlineCode");
+                if (_page) // the viewer's: string-coloured, as Notepad++ shows it
+                    code.SetResourceReference(TextElement.ForegroundProperty, "CodeString");
                 target.Add(code);
             }
             else if (m.Groups["bold"].Success || m.Groups["bold2"].Success)
             {
                 var bold = new Bold { FontWeight = StrongWeight }; // 0.7 of Claude's 600
+                if (_page)
+                    bold.SetResourceReference(TextElement.ForegroundProperty, "TextPrimary"); // brighter than the page's text
                 AddInlines(bold.Inlines, m.Groups["bold"].Success ? m.Groups["bold"].Value : m.Groups["bold2"].Value, links);
                 target.Add(bold);
             }
             else if (m.Groups["em"].Success || m.Groups["em2"].Success)
             {
                 var em = new Italic();
+                if (_page)
+                    em.SetResourceReference(TextElement.ForegroundProperty, "CodeControl"); // Notepad++'s purple, the theme's shade
                 AddInlines(em.Inlines, m.Groups["em"].Success ? m.Groups["em"].Value : m.Groups["em2"].Value, links);
                 target.Add(em);
             }
@@ -636,6 +711,14 @@ internal static class Markdown
         if (weights.FontWeight != FontWeights.Light || ((Paragraph)weights.Blocks.FirstBlock).FontWeight != FontWeights.Normal ||
             ((Paragraph)weights.Blocks.LastBlock).Inlines.OfType<Bold>().Single().FontWeight != FontWeights.Normal)
             throw new InvalidOperationException("Markdown weights");
+        // the viewer's table columns: shares of 1 by content (larger star values left a long table's last column no width),
+        // none narrower than its longest word; a reply's table keeps equal columns
+        var row = "| " + new string('x', 70) + " ";
+        var wide = (Table)ToDocument("| ID | A | B | C |\n|---|---|---|---|\n| R1 " + row + row + row + "|", 15, page: true).Blocks.FirstBlock;
+        var shares = wide.Columns.Select(c => c.Width).ToList();
+        if (shares.Any(w => !w.IsStar) || Math.Abs(shares.Sum(w => w.Value) - 1) > 1e-9 || shares[0].Value >= shares[1].Value ||
+            ((Table)ToDocument("| ID | A |\n|---|---|\n| R1 | " + row + "|", 15).Blocks.FirstBlock).Columns.Any(c => !c.Width.IsAuto))
+            throw new InvalidOperationException($"Markdown: the viewer's table columns: {string.Join(", ", shares)}");
         // a user's message: its emoji in colour, its text and lines kept; © and arrows stay text
         var message = EmojiTextBlock("Ship it 🚀\n© ok → next", 16);
         if (message.Inlines.OfType<InlineUIContainer>().Single() is not { Tag: "🚀", Child: Image { Width: 20, Source.Width: 40 } } || message.Inlines.OfType<LineBreak>().Count() != 1 ||
