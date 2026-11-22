@@ -197,7 +197,11 @@ internal static class LauncherLogic
         var variant = autoLoad["gguf_variant"]?.ToString() ?? "";
         try
         {
-            var mine = FindLocalGgufs(modelsFolder, hubCache).Where(g => g.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase)).ToList();
+            // as the engine's gguf_file: a Models-folder file whose path names the model counts too (a file moved between folders)
+            // ponytail: substring match on the full path, as the engine's on the folder-relative one
+            var key = Regex.Replace(repo.Split('/')[^1], "-gguf$", "", RegexOptions.IgnoreCase);
+            var mine = FindLocalGgufs(modelsFolder, hubCache).Where(g => g.Repo.Equals(repo, StringComparison.OrdinalIgnoreCase)
+                || g.Repo.Length == 0 && g.File.Contains(key, StringComparison.OrdinalIgnoreCase)).ToList();
             return (mine.FirstOrDefault(g => variant.Length > 0 && g.Variant.Equals(variant, StringComparison.OrdinalIgnoreCase)) ?? mine.FirstOrDefault())?.File;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
@@ -2359,6 +2363,10 @@ internal static class LauncherLogic
             if (string.Join("|", several.Select(g => Path.GetFileName(g.File))) != "My-Model-Q8_0.gguf|Other-Q4_K_M.gguf" ||
                 JoinModelFolders([@"C:\a", " ", @"c:\A", @"D:\b"]) != @"C:\a;D:\b")
                 throw new InvalidOperationException($"Several Models folders: {string.Join("|", several.Select(g => g.File))}");
+            // a Models-folder model whose file moved to another listed folder: found there by its name
+            var moved = new JsonObject { ["model_path"] = "Other-Q4_K_M", ["gguf_file"] = Path.Combine(ggufArea, "gone", "Other-Q4_K_M.gguf") };
+            if (ResolveGguf(moved, $"{Path.Combine(ggufArea, "models")};{Path.Combine(ggufArea, "more")}", Path.Combine(ggufArea, "none")) != Path.Combine(ggufArea, "more", "Other-Q4_K_M.gguf"))
+                throw new InvalidOperationException("ResolveGguf: a moved Models-folder file must be found by its name");
         }
         finally
         {
