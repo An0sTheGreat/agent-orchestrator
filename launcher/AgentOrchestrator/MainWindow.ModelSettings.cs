@@ -1059,7 +1059,7 @@ public partial class MainWindow
                         promptBox.Text = preset.SystemPrompt;
                     MakeActive(preset.Name);
                 }
-                foreach (var (group, list) in new[] { ("THIS MODEL", mine), ("OTHER MODELS", others) })
+                foreach (var (group, list) in new[] { ("ANY MODEL", mine.Where(p => p.Model.Length == 0).ToList()), ("THIS MODEL", mine.Where(p => p.Model.Length > 0).ToList()), ("OTHER MODELS", others) })
                 {
                     if (list.Count == 0)
                         continue;
@@ -1067,7 +1067,7 @@ public partial class MainWindow
                     menu.Items.Add(new MenuItem { Header = group, IsEnabled = false, FontSize = 10.5 });
                     var other = list == others;
                     foreach (var preset in list)
-                        menu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : other ? $"{preset.Name}  ·  {preset.Model}" : preset.Name, async () =>
+                        menu.Items.Add(Item(other ? $"{preset.Name}  ·  {preset.Model}" : preset.Name, async () =>
                         {
                             if (other)
                             {
