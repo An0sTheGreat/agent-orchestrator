@@ -219,13 +219,18 @@ public partial class MainWindow
         return changes;
     }
 
+    // A finished turn's changes: its tool calls, files and the folders the model works in (saved with the reply). Null: no calls.
+    private LauncherLogic.ChatChanges? TurnChanges(ChatReply r) => r.ToolCalls == 0 ? null
+        : new(r.ToolCalls, r.Files.Select(f => new LauncherLogic.FileChange(f.Key, f.Value.Added, f.Value.Removed)).ToList(),
+            new[] { SelectedProjectPath() }.Concat(CodeExtraFolders.Select(f => f.Path)).Append(_turnFolder ?? "").Where(f => f.Length > 0).ToList());
+
     // The files a turn changed, as the site's file chips under a "N tool calls" line: the name, +added in green, −removed in red.
-    private void AddFileChips(ChatReply r)
+    private void AddFileChips(StackPanel content, LauncherLogic.ChatChanges? changes)
     {
-        if (r.ToolCalls == 0 || r.Content.Children.OfType<Border>().Any(b => b.Tag as string == "file-chips"))
+        if (changes is null || changes.ToolCalls == 0 || content.Children.OfType<Border>().Any(b => b.Tag as string == "file-chips"))
             return;
         var wrap = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
-        foreach (var (file, (added, removed)) in r.Files.Take(6))
+        foreach (var (file, added, removed) in changes.Files.Take(6))
         {
             var text = new TextBlock { FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center };
             text.Inlines.Add(new Run(file));
@@ -236,8 +241,7 @@ public partial class MainWindow
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
             // a click opens the file in the editor; a right click offers the text app and the file's folder
             // the model may have written it in the project, an extra folder or the chat's own folder: each use finds the newest
-            string[] bases = [SelectedProjectPath(), .. CodeExtraFolders.Select(f => f.Path), _turnFolder ?? ""];
-            string Full() => ChipPath(file, bases);
+            string Full() => ChipPath(file, changes.Folders);
             var full = Full();
             var chip = new Border { Child = text, Height = 28, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
                 ToolTip = full, Cursor = System.Windows.Input.Cursors.Hand, Tag = "file-chip" };
@@ -263,20 +267,20 @@ public partial class MainWindow
             };
             wrap.Children.Add(chip);
         }
-        if (r.Files.Count > 6)
+        if (changes.Files.Count > 6)
         {
-            var more = new TextBlock { Text = $"+{r.Files.Count - 6} more", FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 6) };
+            var more = new TextBlock { Text = $"+{changes.Files.Count - 6} more", FontFamily = AppFonts.Mono, FontSize = 11.5, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(2, 0, 0, 6) };
             more.SetResourceReference(TextBlock.ForegroundProperty, "CodeLineNumber");
             wrap.Children.Add(more);
         }
-        var header = new TextBlock { Text = $"{r.ToolCalls} tool {(r.ToolCalls == 1 ? "call" : "calls")}" + (r.Files.Count > 0 ? $" · {r.Files.Count} {(r.Files.Count == 1 ? "file" : "files")} changed" : ""), FontSize = 12.5 };
+        var header = new TextBlock { Text = $"{changes.ToolCalls} tool {(changes.ToolCalls == 1 ? "call" : "calls")}" + (changes.Files.Count > 0 ? $" · {changes.Files.Count} {(changes.Files.Count == 1 ? "file" : "files")} changed" : ""), FontSize = 12.5 };
         header.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var box = new StackPanel { Children = { header } };
-        if (r.Files.Count > 0)
+        if (changes.Files.Count > 0)
             box.Children.Add(wrap);
         var block = new Border { Child = box, Tag = "file-chips", Margin = new Thickness(0, 8, 0, 2), Padding = new Thickness(0, 10, 0, 0), BorderThickness = new Thickness(0, 1, 0, 0) };
         block.SetResourceReference(Border.BorderBrushProperty, "Border");
-        r.Content.Children.Add(block);
+        content.Children.Add(block);
     }
 
     // A changed file's path: as given when absolute, else under each folder the model works in, the one changed last (the

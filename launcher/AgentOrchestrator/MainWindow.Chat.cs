@@ -732,6 +732,7 @@ public partial class MainWindow
                     shots.Margin = new Thickness(0, 6, 0, 0);
                     reply.Content.Children.Add(shots);
                 }
+                AddFileChips(reply.Content, message.Changes); // its tool calls and changed files, as when it finished
                 reply.Status.Visibility = Visibility.Collapsed;
                 SetStamp(reply.Stamp, message.Time);
                 if (message.Stats is { } stats)
@@ -1070,7 +1071,8 @@ public partial class MainWindow
         {
             EndChatBlock();
             reply.Status.Visibility = Visibility.Collapsed;
-            AddFileChips(reply);
+            var changes = TurnChanges(reply);
+            AddFileChips(reply.Content, changes);
             var answer = reply.Final ?? (reply.AnswerText.Length > 0 ? reply.AnswerText.ToString() : null);
             stopped &= !(failure is null && exitCode == 0 && reply.Final is not null);
             string? problem = stopped ? null : failure is not null || exitCode != 0 ? failure ?? _chatError ?? $"The chat failed (exit code {exitCode})."
@@ -1086,7 +1088,7 @@ public partial class MainWindow
             {
                 var note = stopped ? "(Stopped before the reply finished.)" : $"(The reply failed: {problem})";
                 c.History.AddRange(TurnMessages(lost));
-                c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText is { Length: > 0 } ? $"{shownText.TrimEnd()}\n\n{note}" : note, Now(), TurnShots(), stats));
+                c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText is { Length: > 0 } ? $"{shownText.TrimEnd()}\n\n{note}" : note, Now(), TurnShots(), stats, changes));
                 kept = true;
             }
             if (!stopped && problem is null)
@@ -1096,7 +1098,7 @@ public partial class MainWindow
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
                     c.History.AddRange(TurnMessages(user));
-                    c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText!, Now(), TurnShots(), stats));
+                    c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText!, Now(), TurnShots(), stats, changes));
                 }
                 completed = true;
             }
