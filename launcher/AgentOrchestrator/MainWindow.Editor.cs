@@ -25,21 +25,11 @@ public partial class MainWindow
 
     private void EditorClose_Click(object sender, RoutedEventArgs e) => ShowWorkerRail();
 
-    // path null: only open (the last file stays shown). From the rail the column slides open; from the browser the pages swap.
+    // path null: only open (the last file stays shown). From the rail the column slides open; from the browser or terminal the pages swap.
     private void OpenEditor(string? path)
     {
-        StopColumnTween();
-        if (!EditorPanel.IsVisible)
-        {
-            RailPopup.IsOpen = false;
-            EditorTitle.FontFamily = EditorBox.FontFamily = AppFonts.Mono;
-            var fromBrowser = BrowserPanel.IsVisible;
-            BrowserPanel.Visibility = Visibility.Collapsed;
-            WorkerRail.Visibility = Visibility.Collapsed;
-            EditorPanel.Visibility = Visibility.Visible;
-            if (!fromBrowser)
-                SlideColumn(EditorPanel, collapsed: false, slide: true);
-        }
+        EditorTitle.FontFamily = EditorBox.FontFamily = AppFonts.Mono;
+        ShowColumnPage(EditorPanel);
         if (path is not null)
             ShowEditorFile(path);
     }

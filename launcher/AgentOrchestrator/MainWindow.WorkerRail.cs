@@ -43,14 +43,34 @@ public partial class MainWindow
     private void ShowWorkerRail()
     {
         StopColumnTween(); // a slide still running finishes first, before the pages change
-        var page = EditorPanel.IsVisible ? EditorPanel : BrowserPanel; // the editor shares the column
+        var page = ColumnPages.FirstOrDefault(p => p.IsVisible) ?? BrowserPanel;
         var slide = page.IsVisible;
         if (BrowserPanel.IsVisible) // closed by this, not at startup
             _settings.BrowserOpen = false;
         RailPopup.IsOpen = false;
-        BrowserPanel.Visibility = EditorPanel.Visibility = Visibility.Collapsed;
+        foreach (var p in ColumnPages)
+            p.Visibility = Visibility.Collapsed;
         WorkerRail.Visibility = Visibility.Visible;
         SlideColumn(page, collapsed: true, slide);
+    }
+
+    // The pages that take the right column in place of the rail: the browser, the editor and the terminal.
+    private FrameworkElement[] ColumnPages => [BrowserPanel, EditorPanel, TerminalPanel];
+
+    // Shows one of them: from the rail the column slides open; from another of them the pages swap in place.
+    private void ShowColumnPage(FrameworkElement page)
+    {
+        StopColumnTween();
+        if (page.IsVisible)
+            return;
+        RailPopup.IsOpen = false;
+        var swap = ColumnPages.Any(p => p.IsVisible);
+        foreach (var p in ColumnPages)
+            p.Visibility = Visibility.Collapsed;
+        WorkerRail.Visibility = Visibility.Collapsed;
+        page.Visibility = Visibility.Visible;
+        if (!swap)
+            SlideColumn(page, collapsed: false, slide: true);
     }
 
     // The right column between the rail (collapsed) and the browser at its saved width. slide: the

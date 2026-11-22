@@ -1070,6 +1070,10 @@
                     </StackPanel>
                 </Border>
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
+                    <Button x:Name="TerminalButton" Style="{StaticResource TitleButton}" Click="Terminal_Click"
+                            ToolTip="Terminal: PowerShell in the chat's folder" AutomationProperties.Name="Terminal">
+                        <TextBlock Text="&#xE756;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                    </Button>
                     <Button x:Name="EditorButton" Style="{StaticResource TitleButton}" Click="Editor_Click"
                             ToolTip="Editor: files from the replies open here" AutomationProperties.Name="Editor">
                         <TextBlock Text="&#xE70F;" Style="{StaticResource RailGlyph}" FontSize="13" />
@@ -1490,6 +1494,27 @@
                                      PreviewKeyDown="EditorBox_PreviewKeyDown" AutomationProperties.Name="File text" />
                             <TextBlock x:Name="EditorMessage" Margin="20" TextWrapping="Wrap" Foreground="{DynamicResource Muted}"
                                        Text="Click a file under a reply (the chips after &quot;files changed&quot;) to open it here." />
+                        </Grid>
+                    </Border>
+                </DockPanel>
+            </Border>
+            <!-- Terminal (MainWindow.Terminal.cs): PowerShell in a pseudo console, drawn by xterm.js in a WebView2 -->
+            <Border x:Name="TerminalPanel" Grid.Column="3" Background="{DynamicResource Panel}" Visibility="Collapsed">
+                <DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="17,17,17,8">
+                        <Button DockPanel.Dock="Left" Style="{StaticResource GhostButton}" Width="26" Height="26" Padding="0" Margin="-6,0,4,0"
+                                Click="TerminalClose_Click" ToolTip="Hide the terminal (it keeps running)" AutomationProperties.Name="Close terminal">
+                            <TextBlock Text="&#xE76C;" Style="{StaticResource RailGlyph}" FontSize="12" />
+                        </Button>
+                        <TextBlock DockPanel.Dock="Left" Text="TERMINAL" Style="{StaticResource SectionHeader}" VerticalAlignment="Center" />
+                        <Button DockPanel.Dock="Right" Style="{StaticResource GhostButton}" Padding="10,3" Click="TerminalNew_Click" Content="New"
+                                ToolTip="Start a new PowerShell in the chat's folder (ends this one)" />
+                        <TextBlock x:Name="TerminalFolder" Margin="12,0,8,0" FontSize="11.5" VerticalAlignment="Center" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" />
+                    </DockPanel>
+                    <Border Margin="10,0,10,10" BorderThickness="1" BorderBrush="{DynamicResource Border}" Background="{DynamicResource Card}" CornerRadius="{DynamicResource ControlRadius}" Padding="8,6,2,6">
+                        <Grid>
+                            <Grid x:Name="TerminalHost" />
+                            <TextBlock x:Name="TerminalMessage" Margin="12" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Visibility="Collapsed" />
                         </Grid>
                     </Border>
                 </DockPanel>

@@ -53,13 +53,7 @@ public partial class MainWindow
         StopColumnTween(); // a slide still running finishes first
         if (!BrowserPanel.IsVisible)
         {
-            RailPopup.IsOpen = false;
-            WorkerRail.Visibility = Visibility.Collapsed;
-            var fromEditor = EditorPanel.IsVisible; // the editor shares the column: the pages swap
-            EditorPanel.Visibility = Visibility.Collapsed;
-            BrowserPanel.Visibility = Visibility.Visible;
-            if (!fromEditor)
-                SlideColumn(BrowserPanel, collapsed: false, slide: true); // from the rail the column slides open
+            ShowColumnPage(BrowserPanel); // from the rail the column slides open
             BrowserFollowToggle.IsChecked = _settings.BrowserFollow;
             BrowserInputToggle.IsChecked = _settings.BrowserInput;
             _settings.BrowserOpen = true;

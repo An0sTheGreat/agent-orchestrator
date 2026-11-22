@@ -26,6 +26,10 @@
     <Resource Include="Assets\Vendors\*.png" />
     <None Remove="Assets\make_icon.py" />
     <EmbeddedResource Include="remote.html" LogicalName="remote.html" />
+    <!-- the terminal panel's xterm.js (MIT; the licenses are beside it in Terminal\) -->
+    <EmbeddedResource Include="Terminal\xterm.js" LogicalName="xterm.js" />
+    <EmbeddedResource Include="Terminal\xterm.css" LogicalName="xterm.css" />
+    <EmbeddedResource Include="Terminal\addon-fit.js" LogicalName="addon-fit.js" />
   </ItemGroup>
   <ItemGroup>
     <Using Remove="System.Windows.Forms" />

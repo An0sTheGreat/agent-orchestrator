@@ -5220,6 +5220,7 @@ public partial class MainWindow : Window
 
     private void ApplyTheme()
     {
+        Dispatcher.InvokeAsync(RefreshTerminalTheme, DispatcherPriority.Background); // once the new colours are in
         var glass = _settings.Theme == "Glass";
         var oled = _settings.Theme == "Oled";
         var graphite = _settings.Theme == "Graphite";

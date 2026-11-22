@@ -1292,7 +1292,7 @@ public partial class MainWindow
     {
         ComputerToggle.IsChecked = _settings.ComputerUse;
         RenderComputerApps();
-        Closed += (_, _) => { HidePointer(); _cuBanner?.Close(); _cuPulse?.Close(); _cuPointer?.Close(); }; // a hidden window would keep the app running
+        Closed += (_, _) => { HidePointer(); _cuBanner?.Close(); _cuPulse?.Close(); _cuPointer?.Close(); StopTerminal(); }; // a hidden window would keep the app running
         RestoreSystemCursor(force: true); // the last run crashed while the model's pointer stood in for the cursor
         AppDomain.CurrentDomain.ProcessExit += (_, _) => RestoreSystemCursor();
         AppDomain.CurrentDomain.UnhandledException += (_, _) => RestoreSystemCursor();
