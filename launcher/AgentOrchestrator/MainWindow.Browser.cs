@@ -504,10 +504,12 @@ public partial class MainWindow
                 {
                     if (number > 0)
                         SelectTab(_tabs[number - 1]);
-                    if (action != "screenshot")
+                    if (action is not ("screenshot" or "zoom"))
                         result = await Report();
                     else if (_tab?.Web.CoreWebView2 is not { } core)
                         result = await Report(); // the error
+                    else if (action == "zoom")
+                        (result, image) = await ZoomBrowserAsync(_tab, core, input ?? new BrowserInput(null, null, null, null, null, null, "left", 1, "", "", true));
                     else
                     {
                         await Task.Delay(320); // a column that just opened lays the page out first

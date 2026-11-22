@@ -4482,7 +4482,9 @@ BROWSER_TOOL = function_tool(
     "or, with new_tab, a new one; 'read' returns the shown page again (after it changed), or tab N's, which it then shows. "
     "Long text is cut: read on with `offset` as the reply says, or jump to a part with `find` (e.g. find 'README'). "
     "'screenshot' returns an image of what the shown tab (or tab N) shows, scrolled to `find` when given: use it to see "
-    "a page's look or its pictures. 'tabs' lists the open tabs. You also drive the page with a mouse and keyboard of its "
+    "a page's look or its pictures. 'zoom' (x,y to to_x,to_y: a box of the last screenshot) returns that part rendered again "
+    "at up to 4x detail, to read small text or tell small controls apart; clicks still use the last full screenshot's pixels. "
+    "'tabs' lists the open tabs. You also drive the page with a mouse and keyboard of its "
     "own (the user's are untouched): take a screenshot first, then x and y are pixels of that screenshot. 'click' "
     "(x,y, or `find` = a visible text to click, the surest way to hit a labelled button or link; button left|right|middle; "
     "clicks 1-3 for a double or triple click; the reply names what was under the pointer, so aim again if that is not "
@@ -4496,14 +4498,14 @@ BROWSER_TOOL = function_tool(
     "returns what changed and, unless `shot` is false, a new screenshot. Browser menus, file pickers and a <select>'s "
     "list are not reachable (focus a <select> and press ArrowDown); alert/confirm dialogs are cancelled and reported; "
     "copy, cut and paste are refused (the clipboard is the user's).",
-    {"action": {"type": "string", "enum": ["open", "read", "screenshot", "tabs", *BROWSER_INPUT]}, "url": {"type": "string"},
+    {"action": {"type": "string", "enum": ["open", "read", "screenshot", "zoom", "tabs", *BROWSER_INPUT]}, "url": {"type": "string"},
      "new_tab": {"type": "boolean"}, "tab": {"type": "integer", "description": "a tab number from 'tabs'"},
      "offset": {"type": "integer", "description": "read the text from this character (the reply says where to read on)"},
      "find": {"type": "string", "description": "read from, screenshot at, or click, the first place with this text"},
      "x": {"type": "number", "description": "pixels from the left of the last screenshot"},
      "y": {"type": "number", "description": "pixels from the top of the last screenshot"},
-     "to_x": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
-     "to_y": {"type": "number", "description": "drag: where to release (screenshot pixels)"},
+     "to_x": {"type": "number", "description": "drag: where to release; zoom: the box's opposite corner (screenshot pixels)"},
+     "to_y": {"type": "number", "description": "drag: where to release; zoom: the box's opposite corner (screenshot pixels)"},
      "dx": {"type": "number", "description": "scroll: wheel pixels right"}, "dy": {"type": "number", "description": "scroll: wheel pixels down"},
      "button": {"type": "string", "enum": ["left", "right", "middle"]}, "clicks": {"type": "integer", "description": "1 to 3"},
      "text": {"type": "string", "description": "type: the text to enter"},
@@ -4534,10 +4536,19 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
                 button: str = "left", clicks: Any = 1, text: str = "", keys: str = "", shot: bool = True) -> str:
         if action in BROWSER_INPUT:
             return browser_input(action, tab, find, x, y, to_x, to_y, dx, dy, button, clicks, text, keys, shot)
-        if action not in ("open", "read", "tabs", "screenshot"):
-            raise WorkflowError("action must be 'open', 'read', 'screenshot', 'tabs', " + ", ".join(f"'{a}'" for a in BROWSER_INPUT))
-        if action == "screenshot" and not vision:
+        if action not in ("open", "read", "tabs", "screenshot", "zoom"):
+            raise WorkflowError("action must be 'open', 'read', 'screenshot', 'zoom', 'tabs', " + ", ".join(f"'{a}'" for a in BROWSER_INPUT))
+        if action in ("screenshot", "zoom") and not vision:
             raise WorkflowError("this model's settings switch vision off, so it cannot see a screenshot; use read")
+        if action == "zoom":
+            if None in (x, y, to_x, to_y):
+                raise WorkflowError("zoom needs x, y (one corner) and to_x, to_y (the opposite corner): pixels of the last screenshot")
+            box = {k: finite(k, v) for k, v in (("x", x), ("y", y), ("to_x", to_x), ("to_y", to_y))}
+            answer = launcher_call("browser", action="zoom", url="", **({"tab": int(finite("tab", tab))} if tab else {}), **box)
+            if answer is None:
+                return "ERROR: the in-app browser is only there when the app runs this turn"
+            result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+            return ToolResult(result, [image]) if image.startswith("data:image/") else result
         target = ""
         if action == "open":
             raw = str(url or "").strip()

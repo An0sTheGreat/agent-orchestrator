@@ -3329,6 +3329,19 @@ class CodeTests(unittest.TestCase):
             self.assertIn(f"TEXT FROM CHARACTER 0 OF {len(page)}:\nnav menu", cut)
             self.assertRegex(cut, r"read on with offset=\d+ \(without find\)")
 
+    def test_browser_zoom_asks_the_launcher_for_a_box_and_returns_its_image(self):
+        asked, image = [], "data:image/jpeg;base64,/9j/BBBB"
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: asked.append((event, d)) or {"result": "ZOOM: the box", "image": image}):
+            browse = orchestrator.browser_handler(self.folders, {})
+            shot = browse("zoom", x=10, y=20, to_x=110, to_y=70, tab=2)
+            self.assertEqual(asked, [("browser", {"action": "zoom", "url": "", "tab": 2, "x": 10.0, "y": 20.0, "to_x": 110.0, "to_y": 70.0})])
+            self.assertIsInstance(shot, orchestrator.ToolResult)
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "zoom needs x, y"):
+                browse("zoom", x=1, y=2)
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "vision off"):
+                orchestrator.browser_handler(self.folders, {}, vision=False)("zoom", x=1, y=2, to_x=9, to_y=9)
+            self.assertEqual(len(asked), 1)
+
     @patch.object(orchestrator, "KEEP_TOOL_ROUNDS", 2)
     def test_a_browser_screenshot_goes_to_the_model_as_an_image(self):
         asked, image = [], "data:image/jpeg;base64,/9j/AAAA"

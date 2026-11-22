@@ -306,6 +306,47 @@ public partial class MainWindow
         return ("data:image/jpeg;base64," + Convert.ToBase64String(bytes), note);
     }
 
+    // zoom: a box of the last screenshot (two corners, its pixels) rendered again at up to 4x detail by the page itself (DevTools
+    // Page.captureScreenshot with a clip), so small text is sharp, not enlarged pixels. Clicks keep using the last full screenshot.
+    private async Task<(string Result, string? Image)> ZoomBrowserAsync(BrowserTab tab, CoreWebView2 core, BrowserInput input)
+    {
+        if (tab.ShotW <= 0)
+            return ("ERROR: take a screenshot first; the zoom box is in pixels of the last screenshot", null);
+        if (input.X is not { } x1 || input.Y is not { } y1 || input.ToX is not { } x2 || input.ToY is not { } y2)
+            return ("ERROR: zoom needs x, y (one corner) and to_x, to_y (the opposite corner): pixels of the last screenshot", null);
+        var (left, right) = (Math.Clamp(Math.Min(x1, x2), 0, tab.ShotW), Math.Clamp(Math.Max(x1, x2), 0, tab.ShotW));
+        var (top, bottom) = (Math.Clamp(Math.Min(y1, y2), 0, tab.ShotH), Math.Clamp(Math.Max(y1, y2), 0, tab.ShotH));
+        if (right - left < 4 || bottom - top < 4)
+            return ($"ERROR: the zoom box must be at least 4 pixels each way, inside the last screenshot ({tab.ShotW}x{tab.ShotH})", null);
+        var view = await ViewAsync(core);
+        var (sx, sy) = (tab.ShotViewW / tab.ShotW, tab.ShotViewH / tab.ShotH); // CSS px per screenshot pixel
+        var (w, h) = ((right - left) * sx, (bottom - top) * sy);
+        var dpr = double.TryParse(await core.ExecuteScriptAsync("devicePixelRatio"), NumberStyles.Float, CultureInfo.InvariantCulture, out var d) && d > 0 ? d : 1;
+        var scale = ComputerLogic.ZoomScale((int)Math.Round(w * dpr), (int)Math.Round(h * dpr));
+        // the clip is in page (document) CSS px: the box as the page is scrolled now
+        var json = await core.CallDevToolsProtocolMethodAsync("Page.captureScreenshot", JsonSerializer.Serialize(new
+        {
+            format = "jpeg", quality = 90,
+            clip = new { x = view[2] + left * sx, y = view[3] + top * sy, width = w, height = h, scale },
+        }));
+        string data;
+        int zw, zh;
+        try
+        {
+            using var reply = JsonDocument.Parse(json);
+            data = reply.RootElement.GetProperty("data").GetString() ?? "";
+            var frame = BitmapFrame.Create(new MemoryStream(Convert.FromBase64String(data)), BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            (zw, zh) = (frame.PixelWidth, frame.PixelHeight);
+        }
+        catch (Exception e) when (e is FormatException or NotSupportedException or KeyNotFoundException or JsonException)
+        {
+            return ($"ERROR: the zoom failed: {e.Message}", null);
+        }
+        return ($"ZOOM: the box ({Num(left)},{Num(top)}) to ({Num(right)},{Num(bottom)}) of the last screenshot, as a {zw}x{zh} image. Clicks still use the last " +
+                $"full screenshot's pixels ({tab.ShotW}x{tab.ShotH}): a point at (u, v) in this zoom is at ({Num(left)} + u * {Num((right - left) / zw)}, " +
+                $"{Num(top)} + v * {Num((bottom - top) / zh)}) there.", "data:image/jpeg;base64," + data);
+    }
+
     // click / move / drag / scroll / type / key in tab `number` (0: the shown one). Returns what changed and, when asked, a screenshot.
     // The engine waits for this answer, so it always comes: a page that blocks (a dialog the cancel of which does not reach it, a busy page) ends in an error.
     private async Task<(string Result, string? Image)> DriveAsync(string action, int number, string find, BrowserInput input)
