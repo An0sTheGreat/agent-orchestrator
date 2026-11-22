@@ -813,7 +813,35 @@ public partial class MainWindow
                 follow.Children.Add(back);
             }
         }
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
+        // Favorite models: the models starred in the model list, one pick away (as API Model's are).
+        var favBox = new ComboBox { Tag = "LocalFavorites", Margin = new Thickness(0, 6, 0, 0) };
+        var favHint = new TextBlock { FontSize = 10.5, TextWrapping = TextWrapping.Wrap };
+        favHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        void FillFavorites()
+        {
+            favBox.Items.Clear();
+            var none = _settings.LocalFavorites.Count == 0;
+            favBox.Items.Add(new ComboBoxItem { Content = none ? "No favorites yet" : "Choose a favorite…", Tag = "" });
+            foreach (var f in _settings.LocalFavorites)
+                favBox.Items.Add(new ComboBoxItem { Content = f, Tag = f });
+            favBox.SelectedIndex = 0;
+            favBox.IsEnabled = !none && !remoteMode();
+            favHint.Text = none ? "Star models (☆) in the model list to list them here." : "Your starred local models: pick one, then Save.";
+        }
+        FillFavorites();
+        favBox.SelectionChanged += async (_, _) =>
+        {
+            if (favBox.SelectedItem is not ComboBoxItem { Tag: string { Length: > 0 } f })
+                return;
+            favBox.SelectedIndex = 0;
+            if (await ChoiceNamed(f) is { } choice)
+                ShowChoice(choice);
+            else
+                Toast($"{f} is no longer on this computer", "#F7C873");
+        };
+        var favLabel = new TextBlock { Text = "Favorite models", FontWeight = FontWeights.SemiBold, FontSize = 12 };
+        var favBlock = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Tag = "LocalFavoritesBlock", Children = { favLabel, favHint, favBox } };
+        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, favBlock, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
                      rows["max_seq_length"], advancedRow })
             if (part is not null)
                 top.Children.Add(part);
@@ -825,13 +853,26 @@ public partial class MainWindow
         // pick. The list loads the first time it opens (never at startup); the body stays usable meanwhile.
         ModelChoice? initial = null;
         int? scannedAt = null; // the _localModelsVersion the list was scanned at: a download or a new models folder rescans
-        var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, choice =>
+        // A pick (from the list, a favorite or a preset) shows in the box; null: the model the worker had.
+        void ShowChoice(ModelChoice? choice)
         {
             var old = modelBox.SelectedItem;
             var item = choice is null ? new ComboBoxItem { Content = card.ModelName } : new ComboBoxItem { Content = choice.Label, Tag = choice };
             modelBox.Items.Add(item);
             modelBox.SelectedItem = item;
             modelBox.Items.Remove(old);
+        }
+        // The installed model a favorite or a preset names: by its label, else by the name the worker card shows.
+        async Task<ModelChoice?> ChoiceNamed(string model)
+        {
+            var choices = await FetchModelChoicesAsync();
+            return choices.FirstOrDefault(c => c.Label.Equals(model, StringComparison.OrdinalIgnoreCase))
+                ?? choices.FirstOrDefault(c => LauncherLogic.DescribeModel(c.Display, c.Variant).Name.Equals(model, StringComparison.OrdinalIgnoreCase));
+        }
+        var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, ShowChoice, _settings.LocalFavorites, () =>
+        {
+            _settings.Save();
+            FillFavorites();
         });
         void OpenPicker()
         {
@@ -906,6 +947,7 @@ public partial class MainWindow
             foreach (var key in ModelOptions.ApiOnly.Where(rows.ContainsKey))
                 rows[key].Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
             modelBox.IsEnabled = !remote;
+            favBox.IsEnabled = !remote && _settings.LocalFavorites.Count > 0;
             if (advanced.IsChecked != true) // the Advanced switch shows the load and output groups; Sampling and the prompts always show
                 foreach (var name in AdvancedGroups)
                     if (blocks.TryGetValue(name, out var block))
@@ -998,24 +1040,49 @@ public partial class MainWindow
                     return;
                 WritePreset(name, same, ShownModel());
             }));
-            if (_settings.ModelPresets.Any(Mine))
+            // This model's presets (and those for any model), then the other models' presets: picking one of those puts its
+            // model in the box first, so one Save keeps the model and its options.
+            var mine = _settings.ModelPresets.Where(Mine).ToList();
+            var others = remoteMode() ? [] : _settings.ModelPresets.Where(p => !Mine(p)).ToList();
+            if (mine.Count + others.Count > 0)
             {
-                menu.Items.Add(new Separator());
                 // A second menu, not a submenu: the app's menu item template has none (DeletePresetMenu does the same)
                 var deleteMenu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Bottom };
-                foreach (var preset in _settings.ModelPresets.Where(Mine).ToList())
+                void Apply(ModelPreset preset)
                 {
-                    menu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
-                    {
-                        // values only; load options only with a model to load (Save would refuse them)
-                        var load = hasModel && !remoteMode();
-                        foreach (var (key, value) in preset.Options)
-                            if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
-                                SetValue(editor, value);
-                        if (preset.SystemPrompt.Trim().Length > 0)
-                            promptBox.Text = preset.SystemPrompt;
-                        MakeActive(preset.Name);
-                    }));
+                    // values only; load options only with a model to load (Save would refuse them)
+                    var load = hasModel && !remoteMode();
+                    foreach (var (key, value) in preset.Options)
+                        if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
+                            SetValue(editor, value);
+                    if (preset.SystemPrompt.Trim().Length > 0)
+                        promptBox.Text = preset.SystemPrompt;
+                    MakeActive(preset.Name);
+                }
+                foreach (var (group, list) in new[] { ("THIS MODEL", mine), ("OTHER MODELS", others) })
+                {
+                    if (list.Count == 0)
+                        continue;
+                    menu.Items.Add(new Separator());
+                    menu.Items.Add(new MenuItem { Header = group, IsEnabled = false, FontSize = 10.5 });
+                    var other = list == others;
+                    foreach (var preset in list)
+                        menu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : other ? $"{preset.Name}  ·  {preset.Model}" : preset.Name, async () =>
+                        {
+                            if (other)
+                            {
+                                if (await ChoiceNamed(preset.Model) is not { } choice)
+                                {
+                                    Toast($"{preset.Model} is not on this computer", "#F7C873");
+                                    return;
+                                }
+                                ShowChoice(choice); // the model's own defaults first, then the preset's options over them
+                            }
+                            Apply(preset);
+                        }));
+                }
+                foreach (var preset in mine.Concat(others))
+                {
                     deleteMenu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
                     {
                         _settings.ModelPresets.Remove(preset);

@@ -291,6 +291,8 @@ internal sealed class AppSettings
     public List<string> HubBrands { get; set; } = new(); // the Models Hub's brand filter (HubBrand keys, "other"); empty = all
     public string HubDownloadFolder { get; set; } = ""; // where the Models Hub saves (root\<repo name>\<file>); "" = the Hugging Face cache
     public List<string> RemoteFavorites { get; set; } = new(); // the Remote API page's starred models, "<service id>|<model id>", in the order starred
+    public Dictionary<string, double> LoadSeconds { get; set; } = new(); // how long Load models last took per role: its bar's pace
+    public List<string> LocalFavorites { get; set; } = new(); // local models starred in Model Settings' model list (their labels), in the order starred
     // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port
     // when taken), signed in with the password whose RemoteAuth.HashPassword string is kept here (never the password).
     public bool RemoteAccess { get; set; }

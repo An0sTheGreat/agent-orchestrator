@@ -467,7 +467,15 @@ public partial class MainWindow
         }
         _loadingRole = role;
         LoadModelsText.Text = $"Loading {title}…";
+        // llama-server reports no load progress: the bar fills at the pace of this role's last load (20 s the first time),
+        // holds at 95% if this one takes longer, and fills on success
+        var started = DateTime.Now;
+        var expected = _settings.LoadSeconds.GetValueOrDefault(role, 20);
+        LoadModelsProgress.Value = 0;
         LoadModelsProgress.Visibility = Visibility.Visible;
+        var pace = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
+        pace.Tick += (_, _) => LoadModelsProgress.Value = Math.Min(0.95, (DateTime.Now - started).TotalSeconds / expected);
+        pace.Start();
         RefreshChatInput();
         string? folder = null, temp = null, error = null;
         try
@@ -498,10 +506,25 @@ public partial class MainWindow
         {
             if (temp is not null)
                 try { Directory.Delete(temp, true); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
+            pace.Stop();
             _loadingRole = null;
+            RefreshChatInput();
+        }
+        if (error is null)
+        {
+            var took = (DateTime.Now - started).TotalSeconds;
+            if (took > 3) // a model already loaded answers at once: not a load time
+            {
+                _settings.LoadSeconds[role] = took;
+                _settings.Save();
+            }
+            LoadModelsProgress.Value = 1;
+            await Task.Delay(400);
+        }
+        if (_loadingRole is null)
+        {
             LoadModelsText.Text = "Load models";
             LoadModelsProgress.Visibility = Visibility.Collapsed;
-            RefreshChatInput();
         }
         if (error is null)
             Toast($"{title} loaded");

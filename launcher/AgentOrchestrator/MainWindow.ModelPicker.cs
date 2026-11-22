@@ -75,6 +75,8 @@ public partial class MainWindow
         private const double QuantWidth = 96, SizeWidth = 70;
         private readonly ComboBox _anchor;
         private readonly Action<ModelChoice?> _pick; // null: the model the worker had (not in the list)
+        private readonly List<string>? _favorites; // starred labels (a star column when set), changed in place
+        private readonly Action? _favoritesChanged;
         private readonly string _currentName;
         private readonly Popup _popup;
         private readonly TextBox _search;
@@ -97,9 +99,9 @@ public partial class MainWindow
         internal TextBox Search => _search;
         internal FrameworkElement Card => (FrameworkElement)_popup.Child;
 
-        public ModelPicker(ComboBox anchor, string currentName, Action<ModelChoice?> pick)
+        public ModelPicker(ComboBox anchor, string currentName, Action<ModelChoice?> pick, List<string>? favorites = null, Action? favoritesChanged = null)
         {
-            (_anchor, _currentName, _pick) = (anchor, currentName, pick);
+            (_anchor, _currentName, _pick, _favorites, _favoritesChanged) = (anchor, currentName, pick, favorites, favoritesChanged);
             _search = new TextBox { Tag = "ModelSearch", Height = 30, Padding = new Thickness(10, 0, 10, 0), VerticalContentAlignment = VerticalAlignment.Center };
             _searchHint = new TextBlock { Text = "Search models", Margin = new Thickness(13, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
             _searchHint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
@@ -112,7 +114,7 @@ public partial class MainWindow
 
             // The column titles: Name left; Quant and Size right-aligned over their columns (no lines between them).
             var titles = new Grid { Margin = new Thickness(10, 10, 10, 4) };
-            foreach (var width in new[] { new GridLength(1, GridUnitType.Star), new GridLength(QuantWidth), new GridLength(SizeWidth) })
+            foreach (var width in Columns())
                 titles.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
             foreach (var (column, name) in new[] { (0, "Name"), (1, "Quant"), (2, "Size") })
             {
@@ -126,7 +128,7 @@ public partial class MainWindow
                     e.Handled = true;
                     SortBy(name);
                 };
-                Grid.SetColumn(title, column);
+                Grid.SetColumn(title, column + Shift);
                 titles.Children.Add(title);
             }
             _status = new TextBlock { FontSize = 12, Margin = new Thickness(10, 8, 10, 8), TextWrapping = TextWrapping.Wrap };
@@ -264,7 +266,7 @@ public partial class MainWindow
         private Border Row(PickerEntry entry, bool pickable)
         {
             var grid = new Grid();
-            foreach (var width in new[] { new GridLength(1, GridUnitType.Star), new GridLength(QuantWidth), new GridLength(SizeWidth) })
+            foreach (var width in Columns())
                 grid.ColumnDefinitions.Add(new ColumnDefinition { Width = width });
             var current = entry.Choice == _current;
             var name = new TextBlock { Text = entry.Name, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13 };
@@ -276,8 +278,9 @@ public partial class MainWindow
                 muted.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
                 muted.Typography.NumeralAlignment = FontNumeralAlignment.Tabular;
             }
-            Grid.SetColumn(quant, 1);
-            Grid.SetColumn(size, 2);
+            Grid.SetColumn(name, Shift);
+            Grid.SetColumn(quant, 1 + Shift);
+            Grid.SetColumn(size, 2 + Shift);
             grid.Children.Add(name);
             grid.Children.Add(quant);
             grid.Children.Add(size);
@@ -288,6 +291,8 @@ public partial class MainWindow
                 (row.Opacity, row.ToolTip) = (0.5, "An image generation model: a worker needs a model that writes text.");
                 return row;
             }
+            if (_favorites is not null)
+                grid.Children.Add(Star(entry.Choice.Label));
             row.Cursor = Cursors.Hand;
             var index = _pickable.Count;
             _pickable.Add(row);
@@ -298,6 +303,35 @@ public partial class MainWindow
                 Choose(entry);
             };
             return row;
+        }
+
+        // With favorites, a star column first: ☆ stars the model (Model Settings' Favorite models lists it), ★ unstars it.
+        private int Shift => _favorites is null ? 0 : 1;
+
+        private GridLength[] Columns() => _favorites is null
+            ? [new GridLength(1, GridUnitType.Star), new GridLength(QuantWidth), new GridLength(SizeWidth)]
+            : [new GridLength(24), new GridLength(1, GridUnitType.Star), new GridLength(QuantWidth), new GridLength(SizeWidth)];
+
+        private TextBlock Star(string label)
+        {
+            var star = new TextBlock { FontSize = 14, Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center, Tag = "Favorite" };
+            void Show()
+            {
+                var on = _favorites!.Contains(label);
+                star.Text = on ? "★" : "☆";
+                star.ToolTip = on ? "Remove from favorites" : "Add to favorites";
+                star.SetResourceReference(TextBlock.ForegroundProperty, on ? "AccentLight" : "Muted");
+            }
+            star.MouseLeftButtonUp += (_, e) =>
+            {
+                e.Handled = true; // a star, not a pick
+                if (!_favorites!.Remove(label))
+                    _favorites.Add(label);
+                Show();
+                _favoritesChanged?.Invoke();
+            };
+            Show();
+            return star;
         }
 
         private void Highlight(int index)
