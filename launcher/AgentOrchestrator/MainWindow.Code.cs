@@ -235,9 +235,13 @@ public partial class MainWindow
                 text.Inlines.Add(new Run("  −" + removed) { Foreground = new SolidColorBrush(Color.FromRgb(0xEE, 0x5C, 0x61)) });
             text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
             // a click opens the file in the editor; a right click offers the text app and the file's folder
-            var full = Path.IsPathRooted(file) || _turnFolder is null ? file : Path.GetFullPath(Path.Combine(_turnFolder, file));
+            // the model may have written it in the project, an extra folder or the chat's own folder: each use finds the newest
+            string[] bases = [SelectedProjectPath(), .. CodeExtraFolders.Select(f => f.Path), _turnFolder ?? ""];
+            string Full() => ChipPath(file, bases);
+            var full = Full();
             var chip = new Border { Child = text, Height = 28, Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(0, 0, 6, 6), CornerRadius = new CornerRadius(6), BorderThickness = new Thickness(1),
                 ToolTip = full, Cursor = System.Windows.Input.Cursors.Hand, Tag = "file-chip" };
+            chip.ToolTipOpening += (_, _) => chip.ToolTip = Full();
             chip.SetResourceReference(Border.BackgroundProperty, "Card");
             chip.SetResourceReference(Border.BorderBrushProperty, "BorderStrong");
             chip.MouseEnter += (_, _) => chip.SetResourceReference(Border.BackgroundProperty, "Hover");
@@ -245,11 +249,12 @@ public partial class MainWindow
             chip.MouseLeftButtonUp += (_, e) =>
             {
                 e.Handled = true;
-                OpenEditor(full);
+                OpenEditor(Full());
             };
             chip.MouseRightButtonUp += (_, e) =>
             {
                 e.Handled = true;
+                var full = Full();
                 var menu = NewPresetMenu(chip);
                 menu.Items.Add(PresetItem("Open in editor", () => OpenEditor(full)));
                 menu.Items.Add(PresetItem("Open in text app", () => OpenInTextApp(full), File.Exists(full)));
@@ -272,6 +277,17 @@ public partial class MainWindow
         var block = new Border { Child = box, Tag = "file-chips", Margin = new Thickness(0, 8, 0, 2), Padding = new Thickness(0, 10, 0, 0), BorderThickness = new Thickness(0, 1, 0, 0) };
         block.SetResourceReference(Border.BorderBrushProperty, "Border");
         r.Content.Children.Add(block);
+    }
+
+    // A changed file's path: as given when absolute, else under each folder the model works in, the one changed last (the
+    // first when none has it yet).
+    internal static string ChipPath(string file, IEnumerable<string> bases)
+    {
+        if (Path.IsPathRooted(file))
+            return file;
+        var candidates = bases.Where(b => b.Length > 0).Select(b => { try { return Path.GetFullPath(Path.Combine(b, file)); } catch (Exception e) when (e is ArgumentException or NotSupportedException or PathTooLongException) { return null; } })
+            .OfType<string>().Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        return candidates.Where(File.Exists).OrderByDescending(File.GetLastWriteTimeUtc).FirstOrDefault() ?? candidates.FirstOrDefault() ?? file;
     }
 
     // A tool call's code (its content, text or new_string argument) as a fenced block named for the file's extension, else null.

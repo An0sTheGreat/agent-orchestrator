@@ -1430,7 +1430,20 @@ public partial class MainWindow
             if (!ok)
                 throw new InvalidOperationException("Tool call self-test failed: " + what);
         }
-        const string args = """{"content": "<p class=\"a\">hi</p>\n\tx\\y é", "path": "i.html"}""";
+        // a file chip's path: the newest of the folders' files of that name; the first folder when none has it
+        var area = Directory.CreateTempSubdirectory("ao-chips-").FullName;
+        try
+        {
+            var (project, scratch) = (Directory.CreateDirectory(Path.Combine(area, "project")).FullName, Directory.CreateDirectory(Path.Combine(area, "scratch")).FullName);
+            File.WriteAllText(Path.Combine(scratch, "package.json"), "old");
+            File.SetLastWriteTimeUtc(Path.Combine(scratch, "package.json"), DateTime.UtcNow.AddMinutes(-5));
+            File.WriteAllText(Path.Combine(project, "package.json"), "new");
+            Check(ChipPath("package.json", [scratch, "", project]) == Path.Combine(project, "package.json") &&
+                  ChipPath("gone.txt", [project, scratch]) == Path.Combine(project, "gone.txt") && ChipPath(@"C:\x\a.txt", [project]) == @"C:\x\a.txt",
+                "a file chip's path is the newest file of that name");
+        }
+        finally { Directory.Delete(area, true); }
+        const string args ="""{"content": "<p class=\"a\">hi</p>\n\tx\\y é", "path": "i.html"}""";
         var at = ToolBody.Match(args);
         var decoded = at.Success ? JsonPrefix(args, at.Index + at.Length) : "";
         Check(decoded == "<p class=\"a\">hi</p>\n\tx\\y é", "decoded string: " + decoded);

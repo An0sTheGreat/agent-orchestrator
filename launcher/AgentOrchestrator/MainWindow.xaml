@@ -1072,7 +1072,7 @@
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" shell:WindowChrome.IsHitTestVisibleInChrome="True">
                     <Button x:Name="TerminalButton" Style="{StaticResource TitleButton}" Click="Terminal_Click"
                             ToolTip="Terminal: PowerShell in the chat's folder" AutomationProperties.Name="Terminal">
-                        <TextBlock Text="&#xE756;" Style="{StaticResource RailGlyph}" FontSize="13" />
+                        <TextBlock Text="&gt;_" Style="{StaticResource RailGlyph}" FontFamily="Consolas" FontSize="13" FontWeight="SemiBold" Margin="0,-2,0,0" />
                     </Button>
                     <Button x:Name="EditorButton" Style="{StaticResource TitleButton}" Click="Editor_Click"
                             ToolTip="Editor: files from the replies open here" AutomationProperties.Name="Editor">
