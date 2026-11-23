@@ -47,7 +47,8 @@ public partial class MainWindow
         var hint = new TextBlock { FontSize = 10.5, TextWrapping = TextWrapping.Wrap,
             Text = favorites.Count == 0 ? "Star models on the Remote API page to list them here." : "Your Remote API favorites: pick one to run this worker on it." };
         hint.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        return new StackPanel { Margin = new Thickness(0, 12, 0, 0), Tag = "ApiModelBlock", Children = { label, hint, box } };
+        hint.Margin = new Thickness(0, 4, 0, 0);
+        return new StackPanel { Tag = "ApiModelBlock", Children = { label, box, hint } };
     }
 
     // The provider window, then the write; false when cancelled or refused (the dropdown goes back).

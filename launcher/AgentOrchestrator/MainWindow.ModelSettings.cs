@@ -248,12 +248,19 @@ public partial class MainWindow
             TextWrapping = height > 30 ? TextWrapping.Wrap : TextWrapping.NoWrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
 
-        // The groups of related settings, one column or two (SettingsColumns), added in SettingsGroups' order once built: the
-        // Model group beside the worker's own (HeadGroups) on top, then a line, then the option groups.
-        var head = new SettingsColumns();
+        // The groups of related settings, added in SettingsGroups' order once built: the Model group and the worker's own
+        // (HeadGroups) one under another, full width, a line between; then a line, then the option groups, one column or two
+        // (SettingsColumns).
+        var head = new StackPanel();
         var sections = new SettingsColumns();
-        var divider = new Border { Height = 1, Margin = new Thickness(0, 16, 0, 18) };
-        divider.SetResourceReference(Border.BackgroundProperty, "Border");
+        // A line across the card between its sections (as under the presets band).
+        Border Line()
+        {
+            var line = new Border { Height = 1, Margin = new Thickness(-20, 16, -20, 18) };
+            line.SetResourceReference(Border.BackgroundProperty, "Border");
+            return line;
+        }
+        var divider = Line();
         // One card centred at about 65% of the page: the presets band on top (the bar, below), then the groups.
         var body = new StackPanel { Margin = new Thickness(20, 16, 20, 20), Children = { head, divider, sections } };
         var cardShell = new StackPanel { Children = { body } };
@@ -268,8 +275,7 @@ public partial class MainWindow
         StackPanel Section(string name, string help, bool showHelp = true, bool card = false)
         {
             var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 10) };
-            var header = new TextBlock { Text = name.ToUpperInvariant(), FontSize = 11, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 0), ToolTip = help };
-            header.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var header = new TextBlock { Text = name.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(0, 6, 0, 0), ToolTip = help };
             panel.Children.Add(header);
             if (showHelp)
                 panel.Children.Add(Muted(help));
@@ -592,30 +598,27 @@ public partial class MainWindow
             return b;
         }
         var switchLocal = SourceButton("Switch to Local", "SwitchToLocal", () => { });
+        // In three cells of the Model grid, each shown in its mode (SyncMode): the summary or "Runs on this computer.", the
+        // primary PC's note, and the buttons.
         var remotePanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0) };
+        var remoteNote = new StackPanel();
+        var remoteActions = new WrapPanel();
         var primaryNote = Muted("Reading the load options from the primary PC…");
-        primaryNote.Margin = new Thickness(0, 6, 0, 0);
         if (remoteNow is not null)
         {
             var summary = new TextBlock { Text = RemoteSummary(remoteNow), Tag = "RemoteSummary", FontSize = 12, TextWrapping = TextWrapping.Wrap };
             var hint = Muted("Edit it on the Remote API page");
-            hint.Margin = new Thickness(0, 2, 0, 0);
+            hint.Margin = new Thickness(0, 4, 0, 0);
             remotePanel.Children.Add(summary);
             remotePanel.Children.Add(hint);
             if (onPrimary)
-                remotePanel.Children.Add(primaryNote);
-            remotePanel.Children.Add(new WrapPanel
-            {
-                Margin = new Thickness(0, 8, 0, 0),
-                Children = { SourceButton("Edit in Remote API", "EditRemoteApi", () => OpenRemoteApi(card.Role, remoteNow)), switchLocal },
-            });
+                remoteNote.Children.Add(primaryNote);
+            remoteActions.Children.Add(SourceButton("Edit in Remote API", "EditRemoteApi", () => OpenRemoteApi(card.Role, remoteNow)));
+            remoteActions.Children.Add(switchLocal);
         }
-        var localPanel = new StackPanel
-        {
-            Margin = new Thickness(0, 6, 0, 0),
-            Children = { Muted("Runs on this computer."), new WrapPanel { Margin = new Thickness(0, 8, 0, 0), Children = { SourceButton("Use a Remote API…", "UseRemoteApi", () => OpenRemoteApi(card.Role)) } } },
-        };
-        var source = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Children = { Label("Model source"), remotePanel, localPanel } };
+        var localPanel = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { Muted("Runs on this computer.") } };
+        var localActions = new WrapPanel { Children = { SourceButton("Use a Remote API…", "UseRemoteApi", () => OpenRemoteApi(card.Role)) } };
+        var source = new StackPanel { Children = { Label("Model source"), remotePanel, localPanel } };
 
         // The option groups (Model's fields join the picker below); a remote role hides the load options, and the groups
         // holding nothing else.
@@ -818,7 +821,7 @@ public partial class MainWindow
         DockPanel.SetDock(primarySwitch, Dock.Right);
         var primaryLabel = Label("Run on the primary PC");
         primaryLabel.VerticalAlignment = VerticalAlignment.Center;
-        var primaryRow = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { new DockPanel { Children = { primarySwitch, primaryLabel } } } };
+        var primaryRow = new StackPanel { Children ={ new DockPanel { Children = { primarySwitch, primaryLabel } } } };
         if (!connected)
             primaryRow.Children.Add(Muted("Connect to a primary PC in Settings › Models"));
         // Top: the picker, quantization, source, memory, context length with its slider, then the Advanced switch.
@@ -910,14 +913,55 @@ public partial class MainWindow
                 Toast($"{f} is no longer on this computer", "#F7C873");
         };
         var favLabel = new TextBlock { Text = "Favorite models", FontWeight = FontWeights.SemiBold, FontSize = 12 };
-        var favBlock = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Tag = "LocalFavoritesBlock", Children = { favLabel, favHint, favBox } };
-        foreach (var part in new UIElement?[] { primaryRow, new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, favBlock, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
-                     rows["max_seq_length"], advancedRow })
-            if (part is not null)
-                top.Children.Add(part);
+        favHint.Margin = new Thickness(0, 4, 0, 0);
+        var favBlock = new StackPanel { Tag = "LocalFavoritesBlock", Children = { favLabel, favBox, favHint } };
+        // The concept's grid, row by row: Model | Favorite models | Model source; Run on the primary PC | API Model | the primary
+        // PC's note; the source buttons (and COMPACTOR's) under the switch. One column, in the same order, on a page narrower
+        // than 1200. Then the memory estimate, the context length and the Advanced switch, full width.
+        var cells = new (FrameworkElement Cell, int Row, int Column)[]
+        {
+            (new StackPanel { Children = { Label("Model"), modelBox, modelStatus, modelFields } }, 0, 0), (favBlock, 0, 1), (source, 0, 2),
+            (primaryRow, 1, 0), (ApiModelPicker(card, remoteNow), 1, 1), (remoteNote, 1, 2),
+            (new StackPanel { Children = { remoteActions, localActions } }, 2, 0),
+        };
+        if (follow is not null)
+            ((StackPanel)cells[^1].Cell).Children.Add(follow);
+        var modelGrid = new Grid { Margin = new Thickness(0, 14, 0, 0) };
+        bool? threeColumns = null;
+        void LayOutModel(bool three)
+        {
+            if (threeColumns == three)
+                return;
+            threeColumns = three;
+            modelGrid.ColumnDefinitions.Clear();
+            modelGrid.RowDefinitions.Clear();
+            for (var c = 0; c < (three ? 5 : 1); c++) // three: the cells' columns, a 28 px gap between
+                modelGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = c % 2 == 1 ? new GridLength(28) : new GridLength(1, GridUnitType.Star) });
+            for (var i = 0; i < cells.Length; i++)
+            {
+                var (cell, row, column) = cells[i];
+                var r = three ? row : i;
+                while (modelGrid.RowDefinitions.Count <= r)
+                    modelGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                Grid.SetRow(cell, r);
+                Grid.SetColumn(cell, three ? column * 2 : 0);
+                cell.Margin = new Thickness(0, r > 0 ? 16 : 0, 0, 0);
+            }
+        }
+        foreach (var (cell, _, _) in cells)
+            modelGrid.Children.Add(cell);
+        LayOutModel(false);
+        scroll.SizeChanged += (_, e) => LayOutModel(e.NewSize.Width >= 1200);
+        foreach (var part in new UIElement[] { modelGrid, vramBlock, rows["max_seq_length"], advancedRow })
+            top.Children.Add(part);
+        // The worker's own sections under Model, a line above each (one above both prompt sections: one shows at a time).
         foreach (var (name, _) in SettingsGroups)
             if (blocks.TryGetValue(name, out var block))
-                (HeadGroups.Contains(name) ? head : sections).Children.Add(block);
+            {
+                if (HeadGroups.Contains(name) && head.Children.Count > 0 && !(name == "System prompt (workflow)" && blocks.ContainsKey("System prompt (Chat)")))
+                    head.Children.Add(Line());
+                (HeadGroups.Contains(name) ? (Panel)head : sections).Children.Add(block);
+            }
         ApplyPromptView(body);
         // The picker (MainWindow.ModelPicker.cs) opens instead of the box's own list; the box shows the current model or the
         // pick. The list loads the first time it opens (never at startup); the body stays usable meanwhile.
@@ -1045,8 +1089,10 @@ public partial class MainWindow
         void SyncMode()
         {
             var remote = remoteMode();
-            remotePanel.Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
-            localPanel.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
+            foreach (var part in new FrameworkElement[] { remotePanel, remoteNote, remoteActions })
+                part.Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
+            foreach (var part in new FrameworkElement[] { localPanel, localActions })
+                part.Visibility = remote ? Visibility.Collapsed : Visibility.Visible;
             foreach (var hidden in ModelOptions.All.Where(o => o.Target == "auto_load").Select(o => rows[o.Key]).Concat(loadOnly))
                 hidden.Visibility = remote && (primaryLoad is null || hidden == rows["gguf_variant"]) ? Visibility.Collapsed : Visibility.Visible;
             foreach (var key in ModelOptions.ApiOnly.Where(rows.ContainsKey))
@@ -1952,7 +1998,7 @@ public partial class MainWindow
             _settings.ChatWorker = chatWorker;
 
             OpenModelSettings();
-            ModelSettingsPage.Width = 820; // two columns: Model beside the prompts, the options below the line
+            ModelSettingsPage.Width = 820; // Model on top, the prompts under it, the options below the line
             SmokeClickTab(compactor);
             await Idle();
             if ((double)Resources["WorkerTabWidth"] != WorkerTabMax || WorkerTabsScroll.ScrollableWidth > 1) // capped: all four fit
@@ -2067,7 +2113,7 @@ public partial class MainWindow
                 return Fail("a model that cannot see greys the switch");
             var (m, p, s) = (model.TranslatePoint(new Point(), WorkerSettingsHost), prompts.TranslatePoint(new Point(), WorkerSettingsHost),
                 sampling.TranslatePoint(new Point(), WorkerSettingsHost));
-            if (Math.Abs(m.Y - p.Y) > 2 || p.X <= m.X + 100 || s.Y <= m.Y + 100)
+            if (Math.Abs(m.X - p.X) > 2 || p.Y <= m.Y + 100 || s.Y <= p.Y + 20)
                 return Fail($"the layout: model {m}, prompts {p}, sampling {s}");
             if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as LEAD:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
@@ -2221,6 +2267,13 @@ public partial class MainWindow
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is null ||
                 Model().Items.Count != 1 || Model().Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null))
                 return Fail("the Planner's tab");
+            // A picture of the page at about 1600x1000, a local worker: %TEMP%\ao-model-settings.png (to look at the layout).
+            var (oldWidth, oldHeight) = (Width, Height);
+            (Width, Height) = (1600, 1000);
+            await Idle();
+            SavePicture(ModelSettingsView, Path.Combine(Path.GetTempPath(), "ao-model-settings.png"));
+            (Width, Height) = (oldWidth, oldHeight);
+            await Idle();
             // A click on the box opens the picker (not the box's own list), which lists the models once loaded.
             async Task<PickerEntry?> FakeItem()
             {
