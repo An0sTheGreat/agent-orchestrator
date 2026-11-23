@@ -223,6 +223,7 @@ public partial class MainWindow
         // and the changed ones posted on Save (POST /share/load). primaryLoad: as read or last saved; null until read, and while
         // null the load rows stay hidden as for any remote worker. The quantization is the primary PC's file, so not offered.
         var onPrimary = remoteNow is not null && _settings.ShareHost is { Length: > 0 } && remoteNow.BaseUrl.Trim().TrimEnd('/') == ModelShare.ChatUrl(_settings.ShareHost);
+        var usePrimary = onPrimary; // the Run on the primary PC switch: the picker lists its models, Presets its presets
         Dictionary<string, string>? primaryLoad = null;
         var primaryKeys = ModelOptions.All.Where(o => o.Target == "auto_load" && o.Key != "gguf_variant").Select(o => o.Key).ToList();
         Dictionary<string, string> Base() => remoteMode() ? new() : ModelOptions.Defaults(meta, hasModel, inherited);
@@ -771,6 +772,15 @@ public partial class MainWindow
         modelBox.SelectedIndex = 0;
         var modelStatus = Muted("Open the list for the installed models.");
         modelStatus.Margin = new Thickness(0, 4, 0, 0);
+        // Run on the primary PC: on, a pick from its models puts the worker on it (as API Model does); off, Switch to Local.
+        var connected = _settings.ShareHost is { Length: > 0 };
+        var primarySwitch = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), IsChecked = onPrimary, IsEnabled = connected, Tag = "RunOnPrimary", VerticalAlignment = VerticalAlignment.Center };
+        DockPanel.SetDock(primarySwitch, Dock.Right);
+        var primaryLabel = Label("Run on the primary PC");
+        primaryLabel.VerticalAlignment = VerticalAlignment.Center;
+        var primaryRow = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { new DockPanel { Children = { primarySwitch, primaryLabel } } } };
+        if (!connected)
+            primaryRow.Children.Add(Muted("Connect to a primary PC in Settings › Models"));
         // Top: the picker, quantization, source, memory, context length with its slider, then the Advanced switch.
         var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
         var modelFields = Fields("Model");
@@ -861,7 +871,7 @@ public partial class MainWindow
         };
         var favLabel = new TextBlock { Text = "Favorite models", FontWeight = FontWeights.SemiBold, FontSize = 12 };
         var favBlock = new StackPanel { Margin = new Thickness(0, 12, 0, 0), Tag = "LocalFavoritesBlock", Children = { favLabel, favHint, favBox } };
-        foreach (var part in new UIElement?[] { new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, favBlock, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
+        foreach (var part in new UIElement?[] { primaryRow, new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { modelBox, modelStatus } }, favBlock, ApiModelPicker(card, remoteNow), follow, modelFields, source, vramBlock,
                      rows["max_seq_length"], advancedRow })
             if (part is not null)
                 top.Children.Add(part);
@@ -889,7 +899,21 @@ public partial class MainWindow
             return choices.FirstOrDefault(c => c.Label.Equals(model, StringComparison.OrdinalIgnoreCase))
                 ?? choices.FirstOrDefault(c => LauncherLogic.DescribeModel(c.Display, c.Variant).Name.Equals(model, StringComparison.OrdinalIgnoreCase));
         }
-        var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, ShowChoice, _settings.LocalFavorites, () =>
+        // A primary PC model applies at once, as the Remote API page's Apply does (ModelShare.ChatUrl and its key: onPrimary).
+        void UsePrimaryModel(string id)
+        {
+            if (CodeBusy)
+                Toast("Wait for the reply or run to finish", "#F7C873");
+            else if (DiscardWorkerEdits() && ApplyRemoteRole(card, new(ModelShare.ChatUrl(_settings.ShareHost), id, ModelShare.KeyEnv, ""), "in Settings › Models") is { } problem)
+                Toast($"{card.Title}: {problem}", "#FF667A");
+        }
+        var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, c =>
+        {
+            if (usePrimary && c is not null)
+                UsePrimaryModel(c.Label);
+            else
+                ShowChoice(c);
+        }, _settings.LocalFavorites, () =>
         {
             _settings.Save();
             FillFavorites();
@@ -938,12 +962,26 @@ public partial class MainWindow
             picker.SetEntries(null, "Loading models…");
             try
             {
-                var choices = await FetchModelChoicesAsync();
-                var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
-                var entries = await Task.Run(() => DescribeChoices(choices, folder, hub));
-                initial = choices.FirstOrDefault(choice => LauncherLogic.DescribeModel(choice.Display, choice.Variant) is var d
-                    && card.ModelName == d.Name && (card.Quant == d.Quant || d.Quant == "—"));
-                modelStatus.Text = choices.Count == 0 ? "No installed text models found." : "GGUF files on this computer.";
+                List<ModelChoice> choices;
+                List<PickerEntry> entries;
+                if (usePrimary) // only the primary PC's models (its /v1/models), by their ids
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    var shared = await RemoteCatalog.FetchModelsAsync(http, ModelShare.ChatUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv), CancellationToken.None);
+                    choices = [.. shared.Select(m => new ModelChoice(m.Id, m.Id, m.Id, null, m.Id))];
+                    entries = [.. choices.Select(c => new PickerEntry(c, c.Label, "—", 0, PickerGroups[0]))];
+                    initial = onPrimary ? choices.FirstOrDefault(c => c.Label == remoteNow!.Model.Trim()) : null;
+                    modelStatus.Text = choices.Count == 0 ? "The primary PC shares no models." : "Models on the primary PC.";
+                }
+                else
+                {
+                    choices = await FetchModelChoicesAsync();
+                    var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
+                    entries = await Task.Run(() => DescribeChoices(choices, folder, hub));
+                    initial = choices.FirstOrDefault(choice => LauncherLogic.DescribeModel(choice.Display, choice.Variant) is var d
+                        && card.ModelName == d.Name && (card.Quant == d.Quant || d.Quant == "—"));
+                    modelStatus.Text = choices.Count == 0 ? "No installed text models found." : "GGUF files on this computer.";
+                }
                 picker.SetEntries(entries, choices.Count == 0 ? modelStatus.Text : "");
                 if (picker.IsOpen)
                     picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
@@ -966,7 +1004,7 @@ public partial class MainWindow
                 hidden.Visibility = remote && (primaryLoad is null || hidden == rows["gguf_variant"]) ? Visibility.Collapsed : Visibility.Visible;
             foreach (var key in ModelOptions.ApiOnly.Where(rows.ContainsKey))
                 rows[key].Visibility = remote ? Visibility.Visible : Visibility.Collapsed;
-            modelBox.IsEnabled = !remote;
+            modelBox.IsEnabled = !remote || usePrimary;
             favBox.IsEnabled = !remote && _settings.LocalFavorites.Count > 0;
             if (advanced.IsChecked != true) // the Advanced switch shows the load and output groups; Sampling and the prompts always show
                 foreach (var name in AdvancedGroups)
@@ -1049,8 +1087,20 @@ public partial class MainWindow
         saveTo.Click += (_, _) => SaveToActive();
         modelBox.SelectionChanged += (_, _) => SyncSaveTo();
         SyncSaveTo();
-        presets.Click += (_, _) =>
+        presets.Click += async (_, _) =>
         {
+            List<ModelPreset>? shared = null; // with Run on the primary PC: its presets, read now (read-only here)
+            if (usePrimary)
+                try
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                    shared = ModelShare.ParsePresets(await ImageShare.FetchPresetsAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "", CancellationToken.None));
+                }
+                catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+                {
+                    Toast("Could not read the primary PC's presets: " + x.Message, "#FF667A");
+                    return;
+                }
             var menu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Bottom };
             MenuItem Item(string header, Action act)
             {
@@ -1058,6 +1108,7 @@ public partial class MainWindow
                 item.Click += (_, _) => act();
                 return item;
             }
+            if (shared is null)
             menu.Items.Add(Item("Save as preset…", () =>
             {
                 if (SidebarAsk("Save preset", "Name this set of model options.", "Save", "")?.Trim() is not { Length: > 0 } name)
@@ -1068,13 +1119,15 @@ public partial class MainWindow
                 WritePreset(name, same, ShownModel());
             }));
             // the preset this worker last applied or saved: overwritten with the options shown now (as the bar's Save to button)
-            if (Active() is { } current)
+            if (shared is null && Active() is { } current)
                 menu.Items.Add(Item($"Save to “{current.Name}”", SaveToActive));
             // This model's presets (and those for any model), the same model's in other quantizations, then the other models'
             // presets: picking one of those puts its model in the box first, so one Save keeps the model and its options.
-            var mine = _settings.ModelPresets.Where(Mine).ToList();
-            var quants = remoteMode() ? [] : _settings.ModelPresets.Where(OtherQuant).ToList();
-            var others = remoteMode() ? [] : _settings.ModelPresets.Where(p => !Mine(p) && !OtherQuant(p)).ToList();
+            var mine = (shared ?? _settings.ModelPresets).Where(Mine).ToList();
+            if (shared is not null && mine.Count == 0)
+                menu.Items.Add(new MenuItem { Header = "No presets on the primary PC for this model", IsEnabled = false });
+            var quants = remoteMode() || shared is not null ? [] : _settings.ModelPresets.Where(OtherQuant).ToList();
+            var others = remoteMode() || shared is not null ? [] : _settings.ModelPresets.Where(p => !Mine(p) && !OtherQuant(p)).ToList();
             void Apply(ModelPreset preset)
             {
                 // values only; load options only with a model to load (Save would refuse them)
@@ -1099,6 +1152,7 @@ public partial class MainWindow
                 };
                 remove.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
                 remove.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
+                remove.Visibility = shared is null ? Visibility.Visible : Visibility.Collapsed; // the primary PC's are not deleted from here
                 Grid.SetColumn(remove, 1);
                 var header = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } }, Children = { name, remove } };
                 var item = new MenuItem { Header = header, Tag = label, HorizontalContentAlignment = HorizontalAlignment.Stretch };
@@ -1172,7 +1226,20 @@ public partial class MainWindow
 
         save.Click += (_, _) => Save();
         // As the Local radio and Save once did: a failed Save leaves the switch pending (Save again, or Revert).
-        switchLocal.Click += (_, _) =>
+        switchLocal.Click += (_, _) => GoLocal();
+        // Off from the primary PC: Switch to Local; otherwise the picker swaps lists (a pick from the other one is dropped).
+        primarySwitch.Click += (_, _) =>
+        {
+            usePrimary = primarySwitch.IsChecked == true;
+            scannedAt = null; // the next open lists the other side's models
+            ShowChoice(null);
+            if (!usePrimary && onPrimary)
+                GoLocal();
+            else
+                SyncMode();
+            modelStatus.Text = usePrimary ? "Open the list for the primary PC's models." : "Open the list for the installed models.";
+        };
+        void GoLocal()
         {
             toLocal = true;
             if (primaryLoad is not null) // the primary PC's load options are not this PC's
@@ -1182,7 +1249,7 @@ public partial class MainWindow
             Rederive(); // a local role shows the local defaults
             Vram();
             Save();
-        };
+        }
         bool Save()
         {
             var fields = editors.ToDictionary(p => p.Key, p => Value(p.Value));
@@ -1848,6 +1915,11 @@ public partial class MainWindow
             advancedSwitch.IsChecked = false;
             SmokeClick(advancedSwitch);
             await Idle();
+            // Run on the primary PC: above the picker; not connected, off and greyed with the way to connect under it.
+            var connectedNow = !string.IsNullOrEmpty(_settings.ShareHost);
+            if (SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "RunOnPrimary") is not { IsVisible: true } runOnPrimary || runOnPrimary.IsEnabled != connectedNow ||
+                !connectedNow && (runOnPrimary.IsChecked == true || SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == "Connect to a primary PC in Settings › Models" && t.IsVisible) is null))
+                return Fail("the Run on the primary PC switch");
 
             // Vision: the switch goes in the request; a model that cannot see (Disable vision, or no mmproj beside its GGUF)
             // greys it with the reason as its tip.
