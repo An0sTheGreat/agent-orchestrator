@@ -185,6 +185,12 @@ internal static class LauncherLogic
         return [.. levels];
     }
 
+    // The effort a template uses when none is sent (Default): the level in reasoning_effort|default('xhigh') (Qwen3.8), one of
+    // EffortValues; null when the template sets none (the model's own behaviour) or there is no template.
+    internal static string? EffortDefault(string? template) =>
+        template is not null && Regex.Match(template, @"reasoning_effort\s*\|\s*default\(\s*['""]([A-Za-z]+)['""]") is { Success: true } m &&
+        EffortValues.Contains(m.Groups[1].Value.ToLowerInvariant()) ? m.Groups[1].Value.ToLowerInvariant() : null;
+
     // The role's GGUF file: auto_load.gguf_file when it exists, else the local scan (the Change picker's) for the repo in
     // auto_load.model_path, preferring auto_load.gguf_variant. Null when none is found.
     public static string? ResolveGguf(JsonObject? autoLoad, string modelsFolder, string hubCache)
@@ -2287,6 +2293,10 @@ internal static class LauncherLogic
             if (string.Join(",", EffortLevels(qwen38)!) != "off,low,medium,xhigh" || string.Join(",", EffortLevels("{{ reasoning_effort }}")!) != "low,medium,high" ||
                 string.Join(",", EffortLevels("{% if enable_thinking %}<think>{% endif %}")!) != "off" || EffortLevels("plain")!.Length != 0 || EffortLevels(null) is not null)
                 throw new InvalidOperationException("EffortLevels failed.");
+            // Default's level: what the template falls back to when no effort is sent
+            if (EffortDefault(qwen38) != "xhigh" || EffortDefault("{%- set r = reasoning_effort | default(\"medium\") %}") != "medium" ||
+                EffortDefault("{{ reasoning_effort }}") is not null || EffortDefault(null) is not null || EffortDefault("reasoning_effort|default('loud')") is not null)
+                throw new InvalidOperationException("EffortDefault failed.");
             // Qwen3 Instruct 2507: <think> and reasoning_content only to strip earlier reasoning; the reply starts plainly.
             const string instruct = "{% if '</think>' in content %}{% set reasoning_content = content.split('</think>')[0] %}{% endif %}" +
                 "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}";

@@ -1721,7 +1721,7 @@ public partial class MainWindow : Window
             File.WriteAllText(effortConfig, effortRoot.ToJsonString());
             var effortMenu = BuildEffortMenu(CodeEffortChip);
             var levels = effortMenu.Items.OfType<MenuItem>().ToList();
-            if (effortMenu.Placement != PlacementMode.Top || levels.Select(i => (string)i.Header).SequenceEqual(new[] { "Default", "Off (no thinking)", "Low", "Medium", "High", "Max" }) is false ||
+            if (effortMenu.Placement != PlacementMode.Top || levels.Select(i => i.Header as string ?? (string)i.Tag).SequenceEqual(new[] { "Default", "Off (no thinking)", "Low", "Medium", "High", "Max" }) is false ||
                 levels[0].IsChecked is false || (string)ChatEffortChip.Content != "Effort: Default  ▾")
                 return Fail();
             levels[4].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));

@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 
 namespace AgentOrchestrator;
 
@@ -99,10 +100,14 @@ public partial class MainWindow
     // The effort levels a worker's model takes besides Default (empty: it does not think), from the model saved in the active
     // config.json (roles[role] for a built-in worker, its custom_workers entry for a custom one), loaded or not: the GGUF's
     // chat template when it can be read (LauncherLogic.EffortLevels), else IsThinkingModel and every level.
-    private string[] EffortLevels(RoleCard? card)
+    private string[] EffortLevels(RoleCard? card) => EffortInfo(card).Levels;
+
+    // The levels, and the level Default resolves to (the template's reasoning_effort|default(...), LauncherLogic.EffortDefault;
+    // null for a remote API, an unreadable template or one that sets none).
+    private (string[] Levels, string? Default) EffortInfo(RoleCard? card)
     {
         if (card is null)
-            return [];
+            return ([], null);
         JsonObject? entry = null;
         try
         {
@@ -117,12 +122,13 @@ public partial class MainWindow
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException) { }
         if (LauncherLogic.IsRemote(entry)) // a remote API decides for itself (and ignores a level its model lacks); names say little there
-            return AnyEfforts;
+            return (AnyEfforts, null);
         var load = entry?["auto_load"] as JsonObject;
         var folder = _settings.ModelsFolder ?? "";
         if (!LauncherLogic.IsThinkingModel(entry?["model"]?.ToString() ?? load?["model_path"]?.ToString() ?? card.Config.ModelPath ?? card.ModelName, load, folder))
-            return [];
-        return LauncherLogic.EffortLevels(LauncherLogic.ReadGgufChatTemplate(LauncherLogic.ResolveGguf(load, folder, LauncherLogic.HubCache()))) is { Length: > 0 } own ? own : AnyEfforts;
+            return ([], null);
+        var template = LauncherLogic.ReadGgufChatTemplate(LauncherLogic.ResolveGguf(load, folder, LauncherLogic.HubCache()));
+        return (LauncherLogic.EffortLevels(template) is { Length: > 0 } own ? own : AnyEfforts, LauncherLogic.EffortDefault(template));
     }
 
     private bool Thinks(RoleCard? card) => EffortLevels(card).Length > 0;
@@ -159,7 +165,7 @@ public partial class MainWindow
         var menu = NewPresetMenu(target);
         menu.Placement = PlacementMode.Top;
         var card = target == CodeEffortChip ? CodeTarget() : ChatTarget();
-        var levels = EffortLevels(card);
+        var (levels, fallback) = EffortInfo(card);
         if (card is not null)
         {
             var heading = new TextBlock { Text = EffortTarget(card), FontSize = 11, Margin = new Thickness(8, 4, 8, 4), Tag = "EffortTarget" };
@@ -177,6 +183,16 @@ public partial class MainWindow
                 RefreshEffort();
             });
             item.IsChecked = value == sent;
+            if (value.Length == 0 && fallback is not null) // what Default really is: "Default (Extra high)", the level in grey
+            {
+                var header = new TextBlock();
+                header.Inlines.Add(new Run(label));
+                var resolved = new Run($"  ({EffortLabel(fallback)})");
+                resolved.SetResourceReference(TextElement.ForegroundProperty, "Muted");
+                header.Inlines.Add(resolved);
+                (item.Header, item.Tag) = (header, label);
+                item.ToolTip = $"Sends no effort: this model's template then uses {EffortLabel(fallback)}";
+            }
             menu.Items.Add(item);
         }
         return menu;
