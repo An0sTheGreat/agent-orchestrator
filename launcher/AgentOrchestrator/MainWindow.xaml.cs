@@ -2943,20 +2943,20 @@ public partial class MainWindow : Window
                     (_imgWidth.Text, _imgHeight.Text) = ("", "");
                     _imgAspect.SelectedIndex = square;
                 }
-                // the prompt boxes cap their height with a fading bottom edge and an expand/collapse toggle; no toggle when the text fits
+                // the prompt boxes fill their cells and never grow: a taller text fades at the bottom edge until its end is in view
                 {
                     TextBox promptBox = _imgPrompt, negBox = _imgNegative;
-                    Button? PromptToggle(string tag) => SmokeFind<Button>(ImagesView, b => b.Tag as string == tag);
                     string Lines(int n) => string.Join("\n", Enumerable.Range(1, n).Select(i => "line " + i));
-                    async Task<bool> FadeCheck(TextBox box, string tag, double max)
+                    async Task<bool> FadeCheck(TextBox box)
                     {
                         box.Text = "one line";
                         await Settle();
-                        if (PromptToggle(tag) is not { } toggle || toggle.IsVisible || box.OpacityMask is not null || box.ActualHeight > max)
+                        var height = box.ActualHeight;
+                        if (box.OpacityMask is not null || height <= 0)
                             return false;
                         box.Text = Lines(40);
                         await Settle();
-                        if (!toggle.IsVisible || toggle.Content as string != "Show more ▾" || box.ActualHeight > max + 0.5 || !(box.ExtentHeight > box.ViewportHeight) || box.OpacityMask is null)
+                        if (Math.Abs(box.ActualHeight - height) > 0.5 || !(box.ExtentHeight > box.ViewportHeight) || box.OpacityMask is null)
                             return false;
                         box.ScrollToEnd(); // at the end of the text nothing is below: no fade over the line being typed
                         await Settle();
@@ -2966,47 +2966,55 @@ public partial class MainWindow : Window
                         await Settle();
                         if (box.OpacityMask is null)
                             return false;
-                        var line = box.ExtentHeight / 40;
-                        var fitLines = (int)Math.Floor((max - (box.ActualHeight - box.ViewportHeight)) / line);
-                        SmokeClick(toggle);
-                        await Settle();
-                        if (box.ActualHeight <= max + 1 || box.OpacityMask is not null || toggle.Content as string != "Show less ▴" || !toggle.IsVisible)
-                            return false;
-                        SmokeClick(toggle);
-                        await Settle();
-                        if (box.ActualHeight > max + 0.5 || box.OpacityMask is null || toggle.Content as string != "Show more ▾")
-                            return false;
-                        box.Text = Lines(fitLines); // exactly what fits: no toggle
-                        await Settle();
-                        if (toggle.IsVisible || box.OpacityMask is not null)
-                            return false;
-                        box.Text = Lines(fitLines + 1); // one line more: the toggle
-                        await Settle();
-                        if (!toggle.IsVisible)
-                            return false;
-                        box.Text = "x " + new string('w', 4000); // one very long wrapped line
-                        await Settle();
-                        if (!toggle.IsVisible || box.ActualHeight > max + 0.5)
-                            return false;
                         box.Text = "one line";
                         await Settle();
-                        return !toggle.IsVisible && box.OpacityMask is null && box.ActualHeight <= max;
+                        return box.OpacityMask is null && Math.Abs(box.ActualHeight - height) <= 0.5;
                     }
-                    if (!await FadeCheck(promptBox, "ImagesPromptToggle", 150) || !await FadeCheck(negBox, "ImagesNegativeToggle", 90))
+                    if (!await FadeCheck(promptBox) || !await FadeCheck(negBox))
                         return Fail();
                     negBox.Text = Lines(40);
                     await Settle();
-                    _imgRemoteMode = true; // OpenRouter hides the negative row and its toggle; the state is intact on the way back
+                    _imgRemoteMode = true; // OpenRouter hides the negative cell; the state is intact on the way back
                     ShowImageSource();
                     await Settle();
-                    var hiddenInRemote = !negative.IsVisible && !PromptToggle("ImagesNegativeToggle")!.IsVisible;
+                    var hiddenInRemote = !negative.IsVisible;
                     _imgRemoteMode = false;
                     ShowImageSource();
                     await Settle();
-                    if (!hiddenInRemote || !PromptToggle("ImagesNegativeToggle")!.IsVisible || negBox.ActualHeight > 90.5 || negBox.OpacityMask is null)
+                    if (!hiddenInRemote || !negative.IsVisible || negBox.OpacityMask is null)
                         return Fail();
                     Snap("42-images-prompt-fade");
                     (negBox.Text, promptBox.Text) = ("", "");
+                }
+                // the page never scrolls: at 1280x720 with Advanced open the card's content fits it, and the right column ends where the card does
+                {
+                    var (oldWidth, oldHeight) = (Width, Height);
+                    var card = SmokeFind<Border>(ImagesView, b => b.Tag as string == "ImagesCard")!;
+                    var rightColumn = SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesRight")!;
+                    var advancedToggle = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesAdvanced")!;
+                    ImagesView.SetResourceReference(Panel.BackgroundProperty, "AppBackground"); // the window's, behind the page
+                    (Width, Height) = (1600, 1000);
+                    await Settle();
+                    SavePicture(ImagesView, Path.Combine(Path.GetTempPath(), "ao-images.png"));
+                    (Width, Height) = (1280, 720);
+                    SmokeClick(advancedToggle);
+                    await Settle();
+                    SavePicture(ImagesView, Path.Combine(Path.GetTempPath(), "ao-images-short.png"));
+                    var shown = card.ActualHeight;
+                    card.Measure(new Size(card.ActualWidth, double.PositiveInfinity)); // the content's own height
+                    var needed = card.DesiredSize.Height;
+                    var cardBottom = card.TranslatePoint(new Point(0, card.ActualHeight), ImagesView).Y;
+                    var rightBottom = rightColumn.TranslatePoint(new Point(0, rightColumn.ActualHeight), ImagesView).Y;
+                    SmokeClick(advancedToggle);
+                    ImagesView.ClearValue(Panel.BackgroundProperty);
+                    (Width, Height) = (oldWidth, oldHeight);
+                    card.InvalidateMeasure();
+                    await Settle();
+                    if (needed > shown + 0.5 || cardBottom > ImagesView.ActualHeight + 0.5 || Math.Abs(cardBottom - rightBottom) > 2)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: the Images page at 1280x720 needs {needed:0} of {shown:0}; the card ends at {cardBottom:0}, the right column at {rightBottom:0}");
+                        return Fail();
+                    }
                 }
                 // OpenRouter image models (a fake OpenRouter answers): the toggle, the model popup, the provider popup; the local pick survives the round trip
                 var imgHttp = _remoteHttp;
@@ -3203,7 +3211,8 @@ public partial class MainWindow : Window
                     SmokeClick((Button)ImgFind("ImagesSwitchToLocal")!);
                     if (ReadImageSettings() is not { RemoteModel: "" } || recipes.SelectedIndex != recipeWas || !recipes.IsVisible || modelButton.IsVisible || !useRemote.IsVisible)
                         return Fail();
-                    if (_imgLocalOnly.Any(e => e.Visibility != Visibility.Visible) || !_imgSteps.IsVisible || !_imgSeed.IsVisible || !_imgWidth.IsVisible || !_imgRuntimeText.IsVisible || !negative.IsVisible)
+                    // (the runtime line sits in Advanced, closed here: its panel's Visibility is in _imgLocalOnly's)
+                    if (_imgLocalOnly.Any(e => e.Visibility != Visibility.Visible) || !_imgSteps.IsVisible || !_imgSeed.IsVisible || !_imgWidth.IsVisible || !negative.IsVisible)
                         return Fail();
                     // a restart in OpenRouter mode: the saved local pick (a recipe that is not the first) comes back with Switch to Local, and is what the next run saves
                     var flux = Array.FindIndex(ImageGen.Recipes, r => r.Id == "flux3-klein");

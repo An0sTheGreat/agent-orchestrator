@@ -59,7 +59,8 @@ public partial class MainWindow
     private StackPanel _imgSharedPanel = null!;
     private ComboBox _imgSharedModel = null!;
     private TextBlock _imgSharedNote = null!;
-    private Button _imgUseShared = null!;
+    private RadioButton _imgConnLocal = null!, _imgConnRemote = null!; // the header's CONNECTION: this PC or the primary PC
+    private TextBlock _imgModelBadge = null!;
     private string _imgSharedId = "";
     private List<ImageShare.Model> _imgShared = [];
     private ImageShare.Model? SharedPick => _imgShared.FirstOrDefault(m => m.Id == _imgSharedId);
@@ -112,6 +113,9 @@ public partial class MainWindow
 
     private bool ImageBusy => _imgCts is not null;
 
+    // The page never scrolls: a header (title, the CONNECTION pill, the model badge), then the settings card on the left and the
+    // stage with the gallery on the right, both reaching the bottom. The card's prompt boxes take what its other sections leave
+    // (Advanced open or a short window shrinks them); the stage takes what the gallery leaves.
     private void BuildImagesPage()
     {
         TextBlock Muted(string text, double size = 12)
@@ -120,30 +124,92 @@ public partial class MainWindow
             t.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             return t;
         }
-        var left = new StackPanel { Margin = new Thickness(24, 24, 16, 24) };
-        void Label(string text) => left.Children.Add(new TextBlock { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) });
-        Slider NewSlider(double min, double max, double step, string format, StackPanel into)
+        TextBlock Head(string text, double bottom = 6) =>
+            new() { Text = text.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(0, 0, 0, bottom), VerticalAlignment = VerticalAlignment.Center };
+        TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+        // a label left of its control, on one line
+        DockPanel Inline(string label, UIElement control)
+        {
+            var l = Label(label);
+            l.Margin = new Thickness(0, 0, 8, 0);
+            DockPanel.SetDock(l, Dock.Left);
+            return new DockPanel { Children = { l, control } };
+        }
+        // cells side by side in equal columns; a collapsed cell gives its column to the others
+        UniformGrid Pair(double top, params FrameworkElement[] cells)
+        {
+            for (var i = 0; i < cells.Length; i++)
+                cells[i].Margin = new Thickness(i == 0 ? 0 : 8, 0, i == cells.Length - 1 ? 0 : 8, 0);
+            var grid = new UniformGrid { Rows = 1, Margin = new Thickness(0, top, 0, 0) };
+            foreach (var c in cells)
+                grid.Children.Add(c);
+            return grid;
+        }
+        Border Badge(TextBlock text)
+        {
+            (text.FontSize, text.FontFamily, text.TextWrapping, text.TextTrimming) = (11, AppFonts.Mono, TextWrapping.NoWrap, TextTrimming.CharacterEllipsis);
+            var badge = new Border { Child = text, Padding = new Thickness(10, 3, 10, 3), CornerRadius = new CornerRadius(11), BorderThickness = new Thickness(1), VerticalAlignment = VerticalAlignment.Center };
+            badge.SetResourceReference(Border.BackgroundProperty, "Hover");
+            badge.SetResourceReference(Border.BorderBrushProperty, "Border");
+            return badge;
+        }
+        Slider NewSlider(double min, double max, double step, string format, out FrameworkElement row)
         {
             var value = new TextBlock { Width = 40, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
             var slider = new Slider { Minimum = min, Maximum = max, TickFrequency = step, IsSnapToTickEnabled = true, VerticalAlignment = VerticalAlignment.Center };
             slider.ValueChanged += (_, _) => value.Text = slider.Value.ToString(format);
             DockPanel.SetDock(value, Dock.Right);
-            into.Children.Add(new DockPanel { Children = { value, slider } });
+            row = new DockPanel { Children = { value, slider } };
             return slider;
         }
+        // Steps and Guidance: the label with a small box at the right of its row, the slider under it with its range; box and slider set each other
+        FrameworkElement SliderCell(string label, double min, double max, double step, string format, string tag, out Slider slider)
+        {
+            var s = slider = new Slider { Minimum = min, Maximum = max, TickFrequency = step, IsSnapToTickEnabled = true };
+            var box = new TextBox { Width = 48, Height = 24, Padding = new Thickness(4, 0, 4, 0), TextAlignment = TextAlignment.Right, VerticalContentAlignment = VerticalAlignment.Center, Tag = tag };
+            s.ValueChanged += (_, _) => box.Text = s.Value.ToString(format);
+            void Commit()
+            {
+                if (double.TryParse(box.Text, out var v))
+                    s.Value = Math.Clamp(v, min, max);
+                box.Text = s.Value.ToString(format);
+            }
+            box.LostKeyboardFocus += (_, _) => Commit();
+            box.KeyDown += (_, e) => { if (e.Key == Key.Enter) Commit(); };
+            DockPanel.SetDock(box, Dock.Right);
+            var (lo, hi) = (Muted(min.ToString(format), 10), Muted(max.ToString(format), 10));
+            DockPanel.SetDock(hi, Dock.Right);
+            return new StackPanel
+            {
+                Children =
+                {
+                    new DockPanel { Margin = new Thickness(0, 0, 0, 2), Children = { box, Label(label) } }, s,
+                    new DockPanel { LastChildFill = false, Children = { hi, lo } },
+                },
+            };
+        }
+        var radius = (CornerRadius)FindResource("ControlRadius");
+        // a card section: a line under it; a band is slightly darker (as Model settings' top band)
+        Border Section(UIElement child, bool band = false, bool last = false)
+        {
+            var b = new Border { Child = child, Padding = new Thickness(18, band ? 6 : 10, 18, band ? 6 : 10), BorderThickness = new Thickness(0, 0, 0, last ? 0 : 1) };
+            b.SetResourceReference(Border.BorderBrushProperty, "Border");
+            if (band)
+                b.Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0));
+            return b;
+        }
 
-        left.Children.Add(new TextBlock { Text = "Images", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 22, FontWeight = FontWeights.SemiBold });
+        // the runtime: in Advanced (hidden as a whole in OpenRouter mode, and on the primary PC)
         _imgRuntimeText = Muted("", 11.5);
-        _imgRuntimeText.Margin = new Thickness(0, 6, 0, 4);
-        _imgRuntimeButton = new Button { Tag = "ImagesRuntime", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), HorizontalAlignment = HorizontalAlignment.Left };
+        (_imgRuntimeText.TextWrapping, _imgRuntimeText.TextTrimming, _imgRuntimeText.VerticalAlignment) = (TextWrapping.NoWrap, TextTrimming.CharacterEllipsis, VerticalAlignment.Center);
+        _imgRuntimeButton = new Button { Tag = "ImagesRuntime", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 3, 9, 3), FontSize = 11, Margin = new Thickness(6, 0, 0, 0) };
+        DockPanel.SetDock(_imgRuntimeButton, Dock.Right);
         _imgRuntimeButton.Click += async (_, _) => await RunImageJob(InstallImageRuntimeAsync);
         _imgVramHint = Muted("Chat models are loaded and using VRAM; image generation may be slower or run out of memory.", 11.5);
-        _imgVramHint.Margin = new Thickness(0, 6, 0, 0);
-        var runtime = new StackPanel { Children = { _imgRuntimeText, _imgRuntimeButton, _imgVramHint } }; // one panel: hidden as a whole in OpenRouter mode
-        left.Children.Add(runtime);
+        _imgVramHint.Margin = new Thickness(0, 4, 0, 0);
+        var runtime = new StackPanel { Children = { new DockPanel { Children = { _imgRuntimeButton, _imgRuntimeText } }, _imgVramHint } };
         _imgLocalOnly.Add(runtime);
 
-        Label("Model");
         _imgRecipe = new ComboBox { Tag = "ImagesRecipe" };
         _imgRecipe.SelectionChanged += (_, _) =>
         {
@@ -158,26 +224,20 @@ public partial class MainWindow
                 Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1, LowVram = _imgLowVram.IsChecked == true, Strength = _imgStrength.Value, InitImage = _imgInit,
             });
         };
-        // The local model (the picker and its folder) or an OpenRouter one: the two panels swap; the local pick is never touched on the way.
+        // The source: the local model (the picker and its folder), an OpenRouter one, or the primary PC's (the header's Remote PC).
+        // The panels under MODEL swap; the band above shows the same source's note and links. The local pick is never touched on the way.
         Button SourceButton(string text, string tag, Action click)
         {
-            var b = new Button { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4), Margin = new Thickness(0, 6, 0, 0), HorizontalAlignment = HorizontalAlignment.Left };
+            var b = new Button { Content = text, Tag = tag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 3, 9, 3), FontSize = 11, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
             b.Click += (_, _) => click();
             return b;
         }
         _imgLocalPanel = new StackPanel { Children = { _imgRecipe } };
         _imgRemoteModelButton = SourceButton("", "ImagesRemoteModelButton", ChooseImageModel);
         _imgRemoteProvidersButton = SourceButton("", "ImagesRemoteProvidersButton", ChooseImageProviders);
-        _imgRemotePanel = new StackPanel
-        {
-            Visibility = Visibility.Collapsed,
-            Children =
-            {
-                Muted($"Runs on OpenRouter with the key in {ImageKeyEnv}."), _imgRemoteModelButton, _imgRemoteProvidersButton,
-                SourceButton("Switch to Local", "ImagesSwitchToLocal", () => { _imgRemoteMode = false; ShowImageSource(); }),
-            },
-        };
-        _imgSharedModel = new ComboBox { Tag = "ImagesSharedModel" };
+        (_imgRemoteModelButton.Margin, _imgRemoteModelButton.FontSize, _imgRemoteProvidersButton.FontSize) = (new Thickness(0), 12, 12);
+        _imgRemotePanel = new StackPanel { Visibility = Visibility.Collapsed, Orientation = Orientation.Horizontal, Children = { _imgRemoteModelButton, _imgRemoteProvidersButton } };
+        _imgSharedModel = new ComboBox { Tag = "ImagesSharedModel", ToolTip = "Runs on the primary PC this PC is connected to (Settings > Models)" };
         _imgSharedModel.SelectionChanged += (_, _) =>
         {
             if (_imgApplying || _imgSharedModel.SelectedIndex < 0)
@@ -188,26 +248,10 @@ public partial class MainWindow
             ShowImageSource(); // the negative row
             ShowImageSize(); // the multiple
         };
-        _imgSharedNote = Muted("", 11.5);
-        _imgSharedNote.Margin = new Thickness(0, 4, 0, 0);
-        _imgSharedPanel = new StackPanel
-        {
-            Visibility = Visibility.Collapsed,
-            Children =
-            {
-                Muted("Runs on the primary PC this PC is connected to (Settings > Models)."), _imgSharedModel, _imgSharedNote,
-                SourceButton("Switch to Local", "ImagesSharedToLocal", () => { _imgSharedMode = false; ShowImageSource(); }),
-            },
-        };
-        left.Children.Add(_imgLocalPanel);
-        left.Children.Add(_imgRemotePanel);
-        left.Children.Add(_imgSharedPanel);
-        _imgFolderText = Muted("", 11.5);
-        _imgFolderText.Tag = "ImagesFolder";
-        _imgFolderText.VerticalAlignment = VerticalAlignment.Center;
-        var chooseFolder = new Button { Content = "Choose folder…", Tag = "ImagesChooseFolder", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0),
-            ToolTip = "A folder with image models you already have (searched with its subfolders); only image models are listed" };
-        chooseFolder.Click += (_, _) =>
+        _imgSharedNote = new TextBlock();
+        _imgSharedPanel = new StackPanel { Visibility = Visibility.Collapsed, Children = { _imgSharedModel } };
+        _imgFolderText = new TextBlock { Tag = "ImagesFolder" };
+        var chooseFolder = SourceButton("Choose folder…", "ImagesChooseFolder", () =>
         {
             var dialog = new OpenFolderDialog { Title = "Folder with image models", InitialDirectory = Directory.Exists(ImageModelsFolder) ? ImageModelsFolder : "" };
             if (dialog.ShowDialog(this) != true)
@@ -217,39 +261,70 @@ public partial class MainWindow
             ScanImageFolder();
             RefreshImageRecipes();
             Toast(_imgLocal.Count == 0 ? "No image models in that folder" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")} found");
-        };
-        var folderRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { chooseFolder, _imgFolderText } };
-        DockPanel.SetDock(chooseFolder, Dock.Left);
-        _imgLocalPanel.Children.Add(folderRow);
-        _imgLocalPanel.Children.Add(SourceButton("Use OpenRouter…", "ImagesUseRemoteApi", () => { _imgRemoteMode = true; ShowImageSource(); }));
-        _imgUseShared = SourceButton("Use the primary PC…", "ImagesUseShared", () => { _imgSharedMode = true; ShowImageSource(); LoadSharedModels(); });
-        _imgLocalPanel.Children.Add(_imgUseShared);
-
-        Label("Prompt");
-        _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 80, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        left.Children.Add(AttachPromptFade(_imgPrompt, 150, "ImagesPromptToggle"));
-        _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 44, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        _imgNegativeRow = new StackPanel
+        });
+        chooseFolder.ToolTip = "A folder with image models you already have (searched with its subfolders); only image models are listed";
+        // MODEL INFO band: per source, its note as a badge and its links at the right (shown with that source's panel)
+        var bandNotes = new Grid();
+        var bandLinks = new Grid { HorizontalAlignment = HorizontalAlignment.Right };
+        void BandFor(StackPanel panel, TextBlock note, params Button[] links)
         {
-            Tag = "ImagesNegative",
-            Children = { new TextBlock { Text = "Negative prompt", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) }, AttachPromptFade(_imgNegative, 90, "ImagesNegativeToggle") },
-        };
-        left.Children.Add(_imgNegativeRow);
+            var badge = Badge(note);
+            badge.HorizontalAlignment = HorizontalAlignment.Left;
+            var row = new StackPanel { Orientation = Orientation.Horizontal };
+            foreach (var link in links)
+                row.Children.Add(link);
+            foreach (var part in new FrameworkElement[] { badge, row })
+                part.SetBinding(VisibilityProperty, new System.Windows.Data.Binding(nameof(Visibility)) { Source = panel });
+            bandNotes.Children.Add(badge);
+            bandLinks.Children.Add(row);
+        }
+        _imgFolderText.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        _imgSharedNote.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        BandFor(_imgLocalPanel, _imgFolderText, chooseFolder, SourceButton("Use OpenRouter…", "ImagesUseRemoteApi", () => { _imgRemoteMode = true; ShowImageSource(); }));
+        BandFor(_imgRemotePanel, Muted($"OpenRouter · key in {ImageKeyEnv}"), SourceButton("Switch to Local", "ImagesSwitchToLocal", () => { _imgRemoteMode = false; ShowImageSource(); }));
+        BandFor(_imgSharedPanel, _imgSharedNote, SourceButton("Switch to Local", "ImagesSharedToLocal", () => { _imgSharedMode = false; ShowImageSource(); }));
+        var bandHead = Head("Model info", 0);
+        bandHead.Margin = new Thickness(0, 0, 12, 0);
+        DockPanel.SetDock(bandHead, Dock.Left);
+        DockPanel.SetDock(bandLinks, Dock.Right);
+        var band = Section(new DockPanel { Children = { bandHead, bandLinks, bandNotes } }, band: true);
+        band.CornerRadius = new CornerRadius(radius.TopLeft, radius.TopRight, 0, 0);
 
-        Label("Aspect ratio");
-        _imgAspect = new ComboBox { Tag = "ImagesAspect", Width = 200, Margin = new Thickness(0, 0, 8, 0) };
+        var modelSection = Section(Inline("Model", new StackPanel { Children = { _imgLocalPanel, _imgRemotePanel, _imgSharedPanel } }));
+
+        // PROMPTS: positive and negative side by side, filling the height the card leaves them
+        _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
+        _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
+        DockPanel PromptCell(string label, TextBox box)
+        {
+            var head = Head(label, 4);
+            DockPanel.SetDock(head, Dock.Top);
+            return new DockPanel { Children = { head, AttachPromptFade(box) } };
+        }
+        var positiveCell = PromptCell("Positive prompt", _imgPrompt);
+        var negativeCell = PromptCell("Negative prompt", _imgNegative);
+        negativeCell.Tag = "ImagesNegative";
+        _imgNegativeRow = negativeCell;
+        var promptsSection = Section(Pair(0, positiveCell, negativeCell));
+
+        // the parameters (no header of their own: the line above sets them off, and the page has no height to spare)
+        var steps = SliderCell("Steps", 1, 100, 1, "0", "ImagesStepsBox", out _imgSteps);
+        var guidance = SliderCell("Guidance", 0, 20, 0.5, "0.0", "ImagesGuidanceBox", out _imgCfg);
+        var stepsRow = Pair(0, steps, guidance);
+        _imgLocalOnly.AddRange([stepsRow, steps, guidance]);
+        _imgAspect = new ComboBox { Tag = "ImagesAspect" };
         _imgAspect.SelectionChanged += (_, _) => ImageAspectChanged();
-        var swap = new Button { Content = "↑↓", Tag = "ImagesSwapSize", ToolTip = "Swap width and height (portrait or landscape)", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand };
+        var swap = new Button { Content = "↑↓", Tag = "ImagesSwapSize", ToolTip = "Swap width and height (portrait or landscape)", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand, Margin = new Thickness(8, 0, 0, 0) };
         swap.Click += (_, _) => SwapImageSize();
-        left.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { _imgAspect, swap } });
-        Label("Resolution");
-        var resolutionLabel = left.Children[left.Children.Count - 1];
+        DockPanel.SetDock(swap, Dock.Right);
+        var aspectRow = Inline("Aspect ratio", new DockPanel { Children = { swap, _imgAspect } });
+        aspectRow.Margin = new Thickness(0, 8, 0, 0);
         // Width and height: editable lists. Empty shows the recommended value greyed where typed text starts (the caret sits at its left
         // edge); a typed or picked value is rounded to the model's multiple when the box loses focus, and with a ratio chosen the other follows.
         var editable = ParseTemplate(EditableComboXaml);
-        StackPanel SizeBox(string tag, bool width, out ComboBox box, out TextBlock hint)
+        DockPanel SizeBox(string tag, bool width, out ComboBox box, out TextBlock hint)
         {
-            var b = box = new ComboBox { Tag = tag, Width = 100, IsEditable = true, IsTextSearchEnabled = false, Template = editable, ItemsSource = ImageGen.SizeChoices,
+            var b = box = new ComboBox { Tag = tag, MinWidth = 70, IsEditable = true, IsTextSearchEnabled = false, Template = editable, ItemsSource = ImageGen.SizeChoices,
                 ToolTip = $"Any {(width ? "width" : "height")}, rounded to the model's multiple; empty: the aspect ratio's recommended one" };
             var h = hint = new TextBlock { IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Tag = tag + "Hint" };
             h.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
@@ -285,59 +360,44 @@ public partial class MainWindow
             };
             var icon = Muted(width ? "⇆" : "⇅");
             (icon.VerticalAlignment, icon.Margin, icon.ToolTip) = (VerticalAlignment.Center, new Thickness(0, 0, 6, 0), width ? "Width" : "Height");
-            return new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, width ? 12 : 0, 0), Children = { icon, new Grid { Children = { b, h } } } };
+            DockPanel.SetDock(icon, Dock.Left);
+            return new DockPanel { Children = { icon, new Grid { Children = { b, h } } } };
         }
         _imgSizeLock = new Button { Tag = "ImagesSizeLock", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand, Margin = new Thickness(8, 0, 0, 0),
             FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), VerticalAlignment = VerticalAlignment.Center };
         _imgSizeLock.Click += (_, _) => { _imgUnlocked = !_imgUnlocked; ShowSizeLock(); };
         ShowSizeLock();
-        var sizeBoxes = new StackPanel { Orientation = Orientation.Horizontal,
-            Children = { SizeBox("ImagesWidth", true, out _imgWidth, out _imgWidthHint), SizeBox("ImagesHeight", false, out _imgHeight, out _imgHeightHint), _imgSizeLock } };
-        left.Children.Add(sizeBoxes);
-        _imgLocalOnly.Add(resolutionLabel);
+        DockPanel.SetDock(_imgSizeLock, Dock.Right);
+        var sizeBoxes = new DockPanel { Margin = new Thickness(0, 8, 0, 0),
+            Children = { _imgSizeLock, Pair(0, SizeBox("ImagesWidth", true, out _imgWidth, out _imgWidthHint), SizeBox("ImagesHeight", false, out _imgHeight, out _imgHeightHint)) } };
         _imgLocalOnly.Add(sizeBoxes); // OpenRouter is sent the nearest aspect ratio only, not this size
+        _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 } };
+        _imgSeed = new TextBox { ToolTip = "Empty: a random seed (recorded with the picture)", VerticalContentAlignment = VerticalAlignment.Center,
+            Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        var seedCell = Inline("Seed", _imgSeed);
+        _imgLocalOnly.Add(seedCell);
+        var countRow = Pair(8, Inline("Images", _imgBatch), seedCell);
+        var paramsSection = Section(new StackPanel { Children = { stepsRow, aspectRow, sizeBoxes, countRow } });
 
-        var localFrom = left.Children.Count;
-        Label("Steps");
-        _imgSteps = NewSlider(1, 100, 1, "0", left);
-        Label("Guidance");
-        _imgCfg = NewSlider(0, 20, 0.5, "0.0", left);
-        Label("Seed");
-        _imgSeed = new TextBox { ToolTip = "Empty: a random seed (recorded with the picture)" };
-        left.Children.Add(_imgSeed);
-        _imgLocalOnly.AddRange(left.Children.Cast<UIElement>().Skip(localFrom)); // Steps, Guidance, Seed with their labels
-        Label("Images");
-        _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 }, Width = 90, HorizontalAlignment = HorizontalAlignment.Left };
-        left.Children.Add(_imgBatch);
-
-        var advancedHost = new StackPanel(); // the toggle and Advanced (Sampler, Low VRAM, start image): hidden as one in OpenRouter mode
-        var advanced = new StackPanel { Visibility = Visibility.Collapsed };
-        var toggle = new Button { Content = "▸ Advanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 16, 0, 0) };
-        toggle.SetResourceReference(ForegroundProperty, "TextPrimary"); // BareButton's own is dark on the dark theme
+        // ADVANCED SETTINGS band (Sampler, Scheduler, start image, Low VRAM, the runtime): hidden as one in OpenRouter mode
+        var advanced = new Grid { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
+        var toggle = new Button { Content = "▸  ADVANCED SETTINGS", Tag = "ImagesAdvanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, FontSize = 11 };
+        toggle.SetResourceReference(ForegroundProperty, "Muted");
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
             advanced.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
-            toggle.Content = (show ? "▾" : "▸") + " Advanced";
+            toggle.Content = (show ? "▾" : "▸") + "  ADVANCED SETTINGS";
         };
-        advancedHost.Children.Add(toggle);
-        advancedHost.Children.Add(advanced);
-        left.Children.Add(advancedHost);
-        _imgLocalOnly.Add(advancedHost);
-        advanced.Children.Add(new TextBlock { Text = "Sampler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
         _imgSampler = new ComboBox { ItemsSource = ImageGen.Samplers.Prepend("Default").ToList() };
-        advanced.Children.Add(_imgSampler);
-        advanced.Children.Add(new TextBlock { Text = "Scheduler", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 10, 0, 4) });
         _imgScheduler = new ComboBox { ItemsSource = ImageGen.Schedulers.Prepend("Default").ToList(), Tag = "ImagesScheduler",
             ToolTip = "How the noise level steps down over the steps; Default is the model's own" };
-        advanced.Children.Add(_imgScheduler);
-        _imgLowVram = new CheckBox { Content = "Low VRAM: one model on the GPU at a time", ToolTip = "Runs the text encoder, then swaps in the image model, then the decoder (weights wait in RAM). Slower to load; needed when the models together are bigger than the GPU", Margin = new Thickness(0, 12, 0, 0) };
+        _imgLowVram = new CheckBox { Content = "Low VRAM", ToolTip = "One model on the GPU at a time: runs the text encoder, then swaps in the image model, then the decoder (weights wait in RAM). Slower to load; needed when the models together are bigger than the GPU", VerticalAlignment = VerticalAlignment.Center };
         _imgLowVram.SetResourceReference(ForegroundProperty, "TextPrimary");
-        advanced.Children.Add(_imgLowVram);
-        advanced.Children.Add(new TextBlock { Text = "Start from image", FontWeight = FontWeights.SemiBold, FontSize = 12, Margin = new Thickness(0, 14, 0, 4) });
         _imgInitText = Muted("None", 11.5);
-        var pick = new Button { Content = "Choose…", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 6, 0) };
-        var clear = new Button { Content = "Clear", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 3, 10, 3), Margin = new Thickness(0, 0, 8, 0) };
+        (_imgInitText.VerticalAlignment, _imgInitText.TextWrapping, _imgInitText.TextTrimming) = (VerticalAlignment.Center, TextWrapping.NoWrap, TextTrimming.CharacterEllipsis);
+        var pick = new Button { Content = "Start image…", ToolTip = "Start from an image (img2img)", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 3, 9, 3), Margin = new Thickness(0, 0, 4, 0) };
+        var clear = new Button { Content = "✕", ToolTip = "Clear the start image", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 3, 9, 3), Margin = new Thickness(0, 0, 6, 0) };
         pick.Click += (_, _) =>
         {
             var dialog = new OpenFileDialog { Filter = "Images|*.png;*.jpg;*.jpeg;*.webp;*.bmp" };
@@ -345,15 +405,53 @@ public partial class MainWindow
                 SetInitImage(dialog.FileName);
         };
         clear.Click += (_, _) => SetInitImage("");
-        _imgInitText.VerticalAlignment = VerticalAlignment.Center;
-        advanced.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Children = { pick, clear, _imgInitText } });
-        advanced.Children.Add(Muted("Strength (how far from the image)", 11.5));
-        _imgStrength = NewSlider(0, 1, 0.05, "0.00", advanced);
+        DockPanel.SetDock(pick, Dock.Left);
+        DockPanel.SetDock(clear, Dock.Left);
+        _imgStrength = NewSlider(0, 1, 0.05, "0.00", out var strengthRow);
+        strengthRow.ToolTip = "Strength: how far from the start image";
+        advanced.ColumnDefinitions.Add(new ColumnDefinition());
+        advanced.ColumnDefinitions.Add(new ColumnDefinition());
+        foreach (var _ in new[] { 0, 1, 2 })
+            advanced.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        void Cell(FrameworkElement element, int row, int column)
+        {
+            (element.Margin, element.VerticalAlignment) = (new Thickness(column == 0 ? 0 : 8, row == 0 ? 0 : 6, column == 0 ? 8 : 0, 0), VerticalAlignment.Top);
+            Grid.SetRow(element, row);
+            Grid.SetColumn(element, column);
+            advanced.Children.Add(element);
+        }
+        Cell(Inline("Sampler", _imgSampler), 0, 0);
+        Cell(Inline("Scheduler", _imgScheduler), 0, 1);
+        Cell(new DockPanel { Children = { pick, clear, _imgInitText } }, 1, 0);
+        Cell(Inline("Strength", strengthRow), 1, 1);
+        Cell(_imgLowVram, 2, 0);
+        Cell(runtime, 2, 1);
+        var advancedSection = Section(new StackPanel { Children = { toggle, advanced } }, band: true);
+        _imgLocalOnly.Add(advancedSection);
 
-        _imgGenerate = new Button { Content = "Generate", Tag = "ImagesGenerate", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 7, 16, 7), Margin = new Thickness(0, 20, 0, 0) };
+        _imgGenerate = new Button { Content = "Generate", Tag = "ImagesGenerate", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 7, 16, 7) };
         _imgGenerate.Click += async (_, _) => await RunImageJob(GenerateImagesAsync);
-        left.Children.Add(_imgGenerate);
+        var generateSection = Section(_imgGenerate, last: true);
 
+        // the card: its sections top to bottom, the prompts taking the rest (at least room for a few lines), Generate at the foot
+        var cardGrid = new Grid();
+        var sections = new FrameworkElement[] { band, modelSection, promptsSection, paramsSection, advancedSection, generateSection };
+        for (var i = 0; i < sections.Length; i++)
+        {
+            cardGrid.RowDefinitions.Add(sections[i] == promptsSection ? new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 72 } : new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(sections[i], i);
+            cardGrid.Children.Add(sections[i]);
+        }
+        foreach (var field in new Control[] { _imgRecipe, _imgSharedModel, _imgPrompt, _imgNegative, _imgAspect, _imgWidth, _imgHeight, _imgBatch, _imgSeed, _imgSampler, _imgScheduler,
+            (Control)((DockPanel)((StackPanel)steps).Children[0]).Children[0], (Control)((DockPanel)((StackPanel)guidance).Children[0]).Children[0] })
+        {
+            field.SetResourceReference(Control.BackgroundProperty, "Field");
+            field.SetResourceReference(Control.BorderBrushProperty, "Border");
+        }
+        var card = new Border { Child = cardGrid, BorderThickness = new Thickness(1), Tag = "ImagesCard", ClipToBounds = true };
+        card.SetResourceReference(Border.BackgroundProperty, "Card");
+        card.SetResourceReference(Border.BorderBrushProperty, "Border");
+        card.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         // right: the stage (the picture centred and fitted; the wheel zooms at the cursor, a drag pans, a double-click fits it
         // again), the progress under it, and the gallery as a strip along the bottom (a click puts a picture on the stage)
         _imgResult = new Image { Stretch = Stretch.Uniform, Tag = "ImagesResult", LayoutTransform = _imgScale };
@@ -444,6 +542,8 @@ public partial class MainWindow
         stage.SetResourceReference(Border.BorderBrushProperty, "Border");
         stage.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
 
+        stage.SetResourceReference(Border.BackgroundProperty, "Panel");
+
         _imgProgress = new ProgressBar { Height = 4, Maximum = 1, Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
         _imgStatus = Muted("", 12);
         _imgStatus.Tag = "ImagesStatus";
@@ -453,37 +553,85 @@ public partial class MainWindow
         DockPanel.SetDock(_imgCancel, Dock.Right);
         var statusRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { _imgCancel, _imgStatus } };
         _imgGallery = new StackPanel { Orientation = Orientation.Horizontal, Tag = "ImagesGallery" };
-        _imgGalleryHead = Muted("GALLERY", 11);
-        _imgGalleryHead.FontWeight = FontWeights.SemiBold;
-        _imgGalleryHead.Margin = new Thickness(0, 14, 0, 6);
+        _imgGalleryHead = Muted("", 11);
+        DockPanel.SetDock(_imgGalleryHead, Dock.Right);
         // one row of thumbnails, always in view; the wheel scrolls it sideways
         var galleryScroll = new ScrollViewer
         {
-            Content = _imgGallery, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Height = 128,
+            Content = _imgGallery, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, Height = 122, Margin = new Thickness(0, 8, 0, 0),
         };
         galleryScroll.PreviewMouseWheel += (_, e) =>
         {
             galleryScroll.ScrollToHorizontalOffset(galleryScroll.HorizontalOffset - e.Delta);
             e.Handled = true;
         };
-        var right = new Grid { Margin = new Thickness(16, 24, 24, 20) };
-        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 160 });
-        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        foreach (var (element, row) in new (UIElement, int)[] { (stage, 0), (_imgProgress, 1), (statusRow, 2), (_imgGalleryHead, 3), (galleryScroll, 4) })
+        var galleryCard = new Border
+        {
+            BorderThickness = new Thickness(1), Padding = new Thickness(18, 12, 18, 10), Margin = new Thickness(0, 12, 0, 0),
+            Child = new StackPanel { Children = { new DockPanel { Children = { _imgGalleryHead, Head("Gallery", 0) } }, galleryScroll } },
+        };
+        galleryCard.SetResourceReference(Border.BackgroundProperty, "Card");
+        galleryCard.SetResourceReference(Border.BorderBrushProperty, "Border");
+        galleryCard.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        var right = new Grid { Tag = "ImagesRight", Margin = new Thickness(16, 0, 0, 0) };
+        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 120 });
+        foreach (var _ in new[] { 1, 2, 3 })
+            right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        foreach (var (element, row) in new (UIElement, int)[] { (stage, 0), (_imgProgress, 1), (statusRow, 2), (galleryCard, 3) })
         {
             Grid.SetRow(element, row);
             right.Children.Add(element);
         }
 
-        var page = new Grid { Tag = "ImagesPage" };
-        page.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
+        // the header: the title left, CONNECTION (this PC or the primary PC) in a pill exactly centred, the model in use right
+        var title = new TextBlock { Text = "Image Generation", FontFamily = (FontFamily)FindResource("DisplayFont"), FontSize = 18, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+        RadioButton Segment(string text, string tag, string tip, Action click)
+        {
+            var b = new RadioButton { Content = text, Tag = tag, GroupName = "ImagesConnection", Style = (Style)FindResource("HeaderSeg"), ToolTip = tip };
+            ToolTipService.SetShowOnDisabled(b, true);
+            b.Click += (_, _) => click();
+            return b;
+        }
+        _imgConnLocal = Segment("LOCAL", "ImagesConnectionLocal", "Generate on this PC", () => { _imgSharedMode = _imgRemoteMode = false; ShowImageSource(); });
+        _imgConnRemote = Segment("REMOTE PC", "ImagesConnectionRemote", "", () => { (_imgSharedMode, _imgRemoteMode) = (true, false); ShowImageSource(); LoadSharedModels(); });
+        var segments = new Border { BorderThickness = new Thickness(1), Padding = new Thickness(2), HorizontalAlignment = HorizontalAlignment.Left,
+            Child = new StackPanel { Orientation = Orientation.Horizontal, Children = { _imgConnLocal, _imgConnRemote } } };
+        segments.SetResourceReference(Border.BorderBrushProperty, "Border");
+        segments.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        var connectionHead = Head("Connection", 3);
+        (connectionHead.FontSize, connectionHead.Margin) = (9, new Thickness(4, 0, 0, 3));
+        var pill = new Border { BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(30), Padding = new Thickness(20, 6, 20, 6), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+            Child = new StackPanel { Children = { connectionHead, segments } } };
+        pill.SetResourceReference(Border.BackgroundProperty, "Panel");
+        pill.SetResourceReference(Border.BorderBrushProperty, "Border");
+        _imgModelBadge = new TextBlock { Tag = "ImagesModelBadge", MaxWidth = 320 };
+        _imgModelBadge.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var modelBadge = Badge(_imgModelBadge);
+        modelBadge.HorizontalAlignment = HorizontalAlignment.Right;
+        var header = new Grid { MinHeight = 56, Margin = new Thickness(0, 0, 0, 8) };
+        header.ColumnDefinitions.Add(new ColumnDefinition());
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition());
+        foreach (var (element, column) in new (UIElement, int)[] { (title, 0), (pill, 1), (modelBadge, 2) })
+        {
+            Grid.SetColumn(element, column);
+            header.Children.Add(element);
+        }
+
+        // the card about 575 wide, narrower (to 420) as the window narrows, the right column the rest
+        var page = new Grid { Tag = "ImagesPage", Margin = new Thickness(19, 8, 19, 16) };
+        page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        page.RowDefinitions.Add(new RowDefinition());
+        var leftColumn = new ColumnDefinition { Width = new GridLength(575) };
+        page.ColumnDefinitions.Add(leftColumn);
         page.ColumnDefinitions.Add(new ColumnDefinition());
-        var leftScroll = new ScrollViewer { Content = left, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        page.SizeChanged += (_, e) => leftColumn.Width = new GridLength(Math.Clamp(e.NewSize.Width - 560, 420, 575));
+        Grid.SetColumnSpan(header, 2);
+        Grid.SetRow(card, 1);
+        Grid.SetRow(right, 1);
         Grid.SetColumn(right, 1);
-        page.Children.Add(leftScroll);
+        page.Children.Add(header);
+        page.Children.Add(card);
         page.Children.Add(right);
         ImagesView.Children.Add(page);
         RefreshImageRecipes(); // the items first: Apply selects one
@@ -563,45 +711,34 @@ public partial class MainWindow
         };
     }
 
-    // A prompt box that stops at collapsedMax: when its text is taller, the bottom edge fades out (an opacity mask, so any theme's
-    // background shows through) and a ghost toggle below expands it to ExpandedMax (the box's own scrollbar takes over beyond that).
-    private const double ExpandedMax = 420, FadeHeight = 20;
+    // A prompt box fills its cell (the page never scrolls; its own scrollbar reaches the rest): when its text is taller, the bottom
+    // edge fades out (an opacity mask, so any theme's background shows through) until the end of the text is in view.
+    private const double FadeHeight = 20;
 
-    private FrameworkElement AttachPromptFade(TextBox box, double collapsedMax, string toggleTag)
+    private FrameworkElement AttachPromptFade(TextBox box)
     {
-        var toggle = new Button { Tag = toggleTag, Style = (Style)FindResource("GhostButton"), Padding = new Thickness(8, 1, 8, 1), FontSize = 11.5, Margin = new Thickness(0, 4, 0, 0),
-            HorizontalAlignment = HorizontalAlignment.Left, Focusable = false, Visibility = Visibility.Collapsed };
-        var (expanded, tall) = (false, false);
-        var fade = Math.Min(FadeHeight, collapsedMax / 2) / collapsedMax;
-        var fadeMask = new LinearGradientBrush(new GradientStopCollection
-        {
-            new GradientStop(Colors.Black, 0), new GradientStop(Colors.Black, 1 - fade), new GradientStop(Color.FromArgb(0x10, 0, 0, 0), 1),
-        }, new Point(0, 0), new Point(0, 1));
         void Update()
         {
             if (!box.IsVisible || box.ViewportHeight <= 0)
-                return; // hidden (the negative row in OpenRouter mode) or not laid out yet: keep the state
-            var chrome = box.ActualHeight - box.ViewportHeight;
-            var nowTall = box.ExtentHeight > collapsedMax - chrome + 1;
-            if (!nowTall)
-                expanded = false;
-            tall = nowTall;
-            box.MaxHeight = expanded ? ExpandedMax : collapsedMax;
-            toggle.Visibility = tall ? Visibility.Visible : Visibility.Collapsed;
-            toggle.Content = expanded ? "Show less ▴" : "Show more ▾";
-            // nothing below to hint at once the end of the text is in view: the line being typed must not sit in the fade
-            var atEnd = box.VerticalOffset + box.ViewportHeight >= box.ExtentHeight - 1;
-            var mask = !tall || expanded || atEnd ? null : fadeMask;
-            if (!ReferenceEquals(box.OpacityMask, mask))
-                box.OpacityMask = mask;
+                return; // hidden (the negative cell in OpenRouter mode) or not laid out yet: keep the state
+            var tall = box.ExtentHeight > box.ViewportHeight + 1;
+            var atEnd = box.VerticalOffset + box.ViewportHeight >= box.ExtentHeight - 1; // the line being typed must not sit in the fade
+            if (!tall || atEnd)
+            {
+                box.OpacityMask = null;
+                return;
+            }
+            var fade = Math.Min(FadeHeight, box.ActualHeight / 2) / Math.Max(1, box.ActualHeight);
+            box.OpacityMask = new LinearGradientBrush(new GradientStopCollection
+            {
+                new GradientStop(Colors.Black, 0), new GradientStop(Colors.Black, 1 - fade), new GradientStop(Color.FromArgb(0x10, 0, 0, 0), 1),
+            }, new Point(0, 0), new Point(0, 1));
         }
         box.AddHandler(ScrollViewer.ScrollChangedEvent, new ScrollChangedEventHandler((_, _) => Update()));
-        box.MaxHeight = collapsedMax;
         box.TextChanged += (_, _) => box.Dispatcher.BeginInvoke(Update, System.Windows.Threading.DispatcherPriority.Loaded);
         box.SizeChanged += (_, _) => Update();
         box.IsVisibleChanged += (_, _) => box.Dispatcher.BeginInvoke(Update, System.Windows.Threading.DispatcherPriority.Loaded);
-        toggle.Click += (_, _) => { expanded = !expanded; Update(); };
-        return new StackPanel { Children = { box, toggle } };
+        return box;
     }
 
     // The panel for the source in use; the model button shows the name (the id until the list has been fetched), the providers button the ticks.
@@ -613,9 +750,14 @@ public partial class MainWindow
         _imgLocalPanel.Visibility = Shown(!_imgRemoteMode && !_imgSharedMode);
         _imgRemotePanel.Visibility = Shown(_imgRemoteMode);
         _imgSharedPanel.Visibility = Shown(_imgSharedMode);
-        _imgUseShared.Visibility = Shown(_settings.ShareHost.Length > 0);
+        _imgConnRemote.IsEnabled = _settings.ShareHost.Length > 0;
+        _imgConnRemote.ToolTip = _imgConnRemote.IsEnabled ? $"Generate on the primary PC ({_settings.ShareHost})" : "Connect to a primary PC in Settings › Models";
+        (_imgSharedMode ? _imgConnRemote : _imgConnLocal).IsChecked = true;
+        _imgModelBadge.Text = _imgSharedMode ? SharedPick?.Name ?? _imgSharedId
+            : _imgRemoteMode ? (_imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id)
+            : _imgRecipe.SelectedIndex < 0 ? "" : ImageChoice(_imgRecipe.SelectedIndex) is var (r, l) && l.Length > 0 ? Path.GetFileName(l) : r.Name;
         foreach (var control in _imgLocalOnly) // the primary PC takes the settings, but not this PC's runtime
-            control.Visibility = Shown(!_imgRemoteMode && !(_imgSharedMode && control == _imgRuntimeText.Parent));
+            control.Visibility = Shown(!_imgRemoteMode && !(_imgSharedMode && control == ((FrameworkElement)_imgRuntimeText.Parent).Parent));
         _imgNegativeRow.Visibility = Shown(_imgSharedMode ? SharedPick?.Negative == true
             : !_imgRemoteMode && _imgRecipe.SelectedIndex >= 0 && ImageChoice(_imgRecipe.SelectedIndex).Recipe.Negative);
         _imgRemoteModelButton.Content = (_imgRemoteModel.Id.Length == 0 ? "Choose a model…" : _imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id) + " ▾";
@@ -1013,7 +1155,7 @@ public partial class MainWindow
         var pictures = Directory.Exists(ImageGen.ImagesFolder)
             ? new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName).ToList()
             : [];
-        _imgGalleryHead.Text = pictures.Count == 0 ? "GALLERY · nothing yet" : $"GALLERY · {pictures.Count}{(pictures.Count == 200 ? "+" : "")}";
+        _imgGalleryHead.Text = pictures.Count == 0 ? "Nothing yet" : $"{pictures.Count}{(pictures.Count == 200 ? "+" : "")}";
         if (_imgResultPath is not null && !File.Exists(_imgResultPath))
             ShowOnStage(null);
         if (_imgResultPath is null && pictures.Count > 0)

@@ -485,15 +485,15 @@ public partial class MainWindow
         // the Images page offers the primary PC only while connected
         if (ImagesView.Children.Count == 0)
             BuildImagesPage();
-        var useShared = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesUseShared");
+        var remotePc = SmokeFind<RadioButton>(ImagesView, b => b.Tag as string == "ImagesConnectionRemote");
         _settings.ShareHost = "smoke.trycloudflare.com";
         ShowImageSource();
-        var connected = useShared?.Visibility;
+        var connected = remotePc?.IsEnabled;
         _settings.ShareHost = "";
         ShowImageSource();
         _settings.ShareHost = host;
-        if (connected != Visibility.Visible || useShared!.Visibility != Visibility.Collapsed)
-            return Fail($"\"Use the primary PC…\" is {connected} connected and {useShared?.Visibility} not");
+        if (connected != true || remotePc!.IsEnabled || remotePc.ToolTip as string != "Connect to a primary PC in Settings › Models")
+            return Fail($"Remote PC is enabled {connected} connected and {remotePc?.IsEnabled} not");
         ShowImageSource();
         return true;
     }
