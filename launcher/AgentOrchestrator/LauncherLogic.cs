@@ -1371,6 +1371,28 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
     }
 
+    // orchestrator.mtp_head: a separate MTP draft head beside the model (Gemma 4's mtp-<model>.gguf, architecture
+    // "<arch>-assistant"), matched by name in a folder holding other models too, as VisionProjector; the smallest; null without.
+    public static string? MtpHead(string modelFile)
+    {
+        static string Squash(string s) => Regex.Replace(s.ToLowerInvariant(), "[^a-z0-9]", "");
+        static string Stem(string file) => Squash(Regex.Replace(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5], @"[-_. ]+(?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*)$", "", RegexOptions.IgnoreCase));
+        static bool Helper(string name) => new[] { "mmproj", "imatrix", "mtp", "draft" }.Any(p => name.Contains(p, StringComparison.OrdinalIgnoreCase));
+        try
+        {
+            var files = Directory.EnumerateFiles(Path.GetDirectoryName(modelFile)!, "*.gguf").ToList();
+            var heads = files.Where(f => Path.GetFileName(f).Contains("mtp", StringComparison.OrdinalIgnoreCase) && !string.Equals(f, modelFile, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (files.Where(f => !Helper(Path.GetFileName(f))).Select(Stem).Distinct().Count() > 1)
+            {
+                var own = Stem(modelFile);
+                heads = heads.Where(f => own.Length > 0 && Squash(Path.GetFileName(f)).Contains(own)).ToList();
+            }
+            return heads.Where(f => ReadGgufMetadata(f)?.GetValueOrDefault("general.architecture")?.EndsWith("-assistant", StringComparison.Ordinal) == true)
+                .OrderBy(f => new FileInfo(f).Length).FirstOrDefault();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+    }
+
     // The quantization a GGUF's file name ends with ("model-Q4_K_M.gguf": Q4_K_M), or "".
     public static string QuantOf(string file) =>
         QuantTail.Match(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5]) is { Success: true } m ? m.Groups[1].Value : "";
@@ -2285,6 +2307,25 @@ internal static class LauncherLogic
                 throw new InvalidOperationException("GGUF metadata read failed: " + string.Join(" ", read ?? new()));
             if (GgufTemplateCacheCount == 0 || ReadGgufChatTemplate(think) is null)
                 throw new InvalidOperationException("GGUF template cache failed.");
+            // Gemma 4's MTP head beside its model (architecture gemma4-assistant), told from another model's head by name
+            var gemmaDir = Directory.CreateDirectory(Path.Combine(tplArea, "gemma")).FullName;
+            void Arch(string name, string arch)
+            {
+                using var w = new BinaryWriter(File.Create(Path.Combine(gemmaDir, name)), System.Text.Encoding.UTF8);
+                void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(1UL);
+                S("general.architecture"); w.Write(8u); S(arch);
+            }
+            Arch("gemma-4-E4B-it-Q5_K_P.gguf", "gemma4");
+            Arch("mtp-gemma-4-E4B-it-F16.gguf", "gemma4-assistant");
+            Arch("Qwen3.5-9B-Q6_K.gguf", "qwen35");
+            Arch("mtp-Qwen3.5-9B-F16.gguf", "qwen35-assistant");
+            Arch("mtp-notes.gguf", "llama"); // "mtp" in the name, but not an assistant head
+            if (MtpHead(Path.Combine(gemmaDir, "gemma-4-E4B-it-Q5_K_P.gguf")) is not { } gemmaHead || Path.GetFileName(gemmaHead) != "mtp-gemma-4-E4B-it-F16.gguf")
+                throw new InvalidOperationException("MtpHead: Gemma's head beside it was not found by name");
+            File.Delete(Path.Combine(gemmaDir, "mtp-gemma-4-E4B-it-F16.gguf"));
+            if (MtpHead(Path.Combine(gemmaDir, "gemma-4-E4B-it-Q5_K_P.gguf")) is not null)
+                throw new InvalidOperationException("MtpHead: another model's head was taken");
         }
         finally { Directory.Delete(tplArea, recursive: true); }
         var skillArea = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-skills-{Guid.NewGuid():N}");

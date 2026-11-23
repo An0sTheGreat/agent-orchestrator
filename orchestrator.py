@@ -1295,6 +1295,8 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         stem = model_file.name[:split.start()]
         parts = [model_file.with_name(f"{stem}-{i:05d}-of-{split.group(1)}.gguf") for i in range(1, int(split.group(1)) + 1)]
     size = sum(p.stat().st_size for p in parts if p.is_file())
+    draft = Path(arg("-md")) if arg("-md") else None  # a draft model or MTP head: on the GPU too (-ngld 99), its own KV cache not counted
+    head = draft.stat().st_size if draft and draft.is_file() else 0
     try:
         meta = gguf_metadata(model_file)
         arch = meta["general.architecture"]
@@ -1320,9 +1322,9 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         sliding = [bool(p) for p in pattern] if window and isinstance(pattern, list) and len(pattern) == layers else [False] * layers
         kv = sum(h * (swa_key * k_bytes + swa_value * v_bytes) * min(ctx, window + ubatch) if swa else h * (key * k_bytes + value * v_bytes) * ctx
                  for h, swa in zip(per_layer, sliding))
-        return int((weights + kv) * 1.1 / 2**20)
+        return int((weights + head + kv) * 1.1 / 2**20)
     except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, struct.error):
-        return int(size * 1.25 / 2**20)
+        return int((size + head) * 1.25 / 2**20)
 
 
 def llama_alias(server: dict[str, Any]) -> str:
@@ -1387,16 +1389,43 @@ SPEC_TYPES = {"mtp": "draft-mtp", "dspark": "draft-dspark", "dflash": "draft-dfl
               "mtp+ngram": "draft-mtp,ngram-simple", "off": "none"}
 
 
-def speculative_type(model_file: Path, choice: Any) -> str | None:
-    """llama-server's --spec-type for the Speculative decoding choice. "auto" (or unset) is MTP when the GGUF carries its
-    own MTP layers (<arch>.nextn_predict_layers), else nothing. dflash and dspark also need a draft model (-md) in the
-    extra arguments. MTP asked of a GGUF without MTP layers is left out: llama-server would exit while loading."""
-    choice = str(choice or "auto").lower()
+def builtin_mtp(model_file: Path) -> bool | None:
+    """Whether the GGUF carries its own MTP layers (<arch>.nextn_predict_layers > 0); None when its header cannot be read."""
     try:
         meta = gguf_metadata(model_file)
-        has_mtp = int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0
-    except (OSError, ValueError, KeyError, struct.error):
-        has_mtp = choice != "auto"  # unreadable: trust an explicit choice
+        return int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return None
+
+
+def mtp_head(model_file: Path) -> Path | None:
+    """A separate MTP draft head beside the model (Gemma 4 ships mtp-<model>.gguf, architecture "<arch>-assistant"), run
+    with -md; the smallest when there are several. In a folder holding other models too, only one whose name carries this
+    model's name, as vision_projector matches a projector. None without."""
+    try:
+        files = list(model_file.parent.glob("*.gguf"))
+        heads = [p for p in files if "mtp" in p.name.lower() and p != model_file]
+        if len({model_stem(p.name) for p in files if not not_weights(p.name)}) > 1:
+            own = model_stem(model_file.name)
+            heads = [p for p in heads if own and own in re.sub(r"[^a-z0-9]", "", p.name.lower())]
+        heads = [p for p in heads if str(gguf_metadata(p).get("general.architecture") or "").endswith("-assistant")]
+        return min(heads, key=lambda p: p.stat().st_size) if heads else None
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return None
+
+
+DRAFT_FLAGS = {"-md", "--spec-draft-model", "--model-draft"}
+
+
+def speculative_type(model_file: Path, choice: Any) -> str | None:
+    """llama-server's --spec-type for the Speculative decoding choice. "auto" (or unset) is MTP when the GGUF carries its
+    own MTP layers (<arch>.nextn_predict_layers) or has an MTP head beside it (mtp_head; llama_args adds it with -md),
+    else nothing. dflash and dspark also need a draft model (-md) in the extra arguments. MTP asked of a model without
+    either is left out: llama-server would exit while loading."""
+    choice = str(choice or "auto").lower()
+    builtin = builtin_mtp(model_file)
+    head = None if builtin else mtp_head(model_file)
+    has_mtp = bool(builtin) or head is not None or (builtin is None and choice != "auto")  # unreadable: trust an explicit choice
     if choice == "auto":
         return "draft-mtp" if has_mtp else None
     if choice in ("mtp", "mtp+ngram") and not has_mtp:
@@ -1439,6 +1468,9 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
             args += ["--spec-draft-n-max", str(auto_load["spec_draft_n_max"])]
         if spec != "none" and auto_load.get("spec_draft_cache_type"):
             args += ["-ctkd", str(auto_load["spec_draft_cache_type"]), "-ctvd", str(auto_load["spec_draft_cache_type"])]
+        # a separate MTP head (Gemma 4), all on the GPU; a draft model the user named in llama_extra_args wins
+        if "draft-mtp" in spec and not builtin_mtp(model_file) and not own & DRAFT_FLAGS and (head := mtp_head(model_file)):
+            args += ["-md", str(head), "-ngld", "99"]
     if (projector := vision_projector(model_file)) and str(auto_load.get("disable_vision") or "").lower() not in ("on", "true", "1"):
         args += ["--mmproj", str(projector)]  # the model can see the turn's images
         # at most ~1 megapixel's worth per image: a 2040x1268 screenshot is ~3,300 tokens uncapped (minutes to encode on the

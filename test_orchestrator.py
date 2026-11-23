@@ -6124,6 +6124,32 @@ class LlamaCppTests(unittest.TestCase):
                          ["--spec-type", "draft-dflash", "--spec-draft-n-max", "3", "-ctkd", "q8_0", "-ctvd", "q8_0"])
         self.assertNotIn("--spec-draft-n-max", spec(mtp, speculative_type="off", spec_draft_n_max=3)[1])
 
+    def test_a_separate_mtp_head_beside_the_model_is_drafted_with(self):
+        # Gemma 4: no nextn_predict_layers in the model, its MTP head is mtp-<model>.gguf (architecture gemma4-assistant)
+        folder = self.tmp / "gemma"
+        folder.mkdir()
+        model, head = folder / "gemma-4-E4B-it-Q5_K_P.gguf", folder / "mtp-gemma-4-E4B-it-F16.gguf"
+        other, other_head = folder / "Qwen3.5-9B-Q6_K.gguf", folder / "mtp-Qwen3.5-9B-F16.gguf"  # another model in the same folder
+        MultiModelTests.gguf(model, {"general.architecture": "gemma4"})
+        MultiModelTests.gguf(head, {"general.architecture": "gemma4-assistant"})
+        MultiModelTests.gguf(other, {"general.architecture": "qwen35"})
+        MultiModelTests.gguf(other_head, {"general.architecture": "qwen35-assistant"})
+        self.assertEqual(orchestrator.mtp_head(model), head)  # matched by name, not the other model's head
+        args = orchestrator.llama_args(model, {"model_path": self.PATH}, 8899)  # auto
+        self.assertEqual(args[args.index("--spec-type"):][:6], ["--spec-type", "draft-mtp", "-md", str(head), "-ngld", "99"])
+        args = orchestrator.llama_args(model, {"model_path": self.PATH, "speculative_type": "mtp+ngram"}, 8899)
+        self.assertEqual(args[args.index("--spec-type") + 1], "draft-mtp,ngram-simple")
+        self.assertEqual(args.count("-md"), 1)
+        mine = orchestrator.llama_args(model, {"model_path": self.PATH, "llama_extra_args": ["--spec-draft-model", "x.gguf"]}, 8899)
+        self.assertNotIn("-md", mine)  # the user's own draft model wins
+        self.assertNotIn("-md", orchestrator.llama_args(model, {"model_path": self.PATH, "speculative_type": "off"}, 8899))
+        with open(head, "r+b") as f:
+            f.truncate(4 * 2**20)  # a 4 MiB head (the header stays readable)
+        off = orchestrator.llama_args(model, {"model_path": self.PATH, "speculative_type": "off"}, 8899)
+        self.assertEqual(orchestrator.estimate_vram_mib(model, args) - orchestrator.estimate_vram_mib(model, off), 5)  # its file counts (x1.25 unread)
+        head.unlink()
+        self.assertNotIn("--spec-type", orchestrator.llama_args(model, {"model_path": self.PATH}, 8899))  # no head: no MTP
+
     def test_llama_role_needs_no_key_and_uses_the_llama_port(self):
         client = self.client({"llama_port": 9001, "roles": {"planner": self.ROLE}})
         self.assertEqual((client.base_url, client.llama_port, client.remote), ("http://127.0.0.1:9001/v1", 9001, False))

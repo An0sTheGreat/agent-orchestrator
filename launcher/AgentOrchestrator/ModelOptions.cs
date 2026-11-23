@@ -189,11 +189,12 @@ internal static class ModelOptions
     public const long ContextCap = 32768;
 
     // The Speculative decoding choices that work with the model (meta: its GGUF header values, null = unreadable, so all):
-    // mtp and mtp+ngram need <arch>.nextn_predict_layers > 0; dflash and dspark use a separate draft model, so they stay.
-    public static string[] SpeculativeChoices(IReadOnlyDictionary<string, string>? meta)
+    // mtp and mtp+ngram need <arch>.nextn_predict_layers > 0 or a separate MTP head beside the model (mtpHead,
+    // LauncherLogic.MtpHead: the engine adds it with -md); dflash and dspark use a separate draft model, so they stay.
+    public static string[] SpeculativeChoices(IReadOnlyDictionary<string, string>? meta, bool mtpHead = false)
     {
         var all = All.First(o => o.Key == "speculative_type").Values;
-        if (meta is null || HasMtp(meta))
+        if (meta is null || mtpHead || HasMtp(meta))
             return all;
         return [.. all.Where(v => v is not ("mtp" or "mtp+ngram"))];
     }
@@ -341,7 +342,7 @@ internal static class ModelOptions
         var mtp = new Dictionary<string, string>(noMtp) { ["qwen35.nextn_predict_layers"] = "1" };
         var offered = SpeculativeChoices(noMtp);
         Check(!offered.Contains("mtp") && !offered.Contains("mtp+ngram") && offered.Contains("dflash") && offered.Contains("auto") && offered.Contains("off") &&
-              SpeculativeChoices(mtp).Contains("mtp+ngram") && SpeculativeChoices(null).Contains("mtp") &&
+              SpeculativeChoices(mtp).Contains("mtp+ngram") && SpeculativeChoices(null).Contains("mtp") && SpeculativeChoices(noMtp, mtpHead: true).Contains("mtp+ngram") &&
               !SpeculativeChoices(new Dictionary<string, string>(noMtp) { ["qwen35.nextn_predict_layers"] = "0" }).Contains("mtp"),
             "speculative choices: MTP only for a GGUF with nextn_predict_layers > 0");
         Check(SpeculativeFallback("mtp", offered) == "off" && SpeculativeFallback("mtp+ngram", offered) == "ngram" && SpeculativeFallback("ngram", offered) == "ngram" &&

@@ -215,6 +215,7 @@ public partial class MainWindow
         var startLoad = LoadOf(null);
         var hasModel = startLoad?["model_path"] is not null;
         Dictionary<string, string>? meta = null;
+        var mtpHead = false; // a separate MTP head beside the model's GGUF (LauncherLogic.MtpHead): Speculative decoding offers MTP
         (long Model, long Vision) files = (0, 0);
         var toLocal = false; // Switch to Local, until a Save writes it
         var remoteMode = () => remoteNow is not null && !toLocal;
@@ -657,7 +658,7 @@ public partial class MainWindow
         {
             if (!editors.TryGetValue("speculative_type", out var editor) || editor is not ComboBox box)
                 return [];
-            var offered = ModelOptions.SpeculativeChoices(meta);
+            var offered = ModelOptions.SpeculativeChoices(meta, mtpHead);
             var (was, items) = (Value(box), box.Items.OfType<string>().Skip(1).ToList());
             var shown = ModelOptions.SpeculativeFallback(was, offered);
             var list = items.Where(v => offered.Contains(v) || !ModelOptions.All.First(o => o.Key == "speculative_type").Values.Contains(v)).ToList(); // a value config.json had stays
@@ -678,14 +679,14 @@ public partial class MainWindow
         {
             var mine = ++derivation;
             var (folder, hub, copy) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache(), load?.DeepClone().AsObject());
-            var (read, sizes) = await Task.Run(() =>
+            var (read, sizes, head) = await Task.Run(() =>
             {
                 var gguf = LauncherLogic.ResolveGguf(copy, folder, hub);
-                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf));
+                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf), gguf is not null && LauncherLogic.MtpHead(gguf) is not null);
             });
             if (mine != derivation)
                 return;
-            meta = read;
+            (meta, mtpHead) = (read, head);
             files = sizes;
             var keys = editors.Keys.ToList();
             foreach (var key in Rederive().Concat(SpeculativeFits()))
