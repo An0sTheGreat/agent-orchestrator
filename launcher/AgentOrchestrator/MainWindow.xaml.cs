@@ -2977,14 +2977,38 @@ public partial class MainWindow : Window
                     _imgRemoteMode = true; // OpenRouter hides the negative cell; the state is intact on the way back
                     ShowImageSource();
                     await Settle();
-                    var hiddenInRemote = !negative.IsVisible;
+                    var hiddenInRemote = !negative.IsVisible && _imgConnLocal.IsChecked != true && _imgConnRemote.IsChecked != true; // OpenRouter: neither segment
                     _imgRemoteMode = false;
                     ShowImageSource();
                     await Settle();
-                    if (!hiddenInRemote || !negative.IsVisible || negBox.OpacityMask is null)
+                    if (!hiddenInRemote || !negative.IsVisible || negBox.OpacityMask is null || _imgConnLocal.IsChecked != true)
                         return Fail();
                     Snap("42-images-prompt-fade");
                     (negBox.Text, promptBox.Text) = ("", "");
+                }
+                // a typed Steps or Guidance goes to the slider's step ("." or "," as the decimal point): the box shows what is generated
+                {
+                    string Typed(string tag, string text)
+                    {
+                        var box = SmokeFind<TextBox>(ImagesView, b => b.Tag as string == tag)!;
+                        box.Text = text;
+                        box.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice, 0, box, null) { RoutedEvent = Keyboard.LostKeyboardFocusEvent });
+                        return box.Text;
+                    }
+                    var (stepsWas, cfgWas) = (_imgSteps.Value, _imgCfg.Value);
+                    var stepsShown = Typed("ImagesStepsBox", "25.6");
+                    var steps = ReadImageSettings().Steps;
+                    var cfg73Shown = Typed("ImagesGuidanceBox", "7.3");
+                    var cfg73 = ReadImageSettings().Cfg;
+                    Typed("ImagesGuidanceBox", "2");
+                    var cfg75Shown = Typed("ImagesGuidanceBox", "7,5");
+                    var cfg75 = ReadImageSettings().Cfg;
+                    (_imgSteps.Value, _imgCfg.Value) = (stepsWas, cfgWas);
+                    if (steps != 26 || stepsShown != "26" || cfg73 != 7.5 || cfg75 != 7.5 || cfg73Shown != 7.5.ToString("0.0") || cfg75Shown != cfg73Shown)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: Images number boxes: \"25.6\" gave {steps} ({stepsShown}), \"7.3\" {cfg73} ({cfg73Shown}), \"7,5\" {cfg75} ({cfg75Shown})");
+                        return Fail();
+                    }
                 }
                 // the page never scrolls: at 1280x720 with Advanced open the card's content fits it, and the right column ends where the card does
                 {
@@ -3005,7 +3029,23 @@ public partial class MainWindow : Window
                     var needed = card.DesiredSize.Height;
                     var cardBottom = card.TranslatePoint(new Point(0, card.ActualHeight), ImagesView).Y;
                     var rightBottom = rightColumn.TranslatePoint(new Point(0, rightColumn.ActualHeight), ImagesView).Y;
+                    // the smallest window (MinWidth x MinHeight), Advanced still open, the VRAM hint showing: Advanced scrolls inside,
+                    // Generate stays whole inside the card, the prompts keep two lines, the card and the right column end together on the page
+                    card.InvalidateMeasure();
+                    (Width, Height) = (MinWidth, MinHeight);
+                    _imgVramHint.Visibility = Visibility.Visible;
+                    await Settle();
+                    SavePicture(ImagesView, Path.Combine(Path.GetTempPath(), "ao-images-tiny.png"));
+                    var generateBottom = _imgGenerate.TranslatePoint(new Point(0, _imgGenerate.ActualHeight), card).Y;
+                    var tinyCard = card.ActualHeight - card.BorderThickness.Bottom;
+                    var tinyView = ImagesView.ActualHeight;
+                    var tinyCardBottom = card.TranslatePoint(new Point(0, card.ActualHeight), ImagesView).Y;
+                    var tinyRightBottom = rightColumn.TranslatePoint(new Point(0, rightColumn.ActualHeight), ImagesView).Y;
+                    var twoLines = 2 * _imgPrompt.FontSize * _imgPrompt.FontFamily.LineSpacing;
+                    var advancedView = SmokeFind<ScrollViewer>(ImagesView, v => v.Tag as string == "ImagesAdvancedScroll")?.ActualHeight ?? 0;
+                    var promptView = _imgPrompt.ActualHeight - _imgPrompt.Padding.Top - _imgPrompt.Padding.Bottom - _imgPrompt.BorderThickness.Top - _imgPrompt.BorderThickness.Bottom;
                     SmokeClick(advancedToggle);
+                    RefreshImageRuntime(); // the hint as it really is
                     ImagesView.ClearValue(Panel.BackgroundProperty);
                     (Width, Height) = (oldWidth, oldHeight);
                     card.InvalidateMeasure();
@@ -3013,6 +3053,13 @@ public partial class MainWindow : Window
                     if (needed > shown + 0.5 || cardBottom > ImagesView.ActualHeight + 0.5 || Math.Abs(cardBottom - rightBottom) > 2)
                     {
                         Console.Error.WriteLine($"ui-smoke: the Images page at 1280x720 needs {needed:0} of {shown:0}; the card ends at {cardBottom:0}, the right column at {rightBottom:0}");
+                        return Fail();
+                    }
+                    if (generateBottom > tinyCard + 0.5 || tinyCardBottom > tinyView + 0.5 ||
+                        Math.Abs(tinyCardBottom - tinyRightBottom) > 2 || promptView + 0.5 < twoLines || advancedView < 8)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: the Images page at {MinWidth}x{MinHeight} with Advanced open: Generate ends at {generateBottom:0} in a card of {tinyCard:0}; " +
+                            $"the card ends at {tinyCardBottom:0} of {tinyView:0}, the right column at {tinyRightBottom:0}; the prompt shows {promptView:0} of two lines' {twoLines:0}, Advanced {advancedView:0}");
                         return Fail();
                     }
                 }
@@ -3129,9 +3176,11 @@ public partial class MainWindow : Window
                     }
                     Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "sk-or-smoke");
                     string[] Pictures() => Directory.GetFiles(ImageGen.ImagesFolder, "*.png");
+                    var pillWrong = false;
                     async Task RunGenerate()
                     {
                         SmokeClick(_imgGenerate);
+                        pillWrong |= !_imgGenerate.IsEnabled && (_imgConnLocal.IsEnabled || _imgConnRemote.IsEnabled); // the CONNECTION pill is off while a job runs
                         for (var i = 0; i < 250 && !_imgGenerate.IsEnabled; i++)
                             await Task.Delay(20);
                     }
@@ -3148,7 +3197,7 @@ public partial class MainWindow : Window
                         pinned["provider"]?.ToJsonString() != "{\"order\":[\"beta\",\"alpha/fp8\"],\"allow_fallbacks\":false}" ||
                         imgFake.Seen.Last(r => r.Url == "https://openrouter.ai/api/v1/images").Auth != "Bearer sk-or-smoke" ||
                         created.Count != 1 || JsonSerializer.Deserialize<ImageSettings>(File.ReadAllText(Path.ChangeExtension(created[0], ".json"))) is not { RemoteModel: "acme/img-two", InitImage: "", Seed: -1 } ||
-                        SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery")?.Children.Count != 4)
+                        SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery")?.Children.Count != 4 || pillWrong || !_imgConnLocal.IsEnabled)
                         return Fail();
                     SetInitImage("");
                     _imgSeed.Text = "";

@@ -31,6 +31,7 @@ public partial class MainWindow
     private CheckBox _imgLowVram = null!;
     private string _imgInit = "";
     private TextBlock _imgWidthHint = null!, _imgHeightHint = null!,_imgRuntimeText = null!, _imgStatus = null!, _imgVramHint = null!, _imgInitText = null!;
+    private Border _imgVramHintRow = null!; // the hint's row under the stage: shown for local runs only (the hint itself while llama-server runs)
     private Button _imgRuntimeButton = null!, _imgGenerate = null!, _imgCancel = null!;
     private ProgressBar _imgProgress = null!;
     private Image _imgResult = null!;
@@ -168,10 +169,11 @@ public partial class MainWindow
             var s = slider = new Slider { Minimum = min, Maximum = max, TickFrequency = step, IsSnapToTickEnabled = true };
             var box = new TextBox { Width = 48, Height = 24, Padding = new Thickness(4, 0, 4, 0), TextAlignment = TextAlignment.Right, VerticalContentAlignment = VerticalAlignment.Center, Tag = tag };
             s.ValueChanged += (_, _) => box.Text = s.Value.ToString(format);
+            // a typed value goes to the slider's step ("." or "," as the decimal point, no thousands), then into its range; the box shows what is used
             void Commit()
             {
-                if (double.TryParse(box.Text, out var v))
-                    s.Value = Math.Clamp(v, min, max);
+                if (double.TryParse(box.Text.Trim().Replace(',', '.'), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var v))
+                    s.Value = Math.Clamp(Math.Round(v / step, MidpointRounding.AwayFromZero) * step, min, max);
                 box.Text = s.Value.ToString(format);
             }
             box.LostKeyboardFocus += (_, _) => Commit();
@@ -205,9 +207,7 @@ public partial class MainWindow
         _imgRuntimeButton = new Button { Tag = "ImagesRuntime", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(9, 3, 9, 3), FontSize = 11, Margin = new Thickness(6, 0, 0, 0) };
         DockPanel.SetDock(_imgRuntimeButton, Dock.Right);
         _imgRuntimeButton.Click += async (_, _) => await RunImageJob(InstallImageRuntimeAsync);
-        _imgVramHint = Muted("Chat models are loaded and using VRAM; image generation may be slower or run out of memory.", 11.5);
-        _imgVramHint.Margin = new Thickness(0, 4, 0, 0);
-        var runtime = new StackPanel { Children = { new DockPanel { Children = { _imgRuntimeButton, _imgRuntimeText } }, _imgVramHint } };
+        var runtime = new StackPanel { Children = { new DockPanel { Children = { _imgRuntimeButton, _imgRuntimeText } } } };
         _imgLocalOnly.Add(runtime);
 
         _imgRecipe = new ComboBox { Tag = "ImagesRecipe" };
@@ -293,8 +293,8 @@ public partial class MainWindow
         var modelSection = Section(Inline("Model", new StackPanel { Children = { _imgLocalPanel, _imgRemotePanel, _imgSharedPanel } }));
 
         // PROMPTS: positive and negative side by side, filling the height the card leaves them
-        _imgPrompt = new TextBox { Tag = "ImagesPrompt", AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
-        _imgNegative = new TextBox { AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
+        _imgPrompt = new TextBox { Tag = "ImagesPrompt", Padding = new Thickness(10, 4, 10, 4), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
+        _imgNegative = new TextBox { Padding = new Thickness(10, 4, 10, 4), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
         DockPanel PromptCell(string label, TextBox box)
         {
             var head = Head(label, 4);
@@ -383,11 +383,25 @@ public partial class MainWindow
         var advanced = new Grid { Visibility = Visibility.Collapsed, Margin = new Thickness(0, 8, 0, 0) };
         var toggle = new Button { Content = "▸  ADVANCED SETTINGS", Tag = "ImagesAdvanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, FontSize = 11 };
         toggle.SetResourceReference(ForegroundProperty, "Muted");
+        // open, the band shares the card's leftover height with the prompts: all of its content when there is room, else what is left
+        // once the prompts have their two lines, scrolling inside (Generate under it always shows)
+        var advancedRow = new RowDefinition { Height = GridLength.Auto };
+        Border advancedSection = null!;
+        void SizeAdvancedRow()
+        {
+            var open = advanced.Visibility == Visibility.Visible;
+            var chrome = advancedSection.Padding.Top + advancedSection.Padding.Bottom + advancedSection.BorderThickness.Bottom + toggle.ActualHeight;
+            advancedRow.Height = open ? new GridLength(1000, GridUnitType.Star) : GridLength.Auto; // 1000 to the prompts' 1: Advanced is served first, up to its MaxHeight
+            advancedRow.MaxHeight = open ? chrome + advanced.Margin.Top + advanced.ActualHeight : double.PositiveInfinity;
+            advancedRow.MinHeight = open ? chrome : 0; // the toggle always: a short window leaves the content a scroll away
+        }
+        advanced.SizeChanged += (_, _) => SizeAdvancedRow();
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
             advanced.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
             toggle.Content = (show ? "▾" : "▸") + "  ADVANCED SETTINGS";
+            SizeAdvancedRow();
         };
         _imgSampler = new ComboBox { ItemsSource = ImageGen.Samplers.Prepend("Default").ToList() };
         _imgScheduler = new ComboBox { ItemsSource = ImageGen.Schedulers.Prepend("Default").ToList(), Tag = "ImagesScheduler",
@@ -426,19 +440,21 @@ public partial class MainWindow
         Cell(Inline("Strength", strengthRow), 1, 1);
         Cell(_imgLowVram, 2, 0);
         Cell(runtime, 2, 1);
-        var advancedSection = Section(new StackPanel { Children = { toggle, advanced } }, band: true);
+        DockPanel.SetDock(toggle, Dock.Top);
+        advancedSection = Section(new DockPanel { Children = { toggle, new ScrollViewer { Content = advanced, Tag = "ImagesAdvancedScroll", VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false } } }, band: true);
         _imgLocalOnly.Add(advancedSection);
 
         _imgGenerate = new Button { Content = "Generate", Tag = "ImagesGenerate", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 7, 16, 7) };
         _imgGenerate.Click += async (_, _) => await RunImageJob(GenerateImagesAsync);
         var generateSection = Section(_imgGenerate, last: true);
 
-        // the card: its sections top to bottom, the prompts taking the rest (at least room for a few lines), Generate at the foot
+        // the card: its sections top to bottom, the prompts taking the rest (at least two lines), Advanced sharing it when open, Generate at the foot
         var cardGrid = new Grid();
         var sections = new FrameworkElement[] { band, modelSection, promptsSection, paramsSection, advancedSection, generateSection };
         for (var i = 0; i < sections.Length; i++)
         {
-            cardGrid.RowDefinitions.Add(sections[i] == promptsSection ? new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 72 } : new RowDefinition { Height = GridLength.Auto });
+            cardGrid.RowDefinitions.Add(sections[i] == promptsSection ? new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 84 } // two lines in the boxes
+                : sections[i] == advancedSection ? advancedRow : new RowDefinition { Height = GridLength.Auto });
             Grid.SetRow(sections[i], i);
             cardGrid.Children.Add(sections[i]);
         }
@@ -552,6 +568,10 @@ public partial class MainWindow
         _imgCancel.Click += (_, _) => CancelImageGen();
         DockPanel.SetDock(_imgCancel, Dock.Right);
         var statusRow = new DockPanel { Margin = new Thickness(0, 6, 0, 0), Children = { _imgCancel, _imgStatus } };
+        // a warning, so always in view under the status (not in Advanced); local runs only
+        _imgVramHint = Muted("Chat models are loaded and using VRAM; image generation may be slower or run out of memory.", 11.5);
+        _imgVramHint.Margin = new Thickness(0, 4, 0, 0);
+        _imgVramHintRow = new Border { Child = _imgVramHint };
         _imgGallery = new StackPanel { Orientation = Orientation.Horizontal, Tag = "ImagesGallery" };
         _imgGalleryHead = Muted("", 11);
         DockPanel.SetDock(_imgGalleryHead, Dock.Right);
@@ -575,9 +595,9 @@ public partial class MainWindow
         galleryCard.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         var right = new Grid { Tag = "ImagesRight", Margin = new Thickness(16, 0, 0, 0) };
         right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 120 });
-        foreach (var _ in new[] { 1, 2, 3 })
+        foreach (var _ in new[] { 1, 2, 3, 4 })
             right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        foreach (var (element, row) in new (UIElement, int)[] { (stage, 0), (_imgProgress, 1), (statusRow, 2), (galleryCard, 3) })
+        foreach (var (element, row) in new (UIElement, int)[] { (stage, 0), (_imgProgress, 1), (statusRow, 2), (_imgVramHintRow, 3), (galleryCard, 4) })
         {
             Grid.SetRow(element, row);
             right.Children.Add(element);
@@ -750,9 +770,13 @@ public partial class MainWindow
         _imgLocalPanel.Visibility = Shown(!_imgRemoteMode && !_imgSharedMode);
         _imgRemotePanel.Visibility = Shown(_imgRemoteMode);
         _imgSharedPanel.Visibility = Shown(_imgSharedMode);
-        _imgConnRemote.IsEnabled = _settings.ShareHost.Length > 0;
-        _imgConnRemote.ToolTip = _imgConnRemote.IsEnabled ? $"Generate on the primary PC ({_settings.ShareHost})" : "Connect to a primary PC in Settings › Models";
-        (_imgSharedMode ? _imgConnRemote : _imgConnLocal).IsChecked = true;
+        // the pill: neither segment in OpenRouter mode (LOCAL leaves it); both off while a job runs
+        _imgConnLocal.IsEnabled = !ImageBusy;
+        _imgConnRemote.IsEnabled = !ImageBusy && _settings.ShareHost.Length > 0;
+        _imgConnRemote.ToolTip = _settings.ShareHost.Length > 0 ? $"Generate on the primary PC ({_settings.ShareHost})" : "Connect to a primary PC in Settings › Models";
+        _imgConnLocal.IsChecked = !_imgSharedMode && !_imgRemoteMode;
+        _imgConnRemote.IsChecked = _imgSharedMode;
+        _imgVramHintRow.Visibility = Shown(!_imgRemoteMode && !_imgSharedMode);
         _imgModelBadge.Text = _imgSharedMode ? SharedPick?.Name ?? _imgSharedId
             : _imgRemoteMode ? (_imgRemoteModel.Name.Length > 0 ? _imgRemoteModel.Name : _imgRemoteModel.Id)
             : _imgRecipe.SelectedIndex < 0 ? "" : ImageChoice(_imgRecipe.SelectedIndex) is var (r, l) && l.Length > 0 ? Path.GetFileName(l) : r.Name;
@@ -1266,6 +1290,7 @@ public partial class MainWindow
             return;
         using var cts = _imgCts = new CancellationTokenSource();
         _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = false;
+        ShowImageSource(); // the CONNECTION pill off (ImageBusy)
         _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Visible;
         try { await job(cts.Token); }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { ImageStatus("Cancelled"); }
@@ -1281,6 +1306,7 @@ public partial class MainWindow
             _imgProcess = null;
             _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = true;
             _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Collapsed;
+            ShowImageSource(); // the pill back on
             RefreshImageRuntime();
             RefreshImageRecipes();
         }
