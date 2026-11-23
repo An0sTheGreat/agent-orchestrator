@@ -5950,6 +5950,12 @@ class LlamaCppTests(unittest.TestCase):
         wanted = self.touch(self.SNAP + "Qwen3.5-4B-Q4_K_M.gguf")
         self.assertEqual(self.find(gguf_variant="q4_k_m"), wanted)
 
+    def test_gguf_skips_an_mtp_head(self):
+        head = self.touch(self.SNAP + "mtp-Qwen3.5-4B-F16.gguf")  # an MTP draft head: llama-server exits on it alone
+        wanted = self.touch(self.SNAP + "Qwen3.5-4B-Q5_K_P.gguf")
+        self.assertEqual(self.find(gguf_variant="f16"), wanted)
+        self.assertEqual(self.find(gguf_file=str(head)), wanted)
+
     def test_gguf_skips_the_vision_projector(self):
         self.touch(self.SNAP + "mmproj-f16.gguf")
         wanted = self.touch(self.SNAP + "qwen3.5-4b-q4_k_m.gguf")

@@ -1347,10 +1347,15 @@ def llama_make_room(name: str, role: str, need: int, free: int, servers: list[di
             return
 
 
+def not_weights(name: str) -> bool:
+    """A helper GGUF beside a model, not one to run: llama-server exits on an MTP/draft head (mtp-*.gguf) loaded alone."""
+    return any(p in name.lower() for p in ("mmproj", "imatrix", "mtp", "draft"))
+
+
 def gguf_file(auto_load: dict[str, Any]) -> Path:
     """auto_load.gguf_file, else the model's GGUF in the extra model folders, then the Hugging Face cache."""
     explicit = auto_load.get("gguf_file")
-    if explicit and Path(explicit).is_file():
+    if explicit and Path(explicit).is_file() and not not_weights(Path(explicit).name):
         return Path(explicit)
     repo = str(auto_load["model_path"])
     hub = os.environ.get("HF_HUB_CACHE") or (Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME")
@@ -1364,8 +1369,8 @@ def gguf_file(auto_load: dict[str, Any]) -> Path:
     for root, by_name in roots:
         for path in sorted(root.rglob("*.gguf")):
             part = SPLIT_PART.search(path.name)
-            if "mmproj" in path.name.lower() or (part and part.group(1) != "00001"):
-                continue  # vision projector, or a later part of a split model (llama.cpp loads the rest from part 1)
+            if not_weights(path.name) or (part and part.group(1) != "00001"):
+                continue  # vision projector, MTP/draft head, imatrix, or a later part of a split model (llama.cpp loads the rest from part 1)
             if not by_name or key in str(path.relative_to(root)).lower():
                 found.append(path)
     variant = str(auto_load.get("gguf_variant") or "").lower()

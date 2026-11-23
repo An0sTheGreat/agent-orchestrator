@@ -1390,9 +1390,11 @@ internal static class LauncherLogic
         var found = new List<LocalGguf>();
         IEnumerable<string> Files(string folder) => Directory.Exists(folder)
             ? Directory.EnumerateFiles(folder, "*.gguf", SearchOption.AllDirectories)
-                .Where(f => !Path.GetFileName(f).Contains("mmproj", StringComparison.OrdinalIgnoreCase) && FirstPart(Path.GetFileName(f)))
+                .Where(f => !NotWeights(Path.GetFileName(f)) && FirstPart(Path.GetFileName(f)))
                 .Order(StringComparer.OrdinalIgnoreCase)
             : [];
+        // helper files, not a model to run (as the Hub's variant list): mtp-*.gguf is an MTP draft head, llama-server exits on it
+        static bool NotWeights(string name) => new[] { "mmproj", "imatrix", "mtp", "draft" }.Any(p => name.Contains(p, StringComparison.OrdinalIgnoreCase));
         static bool FirstPart(string name) => SplitPart.Match(name) is not { Success: true } part || part.Groups[1].Value == "00001";
         static string Variant(string file) => QuantOf(file);
         // a file under two listed folders (one inside the other) is one choice
@@ -2350,6 +2352,7 @@ internal static class LauncherLogic
             Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r1", "Qwen3-4B-UD-Q4_K_XL.gguf");
             Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r2", "Qwen3-4B-UD-Q4_K_XL.gguf");
             Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r1", "mmproj-BF16.gguf");
+            Touch("hub", "models--unsloth--Qwen3-4B-GGUF", "snapshots", "r1", "mtp-Qwen3-4B-F16.gguf");
             Touch("hub", "models--org--Big-GGUF", "snapshots", "r1", "Q4_K_M", "Big-Q4_K_M-00001-of-00002.gguf");
             Touch("hub", "models--org--Big-GGUF", "snapshots", "r1", "Q4_K_M", "Big-Q4_K_M-00002-of-00002.gguf");
             Touch("hub", "models--org--Big-GGUF", "blobs", "x.gguf");
