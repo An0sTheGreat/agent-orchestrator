@@ -267,10 +267,11 @@ public partial class MainWindow
         };
 
         // The groups of related settings, added in SettingsGroups' order once built: the Model group and the worker's own
-        // (HeadGroups) one under another, full width, a line between; then a line, then the option groups, one column or two
-        // (SettingsColumns).
+        // (HeadGroups) one under another, full width, a line between; then a line, the SETTINGS header (with the Advanced
+        // switch), and the option groups as the cells of a grid reaching the card's edges (SettingsGrid, GridCells' order).
         var head = new StackPanel();
-        var sections = new SettingsColumns();
+        var sections = new SettingsGrid { Margin = new Thickness(-20, 4, -20, -20) };
+        sections.SetResourceReference(SettingsGrid.LineProperty, "Border");
         // A line across the card between its sections (as under the presets band).
         Border Line()
         {
@@ -279,8 +280,9 @@ public partial class MainWindow
             return line;
         }
         var divider = Line();
+        var settingsHead = Headline("Settings", null);
         // One card centred at about 65% of the page: the presets band on top (the bar, below), then the groups.
-        var body = new StackPanel { Margin = new Thickness(20, 16, 20, 20), Children = { head, divider, sections } };
+        var body = new StackPanel { Margin = new Thickness(20, 16, 20, 20), Children = { head, divider, settingsHead, sections } };
         var cardShell = new StackPanel { Children = { body } };
         var cardBorder = new Border { Child = cardShell, BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 24) };
         cardBorder.SetResourceReference(Border.BackgroundProperty, "Card");
@@ -290,23 +292,14 @@ public partial class MainWindow
         scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Clamp(e.NewSize.Width * 0.65, 680, 1280)));
         var blocks = new Dictionary<string, FrameworkElement>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
-        StackPanel Section(string name, string help, bool showHelp = true, bool card = false)
+        StackPanel Section(string name, string help, bool showHelp = true)
         {
             var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 10) };
             var header = new TextBlock { Text = name.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(0, 6, 0, 0), ToolTip = help };
             panel.Children.Add(header);
             if (showHelp)
                 panel.Children.Add(Muted(help));
-            if (!card)
-                blocks[name] = panel;
-            else
-            {
-                var border = new Border { Child = panel, BorderThickness = new Thickness(1), Padding = new Thickness(14), Margin = new Thickness(0, 4, 0, 14) };
-                border.SetResourceReference(Border.BackgroundProperty, "Card");
-                border.SetResourceReference(Border.BorderBrushProperty, "Border");
-                border.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
-                blocks[name] = border;
-            }
+            blocks[name] = panel;
             return panel;
         }
 
@@ -383,21 +376,12 @@ public partial class MainWindow
             if (layers != 100 && editors.GetValueOrDefault("gpu_layers") is TextBox gpu && long.TryParse(gpu.Text.Trim(), out var set) && set > layers)
                 gpu.Text = layers.ToString(System.Globalization.CultureInfo.InvariantCulture);
         }
-        // Option rows: a fixed name column so every name and every control starts on the same line, a faint rule between
-        // rows, and controls drawn as outlined pills on the "Field" shade so they read against the card in every theme.
-        const double LabelColumn = 190;
+        // Option rows: the name on a line of its own, the control full width under it, drawn as an outlined pill on the "Field"
+        // shade so it reads against the card in every theme.
         void Pill(Control c)
         {
             c.SetResourceReference(Control.BackgroundProperty, "Field");
             c.SetResourceReference(Control.BorderBrushProperty, "Border");
-        }
-        void RowLine(StackPanel row, bool first)
-        {
-            if (first)
-                return;
-            var rule = new Border { Height = 1, Margin = new Thickness(0, 0, 0, 6), Opacity = 0.7 };
-            rule.SetResourceReference(Border.BackgroundProperty, "Border");
-            row.Children.Insert(0, rule);
         }
         // What an empty field means, shown in it in muted text; a field still showing its default is muted too.
         string EmptyMeans(ModelOptions.Option o) => Base().GetValueOrDefault(o.Key, "") is { Length: > 0 } d ? d : o.Key switch
@@ -438,7 +422,7 @@ public partial class MainWindow
             box.TextChanged += (_, _) => Sync();
             box.Loaded += (_, _) => Sync();
             Sync();
-            var host = new Grid { Children = { box, hint }, HorizontalAlignment = wide ? HorizontalAlignment.Stretch : HorizontalAlignment.Left };
+            var host = new Grid { Children = { box, hint } };
             return host;
         }
         StackPanel Fields(string group)
@@ -484,25 +468,16 @@ public partial class MainWindow
                     {
                         Margin = new Thickness(0, 8, 0, 0), Children = { Label(o.Label), hints[o.Key], Hinted(editor, o, true), (fieldErrors[o.Key] = ErrorLine()) }, ToolTip = TipBlock(),
                     });
-                    RowLine(rows[o.Key], fields.Children.Count == 1);
                     rows[o.Key].ToolTipOpening += (_, _) => rows[o.Key].ToolTip = TipBlock();
                     continue;
                 }
-                // Two columns, both left-aligned: the name in a fixed column, then a compact pill control; the help shows on hover.
-                (editor.Width, editor.Margin, editor.HorizontalAlignment) = (o.Kind == ModelOptions.Kind.Text ? 170 : 130, new Thickness(0), HorizontalAlignment.Left);
+                // The name on its own line, the control full width under it; the help shows on hover.
+                editor.Margin = new Thickness(0, 4, 0, 0);
                 Pill(editor);
                 var name = Label(o.Label);
-                name.VerticalAlignment = VerticalAlignment.Center;
                 name.TextTrimming = TextTrimming.CharacterEllipsis;
-                name.Margin = new Thickness(0, 0, 12, 0);
-                var line = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = new GridLength(LabelColumn) }, new ColumnDefinition() } };
-                var hosted = Hinted(editor, o, false);
-                Grid.SetColumn(hosted, 1);
-                line.Children.Add(name);
-                line.Children.Add(hosted);
                 hints[o.Key].Visibility = Visibility.Collapsed;
-                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 6, 0, 0), Children = { line }, ToolTip = TipBlock() };
-                RowLine(row, fields.Children.Count == 0);
+                var row = rows[o.Key] = new StackPanel { Margin = new Thickness(0, 10, 0, 0), Children = { name, Hinted(editor, o, false) }, ToolTip = TipBlock() };
                 row.ToolTipOpening += (_, _) => row.ToolTip = TipBlock();
                 if (o.Key is "max_seq_length" or "gpu_layers" && editor is TextBox sliderBox)
                     row.Children.Add(SliderFor(o.Key, sliderBox));
@@ -644,25 +619,18 @@ public partial class MainWindow
         foreach (var (name, help) in SettingsGroups.Where(g => g.Help is not null))
             if (Fields(name) is { Children.Count: > 0 } fields)
             {
-                var group = Section(name, $"{help} {emptyMeans}", showHelp: false, card: true);
-                // Each group's fields collapse on their own header (like the prompts); the choice is kept per group.
-                bool Open() => name switch { "Sampling" => _settings.SamplingExpanded, "Memory" => _settings.MemoryExpanded, "Speed" => _settings.SpeedExpanded, "Output" => _settings.OutputExpanded, "Server" => _settings.ServerExpanded, "Request" => _settings.RequestExpanded, _ => _settings.OtherExpanded };
-                void SetOpen(bool on) { switch (name) { case "Sampling": _settings.SamplingExpanded = on; break; case "Memory": _settings.MemoryExpanded = on; break; case "Speed": _settings.SpeedExpanded = on; break; case "Output": _settings.OutputExpanded = on; break; case "Server": _settings.ServerExpanded = on; break; case "Request": _settings.RequestExpanded = on; break; default: _settings.OtherExpanded = on; break; } }
-                var groupBody = new StackPanel { Tag = name + "Body", Visibility = Open() ? Visibility.Visible : Visibility.Collapsed, Children = { fields } };
-                var groupHeader = (TextBlock)group.Children[0];
-                var groupTitle = groupHeader.Text;
-                void ShowGroup() => groupHeader.Text = (groupBody.Visibility == Visibility.Visible ? "▾  " : "▸  ") + groupTitle;
-                groupHeader.Cursor = Cursors.Hand;
-                groupHeader.MouseLeftButtonUp += (_, e) =>
+                // A cell of the settings grid: the group's name, then its fields, always shown (Tag: the smoke checks find it).
+                var group = Section(name, $"{help} {emptyMeans}", showHelp: false);
+                group.Margin = new Thickness(0);
+                ((TextBlock)group.Children[0]).Margin = new Thickness(0);
+                fields.Tag = name + "Body";
+                group.Children.Add(fields);
+                if (name == "Server") // Request shares its cell, under a thin line (Server hides for a remote worker, the line with it)
                 {
-                    e.Handled = true;
-                    groupBody.Visibility = groupBody.Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
-                    SetOpen(groupBody.Visibility == Visibility.Visible);
-                    _settings.Save();
-                    ShowGroup();
-                };
-                ShowGroup();
-                group.Children.Add(groupBody);
+                    var rule = new Border { Height = 1, Margin = new Thickness(0, 18, 0, 18) };
+                    rule.SetResourceReference(Border.BackgroundProperty, "Border");
+                    group.Children.Add(rule);
+                }
                 if (ModelOptions.All.Where(o => SettingsGroupOf(o.Key) == name).All(o => o.Target == "auto_load"))
                     loadOnly.Add(blocks[name]);
             }
@@ -892,11 +860,12 @@ public partial class MainWindow
         }
         ContextHint(null);
         var advanced = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), IsChecked = _settings.ModelAdvanced, Tag = "AdvancedSettings", VerticalAlignment = VerticalAlignment.Center };
-        DockPanel.SetDock(advanced, Dock.Right);
-        var advancedLabel = Label("Advanced settings");
-        advancedLabel.VerticalAlignment = VerticalAlignment.Center;
-        var advancedRow = new DockPanel { Margin = new Thickness(0, 16, 0, 0), Children = { advanced, advancedLabel },
-            ToolTip = "Memory, speed, output and server options" };
+        // At the right of the SETTINGS header: "Advanced" and the switch.
+        var advancedLabel = Muted("Advanced");
+        (advancedLabel.VerticalAlignment, advancedLabel.Margin) = (VerticalAlignment.Center, new Thickness(0, 0, 8, 0));
+        var advancedRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { advancedLabel, advanced }, ToolTip = "Memory, speed, output and server options" };
+        DockPanel.SetDock(advancedRow, Dock.Right);
+        settingsHead.Children.Insert(0, advancedRow);
         // COMPACTOR: whether it follows LEAD's model, and the way back to it.
         StackPanel? follow = null;
         if (card.Role == LauncherLogic.Compactor)
@@ -998,15 +967,25 @@ public partial class MainWindow
             modelGrid.Children.Add(cell);
         LayOutModel(false);
         scroll.SizeChanged += (_, e) => LayOutModel(e.NewSize.Width >= 1200);
-        foreach (var part in new UIElement[] { modelGrid, vramBlock, rows["max_seq_length"], advancedRow })
+        scroll.SizeChanged += (_, e) => sections.Columns = e.NewSize.Width >= 1200 ? 3 : e.NewSize.Width >= 768 ? 2 : 1;
+        foreach (var part in new UIElement[] { modelGrid, vramBlock, rows["max_seq_length"] })
             top.Children.Add(part);
-        // The worker's own sections under Model, a line above each (one above both prompt sections: one shows at a time).
-        foreach (var (name, _) in SettingsGroups)
-            if (blocks.TryGetValue(name, out var block))
+        // The worker's own sections under Model, a line above each (one above both prompt sections: one shows at a time); the
+        // option groups as the grid's cells, in GridCells' order (Server and Request in one), any other group in a cell after.
+        foreach (var (name, _) in SettingsGroups.Where(g => HeadGroups.Contains(g.Name) && blocks.ContainsKey(g.Name)))
+        {
+            if (head.Children.Count > 0 && !(name == "System prompt (workflow)" && blocks.ContainsKey("System prompt (Chat)")))
+                head.Children.Add(Line());
+            head.Children.Add(blocks[name]);
+        }
+        var inCells = GridCells.SelectMany(c => c).ToHashSet();
+        foreach (var names in GridCells.Concat(SettingsGroups.Where(g => !HeadGroups.Contains(g.Name) && !inCells.Contains(g.Name)).Select(g => new[] { g.Name })))
+            if (names.Where(blocks.ContainsKey).ToList() is { Count: > 0 } shown)
             {
-                if (HeadGroups.Contains(name) && head.Children.Count > 0 && !(name == "System prompt (workflow)" && blocks.ContainsKey("System prompt (Chat)")))
-                    head.Children.Add(Line());
-                (HeadGroups.Contains(name) ? (Panel)head : sections).Children.Add(block);
+                var cell = new StackPanel();
+                foreach (var name in shown)
+                    cell.Children.Add(blocks[name]);
+                sections.Children.Add(cell);
             }
         ApplyPromptView(body);
         // The picker (MainWindow.ModelPicker.cs) opens instead of the box's own list; the box shows the current model or the
@@ -1637,6 +1616,8 @@ public partial class MainWindow
     ];
     private static readonly string[] HeadGroups = ["Model", "Worker", "System prompt (Chat)", "System prompt (workflow)"];
     private static readonly string[] AdvancedGroups = ["Memory", "Speed", "Output", "Server", "Request", "Other"];
+    // The settings grid's cells, read left to right; a group not named here gets a cell of its own after them.
+    private static readonly string[][] GridCells = [["Memory"], ["Speed"], ["Sampling"], ["Output"], ["Server", "Request"], ["Other"]];
     private static readonly Dictionary<string, string[]> SettingsGroupKeys = new()
     {
         ["Model"] = ["gguf_variant", "max_seq_length"],
@@ -2059,18 +2040,21 @@ public partial class MainWindow
             await Idle();
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "PromptBody") is not { IsVisible: true } || !prompts.Text.StartsWith("▾") || !_settings.PromptsExpanded)
                 return Fail("the prompts open");
-            // Advanced on: Speed's card shows, so the check below isolates SpeedExpanded's own default from the Advanced switch.
+            // The option groups are always open: Advanced on shows Speed's cell, off hides it; Sampling shows either way.
             if (SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "AdvancedSettings") is not { } advancedSwitch)
                 return Fail("the Advanced switch");
             advancedSwitch.IsChecked = true;
             SmokeClick(advancedSwitch);
             await Idle();
             if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SamplingBody") is not { IsVisible: true } ||
-                SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SpeedBody") is not { IsVisible: false })
-                return Fail("the option groups' default open/collapsed state");
+                SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SpeedBody") is not { IsVisible: true })
+                return Fail("the option groups with Advanced on");
             advancedSwitch.IsChecked = false;
             SmokeClick(advancedSwitch);
             await Idle();
+            if (SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SamplingBody") is not { IsVisible: true } ||
+                SmokeFind<StackPanel>(WorkerSettingsHost, p => p.Tag as string == "SpeedBody") is not { IsVisible: false })
+                return Fail("the option groups with Advanced off");
             // Run on the primary PC: above the picker; not connected, off and greyed with the way to connect under it.
             var connectedNow = !string.IsNullOrEmpty(_settings.ShareHost);
             if (SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "RunOnPrimary") is not { IsVisible: true } runOnPrimary || runOnPrimary.IsEnabled != connectedNow ||
@@ -2313,11 +2297,37 @@ public partial class MainWindow
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is null ||
                 Model().Items.Count != 1 || Model().Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null))
                 return Fail("the Planner's tab");
-            // A picture of the page at about 1600x1000, a local worker: %TEMP%\ao-model-settings.png (to look at the layout).
-            var (oldWidth, oldHeight) = (Width, Height);
-            (Width, Height) = (1600, 1000);
-            await Idle();
-            SavePicture(ModelSettingsView, Path.Combine(Path.GetTempPath(), "ao-model-settings.png"));
+            // Pictures of the whole settings card, a local worker, Advanced on (to look at the layout): the window 1600 wide
+            // (%TEMP%\ao-model-settings.png, the grid's three columns) and narrowed until the page's ScrollViewer is 1000 wide
+            // (ao-model-settings-narrow.png, two).
+            var (oldWidth, oldHeight, oldAdvanced) = (Width, Height, _settings.ModelAdvanced);
+            void Advanced(bool on)
+            {
+                var toggle = SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "AdvancedSettings")!;
+                toggle.IsChecked = on;
+                SmokeClick(toggle);
+            }
+            Advanced(true);
+            foreach (var file in new[] { "ao-model-settings.png", "ao-model-settings-narrow.png" })
+            {
+                (Width, Height) = (1600, 1000);
+                await Idle();
+                var page = SmokeFind<ScrollViewer>(WorkerSettingsHost, s => s.Content is Border)!;
+                if (file.Contains("narrow"))
+                {
+                    Width -= page.ActualWidth - 1000;
+                    await Idle();
+                }
+                var whole = (FrameworkElement)page.Content;
+                var dpi = VisualTreeHelper.GetDpi(whole);
+                var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)(whole.ActualWidth * dpi.DpiScaleX), (int)(whole.ActualHeight * dpi.DpiScaleY), dpi.PixelsPerInchX, dpi.PixelsPerInchY, PixelFormats.Pbgra32);
+                var visual = new DrawingVisual();
+                using (var dc = visual.RenderOpen()) // through a brush: the card below the fold too, not the viewport's clip
+                    dc.DrawRectangle(new VisualBrush(whole), null, new Rect(0, 0, whole.ActualWidth, whole.ActualHeight));
+                bitmap.Render(visual);
+                SavePicture(bitmap, Path.Combine(Path.GetTempPath(), file));
+            }
+            Advanced(oldAdvanced);
             (Width, Height) = (oldWidth, oldHeight);
             await Idle();
             // A click on the box opens the picker (not the box's own list), which lists the models once loaded.
@@ -2453,39 +2463,69 @@ public partial class MainWindow
     }
 }
 
-// The settings body's groups: one column, or two from TwoColumnsAt wide, each group whole in the shorter column, in order.
-// Re-flows on every measure (a width or visibility change), so the editors, their state and focus stay put.
-internal sealed class SettingsColumns : Panel
+// The settings grid: its cells Columns across, each row as tall as its tallest cell, Pad around each cell's content, and 1 px
+// lines (Line) between columns and between rows, none on the outer edge (the card's border is). A cell measuring 0 high (all
+// its groups hidden) is skipped, so the rest re-pack without a gap. Re-flows on every measure (a width or visibility change),
+// so the editors, their state and focus stay put.
+internal sealed class SettingsGrid : Panel
 {
-    public const double TwoColumnsAt = 620;
-    private const double ColumnGap = 28, RowGap = 26;
-    private readonly List<(int Column, double Y)> _slots = [];
-    private bool _two;
+    public static readonly DependencyProperty ColumnsProperty = DependencyProperty.Register(nameof(Columns), typeof(int), typeof(SettingsGrid),
+        new FrameworkPropertyMetadata(1, FrameworkPropertyMetadataOptions.AffectsMeasure));
+    public static readonly DependencyProperty LineProperty = DependencyProperty.Register(nameof(Line), typeof(Brush), typeof(SettingsGrid),
+        new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsArrange));
+    public int Columns { get => (int)GetValue(ColumnsProperty); set => SetValue(ColumnsProperty, value); }
+    public Brush? Line { get => (Brush?)GetValue(LineProperty); set => SetValue(LineProperty, value); }
+    private const double Pad = 20;
+    private readonly List<(int Child, int Row, int Column)> _slots = [];
+    private readonly List<double> _heights = []; // each row's, padding included
+    private readonly DrawingGroup _lines = new(); // redrawn on every arrange; OnRender only hands it over
 
     protected override Size MeasureOverride(Size available)
     {
-        _two = !double.IsInfinity(available.Width) && available.Width >= TwoColumnsAt;
-        var width = _two ? (available.Width - ColumnGap) / 2 : available.Width;
-        var heights = new double[_two ? 2 : 1];
-        var widest = 0.0;
+        var columns = Math.Max(1, Columns);
+        var inner = double.IsInfinity(available.Width) ? double.PositiveInfinity : Math.Max(0, available.Width / columns - 2 * Pad);
         _slots.Clear();
-        foreach (UIElement child in InternalChildren)
+        _heights.Clear();
+        for (var i = 0; i < InternalChildren.Count; i++)
         {
-            child.Measure(new Size(width, double.PositiveInfinity));
-            var column = _two && heights[1] < heights[0] ? 1 : 0;
-            var y = heights[column] > 0 ? heights[column] + RowGap : 0;
-            _slots.Add((column, y));
-            if (child.Visibility != Visibility.Collapsed)
-                (heights[column], widest) = (y + child.DesiredSize.Height, Math.Max(widest, child.DesiredSize.Width));
+            var child = InternalChildren[i];
+            child.Measure(new Size(inner, double.PositiveInfinity));
+            if (child.DesiredSize.Height <= 0)
+                continue;
+            var n = _slots.Count;
+            if (n % columns == 0)
+                _heights.Add(0);
+            _slots.Add((i, n / columns, n % columns));
+            _heights[^1] = Math.Max(_heights[^1], child.DesiredSize.Height + 2 * Pad);
         }
-        return new Size(double.IsInfinity(available.Width) ? widest : available.Width, heights.Max());
+        return new Size(double.IsInfinity(available.Width) ? 0 : available.Width, _heights.Sum());
     }
 
     protected override Size ArrangeOverride(Size final)
     {
-        var width = _two ? (final.Width - ColumnGap) / 2 : final.Width;
+        var width = final.Width / Math.Max(1, Columns);
+        var tops = new double[_heights.Count];
+        for (var r = 1; r < tops.Length; r++)
+            tops[r] = tops[r - 1] + _heights[r - 1];
+        var shown = _slots.ToDictionary(s => s.Child);
         for (var i = 0; i < InternalChildren.Count; i++)
-            InternalChildren[i].Arrange(new Rect(_slots[i].Column * (width + ColumnGap), _slots[i].Y, width, InternalChildren[i].DesiredSize.Height));
+            InternalChildren[i].Arrange(shown.TryGetValue(i, out var s)
+                ? new Rect(s.Column * width + Pad, tops[s.Row] + Pad, Math.Max(0, width - 2 * Pad), _heights[s.Row] - 2 * Pad) : new Rect());
+        using var dc = _lines.Open();
+        if (Line is not null)
+            foreach (var (_, row, column) in _slots)
+            {
+                if (column == 0 && row > 0)
+                    dc.DrawRectangle(Line, null, new Rect(0, Math.Round(tops[row]), final.Width, 1));
+                if (column > 0)
+                    dc.DrawRectangle(Line, null, new Rect(Math.Round(column * width), Math.Round(tops[row]), 1, Math.Round(_heights[row])));
+            }
         return final;
+    }
+
+    protected override void OnRender(DrawingContext dc)
+    {
+        base.OnRender(dc);
+        dc.DrawDrawing(_lines);
     }
 }
