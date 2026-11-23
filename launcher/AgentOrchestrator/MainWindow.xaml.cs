@@ -1959,7 +1959,7 @@ public partial class MainWindow : Window
             var compactedNote = parts.OfType<TextBlock>().FirstOrDefault(t => t.Text == "Context compacted · 30.1k → 8.2k tokens"); // a muted line where it happened
             if (early is null || parts.IndexOf(early) > parts.IndexOf(toolRow) || parts.IndexOf(toolRow) > parts.IndexOf(codeReply.Answer!) ||
                 compactedNote is null || parts.IndexOf(compactedNote) < parts.IndexOf(toolRow) || parts.IndexOf(compactedNote) > parts.IndexOf(codeReply.Answer!) ||
-                _codeConv?.Messages is not [_, { Content: "Fixed" }])
+                _codeConv?.Messages is not [_, { Content: "Looking\n\nFixed" }]) // the whole reply shown is saved, the text before the tool call too (ddc533d)
                 return Fail();
             // A Code chat turn sends the stored summary in place of the messages it covers; write_project reads the whole history.
             (_code.Summary, _code.SummaryCovers) = ("CS", 2);
