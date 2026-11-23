@@ -45,7 +45,7 @@ public partial class MainWindow
     internal int _localModelsVersion;
 
     private const double HubGiB = 1024.0 * 1024 * 1024;
-    private const int HubMaxPages = 10, HubEnoughRows = 8;
+    private const int HubMaxPages = 4, HubEnoughRows = 8; // at most 4 pages (400 repos) in the list: rows are rebuilt on each refill
     private static readonly TimeSpan HubCacheFor = TimeSpan.FromMinutes(5);
 
     private HttpClient? _hubHttp;
@@ -361,9 +361,10 @@ public partial class MainWindow
             Tag = "HubScroll", Content = new StackPanel { Children = { _hubStatus, _hubList, _hubFooter } },
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        scroll.ScrollChanged += (_, _) =>
+        _hubScroll = scroll;
+        scroll.ScrollChanged += (_, e) =>
         {
-            if (scroll.VerticalOffset + scroll.ViewportHeight >= scroll.ExtentHeight - 300)
+            if (e.VerticalChange > 0 && HubNearEnd()) // the user scrolled down to the end: the next page
                 HubLoadMore();
         };
         var results = HubCard(scroll, new Thickness(4));
@@ -723,11 +724,17 @@ public partial class MainWindow
         _hubSizeTask = HubFetchSizesAsync(cts.Token);
     }
 
-    // 8 repos at a time (the 5-minute text cache serves the detail too), the rows refilled after each batch; failures stay shown.
+    // HubSizeBatch repos at a time with a pause between batches (the 5-minute text cache serves the detail too); the rows are
+    // refilled at most once a second and at the end; failures stay shown. A 429 (too many requests) stops the fetch: the next
+    // page or search starts it again.
+    private const int HubSizeBatch = 4;
+
     private async Task HubFetchSizesAsync(CancellationToken ct)
     {
-        while (_settings.HubFitsGpu && !ct.IsCancellationRequested &&
-               _hubShown.Where(m => !_hubSmallest.ContainsKey(m.Id) && !_hubSizeTried.Contains(m.Id)).Take(8).ToList() is { Count: > 0 } batch)
+        var refilled = DateTime.UtcNow;
+        var limited = false;
+        while (!limited && _settings.HubFitsGpu && !ct.IsCancellationRequested &&
+               _hubShown.Where(m => !_hubSmallest.ContainsKey(m.Id) && !_hubSizeTried.Contains(m.Id)).Take(HubSizeBatch).ToList() is { Count: > 0 } batch)
         {
             await Task.WhenAll(batch.Select(async m =>
             {
@@ -738,11 +745,21 @@ public partial class MainWindow
                     _hubSmallest[m.Id] = HubLogic.SmallestWeights(await Task.Run(() => HubLogic.ParseVariants(json), ct));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+                catch (HttpRequestException e) when (e.StatusCode == HttpStatusCode.TooManyRequests) { limited = true; }
                 catch (Exception e) when (e is HttpRequestException or OperationCanceledException or JsonException) { _hubSizeTried.Add(m.Id); }
             }));
-            if (!ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested)
+                return;
+            if (DateTime.UtcNow - refilled > TimeSpan.FromSeconds(1))
+            {
                 HubFillRows();
+                refilled = DateTime.UtcNow;
+            }
+            try { await Task.Delay(250, ct); }
+            catch (OperationCanceledException) { return; }
         }
+        if (!ct.IsCancellationRequested)
+            HubFillRows();
     }
 
     private static string HubBlobsUrl(string id) => $"https://huggingface.co/api/models/{id}?blobs=true";
@@ -763,9 +780,18 @@ public partial class MainWindow
         else
             HubStatus(rows.Count > 0 ? "" : (query.Length == 0 ? "No GGUF models found" : $"No GGUF models match “{query}”")
                 + (rows.Count == 0 && _hubShown.Count > 0 && _settings.HubFitsGpu ? " that fit this GPU" : ""));
-        // a short list does not scroll: keep loading until it fills (or the pages run out)
-        Dispatcher.BeginInvoke(HubLoadMore, DispatcherPriority.Background);
+        // a short list does not scroll: load the next page only while the rows do not fill the view (after layout); a full list
+        // waits for the user to scroll, so a search no longer chains through every page at once
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (_hubScroll is { } s && s.ExtentHeight <= s.ViewportHeight + 300)
+                HubLoadMore();
+        }, DispatcherPriority.Background);
     }
+
+    private ScrollViewer? _hubScroll;
+
+    private bool HubNearEnd() => _hubScroll is { } s && s.VerticalOffset + s.ViewportHeight >= s.ExtentHeight - 300;
 
     // clearFilters: a "Clear filters" link after it (back to Text & vision, every maker).
     private void HubStatus(string text, bool clearFilters = false)
