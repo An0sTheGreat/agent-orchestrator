@@ -24,12 +24,12 @@ internal sealed class RoleCard : INotifyPropertyChanged
 
     // The planner's tab: the built-in roles it currently covers ("Planner · Implementer · Reviewer"); "" on other tabs.
     private string _covers = "";
-    public string Covers { get => _covers; set { if (_covers != value) { _covers = value; Raise(nameof(Covers)); Raise(nameof(HasCovers)); } } }
+    public string Covers { get => _covers; set { if (_covers != value) { _covers = value; Raise(nameof(Covers)); Raise(nameof(HasCovers)); Raise(nameof(TabTip)); } } }
     public bool HasCovers => _covers.Length > 0;
 
     // COMPACTOR's tab while compaction runs on MAIN's model (roles.compactor absent or "same_as": "planner").
     private bool _followsMain;
-    public bool FollowsMain { get => _followsMain; set { if (_followsMain != value) { _followsMain = value; Raise(nameof(FollowsMain)); } } }
+    public bool FollowsMain { get => _followsMain; set { if (_followsMain != value) { _followsMain = value; Raise(nameof(FollowsMain)); Raise(nameof(TabTip)); } } }
 
     public string Role { get; }
     public bool IsCustom { get; }
@@ -40,14 +40,10 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: an implementer or reviewer not added).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
-    // The test build's card groups (MainWindow.RefreshCardVisibility): LEAD and COMPACTOR always on, the others helpers. A
-    // group's first card carries its label and, for the helpers, a gap before it; helper cards are a little fainter.
-    private string _groupLabel = "";
-    public string GroupLabel { get => _groupLabel; set { Set(ref _groupLabel, value); Raise(nameof(GroupLabelShown)); } }
-    public System.Windows.Visibility GroupLabelShown => AppSettings.Unified ? _groupLabel.Length > 0 ? System.Windows.Visibility.Visible
-        : System.Windows.Visibility.Hidden : System.Windows.Visibility.Collapsed; // the test build keeps the row's height even
-    private System.Windows.Thickness _groupGap;
-    public System.Windows.Thickness GroupGap { get => _groupGap; set => Set(ref _groupGap, value); }
+    // The card groups (MainWindow.RefreshCardVisibility): LEAD and COMPACTOR always on, the others helpers. The first helper
+    // has a line before it in the Target agent track; helpers are a little fainter.
+    private bool _groupStart;
+    public bool GroupStart { get => _groupStart; set => Set(ref _groupStart, value); }
     private double _groupOpacity = 1;
     public double GroupOpacity { get => _groupOpacity; set => Set(ref _groupOpacity, value); }
     // Display name, weights and quantization of the assigned model (custom workers keep these in settings).
@@ -57,7 +53,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public WorkerSetting Config { get; set; } = new();
     // Why the orchestrator would ignore this custom worker (null = fine); refreshed by MainWindow.RefreshSetupProblems.
     private string? _setupProblem;
-    public string? SetupProblem { get => _setupProblem; set { if (_setupProblem != value) { _setupProblem = value; Raise(nameof(SetupProblem)); Raise(nameof(HasSetupProblem)); Raise(nameof(SetupTip)); } } }
+    public string? SetupProblem { get => _setupProblem; set { if (_setupProblem != value) { _setupProblem = value; Raise(nameof(SetupProblem)); Raise(nameof(HasSetupProblem)); Raise(nameof(SetupTip)); Raise(nameof(TabTip)); } } }
     public bool HasSetupProblem => _setupProblem is not null;
     public string SetupTip => $"The orchestrator will skip this worker: {_setupProblem}";
     public string ModelName { get => _modelName; private set => Set(ref _modelName, value); }
@@ -73,7 +69,9 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Compact forms for the worker tab (1.5k, 2M); the full numbers are in its tooltip.
     public string TaskTokensShort => _taskTokens is { } t ? Compact(t) : "—";
     public string TurnTotalShort => Compact(_bankedPrompt + _bankedCompletion + _livePrompt + _liveCompletion);
-    public string TabTip => $"{Title}\n{ModelName}\n{TokensPerSec}\nLast task: {TaskTokens} tokens · this turn: {TurnTotal} tokens";
+    // The Target agent segment's tip: what the old worker tab showed (the segment itself is the dot and the title).
+    public string TabTip => string.Join("\n", new[] { Title, HasCovers ? "Covers " + Covers : "", FollowsMain ? "Same as LEAD" : "", ModelName,
+        HasSetupProblem ? "⚠ Setup incomplete" : "", TokensPerSec, $"Last task: {TaskTokens} tokens · this turn: {TurnTotal} tokens" }.Where(s => s.Length > 0));
     private static string Compact(long n) => n switch
     {
         < 1000 => n.ToString(),

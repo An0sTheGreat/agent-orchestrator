@@ -1,10 +1,12 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 
 namespace AgentOrchestrator;
 
-// The Model Settings page: a horizontal strip of worker tabs (WorkerTabTemplate) and, below it, the selected worker's model
+// The Model Settings page: a header with Connection and the Target agent segments (WorkerTabTemplate, one per worker) and,
+// below it, the selected worker's model
 // settings inline (ModelSettingsBody in WorkerSettingsHost). The selection is saved (AppSettings.SelectedWorker); leaving a
 // tab with unsaved edits asks first.
 public partial class MainWindow
@@ -18,7 +20,6 @@ public partial class MainWindow
     private void InitWorkerTabs()
     {
         WorkerTabs.ItemsSource = _cards;
-        Resources["WorkerTabWidth"] = 88.0;
         SelectWorker(_cards.FirstOrDefault(c => c.Role == _settings.SelectedWorker && !c.Hidden) ?? FirstVisibleWorker());
         _cards.CollectionChanged += (_, _) =>
         {
@@ -56,11 +57,46 @@ public partial class MainWindow
             OpenWorkerTab(card);
     }
 
-    // Three tabs across the column, each 88 to WorkerTabMax wide: a narrower column scrolls the strip, a wider one shows more.
-    internal const double WorkerTabMax = 150;
+    // The header's three parts side by side, the pill exactly centred, when the page is 1200 wide and the left part fits
+    // beside the centred pill; otherwise stacked and centred.
+    private void ModelHeader_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        var natural = new Size(double.PositiveInfinity, double.PositiveInfinity);
+        ModelHeaderLeft.Measure(natural);
+        ModelHeaderPill.Measure(natural);
+        var stack = ModelSettingsPage.ActualWidth < 1200 ||
+                    ModelHeaderLeft.DesiredSize.Width > (ModelHeaderBar.ActualWidth - ModelHeaderPill.DesiredSize.Width) / 2;
+        Grid.SetColumnSpan(ModelHeaderLeft, stack ? 3 : 1);
+        ModelHeaderLeft.HorizontalAlignment = stack ? HorizontalAlignment.Center : HorizontalAlignment.Left;
+        Grid.SetColumn(ModelHeaderPill, stack ? 0 : 1);
+        Grid.SetColumnSpan(ModelHeaderPill, stack ? 3 : 1);
+        Grid.SetRow(ModelHeaderPill, stack ? 1 : 0);
+        ModelHeaderPill.Margin = new Thickness(0, stack ? 10 : 0, 0, 0);
+    }
 
-    private void WorkerTabs_SizeChanged(object sender, SizeChangedEventArgs e) =>
-        Resources["WorkerTabWidth"] = Math.Clamp(WorkerTabsScroll.ActualWidth / 3 - 6, 88, WorkerTabMax);
+    // Connection [Local | Remote PC]: the shown worker's Run on the primary PC switch (in its body), whichever is used.
+    private ToggleButton? PrimarySwitch() =>
+        WorkerSettingsHost.Child is { } body ? SmokeFind<ToggleButton>(body, b => b.Tag as string == "RunOnPrimary") : null;
+
+    private void SyncConnection()
+    {
+        var primary = PrimarySwitch();
+        ConnectionLocal.IsEnabled = primary is not null;
+        ConnectionRemote.IsEnabled = primary is { IsEnabled: true };
+        ConnectionRemote.ToolTip = string.IsNullOrEmpty(_settings.ShareHost) ? "Connect to a primary PC in Settings › Models" : "Run this worker on the primary PC";
+        (primary?.IsChecked == true ? ConnectionRemote : ConnectionLocal).IsChecked = true;
+    }
+
+    private void Connection_Click(object sender, RoutedEventArgs e)
+    {
+        var remote = sender == ConnectionRemote;
+        if (PrimarySwitch() is { IsEnabled: true } primary && (primary.IsChecked == true) != remote)
+        {
+            primary.IsChecked = remote; // as a click on the switch: it flips, then its Click acts
+            primary.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+        }
+        SyncConnection();
+    }
 
     private void WorkerTabs_MouseWheel(object sender, MouseWheelEventArgs e)
     {
@@ -162,10 +198,17 @@ public partial class MainWindow
         if (ModelSettingsBody(card, () => { RefreshWorkerTab(force: true); RefreshEffort(); }, () => RefreshWorkerTab(force: true), "Revert") is { } built)
         {
             (WorkerSettingsHost.Child, _workerDirty, _workerSave) = built;
+            if (PrimarySwitch() is { } primary)
+            {
+                primary.Checked += (_, _) => SyncConnection();
+                primary.Unchecked += (_, _) => SyncConnection();
+            }
+            SyncConnection();
             return;
         }
         var note = new TextBlock { Text = $"Could not read config.json for {ChatName(card, card.Role)}", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 14, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         WorkerSettingsHost.Child = note;
+        SyncConnection();
     }
 }

@@ -611,6 +611,35 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- Model Settings header: a segment of a rounded track (Connection); the checked one lifts on the page colour. -->
+        <Style x:Key="HeaderSeg" TargetType="ToggleButton">
+            <Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Padding" Value="14,4" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Grid>
+                            <Border x:Name="Seg" Background="{DynamicResource AppBackground}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
+                                <Border.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.3" /></Border.Effect>
+                            </Border>
+                            <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Seg" Property="Opacity" Value="1" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <!-- Chat: segmented toggle, the borderless message box and the rounded composer around it. -->
         <Style x:Key="SegToggle" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
@@ -896,49 +925,36 @@
             </Grid>
         </DataTemplate>
 
-        <!-- One worker tab (MainWindow.WorkerTabs.cs): title and activity dot, model, then tok/s and task / turn tokens.
-             WorkerTabWidth fits three tabs across the column, down to a minimum; narrower columns scroll the strip. -->
+        <!-- One worker in the Model Settings header's Target agent (MainWindow.WorkerTabs.cs): a segment with the worker's
+             activity dot and title; the old tab's figures are in its tip. A thin line in the track starts the helpers. -->
         <DataTemplate x:Key="WorkerTabTemplate">
-            <!-- The test build's card groups (RoleCard.GroupLabel): a label over a group's first card, a gap before the helpers -->
-            <StackPanel Margin="{Binding GroupGap}" Opacity="{Binding GroupOpacity}">
-            <TextBlock Text="{Binding GroupLabel}" Visibility="{Binding GroupLabelShown}" Style="{StaticResource SectionHeader}" FontSize="9"
-                       Foreground="{DynamicResource Muted}" Margin="2,0,0,4" />
-            <Button Tag="WorkerTab" Width="{DynamicResource WorkerTabWidth}" Margin="0,0,6,0" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}"
-                    Foreground="{DynamicResource TextPrimary}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
+            <StackPanel Orientation="Horizontal">
+            <Border Width="1" Margin="3,5" Background="{DynamicResource Border}" Visibility="{Binding GroupStart, Converter={StaticResource BoolVis}}" />
+            <Button Tag="WorkerTab" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}" FontSize="11" Padding="8,4,12,4" Opacity="{Binding GroupOpacity}"
+                    Foreground="{DynamicResource Muted}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="TabBox" Background="{DynamicResource Card}" BorderBrush="{DynamicResource EdgeHighlight}" BorderThickness="1"
-                                CornerRadius="{DynamicResource SmallRadius}" Padding="9,6,6,7">
-                            <ContentPresenter />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Seg" Background="{DynamicResource AppBackground}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
+                                <Border.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.3" /></Border.Effect>
+                            </Border>
+                            <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+                        </Grid>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="TabBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></Trigger>
                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
-                                <Setter TargetName="TabBox" Property="Background" Value="{DynamicResource Hover}" />
-                                <Setter TargetName="TabBox" Property="BorderBrush" Value="{DynamicResource Accent}" />
+                                <Setter TargetName="Seg" Property="Opacity" Value="1" />
+                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                                <Setter Property="FontWeight" Value="SemiBold" />
                             </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Button.Template>
-                <StackPanel>
-                    <DockPanel>
-                        <ContentPresenter DockPanel.Dock="Right" Content="{Binding}" ContentTemplate="{StaticResource ActivityDot}" Margin="0,-6,-6,-6" />
-                        <TextBlock Text="{Binding Title}" Style="{StaticResource SectionHeader}" FontSize="9.5" Foreground="{DynamicResource AccentLight}"
-                                   TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding Title}" />
-                    </DockPanel>
-                    <TextBlock Tag="Covers" FontSize="9.5" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Covers}"
-                               Visibility="{Binding HasCovers, Converter={StaticResource BoolVis}}">
-                        <Run Text="Covers " /><Run Text="{Binding Covers, Mode=OneWay}" />
-                    </TextBlock>
-                    <TextBlock Tag="FollowsMain" Text="Same as LEAD" FontSize="9.5" Foreground="{DynamicResource Muted}" ToolTip="Compaction runs on LEAD's model until COMPACTOR gets its own"
-                               Visibility="{Binding FollowsMain, Converter={StaticResource BoolVis}}" />
-                    <TextBlock Text="{Binding ModelName}" FontSize="12" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
-                    <TextBlock Text="&#x26A0; Setup incomplete" FontSize="10" Foreground="{DynamicResource Muted}" TextTrimming="CharacterEllipsis" ToolTip="{Binding SetupTip}"
-                               Visibility="{Binding HasSetupProblem, Converter={StaticResource BoolVis}}" />
-                    <TextBlock Text="{Binding TokensPerSec}" FontSize="11" FontWeight="SemiBold" Typography.NumeralAlignment="Tabular" TextTrimming="CharacterEllipsis" Margin="0,5,0,0" />
-                    <TextBlock FontSize="10.5" Foreground="{DynamicResource Muted}" Typography.NumeralAlignment="Tabular">
-                        <Run Text="{Binding TaskTokensShort, Mode=OneWay}" /><Run Text=" task · " /><Run Text="{Binding TurnTotalShort, Mode=OneWay}" /><Run Text=" turn" />
-                    </TextBlock>
+                <StackPanel Orientation="Horizontal">
+                    <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource ActivityDot}" Margin="-4,0,1,0" VerticalAlignment="Center">
+                        <ContentPresenter.LayoutTransform><ScaleTransform ScaleX="0.6" ScaleY="0.6" /></ContentPresenter.LayoutTransform>
+                    </ContentPresenter>
+                    <TextBlock Text="{Binding Title}" VerticalAlignment="Center" />
                 </StackPanel>
             </Button>
             </StackPanel>
@@ -1193,61 +1209,87 @@
             <!-- The Skills page (the sidebar's Skills), built by MainWindow.SkillsPage.cs; in place of Code and Chat while open -->
             <Grid x:Name="SkillsView" Grid.Column="1" Visibility="Collapsed" />
             <Grid x:Name="ImagesView" Grid.Column="1" Visibility="Collapsed" />
-            <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the worker tabs and the selected
+            <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the Connection and Target agent header and the selected
                  worker's settings (MainWindow.WorkerTabs.cs); in place of Code and Chat while open -->
             <Grid x:Name="ModelSettingsView" Grid.Column="1" Visibility="Collapsed">
-              <DockPanel x:Name="ModelSettingsPage" Tag="ModelSettingsPage" MaxWidth="1400" Margin="19,28,19,0">
-                <DockPanel DockPanel.Dock="Top" Margin="17,0,17,14">
-                    <TextBlock DockPanel.Dock="Left" Text="Model Settings" FontFamily="{StaticResource DisplayFont}" FontSize="22" FontWeight="SemiBold" VerticalAlignment="Center" />
-                    <TextBlock Text="ALL WORKERS" Style="{StaticResource SectionHeader}" Margin="18,0,0,0" VerticalAlignment="Center" />
-                    <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="9,3"
-                            Margin="10,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="Presets_Click"
-                            ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
-                    <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontSize="11" Padding="9,3"
-                            Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
-                </DockPanel>
-                <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
-                <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">
-                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"
-                                  SizeChanged="WorkerTabs_SizeChanged" PreviewMouseWheel="WorkerTabs_MouseWheel">
-                        <StackPanel Orientation="Horizontal">
-                            <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}" Margin="0,0,0,8">
-                                <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                                <ItemsControl.ItemContainerStyle>
-                                    <Style TargetType="ContentPresenter">
-                                        <Style.Triggers>
-                                            <MultiDataTrigger>
-                                                <MultiDataTrigger.Conditions>
-                                                    <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
-                                                </MultiDataTrigger.Conditions>
-                                                <Setter Property="Visibility" Value="Collapsed" />
-                                            </MultiDataTrigger>
-                                        </Style.Triggers>
-                                    </Style>
-                                </ItemsControl.ItemContainerStyle>
-                            </ItemsControl>
-                            <!-- Add agent: a card of its own after the last one (custom workers; Chat's "+" also shows or hides agents) -->
-                            <Button x:Name="AddWorkerButton" Width="96" Margin="0,0,0,8" Click="AddWorker_Click" Cursor="Hand"
-                                    ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
+              <DockPanel x:Name="ModelSettingsPage" Tag="ModelSettingsPage" MaxWidth="1400" Margin="19,8,19,0">
+                <!-- Header: the title and the workflow presets left; Connection and Target agent in a pill exactly centred (the
+                     right column balances the left); too narrow for that, they stack centred (MainWindow.WorkerTabs.cs). -->
+                <Grid DockPanel.Dock="Top" MinHeight="64" Margin="0,0,0,14">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="8*" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                  <Grid x:Name="ModelHeaderBar" Grid.Column="1" SizeChanged="ModelHeader_SizeChanged">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <StackPanel x:Name="ModelHeaderLeft" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" SizeChanged="ModelHeader_SizeChanged">
+                        <TextBlock Text="Model Settings" FontFamily="{StaticResource DisplayFont}" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" />
+                        <Border Width="1" Height="18" Margin="14,0,12,0" Background="{DynamicResource Border}" VerticalAlignment="Center" />
+                        <TextBlock Text="ALL WORKERS" Style="{StaticResource SectionHeader}" FontSize="10" VerticalAlignment="Center" />
+                        <TextBlock Text="·" Foreground="{DynamicResource Muted}" Margin="6,0,0,0" VerticalAlignment="Center" />
+                        <Button x:Name="PresetsButton" Style="{StaticResource GhostButton}" Content="Presets  &#x25BE;" FontSize="11" Padding="7,3"
+                                Margin="2,0,0,0" VerticalAlignment="Center" Click="Presets_Click"
+                                ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
+                        <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontFamily="{StaticResource MonoFont}" FontSize="11" Padding="7,3"
+                                VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
+                    </StackPanel>
+                    <Border x:Name="ModelHeaderPill" Grid.Column="1" HorizontalAlignment="Center" VerticalAlignment="Center" Background="{DynamicResource Panel}"
+                            BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="30" Padding="20,6" SizeChanged="ModelHeader_SizeChanged">
+                        <DockPanel>
+                            <StackPanel DockPanel.Dock="Left" VerticalAlignment="Center">
+                                <TextBlock Text="CONNECTION" Style="{StaticResource SectionHeader}" FontSize="9" Margin="4,0,0,3" />
+                                <Border BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}" Padding="2" HorizontalAlignment="Left">
+                                    <StackPanel Orientation="Horizontal">
+                                        <!-- The shown worker's Run on the primary PC switch (Local: off), either way (MainWindow.WorkerTabs.cs) -->
+                                        <RadioButton x:Name="ConnectionLocal" Tag="ConnectionLocal" GroupName="Connection" Style="{StaticResource HeaderSeg}" Content="LOCAL"
+                                                     Click="Connection_Click" ToolTip="Run this worker on this PC" />
+                                        <RadioButton x:Name="ConnectionRemote" Tag="ConnectionRemote" GroupName="Connection" Style="{StaticResource HeaderSeg}" Content="REMOTE PC"
+                                                     Click="Connection_Click" ToolTipService.ShowOnDisabled="True" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                            <Border DockPanel.Dock="Left" Width="1" Margin="12,4" Background="{DynamicResource Border}" />
+                            <!-- Add agent: custom workers (Chat's "+" also shows or hides agents) -->
+                            <Button x:Name="AddWorkerButton" DockPanel.Dock="Right" Width="28" Height="28" Margin="10,14,0,0" VerticalAlignment="Center" Click="AddWorker_Click" Cursor="Hand"
+                                    Background="Transparent" ToolTip="Add an agent" AutomationProperties.Name="Add agent" FocusVisualStyle="{x:Null}">
                                 <Button.Template>
                                     <ControlTemplate TargetType="Button">
-                                        <Grid x:Name="AddBox" Background="Transparent" MinHeight="72">
-                                            <Rectangle x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="4 3" RadiusX="8" RadiusY="8" />
-                                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                                                <TextBlock Text="+" FontSize="20" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
-                                                <TextBlock Text="Add agent" FontSize="11" HorizontalAlignment="Center" Foreground="{DynamicResource Muted}" />
-                                            </StackPanel>
+                                        <Grid x:Name="AddBox">
+                                            <Ellipse x:Name="AddEdge" Stroke="{DynamicResource Border}" StrokeThickness="1.2" StrokeDashArray="3 2" Fill="{TemplateBinding Background}" />
+                                            <TextBlock Text="+" FontSize="15" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="0,-2,0,0" Foreground="{DynamicResource Muted}" />
                                         </Grid>
                                         <ControlTemplate.Triggers>
-                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddBox" Property="Background" Value="{DynamicResource Hover}" /></Trigger>
+                                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="AddEdge" Property="Fill" Value="{DynamicResource Hover}" /></Trigger>
                                             <Trigger Property="IsEnabled" Value="False"><Setter TargetName="AddBox" Property="Opacity" Value="0.45" /></Trigger>
                                         </ControlTemplate.Triggers>
                                     </ControlTemplate>
                                 </Button.Template>
                             </Button>
-                        </StackPanel>
-                    </ScrollViewer>
-                </DockPanel>
+                            <StackPanel VerticalAlignment="Center">
+                                <TextBlock Text="TARGET AGENT" Style="{StaticResource SectionHeader}" FontSize="9" Margin="4,0,0,3" />
+                                <Border BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}" Padding="2" HorizontalAlignment="Left">
+                                    <!-- one segment per shown worker (MainWindow.WorkerTabs.cs); too many for the pill, they scroll (the wheel too) -->
+                                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" PreviewMouseWheel="WorkerTabs_MouseWheel">
+                                        <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}">
+                                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                            <ItemsControl.ItemContainerStyle>
+                                                <Style TargetType="ContentPresenter">
+                                                    <Style.Triggers>
+                                                        <MultiDataTrigger>
+                                                            <MultiDataTrigger.Conditions>
+                                                                <Condition Binding="{Binding Hidden}" Value="True" /><Condition Binding="{Binding IsSelected}" Value="False" />
+                                                            </MultiDataTrigger.Conditions>
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </MultiDataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ItemsControl.ItemContainerStyle>
+                                        </ItemsControl>
+                                    </ScrollViewer>
+                                </Border>
+                            </StackPanel>
+                        </DockPanel>
+                    </Border>
+                  </Grid>
+                </Grid>
                 <Border x:Name="WorkerSettingsHost" Margin="17,0,4,0" />
               </DockPanel>
             </Grid>

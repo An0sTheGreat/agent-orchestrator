@@ -192,16 +192,13 @@ public partial class MainWindow
         }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
-        // the Add agent card lines up with the cards (the test build's sit under their group labels)
-        AddWorkerButton.Margin = new Thickness(AppSettings.Unified ? 4 : 0, AppSettings.Unified ? 17 : 0, 0, 8);
-        // The test build's groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the
-        // workflow or the lead calls them. The first shown card of each group carries its label; the helpers start after a gap.
+        // The groups: LEAD and COMPACTOR always work; the Implementer, Reviewer and custom workers only when the workflow or
+        // the lead calls them. A line in the Target agent track starts the helpers, which are a little fainter.
         var firstHelper = true;
         foreach (var card in _cards.Where(c => !c.Hidden))
         {
             var core = card.Role is "planner" or "compactor";
-            card.GroupLabel = card.Role == "planner" ? "ALWAYS ON" : !core && firstHelper ? "HELPERS · WHEN NEEDED" : "";
-            card.GroupGap = !core && firstHelper ? new Thickness(10, 0, 0, 0) : new Thickness(0);
+            card.GroupStart = !core && firstHelper;
             card.GroupOpacity = core ? 1 : 0.82;
             firstHelper &= core;
         }

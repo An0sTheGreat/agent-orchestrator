@@ -2028,8 +2028,8 @@ public partial class MainWindow
             ModelSettingsPage.Width = 820; // Model on top, the prompts under it, the options below the line
             SmokeClickTab(compactor);
             await Idle();
-            if ((double)Resources["WorkerTabWidth"] != WorkerTabMax || WorkerTabsScroll.ScrollableWidth > 1) // capped: all four fit
-                return Fail($"the cards' width: {Resources["WorkerTabWidth"]}");
+            if (WorkerTabsScroll.ScrollableWidth > 1) // all four fit
+                return Fail($"the Target agent segments scroll: {WorkerTabsScroll.ScrollableWidth}");
             TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.EndsWith(text) && t.IsVisible);
             if (Header("MODEL") is not { } model || Header("SYSTEM PROMPT (WORKFLOW)") is not { } prompts || Header("SAMPLING") is not { } sampling)
                 return Fail("the groups");
@@ -2265,22 +2265,27 @@ public partial class MainWindow
             if (RailPopup.IsOpen || !ModelSettingsView.IsVisible || !WorkerRail.IsVisible || _shownWorker != implementer || !implementer.IsSelected)
                 return Fail("the gear opens the tab");
 
-            // One tab per shown worker; three fit the page.
-            var width = (double)Resources["WorkerTabWidth"];
-            if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)) || Math.Abs(width - Math.Clamp(WorkerTabsScroll.ActualWidth / 3 - 6, 88, WorkerTabMax)) > 0.5 ||
-                3 * (width + 6) > WorkerTabsScroll.ActualWidth + 1 || (_cards.Count(c => !c.Hidden) <= 3 && WorkerTabsScroll.ScrollableWidth > 1) ||
-                Math.Abs(SmokeTab(planner)!.ActualWidth - width - 6) > 0.5)
-                return Fail("tabs at the default width");
-            var texts = SmokeVisuals(SmokeTab(planner)!).OfType<TextBlock>().Select(t => new System.Windows.Documents.TextRange(t.ContentStart, t.ContentEnd).Text).ToList();
-            if (!texts.Contains(planner.Title) || !texts.Contains(planner.ModelName) || !texts.Contains(planner.TokensPerSec) ||
-                !texts.Contains($"{planner.TaskTokensShort} task · {planner.TurnTotalShort} turn"))
-                return Fail("tab text: " + string.Join(" | ", texts));
+            // The header's Target agent: one segment per shown worker, its activity dot and title; the old tab's figures in its tip.
+            if (_cards.Any(c => SmokeTab(c) is not { } t || t.IsVisible != (!c.Hidden || c.IsSelected)))
+                return Fail("a Target agent segment per shown worker");
+            var segment = SmokeVisuals(SmokeTab(planner)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab");
+            var texts = SmokeVisuals(segment).OfType<TextBlock>().Select(t => t.Text).ToList();
+            if (!texts.Contains(planner.Title) || segment.ToolTip as string != planner.TabTip || !planner.TabTip.Contains(planner.ModelName) ||
+                !planner.TabTip.Contains(planner.TokensPerSec) || !SmokeVisuals(segment).OfType<System.Windows.Shapes.Ellipse>().Any())
+                return Fail("segment text: " + string.Join(" | ", texts) + " / tip: " + segment.ToolTip);
+            // Connection: Local or Remote PC as the shown worker's Run on the primary PC switch; Remote PC greyed until connected.
+            var connectedNow = !string.IsNullOrEmpty(_settings.ShareHost);
+            var runOnPrimary = SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "RunOnPrimary");
+            if (!ConnectionLocal.IsVisible || !ConnectionRemote.IsVisible || ConnectionRemote.IsEnabled != connectedNow || runOnPrimary is null ||
+                (ConnectionRemote.IsChecked == true) != (runOnPrimary.IsChecked == true) || (ConnectionLocal.IsChecked == true) == (runOnPrimary.IsChecked == true) ||
+                !connectedNow && ConnectionRemote.ToolTip as string != "Connect to a primary PC in Settings › Models")
+                return Fail("the Connection toggle");
             snap("tabs-default", null);
 
-            // A narrow page: the tabs keep their minimum width and the strip scrolls, also with the mouse wheel.
+            // A narrow page: the header stacks and the Target agent segments scroll, also with the mouse wheel.
             ModelSettingsPage.Width = 260;
             await Idle();
-            if (WorkerTabsScroll.ScrollableWidth <= 0 || (double)Resources["WorkerTabWidth"] != 88)
+            if (WorkerTabsScroll.ScrollableWidth <= 0 || Grid.GetRow(ModelHeaderPill) != 1)
                 return Fail("a narrow column scrolls");
             WorkerTabsScroll.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, -120) { RoutedEvent = PreviewMouseWheelEvent });
             await Idle();
@@ -2313,6 +2318,13 @@ public partial class MainWindow
                 (Width, Height) = (1600, 1000);
                 await Idle();
                 var page = SmokeFind<ScrollViewer>(WorkerSettingsHost, s => s.Content is Border)!;
+                if (!file.Contains("narrow")) // the whole page as shown: the header and the top of the body (ao-model-settings-header.png)
+                {
+                    ModelSettingsView.SetResourceReference(Panel.BackgroundProperty, "AppBackground"); // the window's, behind the page
+                    await Idle();
+                    SavePicture(ModelSettingsView, Path.Combine(Path.GetTempPath(), "ao-model-settings-header.png"));
+                    ModelSettingsView.ClearValue(Panel.BackgroundProperty);
+                }
                 if (file.Contains("narrow"))
                 {
                     Width -= page.ActualWidth - 1000;

@@ -1132,8 +1132,8 @@ public partial class MainWindow : Window
                 Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
                 Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
                 return Fail();
-            // The group labels: ALWAYS ON over LEAD, HELPERS · WHEN NEEDED over the first helper shown
-            if (main.GroupLabel != "ALWAYS ON" || CardFor("compactor")!.GroupLabel != "" || reviewer.GroupLabel != "HELPERS · WHEN NEEDED")
+            // The groups: the Target agent track's line before the first helper shown (REVIEWER), none before LEAD or COMPACTOR
+            if (main.GroupStart || CardFor("compactor")!.GroupStart || !reviewer.GroupStart)
                 return Fail();
             // Chat shows Code's cards, and its "+" adds only custom workers (no Chat-only agent list)
             var chatCards = _settings.ChatCards.ToList();
