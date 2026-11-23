@@ -1205,8 +1205,6 @@
                             ToolTip="Save, apply or delete named presets: each saves the workers in the tabs and all their settings" />
                     <Button x:Name="SavePresetButton" Style="{StaticResource GhostButton}" Content="Save" FontSize="11" Padding="9,3"
                             Margin="6,0,0,0" HorizontalAlignment="Left" VerticalAlignment="Center" Click="SavePreset_Click" Visibility="Collapsed" />
-                    <!-- The selected worker's own presets, Revert and Save (ModelSettingsBody's bar), after a divider -->
-                    <ContentControl x:Name="WorkerBarHost" HorizontalAlignment="Left" VerticalAlignment="Center" Focusable="False" IsTabStop="False" />
                 </DockPanel>
                 <!-- Worker tabs (MainWindow.WorkerTabs.cs): one per shown worker, the selected one's settings below -->
                 <DockPanel DockPanel.Dock="Top" Margin="10,0,10,10">

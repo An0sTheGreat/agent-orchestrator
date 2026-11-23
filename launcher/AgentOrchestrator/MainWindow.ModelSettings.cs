@@ -172,7 +172,7 @@ public partial class MainWindow
     // closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs from what the
     // body was built with. Save: the Save button; true when it wrote the edits. The radio buttons share fixed group names,
     // so host one body at a time.
-    private (FrameworkElement Body, FrameworkElement Bar, Func<bool> IsDirty, Func<bool> Save)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
+    private (FrameworkElement Body, Func<bool> IsDirty, Func<bool> Save)? ModelSettingsBody(RoleCard card, Action saved, Action close, string closeLabel)
     {
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
@@ -254,8 +254,15 @@ public partial class MainWindow
         var sections = new SettingsColumns();
         var divider = new Border { Height = 1, Margin = new Thickness(0, 16, 0, 18) };
         divider.SetResourceReference(Border.BackgroundProperty, "Border");
-        var body = new StackPanel { Margin = new Thickness(0, 0, 14, 0), Children = { head, divider, sections } };
-        var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        // One card centred at about 65% of the page: the presets band on top (the bar, below), then the groups.
+        var body = new StackPanel { Margin = new Thickness(20, 16, 20, 20), Children = { head, divider, sections } };
+        var cardShell = new StackPanel { Children = { body } };
+        var cardBorder = new Border { Child = cardShell, BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 24) };
+        cardBorder.SetResourceReference(Border.BackgroundProperty, "Card");
+        cardBorder.SetResourceReference(Border.BorderBrushProperty, "Border");
+        cardBorder.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        var scroll = new ScrollViewer { Content = cardBorder, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Clamp(e.NewSize.Width * 0.65, 680, 1280)));
         var blocks = new Dictionary<string, FrameworkElement>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
         StackPanel Section(string name, string help, bool showHelp = true, bool card = false)
@@ -1236,16 +1243,31 @@ public partial class MainWindow
             presets.ContextMenu = menu;
             menu.IsOpen = true;
         };
-        // The bar goes in the page header, right of the all-workers presets: a divider, then this worker's name, its presets,
-        // Revert and Save. The error line stays at the foot of the settings.
-        var barDivider = new Border { Width = 1, Height = 18, Margin = new Thickness(18, 0, 18, 0), VerticalAlignment = VerticalAlignment.Center };
-        barDivider.SetResourceReference(Border.BackgroundProperty, "Border");
+        // The card's top band (slightly darker, a line under it): MODEL PRESETS, the model's name, this worker's presets, and
+        // Revert and Save at the right. The error line stays at the foot of the settings.
         var barLabel = new TextBlock
         {
-            Text = $"{ChatName(card, card.Role).ToUpperInvariant()} MODEL", Style = (Style)FindResource("SectionHeader"), VerticalAlignment = VerticalAlignment.Center,
-            Margin = new Thickness(0, 0, 10, 0), ToolTip = "Presets, Revert and Save for the selected worker's model settings only",
+            Text = "MODEL PRESETS", Style = (Style)FindResource("SectionHeader"), VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 12, 0), ToolTip = $"Presets, Revert and Save for {ChatName(card, card.Role)}'s model settings only",
         };
-        var bar = new StackPanel { Orientation = Orientation.Horizontal, Children = { barDivider, barLabel, presets, saveTo, cancel, save } };
+        var badgeText = new TextBlock { Text = ShownModel(), FontSize = 11, FontFamily = AppFonts.Mono, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = 260 };
+        badgeText.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        var badge = new Border { Child = badgeText, Padding = new Thickness(10, 4, 10, 4), CornerRadius = new CornerRadius(11), BorderThickness = new Thickness(1),
+            Margin = new Thickness(0, 0, 12, 0), VerticalAlignment = VerticalAlignment.Center, Tag = "ModelBadge" };
+        badge.SetResourceReference(Border.BackgroundProperty, "Hover");
+        badge.SetResourceReference(Border.BorderBrushProperty, "Border");
+        modelBox.SelectionChanged += (_, _) => badgeText.Text = ShownModel();
+        var barRight = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center, Children = { cancel, save } };
+        DockPanel.SetDock(barRight, Dock.Right);
+        var barLeft = new WrapPanel { VerticalAlignment = VerticalAlignment.Center, Children = { barLabel, badge, presets, saveTo } };
+        var radius = (CornerRadius)FindResource("ControlRadius");
+        var bar = new Border
+        {
+            Child = new DockPanel { Children = { barRight, barLeft } }, Padding = new Thickness(20, 12, 20, 12), BorderThickness = new Thickness(0, 0, 0, 1),
+            Background = new SolidColorBrush(Color.FromArgb(0x26, 0, 0, 0)), CornerRadius = new CornerRadius(radius.TopLeft, radius.TopRight, 0, 0),
+        };
+        bar.SetResourceReference(Border.BorderBrushProperty, "Border");
+        cardShell.Children.Insert(0, bar);
         var footer = new StackPanel { Children = { error } };
         DockPanel.SetDock(footer, Dock.Bottom);
         footer.Margin = new Thickness(0, 8, 14, 14);
@@ -1496,7 +1518,7 @@ public partial class MainWindow
         }
         if (onPrimary)
             FetchPrimaryLoad();
-        return (new DockPanel { Children = { footer, scroll } }, bar, () => !State().SequenceEqual(clean), Save);
+        return (new DockPanel { Children = { footer, scroll } }, () => !State().SequenceEqual(clean), Save);
     }
 
     // A model's Save: while a reply or run uses the models, a dialog says when the settings take effect (MainWindow.SavedWhileWorking).
@@ -1619,7 +1641,7 @@ public partial class MainWindow
             // Save of another field, opens the page on itself, and Switch to Local restores its local settings and the defaults.
             if (SmokeField("temperature").Text != "0.8" || SmokeField("top_p").Text != "0.95" || _workerDirty())
                 return Fail("defaults");
-            Button? SourceButton(string tag) => SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == tag) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag);
+            Button? SourceButton(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag);
             TextBlock? Summary() => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Tag as string == "RemoteSummary");
             bool Shown(FrameworkElement? e)
             {
@@ -1748,7 +1770,7 @@ public partial class MainWindow
             // Option presets: save on the Reviewer (with its chat system prompt), apply on the Implementer, delete.
             void Preset(string header, string? sub = null)
             {
-                var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
+                var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
                 var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (i.Header as string ?? i.Tag as string) == header); // a preset's row: Tag is its label
                 if (sub == "✕") // the row's delete button, not the row
@@ -1759,7 +1781,7 @@ public partial class MainWindow
             }
             bool Listed(string label)
             {
-                var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
+                var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
                 var found = button.ContextMenu.Items.OfType<MenuItem>().Any(i => (i.Header as string ?? i.Tag as string) == label);
                 button.ContextMenu.IsOpen = false;
@@ -1895,7 +1917,7 @@ public partial class MainWindow
         d is T t && match(t) ? t : LogicalTreeHelper.GetChildren(d).OfType<DependencyObject>().Select(c => SmokeFind(c, match)).FirstOrDefault(r => r is not null);
     private static void SmokeClick(ButtonBase b) => b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
     private TextBox SmokeField(string key) => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == key)!;
-    private Button SmokeButton(string label) => (SmokeFind<Button>(WorkerBarHost, b => b.Content as string == label) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Content as string == label))!;
+    private Button SmokeButton(string label) => SmokeFind<Button>(WorkerSettingsHost, b => b.Content as string == label)!;
     private FrameworkElement? SmokeTab(RoleCard card)
     {
         WorkerTabs.UpdateLayout();
@@ -2051,7 +2073,7 @@ public partial class MainWindow
                 SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
                 return Fail("Same as LEAD, no chat prompt");
             TextBox Box() => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "Prompt:compactor.txt")!;
-            Button Icon(string tag) => (SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == tag) ?? SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag))!;
+            Button Icon(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag)!;
             var original = DefaultPromptText("compactor.txt");
             if (original.Length == 0 || Box().Text != original || !Box().IsReadOnly)
                 return Fail("the compactor prompt");

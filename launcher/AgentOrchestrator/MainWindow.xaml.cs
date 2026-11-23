@@ -1539,7 +1539,7 @@ public partial class MainWindow : Window
             // Its options show what it inherits (the Implementer's temperature); Save keeps only what differs, so it still inherits.
             var inheritedTemperature = FindIn<TextBox>(prefilled, t => t.Tag as string == "temperature")?.Text;
             FindIn<TextBox>(prefilled, t => t.Tag as string == "top_k")!.Text = "12";
-            FindIn<Button>(WorkerBarHost, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            FindIn<Button>(WorkerSettingsHost, b => b.Content as string == "Save")!.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
             if (!swapped || tester.Config.SystemPrompt != LauncherLogic.DefaultSystemPrompt("reviewer") || tester.Config.Description != LauncherLogic.DefaultDescription("reviewer") ||
                 inheritedTemperature != "0.33" || string.Join(",", tester.Config.ModelOptions.Select(p => $"{p.Key}={p.Value}")) != "top_k=12")
                 return Fail();
