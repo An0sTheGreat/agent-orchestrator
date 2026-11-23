@@ -651,6 +651,25 @@ public partial class MainWindow
                 }
             return changed;
         }
+        // Speculative decoding offers only what the model's GGUF supports (ModelOptions.SpeculativeChoices); a saved choice it
+        // cannot use shows as the engine runs it. Returns the key when the shown value changed.
+        List<string> SpeculativeFits()
+        {
+            if (!editors.TryGetValue("speculative_type", out var editor) || editor is not ComboBox box)
+                return [];
+            var offered = ModelOptions.SpeculativeChoices(meta);
+            var (was, items) = (Value(box), box.Items.OfType<string>().Skip(1).ToList());
+            var shown = ModelOptions.SpeculativeFallback(was, offered);
+            var list = items.Where(v => offered.Contains(v) || !ModelOptions.All.First(o => o.Key == "speculative_type").Values.Contains(v)).ToList(); // a value config.json had stays
+            foreach (var v in offered.Where(v => !list.Contains(v)))
+                list.Insert(Math.Min(Array.IndexOf(offered, v), list.Count), v);
+            box.Items.Clear();
+            box.Items.Add("(default)");
+            foreach (var v in list)
+                box.Items.Add(v);
+            box.SelectedItem = shown.Length > 0 ? shown : "(default)";
+            return shown == was ? [] : ["speculative_type"];
+        }
         // Reads the model's GGUF header off the UI thread, then rederives; only the latest read applies. The values derived at
         // open are part of the clean state, not changes.
         var derivation = 0;
@@ -669,7 +688,7 @@ public partial class MainWindow
             meta = read;
             files = sizes;
             var keys = editors.Keys.ToList();
-            foreach (var key in Rederive())
+            foreach (var key in Rederive().Concat(SpeculativeFits()))
                 if (atOpen)
                     clean[keys.IndexOf(key)] = StateOf(editors[key]);
             ContextHint(meta);

@@ -188,6 +188,24 @@ internal static class ModelOptions
 
     public const long ContextCap = 32768;
 
+    // The Speculative decoding choices that work with the model (meta: its GGUF header values, null = unreadable, so all):
+    // mtp and mtp+ngram need <arch>.nextn_predict_layers > 0; dflash and dspark use a separate draft model, so they stay.
+    public static string[] SpeculativeChoices(IReadOnlyDictionary<string, string>? meta)
+    {
+        var all = All.First(o => o.Key == "speculative_type").Values;
+        if (meta is null || HasMtp(meta))
+            return all;
+        return [.. all.Where(v => v is not ("mtp" or "mtp+ngram"))];
+    }
+
+    public static bool HasMtp(IReadOnlyDictionary<string, string> meta) =>
+        meta.GetValueOrDefault("general.architecture") is { } arch && meta.GetValueOrDefault(arch + ".nextn_predict_layers") is { } n &&
+        long.TryParse(n, NumberStyles.Integer, CultureInfo.InvariantCulture, out var v) && v > 0;
+
+    // A saved choice the model cannot use, as the engine runs it (orchestrator.py speculative_type): mtp off, mtp+ngram ngram.
+    public static string SpeculativeFallback(string value, string[] offered) =>
+        value.Length == 0 || offered.Contains(value) ? value : value == "mtp+ngram" ? "ngram" : "off";
+
     // What each option shows while its key is absent: the model's own value (meta: its GGUF header values, null = unknown),
     // else the option's static default. Context length: the model's, capped at ContextCap. load false (no model to load):
     // the load options stay empty, as Apply would refuse them. inherited (a custom worker: what it inherits from the
@@ -319,6 +337,15 @@ internal static class ModelOptions
              "sampling":{"temperature":0.3,"top_p":0.9,"extra_body":{"top_k":40,"other":1}}}
             """)!.AsObject();
         string J(JsonNode? n) => n?.ToJsonString() ?? "absent";
+        var noMtp = new Dictionary<string, string> { ["general.architecture"] = "qwen35", ["qwen35.block_count"] = "32" };
+        var mtp = new Dictionary<string, string>(noMtp) { ["qwen35.nextn_predict_layers"] = "1" };
+        var offered = SpeculativeChoices(noMtp);
+        Check(!offered.Contains("mtp") && !offered.Contains("mtp+ngram") && offered.Contains("dflash") && offered.Contains("auto") && offered.Contains("off") &&
+              SpeculativeChoices(mtp).Contains("mtp+ngram") && SpeculativeChoices(null).Contains("mtp") &&
+              !SpeculativeChoices(new Dictionary<string, string>(noMtp) { ["qwen35.nextn_predict_layers"] = "0" }).Contains("mtp"),
+            "speculative choices: MTP only for a GGUF with nextn_predict_layers > 0");
+        Check(SpeculativeFallback("mtp", offered) == "off" && SpeculativeFallback("mtp+ngram", offered) == "ngram" && SpeculativeFallback("ngram", offered) == "ngram" &&
+              SpeculativeFallback("", offered) == "", "a saved MTP choice the model cannot use shows as the engine runs it");
 
         var role = Role();
         var errors = Apply(role, new Dictionary<string, string>
