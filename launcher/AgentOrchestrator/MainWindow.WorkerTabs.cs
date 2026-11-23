@@ -194,7 +194,10 @@ public partial class MainWindow
         WorkerSettingsHost.Child = null; // the radio groups are shared by name: never two bodies at once
         (_workerDirty, _workerSave) = (() => false, () => true);
         if (_shownWorker is not { } card)
+        {
+            SyncConnection(); // no worker: the pill doesn't keep the last one's state
             return;
+        }
         if (ModelSettingsBody(card, () => { RefreshWorkerTab(force: true); RefreshEffort(); }, () => RefreshWorkerTab(force: true), "Revert") is { } built)
         {
             (WorkerSettingsHost.Child, _workerDirty, _workerSave) = built;

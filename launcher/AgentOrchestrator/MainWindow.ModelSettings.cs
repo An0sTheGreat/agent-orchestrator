@@ -2280,6 +2280,25 @@ public partial class MainWindow
                 (ConnectionRemote.IsChecked == true) != (runOnPrimary.IsChecked == true) || (ConnectionLocal.IsChecked == true) == (runOnPrimary.IsChecked == true) ||
                 !connectedNow && ConnectionRemote.ToolTip as string != "Connect to a primary PC in Settings › Models")
                 return Fail("the Connection toggle");
+            // Clicking Remote PC / Local acts as the switch itself (its Click swaps the picker's list), not just its look.
+            var savedHost = _settings.ShareHost;
+            _settings.ShareHost = "smoke.invalid";
+            RefreshWorkerTab(force: true);
+            await Idle();
+            bool Says(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == text && t.IsVisible) is not null;
+            ConnectionRemote.IsChecked = true;
+            ConnectionRemote.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Idle();
+            var remoteOk = PrimarySwitch()?.IsChecked == true && Says("Open the list for the primary PC's models.");
+            ConnectionLocal.IsChecked = true;
+            ConnectionLocal.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Idle();
+            var localOk = PrimarySwitch()?.IsChecked == false && Says("Open the list for the installed models.") && ConnectionLocal.IsChecked == true;
+            _settings.ShareHost = savedHost;
+            RefreshWorkerTab(force: true);
+            await Idle();
+            if (!remoteOk || !localOk)
+                return Fail($"clicking the Connection toggle (remote {remoteOk}, local {localOk})");
             snap("tabs-default", null);
 
             // A narrow page: the header stacks and the Target agent segments scroll, also with the mouse wheel.
