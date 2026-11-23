@@ -360,7 +360,7 @@ internal static class ImageShare
                         : request.Path == PairPath && Pair is { } pair
                         ? request.Method == "GET" ? await pair(request) : Error(405, $"{PairPath} takes GET")
                         : Check(request, key()) ?? (request.Path == GeneratePath
-                            ? await HeartbeatAsync(stream, handle(request, _stop.Token), Progress, _stop.Token)
+                            ? await GenerateUntilGoneAsync(client.Client, stream, request, handle)
                             : await handle(request, _stop.Token));
                     if (response is null)
                         return;
@@ -373,15 +373,38 @@ internal static class ImageShare
             }
         }
 
+        // The generation, cancelled when the other PC hangs up (its Cancel closes the connection): else the primary PC kept
+        // downloading and generating for nobody and answered every later request 409 busy until it was done.
+        private async Task<Response?> GenerateUntilGoneAsync(Socket socket, Stream stream, Request request, Func<Request, CancellationToken, Task<Response>> handle)
+        {
+            using var gone = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            return await HeartbeatAsync(stream, handle(request, gone.Token), Progress, _stop.Token, () =>
+            {
+                if (!Closed(socket))
+                    return false;
+                gone.Cancel();
+                return true;
+            });
+        }
+
+        // The other PC sent its whole request before this, so readable with nothing to read is its close (or a reset).
+        internal static bool Closed(Socket socket)
+        {
+            try { return socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0; }
+            catch (Exception x) when (x is SocketException or ObjectDisposedException) { return true; }
+        }
+
         // The 200 head now; while the handler runs, a progress line whenever the status changed (checked each ProgressTick) and a
         // blank line at least every Heartbeat; then its JSON on the last line (an error as {"error","status"}). Null: the reply is written.
-        private static async Task<Response?> HeartbeatAsync(Stream stream, Task<Response> work, Func<string?>? progress, CancellationToken ct)
+        private static async Task<Response?> HeartbeatAsync(Stream stream, Task<Response> work, Func<string?>? progress, CancellationToken ct, Func<bool>? hungUp = null)
         {
             await stream.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson; charset=utf-8\r\nConnection: close\r\n\r\n"), ct);
             string? sent = null;
             var quiet = System.Diagnostics.Stopwatch.StartNew();
             while (await Task.WhenAny(work, Task.Delay(ProgressTick, ct)) != work)
             {
+                if (hungUp?.Invoke() == true)
+                    return null; // the handler sees its token cancelled and stops
                 var line = progress?.Invoke();
                 if (line is not null && line != sent)
                     await stream.WriteAsync(Encoding.UTF8.GetBytes((sent = line) + "\n"), ct);
@@ -526,6 +549,22 @@ internal static class ImageShare
             Assert(Task.Run(() => GenerateAsync(http, $"http://127.0.0.1:{slow.Port}", "k", new() { Prompt = "x" }, default, new Sync<ProgressLine>(reported.Add))).GetAwaiter().GetResult() is [{ Seed: 9 }],
                 "a slow generation's reply parses after its progress lines");
             Assert(reported.Count > 0 && reported[0] == new ProgressLine(0.5, "Step 1/2"), "the primary PC's progress reaches the other PC");
+            // the other PC cancels (closes the connection): the generation's token is cancelled, so the primary PC is free again
+            var stopped = new TaskCompletionSource();
+            using var endless = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", async (_, ct) =>
+            {
+                try { await Task.Delay(Timeout.Infinite, ct); }
+                finally { stopped.TrySetResult(); }
+                return Error(500, "unreachable");
+            });
+            using (var quitter = new TcpClient())
+            {
+                quitter.Connect(IPAddress.Loopback, endless.Port);
+                var q = quitter.GetStream();
+                q.Write(Encoding.ASCII.GetBytes($"POST {GeneratePath} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer k\r\nContent-Length: 2\r\n\r\n{{}}"));
+                q.Read(new byte[64]);
+            }
+            Assert(stopped.Task.Wait(TimeSpan.FromSeconds(3)), "the other PC hanging up cancels the generation");
             ProgressTick = tick;
         }
         finally { Heartbeat = heartbeat; }
