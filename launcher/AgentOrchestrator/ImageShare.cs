@@ -20,6 +20,8 @@ internal static class ImageShare
     public const string ModelsPath = "/images/models", GeneratePath = "/images/generate", UnloadPath = "/share/unload", PresetsPath = "/share/presets", LoadPath = "/share/load", ChatPrefix = "/v1/";
     // GET without the key: the key itself, for a PC signed in to this PC's Tailscale account (Server.Pair, Tailscale.MayPair).
     public const string PairPath = "/share/pair";
+    // GET: this PC's profile (name, picture, when it last changed); POST: a newer one from a connected PC (Profile, MainWindow.Tailnet.cs).
+    public const string ProfilePath = "/share/profile";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     // Query: what follows the path's "?" ("" = none). Remote: the caller's address (set by Server).
@@ -103,7 +105,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", LoadPath => request.Method == "POST" ? "POST" : "GET", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -213,6 +215,24 @@ internal static class ImageShare
     public static async Task SaveLoadAsync(HttpClient http, string baseUrl, string key, string model, IReadOnlyDictionary<string, string> options, CancellationToken ct) =>
         await SendAsync(http, new(HttpMethod.Post, baseUrl + LoadPath)
             { Content = new StringContent(JsonSerializer.Serialize(new { model, options }), Encoding.UTF8, "application/json") }, key, ct);
+
+    // The sidebar's profile as the PCs pass it on: Png = the picture as base64 PNG ("" = none), Changed = when it was last edited (UTC).
+    public sealed record Profile(string Name, string Png, DateTime Changed);
+    public static string ProfileJson(Profile profile) => JsonSerializer.Serialize(profile, Web);
+    public static Profile? ParseProfile(string json)
+    {
+        try { return JsonSerializer.Deserialize<Profile>(json, Web) is { Name: not null, Png: not null } p ? p : null; }
+        catch (JsonException) { return null; }
+    }
+
+    // Which way a connected PC syncs: "pull" the primary PC's newer profile, "push" its own newer one, "" = the same.
+    public static string ProfileSync(DateTime mine, DateTime theirs) => theirs > mine ? "pull" : mine > theirs ? "push" : "";
+
+    public static async Task<Profile?> FetchProfileAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
+        ParseProfile(await SendAsync(http, new(HttpMethod.Get, baseUrl + ProfilePath), key, ct));
+
+    public static async Task SendProfileAsync(HttpClient http, string baseUrl, string key, Profile profile, CancellationToken ct) =>
+        await SendAsync(http, new(HttpMethod.Post, baseUrl + ProfilePath) { Content = new StringContent(ProfileJson(profile), Encoding.UTF8, "application/json") }, key, ct);
 
     public static async Task<List<Model>> FetchModelsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseModels(await SendAsync(http, new(HttpMethod.Get, baseUrl + ModelsPath), key, ct));
@@ -394,6 +414,13 @@ internal static class ImageShare
             if (!ok)
                 throw new InvalidOperationException("ImageShare: " + what);
         }
+        var when = new DateTime(2026, 11, 23, 8, 0, 0, DateTimeKind.Utc);
+        Assert(ParseProfile(ProfileJson(new("An0s", "iVBO", when))) is { Name: "An0s", Png: "iVBO" } back && back.Changed == when &&
+               ParseProfile("{}") is null && ParseProfile("nope") is null, "the profile round trip");
+        Assert(ProfileSync(when, when.AddMinutes(1)) == "pull" && ProfileSync(when.AddMinutes(1), when) == "push" && ProfileSync(when, when) == "", "which way the profile syncs");
+        Assert(Check(new("POST", ProfilePath, new() { ["Authorization"] = "Bearer k" }, []), "k") is null &&
+               Check(new("GET", ProfilePath, new() { ["Authorization"] = "Bearer k" }, []), "k") is null &&
+               Check(new("GET", ProfilePath, new(), []), "k")?.Status == 401, "the profile path needs the key");
         static Request Parse(string text) => ReadRequestAsync(new MemoryStream(Encoding.UTF8.GetBytes(text)), CancellationToken.None).GetAwaiter().GetResult();
         static int Refused(string text)
         {

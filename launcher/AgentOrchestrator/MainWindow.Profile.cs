@@ -169,6 +169,7 @@ public partial class MainWindow
             if (name.Text.Trim() == ProfileName)
                 return;
             _settings.ProfileName = name.Text.Trim();
+            _settings.ProfileChanged = DateTime.UtcNow;
             _settings.Save();
             RefreshProfile();
         };
@@ -226,6 +227,7 @@ public partial class MainWindow
                 File.Copy(source, path, overwrite: true);
             }
             _settings.ProfilePicture = path;
+            _settings.ProfileChanged = DateTime.UtcNow;
             _settings.Save();
             _pictureFrom = null; // reload even when the path is the same
             if (path.Length > 0 && LoadPicture() is null)
@@ -239,6 +241,50 @@ public partial class MainWindow
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             Toast($"Couldn't save the picture: {e.Message}", "#FF667A");
+        }
+    }
+
+    // The profile as the other PCs get it (ImageShare.ProfilePath): the picture as the sidebar shows it (160 px wide), as PNG.
+    private ImageShare.Profile OwnProfile()
+    {
+        var png = "";
+        if (LoadPicture() is { } picture)
+        {
+            var encoder = new PngBitmapEncoder();
+            encoder.Frames.Add(BitmapFrame.Create(picture));
+            using var bytes = new MemoryStream();
+            encoder.Save(bytes);
+            png = Convert.ToBase64String(bytes.ToArray());
+        }
+        return new(_settings.ProfileName, png, ProfileStamp);
+    }
+
+    // When the profile last changed; one set before the PCs synced it (no time saved) still counts as newer than an untouched one.
+    private DateTime ProfileStamp => _settings.ProfileChanged > DateTime.MinValue ? _settings.ProfileChanged
+        : _settings.ProfileName.Trim().Length > 0 || _settings.ProfilePicture.Length > 0 ? DateTime.MinValue.AddTicks(1) : DateTime.MinValue;
+
+    // Another PC's newer profile in place of this one's, keeping its time so the two agree from then on.
+    private void TakeProfile(ImageShare.Profile profile)
+    {
+        try
+        {
+            foreach (var old in Directory.Exists(AppSettings.DataRoot) ? Directory.GetFiles(AppSettings.DataRoot, "avatar.*") : Array.Empty<string>())
+                File.Delete(old);
+            var path = "";
+            if (profile.Png.Length > 0)
+            {
+                path = System.IO.Path.Combine(AppSettings.DataRoot, "avatar.png");
+                Directory.CreateDirectory(AppSettings.DataRoot);
+                File.WriteAllBytes(path, Convert.FromBase64String(profile.Png));
+            }
+            (_settings.ProfileName, _settings.ProfilePicture, _settings.ProfileChanged) = (profile.Name.Trim(), path, profile.Changed);
+            _settings.Save();
+            _pictureFrom = null;
+            RefreshProfile();
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or FormatException)
+        {
+            Log($"Profile: couldn't take the other PC's profile: {e.Message}");
         }
     }
 

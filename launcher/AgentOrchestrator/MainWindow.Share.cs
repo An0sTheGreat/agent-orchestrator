@@ -227,6 +227,18 @@ public partial class MainWindow
             await UnloadSharedChatModelsAsync(ct);
             return new(200, "{}");
         }
+        if (request.Path == ImageShare.ProfilePath)
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                if (request.Method == "POST")
+                {
+                    if (ImageShare.ParseProfile(System.Text.Encoding.UTF8.GetString(request.Body)) is not { } theirs)
+                        return ImageShare.Error(400, "Not a profile");
+                    if (ImageShare.ProfileSync(ProfileStamp, theirs.Changed) == "pull")
+                        TakeProfile(theirs);
+                }
+                return new ImageShare.Response(200, ImageShare.ProfileJson(OwnProfile()));
+            });
         if (request.Path == ImageShare.PresetsPath)
             return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
         if (request.Path == ImageShare.LoadPath)

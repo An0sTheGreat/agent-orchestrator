@@ -36,6 +36,7 @@ public partial class MainWindow
             _tailnet = await Tailscale.StatusAsync();
             if (_tailnet is { SignedIn: true } state && !_settings.ShareModels && !await SharedHostAnswersAsync())
                 await PairAsync(state);
+            await SyncProfileAsync();
         }
         finally { _tailnetBusy = false; }
     }
@@ -54,6 +55,31 @@ public partial class MainWindow
             return true;
         }
         catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException) { return false; }
+    }
+
+    // A PC connected to a primary PC: the newer profile wins, the primary PC's taken here or this one's sent there, so every
+    // connected PC shows the same name and picture within a minute of a change on any of them.
+    private async Task SyncProfileAsync()
+    {
+        if (_settings.ShareModels || _settings.ShareHost is not { Length: > 0 } host || ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
+            return;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            var url = ModelShare.ImagesUrl(host);
+            if (await ImageShare.FetchProfileAsync(http, url, key, CancellationToken.None) is not { } theirs)
+                return;
+            switch (ImageShare.ProfileSync(ProfileStamp, theirs.Changed))
+            {
+                case "pull":
+                    TakeProfile(theirs);
+                    break;
+                case "push":
+                    await ImageShare.SendProfileAsync(http, url, key, OwnProfile(), CancellationToken.None);
+                    break;
+            }
+        }
+        catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException) { } // an older primary PC (404) or not reachable: next minute
     }
 
     // The account's online PCs, each asked for its key; the first that shares becomes this PC's primary PC.

@@ -229,6 +229,7 @@ internal sealed class AppSettings
     // The sidebar's profile: a display name ("" = the Windows user name) and the picture copied into the data folder.
     public string ProfileName { get; set; } = "";
     public string ProfilePicture { get; set; } = "";
+    public DateTime ProfileChanged { get; set; } // UTC, when the name or picture was last edited here or taken from another PC
     // The Chat view's target worker id (it may delegate to the others). The Code view always talks to the Planner, the lead.
     // Older settings files' ChatMode / CodeMode / CodeWorker are ignored on load.
     public string ChatWorker { get; set; } = "planner";
