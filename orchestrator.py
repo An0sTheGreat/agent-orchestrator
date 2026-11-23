@@ -1358,15 +1358,27 @@ def llama_make_room(name: str, role: str, need: int, free: int, servers: list[di
             return
 
 
-def not_weights(name: str) -> bool:
-    """A helper GGUF beside a model, not one to run: llama-server exits on an MTP/draft head (mtp-*.gguf) loaded alone."""
-    return any(p in name.lower() for p in ("mmproj", "imatrix", "mtp", "draft"))
+def not_weights(path: Path) -> bool:
+    """A helper GGUF beside a model, not one to run (llama-server exits on Gemma's mtp-*.gguf head loaded alone): a vision
+    projector, or, by its header, general.type mmproj/imatrix or an "<arch>-assistant" draft/MTP head. Only a name with
+    mtp, draft or imatrix in it has its header read; unreadable, a name starting mtp- or draft- counts. A "-mtp" model (MTP
+    layers built in, e.g. Qwen3.8-27B-...-IQ3_S-mtp.gguf) is a model."""
+    name = path.name.lower()
+    if "mmproj" in name:
+        return True
+    if not any(p in name for p in ("mtp", "draft", "imatrix")):
+        return False
+    try:
+        meta = gguf_metadata(path)
+    except (OSError, ValueError, KeyError, TypeError, struct.error):
+        return name.startswith(("mtp-", "draft-"))
+    return str(meta.get("general.type") or "") in ("mmproj", "imatrix") or str(meta.get("general.architecture") or "").endswith("-assistant")
 
 
 def gguf_file(auto_load: dict[str, Any]) -> Path:
     """auto_load.gguf_file, else the model's GGUF in the extra model folders, then the Hugging Face cache."""
     explicit = auto_load.get("gguf_file")
-    if explicit and Path(explicit).is_file() and not not_weights(Path(explicit).name):
+    if explicit and Path(explicit).is_file() and not not_weights(Path(explicit)):
         return Path(explicit)
     repo = str(auto_load["model_path"])
     hub = os.environ.get("HF_HUB_CACHE") or (Path(os.environ["HF_HOME"]) / "hub" if os.environ.get("HF_HOME")
@@ -1380,7 +1392,7 @@ def gguf_file(auto_load: dict[str, Any]) -> Path:
     for root, by_name in roots:
         for path in sorted(root.rglob("*.gguf")):
             part = SPLIT_PART.search(path.name)
-            if not_weights(path.name) or (part and part.group(1) != "00001"):
+            if (part and part.group(1) != "00001") or not_weights(path):
                 continue  # vision projector, MTP/draft head, imatrix, or a later part of a split model (llama.cpp loads the rest from part 1)
             if not by_name or key in str(path.relative_to(root)).lower():
                 found.append(path)
@@ -1414,7 +1426,7 @@ def mtp_head(model_file: Path) -> Path | None:
     try:
         files = list(model_file.parent.glob("*.gguf"))
         heads = [p for p in files if "mtp" in p.name.lower() and p != model_file]
-        if len({model_stem(p.name) for p in files if not not_weights(p.name)}) > 1:
+        if len({model_stem(p.name) for p in files if not not_weights(p)}) > 1:
             own = model_stem(model_file.name)
             heads = [p for p in heads if own and own in re.sub(r"[^a-z0-9]", "", p.name.lower())]
         heads = [p for p in heads if str(gguf_metadata(p).get("general.architecture") or "").endswith("-assistant")]

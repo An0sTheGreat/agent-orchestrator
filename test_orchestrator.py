@@ -6178,6 +6178,28 @@ class LlamaCppTests(unittest.TestCase):
         head.unlink()
         self.assertNotIn("--spec-type", orchestrator.llama_args(model, {"model_path": self.PATH}, 8899))  # no head: no MTP
 
+    def test_a_model_named_mtp_with_mtp_layers_built_in_is_a_model(self):
+        # Qwen3.8-27B-...-IQ3_S-mtp.gguf: a whole model whose MTP layers are built in; the header decides, not the name
+        folder = self.tmp / "qwen"
+        folder.mkdir()
+        model = folder / "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
+        MultiModelTests.gguf(model, {"general.architecture": "qwen35", "general.type": "model", "qwen35.nextn_predict_layers": 1})
+        head = folder / "mtp-gemma-4-E4B-it-F16.gguf"
+        MultiModelTests.gguf(head, {"general.architecture": "gemma4-assistant"})
+        (folder / "mtp-unreadable.gguf").write_bytes(b"")
+        (folder / "draft-unreadable.gguf").write_bytes(b"")
+        os.environ["AGENT_ORCHESTRATOR_GGUF_DIRS"] = str(folder)
+        self.assertEqual(orchestrator.gguf_file({"model_path": "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"}), model)
+        self.assertEqual(orchestrator.gguf_file({"model_path": "x", "gguf_file": str(model)}), model)
+        self.assertFalse(orchestrator.not_weights(model))
+        self.assertTrue(all(orchestrator.not_weights(folder / n) for n in ("mtp-gemma-4-E4B-it-F16.gguf", "mtp-unreadable.gguf", "draft-unreadable.gguf", "mmproj-F16.gguf")))
+        args = orchestrator.llama_args(model, {"model_path": self.PATH}, 8899)  # auto: its own MTP layers, no separate head
+        self.assertEqual(args[args.index("--spec-type") + 1], "draft-mtp")
+        self.assertNotIn("-md", args)
+        renamed = folder / "Qwen3.8-27B-GSQ-RCO-IQ3_S.gguf"  # the workaround: the name without -mtp still works
+        model.rename(renamed)
+        self.assertEqual(orchestrator.gguf_file({"model_path": "Qwen3.8-27B-GSQ-RCO-IQ3_S"}), renamed)
+
     def test_llama_role_needs_no_key_and_uses_the_llama_port(self):
         client = self.client({"llama_port": 9001, "roles": {"planner": self.ROLE}})
         self.assertEqual((client.base_url, client.llama_port, client.remote), ("http://127.0.0.1:9001/v1", 9001, False))

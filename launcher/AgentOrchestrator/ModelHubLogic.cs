@@ -405,7 +405,10 @@ internal static class HubLogic
         var companionBytes = companions.Sum(f => f.Size);
 
         var variants = files
-            .Where(f => !Has(f.Name, "mmproj") && !Has(f.Name, "imatrix") && !Has(f.Name, "mtp") && !Has(f.Name, "draft"))
+            // helper files (no header to read here): a projector, an imatrix, or a draft/MTP head named mtp-* or draft-* or kept in
+            // a draft/ or mtp/ folder; a "-mtp" model (MTP layers built in) is a variant like any other
+            .Where(f => !Has(f.Name, "mmproj") && !Has(f.Name, "imatrix") && !f.Name.Split('/').SkipLast(1).Any(d => d.Equals("draft", StringComparison.OrdinalIgnoreCase) || d.Equals("mtp", StringComparison.OrdinalIgnoreCase)) &&
+                        !Path.GetFileName(f.Name).StartsWith("mtp-", StringComparison.OrdinalIgnoreCase) && !Path.GetFileName(f.Name).StartsWith("draft-", StringComparison.OrdinalIgnoreCase))
             .GroupBy(f => (Dir: f.Name[..Math.Max(0, f.Name.LastIndexOf('/'))], Stem: ShardRx.Replace(Path.GetFileNameWithoutExtension(f.Name), "")))
             .Select(g =>
             {
@@ -792,12 +795,15 @@ internal static class HubLogic
               {"rfilename":"mmproj-F32.gguf","size":1700000000},
               {"rfilename":"imatrix_unsloth.gguf","size":5000000},
               {"rfilename":"Qwen3.8-27B-MTP-Q8_0.gguf","size":500000000},
+              {"rfilename":"Qwen3.8-27B-IQ3_S-mtp.gguf","size":11300000000},
+              {"rfilename":"mtp-Qwen3.8-27B-F16.gguf","size":160000000},
               {"rfilename":"draft/Qwen3.8-0.6B-Q8_0.gguf","size":600000000},
               {"rfilename":"Qwen3.8-27B-IQ4_XS.gguf"}
             ]}
             """);
         Check(vs.Sha == "abc123" && vs.HasVision, "variants sha and vision");
-        Check(string.Join(",", vs.Variants.Select(v => v.Label)) == "BF16,Q4_K_M,UD-Q2_K_XL,Qwen3.8-27B-weird,IQ4_XS", "variant labels and order: " + string.Join(",", vs.Variants.Select(v => v.Label)));
+        // a "-mtp" / "-MTP-" model has MTP layers built in: a variant; an mtp-* head and a draft/ model are not
+        Check(string.Join(",", vs.Variants.Select(v => v.Label)) == "BF16,Q4_K_M,IQ3_S,UD-Q2_K_XL,Qwen3.8-27B-weird,Q8_0,IQ4_XS", "variant labels and order: " + string.Join(",", vs.Variants.Select(v => v.Label)));
         var bf16 = vs.Variants[0];
         Check(bf16.SizeBytes == 54000000000 && bf16.DownloadBytes == 54880000000, "shard sizes summed");
         Check(string.Join(",", bf16.Files.Select(f => f.Name)) == "BF16/Qwen3.8-27B-BF16-00001-of-00002.gguf,BF16/Qwen3.8-27B-BF16-00002-of-00002.gguf", "shards in order");

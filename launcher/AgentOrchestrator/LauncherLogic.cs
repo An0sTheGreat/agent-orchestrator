@@ -1371,18 +1371,34 @@ internal static class LauncherLogic
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
     }
 
+    // orchestrator.not_weights: a helper GGUF beside a model, not one to run (llama-server exits on Gemma's mtp-*.gguf head
+    // loaded alone): a vision projector, or, by its header, general.type mmproj/imatrix or an "<arch>-assistant" draft/MTP
+    // head. Only a name with mtp, draft or imatrix in it has its header read; unreadable, a name starting mtp- or draft-
+    // counts. A "-mtp" model (MTP layers built in) is a model.
+    public static bool NotWeights(string file)
+    {
+        var name = Path.GetFileName(file);
+        bool Has(string part) => name.Contains(part, StringComparison.OrdinalIgnoreCase);
+        if (Has("mmproj"))
+            return true;
+        if (!Has("mtp") && !Has("draft") && !Has("imatrix"))
+            return false;
+        if (ReadGgufMetadata(file) is not { } meta)
+            return name.StartsWith("mtp-", StringComparison.OrdinalIgnoreCase) || name.StartsWith("draft-", StringComparison.OrdinalIgnoreCase);
+        return meta.GetValueOrDefault("general.type") is "mmproj" or "imatrix" || meta.GetValueOrDefault("general.architecture")?.EndsWith("-assistant", StringComparison.Ordinal) == true;
+    }
+
     // orchestrator.mtp_head: a separate MTP draft head beside the model (Gemma 4's mtp-<model>.gguf, architecture
     // "<arch>-assistant"), matched by name in a folder holding other models too, as VisionProjector; the smallest; null without.
     public static string? MtpHead(string modelFile)
     {
         static string Squash(string s) => Regex.Replace(s.ToLowerInvariant(), "[^a-z0-9]", "");
         static string Stem(string file) => Squash(Regex.Replace(SplitPart.Replace(Path.GetFileName(file), ".gguf")[..^5], @"[-_. ]+(?:UD-)?(?:I?Q\d\w*|BF16|F16|F32|MXFP4\w*)$", "", RegexOptions.IgnoreCase));
-        static bool Helper(string name) => new[] { "mmproj", "imatrix", "mtp", "draft" }.Any(p => name.Contains(p, StringComparison.OrdinalIgnoreCase));
         try
         {
             var files = Directory.EnumerateFiles(Path.GetDirectoryName(modelFile)!, "*.gguf").ToList();
             var heads = files.Where(f => Path.GetFileName(f).Contains("mtp", StringComparison.OrdinalIgnoreCase) && !string.Equals(f, modelFile, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (files.Where(f => !Helper(Path.GetFileName(f))).Select(Stem).Distinct().Count() > 1)
+            if (files.Where(f => !NotWeights(f)).Select(Stem).Distinct().Count() > 1)
             {
                 var own = Stem(modelFile);
                 heads = heads.Where(f => own.Length > 0 && Squash(Path.GetFileName(f)).Contains(own)).ToList();
@@ -1412,11 +1428,9 @@ internal static class LauncherLogic
         var found = new List<LocalGguf>();
         IEnumerable<string> Files(string folder) => Directory.Exists(folder)
             ? Directory.EnumerateFiles(folder, "*.gguf", SearchOption.AllDirectories)
-                .Where(f => !NotWeights(Path.GetFileName(f)) && FirstPart(Path.GetFileName(f)))
+                .Where(f => FirstPart(Path.GetFileName(f)) && !NotWeights(f))
                 .Order(StringComparer.OrdinalIgnoreCase)
             : [];
-        // helper files, not a model to run (as the Hub's variant list): mtp-*.gguf is an MTP draft head, llama-server exits on it
-        static bool NotWeights(string name) => new[] { "mmproj", "imatrix", "mtp", "draft" }.Any(p => name.Contains(p, StringComparison.OrdinalIgnoreCase));
         static bool FirstPart(string name) => SplitPart.Match(name) is not { Success: true } part || part.Groups[1].Value == "00001";
         static string Variant(string file) => QuantOf(file);
         // a file under two listed folders (one inside the other) is one choice
@@ -2323,6 +2337,13 @@ internal static class LauncherLogic
             Arch("mtp-notes.gguf", "llama"); // "mtp" in the name, but not an assistant head
             if (MtpHead(Path.Combine(gemmaDir, "gemma-4-E4B-it-Q5_K_P.gguf")) is not { } gemmaHead || Path.GetFileName(gemmaHead) != "mtp-gemma-4-E4B-it-F16.gguf")
                 throw new InvalidOperationException("MtpHead: Gemma's head beside it was not found by name");
+            // a "-mtp" model (MTP layers built in, by its header) is listed; the assistant heads are not, nor is a name-only mtp- file
+            Arch("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", "qwen35");
+            File.WriteAllText(Path.Combine(gemmaDir, "mtp-unreadable.gguf"), "");
+            var listed = FindLocalGgufs(gemmaDir, Path.Combine(gemmaDir, "none")).Select(g => Path.GetFileName(g.File)).ToList();
+            if (!listed.Contains("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf") || listed.Contains("mtp-Qwen3.5-9B-F16.gguf") || listed.Contains("mtp-unreadable.gguf") ||
+                !listed.Contains("mtp-notes.gguf") || !listed.Contains("gemma-4-E4B-it-Q5_K_P.gguf")) // the header decides: mtp-notes is a llama model
+                throw new InvalidOperationException("Local GGUFs: " + string.Join(", ", listed));
             File.Delete(Path.Combine(gemmaDir, "mtp-gemma-4-E4B-it-F16.gguf"));
             if (MtpHead(Path.Combine(gemmaDir, "gemma-4-E4B-it-Q5_K_P.gguf")) is not null)
                 throw new InvalidOperationException("MtpHead: another model's head was taken");
