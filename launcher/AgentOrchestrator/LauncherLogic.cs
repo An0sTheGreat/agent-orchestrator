@@ -929,7 +929,13 @@ internal static class LauncherLogic
         }
         var name = Regex.Replace(tail, @"[-_ ]GGUF$", "", RegexOptions.IgnoreCase);
         if (quant.Length > 0)
+        {
             name = Regex.Replace(name, @"\s*[｜|]?\s*" + Regex.Escape(quant) + "$", "");
+            // a suffix after the quant ("...-RCO-IQ3_S-mtp"): the name is what comes before the quant, without a dangling dash
+            if (Regex.Match(name, @"(?<![A-Za-z0-9])" + Regex.Escape(quant) + "(?![A-Za-z0-9])", RegexOptions.IgnoreCase) is { Success: true, Index: > 0 } at)
+                name = name[..at.Index];
+            name = name.TrimEnd(' ', '-', '_', '.', '|', '｜');
+        }
         var w = Regex.Match(name, @"(?<![A-Za-z0-9.])(\d+(?:\.\d+)?)B(?:[-_ ]A(\d+(?:\.\d+)?)B)?(?![A-Za-z])");
         var weights = !w.Success ? "—" : w.Groups[2].Success ? $"{w.Groups[1].Value}B · {w.Groups[2].Value}B active" : $"{w.Groups[1].Value}B";
         return new ModelInfo(name.Trim(), weights, quant.Length == 0 ? "—" : quant);
@@ -1330,7 +1336,8 @@ internal static class LauncherLogic
         : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "huggingface", "hub");
 
     private static readonly Regex SplitPart = new(@"-(\d{5})-of-\d{5}\.gguf$", RegexOptions.IgnoreCase);
-    private static readonly Regex QuantTail = new(@"[-_. ]((?:UD-)?(?:I?Q\d\w*|TQ\d\w*|BF16|F16|F32|MXFP4\w*))$", RegexOptions.IgnoreCase);
+    // the quant at the end of a name, before a "-mtp" (a model with its MTP layers built in: ...-IQ3_S-mtp.gguf)
+    private static readonly Regex QuantTail = new(@"[-_. ]((?:UD-)?(?:I?Q\d\w*|TQ\d\w*|BF16|F16|F32|MXFP4\w*))(?:[-_.]mtp)?$", RegexOptions.IgnoreCase);
 
     // llama.cpp's general.file_type values (llama_ftype) as quantization names; "" for one it does not name.
     private static readonly string[] FileTypes = ["F32", "F16", "Q4_0", "Q4_1", "", "", "", "Q8_0", "Q5_0", "Q5_1", "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L",
@@ -2446,6 +2453,10 @@ internal static class LauncherLogic
         var moe = DescribeModel("unsloth/Qwen-AgentWorld-35B-A3B-GGUF", "UD-Q2_K_XL");
         if (moe.Weights != "35B · 3B active" || moe.Quant != "UD-Q2_K_XL" || moe.Name != "Qwen-AgentWorld-35B-A3B")
             throw new InvalidOperationException($"MoE model description failed: {moe}");
+        // a "-mtp" suffix after the quant: the quant is still found, and the name has no dangling dash
+        var suffixed = DescribeModel(@"Y:\.llm_models\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", QuantOf("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"));
+        if (suffixed.Name != "Qwen3.8-27B-GSQ-RCO" || suffixed.Quant != "IQ3_S" || DescribeModel(@"Y:\m\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf").Name != "Qwen3.8-27B-GSQ-RCO")
+            throw new InvalidOperationException($"A -mtp model's description: {suffixed}");
         if (TryParseEvent("@@AO {\"e\":\"usage\",\"role\":\"planner\"}")?.GetProperty("role").GetString() != "planner" ||
             TryParseEvent("plain log line") is not null)
             throw new InvalidOperationException("Event parsing failed.");

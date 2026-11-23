@@ -1003,7 +1003,12 @@ public partial class MainWindow
         // A remote worker's is its remote model id (as the Remote API lists it; the card's name can be a run's reported id), until a local pick
         string ShownModel() => remoteMode() && modelBox.SelectedItem is not ComboBoxItem { Tag: ModelChoice } ? remoteNow!.Model.Trim()
             : (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
-        bool Mine(ModelPreset p) => p.Model.Length == 0 || p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
+        // and its quantization: the one picked (the Quantization field follows the pick), else the card's; none for a remote model
+        string ShownQuant() => remoteMode() ? "" : editors["gguf_variant"] is TextBox { Text: var v } && v.Trim().Length > 0 ? v.Trim() : card.Quant is "—" ? "" : card.Quant;
+        bool SameModel(ModelPreset p) => p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
+        // a preset for this model in another quantization is listed apart (OTHER QUANTIZATIONS); one saved without a quant matches any
+        bool OtherQuant(ModelPreset p) => SameModel(p) && p.Quant.Length > 0 && ShownQuant() is { Length: > 0 } q && !p.Quant.Equals(q, StringComparison.OrdinalIgnoreCase);
+        bool Mine(ModelPreset p) => p.Model.Length == 0 || SameModel(p) && !OtherQuant(p);
         ModelPreset? Active() => _settings.ActiveModelPresets.GetValueOrDefault(card.Role) is { Length: > 0 } name
             ? _settings.ModelPresets.FirstOrDefault(p => Mine(p) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) : null;
         void SyncSaveTo()
@@ -1025,7 +1030,7 @@ public partial class MainWindow
         {
             var preset = new ModelPreset
             {
-                Name = name, Model = model, Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
+                Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model) ? ShownQuant() : "", Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
                 SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
             };
             if (same >= 0)
@@ -1035,11 +1040,13 @@ public partial class MainWindow
             MakeActive(name);
             Toast($"Preset {name} saved");
         }
-        saveTo.Click += (_, _) =>
+        bool SameModelName(string model) => model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
+        void SaveToActive()
         {
             if (Active() is { } active)
                 WritePreset(active.Name, _settings.ModelPresets.IndexOf(active), active.Model);
-        };
+        }
+        saveTo.Click += (_, _) => SaveToActive();
         modelBox.SelectionChanged += (_, _) => SyncSaveTo();
         SyncSaveTo();
         presets.Click += (_, _) =>
@@ -1055,67 +1062,81 @@ public partial class MainWindow
             {
                 if (SidebarAsk("Save preset", "Name this set of model options.", "Save", "")?.Trim() is not { Length: > 0 } name)
                     return;
-                var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase));
+                var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && SameModel(p) && !OtherQuant(p));
                 if (same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
                     return;
                 WritePreset(name, same, ShownModel());
             }));
-            // This model's presets (and those for any model), then the other models' presets: picking one of those puts its
-            // model in the box first, so one Save keeps the model and its options.
+            // the preset this worker last applied or saved: overwritten with the options shown now (as the bar's Save to button)
+            if (Active() is { } current)
+                menu.Items.Add(Item($"Save to “{current.Name}”", SaveToActive));
+            // This model's presets (and those for any model), the same model's in other quantizations, then the other models'
+            // presets: picking one of those puts its model in the box first, so one Save keeps the model and its options.
             var mine = _settings.ModelPresets.Where(Mine).ToList();
-            var others = remoteMode() ? [] : _settings.ModelPresets.Where(p => !Mine(p)).ToList();
-            if (mine.Count + others.Count > 0)
+            var quants = remoteMode() ? [] : _settings.ModelPresets.Where(OtherQuant).ToList();
+            var others = remoteMode() ? [] : _settings.ModelPresets.Where(p => !Mine(p) && !OtherQuant(p)).ToList();
+            void Apply(ModelPreset preset)
             {
-                // A second menu, not a submenu: the app's menu item template has none (DeletePresetMenu does the same)
-                var deleteMenu = new ContextMenu { PlacementTarget = presets, Placement = PlacementMode.Bottom };
-                void Apply(ModelPreset preset)
+                // values only; load options only with a model to load (Save would refuse them)
+                var load = hasModel && !remoteMode();
+                foreach (var (key, value) in preset.Options)
+                    if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
+                        SetValue(editor, value);
+                if (preset.SystemPrompt.Trim().Length > 0)
+                    promptBox.Text = preset.SystemPrompt;
+                MakeActive(preset.Name);
+            }
+            // A preset's row: its name (Tag, for tests), and a red ✕ at the right edge that deletes it, after asking, without
+            // applying it; the menu stays open on the other rows.
+            MenuItem Row(ModelPreset preset, string label, Action apply)
+            {
+                var name = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center, TextTrimming = TextTrimming.CharacterEllipsis };
+                var remove = new Button
                 {
-                    // values only; load options only with a model to load (Save would refuse them)
-                    var load = hasModel && !remoteMode();
-                    foreach (var (key, value) in preset.Options)
-                        if (value.Trim().Length > 0 && editors.TryGetValue(key, out var editor) && (load || ModelOptions.All.First(o => o.Key == key).Target != "auto_load"))
-                            SetValue(editor, value);
-                    if (preset.SystemPrompt.Trim().Length > 0)
-                        promptBox.Text = preset.SystemPrompt;
-                    MakeActive(preset.Name);
-                }
-                foreach (var (group, list) in new[] { ("ANY MODEL", mine.Where(p => p.Model.Length == 0).ToList()), ("THIS MODEL", mine.Where(p => p.Model.Length > 0).ToList()), ("OTHER MODELS", others) })
+                    Content = "✕", Tag = "ModelPresetDelete", Padding = new Thickness(6, 0, 6, 0), Margin = new Thickness(14, 0, 0, 0), FontSize = 11, MinWidth = 0,
+                    Background = Brushes.Transparent, BorderThickness = new Thickness(0), Cursor = System.Windows.Input.Cursors.Hand, VerticalAlignment = VerticalAlignment.Center,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A)), ToolTip = $"Delete the preset {preset.Name}", Focusable = false,
+                };
+                remove.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
+                remove.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
+                Grid.SetColumn(remove, 1);
+                var header = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } }, Children = { name, remove } };
+                var item = new MenuItem { Header = header, Tag = label, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                item.Click += (_, _) => apply();
+                remove.Click += (_, e) =>
                 {
-                    if (list.Count == 0)
-                        continue;
-                    menu.Items.Add(new Separator());
-                    menu.Items.Add(new MenuItem { Header = group, IsEnabled = false, FontSize = 10.5 });
-                    var other = list == others;
-                    foreach (var preset in list)
-                        menu.Items.Add(Item(other ? $"{preset.Name}  ·  {preset.Model}" : preset.Name, async () =>
-                        {
-                            if (other)
-                            {
-                                if (await ChoiceNamed(preset.Model) is not { } choice)
-                                {
-                                    Toast($"{preset.Model} is not on this computer", "#F7C873");
-                                    return;
-                                }
-                                ShowChoice(choice); // the model's own defaults first, then the preset's options over them
-                            }
-                            Apply(preset);
-                        }));
-                }
-                foreach (var preset in mine.Concat(others))
-                {
-                    deleteMenu.Items.Add(Item(preset.Model.Length == 0 ? $"{preset.Name}  (any model)" : preset.Name, () =>
-                    {
-                        _settings.ModelPresets.Remove(preset);
-                        _settings.Save();
-                        SyncSaveTo();
-                    }));
-                }
+                    e.Handled = true; // not the row's click: the preset is not applied
+                    if (SidebarAsk("Delete preset", $"Delete the preset {preset.Name}?", "Delete") is null)
+                        return;
+                    _settings.ModelPresets.Remove(preset);
+                    _settings.Save();
+                    SyncSaveTo();
+                    menu.Items.Remove(item);
+                };
+                return item;
+            }
+            foreach (var (group, list) in new[] { ("ANY MODEL", mine.Where(p => p.Model.Length == 0).ToList()), ("THIS MODEL", mine.Where(p => p.Model.Length > 0).ToList()),
+                         ("OTHER QUANTIZATIONS", quants), ("OTHER MODELS", others) })
+            {
+                if (list.Count == 0)
+                    continue;
                 menu.Items.Add(new Separator());
-                menu.Items.Add(Item("Delete preset…", () =>
-                {
-                    presets.ContextMenu = deleteMenu;
-                    Dispatcher.InvokeAsync(() => deleteMenu.IsOpen = true, System.Windows.Threading.DispatcherPriority.Background);
-                }));
+                menu.Items.Add(new MenuItem { Header = group, IsEnabled = false, FontSize = 10.5 });
+                var other = list == others;
+                foreach (var preset in list)
+                    menu.Items.Add(Row(preset, other ? $"{preset.Name}  ·  {preset.Model}" : list == quants ? $"{preset.Name}  ·  {preset.Quant}" : preset.Name, async () =>
+                    {
+                        if (other)
+                        {
+                            if (await ChoiceNamed(preset.Model) is not { } choice)
+                            {
+                                Toast($"{preset.Model} is not on this computer", "#F7C873");
+                                return;
+                            }
+                            ShowChoice(choice); // the model's own defaults first, then the preset's options over them
+                        }
+                        Apply(preset); // another quantization's: its options on the file picked now
+                    }));
             }
             presets.ContextMenu = menu;
             menu.IsOpen = true;
@@ -1620,13 +1641,20 @@ public partial class MainWindow
             {
                 var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
-                button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == header).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (i.Header as string ?? i.Tag as string) == header); // a preset's row: Tag is its label
+                if (sub == "✕") // the row's delete button, not the row
+                    SmokeClick(SmokeFind<Button>((DependencyObject)item.Header, b => b.Tag as string == "ModelPresetDelete")!);
+                else
+                    item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 button.ContextMenu.IsOpen = false;
-                if (sub is not null) // the item opened a second menu
-                {
-                    button.ContextMenu.Items.OfType<MenuItem>().First(i => (string)i.Header == sub).RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                    button.ContextMenu.IsOpen = false;
-                }
+            }
+            bool Listed(string label)
+            {
+                var button = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
+                SmokeClick(button);
+                var found = button.ContextMenu.Items.OfType<MenuItem>().Any(i => (i.Header as string ?? i.Tag as string) == label);
+                button.ContextMenu.IsOpen = false;
+                return found;
             }
             SmokeField("temperature").Text = "0.21";
             SmokeField("top_k").Text = "7";
@@ -1647,20 +1675,31 @@ public partial class MainWindow
                 return Fail("discard the Reviewer's change");
             // presets are the model's: another model's is not listed; the Implementer's model's is
             stored.Model = "Some other model";
-            var listed = SmokeFind<Button>(WorkerBarHost, b => b.Tag as string == "ModelPresets")!;
-            SmokeClick(listed);
-            var others = listed.ContextMenu.Items.OfType<MenuItem>().Any(i => (string)i.Header == "Smoke options");
-            listed.ContextMenu.IsOpen = false;
-            if (others)
+            if (Listed("Smoke options"))
                 return Fail("another model's preset is listed");
             stored.Model = implementer.ModelName;
+            // the same model in another quantization: listed apart, under OTHER QUANTIZATIONS with its quant (not as this model's)
+            stored.Quant = "IQ3_XXS-other";
+            var quantShown = implementer.Quant is "—" or "" ? null : implementer.Quant;
+            if (quantShown is not null && (Listed("Smoke options") || !Listed("Smoke options  ·  IQ3_XXS-other")))
+                return Fail("another quantization's preset is listed as this model's");
+            stored.Quant = "";
             Preset("Smoke options");
             if (SmokeField("temperature").Text != "0.21" || SmokeField("top_k").Text != "7" || SmokeField("n_batch").Text != "" || SmokeField("top_p").Text != "0.95" ||
                 SmokeField("ChatSystemPrompt").Text != "Smoke prompt" || !File.ReadAllBytes(config).SequenceEqual(bytes))
                 return Fail("apply a preset");
-            Preset("Delete preset…", "Smoke options");
-            if (_settings.ModelPresets.Any(p => p.Name == "Smoke options"))
-                return Fail("delete a preset");
+            // Save to the active preset (the one just applied): the options shown now go into it
+            SmokeField("temperature").Text = "0.27";
+            Preset("Save to “Smoke options”");
+            if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options")?.Options.GetValueOrDefault("temperature") != "0.27")
+                return Fail("save to the active preset");
+            // the row's ✕ deletes it (after asking) without applying it
+            SmokeField("temperature").Text = "0.21";
+            answer = "yes";
+            Preset("Smoke options", "✕");
+            answer = "";
+            if (_settings.ModelPresets.Any(p => p.Name == "Smoke options") || SmokeField("temperature").Text != "0.21" || asked[^1] != "Delete preset")
+                return Fail("delete a preset with its ✕");
             SmokeClick(SmokeButton("Revert"));
             await Idle();
             if (SmokeField("temperature").Text != "0.33" || SmokeField("ChatSystemPrompt").Text != "" || _workerDirty() || !File.ReadAllBytes(config).SequenceEqual(bytes))

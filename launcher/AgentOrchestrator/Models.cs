@@ -414,6 +414,8 @@ internal sealed class ModelPreset
     // The model it was saved for (the picker's name for it): presets list only for that model, whatever the role.
     // "" = saved before presets had a model: listed for every model.
     public string Model { get; set; } = "";
+    // The quantization of that model it was saved with ("IQ3_S"); "" = any (saved before presets kept it, or none known).
+    public string Quant { get; set; } = "";
 }
 
 // A named snapshot of the worker cards plus each built-in role's roles.<role> object from the project's config.json.

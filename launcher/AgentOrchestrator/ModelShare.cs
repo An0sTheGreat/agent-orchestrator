@@ -325,7 +325,7 @@ internal static class ModelShare
         Check(sent.Select(p => $"{p.Name}|{p.Model}").SequenceEqual(["Coder|Qwen3-GGUF  ·  Q4_K_M", "Any|", "G|gemma"]), "the shared presets: " + string.Join("; ", sent.Select(p => p.Name + "|" + p.Model)));
         Check(sent[0].Options.Count == 1 && sent[0].Options["temperature"] == "0.2" && sent[0].SystemPrompt == "Be terse" && sent[1].Options["top_p"] == "0.9",
             "the shared presets' request options only: " + string.Join("; ", sent[0].Options));
-        Check(PresetsJson([new() { Name = "Any" }], []) == """{"presets":[{"name":"Any","options":{},"systemPrompt":"","model":""}]}""", "the presets JSON: " + PresetsJson([new() { Name = "Any" }], []));
+        Check(PresetsJson([new() { Name = "Any" }], []) == """{"presets":[{"name":"Any","options":{},"systemPrompt":"","model":"","quant":""}]}""", "the presets JSON: " + PresetsJson([new() { Name = "Any" }], []));
         List<ModelPreset> mine = [new() { Name = "Coder (Primary PC)", Model = "Qwen3-GGUF  ·  Q4_K_M", SystemPrompt = "old" }, new() { Name = "Coder", Model = "Qwen3-GGUF  ·  Q4_K_M" },
             new() { Name = "Coder (Primary PC)", Model = "gemma" }];
         Check(MergePresets(mine, sent) == 3 && mine.Select(p => $"{p.Name}|{p.Model}|{p.SystemPrompt}").SequenceEqual(["Coder (Primary PC)|Qwen3-GGUF  ·  Q4_K_M|Be terse",
