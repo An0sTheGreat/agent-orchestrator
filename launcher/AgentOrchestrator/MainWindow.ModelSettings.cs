@@ -239,6 +239,24 @@ public partial class MainWindow
             return t;
         }
         TextBlock Label(string text) => new() { Text = text, FontWeight = FontWeights.SemiBold, FontSize = 12 };
+        // A card section's header row (GPU usage, context length): its name in small capitals, its figure in large type at the right.
+        TextBlock Big(string text)
+        {
+            var t = new TextBlock { Text = text, FontSize = 22, FontWeight = FontWeights.Bold, FontFamily = (FontFamily)FindResource("DisplayFont"), VerticalAlignment = VerticalAlignment.Center };
+            t.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
+            return t;
+        }
+        DockPanel Headline(string name, TextBlock? value)
+        {
+            var row = new DockPanel();
+            if (value is not null)
+            {
+                DockPanel.SetDock(value, Dock.Right);
+                row.Children.Add(value);
+            }
+            row.Children.Add(new TextBlock { Text = name.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), VerticalAlignment = VerticalAlignment.Center });
+            return row;
+        }
         TextBlock ErrorLine() => new() { Foreground = red, FontSize = 11, TextWrapping = TextWrapping.Wrap, Visibility = Visibility.Collapsed };
         TextBox Box(string text, string tag, double height = 30) => new()
         {
@@ -705,7 +723,8 @@ public partial class MainWindow
 
         // The VRAM meter (VramEstimate): the model's GGUF and the shown options, against the GPU's memory; it follows every edit.
         // A worker on the primary PC: the primary PC's estimate (POST /share/estimate) from its GGUF, its GPU and the shown load options.
-        var vramBlock = new StackPanel { Tag = "VramEstimate", Margin = new Thickness(0, 12, 0, 0) };
+        // GPU USAGE: its own card section, a line above it; hidden with no estimate.
+        var vramBlock = new StackPanel { Tag = "VramEstimate" };
         void Vram()
         {
             if (remoteMode() && onPrimary && primaryLoad is not null)
@@ -714,7 +733,7 @@ public partial class MainWindow
                 return;
             }
             var local = remoteMode() ? null : VramEstimate.WithWhole(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()), mtpHeadBytes);
-            DrawVram(local?.Gpu, local?.Whole ?? 0, _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : null, "Estimated memory usage", "this GPU");
+            DrawVram(local?.Gpu, local?.Whole ?? 0, _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : null, "GPU usage", "this GPU");
         }
         var primaryAsk = 0; // the latest primary PC estimate request: an older reply is dropped
         async void PrimaryVram()
@@ -730,7 +749,7 @@ public partial class MainWindow
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                 var got = await ImageShare.FetchEstimateAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "", remoteNow!.Model.Trim(), options, CancellationToken.None);
                 if (mine == primaryAsk && remoteMode())
-                    DrawVram(new(got.Weights, got.Kv, got.Compute, got.Vision), got.Whole, got.Gpu is > 0 ? got.Gpu : null, "Estimated memory usage on the primary PC", "the primary PC's GPU");
+                    DrawVram(new(got.Weights, got.Kv, got.Compute, got.Vision), got.Whole, got.Gpu is > 0 ? got.Gpu : null, "GPU usage on the primary PC", "the primary PC's GPU");
                 return;
             }
             catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException or UriFormatException)
@@ -742,8 +761,11 @@ public partial class MainWindow
             if (mine != primaryAsk || !remoteMode())
                 return;
             vramBlock.Children.Clear();
-            vramBlock.Children.Add(Label("Estimated memory usage on the primary PC"));
-            vramBlock.Children.Add(Muted(failed));
+            vramBlock.Children.Add(Line());
+            vramBlock.Children.Add(Headline("GPU usage on the primary PC", null));
+            var failedNote = Muted(failed);
+            failedNote.Margin = new Thickness(0, 4, 0, 0);
+            vramBlock.Children.Add(failedNote);
             vramBlock.Visibility = Visibility.Visible;
         }
         // where: the GPU the over-memory note names.
@@ -753,29 +775,21 @@ public partial class MainWindow
             vramBlock.Visibility = estimate is null ? Visibility.Collapsed : Visibility.Visible;
             if (estimate is null)
                 return;
-            vramBlock.Children.Add(Label(title));
-            DockPanel Pill(string name, string value, Brush? color = null)
-            {
-                var text = new TextBlock { Text = value, FontSize = 12, FontWeight = FontWeights.SemiBold };
-                if (color is null)
-                    text.SetResourceReference(TextBlock.ForegroundProperty, "TextPrimary");
-                else
-                    text.Foreground = color;
-                var pill = new Border { Child = text, Padding = new Thickness(10, 3, 10, 3), CornerRadius = new CornerRadius(11) };
-                pill.SetResourceReference(Border.BackgroundProperty, "Hover");
-                DockPanel.SetDock(pill, Dock.Right);
-                var label = new TextBlock { Text = name, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
-                label.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-                return new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { pill, label } };
-            }
-            vramBlock.Children.Add(Pill("GPU", VramEstimate.Gb(estimate.Total) + (gpu is { } g ? " / " + VramEstimate.Gb(g) : ""),
-                gpu is { } g2 ? (Brush)new BrushConverter().ConvertFromString(RingColor((double)estimate.Total / g2))! : null));
-            vramBlock.Children.Add(Pill("Total", VramEstimate.Gb(Math.Max(whole, estimate.Total))));
+            // The header: the GPU estimate in large type (in the ring's colors against the GPU's memory), under it the GPU's memory
+            // and the whole model's size.
+            var used = Big(VramEstimate.Gb(estimate.Total));
+            if (gpu is { } g)
+                used.Foreground = (Brush)new BrushConverter().ConvertFromString(RingColor((double)estimate.Total / g))!;
+            var facts = Muted((gpu is { } g2 ? $"of {VramEstimate.Gb(g2)} · " : "") + $"whole model {VramEstimate.Gb(Math.Max(whole, estimate.Total))}");
+            facts.HorizontalAlignment = HorizontalAlignment.Right;
+            vramBlock.Children.Add(Line());
+            vramBlock.Children.Add(Headline(title, used));
+            vramBlock.Children.Add(facts);
             var parts = new (string Name, long Bytes, string Color)[]
             {
                 ("Weights", estimate.Weights, "#4C8DFF"), ("KV cache", estimate.Kv, "#8B7CFF"), ("Compute", estimate.Compute, "#E8A33D"), ("Vision", estimate.Vision, "#2BB3A3"),
             };
-            var bar = new Grid { Height = 8 };
+            var bar = new Grid { Height = 6 };
             foreach (var (_, bytes, color) in parts.Append(("", Math.Max(0, (gpu ?? 0) - estimate.Total), "")).Where(p => p.Item2 > 0))
             {
                 bar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(bytes, GridUnitType.Star) });
@@ -783,7 +797,8 @@ public partial class MainWindow
                 Grid.SetColumn(segment, bar.ColumnDefinitions.Count - 1);
                 bar.Children.Add(segment);
             }
-            var track = new Border { CornerRadius = new CornerRadius(4), Child = bar, ClipToBounds = true, Margin = new Thickness(0, 6, 0, 6) };
+            var track = new Border { CornerRadius = new CornerRadius(3), Child = bar, Margin = new Thickness(0, 10, 0, 8) };
+            bar.SizeChanged += (_, e) => bar.Clip = new RectangleGeometry(new Rect(e.NewSize), 3, 3); // the segments' ends rounded too
             track.SetResourceReference(Border.BackgroundProperty, "Hover");
             vramBlock.Children.Add(track);
             var legend = new WrapPanel();
@@ -793,7 +808,7 @@ public partial class MainWindow
                     Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 12, 2),
                     Children =
                     {
-                        new System.Windows.Shapes.Rectangle { Width = 8, Height = 8, RadiusX = 2, RadiusY = 2, Margin = new Thickness(0, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center,
+                        new System.Windows.Shapes.Ellipse { Width = 8, Height = 8, Margin = new Thickness(0, 0, 5, 0), VerticalAlignment = VerticalAlignment.Center,
                             Fill = (Brush)new BrushConverter().ConvertFromString(color)! },
                         Muted($"{name} {VramEstimate.Gb(bytes)}"),
                     },
@@ -844,6 +859,37 @@ public partial class MainWindow
             rows["gguf_variant"].Children.Add(fieldErrors["gguf_variant"]);
         }
         modelFields.Children.Remove(rows["max_seq_length"]);
+        // CONTEXT LENGTH: its own card section, a line above it. The value in large type (Auto: empty or 0), the box (the value
+        // the settings keep) small at the right of "tokens configured", the slider under them.
+        if (editors["max_seq_length"] is TextBox contextBox && contextBox.Parent is Grid contextHost)
+        {
+            var contextRow = rows["max_seq_length"];
+            ((Panel)contextHost.Parent).Children.Remove(contextHost);
+            var contextSlider = contextRow.Children.OfType<StackPanel>().First(); // SliderFor's
+            var contextValue = Big("");
+            void ShowContext()
+            {
+                var text = contextBox.Text.Trim();
+                contextValue.Text = text.Length == 0 ? "Auto"
+                    : long.TryParse(text, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var n)
+                        ? n == 0 ? "Auto" : n.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)
+                        : text;
+            }
+            contextBox.TextChanged += (_, _) => ShowContext();
+            ShowContext();
+            contextBox.Width = 90;
+            var configured = Muted("tokens configured");
+            configured.VerticalAlignment = VerticalAlignment.Center;
+            configured.Margin = new Thickness(0, 0, 8, 0);
+            contextRow.Children.Clear();
+            contextRow.Margin = new Thickness(0);
+            contextRow.Children.Add(Line());
+            contextRow.Children.Add(Headline("Context length", contextValue));
+            contextRow.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 4, 0, 0),
+                Children = { configured, contextHost } });
+            contextRow.Children.Add(contextSlider);
+            contextRow.Children.Add(fieldErrors["max_seq_length"]);
+        }
         ContextHint(null);
         var advanced = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), IsChecked = _settings.ModelAdvanced, Tag = "AdvancedSettings", VerticalAlignment = VerticalAlignment.Center };
         DockPanel.SetDock(advanced, Dock.Right);
