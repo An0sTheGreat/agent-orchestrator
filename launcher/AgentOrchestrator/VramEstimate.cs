@@ -26,7 +26,10 @@ internal static class VramEstimate
     // meta: the GGUF header values (LauncherLogic.ReadGgufMetadata). files: the model's size (every split part) and its
     // vision projector's (0: none). options: the shown option values (ModelOptions keys, "" = default). Null when the header
     // lacks the layer count.
-    public static Result? Estimate(IReadOnlyDictionary<string, string>? meta, long modelBytes, long visionBytes, IReadOnlyDictionary<string, string> options)
+    // mtpHeadBytes: a separate MTP head beside the model (LauncherLogic.MtpHead, Gemma 4), which the engine loads with -md
+    // -ngld 99 (all on the GPU) when Speculative decoding is auto, mtp or mtp+ngram and the model has no MTP layers of its own.
+    public static Result? Estimate(IReadOnlyDictionary<string, string>? meta, long modelBytes, long visionBytes, IReadOnlyDictionary<string, string> options,
+        long mtpHeadBytes = 0)
     {
         if (meta?.GetValueOrDefault("general.architecture") is not { } arch || Num(meta, arch + ".block_count") is not { } layersD || layersD < 1)
             return null;
@@ -44,6 +47,8 @@ internal static class VramEstimate
         var weights = modelBytes * onGpu;
         if (Num(meta, arch + ".expert_count") is > 0)
             weights -= modelBytes * 0.85 * Math.Min(Option("n_cpu_moe", 0), layers) / layers;
+        if (mtpHeadBytes > 0 && options.GetValueOrDefault("speculative_type", "") is "" or "auto" or "mtp" or "mtp+ngram" && !ModelOptions.HasMtp(meta))
+            weights += mtpHeadBytes; // orchestrator.llama_args: -md <head> -ngld 99
 
         // KV cache: per token, each attention layer's KV heads times the key and value widths. Hybrid models (a list of
         // per-layer KV head counts with zeros, or full_attention_interval) cache only their attention layers; sliding-window
@@ -122,6 +127,13 @@ internal static class VramEstimate
         if (half.Weights != 5L << 29 || half.Kv != (long)(r.Kv / 2 * (34 / 32.0) / 2) || half.Vision != 0 || Estimate(meta, 1, 1L << 30, new Dictionary<string, string> { ["mmproj_offload"] = "on" })!.Vision != 1L << 30 ||
             Estimate(meta, 1, 1L << 30, new Dictionary<string, string>())!.Vision != 0) // on the CPU by default
             throw new InvalidOperationException("VramEstimate options");
+        // A separate MTP head (Gemma 4) is on the GPU while Speculative decoding uses MTP, and not when it is off.
+        var plain = new Dictionary<string, string> { ["max_seq_length"] = "8192" };
+        if (Estimate(meta, 5L << 30, 0, plain, 1L << 28)!.Weights != (5L << 30) + (1L << 28) ||
+            Estimate(meta, 5L << 30, 0, new Dictionary<string, string>(plain) { ["speculative_type"] = "mtp+ngram" }, 1L << 28)!.Weights != (5L << 30) + (1L << 28) ||
+            Estimate(meta, 5L << 30, 0, new Dictionary<string, string>(plain) { ["speculative_type"] = "off" }, 1L << 28)!.Weights != 5L << 30 ||
+            Estimate(new Dictionary<string, string>(meta) { ["llama.nextn_predict_layers"] = "1" }, 5L << 30, 0, plain, 1L << 28)!.Weights != 5L << 30)
+            throw new InvalidOperationException("VramEstimate MTP head");
         // Empty context: the model's own, capped at ContextCap.
         if (Estimate(meta, 0, 0, new Dictionary<string, string>())!.Kv != 32768L * 32 * 8 * 256 * 2)
             throw new InvalidOperationException("VramEstimate context");

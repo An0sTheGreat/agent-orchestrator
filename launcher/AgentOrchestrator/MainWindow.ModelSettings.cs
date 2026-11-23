@@ -215,7 +215,7 @@ public partial class MainWindow
         var startLoad = LoadOf(null);
         var hasModel = startLoad?["model_path"] is not null;
         Dictionary<string, string>? meta = null;
-        var mtpHead = false; // a separate MTP head beside the model's GGUF (LauncherLogic.MtpHead): Speculative decoding offers MTP
+        long mtpHeadBytes = 0; // a separate MTP head beside the model's GGUF (LauncherLogic.MtpHead): Speculative decoding offers MTP, the meter counts it
         (long Model, long Vision) files = (0, 0);
         var toLocal = false; // Switch to Local, until a Save writes it
         var remoteMode = () => remoteNow is not null && !toLocal;
@@ -658,7 +658,7 @@ public partial class MainWindow
         {
             if (!editors.TryGetValue("speculative_type", out var editor) || editor is not ComboBox box)
                 return [];
-            var offered = ModelOptions.SpeculativeChoices(meta, mtpHead);
+            var offered = ModelOptions.SpeculativeChoices(meta, mtpHeadBytes > 0);
             var (was, items) = (Value(box), box.Items.OfType<string>().Skip(1).ToList());
             var shown = ModelOptions.SpeculativeFallback(was, offered);
             var list = items.Where(v => offered.Contains(v) || !ModelOptions.All.First(o => o.Key == "speculative_type").Values.Contains(v)).ToList(); // a value config.json had stays
@@ -682,11 +682,11 @@ public partial class MainWindow
             var (read, sizes, head) = await Task.Run(() =>
             {
                 var gguf = LauncherLogic.ResolveGguf(copy, folder, hub);
-                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf), gguf is not null && LauncherLogic.MtpHead(gguf) is not null);
+                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf), gguf is not null && LauncherLogic.MtpHead(gguf) is { } h ? new FileInfo(h).Length : 0L);
             });
             if (mine != derivation)
                 return;
-            (meta, mtpHead) = (read, head);
+            (meta, mtpHeadBytes) = (read, head);
             files = sizes;
             var keys = editors.Keys.ToList();
             foreach (var key in Rederive().Concat(SpeculativeFits()))
@@ -701,14 +701,14 @@ public partial class MainWindow
         void Vram()
         {
             vramBlock.Children.Clear();
-            var estimate = remoteMode() ? null : VramEstimate.Estimate(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()));
+            var estimate = remoteMode() ? null : VramEstimate.Estimate(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()), mtpHeadBytes);
             vramBlock.Visibility = estimate is null ? Visibility.Collapsed : Visibility.Visible;
             if (estimate is null)
                 return;
             var gpu = _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : (long?)null;
             // Total: the whole model wherever it runs (every layer counted, as if all were on the GPU).
             var all = editors.ToDictionary(p => p.Key, p => p.Key is "gpu_layers" or "n_cpu_moe" ? "" : Value(p.Value).Trim());
-            var whole = VramEstimate.Estimate(meta, files.Model, files.Vision, all)!.Total;
+            var whole = VramEstimate.Estimate(meta, files.Model, files.Vision, all, mtpHeadBytes)!.Total;
             vramBlock.Children.Add(Label("Estimated memory usage"));
             DockPanel Pill(string name, string value, Brush? color = null)
             {
