@@ -2922,6 +2922,27 @@ public partial class MainWindow : Window
                 if (!zHidden || negative.Visibility != Visibility.Visible || _imgSteps.Value != 30 ||
                     _imgWidthHint.Text != "1024" || _imgHeightHint.Text != "1024")
                     return Fail();
+                // the size lock: closed, the height follows the width's ratio; open, both go as typed; closed again, the ratio is back
+                {
+                    var square = _imgAspect.SelectedIndex;
+                    _imgAspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "1:1");
+                    var sizeLock = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesSizeLock");
+                    _imgWidth.Text = "1001";
+                    CommitImageSize(true);
+                    var lockedPair = (_imgWidth.Text, _imgHeight.Text);
+                    SmokeClick(sizeLock!);
+                    (_imgWidth.Text, _imgHeight.Text) = ("1001", "777");
+                    CommitImageSize(true);
+                    CommitImageSize(false);
+                    var open = ReadImageSettings();
+                    var openIcon = sizeLock!.Content as string;
+                    SmokeClick(sizeLock);
+                    if (lockedPair.Item1 != lockedPair.Item2 || lockedPair.Item1 == "1001" || openIcon != "" || sizeLock.Content as string != "" ||
+                        open is not { SizeUnlocked: true, Width: 1001, Height: 777 } || _imgHeight.Text != _imgWidth.Text || ReadImageSettings().SizeUnlocked)
+                        return Fail();
+                    (_imgWidth.Text, _imgHeight.Text) = ("", "");
+                    _imgAspect.SelectedIndex = square;
+                }
                 // the prompt boxes cap their height with a fading bottom edge and an expand/collapse toggle; no toggle when the text fits
                 {
                     TextBox promptBox = _imgPrompt, negBox = _imgNegative;

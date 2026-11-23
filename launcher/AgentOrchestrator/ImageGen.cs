@@ -35,6 +35,7 @@ internal sealed class ImageSettings
     public int Height { get; set; } = 1024;
     public int CustomWidth { get; set; } // the Width box (0 = empty: the preset's recommended width)
     public int CustomHeight { get; set; }
+    public bool SizeUnlocked { get; set; } // the lock beside the size boxes open: sizes go as typed, no ratio and no rounding to the model's multiple
     public int Steps { get; set; } = 8;
     public double Cfg { get; set; } = 1.0;
     public long Seed { get; set; } = -1;
