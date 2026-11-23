@@ -2433,8 +2433,7 @@ public partial class MainWindow : Window
                     lists[1].MarkerStyle != TextMarkerStyle.Decimal || lists[0].ListItems.First().Blocks.OfType<System.Windows.Documents.List>().Count() != 1 ||
                     blocks.OfType<System.Windows.Documents.Table>().Single().RowGroups[0].Rows.Count != 2 || blocks.OfType<System.Windows.Documents.Section>().Count() != 1 ||
                     Markdown.CodeBlocks(blocks).SingleOrDefault() is not { Child: Grid { Children: [StackPanel codeContent, Button { Tag: "code **raw**" }] } } ||
-                    SmokeFind<TextBlock>(codeContent, t => t.Tag as string == "codetext") is not { } codeText ||
-                    string.Concat(codeText.Inlines.OfType<System.Windows.Documents.Run>().Select(run => run.Text)) != "code **raw**" ||
+                    SmokeFind<RichTextBox>(codeContent, t => t.Tag as string == "codetext") is not { } codeText || Markdown.CodeOf(codeText) != "code **raw**" ||
                     mdText.Contains("# Peonies") || mdText.Contains("**full sun**") ||
                     blocks.OfType<System.Windows.Documents.Paragraph>().SelectMany(p => p.Inlines).OfType<System.Windows.Documents.Hyperlink>().Single().NavigateUri.AbsoluteUri != "https://example.org/p")
                     return Fail();

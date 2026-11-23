@@ -1,7 +1,10 @@
 using System.Diagnostics;
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Media;
 
@@ -364,7 +367,7 @@ internal static class Markdown
         var pieces = Highlight(code, language);
         if (_page) // the viewer's: the listing alone on a blue-tinted card, the accent bar down its left edge
         {
-            var inner = new Border { Child = CodeText(pieces, gutter: false), Padding = new Thickness(2, 13, 2, 13), BorderThickness = new Thickness(0, 1, 1, 1), CornerRadius = new CornerRadius(0, 4, 4, 0) };
+            var inner = new Border { Child = SelectableCode(pieces, numbered: false), Padding = new Thickness(2, 13, 2, 13), BorderThickness = new Thickness(0, 1, 1, 1), CornerRadius = new CornerRadius(0, 4, 4, 0) };
             inner.SetResourceReference(Border.BackgroundProperty, "MdCode");
             inner.SetResourceReference(Border.BorderBrushProperty, "Border");
             var bar = new Border { Child = inner, Padding = new Thickness(4, 0, 0, 0), CornerRadius = new CornerRadius(4) };
@@ -372,8 +375,8 @@ internal static class Markdown
             return new BlockUIContainer(bar) { Margin = new Thickness(0, 6, 0, 16) };
         }
         var lineCount = code.Count(c => c == (char)10) + 1;
-        // numbered rows only once the block is closed (a streaming one is re-rendered every frame) and not huge
-        UIElement body = closed && lineCount is >= 2 and <= MaxNumbered ? NumberedLines(pieces, lineCount) : CodeText(pieces, gutter: false);
+        // selectable (and numbered, unless one line or huge) once the block is closed: a streaming one is re-rendered every frame
+        UIElement body = closed ? SelectableCode(pieces, numbered: lineCount is >= 2 and <= MaxNumbered) : CodeText(pieces, gutter: false);
         var copyText = new TextBlock { FontSize = 12, FontWeight = FontWeights.Medium };
         CopyLabel(copyText, copied: false);
         var copy = new Button
@@ -401,8 +404,7 @@ internal static class Markdown
     public static UIElement CodeListing(string code, string language)
     {
         var pieces = Highlight(code, language);
-        var lineCount = code.Count(c => c == (char)10) + 1;
-        return lineCount <= MaxNumbered ? NumberedLines(pieces, lineCount) : CodeText(pieces, gutter: false);
+        return SelectableCode(pieces, numbered: code.Count(c => c == (char)10) + 1 <= MaxNumbered);
     }
 
     // Code's size and its line-number gutter's width (the editor panel draws its text and gutter with these too).
@@ -438,11 +440,13 @@ internal static class Markdown
         return text;
     }
 
-    // The highlighted pieces cut at line ends (a block comment or template string can span lines, so the code is highlighted
-    // whole first), one row per line: the number in a muted gutter with a hairline down its right edge, then the line.
-    private static StackPanel NumberedLines(List<(string Text, string? Color)> pieces, int lineCount)
+    // A listing as selectable read-only text (drag to select, Ctrl+C; the Copy button stays), its syntax colours kept. The
+    // highlighted pieces are cut at line ends (a block comment can span lines, so the code is highlighted whole first): one
+    // paragraph per line, wrapping under itself. numbered: each line's number is a UI element hanging in a muted gutter with
+    // a hairline down its right edge, so it is never part of a selection; Copy takes the selected code only (SelectedCode).
+    private static FrameworkElement SelectableCode(List<(string Text, string? Color)> pieces, bool numbered)
     {
-        var lines = new List<List<(string, string?)>> { new() };
+        var lines = new List<List<(string Text, string? Color)>> { new() };
         foreach (var (piece, color) in pieces)
         {
             var parts = piece.Split((char)10);
@@ -454,28 +458,82 @@ internal static class Markdown
                     lines[^1].Add((parts[i], color));
             }
         }
-        var rows = new StackPanel();
-        var width = GutterWidth(lineCount);
+        var gutter = numbered ? GutterWidth(lines.Count) : 0;
+        var indent = numbered ? gutter + 10 : 14; // a code block's text sits 10 px right of the gutter, or 14 px in from the edge
+        var document = new FlowDocument { PagePadding = new Thickness(0, 1, 0, 1), FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = CodeFontSize };
+        document.SetResourceReference(FlowDocument.ForegroundProperty, "CodeText");
         for (var n = 0; n < lines.Count; n++)
         {
-            var number = new TextBlock
-            {
-                Text = (n + 1).ToString(), FontFamily = AppFonts.Mono, FontSize = 11, TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Top,
-                Margin = new Thickness(0, 2, 0, 0),
-            };
+            var line = new Paragraph { Margin = new Thickness(indent, 0, 14, 0), TextIndent = numbered ? -indent : 0 };
             if (Roomy)
-                number.LineHeight = 20.5;
-            number.SetResourceReference(TextBlock.ForegroundProperty, "CodeLineNumber");
-            var cell = new Border { Child = number, Width = width, BorderThickness = new Thickness(0, 0, 1, 0) };
-            cell.SetResourceReference(Border.BorderBrushProperty, "Border");
-            var row = new Grid { ColumnDefinitions = { new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition() } };
-            var text = CodeText(lines[n].Count > 0 ? lines[n] : [(" ", null)]);
-            Grid.SetColumn(text, 1);
-            row.Children.Add(cell);
-            row.Children.Add(text);
-            rows.Children.Add(row);
+                line.LineHeight = 20.5;
+            if (numbered)
+            {
+                // drawn 3 px lower (a render offset, so the line keeps its height): the smaller number then sits on the code's baseline
+                var number = new TextBlock { Text = (n + 1).ToString(CultureInfo.InvariantCulture), FontSize = 11, Width = gutter, TextAlignment = TextAlignment.Center,
+                    RenderTransform = new TranslateTransform(0, 3) };
+                number.SetResourceReference(TextBlock.ForegroundProperty, "CodeLineNumber");
+                line.Inlines.Add(new InlineUIContainer(new Border { Child = number, Width = indent }) { BaselineAlignment = BaselineAlignment.Center });
+            }
+            foreach (var (text, color) in lines[n])
+            {
+                var run = new Run(text);
+                if (color is not null)
+                    run.SetResourceReference(TextElement.ForegroundProperty, color);
+                line.Inlines.Add(run);
+            }
+            document.Blocks.Add(line);
         }
-        return rows;
+        var box = new RichTextBox
+        {
+            Document = document, IsReadOnly = true, IsReadOnlyCaretVisible = false, BorderThickness = new Thickness(0), Background = Brushes.Transparent,
+            Padding = new Thickness(0), VerticalScrollBarVisibility = ScrollBarVisibility.Disabled, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Tag = "codetext", Cursor = System.Windows.Input.Cursors.IBeam, SelectionOpacity = 0.35,
+        };
+        box.SetResourceReference(TextBoxBase.SelectionBrushProperty, "Accent");
+        box.CommandBindings.Add(new System.Windows.Input.CommandBinding(System.Windows.Input.ApplicationCommands.Copy, (_, e) =>
+        {
+            e.Handled = true;
+            if (SelectedCode(box) is { Length: > 0 } code)
+                try { Clipboard.SetText(code); }
+                catch (System.Runtime.InteropServices.ExternalException) { } // the clipboard is busy: nothing copied
+        }));
+        // the wheel scrolls the conversation, not this box (it never scrolls itself)
+        box.PreviewMouseWheel += (_, e) =>
+        {
+            e.Handled = true;
+            (VisualTreeHelper.GetParent(box) as UIElement)?.RaiseEvent(new System.Windows.Input.MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta) { RoutedEvent = UIElement.MouseWheelEvent });
+        };
+        if (!numbered)
+            return box;
+        var rule = new Border { Width = gutter, HorizontalAlignment = HorizontalAlignment.Left, BorderThickness = new Thickness(0, 0, 1, 0) };
+        rule.SetResourceReference(Border.BorderBrushProperty, "Border");
+        return new Grid { Children = { rule, box } };
+    }
+
+    // The code a listing's selection covers, without its line numbers (they are UI elements, not text): one line per paragraph.
+    internal static string SelectedCode(RichTextBox box) => CodeBetween(box, box.Selection.Start, box.Selection.End);
+
+    // A listing's whole code (SelectableCode).
+    internal static string CodeOf(RichTextBox box) => CodeBetween(box, box.Document.ContentStart, box.Document.ContentEnd);
+
+    private static string CodeBetween(RichTextBox box, TextPointer start, TextPointer end)
+    {
+        var blocks = box.Document.Blocks.ToList();
+        var text = new StringBuilder();
+        Block? last = null;
+        for (var at = start; at is not null && at.CompareTo(end) < 0; at = at.GetNextContextPosition(LogicalDirection.Forward))
+        {
+            if (at.GetPointerContext(LogicalDirection.Forward) != TextPointerContext.Text || at.Paragraph is not { } line)
+                continue;
+            if (last is not null && line != last)
+                text.Append('\n', Math.Max(1, blocks.IndexOf(line) - blocks.IndexOf(last))); // blank lines between count too
+            last = line;
+            var run = at.GetTextInRun(LogicalDirection.Forward);
+            var room = at.GetOffsetToPosition(end);
+            text.Append(room < run.Length ? run[..room] : run);
+        }
+        return text.ToString();
     }
 
     public const string CopyGlyph = "\uE8C8", CopiedGlyph = "\uE73E", CodeGlyph = "\uE943";
@@ -724,6 +782,46 @@ internal static class Markdown
         if (message.Inlines.OfType<InlineUIContainer>().Single() is not { Tag: "🚀", Child: Image { Width: 20, Source.Width: 40 } } || message.Inlines.OfType<LineBreak>().Count() != 1 ||
             string.Concat(message.Inlines.OfType<Run>().Select(r => r.Text)) != "Ship it © ok → next" || HasEmoji("© → ™") || !HasEmoji("done ✅"))
             throw new InvalidOperationException("Markdown emoji: a user's message");
+        // a closed code block's listing is selectable text: part of it selects (and copies) the code alone, no line numbers;
+        // a streaming one stays a plain text block
+        var listing = CodeBlocks(ToDocument("```python\na = 1\n\nb = 2  # x\n```", 15).Blocks).Single();
+        var codeBox = Find<RichTextBox>(listing);
+        if (codeBox is null || Find<TextBlock>(listing, t => t.Tag as string == "codetext") is not null || CodeOf(codeBox) != "a = 1\n\nb = 2  # x")
+            throw new InvalidOperationException("Markdown: a code block's listing is not selectable text");
+        // the position of the code's character `index` (each paragraph a line), across the highlighter's runs
+        TextPointer At(int index)
+        {
+            var lines = codeBox.Document.Blocks.ToList();
+            var (line, column) = (0, index);
+            var code = CodeOf(codeBox).Split('\n');
+            while (column > code[line].Length)
+                (column, line) = (column - code[line].Length - 1, line + 1);
+            for (var p = lines[line].ContentStart; p is not null; p = p.GetNextContextPosition(LogicalDirection.Forward))
+                if (p.GetPointerContext(LogicalDirection.Forward) == TextPointerContext.Text)
+                {
+                    var run = p.GetTextInRun(LogicalDirection.Forward).Length;
+                    if (column <= run)
+                        return p.GetPositionAtOffset(column)!;
+                    column -= run;
+                }
+            return lines[line].ContentEnd;
+        }
+        codeBox.Selection.Select(At(2), At(10));
+        if (SelectedCode(codeBox) != "= 1\n\nb =")
+            throw new InvalidOperationException($"Markdown: a code block's selection copied \"{SelectedCode(codeBox)}\"");
+        if (Find<RichTextBox>(CodeBlocks(ToDocument("```python\na = 1\nb", 15).Blocks).Single()) is not null)
+            throw new InvalidOperationException("Markdown: a streaming code block became a text box");
+    }
+
+    // The first T under `root` (visual or logical children) that matches, for tests.
+    private static T? Find<T>(DependencyObject root, Func<T, bool>? match = null) where T : DependencyObject
+    {
+        if (root is T hit && (match is null || match(hit)))
+            return hit;
+        foreach (var child in LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>())
+            if (Find(child, match) is { } found)
+                return found;
+        return null;
     }
 
     // The document's text with its structure flattened, for tests.
