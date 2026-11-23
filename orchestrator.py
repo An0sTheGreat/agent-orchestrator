@@ -13,6 +13,7 @@ import difflib
 import fnmatch
 import hashlib
 import codecs
+import contextlib
 import html
 import ipaddress
 import math
@@ -4443,6 +4444,7 @@ def launcher_call(event: str, **data: Any) -> dict[str, Any] | None:
 
 
 PERMISSIONS_LIVE: str | None = None  # "ask", "safe" or "all" once the launcher sent a change; wins over the request's
+COMMAND_STOP = threading.Event()  # set by the launcher's {"stop_command": true}: the running run_command ends with its output so far
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
 STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
@@ -4464,6 +4466,9 @@ def stdin_lines() -> queue.Queue:
                         message = json.loads(line)
                     except ValueError:
                         message = None
+                    if isinstance(message, dict) and message.get("stop_command") is True and "id" not in message:
+                        COMMAND_STOP.set()  # the user's Stop on the running command: it ends, the turn goes on
+                        continue
                     if isinstance(message, dict) and message.get("permissions") in ("ask", "safe", "all") and "id" not in message:
                         global PERMISSIONS_LIVE
                         PERMISSIONS_LIVE = message["permissions"]  # the user changed the Code composer's mode mid-turn
@@ -4872,6 +4877,37 @@ PROMPTED_NOTE = ("\nNOTE: this command asked a question and got no answer (comma
 NO_PROMPTS = {"CI": "1", "npm_config_yes": "true"}
 
 
+# A dev server or static file server never exits: in the foreground it holds the turn until the timeout (up to 30 minutes).
+# ponytail: a pattern list of the common ones, matched per && / ; / || step; a server it misses still ends at the timeout.
+DEV_SERVER = re.compile(r"^(?:npx\s+)?(?:(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview)\b|vite(?!\s+build\b)(?:\s|$)|"
+                        r"next\s+(?:dev|start)\b|serve(?:\s|$)|http-server\b|live-server\b|webpack\s+serve\b|webpack-dev-server\b|"
+                        r"(?:python3?|py)\s+-m\s+http\.server\b)", re.IGNORECASE)
+SERVER_REFUSED = ("ERROR: this starts a server that never exits, so it would hold this reply until the timeout. Call run_command "
+                  "again with background: true (and outside_sandbox: true with a reason, so localhost can reach it).")
+
+
+@contextlib.contextmanager
+def running(command: str):
+    """The launcher shows the command with a timer and a Stop while it runs ("command" start/end); Stop sets COMMAND_STOP."""
+    COMMAND_STOP.clear()
+    emit("command", state="start", command=command)
+    try:
+        yield
+    finally:
+        emit("command", state="end")
+
+
+def stopped_head(timeout: float) -> str:
+    """The result's first line for a command that did not finish: the user's Stop, or the timeout."""
+    return ("STOPPED by the user: the command and its child processes were ended; the output so far is below"
+            if COMMAND_STOP.is_set() else f"TIMED OUT after {timeout}s: the command and its child processes were stopped")
+
+
+def starts_server(command: str) -> bool:
+    """Whether a step of `command` starts a long-running server (DEV_SERVER)."""
+    return any(DEV_SERVER.match(step.strip()) for step in re.split(r"&&|\|\||;", command))
+
+
 def prompted_note(output: str) -> str:
     """PROMPTED_NOTE when the output shows a question the command could not get answered, whatever its exit code; else ""."""
     return PROMPTED_NOTE if PROMPTED.search(output) else ""
@@ -4886,14 +4922,22 @@ def run_unsandboxed(command: str, shell: str, cwd: str, timeout: float) -> tuple
     env = {**{k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}, **NO_PROMPTS}
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    try:
-        raw, _ = proc.communicate(timeout=timeout)
-        code: int | None = proc.returncode
-    except subprocess.TimeoutExpired:
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        raw, _ = proc.communicate()
-        code = None
-    output = raw.decode("utf-8", errors="replace")
+    chunks: list[bytes] = []
+    reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()), daemon=True)
+    reader.start()
+    deadline, code = time.monotonic() + timeout, None
+    while True:  # the timeout or the user's Stop (COMMAND_STOP) ends the whole process tree
+        try:
+            code = proc.wait(timeout=0.25)
+            break
+        except subprocess.TimeoutExpired:
+            if COMMAND_STOP.is_set() or time.monotonic() > deadline:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                proc.wait()
+                break
+    reader.join(5)
+    proc.stdout.close()
+    output = b"".join(chunks).decode("utf-8", errors="replace")
     if len(output) > sandbox.OUTPUT_LIMIT:
         output = output[:sandbox.OUTPUT_LIMIT // 3] + f"\n... {len(output) - sandbox.OUTPUT_LIMIT} characters cut ...\n" + output[-2 * sandbox.OUTPUT_LIMIT // 3:]
     return code, output
@@ -4982,6 +5026,8 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                     "call again with outside_sandbox: true and a reason")
         if shell not in ("", "powershell", "cmd"):
             raise WorkflowError("shell must be 'powershell' or 'cmd'")
+        if background is not True and starts_server(command):
+            return SERVER_REFUSED
         timeout = min(max(int(timeout_seconds or 120), 1), COMMAND_MAX_TIMEOUT)
         mode = PERMISSIONS_LIVE or start_mode  # the launcher may have changed it since the turn started
         full = settings.get("full_access") is True and not read_only  # the user's Full access setting: no sandbox for these roles
@@ -4995,10 +5041,10 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                 return "DENIED: the user did not allow this command" + ("" if full else " outside the sandbox") + "."
             if background is True:
                 return sandbox.redact(run_background(command, shell or "powershell", folders[0]["path"], min(timeout, 30) if timeout_seconds else BACKGROUND_WAIT), secrets)
-            with RUN_LOCK:
+            with RUN_LOCK, running(command):
                 code, output = run_unsandboxed(command, shell or "powershell", folders[0]["path"], timeout)
             output = sandbox.redact(output, secrets)
-            head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
+            head = f"EXIT {code}" if code is not None else stopped_head(timeout)
             return f"{head} (outside the sandbox)\n{output.strip() or '(no output)'}{prompted_note(output)}"
         if folders[0]["path"] not in grants:
             raise WorkflowError("the project folder overlaps the Agent Orchestrator folder, so commands cannot run in it")
@@ -5029,11 +5075,13 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                 if extra:
                     sandbox.sync_grants(name, container, {**grants, **extra}, state)
                 try:
-                    code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=network, timeout=timeout)
-                    if (code != 0 and not network and sandbox.NETWORK_BLOCKED.search(output) and (mode == "all" or ask_user(
+                    with running(command):
+                        code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=network, timeout=timeout, stop=COMMAND_STOP)
+                    if (code != 0 and not network and not COMMAND_STOP.is_set() and sandbox.NETWORK_BLOCKED.search(output) and (mode == "all" or ask_user(
                             "network", command, "The command seems to have been stopped from using the network.", key))):
                         network = True
-                        code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=True, timeout=timeout)
+                        with running(command):
+                            code, output = sandbox.run(name, command, folders[0]["path"], temp, shell=shell, network=True, timeout=timeout, stop=COMMAND_STOP)
                 finally:
                     if extra:
                         sandbox.sync_grants(name, container, grants, state)
@@ -5047,13 +5095,13 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
             except sandbox.SandboxError as exc:
                 raise WorkflowError(f"sandbox: {exc}") from exc
         output = sandbox.redact(output, secrets)
-        head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
+        head = f"EXIT {code}" if code is not None else stopped_head(timeout)
         note = ("\nNOTE: this looks blocked by the sandbox. If the task really needs it, call run_command again with "
                 "request_write (the folders) or request_network and a reason; the user will be asked."
                 if code != 0 and not read_only and sandbox.BLOCKED.search(output) else
                 "\nNOTE: if this hangs only in the sandbox (the same command works for the user), call run_command again with "
                 "outside_sandbox true and a reason; the user will be asked."
-                if code is None and not read_only else "")
+                if code is None and not read_only and not COMMAND_STOP.is_set() else "")
         moved = "".join(f"\nNOTE: the user did not accept the repository it made; it was renamed to {q}" for q in quarantined)
         return f"{head}{' (network allowed)' if network else ''}\n{output.strip() or '(no output)'}{note}{prompted_note(output)}{moved}"
 

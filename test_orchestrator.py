@@ -4754,6 +4754,34 @@ class LeadTests(unittest.TestCase):
         self.assertEqual(orchestrator.NO_PROMPTS, {"CI": "1", "npm_config_yes": "true"})
         self.assertEqual({k: orchestrator.sandbox.clean_env(Path(folder))[k] for k in orchestrator.NO_PROMPTS}, orchestrator.NO_PROMPTS)
 
+    def test_a_dev_server_in_the_foreground_is_refused(self):
+        ran = []
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(orchestrator, "run_unsandboxed", lambda cmd, shell, cwd, timeout: ran.append(cmd) or (0, "built")):
+            run = orchestrator.command_runner([{"path": folder, "access": "write"}], {"sandbox": {"full_access": True}, "permissions": "all"})
+            for server in ("npm run dev", "npm start", "pnpm dev -- --host", "yarn preview", "bun run serve", "vite", "npx vite --port 3000",
+                           "next dev", "npx serve -s dist", "http-server .", "npx live-server", "python -m http.server 8000",
+                           "webpack serve", "cd web && npm run dev", "npm install; npm run start"):
+                self.assertEqual(run(server), orchestrator.SERVER_REFUSED, server)
+            self.assertEqual(ran, [])
+            for finite in ("npm run build", "vite build", "npx vite build", "npm test", "npm run devtools-check", "next build", "npm install"):
+                self.assertTrue(run(finite).startswith("EXIT 0"), finite)
+            self.assertEqual(len(ran), 7)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows commands")
+    def test_the_users_stop_ends_a_running_command_and_the_turn_goes_on(self):
+        events = []
+        with tempfile.TemporaryDirectory() as folder, patch.object(orchestrator, "emit", lambda e, **d: events.append((e, d))):
+            run = orchestrator.command_runner([{"path": folder, "access": "write"}], {"sandbox": {"full_access": True}, "permissions": "all"})
+            threading.Timer(1.0, orchestrator.COMMAND_STOP.set).start()  # the launcher's {"stop_command": true}
+            started = time.monotonic()
+            result = run("echo before & ping -n 30 127.0.0.1 >nul & echo after", shell="cmd")
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertTrue(result.startswith("STOPPED by the user"), result)
+        self.assertIn("before", result)
+        self.assertNotIn("after", result)
+        self.assertEqual([(e, d.get("state")) for e, d in events if e == "command"], [("command", "start"), ("command", "end")])
+
     def test_repeating_a_command_that_changed_nothing_is_called_out(self):
         replies = [tool_call("run_command", command="npm create vite"), tool_call("list_files"), tool_call("run_command", command="npm create vite"),
                    tool_call("run_command", command="npm create vite --yes"), "FINAL"]

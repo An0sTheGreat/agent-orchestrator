@@ -1200,6 +1200,8 @@ public partial class MainWindow
     {
         _chatBusy = busy;
         if (!busy)
+            EndRunningCommand(); // a turn that ended mid-command: no timer left ticking
+        if (!busy)
             _steering.Clear(); // never delivered: queued rows again, sent as the next turn (or back in the input) as usual
         RefreshQueue(_code); // Send now while a Pi Code turn runs
         AddWorkerButton.IsEnabled = !busy; // model settings and presets stay open: a Save applies from the next load (ModelsWorking)
@@ -1339,6 +1341,15 @@ public partial class MainWindow
                     slimReply.Content.Children.Add(CompactionNote(SlimmedLine(ev)));
                 }
                 break;
+            case "command": // run_command started or ended a command: shown with a timer and a Stop while it runs
+                if (Str(ev, "state") == "start")
+                    ShowRunningCommand(Str(ev, "command"));
+                else
+                {
+                    EndRunningCommand();
+                    SetChatStatus($"{name} is reading the output…");
+                }
+                break;
             case "approval": // the sandboxed run_command asks for network or more folders: the user decides
                 SetChatStatus("Waiting for your approval…");
                 AnswerApproval(ev);
@@ -1386,6 +1397,46 @@ public partial class MainWindow
             else
                 AddStatsLine(block, line, tps);
         }
+    }
+
+    // A command the model runs, in the reply's status: "Running npm test … 0:45  Stop". Stop ends that one command (its
+    // process tree): the model gets the output so far and the turn goes on (the engine's {"stop_command": true}).
+    private System.Windows.Threading.DispatcherTimer? _commandTimer;
+
+    private void ShowRunningCommand(string command)
+    {
+        EndRunningCommand();
+        if (_reply is not { } r)
+            return;
+        var shown = command.Replace('\n', ' ').Trim();
+        shown = shown.Length > 70 ? shown[..69] + "…" : shown;
+        var (started, process, time) = (DateTime.Now, _chatProcess, new Run());
+        var stop = new Hyperlink(new Run("Stop")) { ToolTip = "End this command: the model gets its output so far and goes on", FontStyle = FontStyles.Normal };
+        stop.SetResourceReference(TextElement.ForegroundProperty, "AccentLight");
+        stop.Click += (_, _) =>
+        {
+            ToTurn(process, """{"stop_command": true}""");
+            stop.IsEnabled = false;
+        };
+        void Tick()
+        {
+            var spent = DateTime.Now - started;
+            time.Text = $" … {(int)spent.TotalMinutes}:{spent.Seconds:00}   ";
+        }
+        r.Status.Inlines.Clear();
+        r.Status.Inlines.Add(new Run("Running "));
+        r.Status.Inlines.Add(new Run(shown) { FontFamily = AppFonts.Mono });
+        r.Status.Inlines.Add(time);
+        r.Status.Inlines.Add(stop);
+        r.Status.Visibility = Visibility.Visible;
+        Tick();
+        _commandTimer = new System.Windows.Threading.DispatcherTimer(TimeSpan.FromSeconds(1), System.Windows.Threading.DispatcherPriority.Normal, (_, _) => Tick(), Dispatcher);
+    }
+
+    private void EndRunningCommand()
+    {
+        _commandTimer?.Stop();
+        _commandTimer = null;
     }
 
     private void SetChatStatus(string text)

@@ -556,9 +556,10 @@ def shell_command(command: str, shell: str) -> str:
 
 
 def run(name: str, command: str, cwd: str, temp: Path, *, shell: str = "powershell", network: bool = False,
-        timeout: float = 120.0) -> tuple[int | None, str]:
+        timeout: float = 120.0, stop: threading.Event | None = None) -> tuple[int | None, str]:
     """Runs `command` in the AppContainer `name` (its grants already synced) with cwd `cwd`; returns (exit code, or
-    None on timeout, combined output clipped to OUTPUT_LIMIT). `network` adds the network capabilities for this command."""
+    None on timeout or `stop`, combined output clipped to OUTPUT_LIMIT). `network` adds the network capabilities for this
+    command; `stop` set while it runs ends it (the user's Stop) as the timeout does."""
     sid, _ = container_sid(name)
     temp.mkdir(parents=True, exist_ok=True)
     wanted = [capability_sid(), *(NETWORK_CAPABILITIES if network else ())]
@@ -611,7 +612,9 @@ def run(name: str, command: str, cwd: str, temp: Path, *, shell: str = "powershe
         chunks: list[bytes] = []
         reader = threading.Thread(target=lambda: chunks.extend(iter(lambda: os.read(read_fd, 65536), b"")), daemon=True)
         reader.start()
-        finished = _k.WaitForSingleObject(info.hProcess, int(timeout * 1000)) == 0
+        deadline, finished = time.monotonic() + timeout, False
+        while not finished and time.monotonic() < deadline and not (stop and stop.is_set()):
+            finished = _k.WaitForSingleObject(info.hProcess, int(min(250, max(1, (deadline - time.monotonic()) * 1000)))) == 0
         _k.TerminateJobObject(job, 1)  # the command's children too, finished or not
         reader.join(5)
         code = w.DWORD()
