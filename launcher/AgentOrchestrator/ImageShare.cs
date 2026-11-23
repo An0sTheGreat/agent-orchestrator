@@ -225,8 +225,10 @@ internal static class ImageShare
         catch (JsonException) { return null; }
     }
 
-    // Which way a connected PC syncs: "pull" the primary PC's newer profile, "push" its own newer one, "" = the same.
-    public static string ProfileSync(DateTime mine, DateTime theirs) => theirs > mine ? "pull" : mine > theirs ? "push" : "";
+    // Which way a connected PC syncs: "pull" the primary PC's newer profile, "push" its own newer one, "" = nothing to do. Equal
+    // times (two profiles set before syncing existed carry none) with different profiles: the primary PC's wins.
+    public static string ProfileSync(DateTime mine, DateTime theirs, bool differ = false) =>
+        theirs > mine ? "pull" : mine > theirs ? "push" : differ ? "pull" : "";
 
     public static async Task<Profile?> FetchProfileAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseProfile(await SendAsync(http, new(HttpMethod.Get, baseUrl + ProfilePath), key, ct));
@@ -417,7 +419,8 @@ internal static class ImageShare
         var when = new DateTime(2026, 11, 23, 8, 0, 0, DateTimeKind.Utc);
         Assert(ParseProfile(ProfileJson(new("An0s", "iVBO", when))) is { Name: "An0s", Png: "iVBO" } back && back.Changed == when &&
                ParseProfile("{}") is null && ParseProfile("nope") is null, "the profile round trip");
-        Assert(ProfileSync(when, when.AddMinutes(1)) == "pull" && ProfileSync(when.AddMinutes(1), when) == "push" && ProfileSync(when, when) == "", "which way the profile syncs");
+        Assert(ProfileSync(when, when.AddMinutes(1)) == "pull" && ProfileSync(when.AddMinutes(1), when) == "push" && ProfileSync(when, when) == "" &&
+               ProfileSync(when, when, differ: true) == "pull" && ProfileSync(when.AddMinutes(1), when, differ: true) == "push", "which way the profile syncs");
         Assert(Check(new("POST", ProfilePath, new() { ["Authorization"] = "Bearer k" }, []), "k") is null &&
                Check(new("GET", ProfilePath, new() { ["Authorization"] = "Bearer k" }, []), "k") is null &&
                Check(new("GET", ProfilePath, new(), []), "k")?.Status == 401, "the profile path needs the key");

@@ -69,13 +69,14 @@ public partial class MainWindow
             var url = ModelShare.ImagesUrl(host);
             if (await ImageShare.FetchProfileAsync(http, url, key, CancellationToken.None) is not { } theirs)
                 return;
-            switch (ImageShare.ProfileSync(ProfileStamp, theirs.Changed))
+            var mine = OwnProfile();
+            switch (ImageShare.ProfileSync(mine.Changed, theirs.Changed, differ: mine.Name.Trim() != theirs.Name.Trim() || mine.Png != theirs.Png))
             {
                 case "pull":
                     TakeProfile(theirs);
                     break;
                 case "push":
-                    await ImageShare.SendProfileAsync(http, url, key, OwnProfile(), CancellationToken.None);
+                    await ImageShare.SendProfileAsync(http, url, key, mine, CancellationToken.None);
                     break;
             }
         }
