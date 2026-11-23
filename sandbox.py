@@ -535,6 +535,7 @@ def clean_env(temp: Path) -> dict[str, str]:
     env.update({"NPM_CONFIG_CACHE": str(temp / "npm-cache"), "PIP_CACHE_DIR": str(temp / "pip-cache"),
                 "NUGET_PACKAGES": str(temp / "nuget"), "DOTNET_CLI_HOME": str(temp), "PYTHONPYCACHEPREFIX": str(temp / "pycache"),
                 "DOTNET_CLI_TELEMETRY_OPTOUT": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                "CI": "1", "npm_config_yes": "true",  # stdin is empty: most CLIs and npm then skip their questions
                 "GIT_CONFIG_GLOBAL": str(temp / "gitconfig")})  # ~/.gitconfig is out of reach: no warning on every git call
     return env
 

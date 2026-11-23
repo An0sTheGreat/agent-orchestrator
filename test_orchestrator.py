@@ -4741,6 +4741,40 @@ class LeadTests(unittest.TestCase):
         self.assertEqual(calls, [("planner", "planner-id", "lead.gguf"), ("implementer", "implementer-id", "sub.gguf"),
                                  ("planner", "planner-id", "lead.gguf")])
 
+    def test_a_command_that_asked_a_question_says_it_did_nothing(self):
+        # create-vite in a folder with files: "Operation cancelled" and exit 0, which models took as success and re-ran
+        with tempfile.TemporaryDirectory() as folder, \
+                patch.object(orchestrator, "run_unsandboxed", lambda cmd, shell, cwd, timeout: (0, "◇  Current directory is not empty.\n—  Operation cancelled")):
+            run = orchestrator.command_runner([{"path": folder, "access": "write"}], {"sandbox": {"full_access": True}, "permissions": "all"})
+            result = run("npm create vite@latest . -- --template vanilla-ts")
+            self.assertTrue(result.startswith("EXIT 0") and result.endswith(orchestrator.PROMPTED_NOTE), result)
+        for asked in ("? Project name: › vite-project", "Ok to proceed? (y/N)", "Overwrite? (Y/n)", "npm ERR! aborted"):
+            self.assertEqual(orchestrator.prompted_note(asked), orchestrator.PROMPTED_NOTE, asked)
+        self.assertEqual(orchestrator.prompted_note("added 12 packages in 3s\nDone. Now run: npm install"), "")
+        self.assertEqual(orchestrator.NO_PROMPTS, {"CI": "1", "npm_config_yes": "true"})
+        self.assertEqual({k: orchestrator.sandbox.clean_env(Path(folder))[k] for k in orchestrator.NO_PROMPTS}, orchestrator.NO_PROMPTS)
+
+    def test_repeating_a_command_that_changed_nothing_is_called_out(self):
+        replies = [tool_call("run_command", command="npm create vite"), tool_call("list_files"), tool_call("run_command", command="npm create vite"),
+                   tool_call("run_command", command="npm create vite --yes"), "FINAL"]
+        results = []
+
+        class Client:
+            role, cut_off = "planner", False
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                reply = replies.pop(0)
+                return {"role": "assistant", "content": reply} if isinstance(reply, str) else reply
+
+        handlers = {"run_command": lambda command, **_: "EXIT 0\ncancelled", "list_files": lambda **_: "PROJECT.md"}
+        with patch.object(orchestrator, "role_settings", lambda c, role: (Client(), {})), \
+                patch.object(orchestrator, "emit", lambda e, **d: results.append(d["result"]) if e == "tool" else None):
+            self.assertEqual(orchestrator.code_loop({}, "planner", "S", self.MSGS, [], handlers), "FINAL")
+        self.assertEqual([r.endswith(orchestrator.REPEAT_NOTE) for r in results], [False, False, True, False])  # a list_files between still counts
+
     def test_run_checks_without_checks_and_with_a_python_syntax_error(self):
         (self.root / "notes.txt").write_text("x", encoding="utf-8")
         self.assertTrue(orchestrator.run_checks(self.config, self.folders).startswith("No checks apply here"))

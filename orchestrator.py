@@ -4181,6 +4181,10 @@ def reasoning_budget(body: dict[str, Any], remote: bool) -> dict[str, Any]:
     return body
 
 
+REPEAT_NOTE = ("\nNOTE: you ran this same command last time and it gave the same output, so repeating it changed nothing. "
+               "Do not run it again: find out why (read the output), or try a different approach.")
+
+
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
               stop: Any = None, nudge: Any = "") -> str:
@@ -4193,6 +4197,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
     max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap, remote=getattr(client, "remote", False)), display_name(config, role), None, 0, 0
+    last_run: tuple[str, str] | None = None  # this turn's last run_command (command, result): a repeat that changed nothing is said so
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -4247,6 +4252,11 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                                         "screenshot the first one returned, then decide. To chain actions you are sure of, put them in `steps`")
                 acted = acted or tool == "computer"
                 result = cap_result(tool, handlers[tool](**arguments), arguments, getattr(client, "context_size", lambda: None)())
+                if tool == "run_command" and isinstance(result, str):
+                    ran = (str(arguments.get("command") or "").strip(), result)
+                    if ran == last_run:
+                        result += REPEAT_NOTE
+                    last_run = ran
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
@@ -4292,7 +4302,8 @@ RUN_COMMAND_TOOL = function_tool(
     "run_command", "Run one cmd or PowerShell command in a sandbox, starting in the project root: build, test, "
     "run scripts, use git. It can write the granted write folders and read the read-only ones; the rest of the disk is "
     "read-only or hidden, API keys are absent and the network is off unless the user allowed it. Returns the exit code and "
-    "the output. If the sandbox blocks something the task really needs, call again with request_network, or request_write "
+    "the output. Commands have no keyboard: a question (a confirm, a menu) gets no answer and the command gives up, so use "
+    "its non-interactive flags. If the sandbox blocks something the task really needs, call again with request_network, or request_write "
     "listing the folders, and a reason: the user is asked, and an approval holds for that one command. If a command "
     "hangs or fails only because of the sandbox (a build tool, a native binary), call again with outside_sandbox: the user "
     "is asked every time, and it then runs as the user, in the project folder, without the sandbox.",
@@ -4803,6 +4814,18 @@ def grantable(raw: Any, request: dict[str, Any]) -> str:
 
 
 RUN_LOCK = threading.Lock()  # one sandboxed command at a time: an approval widens the container for that command alone
+# A command that asked a question: commands have no keyboard (stdin is empty), so it cancelled, often still exiting 0
+# (create-vite in a folder that has files prints "Operation cancelled" and exits 0).
+PROMPTED = re.compile(r"operation cancel+ed|\baborted\b|\? .+›|\(y/n\)", re.IGNORECASE)
+PROMPTED_NOTE = ("\nNOTE: this command asked a question and got no answer (commands have no keyboard), so it did nothing. "
+                 "Use its non-interactive flags, or write the files yourself.")
+# create-vite and the like: CI and npm's yes stop most "Ok to proceed?" prompts (not every question: PROMPTED catches those)
+NO_PROMPTS = {"CI": "1", "npm_config_yes": "true"}
+
+
+def prompted_note(output: str) -> str:
+    """PROMPTED_NOTE when the output shows a question the command could not get answered, whatever its exit code; else ""."""
+    return PROMPTED_NOTE if PROMPTED.search(output) else ""
 SHELL_KEYS = {"powershell", "pwsh", "cmd", "python", "py", "node", "bash", "sh", "wsl", "wscript", "cscript", "mshta", "rundll32"}
 
 
@@ -4811,7 +4834,7 @@ def run_unsandboxed(command: str, shell: str, cwd: str, timeout: float) -> tuple
     code, or None on timeout, combined output clipped like sandbox.run). Secret-named environment variables are left out
     and stdin is empty; on timeout the command's whole process tree is killed."""
     argv = ["cmd", "/d", "/c", command] if shell == "cmd" else ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-    env = {k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}
+    env = {**{k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}, **NO_PROMPTS}
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     try:
@@ -4835,7 +4858,7 @@ def run_background(command: str, shell: str, cwd: str, wait: float) -> str:
     """Starts `command` as the user (outside the sandbox) and leaves it running: a dev server, a watcher. Returns its first
     output after `wait` seconds, or its exit code and output if it ended by then. It is stopped when the engine exits."""
     argv = ["cmd", "/d", "/c", command] if shell == "cmd" else ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-    env = {k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}
+    env = {**{k: v for k, v in os.environ.items() if not sandbox.SECRET_ENV.search(k)}, **NO_PROMPTS}
     log = tempfile.NamedTemporaryFile(prefix="ao-background-", suffix=".log", delete=False)
     proc = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -4927,7 +4950,7 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                 code, output = run_unsandboxed(command, shell or "powershell", folders[0]["path"], timeout)
             output = sandbox.redact(output, secrets)
             head = f"EXIT {code}" if code is not None else f"TIMED OUT after {timeout}s: the command and its child processes were stopped"
-            return f"{head} (outside the sandbox)\n{output.strip() or '(no output)'}"
+            return f"{head} (outside the sandbox)\n{output.strip() or '(no output)'}{prompted_note(output)}"
         if folders[0]["path"] not in grants:
             raise WorkflowError("the project folder overlaps the Agent Orchestrator folder, so commands cannot run in it")
         wanted = request_write if isinstance(request_write, list) else [request_write] if request_write else []
@@ -4983,7 +5006,7 @@ def command_runner(folders: list[dict[str, str]], request: dict[str, Any], read_
                 "outside_sandbox true and a reason; the user will be asked."
                 if code is None and not read_only else "")
         moved = "".join(f"\nNOTE: the user did not accept the repository it made; it was renamed to {q}" for q in quarantined)
-        return f"{head}{' (network allowed)' if network else ''}\n{output.strip() or '(no output)'}{note}{moved}"
+        return f"{head}{' (network allowed)' if network else ''}\n{output.strip() or '(no output)'}{note}{prompted_note(output)}{moved}"
 
     return run_command
 
