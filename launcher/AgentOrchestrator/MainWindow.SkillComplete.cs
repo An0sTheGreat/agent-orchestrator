@@ -28,7 +28,7 @@ public partial class MainWindow
     // (RunLocalCommand). Args: the words completed after "/name ".
     private static readonly (string Name, string Help, (string Name, string Help)[] Args)[] Commands =
     {
-        ("clear", "Start a new conversation in the same place (this one stays in the sidebar)", []),
+        ("clear", "Start this conversation over with no history: same name, project and folders", []),
         ("compact", "Summarize the conversation now (add what to keep: /compact keep the API decisions)", []),
         ("ponytail", "Ponytail for every model: the smallest change that works (off, lite, full, ultra)",
             [("off", "Turn Ponytail off"), ("lite", "Build what was asked; name the smaller option"),
@@ -61,16 +61,50 @@ public partial class MainWindow
         if (arg.Length > 0)
             return false; // "/clear something" is a message
         c.Input.Clear();
+        // The conversation is replaced in place: the old one is deleted and a fresh one (a new id, so Pi's session starts over
+        // too) takes its name, sidebar project and folders, with no messages, summary or context.
+        static string? KeptTitle(ConversationStore.Conversation old, int shown) =>
+            old.Title ?? (old.Messages.Count > 0 || shown > 0 ? ConversationStore.TitleOf(old) : null); // untitled and empty: the next message names it
         if (!c.IsCode)
         {
-            var group = _chatConv is { } saved ? _store.GroupOf(saved.Id) : _newChatGroup;
-            if (ChatTurnShown)
-                ParkChatTurn(); // a reply still streaming finishes into its own chat
+            var old = _chatConv;
+            var group = old is { } saved ? _store.GroupOf(saved.Id) : _newChatGroup;
+            var streaming = ChatTurnShown;
+            var title = old is null ? null : KeptTitle(old, _chat.History.Count);
+            if (streaming)
+                ParkChatTurn(); // a reply still streaming finishes into its own chat, which stays
             ClearChatConversation();
             _newChatGroup = group;
+            if (old is not null && !streaming)
+            {
+                StoreDo(() => _store.Delete(old.Id));
+                StoreDo(() => _chatConv = NewStoredChat());
+                if (_chatConv is { } fresh)
+                {
+                    (fresh.Title, fresh.Worker) = (title, old.Worker);
+                    StoreDo(() => _store.Save(fresh));
+                }
+                RefreshSidebarList();
+            }
         }
-        else if (_codeConv is { } open)
-            NewCodeConversation(open.Folder, _store.GroupOf(open.Id));
+        else if (_codeConv is { } open && !CodeWorking && !(_chatBusy && _turn.IsCode))
+        {
+            var (title, group, folders) = (KeptTitle(open, _code.History.Count), _store.GroupOf(open.Id), CodeExtraFolders.ToList());
+            CloseCodeConversation();
+            StoreDo(() => _store.Delete(open.Id));
+            if (EnsureCodeConversation(SelectedProjectPath()) && _codeConv is { } fresh)
+            {
+                fresh.Title = title;
+                if (group is not null)
+                    StoreDo(() => _store.MoveToGroup(fresh.Id, group));
+                CodeExtraFolders.AddRange(folders);
+                RefreshCodeFolders();
+                SaveCodeConversation();
+            }
+            RefreshChatTarget();
+        }
+        else if (_codeConv is { } busy) // a run or reply is using it: a new conversation beside it, as before
+            NewCodeConversation(busy.Folder, _store.GroupOf(busy.Id));
         else
             ClearConversation(_code);
         return true;
