@@ -1385,15 +1385,20 @@ SPEC_TYPES = {"mtp": "draft-mtp", "dspark": "draft-dspark", "dflash": "draft-dfl
 def speculative_type(model_file: Path, choice: Any) -> str | None:
     """llama-server's --spec-type for the Speculative decoding choice. "auto" (or unset) is MTP when the GGUF carries its
     own MTP layers (<arch>.nextn_predict_layers), else nothing. dflash and dspark also need a draft model (-md) in the
-    extra arguments."""
+    extra arguments. MTP asked of a GGUF without MTP layers is left out: llama-server would exit while loading."""
     choice = str(choice or "auto").lower()
-    if choice != "auto":
-        return SPEC_TYPES.get(choice)
     try:
         meta = gguf_metadata(model_file)
-        return "draft-mtp" if int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0 else None
+        has_mtp = int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0
     except (OSError, ValueError, KeyError, struct.error):
-        return None
+        has_mtp = choice != "auto"  # unreadable: trust an explicit choice
+    if choice == "auto":
+        return "draft-mtp" if has_mtp else None
+    if choice in ("mtp", "mtp+ngram") and not has_mtp:
+        print(f"warning: {model_file.name} has no MTP layers; speculative decoding "
+              + ("uses ngram only" if choice == "mtp+ngram" else "is off"))
+        return "ngram-simple" if choice == "mtp+ngram" else None
+    return SPEC_TYPES.get(choice)
 
 
 def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[str]:

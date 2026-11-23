@@ -6075,7 +6075,10 @@ class LlamaCppTests(unittest.TestCase):
         self.assertEqual(spec(mtp)[0], ["--spec-type", "draft-mtp"])  # auto: the model's own MTP layers
         self.assertIsNone(spec(plain)[0])
         self.assertEqual(spec(mtp, speculative_type="off")[0], ["--spec-type", "none"])
-        self.assertEqual(spec(plain, speculative_type="mtp+ngram")[0], ["--spec-type", "draft-mtp,ngram-simple"])
+        self.assertEqual(spec(mtp, speculative_type="mtp+ngram")[0], ["--spec-type", "draft-mtp,ngram-simple"])
+        # MTP asked of a model without MTP layers: llama-server would exit while loading, so it is left out
+        self.assertIsNone(spec(plain, speculative_type="mtp")[0])
+        self.assertEqual(spec(plain, speculative_type="mtp+ngram")[0], ["--spec-type", "ngram-simple"])
         _, args = spec(plain, speculative_type="dflash", spec_draft_n_max=3, spec_draft_cache_type="q8_0")
         self.assertEqual(args[args.index("--spec-type"):][:8],
                          ["--spec-type", "draft-dflash", "--spec-draft-n-max", "3", "-ctkd", "q8_0", "-ctvd", "q8_0"])
