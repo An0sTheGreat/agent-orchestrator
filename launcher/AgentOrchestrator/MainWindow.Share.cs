@@ -243,6 +243,9 @@ public partial class MainWindow
             return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
         if (request.Path == ImageShare.LoadPath)
             return await Dispatcher.InvokeAsync(() => ServeShareLoad(request));
+        if (request.Path == ImageShare.EstimatePath)
+            return ImageShare.ServeEstimate(System.Text.Encoding.UTF8.GetString(request.Body), id => _sharedModels.FirstOrDefault(m => m.Id == id)?.Model,
+                await (_gpuMemory ??= Task.Run(LauncherLogic.GpuMemoryBytes)));
         if (request.Path == ImageShare.ModelsPath)
             return new(200, ImageShare.ModelsJson(ImageShare.Models(ImageGen.ScanFolder(await Dispatcher.InvokeAsync(() => ImageModelsFolder)).Models)));
         ImageSettings? asked;

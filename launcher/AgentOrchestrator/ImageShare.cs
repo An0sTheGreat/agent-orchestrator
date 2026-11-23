@@ -22,6 +22,8 @@ internal static class ImageShare
     public const string PairPath = "/share/pair";
     // GET: this PC's profile (name, picture, when it last changed); POST: a newer one from a connected PC (Profile, MainWindow.Tailnet.cs).
     public const string ProfilePath = "/share/profile";
+    // POST {"model","options"}: this PC's memory estimate for one of its shared models with those load options (ServeEstimate).
+    public const string EstimatePath = "/share/estimate";
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     // Query: what follows the path's "?" ("" = none). Remote: the caller's address (set by Server).
@@ -105,7 +107,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", EstimatePath => "POST", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -215,6 +217,32 @@ internal static class ImageShare
     public static async Task SaveLoadAsync(HttpClient http, string baseUrl, string key, string model, IReadOnlyDictionary<string, string> options, CancellationToken ct) =>
         await SendAsync(http, new(HttpMethod.Post, baseUrl + LoadPath)
             { Content = new StringContent(JsonSerializer.Serialize(new { model, options }), Encoding.UTF8, "application/json") }, key, ct);
+
+    // The primary PC's VramEstimate for a shared model (Whole: the meter's Total) and its GPU's memory (null: unknown).
+    public sealed record MemoryEstimate(long Weights, long Kv, long Compute, long Vision, long Whole, long? Gpu);
+    private sealed record EstimateAsk(string? Model, Dictionary<string, string>? Options);
+
+    // POST /share/estimate {"model":id,"options":{key:value}} on the primary PC: gguf maps a shared model id to its file (null:
+    // not shared), gpu is this PC's GPU memory. 400 for a bad body or an unreadable header, 404 for an unknown model.
+    public static Response ServeEstimate(string body, Func<string, string?> gguf, long? gpu)
+    {
+        EstimateAsk? asked;
+        try { asked = JsonSerializer.Deserialize<EstimateAsk>(body, Web); }
+        catch (JsonException) { asked = null; }
+        if (asked is not { Model: { } id, Options: { } options })
+            return Error(400, "The body is not {\"model\",\"options\"} JSON");
+        if (gguf(id) is not { } file)
+            return Error(404, "No such shared model");
+        var (meta, files, head) = VramEstimate.Read(file);
+        return VramEstimate.WithWhole(meta, files.Model, files.Vision, options, head) is ({ } e, var whole)
+            ? new(200, JsonSerializer.Serialize(new MemoryEstimate(e.Weights, e.Kv, e.Compute, e.Vision, whole, gpu), Web))
+            : Error(400, "The model's GGUF header could not be read");
+    }
+
+    public static async Task<MemoryEstimate> FetchEstimateAsync(HttpClient http, string baseUrl, string key, string model, IReadOnlyDictionary<string, string> options, CancellationToken ct) =>
+        JsonSerializer.Deserialize<MemoryEstimate>(await SendAsync(http, new(HttpMethod.Post, baseUrl + EstimatePath)
+            { Content = new StringContent(JsonSerializer.Serialize(new { model, options }), Encoding.UTF8, "application/json") }, key, ct), Web)
+            ?? throw new InvalidOperationException("The primary PC sent no estimate");
 
     // The sidebar's profile as the PCs pass it on: Png = the picture as base64 PNG ("" = none), Changed = when it was last edited (UTC).
     public sealed record Profile(string Name, string Png, DateTime Changed);
@@ -573,6 +601,43 @@ internal static class ImageShare
         var closedPort = ((IPEndPoint)closed.LocalEndpoint).Port;
         closed.Stop();
         Assert(Thrown(() => FetchModelsAsync(http, $"http://127.0.0.1:{closedPort}", "k", default)) == CannotReach, "nothing listening: CannotReach");
+
+        // /share/estimate: the primary PC's VramEstimate for its shared model's GGUF with the options sent, and its GPU; the key
+        // gates it, an unknown model is 404.
+        Assert(Check(R("POST", EstimatePath, null), "key")?.Status == 401 && Check(R("POST", EstimatePath, "Bearer key"), "key") is null &&
+            Check(R("GET", EstimatePath, "Bearer key"), "key")?.Status == 405, "/share/estimate: POST with the key, 401 without");
+        var ggufDir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-estimate-{Guid.NewGuid():N}")).FullName;
+        try
+        {
+            var tiny = Path.Combine(ggufDir, "Tiny-Q4_K_M.gguf");
+            using (var w = new BinaryWriter(File.Create(tiny), Encoding.UTF8))
+            {
+                void S(string v) { w.Write((ulong)Encoding.UTF8.GetByteCount(v)); w.Write(Encoding.UTF8.GetBytes(v)); }
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write(6UL);
+                S("general.architecture"); w.Write(8u); S("llama");
+                S("llama.block_count"); w.Write(4u); w.Write(4u);
+                S("llama.embedding_length"); w.Write(4u); w.Write(256u);
+                S("llama.attention.head_count"); w.Write(4u); w.Write(8u);
+                S("llama.attention.head_count_kv"); w.Write(4u); w.Write(2u);
+                S("llama.context_length"); w.Write(4u); w.Write(16384u);
+                w.Write(new byte[4096]); // the "weights"
+            }
+            using var primary = new Server(IPAddress.Loopback, 0, upstreamPort, () => "k", (r, _) =>
+                Task.FromResult(ServeEstimate(Encoding.UTF8.GetString(r.Body), id => id == "Tiny" ? tiny : null, 8L << 30)));
+            var at = $"http://127.0.0.1:{primary.Port}";
+            Dictionary<string, string> shown = new() { ["max_seq_length"] = "8192", ["cache_type_kv"] = "q8_0", ["gpu_layers"] = "2" };
+            var (meta, files, _) = VramEstimate.Read(tiny);
+            var want = VramEstimate.WithWhole(meta, files.Model, files.Vision, shown)!.Value;
+            var estimate = Task.Run(() => FetchEstimateAsync(http, at, "k", "Tiny", shown, default)).GetAwaiter().GetResult();
+            Assert(estimate == new MemoryEstimate(want.Gpu.Weights, want.Gpu.Kv, want.Gpu.Compute, want.Gpu.Vision, want.Whole, 8L << 30) && estimate.Kv > 0 && estimate.Whole > estimate.Weights + estimate.Kv,
+                $"the estimate JSON round trip: {estimate}");
+            var longer = Task.Run(() => FetchEstimateAsync(http, at, "k", "Tiny", new Dictionary<string, string>(shown) { ["max_seq_length"] = "16384" }, default)).GetAwaiter().GetResult();
+            Assert(longer.Kv == 2 * estimate.Kv, "the estimate follows the options sent");
+            Assert(Thrown(() => FetchEstimateAsync(http, at, "k", "Nope", shown, default)) == "The primary PC: No such shared model", "the estimate of an unknown model: 404");
+            Assert(Thrown(() => FetchEstimateAsync(http, at, "wrong", "Tiny", shown, default)) == ErrorText(401, ""), "the estimate needs the key");
+            Assert(ServeEstimate("nope", _ => tiny, null).Status == 400 && ServeEstimate("""{"model":"Tiny"}""", _ => tiny, null).Status == 400, "the estimate of a bad body: 400");
+        }
+        finally { Directory.Delete(ggufDir, recursive: true); }
 
         // /v1/ through the proxy: 401 without the key (llama-server never asked); with it the request arrives unchanged but for
         // Connection: close, and the reply streams: the client reads the first chunk before the fake llama-server sends the second.

@@ -80,6 +80,17 @@ internal static class VramEstimate
         return new Result((long)Math.Max(0, weights), (long)kv, (long)compute, vision);
     }
 
+    // Estimate, and the whole model wherever it runs (every layer counted, as if all were on the GPU) for the meter's Total.
+    public static (Result Gpu, long Whole)? WithWhole(IReadOnlyDictionary<string, string>? meta, long modelBytes, long visionBytes,
+        IReadOnlyDictionary<string, string> options, long mtpHeadBytes = 0) =>
+        Estimate(meta, modelBytes, visionBytes, options, mtpHeadBytes) is { } gpu
+            ? (gpu, Estimate(meta, modelBytes, visionBytes, options.ToDictionary(p => p.Key, p => p.Key is "gpu_layers" or "n_cpu_moe" ? "" : p.Value), mtpHeadBytes)!.Total)
+            : null;
+
+    // What Estimate needs from a model's GGUF (null: none): its header, its and its vision projector's sizes, a separate MTP head's.
+    public static (Dictionary<string, string>? Meta, (long Model, long Vision) Files, long MtpHead) Read(string? gguf) =>
+        (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : FileSizes(gguf), gguf is not null && LauncherLogic.MtpHead(gguf) is { } h ? new FileInfo(h).Length : 0L);
+
     private static double? Num(IReadOnlyDictionary<string, string> meta, string key) =>
         double.TryParse(meta.GetValueOrDefault(key, ""), NumberStyles.Float, CultureInfo.InvariantCulture, out var v) ? v : null;
 

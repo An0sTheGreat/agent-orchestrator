@@ -680,11 +680,7 @@ public partial class MainWindow
         {
             var mine = ++derivation;
             var (folder, hub, copy) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache(), load?.DeepClone().AsObject());
-            var (read, sizes, head) = await Task.Run(() =>
-            {
-                var gguf = LauncherLogic.ResolveGguf(copy, folder, hub);
-                return (LauncherLogic.ReadGgufMetadata(gguf), gguf is null ? (0L, 0L) : VramEstimate.FileSizes(gguf), gguf is not null && LauncherLogic.MtpHead(gguf) is { } h ? new FileInfo(h).Length : 0L);
-            });
+            var (read, sizes, head) = await Task.Run(() => VramEstimate.Read(LauncherLogic.ResolveGguf(copy, folder, hub)));
             if (mine != derivation)
                 return;
             (meta, mtpHeadBytes) = (read, head);
@@ -698,19 +694,56 @@ public partial class MainWindow
         }
 
         // The VRAM meter (VramEstimate): the model's GGUF and the shown options, against the GPU's memory; it follows every edit.
+        // A worker on the primary PC: the primary PC's estimate (POST /share/estimate) from its GGUF, its GPU and the shown load options.
         var vramBlock = new StackPanel { Tag = "VramEstimate", Margin = new Thickness(0, 12, 0, 0) };
         void Vram()
         {
+            if (remoteMode() && onPrimary && primaryLoad is not null)
+            {
+                PrimaryVram(); // redraws when the primary PC answers
+                return;
+            }
+            var local = remoteMode() ? null : VramEstimate.WithWhole(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()), mtpHeadBytes);
+            DrawVram(local?.Gpu, local?.Whole ?? 0, _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : null, "Estimated memory usage", "this GPU");
+        }
+        var primaryAsk = 0; // the latest primary PC estimate request: an older reply is dropped
+        async void PrimaryVram()
+        {
+            var mine = ++primaryAsk;
+            await Task.Delay(300); // one request per pause in typing
+            if (mine != primaryAsk)
+                return;
+            var options = primaryKeys.ToDictionary(k => k, k => Value(editors[k]).Trim());
+            string failed;
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                var got = await ImageShare.FetchEstimateAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "", remoteNow!.Model.Trim(), options, CancellationToken.None);
+                if (mine == primaryAsk && remoteMode())
+                    DrawVram(new(got.Weights, got.Kv, got.Compute, got.Vision), got.Whole, got.Gpu is > 0 ? got.Gpu : null, "Estimated memory usage on the primary PC", "the primary PC's GPU");
+                return;
+            }
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException)
+            {
+                failed = x.Message.Contains("No such path") // a primary PC from before /share/estimate
+                    ? "Update Agent Orchestrator on the primary PC to see its memory estimate"
+                    : "Can't get the primary PC's memory estimate: " + x.Message;
+            }
+            if (mine != primaryAsk || !remoteMode())
+                return;
             vramBlock.Children.Clear();
-            var estimate = remoteMode() ? null : VramEstimate.Estimate(meta, files.Model, files.Vision, editors.ToDictionary(p => p.Key, p => Value(p.Value).Trim()), mtpHeadBytes);
+            vramBlock.Children.Add(Label("Estimated memory usage on the primary PC"));
+            vramBlock.Children.Add(Muted(failed));
+            vramBlock.Visibility = Visibility.Visible;
+        }
+        // where: the GPU the over-memory note names.
+        void DrawVram(VramEstimate.Result? estimate, long whole, long? gpu, string title, string where)
+        {
+            vramBlock.Children.Clear();
             vramBlock.Visibility = estimate is null ? Visibility.Collapsed : Visibility.Visible;
             if (estimate is null)
                 return;
-            var gpu = _gpuMemory is { IsCompletedSuccessfully: true, Result: > 0 } t ? t.Result : (long?)null;
-            // Total: the whole model wherever it runs (every layer counted, as if all were on the GPU).
-            var all = editors.ToDictionary(p => p.Key, p => p.Key is "gpu_layers" or "n_cpu_moe" ? "" : Value(p.Value).Trim());
-            var whole = VramEstimate.Estimate(meta, files.Model, files.Vision, all, mtpHeadBytes)!.Total;
-            vramBlock.Children.Add(Label("Estimated memory usage"));
+            vramBlock.Children.Add(Label(title));
             DockPanel Pill(string name, string value, Brush? color = null)
             {
                 var text = new TextBlock { Text = value, FontSize = 12, FontWeight = FontWeights.SemiBold };
@@ -758,7 +791,7 @@ public partial class MainWindow
             vramBlock.Children.Add(legend);
             var over = gpu is { } g3 ? estimate.Total - g3 : 0;
             var note = Muted(over > 0
-                ? $"About {VramEstimate.Gb(over)} over this GPU: lower the context length, pick a smaller KV cache type, or keep layers or MoE experts on the CPU."
+                ? $"About {VramEstimate.Gb(over)} over {where}: lower the context length, pick a smaller KV cache type, or keep layers or MoE experts on the CPU."
                 : "An estimate from the model file and these settings; the real use can differ by a few hundred MB.");
             if (over > 0)
                 note.Foreground = red;
@@ -1423,6 +1456,7 @@ public partial class MainWindow
                 primaryLoad = primaryKeys.ToDictionary(k => k, k => Value(editors[k]));
                 primaryNote.Text = "These run on the primary PC: saving reloads the model there.";
                 SyncMode();
+                Vram();
             }
             catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException)
             {
