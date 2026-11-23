@@ -101,6 +101,7 @@ public partial class MainWindow
             var host = peer.Ip.ToString();
             ApiKeys.Save(ModelShare.KeyEnv, ShareLabel, pairing.Key);
             _settings.ShareHost = RemoteCatalog.ShareHost = host;
+            RefreshWorkerTab(); // the Run on the primary PC switch follows (kept while edits are unsaved)
             _settings.Save();
             var name = pairing.Name.Length > 0 ? pairing.Name : peer.Name;
             ShareNote($"Connected to {name} ({host}) through Tailscale · {await CopySharedPresetsAsync(http, host, pairing.Key)}");

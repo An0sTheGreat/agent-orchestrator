@@ -407,6 +407,7 @@ public partial class MainWindow
             var models = await RemoteCatalog.FetchModelsAsync(http, ModelShare.ChatUrl(host), key, CancellationToken.None);
             ApiKeys.Save(ModelShare.KeyEnv, ShareLabel, key);
             _settings.ShareHost = RemoteCatalog.ShareHost = host;
+            RefreshWorkerTab(); // the Run on the primary PC switch follows (kept while edits are unsaved)
             _settings.Save();
             ShareCodeInput.Clear();
             ShareNote($"Connected to {host}: {models.Count} models · {await CopySharedPresetsAsync(http, host, key)}");
@@ -461,6 +462,7 @@ public partial class MainWindow
         if (ApiKeys.Labels(ModelShare.KeyEnv).Contains(ShareLabel))
             ApiKeys.Remove(ModelShare.KeyEnv, ShareLabel);
         _settings.ShareHost = RemoteCatalog.ShareHost = "";
+        RefreshWorkerTab(); // the Run on the primary PC switch follows (kept while edits are unsaved)
         _settings.Save();
         ShareNote("Not connected");
     }

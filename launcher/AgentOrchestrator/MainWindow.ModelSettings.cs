@@ -723,7 +723,7 @@ public partial class MainWindow
                     DrawVram(new(got.Weights, got.Kv, got.Compute, got.Vision), got.Whole, got.Gpu is > 0 ? got.Gpu : null, "Estimated memory usage on the primary PC", "the primary PC's GPU");
                 return;
             }
-            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException)
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException or JsonException or UriFormatException)
             {
                 failed = x.Message.Contains("No such path") // a primary PC from before /share/estimate
                     ? "Update Agent Orchestrator on the primary PC to see its memory estimate"
@@ -993,6 +993,7 @@ public partial class MainWindow
         {
             modelStatus.Text = "Loading models…";
             picker.SetEntries(null, "Loading models…");
+            var side = usePrimary; // a list that lands after the switch flipped is the other side's: dropped
             try
             {
                 List<ModelChoice> choices;
@@ -1001,6 +1002,8 @@ public partial class MainWindow
                 {
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
                     var shared = await RemoteCatalog.FetchModelsAsync(http, ModelShare.ChatUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv), CancellationToken.None);
+                    if (side != usePrimary)
+                        return;
                     choices = [.. shared.Select(m => new ModelChoice(m.Id, m.Id, m.Id, null, m.Id))];
                     entries = [.. choices.Select(c => new PickerEntry(c, c.Label, "—", 0, PickerGroups[0]))];
                     initial = onPrimary ? choices.FirstOrDefault(c => c.Label == remoteNow!.Model.Trim()) : null;
@@ -1011,6 +1014,8 @@ public partial class MainWindow
                     choices = await FetchModelChoicesAsync();
                     var (folder, hub) = (_settings.ModelsFolder ?? "", LauncherLogic.HubCache());
                     entries = await Task.Run(() => DescribeChoices(choices, folder, hub));
+                    if (side != usePrimary)
+                        return;
                     initial = choices.FirstOrDefault(choice => LauncherLogic.DescribeModel(choice.Display, choice.Variant) is var d
                         && card.ModelName == d.Name && (card.Quant == d.Quant || d.Quant == "—"));
                     modelStatus.Text = choices.Count == 0 ? "No installed text models found." : "GGUF files on this computer.";
@@ -1019,8 +1024,10 @@ public partial class MainWindow
                 if (picker.IsOpen)
                     picker.Open(modelBox.SelectedItem is ComboBoxItem { Tag: ModelChoice shown } ? shown : initial, initial);
             }
-            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException)
+            catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or KeyNotFoundException or IOException or UnauthorizedAccessException or InvalidOperationException or UriFormatException)
             {
+                if (side != usePrimary)
+                    return;
                 modelStatus.Text = $"Could not list models ({exception.Message}); the current model is kept.";
                 modelStatus.Foreground = red;
                 picker.SetEntries([], modelStatus.Text);
@@ -1129,7 +1136,7 @@ public partial class MainWindow
                     using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
                     shared = ModelShare.ParsePresets(await ImageShare.FetchPresetsAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "", CancellationToken.None));
                 }
-                catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException)
+                catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException or JsonException or UriFormatException)
                 {
                     Toast("Could not read the primary PC's presets: " + x.Message, "#FF667A");
                     return;
@@ -1170,7 +1177,8 @@ public partial class MainWindow
                         SetValue(editor, value);
                 if (preset.SystemPrompt.Trim().Length > 0)
                     promptBox.Text = preset.SystemPrompt;
-                MakeActive(preset.Name);
+                if (shared is null) // the primary PC's: not a local preset Save to could overwrite
+                    MakeActive(preset.Name);
             }
             // A preset's row: its name (Tag, for tests), and a red ✕ at the right edge that deletes it, after asking, without
             // applying it; the menu stays open on the other rows.
