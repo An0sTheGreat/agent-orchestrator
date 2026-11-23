@@ -1285,8 +1285,9 @@ KV_BYTES = {"f32": 4, "f16": 2, "bf16": 2, "q8_0": 1.0625, "q4_0": 0.5625}  # by
 
 
 def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
-    """VRAM a server started with `args` needs, in MiB: the weights (every split part) plus the KV cache for its context,
-    plus 10%; the weights plus 25% when the GGUF header cannot be read. The mmproj stays on the CPU and is not counted."""
+    """VRAM a server started with `args` needs, in MiB: the weights (every split part), a draft model or MTP head (-md),
+    the vision projector when it is on the GPU (no --no-mmproj-offload), the KV cache for its context and the compute
+    buffers, plus 10%; the files plus 25% when the GGUF header cannot be read."""
     def arg(flag: str) -> str:
         return args[args.index(flag) + 1] if flag in args[:-1] else ""
 
@@ -1297,6 +1298,8 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
     size = sum(p.stat().st_size for p in parts if p.is_file())
     draft = Path(arg("-md")) if arg("-md") else None  # a draft model or MTP head: on the GPU too (-ngld 99), its own KV cache not counted
     head = draft.stat().st_size if draft and draft.is_file() else 0
+    projector = Path(arg("--mmproj")) if arg("--mmproj") and "--no-mmproj-offload" not in args else None  # Vision on GPU
+    head += projector.stat().st_size if projector and projector.is_file() else 0
     try:
         meta = gguf_metadata(model_file)
         arch = meta["general.architecture"]
@@ -1322,7 +1325,12 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         sliding = [bool(p) for p in pattern] if window and isinstance(pattern, list) and len(pattern) == layers else [False] * layers
         kv = sum(h * (swa_key * k_bytes + swa_value * v_bytes) * min(ctx, window + ubatch) if swa else h * (key * k_bytes + value * v_bytes) * ctx
                  for h, swa in zip(per_layer, sliding))
-        return int((weights + head + kv) * 1.1 / 2**20)
+        # compute buffers, as VramEstimate.cs: one micro-batch's logits (vocabulary x 4 bytes a token) and hidden states, plus
+        # ponytail: a fixed 400 MiB for the CUDA context and scratch; measure per GPU if fit mode misjudges
+        tokens = meta.get("tokenizer.ggml.tokens")
+        vocab = len(tokens) if isinstance(tokens, list) else 32000
+        compute = ubatch * (vocab + int(get("embedding_length") or 0) * 8) * 4 + (400 << 20)
+        return int((weights + head + kv + compute) * 1.1 / 2**20)
     except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, struct.error):
         return int((size + head) * 1.25 / 2**20)
 
@@ -1558,6 +1566,15 @@ def llama_ensure(client: ApiClient, role: str) -> str:
             llama_save(servers)
             break
     else:
+        # a copy of this same GGUF loaded with other settings (the user changed them) is stale: stopped first, in every
+        # mode, unless another worker of this run still uses it; two copies overflow the GPU into shared memory
+        in_use = {c.llama_port for c in LOADED_BY_RUN.values() if c is not client}
+        for stale in [s for s in servers if os.path.normcase(str(s.get("model_file") or "")) == os.path.normcase(str(model_file))
+                      and s.get("port") not in in_use]:
+            print(f"[{name}] unloading the copy of {model_file.name} loaded with other settings")
+            emit("unloading", role=role, model=llama_alias(stale), port=stale.get("port"))
+            llama_stop(stale.get("port"))
+            servers.remove(stale)
         mode = multi_model()
         free = gpu_free_mib() if mode == "fit" else None
         if mode == "fit" and free is None:

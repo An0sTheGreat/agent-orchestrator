@@ -6518,6 +6518,40 @@ class MultiModelTests(unittest.TestCase):
         self.assertIn("nvidia-smi", out)
         self.assertEqual((self.recorded(), client.llama_port), ({8899: 41, 8900: 42, 8901: 77}, 8901))
 
+    def test_a_copy_of_the_same_gguf_with_other_settings_is_unloaded_first(self):
+        # the user changed the planner's load settings: the old copy of that GGUF must not stay loaded beside the new one
+        old = orchestrator.llama_args(self.model_file, {**self.AUTO, "gpu_layers": 20}, 8899)
+        self.state_file().write_text(json.dumps({"servers": [
+            {"pid": 41, "port": 8899, "signature": " ".join(old), "args": old, "model_file": str(self.model_file), "log": "y", "last_used": 1.0},
+            {"pid": 42, "port": 8900, "signature": "x", "args": ["--alias", "b/B"], "model_file": "other.gguf", "log": "y", "last_used": 2.0}]}))
+        self.alive.update({41, 42})
+        client, _, out = self.fit([100000])  # room enough: fit alone would keep it
+        self.assertEqual(self.killed(), [41])
+        self.assertIn("loaded with other settings", out)
+        self.assertEqual(self.recorded(), {8900: 42, 8899: 77})  # one copy of the GGUF, the other model kept
+        # a copy another worker of this run still uses stays
+        self.kill.reset_mock()
+        self.state_file().write_text(json.dumps({"servers": [
+            {"pid": 41, "port": 8899, "signature": " ".join(old), "args": old, "model_file": str(self.model_file), "log": "y", "last_used": 1.0}]}))
+        self.alive.add(41)
+        reviewer = self.client()
+        reviewer.llama_port = 8899
+        self.loaded["reviewer-copy"] = reviewer
+        self.fit([100000])
+        self.assertEqual(self.killed(), [])
+
+    def test_the_estimate_counts_a_gpu_projector_and_a_draft_model(self):
+        folder = Path(tempfile.mkdtemp(dir=self.tmp))
+        model, projector, draft = folder / "m.gguf", folder / "mmproj.gguf", folder / "d.gguf"
+        MultiModelTests.gguf(model, {"general.architecture": "x"})  # no block_count: the files plus 25%
+        for path in (projector, draft):
+            path.write_bytes(b"\0" * (4 * 2**20))
+        base = orchestrator.estimate_vram_mib(model, ["-m", str(model)])
+        on_cpu = orchestrator.estimate_vram_mib(model, ["-m", str(model), "--mmproj", str(projector), "--no-mmproj-offload"])
+        on_gpu = orchestrator.estimate_vram_mib(model, ["-m", str(model), "--mmproj", str(projector)])
+        drafted = orchestrator.estimate_vram_mib(model, ["-m", str(model), "-md", str(draft)])
+        self.assertEqual((on_cpu - base, on_gpu - base, drafted - base), (0, 5, 5))
+
     def test_a_malformed_state_file_lists_no_servers(self):
         for state in ({"servers": 5}, {"servers": {"pid": 1}}, {"servers": [5, "x", None]}, [1]):
             self.state_file().write_text(json.dumps(state))
@@ -6566,6 +6600,11 @@ class MultiModelTests(unittest.TestCase):
         path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, len(meta)) + body + b"\0" * pad)
         return path.stat().st_size
 
+    @staticmethod
+    def compute(vocab=32000, embd=64, ubatch=512):
+        """estimate_vram_mib's compute buffers: a micro-batch's logits and hidden states, plus the fixed 400 MiB."""
+        return ubatch * (vocab + embd * 8) * 4 + (400 << 20)
+
     def test_vram_estimate_counts_weights_split_parts_and_the_kv_cache(self):
         meta = {"general.architecture": "llama", "llama.block_count": 2, "llama.attention.head_count": 4,
                 "llama.attention.head_count_kv": [2, 2], "llama.embedding_length": 64, "llama.context_length": 4096,
@@ -6575,8 +6614,8 @@ class MultiModelTests(unittest.TestCase):
         (self.tmp / "m-00002-of-00002.gguf").write_bytes(b"\0" * 2**20)
         args = ["-m", str(first), "-c", "1000000", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
         per_token = 4 * (16 * 1.0625 + 16 * 2)  # 2+2 KV heads of 64/4 wide; q8_0 keys, f16 values
-        self.assertEqual(orchestrator.estimate_vram_mib(first, args), int((size + 1000000 * per_token) * 1.1 / 2**20))
-        no_ctx = int((size + 4096 * 4 * 16 * 2 * 2) * 1.1 / 2**20)  # the model's own context, f16 cache
+        self.assertEqual(orchestrator.estimate_vram_mib(first, args), int((size + 1000000 * per_token + self.compute(2)) * 1.1 / 2**20))
+        no_ctx = int((size + 4096 * 4 * 16 * 2 * 2 + self.compute(2)) * 1.1 / 2**20)  # the model's own context, f16 cache
         self.assertEqual(orchestrator.estimate_vram_mib(first, ["-m", str(first)]), no_ctx)
         other = self.tmp / "bad.gguf"
         other.write_bytes(b"\0" * 2**21)
@@ -6588,12 +6627,12 @@ class MultiModelTests(unittest.TestCase):
         model = self.tmp / "big.gguf"
         size = self.gguf(model, meta, pad=40 * 2**20)
         per_token = 4 * 4 * (16 * 2 + 16 * 2)  # 4 layers x 4 KV heads, f16 keys and values
-        full = int((size + 32768 * per_token) * 1.1 / 2**20)  # no -c: capped at 32768, not the trained 262144
+        full = int((size + 32768 * per_token + self.compute()) * 1.1 / 2**20)  # no -c: capped at 32768, not the trained 262144
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model)]), full)
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-ngl", "999"]), full)
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "1000000"]),
-                         int((size + 1000000 * per_token) * 1.1 / 2**20))  # an explicit -c is never capped
-        half = int((size / 2 + 32768 * per_token) * 1.1 / 2**20)  # 2 of 4 layers on the GPU
+                         int((size + 1000000 * per_token + self.compute()) * 1.1 / 2**20))  # an explicit -c is never capped
+        half = int((size / 2 + 32768 * per_token + self.compute()) * 1.1 / 2**20)  # 2 of 4 layers on the GPU
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-ngl", "2"]), half)
 
     def test_vram_estimate_counts_only_the_window_for_sliding_window_layers(self):
@@ -6606,13 +6645,13 @@ class MultiModelTests(unittest.TestCase):
         model = self.tmp / "gemma.gguf"
         size = self.gguf(model, meta)
         kv = 3 * 2 * (16 + 16) * 2 * (1024 + 512) + 1 * 2 * (32 + 32) * 2 * 100000  # 3 window layers, 1 full; f16
-        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]), int((size + kv) * 1.1 / 2**20))
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]), int((size + kv + self.compute()) * 1.1 / 2**20))
         hybrid = {"general.architecture": "qwen", "qwen.block_count": 4, "qwen.attention.head_count": 4, "qwen.attention.head_count_kv": 2,
                   "qwen.embedding_length": 64, "qwen.full_attention_interval": 4}
         model = self.tmp / "hybrid.gguf"
         size = self.gguf(model, hybrid)
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]),
-                         int((size + 2 * (16 + 16) * 2 * 100000) * 1.1 / 2**20))  # only layer 4 attends
+                         int((size + 2 * (16 + 16) * 2 * 100000 + self.compute()) * 1.1 / 2**20))  # only layer 4 attends
 
 
 class ContextTests(unittest.TestCase):
