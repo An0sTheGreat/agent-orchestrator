@@ -878,6 +878,8 @@ def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any
 
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 6, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
+SHOT_NOTE = "The screenshot the tool took:"  # the user message code_loop puts a tool's screenshot in
+STEERED: list[dict[str, Any]] = []  # the Send now messages code_loop delivered this turn: a review's fix round starts from the original messages
 SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
 
@@ -895,7 +897,7 @@ def slim_tool_results(messages: list[dict[str, Any]], n_ctx: int | None = None) 
     sent = []
     for i, m in enumerate(messages):
         text = m.get("content")
-        if i < keep_from and m.get("images"):  # an older screenshot: its text stays, the image goes
+        if i < keep_from and m.get("images") and m.get("content") == SHOT_NOTE:  # an older screenshot: its text stays, the image goes (a steer's photos stay, as the turn's own do)
             m = {k: v for k, v in m.items() if k != "images"} | {"content": f"{text} (the image is left out to save context; take it again if you need it)"}
         elif i < keep_from and isinstance(text, str) and len(text) > STUB_OVER and (
                 m.get("role") == "tool" or (m.get("role") == "user" and text.startswith("TOOL RESULTS\n"))):
@@ -3919,11 +3921,11 @@ def with_effort(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
 
 
 def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]],
-              extras: tuple[list[dict[str, Any]], dict[str, Any], str] = ([], {}, "")) -> str:
+              extras: tuple[list[dict[str, Any]], dict[str, Any], str] = ([], {}, ""), steers: list[tuple[str, dict[str, Any]]] | None = None) -> str:
     client, sampling = role_settings(config, role)
     emit("chat_stage", role=role, stage=stage, title=client.title or role)
     if extras[0]:
-        return code_loop(config, role, system + extras[2], messages, extras[0], extras[1])
+        return code_loop(config, role, system + extras[2], messages, extras[0], extras[1], steers=steers)
     model = client.ensure_model(role, False)
     return reply_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
@@ -4008,7 +4010,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     turn_images(request, messages[-1]["content"])
     messages = blind_images(turn, role, messages)
     messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
-    text = chat_call(turn, role, "answer", system, messages, extras)
+    text = with_steers(turn, role, lambda steers: chat_call(turn, role, "answer", system, messages, extras, steers))
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("chat_reply", role=role, text=text)
@@ -4249,8 +4251,11 @@ REPEAT_NOTE = ("\nNOTE: you ran this same command last time and it gave the same
 
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
-              stop: Any = None, nudge: Any = "") -> str:
+              stop: Any = None, nudge: Any = "", steers: list[tuple[str, dict[str, Any]]] | None = None) -> str:
     """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply. With
+    `steers` (with_steers' list: a lead's own loop, never a sub-agent's), the launcher's Send now messages join after a
+    tool batch, before the next model call; one still waiting when the model replies without a tool call is left
+    undelivered (the launcher sends it as the next turn). With
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
     calls. After a batch that ran another model (delegate), the role's model is ensured again: a single-model server may
@@ -4330,7 +4335,14 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
-            messages.append({"role": "user", "content": "The screenshot the tool took:", "images": images})
+            messages.append({"role": "user", "content": SHOT_NOTE, "images": images})
+        if steers:
+            with STDIN_LOCK:  # (the stdin reader adds to it under this lock)
+                taken, steers[:] = steers[:], []
+            for key, message in taken:
+                messages.append(message)
+                STEERED.append(message)
+                emit("steered", role=role, key=key)
         if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():
@@ -4459,13 +4471,13 @@ PERMISSIONS_LIVE: str | None = None  # "ask", "safe" or "all" once the launcher 
 COMMAND_STOP = threading.Event()  # set by the launcher's {"stop_command": true}: the running run_command ends with its output so far
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
-STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
+STEER_HANDLER: Any = None  # the running turn's (pi_lead_turn or with_steers, by steer_to); until then a steer waits in STEERS_HELD
 STEERS_HELD: list[dict[str, Any]] = []
 
 
 def stdin_lines() -> queue.Queue:
     """The launcher's lines on stdin, read by one thread so launcher_call never swallows a steer: a {"steer": ...} line
-    goes to STEER_HANDLER (only a Pi Code turn takes one; elsewhere the launcher sends the message as the next turn),
+    goes to STEER_HANDLER (a Chat or Code turn's lead takes one; elsewhere the launcher sends the message as the next turn),
     every other line to the returned queue, then None when stdin ends."""
     global STDIN_READER
     with STDIN_LOCK:
@@ -4509,6 +4521,27 @@ def steer_to(handler: Any) -> None:
         STEERS_HELD.clear()
         for message in held:
             handler(message)
+
+
+def with_steers(config: dict[str, Any], role: str, run: Any) -> str:
+    """run(steers) with the launcher's Send now messages for this turn arriving in `steers` as (key, user message), which
+    code_loop hands to the model after a tool batch (pi_lead_turn has its own). One with images the role does not see is
+    not taken: the launcher sends it as the next turn, which require_vision refuses."""
+    steers, blind = [], vision_off(config, role)
+
+    def steer(line: dict[str, Any]) -> None:
+        if not str(line.get("steer") or "").strip() or (line.get("images") and blind):
+            return
+        urls = image_urls(line.get("images"))
+        steers.append((str(line.get("key") or ""), {"role": "user", "content": str(line["steer"]), **({"images": urls} if urls else {})}))
+
+    if EVENTS:
+        stdin_lines()
+        steer_to(steer)
+    try:
+        return run(steers)
+    finally:
+        steer_to(None)
 
 
 BROWSER_INPUT = ("click", "move", "drag", "scroll", "type", "key")  # the model's mouse and keyboard in the in-app browser
@@ -5254,7 +5287,7 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools
     messages = compact_conversation(config, (role,), system, messages, tools, request)
     emit("chat_stage", role=role, stage="lead", title=display_name(config, role))
-    return code_loop(config, role, system, messages, tools, handlers)
+    return with_steers(config, role, lambda steers: code_loop(config, role, system, messages, tools, handlers, steers=steers))
 
 
 def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None,
@@ -5998,10 +6031,12 @@ def reviewed_turn(config: dict[str, Any], folders: list[dict[str, str]], message
     message and fixes them in the same turn, up to TURN_REVIEW_FIXES times. Returns the final reply with the verdict."""
     review = lead_setup(config, folders, request, role)[1]["delegate"].uncounted
     asked = str(messages[-1].get("content") or "")
+    steered = STEERED[:]  # (what the lead's first loop took in; each fix round's adds to it)
     for rounds in range(1, TURN_REVIEW_FIXES + 2):
         diff = make_diff(before, project_texts(folders))
         report = review(worker="reviewer", brief=TURN_REVIEW_BRIEF, context=(
-            f"USER'S REQUEST\n{clip(asked, 6000)}\n\nLEAD'S REPLY\n{clip(text, 6000)}\n\nCHANGES THIS TURN\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
+            f"USER'S REQUEST\n{clip(asked, 6000)}\n\n" + "".join(f"USER'S LATER MESSAGE (sent while the lead worked)\n{clip(str(m['content']), 6000)}\n\n" for m in steered)
+            + f"LEAD'S REPLY\n{clip(text, 6000)}\n\nCHANGES THIS TURN\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
         verdicts = {v.upper() for v in REVIEW_VERDICT.findall(report)}
         verdict = verdicts.pop() if len(verdicts) == 1 else ""  # none, or both: unreadable, which counts as FAIL
         emit("verdict", role="reviewer", id="turn", verdict=verdict or "FAIL", round=rounds)
@@ -6011,10 +6046,11 @@ def reviewed_turn(config: dict[str, Any], folders: list[dict[str, str]], message
         if rounds > TURN_REVIEW_FIXES:
             return f"{text.rstrip()}\n\n**Review: FAIL** after {TURN_REVIEW_FIXES} fix rounds. {summary}".rstrip()
         why = "failed your work" if verdict else "gave no readable verdict, which counts as FAIL"
-        messages = [*messages, {"role": "assistant", "content": text},
+        messages = [*messages, *steered, {"role": "assistant", "content": text},
                     {"role": "user", "content": f"The reviewer {why}. Fix the problems it reports, verify, and reply with what "
                                                 f"you changed.\n\nREVIEW\n{report}"}]
         text = lead(config, folders, messages, request, role) or text
+        steered = [*steered, *STEERED[len(steered):]]
     return text
 
 
@@ -6049,6 +6085,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     turn_images(request, messages[-1]["content"])
     messages = blind_images(config, role, messages)
     before = project_texts(folders) if request.get("review") else {}
+    STEERED.clear()
     lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
     global THINKING
     THINKING = ThinkingFile(folders[0]["path"], role)

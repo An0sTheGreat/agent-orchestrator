@@ -916,7 +916,7 @@ public partial class MainWindow
     private void StartTurn(Conversation c, string? text, string role, bool queued = false)
     {
         _steered.Clear();
-        _turnSteers = c.IsCode && text is not null && PiEngine;
+        _turnSteers = text is not null && !IsCommand(text);
         _turn = c;
         _turnWorker = _settings.ChatWorker;
         _pendingUser = text;
@@ -1202,7 +1202,8 @@ public partial class MainWindow
             EndRunningCommand(); // a turn that ended mid-command: no timer left ticking
         if (!busy)
             _steering.Clear(); // never delivered: queued rows again, sent as the next turn (or back in the input) as usual
-        RefreshQueue(_code); // Send now while a Pi Code turn runs
+        RefreshQueue(_chat); // Send now while a turn runs
+        RefreshQueue(_code);
         AddWorkerButton.IsEnabled = !busy; // model settings and presets stay open: a Save applies from the next load (ModelsWorking)
         RefreshPresetButtons();
         SetStatus(busy ? "Replying" : "Ready", busy ? "#8B7CFF" : "#667085");
@@ -1282,8 +1283,8 @@ public partial class MainWindow
             case "steered":
                 if (!_steering.Remove(Str(ev, "key"), out var steered))
                     break;
-                _codeQueue.Remove(steered.Item);
-                RefreshQueue(_code);
+                QueueOf(_turn).Remove(steered.Item);
+                RefreshQueue(_turn.IsCode ? _code : _chat);
                 FlushMarkdown();
                 EndChatBlock();
                 var before = _reply;
