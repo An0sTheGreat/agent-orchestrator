@@ -1464,7 +1464,10 @@ public partial class MainWindow
             finally { _imgUnloadCts = null; }
         NoteTurnPicture(file);
         var (copy, width, height) = ChatCopy(file);
-        return (ImageGen.ChatResult(name, run, width, height), copy, false);
+        var line = ImageGen.ChatResult(name, run, width, height);
+        if (_reply is not null) // a turn's picture: the conversation's next message shows it to the model
+            _turn.LastPicture = (file, line);
+        return (line, copy, false);
         }
         finally { RemovePendingPicture(); }
     }

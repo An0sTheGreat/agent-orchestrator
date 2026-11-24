@@ -184,6 +184,15 @@ internal static class ImageGen
         Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)? Prompt: [^\r\n]*\z") is { Success: true } m
             ? $"{m.Groups[1].Value} · {m.Groups[2].Value}" + (m.Groups[3].Success ? $" · seed {m.Groups[3].Value}" : "") : null;
 
+    // The user's next message after a picture (`last`, then cleared), for the model only: the picture's line before the text and
+    // the picture in its images (text only with Vision off). Neither when the user attached a photo: an edit asked without the extra.
+    public static (string Text, List<string> Images) TakeLastPicture(ref (string File, string Line)? last, string text, List<string> images, bool vision)
+    {
+        var picture = last;
+        last = null;
+        return picture is not var (file, line) || images.Count > 0 ? (text, images) : ($"[Your last picture: {line}]\n\n{text}", vision ? [file] : []);
+    }
+
     public static string LocalPath(string root, ImageFile file) => Path.Combine(root, file.Repo.Split('/')[^1], file.Path.Replace('/', Path.DirectorySeparatorChar));
 
     // Width and height for an aspect ("16:9") and long side, each rounded to the nearest multiple (at least one multiple).
@@ -472,6 +481,12 @@ internal static class ImageGen
             ResultCaption(line) == "SDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(ChatResult("m", new() { Seed = -1, Prompt = "p" }, 1, 1)) == "m · 1x1" && ResultCaption("Hello") is null &&
             ResultCaption(line + "\nIt is a nice picture.") is null && ResultCaption(line + "\n") is null,
             "Image Gen: the reply line and its caption");
+        (string, string)? last = (@"C:\g\p.png", "L");
+        Check(TakeLastPicture(ref last, "bluer", [], true) is ("[Your last picture: L]\n\nbluer", [@"C:\g\p.png"]) && last is null &&
+            TakeLastPicture(ref last, "again", [], true) is ("again", []) &&
+            (last = (@"C:\g\p.png", "L")) is not null && TakeLastPicture(ref last, "x", [], false) is ("[Your last picture: L]\n\nx", []) &&
+            (last = (@"C:\g\p.png", "L")) is not null && TakeLastPicture(ref last, "edit", [@"C:\a.jpg"], true) is ("edit", [@"C:\a.jpg"]) && last is null,
+            "Image Gen: the next message carries the last picture once (text only without vision), not with the user's own photo");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
             @"--diffusion-model C:\m\Z-Image-Turbo-GGUF\z_image_turbo-Q4_K.gguf --vae C:\m\Z-Image-Turbo\split_files\vae\ae.safetensors " +

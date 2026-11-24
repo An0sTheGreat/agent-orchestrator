@@ -120,16 +120,23 @@ public partial class MainWindow
     // How a Code turn runs: with no usable folder (none yet, or gone) as a chat (--chat, no folder tools), else in the folder.
     private (Func<string, string> Request, Func<string, string, string, string, System.Diagnostics.ProcessStartInfo> StartInfo) CodeTurn(string action, string? text, string project) =>
         LauncherLogic.FolderUsable(project) ? (role => CodeRequest(action, role, text, project), LauncherLogic.BuildCodeStartInfo)
-            : (role => LauncherLogic.BuildChatRequest(role, _code.History.Append(new LauncherLogic.ChatMessage("user", text ?? "")), CurrentExtras(message: text) with { Images = _turnImages },
-                title: _code.History.Count == 0, effort: EffortFor(CardFor(role)), summary: _code.Summary ?? "", summaryCovers: _code.SummaryCovers), LauncherLogic.BuildChatStartInfo);
+            : (role =>
+            {
+                var (said, images) = ForModel(_code, text);
+                return LauncherLogic.BuildChatRequest(role, _code.History.Append(new LauncherLogic.ChatMessage("user", said ?? "")), CurrentExtras(message: text) with { Images = images },
+                    title: _code.History.Count == 0, effort: EffortFor(CardFor(role)), summary: _code.Summary ?? "", summaryCovers: _code.SummaryCovers);
+            }, LauncherLogic.BuildChatStartInfo);
 
     // The request of a Code turn; text null: no user message.
-    private string CodeRequest(string action, string role, string? text, string project) =>
-        LauncherLogic.BuildCodeRequest(action, role, text is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", text)),
-            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage, message: text) with { Images = _turnImages }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
+    private string CodeRequest(string action, string role, string? text, string project)
+    {
+        var (said, images) = ForModel(_code, text);
+        return LauncherLogic.BuildCodeRequest(action, role, said is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", said)),
+            project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage, message: text) with { Images = images }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0, // write_project reads it all
             engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess,
             review: _settings.ReviewEveryTurn);
+    }
 
     // A Code turn or run never gets write access to the Agent Orchestrator folder (templates, prompts, orchestrator.py).
     private bool RefuseWorkflowRoot(string project)
