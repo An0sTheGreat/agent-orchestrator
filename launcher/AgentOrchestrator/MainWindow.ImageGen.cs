@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using Microsoft.Win32;
 
 namespace AgentOrchestrator;
@@ -1465,12 +1466,25 @@ public partial class MainWindow
         var run = JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
         if (run.Seed < 0)
             run.Seed = Random.Shared.Next(); // chosen here so the sidecar records it
+        var files = await PaintAsync(run, () =>
+        {
+            Toast("Not enough GPU memory: trying again with Low VRAM");
+            _imgLowVram.IsChecked = s.LowVram = true; // Low VRAM stays ticked for next time
+            _settings.Save();
+        }, ct);
+        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
+    }
+
+    // The generation itself, the page's and the chat's (AnswerImageAsync): run (its seed chosen) goes to the primary PC, OpenRouter or
+    // sd-server here by its model, and the pictures land in the gallery (SaveImageFiles). Inside RunImageJob.
+    private async Task<List<(string Written, string Final, long Seed)>> PaintAsync(ImageSettings run, Action onLowVram, CancellationToken ct)
+    {
         List<(string Written, string Final, long Seed)> files;
-        if (s.RemoteModel.Length > 0 || s.SharedModel.Length > 0) // OpenRouter and the primary PC need neither the runtime nor the model files here
+        if (run.RemoteModel.Length > 0 || run.SharedModel.Length > 0) // OpenRouter and the primary PC need neither the runtime nor the model files here
         {
             Directory.CreateDirectory(ImageGen.ImagesFolder);
             files = ImageGen.OutputNames(ImageGen.ImagesFolder, DateTime.Now, run.Seed, run.Batch).Files;
-            if (s.SharedModel.Length > 0)
+            if (run.SharedModel.Length > 0)
             {
                 run.InitImage = ""; // the primary PC takes no start image
                 await GenerateSharedAsync(run, files, ct);
@@ -1483,14 +1497,101 @@ public partial class MainWindow
             }
         }
         else
-            files = await GenerateLocalAsync(run, ImageGen.ImagesFolder, () =>
-            {
-                Toast("Not enough GPU memory: trying again with Low VRAM");
-                _imgLowVram.IsChecked = s.LowVram = true; // Low VRAM stays ticked for next time
-                _settings.Save();
-            }, ct);
+            files = await GenerateLocalAsync(run, ImageGen.ImagesFolder, onLowVram, ct);
         SaveImageFiles(run, files);
-        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
+        return files;
+    }
+
+    // The chat model's generate_image (AppSettings.UseImageGen; the request's image_gen): painted with the chat's model and size
+    // (AppSettings.ChatImage) by the page's own generation, one job at a time. The picture joins the reply's from the gallery; the
+    // reply is one line for the model's memory and a copy at most 1024 px long. Every outcome answers (busy, cancelled, failed, the
+    // turn gone: "ERROR: …"), as the engine waits without a timeout. The turn's Stop (its process ends) cancels the generation.
+    private async Task AnswerImageAsync(JsonElement ev, Process? asker)
+    {
+        string result;
+        string? image = null;
+        try { (result, image) = await PaintForChatAsync(ev, asker); }
+        catch (Exception x) // whatever broke, the engine must hear back
+        {
+            Log($"Image Gen failed: {x.Message}");
+            result = "ERROR: " + x.Message;
+        }
+        ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
+    }
+
+    private async Task<(string Result, string? Image)> PaintForChatAsync(JsonElement ev, Process? asker)
+    {
+        ScanImageFolder();
+        if (ImagesView.Children.Count == 0)
+            BuildImagesPage();
+        if (ImageBusy)
+            return ("ERROR: the image generator is busy", null);
+        if (ImageGen.ChatModel(_settings.ChatImage) is not var (recipe, name))
+            return ("ERROR: no image model is chosen for Image Gen", null);
+        long? seed = ev.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) ? n : null;
+        var negative = ev.TryGetProperty("negative", out var neg) && neg.ValueKind == JsonValueKind.String ? neg.GetString() : null;
+        var run = ImageGen.ChatRun(_settings.ChatImage, recipe, Str(ev, "prompt"), negative, seed, _settings.ImageGen.LowVram);
+        if (run.Prompt.Length == 0)
+            return ("ERROR: the prompt is empty", null);
+        var local = run.SharedModel.Length == 0 && run.RemoteModel.Length == 0;
+        string? file = null;
+        await RunImageJob(async ct =>
+        {
+            using var watch = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            Forget(CancelWhenGone());
+            async Task CancelWhenGone() // the turn's Stop ends its process: the picture is not wanted any more
+            {
+                try
+                {
+                    if (asker is not null)
+                        await asker.WaitForExitAsync(watch.Token);
+                }
+                catch (OperationCanceledException) { return; } // the job ended first
+                catch (Exception x) when (x is InvalidOperationException or ObjectDisposedException) { } // disposed: gone
+                if (!watch.IsCancellationRequested)
+                    CancelImageGen();
+            }
+            if (asker == _chatProcess)
+                _imgStatusTap = (text, _) => SetChatStatus($"Making a picture… {text}");
+            try
+            {
+                ImageStatus("Generating for the chat…", indeterminate: true);
+                var files = await PaintAsync(run, () => Toast("Not enough GPU memory: trying again with Low VRAM"), ct);
+                file = files.Select(f => f.Final).FirstOrDefault(File.Exists);
+                ImageStatus(run.Seed >= 0 ? $"Done · seed {run.Seed}" : "Done", 1);
+            }
+            finally
+            {
+                watch.Cancel();
+                _imgStatusTap = null;
+            }
+        });
+        if (local && !_settings.ImageKeepBoth && !ImageBusy)
+            StopImageServer(); // the GPU back for the chat model, which the engine loads again
+        if (file is null) // RunImageJob showed the failure: "Failed: …" or "Cancelled"
+            return ("ERROR: " + (_imgStatus.Text.StartsWith("Failed: ") ? "the picture failed: " + _imgStatus.Text[8..] : "the picture was cancelled"), null);
+        if (run.SharedModel.Length > 0 && !_settings.ImageKeepBoth)
+            try // before the reply: the engine's next call may load a chat model there again
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+                await ImageShare.UnloadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
+            }
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException) { Log($"Image Gen: the primary PC did not unload: {x.Message}"); }
+        NoteTurnPicture(file);
+        var (copy, width, height) = ChatCopy(file);
+        return (ImageGen.ChatResult(name, run, width, height), copy);
+    }
+
+    // The picture as a data URL for a model that can see (a JPEG at most 1024 px long) and its own size.
+    private static (string? DataUrl, int Width, int Height) ChatCopy(string file)
+    {
+        var frame = BitmapFrame.Create(new MemoryStream(File.ReadAllBytes(file)), BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+        var scale = Math.Min(1, 1024.0 / Math.Max(frame.PixelWidth, frame.PixelHeight));
+        var encoder = new JpegBitmapEncoder { QualityLevel = 88 };
+        encoder.Frames.Add(BitmapFrame.Create(scale < 1 ? new TransformedBitmap(frame, new ScaleTransform(scale, scale)) : frame));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return ("data:image/jpeg;base64," + Convert.ToBase64String(stream.ToArray()), frame.PixelWidth, frame.PixelHeight);
     }
 
     // The pictures written by a generation, renamed to their final names, each with its settings beside it as <name>.json;

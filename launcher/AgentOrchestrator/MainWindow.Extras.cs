@@ -20,7 +20,9 @@ public partial class MainWindow
             AllSkills().Where(s => HasSkill(s) || InvokesSkill(message, s.Name) ||
                 initProject && Path.GetFileName(s.Folder).Equals(InitProjectSkill, StringComparison.OrdinalIgnoreCase))
                 .Select(s => s.Folder).ToList(), Vision: _settings.UseVision, Emoji: _settings.Emoji,
-            Computer: _settings.ComputerUse ? _settings.ComputerApps.Select(ComputerLogic.AppName).ToList() : []);
+            Computer: _settings.ComputerUse ? _settings.ComputerApps.Select(ComputerLogic.AppName).ToList() : [],
+            ImageGen: _settings.UseImageGen && (_settings.ChatImage.SharedModel.Length == 0 || _settings.ShareHost.Length > 0) // the primary PC's: only while connected
+                ? AgentOrchestrator.ImageGen.ChatRequest(_settings.ChatImage, _settings.ImageKeepBoth) : null);
 
     // The user's skills (AppSettings.SkillsRoot) and the ones bundled with the app (<workflow root>\skills).
     private List<LauncherLogic.Skill> AllSkills() =>

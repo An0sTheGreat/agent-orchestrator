@@ -128,6 +128,15 @@ public partial class MainWindow
     {
         if (_reply is null || dataUrl is null || SaveShot(dataUrl) is not { } file)
             return;
+        NoteTurnPicture(file);
+    }
+
+    // A picture file joining the reply's (shown under its step, saved with its message): a screenshot, or a generated picture
+    // referenced in the gallery itself (its Delete removes it everywhere; a reopened conversation skips a picture that is gone).
+    private void NoteTurnPicture(string file)
+    {
+        if (_reply is null)
+            return;
         _turnShots.Add(file);
         _pendingShot = file;
     }

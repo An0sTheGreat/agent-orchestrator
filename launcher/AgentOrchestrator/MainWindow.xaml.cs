@@ -510,6 +510,9 @@ public partial class MainWindow : Window
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 Forget(AnswerBrowserAsync(ev, _process));
                 break;
+            case "image": // the model's generate_image tool (Image Gen): painted with the Images page's generation
+                Forget(AnswerImageAsync(ev, _process));
+                break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 Forget(AnswerComputerAsync(ev, _process));
                 break;

@@ -116,7 +116,14 @@ internal static class LauncherLogic
     // Emoji: Settings > Appearance's emoji in replies (none, less, standard, more), an instruction the engine adds.
     // Computer: the names of the applications the lead may use with the computer tool (empty: Computer use is off).
     public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true,
-        string Emoji = "standard", IReadOnlyList<string>? Computer = null);
+        string Emoji = "standard", IReadOnlyList<string>? Computer = null, ImageGenRequest? ImageGen = null);
+
+    // Image Gen on (AppSettings.UseImageGen): the generate_image tool's model (its display name), recipe id ("" = OpenRouter), size,
+    // whether it reads a negative prompt, and UnloadChat: it paints on this PC's GPU, so the engine unloads its chat model around the call.
+    public sealed record ImageGenRequest(string Model, string Style, int Width, int Height, bool Negative, bool UnloadChat);
+
+    private static object? ImageGenJson(Extras? extras) => extras?.ImageGen is { } g
+        ? new { model = g.Model, style = g.Style, width = g.Width, height = g.Height, negative = g.Negative, unload_chat = g.UnloadChat } : null;
 
     public sealed record Skill(string Name, string Description, string Folder, bool BuiltIn = false);
 
@@ -362,13 +369,14 @@ internal static class LauncherLogic
             vision = extras?.Vision ?? true,
             emoji = extras?.Emoji ?? "standard",
             computer = extras?.Computer ?? [],
+            image_gen = ImageGenJson(extras), // absent when off (the only field that can be null)
             title,
             effort,
             summary,
             summary_covers = summary.Length > 0 ? summaryCovers : 0,
             sandbox = new { network = false, home = SandboxHome, full_access = fullAccess, super_access = superAccess },
             permissions = permissions is "ask" or "all" ? permissions : "safe",
-        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        }, RequestJson);
 
     public static ProcessStartInfo BuildChatStartInfo(string python, string workflowRoot, string folder, string requestFile)
     {
@@ -426,9 +434,13 @@ internal static class LauncherLogic
             vision = extras?.Vision ?? true,
             emoji = extras?.Emoji ?? "standard",
             computer = extras?.Computer ?? [],
+            image_gen = ImageGenJson(extras), // absent when off (the only field that can be null)
             title,
             effort,
-        }, new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
+        }, RequestJson);
+
+    private static readonly JsonSerializerOptions RequestJson = new()
+        { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
 
     public static ProcessStartInfo BuildCodeStartInfo(string python, string workflowRoot, string configFolder, string requestFile)
     {
@@ -2223,6 +2235,13 @@ internal static class LauncherLogic
             (bool)withExtras["tools"]! || (string)withExtras["skills"]![0]! != @"Y:\skills\a" || (bool)codeExtras["search"]! || !(bool)codeExtras["tools"]! ||
             (bool)code["tools"]!)
             throw new InvalidOperationException("Request extras failed.");
+        var imageGen = new ImageGenRequest("SDXL 1.0", "sdxl", 1024, 576, true, true);
+        var chatImage = JsonNode.Parse(BuildChatRequest("implementer", chat, new(false, false, [], ImageGen: imageGen)))!["image_gen"];
+        var codeImage = JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], new(false, false, [], ImageGen: imageGen)))!["image_gen"];
+        if (single.AsObject().ContainsKey("image_gen") || code.AsObject().ContainsKey("image_gen") || withExtras.AsObject().ContainsKey("image_gen") ||
+            (string?)chatImage?["model"] != "SDXL 1.0" || (string?)chatImage?["style"] != "sdxl" || (int?)chatImage?["width"] != 1024 || (int?)chatImage?["height"] != 576 ||
+            (bool?)chatImage?["negative"] != true || (bool?)chatImage?["unload_chat"] != true || codeImage?.ToJsonString() != chatImage?.ToJsonString())
+            throw new InvalidOperationException("The image_gen request field failed.");
         if ((bool)single["title"]! || (bool)code["title"]! || !(bool)JsonNode.Parse(BuildChatRequest("implementer", chat, title: true))!["title"]! ||
             !(bool)JsonNode.Parse(BuildCodeRequest("chat", "implementer", chat, @"Y:\app", [], title: true))!["title"]!)
             throw new InvalidOperationException("The first-turn title flag failed.");

@@ -1359,6 +1359,10 @@ public partial class MainWindow
                 SetChatStatus("Looking at the page in the browser…");
                 Forget(AnswerBrowserAsync(ev, _chatProcess));
                 break;
+            case "image": // the model's generate_image tool (Image Gen): painted with the Images page's generation
+                SetChatStatus("Making a picture…");
+                Forget(AnswerImageAsync(ev, _chatProcess));
+                break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 SetChatStatus("Using an application on your computer… (Esc stops it)");
                 Forget(AnswerComputerAsync(ev, _chatProcess));
