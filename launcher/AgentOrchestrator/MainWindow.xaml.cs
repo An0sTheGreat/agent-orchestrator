@@ -5623,6 +5623,7 @@ public partial class MainWindow : Window
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
         CancelImageGen();
+        StopImageServer();
         StopLocalServer();
         _settings.Save();
     }

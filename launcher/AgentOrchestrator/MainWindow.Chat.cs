@@ -538,6 +538,8 @@ public partial class MainWindow
     {
         if (_process is null) // a run may be using the local server
             StopLocalServer();
+        if (!ImageBusy) // a generation may be using sd-server
+            StopImageServer();
         WorkerContextsCleared();
         var remote = "";
         if (_settings.ShareHost.Length > 0)

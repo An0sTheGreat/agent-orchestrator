@@ -225,6 +225,7 @@ public partial class MainWindow
         if (request.Path == ImageShare.UnloadPath)
         {
             await UnloadSharedChatModelsAsync(ct);
+            await Dispatcher.InvokeAsync(() => { if (!ImageBusy) StopImageServer(); }); // the image models too, unless a picture is being made
             return new(200, "{}");
         }
         if (request.Path == ImageShare.ProfilePath)

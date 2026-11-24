@@ -19,7 +19,6 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     private CancellationTokenSource? _imgCts; // the download or generation in progress; Cancel and OnClosing cancel it
-    private Process? _imgProcess;
     private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgWidth = null!, _imgHeight = null!,_imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
     private TextBox _imgPrompt = null!, _imgNegative = null!, _imgSeed = null!;
     private bool _imgUnlocked; // the size lock open: width and height as typed (ImageSettings.SizeUnlocked)
@@ -107,9 +106,7 @@ public partial class MainWindow
 
     private void CancelImageGen()
     {
-        _imgCts?.Cancel();
-        try { if (_imgProcess is { HasExited: false } p) p.Kill(entireProcessTree: true); }
-        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        _imgCts?.Cancel(); // the generation's job is cancelled on sd-server, which keeps its models loaded
     }
 
     private bool ImageBusy => _imgCts is not null;
@@ -1343,7 +1340,6 @@ public partial class MainWindow
         finally
         {
             _imgCts = null;
-            _imgProcess = null;
             _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = true;
             _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Collapsed;
             ShowImageSource(); // the pill back on
@@ -1357,6 +1353,7 @@ public partial class MainWindow
     {
         using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
+        StopImageServer(); // its files are replaced
         ImageStatus("Looking up the latest stable-diffusion.cpp release…", indeterminate: true);
         var nvidia = await Task.Run(LauncherLogic.HasNvidiaGpu, ct);
         var assets = ImageGen.PickAssets(await http.GetStringAsync(ImageGen.ReleaseUrl, ct), nvidia);
@@ -1371,7 +1368,7 @@ public partial class MainWindow
                 await DownloadAsync(http, url, zip, Path.GetFileName(url), ct, _imgStatus);
             }
             ImageStatus("Installing the image runtime…", indeterminate: true);
-            await Task.Run(() => LauncherLogic.InstallLlamaServer(zips, ImageGen.RuntimeFolder, $"{assets.Tag}\n{assets.Flavour}", exe: "sd-cli.exe"), ct);
+            await Task.Run(() => LauncherLogic.InstallLlamaServer(zips, ImageGen.RuntimeFolder, $"{assets.Tag}\n{assets.Flavour}", exe: "sd-server.exe"), ct);
             Log($"stable-diffusion.cpp {assets.Tag} ({assets.Flavour}) installed in {ImageGen.RuntimeFolder}");
             ImageStatus($"Image runtime {assets.Tag} installed", 1);
         }
@@ -1489,80 +1486,68 @@ public partial class MainWindow
             ShowOnStage(first);
     }
 
-    // sd-cli on this PC (the Images page and the primary PC's share server): installs the runtime and downloads the model's
+    // sd-server on this PC (the Images page and the primary PC's share server): installs the runtime and downloads the model's
     // missing files first, writes the pictures into folder (run.Seed chosen), progress in the status line. Out of GPU memory
     // without Low VRAM: once more with it (onLowVram is told). Returns the pictures' names (ImageGen.OutputNames), not renamed.
     private async Task<List<(string Written, string Final, long Seed)>> GenerateLocalAsync(ImageSettings run, string folder, Action? onLowVram, CancellationToken ct)
     {
         var recipe = ImageGen.Recipe(run.RecipeId);
-        if (!File.Exists(ImageGen.CliPath))
+        if (!File.Exists(ImageGen.ServerPath))
             await InstallImageRuntimeAsync(ct);
         await DownloadImageModelsAsync(recipe, run.LocalModel, ct);
         Directory.CreateDirectory(folder);
-        var (output, files) = ImageGen.OutputNames(folder, DateTime.Now, run.Seed, run.Batch);
-        var info = new ProcessStartInfo(ImageGen.CliPath)
+        var (_, files) = ImageGen.OutputNames(folder, DateTime.Now, run.Seed, run.Batch);
+        var (context, request) = ImageGen.ServerArgs(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot));
+        if (run.InitImage.Length > 0)
+            request["init_image"] = Convert.ToBase64String(await File.ReadAllBytesAsync(run.InitImage, ct));
+        var fresh = await StartImageServerAsync(context, ct);
+        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_sdPort}"), Timeout = TimeSpan.FromSeconds(30) };
+        JsonNode? job = null;
+        string? error = null;
+        try
         {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
-            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = ImageGen.RuntimeFolder,
-        };
-        foreach (var arg in ImageGen.Args(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot), output))
-            info.ArgumentList.Add(arg);
-        ImageStatus("Loading…", indeterminate: true);
-        var tail = new Queue<string>();
-        void Keep(string line)
-        {
-            lock (tail)
+            using (var posted = await http.PostAsync("/sdcpp/v1/img_gen", new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"), ct))
+                job = JsonNode.Parse(await posted.Content.ReadAsStringAsync(ct));
+            var id = (string?)job?["id"] ?? throw new InvalidOperationException("sd-server took no job: " + job?.ToJsonString());
+            try
             {
-                tail.Enqueue(line);
-                if (tail.Count > 40)
-                    tail.Dequeue();
-            }
-        }
-        using var process = _imgProcess = Process.Start(info) ?? throw new InvalidOperationException("sd-cli did not start");
-        using var kill = ct.Register(() => { try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { } });
-        // stdout: log lines and the \r-separated progress line
-        var stdout = Task.Run(async () =>
-        {
-            var buffer = new char[4096];
-            var line = new StringBuilder();
-            int read;
-            while ((read = await process.StandardOutput.ReadAsync(buffer)) > 0)
-                for (var i = 0; i < read; i++)
+                while ((string?)job?["status"] is "queued" or "generating")
                 {
-                    if (buffer[i] is not ('\r' or '\n'))
-                    {
-                        line.Append(buffer[i]);
+                    await Task.Delay(500, ct);
+                    job = JsonNode.Parse(await http.GetStringAsync($"/sdcpp/v1/jobs/{id}", ct));
+                    if (ImageGen.JobProgress(job, fresh) is not { } p)
                         continue;
-                    }
-                    var text = line.ToString();
-                    line.Clear();
-                    if (text.Trim().Length == 0)
-                        continue;
-                    if (ImageGen.ParseProgress(text) is { } p)
-                        _ = Dispatcher.InvokeAsync(() =>
-                        {
-                            if (p.Loading)
-                                ImageStatus($"Loading… {p.Step * 100 / Math.Max(1, p.Steps)}%", p.Step / (double)Math.Max(1, p.Steps));
-                            else
-                                ImageStatus($"Step {p.Step}/{p.Steps} · {p.Speed}", p.Step / (double)Math.Max(1, p.Steps));
-                        });
+                    if (p.Loading)
+                        ImageStatus("Loading…", indeterminate: true);
                     else
-                        Keep(text);
+                        ImageStatus($"Step {p.Step}/{p.Steps}{(p.Speed.Length > 0 ? " · " + p.Speed : "")}", p.Step / (double)Math.Max(1, p.Steps));
+                    fresh &= p.Loading;
                 }
-        });
-        var stderr = Task.Run(async () =>
-        {
-            while (await process.StandardError.ReadLineAsync() is { } text)
-                Keep(text);
-        });
-        await process.WaitForExitAsync(CancellationToken.None); // a cancel kills it, and this returns
-        await Task.WhenAll(stdout, stderr);
-        ct.ThrowIfCancellationRequested();
-        if (process.ExitCode == 0 && File.Exists(files[0].Written))
-            return files;
-        Log($"sd-cli exited with {process.ExitCode}:\n" + string.Join("\n", tail));
-        var outOfMemory = tail.Any(t => t.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || t.Contains("out of memory", StringComparison.OrdinalIgnoreCase));
-        if (outOfMemory && !run.LowVram) // once more with the weights in RAM
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                try { (await http.PostAsync($"/sdcpp/v1/jobs/{id}/cancel", null, CancellationToken.None)).Dispose(); } // the server and its models stay
+                catch (Exception x) when (x is HttpRequestException or TaskCanceledException) { }
+                throw;
+            }
+            if (job?["result"]?["images"] is JsonArray images && (string?)job["status"] == "completed")
+            {
+                foreach (var image in images)
+                    if ((int?)image?["index"] is { } i && i < files.Count && (string?)image["b64_json"] is { } png)
+                        await File.WriteAllBytesAsync(files[i].Written, Convert.FromBase64String(png), CancellationToken.None);
+                if (File.Exists(files[0].Written))
+                    return files;
+            }
+            error = (string?)job?["error"]?["message"];
+        }
+        catch (HttpRequestException) when (_sdServer is not { HasExited: false }) { } // it crashed: its log says why
+        var tail = SdTail();
+        Log($"sd-server failed: {error}\n{tail}");
+        var all = $"{error}\n{tail}";
+        var outOfMemory = all.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || all.Contains("out of memory", StringComparison.OrdinalIgnoreCase);
+        if (_sdServer is not { HasExited: false })
+            StopImageServer();
+        if (outOfMemory && !run.LowVram) // once more with the weights in RAM (another context: a new server)
         {
             run.LowVram = true;
             onLowVram?.Invoke();
@@ -1570,7 +1555,112 @@ public partial class MainWindow
         }
         throw new InvalidOperationException(outOfMemory
             ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
-            : $"sd-cli failed: {tail.FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim() ?? $"exit code {process.ExitCode}"} (the log has its output)");
+            : $"sd-server failed: {error ?? FirstError(tail) ?? "no picture"} (the log has its output)");
+    }
+
+    private static string? FirstError(string log) => log.Split('\n').FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim();
+
+    // sd-server, kept running with its models loaded between generations (Unload models, a runtime update and closing the app
+    // stop it): the one running is reused while its context (ImageGen.ServerArgs) is the same, else replaced. Its last log lines
+    // are kept for the error text. True when it was just started (its first generation reads the weights in: "Loading…").
+    // ponytail: a crash of the app leaves it running (no Job object); add one if orphans show up.
+    private Process? _sdServer;
+    private List<string> _sdContext = [];
+    private int _sdPort;
+    private readonly Queue<string> _sdTail = new();
+
+    private string SdTail()
+    {
+        lock (_sdTail)
+            return string.Join("\n", _sdTail);
+    }
+
+    private async Task<bool> StartImageServerAsync(List<string> context, CancellationToken ct)
+    {
+        if (_sdServer is { HasExited: false } && _sdContext.SequenceEqual(context))
+            return false;
+        StopImageServer();
+        ImageStatus("Loading…", indeterminate: true);
+        using (var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0))
+        {
+            probe.Start();
+            _sdPort = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+        }
+        var info = new ProcessStartInfo(ImageGen.ServerPath)
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8, StandardErrorEncoding = Encoding.UTF8, WorkingDirectory = ImageGen.RuntimeFolder,
+        };
+        foreach (var arg in (string[])["-l", "127.0.0.1", "--listen-port", _sdPort.ToString(), .. context])
+            info.ArgumentList.Add(arg);
+        lock (_sdTail)
+            _sdTail.Clear();
+        void Keep(object _, DataReceivedEventArgs e)
+        {
+            if (e.Data is not { Length: > 0 } line)
+                return;
+            lock (_sdTail)
+            {
+                _sdTail.Enqueue(line);
+                if (_sdTail.Count > 40)
+                    _sdTail.Dequeue();
+            }
+        }
+        var process = _sdServer = Process.Start(info) ?? throw new InvalidOperationException("sd-server did not start");
+        _sdContext = context;
+        process.OutputDataReceived += Keep;
+        process.ErrorDataReceived += Keep;
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        Log($"sd-server started (pid {process.Id}, port {_sdPort})");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        try
+        {
+            while (true)
+            {
+                if (process.HasExited)
+                {
+                    await Task.Delay(200, CancellationToken.None); // its last lines
+                    var tail = SdTail();
+                    var code = process.ExitCode;
+                    StopImageServer();
+                    Log($"sd-server exited with {code}:\n{tail}");
+                    var outOfMemory = tail.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || tail.Contains("out of memory", StringComparison.OrdinalIgnoreCase);
+                    throw new InvalidOperationException($"sd-server failed{(outOfMemory ? " (out of memory)" : "")}: {FirstError(tail) ?? $"exit code {code}"} (the log has its output)");
+                }
+                try
+                {
+                    using var up = await http.GetAsync($"http://127.0.0.1:{_sdPort}/sdcpp/v1/capabilities", ct);
+                    if (up.IsSuccessStatusCode)
+                        return true;
+                }
+                catch (HttpRequestException) { }
+                catch (TaskCanceledException) when (!ct.IsCancellationRequested) { }
+                await Task.Delay(300, ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            StopImageServer(); // cancelled while loading: nothing loaded to keep
+            throw;
+        }
+    }
+
+    // Idempotent; stops only the sd-server this app started (its own process).
+    private void StopImageServer()
+    {
+        if (_sdServer is not { } process)
+            return;
+        _sdServer = null;
+        _sdContext = [];
+        try
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(10000); // its files stay locked until it exits
+        }
+        catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception) { } // already gone
+        process.Dispose();
     }
 
     // POST /images/generate on the primary PC (no progress: an indeterminate bar); each returned PNG goes to the next of files.

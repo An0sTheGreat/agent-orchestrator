@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
@@ -58,6 +59,7 @@ internal static class ImageGen
 {
     public static string RuntimeFolder => Path.Combine(AppSettings.DataRoot, "sd.cpp");
     public static string CliPath => Path.Combine(RuntimeFolder, "sd-cli.exe");
+    public static string ServerPath => Path.Combine(RuntimeFolder, "sd-server.exe");
     public static string ModelsRoot => Path.Combine(AppSettings.DataRoot, "image-models");
     public static string ImagesFolder => Path.Combine(AppSettings.DataRoot, "images");
     public const string ReleaseUrl = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
@@ -241,6 +243,48 @@ internal static class ImageGen
         return args;
     }
 
+    // sd-server (kept running between generations): Args split into what it starts with (the model files, Low VRAM: a change
+    // restarts it) and one generation's /sdcpp/v1/img_gen body. Each generation flag takes a value; the rest are the context.
+    private static readonly string[] GenerationFlags = ["-p", "-n", "--cfg-scale", "--steps", "-W", "-H", "-s", "-b", "--sampling-method", "--scheduler", "-i", "--strength", "-o"];
+
+    public static (List<string> Context, JsonObject Request) ServerArgs(ImageRecipe recipe, ImageSettings s, IReadOnlyList<string> paths)
+    {
+        var args = Args(recipe, s, paths, "");
+        var (context, gen) = (new List<string>(), new Dictionary<string, string>());
+        for (var i = 0; i < args.Count; i++)
+            if (GenerationFlags.Contains(args[i]))
+                gen[args[i]] = args[++i];
+            else
+                context.Add(args[i]);
+        string? G(string flag) => gen.GetValueOrDefault(flag);
+        var sample = new JsonObject { ["sample_steps"] = int.Parse(gen["--steps"]), ["guidance"] = new JsonObject { ["txt_cfg"] = double.Parse(gen["--cfg-scale"], CultureInfo.InvariantCulture) } };
+        if (G("--sampling-method") is { } sampler)
+            sample["sample_method"] = sampler;
+        if (G("--scheduler") is { } scheduler)
+            sample["scheduler"] = scheduler;
+        var request = new JsonObject
+        {
+            ["prompt"] = gen["-p"], ["negative_prompt"] = G("-n") ?? "", ["width"] = int.Parse(gen["-W"]), ["height"] = int.Parse(gen["-H"]),
+            ["seed"] = long.Parse(gen["-s"]), ["batch_count"] = int.Parse(G("-b") ?? "1"), ["sample_params"] = sample,
+        };
+        if (G("--strength") is { } strength) // the start image itself goes as base64 "init_image" (MainWindow reads the file)
+            request["strength"] = double.Parse(strength, CultureInfo.InvariantCulture);
+        return (context, request);
+    }
+
+    // A job from GET /sdcpp/v1/jobs/<id>: its sampling step (speed from the stage's time per step), or Loading while the server
+    // just started loads the weights (the first step reads them in); null for the other stages (VAE decode, encoding).
+    public static ImageProgress? JobProgress(JsonNode? job, bool fresh)
+    {
+        if (job?["progress"] is not { } p || (string?)p["stage"] != "sampling" || p["total"]?.GetValue<int>() is not { } total)
+            return (string?)job?["status"] == "queued" && fresh ? new(0, 1, "", true) : null;
+        var done = p["completed"]?.GetValue<int>() ?? 0;
+        if (done == 0)
+            return new(0, total, "", fresh);
+        var perStep = (p["stage_elapsed_ms"]?.GetValue<double>() ?? 0) / 1000 / done;
+        return new(done, total, perStep >= 1 || perStep <= 0 ? $"{perStep:0.00} s/it" : $"{1 / perStep:0.00} it/s", false);
+    }
+
     // sd-cli's progress line (stdout, \r-separated): "  |=====>    | 3/8 - 1.23s/it" while sampling (it/s when faster),
     // "  |#####     | 120/500 - 300.00MB/s" while loading weights. Null for any other line.
     public static ImageProgress? ParseProgress(string line)
@@ -319,6 +363,30 @@ internal static class ImageGen
             "LoRA: sd-cli gets its folder and the prompt sent gets its tag (the settings' prompt unchanged)");
         omniRun.Prompt = "a cat <lora:chatrlabs-omni-turbo-8step-fp32:1>";
         Check(Args(omni, omniRun, Paths(omni, "", [], root), "o.png") is var tagged && tagged[tagged.IndexOf("-p") + 1] == omniRun.Prompt, "LoRA: a prompt with the tag already gets it once");
+        // sd-server: the model files and Low VRAM start it; the rest is each generation's request
+        var (omniContext, omniRequest) = ServerArgs(omni, new() { Prompt = "a cat", Negative = "x", Steps = 8, Cfg = 2.5, Seed = 42, Width = 768, Height = 512, Batch = 2, Sampler = "euler", LowVram = true },
+            Paths(omni, "", [], root));
+        Check(string.Join(" ", omniContext) ==
+            @"--diffusion-model C:\m\Qwen-Image-2.1-Uncensored-Omni-Quantized\qwen-image-2.1-step90000-FP8-comfy.safetensors --vae C:\m\Qwen-Image-2.1\vae\qwen_image_2.1_vae_bf16.safetensors " +
+            @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 --offload-to-cpu --vae-tiling",
+            "sd-server context: the model files, the LoRA folder and Low VRAM");
+        Check(omniRequest.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) ==
+            @"{""prompt"":""a cat <lora:chatrlabs-omni-turbo-8step-fp32:1>"",""negative_prompt"":"""",""width"":768,""height"":512,""seed"":42,""batch_count"":2," +
+            @"""sample_params"":{""sample_steps"":8,""guidance"":{""txt_cfg"":2.5},""sample_method"":""euler""}}", "sd-server request: prompt with the LoRA tag, size, seed, batch, steps, cfg, sampler");
+        Check(ServerArgs(sdxl, new() { Prompt = "p", Negative = "n", Scheduler = "karras", InitImage = @"C:\in.png", Strength = 0.6 }, Paths(sdxl, "", [], root)).Request is var img &&
+            (string?)img["negative_prompt"] == "n" && (string?)img["sample_params"]!["scheduler"] == "karras" && (double?)img["strength"] == 0.6, "sd-server request: negative, scheduler, strength");
+        Check(ServerArgs(z, new() { Prompt = "another", Seed = 9, Width = 1024, Steps = 20, Cfg = 4, Batch = 3, Sampler = "euler" }, Paths(z, "", [], root)).Context.SequenceEqual(
+            ServerArgs(z, new() { Prompt = "a cat", Seed = 1, Width = 512, Steps = 4, Cfg = 1 }, Paths(z, "", [], root)).Context), "the same model reuses the server whatever the prompt and numbers");
+        Check(!ServerArgs(z, new() { Prompt = "p", LowVram = false }, Paths(z, "", [], root)).Context.SequenceEqual(ServerArgs(z, new() { Prompt = "p" }, Paths(z, "", [], root)).Context) &&
+            !ServerArgs(z, new() { Prompt = "p" }, Paths(z, @"C:\x\z-image.gguf", [], root)).Context.SequenceEqual(ServerArgs(z, new() { Prompt = "p" }, Paths(z, "", [], root)).Context),
+            "Low VRAM or another model file restarts it");
+        JsonNode Job(string json) => JsonNode.Parse(json)!;
+        Check(JobProgress(Job("""{"status":"generating","progress":{"stage":"sampling","completed":3,"total":8,"stage_elapsed_ms":3690}}"""), true) == new ImageProgress(3, 8, "1.23 s/it", false) &&
+            JobProgress(Job("""{"status":"generating","progress":{"stage":"sampling","completed":4,"total":8,"stage_elapsed_ms":1000}}"""), false) is { Speed: "4.00 it/s" } &&
+            JobProgress(Job("""{"status":"generating","progress":{"stage":"sampling","completed":0,"total":8,"stage_elapsed_ms":9000}}"""), true) is { Loading: true } &&
+            JobProgress(Job("""{"status":"generating","progress":{"stage":"sampling","completed":0,"total":8}}"""), false) is { Loading: false, Steps: 8 } &&
+            JobProgress(Job("""{"status":"generating","progress":{"stage":"vae_decode","completed":null,"total":null}}"""), false) is null,
+            "sd-server job progress: steps and speed, loading only on a fresh server");
         // the models folder: image models only (no chat GGUF, no parts), one per name and size; their parts found there or downloaded
         var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-imgscan-{Guid.NewGuid():N}");
         try
