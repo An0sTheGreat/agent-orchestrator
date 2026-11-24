@@ -3919,11 +3919,11 @@ def with_effort(config: dict[str, Any], request: dict[str, Any]) -> dict[str, An
 
 
 def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messages: list[dict[str, str]],
-              extras: tuple[list[dict[str, Any]], dict[str, Any], str] = ([], {}, "")) -> str:
+              extras: tuple[list[dict[str, Any]], dict[str, Any], str] = ([], {}, ""), steers: list[tuple[str, dict[str, Any]]] | None = None) -> str:
     client, sampling = role_settings(config, role)
     emit("chat_stage", role=role, stage=stage, title=client.title or role)
     if extras[0]:
-        return code_loop(config, role, system + extras[2], messages, extras[0], extras[1])
+        return code_loop(config, role, system + extras[2], messages, extras[0], extras[1], steers=steers)
     model = client.ensure_model(role, False)
     return reply_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
@@ -4008,7 +4008,7 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     turn_images(request, messages[-1]["content"])
     messages = blind_images(turn, role, messages)
     messages = compact_conversation(turn, (role,), system + extras[2], messages, extras[0], request)
-    text = chat_call(turn, role, "answer", system, messages, extras)
+    text = with_steers(turn, role, lambda steers: chat_call(turn, role, "answer", system, messages, extras, steers))
     if not text:
         raise WorkflowError("The model returned an empty reply")
     emit("chat_reply", role=role, text=text)
@@ -4249,8 +4249,11 @@ REPEAT_NOTE = ("\nNOTE: you ran this same command last time and it gave the same
 
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
-              stop: Any = None, nudge: Any = "") -> str:
+              stop: Any = None, nudge: Any = "", steers: list[tuple[str, dict[str, Any]]] | None = None) -> str:
     """Tool loop without task gates: runs tool calls until the model replies without any; returns that reply. With
+    `steers` (with_steers' list: a lead's own loop, never a sub-agent's), the launcher's Send now messages join after a
+    tool batch, before the next model call; one still waiting when the model replies without a tool call is left
+    undelivered (the launcher sends it as the next turn). With
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
     calls. After a batch that ran another model (delegate), the role's model is ensured again: a single-model server may
@@ -4331,6 +4334,12 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
             messages.append({"role": "user", "content": "The screenshot the tool took:", "images": images})
+        if steers:
+            with STDIN_LOCK:  # (the stdin reader adds to it under this lock)
+                taken, steers[:] = steers[:], []
+            for key, message in taken:
+                messages.append(message)
+                emit("steered", role=role, key=key)
         if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():
@@ -4459,13 +4468,13 @@ PERMISSIONS_LIVE: str | None = None  # "ask", "safe" or "all" once the launcher 
 COMMAND_STOP = threading.Event()  # set by the launcher's {"stop_command": true}: the running run_command ends with its output so far
 STDIN_LOCK = threading.Lock()
 STDIN_READER: tuple[Any, queue.Queue] | None = None  # (the stdin it reads, the lines launcher_call takes)
-STEER_HANDLER: Any = None  # the running Pi Code turn's (pi_lead_turn, by steer_to); until then a steer waits in STEERS_HELD
+STEER_HANDLER: Any = None  # the running turn's (pi_lead_turn or with_steers, by steer_to); until then a steer waits in STEERS_HELD
 STEERS_HELD: list[dict[str, Any]] = []
 
 
 def stdin_lines() -> queue.Queue:
     """The launcher's lines on stdin, read by one thread so launcher_call never swallows a steer: a {"steer": ...} line
-    goes to STEER_HANDLER (only a Pi Code turn takes one; elsewhere the launcher sends the message as the next turn),
+    goes to STEER_HANDLER (a Chat or Code turn's lead takes one; elsewhere the launcher sends the message as the next turn),
     every other line to the returned queue, then None when stdin ends."""
     global STDIN_READER
     with STDIN_LOCK:
@@ -4509,6 +4518,27 @@ def steer_to(handler: Any) -> None:
         STEERS_HELD.clear()
         for message in held:
             handler(message)
+
+
+def with_steers(config: dict[str, Any], role: str, run: Any) -> str:
+    """run(steers) with the launcher's Send now messages for this turn arriving in `steers` as (key, user message), which
+    code_loop hands to the model after a tool batch (pi_lead_turn has its own). One with images the role does not see is
+    not taken: the launcher sends it as the next turn, which require_vision refuses."""
+    steers, blind = [], vision_off(config, role)
+
+    def steer(line: dict[str, Any]) -> None:
+        if not str(line.get("steer") or "").strip() or (line.get("images") and blind):
+            return
+        urls = image_urls(line.get("images"))
+        steers.append((str(line.get("key") or ""), {"role": "user", "content": str(line["steer"]), **({"images": urls} if urls else {})}))
+
+    if EVENTS:
+        stdin_lines()
+        steer_to(steer)
+    try:
+        return run(steers)
+    finally:
+        steer_to(None)
 
 
 BROWSER_INPUT = ("click", "move", "drag", "scroll", "type", "key")  # the model's mouse and keyboard in the in-app browser
@@ -5254,7 +5284,7 @@ def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: l
     tools = CODE_TOOLS + [TODO_TOOL, CHECKS_TOOL, RUN_COMMAND_TOOL, DELEGATE_TOOL] + tools
     messages = compact_conversation(config, (role,), system, messages, tools, request)
     emit("chat_stage", role=role, stage="lead", title=display_name(config, role))
-    return code_loop(config, role, system, messages, tools, handlers)
+    return with_steers(config, role, lambda steers: code_loop(config, role, system, messages, tools, handlers, steers=steers))
 
 
 def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: dict[str, Any], role: str, delegations: int | None = None,

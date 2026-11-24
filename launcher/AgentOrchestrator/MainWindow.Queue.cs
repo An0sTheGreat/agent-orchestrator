@@ -8,14 +8,14 @@ namespace AgentOrchestrator;
 // Messages typed while a reply (or the end-of-turn unload) uses the models. Enter queues them, one list per view, shown above
 // the input. When a turn completes, the next queued message is sent as the next turn (the finished view's first). A stopped
 // or failed turn, or a refused send, puts the queued messages back in the input instead, so nothing goes out unseen.
-// While a Pi Code turn runs, Send now steers a queued Code message into it (the model reads it after its current tool calls).
+// While a turn runs, Send now steers a message queued in its view into it (the model reads it after its current tool calls).
 public partial class MainWindow
 {
     private sealed record QueuedMessage(string Text, List<string> Attachments);
 
     private readonly List<QueuedMessage> _chatQueue = new(), _codeQueue = new();
 
-    private bool _turnSteers; // the running turn is a Pi Code turn with a user message: it takes steered messages
+    private bool _turnSteers; // the running turn has a user message that is no command: it takes steered messages
     private readonly Dictionary<string, (QueuedMessage Item, string Text, List<string> Images)> _steering = new(); // by key: written, not delivered yet
 
     private List<QueuedMessage> QueueOf(Conversation c) => c.IsCode ? _codeQueue : _chatQueue;
@@ -47,8 +47,8 @@ public partial class MainWindow
             Dispatcher.InvokeAsync(SendQueued, DispatcherPriority.Background);
     }
 
-    // One row per queued message: its text (and attachment count), Edit (back into the input) and remove; Send now while a Pi
-    // Code turn runs. A row being steered waits for the engine's "steered" event with its buttons off.
+    // One row per queued message: its text (and attachment count), Edit (back into the input) and remove; Send now while a turn
+    // runs in this view (not a parked chat's). A row being steered waits for the engine's "steered" event with its buttons off.
     private void RefreshQueue(Conversation c)
     {
         var panel = c.IsCode ? CodeQueueList : ChatQueueList;
@@ -76,7 +76,7 @@ public partial class MainWindow
             DockPanel.SetDock(edit, Dock.Right);
             DockPanel.SetDock(label, Dock.Left);
             var dock = new DockPanel { Children = { remove, edit } };
-            if (c.IsCode && _chatBusy && _turnSteers && !IsCommand(item.Text)) // a command is a turn of its own, not a message
+            if (c == _turn && _chatBusy && _turnSteers && !IsCommand(item.Text)) // a command is a turn of its own, not a message
             {
                 var now = new Button { Content = "Send now", Padding = new Thickness(6, 0, 6, 0), FontSize = 11, IsEnabled = !steering,
                     ToolTip = "Send into the running reply: the model reads it after its current step", Tag = "SteerQueued" };
@@ -96,17 +96,17 @@ public partial class MainWindow
         RefreshChatInput(); // the "n queued" status
     }
 
-    // Send now: one line on the turn's stdin, which the engine hands to Pi. Composing sets _turnImages, which the running
+    // Send now: one line on the turn's stdin, which the engine hands to the lead (or Pi). Composing sets _turnImages, which the running
     // turn no longer reads (RunTurn wrote its request before starting it). One never delivered is queued again at the turn's end.
     private void Steer(QueuedMessage item)
     {
         if (_chatProcess is not { } process)
             return;
         var key = Guid.NewGuid().ToString("N");
-        var text = ComposeMessage(_code, item.Text, item.Attachments);
+        var text = ComposeMessage(_turn, item.Text, item.Attachments);
         ToTurn(process, JsonSerializer.Serialize(new { steer = text, images = _turnImages, key })); // a failed write: the turn ended, which reverts the row
         _steering[key] = (item, text, _turnImages.ToList()); // its photos show (and are saved) with the steered message
-        RefreshQueue(_code);
+        RefreshQueue(_turn);
     }
 
     // Takes queued messages (all when item is null) out of the queue and puts their text before whatever is typed, and

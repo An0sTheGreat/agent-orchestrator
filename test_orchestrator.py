@@ -3024,6 +3024,27 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(len(cap("fetch_page", "x\n" * 20_000, {}, None).split("\n... cut at")[0]), 11_467)  # unknown: 32,768 tokens
         self.assertEqual(cap("todo", "y" * 50_000, {}, 1000), "y" * 50_000)  # tools without a share are left alone
 
+    def test_a_steer_joins_the_lead_s_turn_after_its_tool_batch(self):
+        read, write = os.pipe()
+        stdin, launcher = os.fdopen(read, encoding="utf-8"), os.fdopen(write, "w", encoding="utf-8")
+        self.addCleanup(stdin.close)
+        cap = orchestrator.cap_result
+
+        def send_now(*args):  # the user's Send now while the tool runs; the reader has handled it once it sees the end
+            if not launcher.closed:
+                launcher.write(json.dumps({"steer": "also list the docs", "key": "k1"}) + "\n")
+                launcher.close()
+                self.assertIsNone(orchestrator.stdin_lines().get(timeout=5))
+            return cap(*args)
+
+        with patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator, "cap_result", send_now):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": [tool_call("list_files"), "Done."]})
+        self.assertEqual(code, 0)
+        self.assertEqual(log[1]["messages"][-1], {"role": "user", "content": "also list the docs"})  # after the tool result
+        self.assertEqual(log[1]["messages"][-2]["role"], "tool")
+        self.assertIn(("steered", {"role": "planner", "key": "k1"}), events)
+        self.assertIsNone(orchestrator.STEER_HANDLER)  # the turn's end takes no more
+
     def test_a_tool_result_is_cut_before_the_model_sees_it(self):
         for n in range(300):
             (self.root / f"file{n:03}.txt").write_text("x", encoding="utf-8")
