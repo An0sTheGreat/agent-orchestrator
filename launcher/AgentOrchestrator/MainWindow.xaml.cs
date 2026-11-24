@@ -3010,6 +3010,8 @@ public partial class MainWindow : Window
                         return Fail();
                     }
                 }
+                if (!ImageDropSmoke())
+                    return Fail();
                 // the page never scrolls: at 1280x720 with Advanced open the card's content fits it, and the right column ends where the card does
                 {
                     var (oldWidth, oldHeight) = (Width, Height);

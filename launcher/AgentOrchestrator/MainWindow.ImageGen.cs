@@ -692,6 +692,7 @@ public partial class MainWindow
         page.Children.Add(card);
         page.Children.Add(right);
         ImagesView.Children.Add(page);
+        HookImageDrop();
         RefreshImageRecipes(); // the items first: Apply selects one
         ApplyImageSettings(_settings.ImageGen);
     }
