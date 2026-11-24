@@ -186,11 +186,13 @@ internal static class ImageGen
 
     // The user's next message after a picture (`last`, then cleared), for the model only: the picture's line before the text and
     // the picture in its images (text only with Vision off). Neither when the user attached a photo: an edit asked without the extra.
+    // The note's start: orchestrator.py's PICTURE_NOTE strips it (to "]" and a blank line) before it scans the user's words. Change both together.
+    const string NotePrefix = "[Your last picture: ";
     public static (string Text, List<string> Images) TakeLastPicture(ref (string File, string Line)? last, string text, List<string> images, bool vision)
     {
         var picture = last;
         last = null;
-        return picture is not var (file, line) || images.Count > 0 ? (text, images) : ($"[Your last picture: {line}]\n\n{text}", vision ? [file] : []);
+        return picture is not var (file, line) || images.Count > 0 ? (text, images) : ($"{NotePrefix}{line}]\n\n{text}", vision ? [file] : []);
     }
 
     public static string LocalPath(string root, ImageFile file) => Path.Combine(root, file.Repo.Split('/')[^1], file.Path.Replace('/', Path.DirectorySeparatorChar));

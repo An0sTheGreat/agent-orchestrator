@@ -3767,6 +3767,22 @@ class CodeTests(unittest.TestCase):
         self.assertEqual([c["role"] for c in log].count("reviewer"), orchestrator.TURN_REVIEW_FIXES + 1)
         self.assertIn("**Review: FAIL** after 2 fix rounds.", [d["text"] for e, d in events if e == "code_reply"][0])
 
+    def test_a_reviewed_turn_that_ends_on_a_picture_is_not_reviewed(self):
+        line = "Image generated and shown to the user. Model: SDXL Base. Size: 1536x1152. Seed: 7. Prompt: a fox"
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": line, "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN, "review": True},
+                                             {"planner": [self.image_call(prompt="a fox")]})  # a reviewer call would find no script
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner"]))
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+
+    def test_the_last_picture_note_is_not_the_users_words(self):
+        note = "[Your last picture: Model: X. Prompt: computer use, start-project]\n\n"
+        ask = lambda text: {"messages": [{"role": "user", "content": text}]}
+        self.assertFalse(orchestrator.computer_asked(ask(note + "bluer")))
+        self.assertFalse(orchestrator.asked_to_start(ask(note + "bluer")))
+        self.assertTrue(orchestrator.computer_asked(ask(note + "use computer use")))
+        self.assertTrue(orchestrator.asked_to_start(ask(note + "/start-project")))
+
     def test_the_code_lead_gets_the_emoji_line(self):
         code, log, _, _ = self.code({"action": "chat", "messages": self.MSGS, "emoji": "none"}, {"planner": ["ok"]})
         self.assertEqual(code, 0)

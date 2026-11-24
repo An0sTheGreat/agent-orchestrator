@@ -1465,7 +1465,7 @@ public partial class MainWindow
         NoteTurnPicture(file);
         var (copy, width, height) = ChatCopy(file);
         var line = ImageGen.ChatResult(name, run, width, height);
-        if (_reply is not null) // a turn's picture: the conversation's next message shows it to the model
+        if (asker is null ? _chatBusy : asker == _chatProcess) // the running chat/Code turn's picture (generate_image or /image), not a project run's: the conversation's next message shows it to the model
             _turn.LastPicture = (file, line);
         return (line, copy, false);
         }

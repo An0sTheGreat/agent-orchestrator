@@ -879,6 +879,7 @@ def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 6, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
 SHOT_NOTE = "The screenshot the tool took:"  # the user message code_loop puts a tool's screenshot in
+PICTURE_REPLY = ""  # the picture line a code_loop turn ended on (the turn's reply): a reviewed turn that ends so is not reviewed
 STEERED: list[dict[str, Any]] = []  # the Send now messages code_loop delivered this turn: a review's fix round starts from the original messages
 SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
@@ -4339,6 +4340,8 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             else:
                 results.append(f"{tool}: {result}")
         if picture and not nudge:  # the user sees the picture: no commentary after it
+            global PICTURE_REPLY
+            PICTURE_REPLY = picture
             return picture
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
@@ -4838,11 +4841,15 @@ COMPUTER_ASKED = re.compile(r"(?i)\bcomputer[- ]use\b|\buse (?:my|the) (?:comput
                             r"\b(?:take over|control) (?:my|the) (?:computer|pc|desktop|mouse|screen)\b")
 
 
+# The launcher's note before a user message that follows a picture (ImageGen.NotePrefix; the model's own prompt is in it): not the user's words.
+PICTURE_NOTE = re.compile(r"\A\[Your last picture: .*?\]\n\n", re.S)
+
+
 def computer_asked(request: dict[str, Any]) -> bool:
     """The user's latest message asks for computer use in words ("use computer use", "use my computer", ...): then the
     computer tool works without asking first this turn."""
     users = [m for m in request.get("messages") or [] if isinstance(m, dict) and m.get("role") == "user"]
-    return bool(users) and bool(COMPUTER_ASKED.search(str(users[-1].get("content") or "")))
+    return bool(users) and bool(COMPUTER_ASKED.search(PICTURE_NOTE.sub("", str(users[-1].get("content") or ""))))
 
 
 def computer_handler(vision: bool = True, permitted: bool = False):
@@ -5345,7 +5352,7 @@ def asked_to_start(request: dict[str, Any]) -> bool:
     """The request's latest message is the user's and invokes start-project (start-project, /start-project, $start-project)."""
     messages = request.get("messages") if isinstance(request.get("messages"), list) else []
     last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
-    return last.get("role") == "user" and bool(START_WORDS.search(str(last.get("content") or "")))
+    return last.get("role") == "user" and bool(START_WORDS.search(PICTURE_NOTE.sub("", str(last.get("content") or ""))))
 
 
 def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
@@ -6163,6 +6170,8 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     messages = blind_images(config, role, messages)
     before = project_texts(folders) if request.get("review") else {}
     STEERED.clear()
+    global PICTURE_REPLY
+    PICTURE_REPLY = ""
     lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
     global THINKING
     THINKING = ThinkingFile(folders[0]["path"], role)
@@ -6172,7 +6181,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         THINKING = None
     if not text:
         raise WorkflowError("The model returned an empty reply")
-    if request.get("review"):
+    if request.get("review") and not (PICTURE_REPLY and text == PICTURE_REPLY and before == project_texts(folders)):  # a picture that changed no files: nothing to review, the reply stays the bare caption line
         text = reviewed_turn(config, folders, messages, request, role, lead, text, before)
     emit("code_reply", role=role, text=text)
     if request.get("title") and (title := chat_title(plain, "planner", messages, text)):
