@@ -3304,6 +3304,13 @@ public partial class MainWindow : Window
                     // (the runtime line sits in Advanced, closed here: its panel's Visibility is in _imgLocalOnly's)
                     if (_imgLocalOnly.Any(e => e.Visibility != Visibility.Visible) || !_imgSteps.IsVisible || !_imgSeed.IsVisible || !_imgWidth.IsVisible || !negative.IsVisible)
                         return Fail();
+                    // the Seed box shows a full line of text (the style's padding once left it a sliver)
+                    _imgSeed.UpdateLayout();
+                    if (_imgSeed.Template.FindName("PART_ContentHost", _imgSeed) is not FrameworkElement seedHost || seedHost.ActualHeight < _imgSeed.FontSize * 1.2)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: the Seed box's text area is {(_imgSeed.Template.FindName("PART_ContentHost", _imgSeed) as FrameworkElement)?.ActualHeight:0} px");
+                        return Fail();
+                    }
                     // a restart in OpenRouter mode: the saved local pick (a recipe that is not the first) comes back with Switch to Local, and is what the next run saves
                     var flux = Array.FindIndex(ImageGen.Recipes, r => r.Id == "flux3-klein");
                     ApplyImageSettings(new ImageSettings { RecipeId = "flux3-klein", RemoteModel = "acme/img-two" });

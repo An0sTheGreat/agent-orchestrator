@@ -403,8 +403,9 @@ public partial class MainWindow
             Children = { _imgSizeLock, Pair(0, SizeBox("ImagesWidth", true, out _imgWidth, out _imgWidthHint), SizeBox("ImagesHeight", false, out _imgHeight, out _imgHeightHint)) } };
         _imgLocalOnly.Add(sizeBoxes); // OpenRouter is sent the nearest aspect ratio only, not this size
         _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 } };
-        _imgSeed = new TextBox { ToolTip = "Empty: a random seed (recorded with the picture)", VerticalContentAlignment = VerticalAlignment.Center,
-            Height = 32, VerticalAlignment = VerticalAlignment.Center };
+        // the style's padding filled a fixed 32 px and hid the text: a slim padding, as the other small boxes
+        _imgSeed = new TextBox { Tag = "ImagesSeed", ToolTip = "Empty: a random seed (recorded with the picture)", VerticalContentAlignment = VerticalAlignment.Center,
+            Height = 32, Padding = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
         var seedCell = Inline("Seed", _imgSeed);
         _imgLocalOnly.Add(seedCell);
         var countRow = Pair(8, Inline("Images", _imgBatch), seedCell);
