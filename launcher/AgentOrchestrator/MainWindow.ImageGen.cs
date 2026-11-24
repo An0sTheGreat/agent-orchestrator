@@ -611,6 +611,16 @@ public partial class MainWindow
         _imgGallery = new StackPanel { Orientation = Orientation.Horizontal, Tag = "ImagesGallery" };
         _imgGalleryHead = Muted("", 11);
         DockPanel.SetDock(_imgGalleryHead, Dock.Right);
+        var deleteAll = new Button { Content = "Delete all", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(10, 2, 10, 2), FontSize = 11,
+            Margin = new Thickness(0, 0, 10, 0), Tag = "ImagesDeleteAll", ToolTip = "Overwrite and delete every picture in the gallery" };
+        DockPanel.SetDock(deleteAll, Dock.Right);
+        deleteAll.Click += (_, _) =>
+        {
+            var all = Directory.Exists(ImageGen.ImagesFolder) ? Directory.GetFiles(ImageGen.ImagesFolder, "*.png") : [];
+            if (all.Length == 0 || SidebarAsk("Delete all pictures", $"Delete all {all.Length} picture{(all.Length == 1 ? "" : "s")} for good? They are overwritten, not moved to the Recycle Bin, so they can't be brought back.", "Delete all") is null)
+                return;
+            ShredPictures(all);
+        };
         // one row of thumbnails, always in view; the wheel scrolls it sideways
         var galleryScroll = new ScrollViewer
         {
@@ -624,7 +634,7 @@ public partial class MainWindow
         var galleryCard = new Border
         {
             BorderThickness = new Thickness(1), Padding = new Thickness(18, 12, 18, 10), Margin = new Thickness(0, 12, 0, 0),
-            Child = new StackPanel { Children = { new DockPanel { Children = { _imgGalleryHead, Head("Gallery", 0) } }, galleryScroll } },
+            Child = new StackPanel { Children = { new DockPanel { Children = { _imgGalleryHead, deleteAll, Head("Gallery", 0) } }, galleryScroll } },
         };
         galleryCard.SetResourceReference(Border.BackgroundProperty, "Card");
         galleryCard.SetResourceReference(Border.BorderBrushProperty, "Border");
@@ -1257,15 +1267,30 @@ public partial class MainWindow
             Item("Copy image", () => { if (LoadPicture(path) is { } picture) Clipboard.SetImage(picture); });
             Item("Delete", () =>
             {
-                if (SidebarAsk("Delete picture", $"Move {Path.GetFileName(path)} to the Recycle Bin?", "Delete") is null)
+                if (SidebarAsk("Delete picture", $"Delete {Path.GetFileName(path)} for good? It is overwritten, not moved to the Recycle Bin, so it can't be brought back.", "Delete") is null)
                     return;
-                foreach (var file in new[] { path, sidecar }.Where(File.Exists))
-                    Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile(file, Microsoft.VisualBasic.FileIO.UIOption.OnlyErrorDialogs, Microsoft.VisualBasic.FileIO.RecycleOption.SendToRecycleBin);
-                RefreshGallery();
+                ShredPictures([path]);
             });
             thumb.ContextMenu = menu;
             _imgGallery.Children.Add(thumb);
         }
+    }
+
+    // Overwrites and deletes pictures and their settings files (ImageGen.Shred); the stage lets go of a deleted one first.
+    private void ShredPictures(IEnumerable<string> pictures)
+    {
+        var failed = 0;
+        foreach (var picture in pictures)
+        {
+            if (string.Equals(picture, _imgResultPath, StringComparison.OrdinalIgnoreCase))
+                ShowOnStage(null);
+            foreach (var file in new[] { picture, Path.ChangeExtension(picture, ".json") }.Where(File.Exists))
+                try { ImageGen.Shred(file); }
+                catch (Exception x) when (x is IOException or UnauthorizedAccessException) { failed++; Log($"Images: couldn't delete {file}: {x.Message}"); }
+        }
+        if (failed > 0)
+            Toast($"{failed} file{(failed == 1 ? "" : "s")} couldn't be deleted (in use?)", "#FF667A");
+        RefreshGallery();
     }
 
     // The stage's picture is outlined in the gallery.

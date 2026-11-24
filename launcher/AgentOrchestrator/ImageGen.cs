@@ -337,6 +337,26 @@ internal static class ImageGen
         return (output, files);
     }
 
+    // A picture deleted for good: its bytes overwritten with zeros, then renamed to a random name and removed, so neither the Recycle
+    // Bin nor an undelete tool brings it (or its file name) back.
+    // ponytail: one zero pass; an SSD can keep old copies of blocks (wear levelling) that only full-disk encryption (BitLocker) hides.
+    public static void Shred(string path)
+    {
+        Overwrite(path);
+        var hidden = Path.Combine(Path.GetDirectoryName(path)!, Guid.NewGuid().ToString("N"));
+        File.Move(path, hidden);
+        File.Delete(hidden);
+    }
+
+    private static void Overwrite(string path)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough);
+        var zeros = new byte[64 * 1024];
+        for (var left = file.Length; left > 0; left -= zeros.Length)
+            file.Write(zeros, 0, (int)Math.Min(zeros.Length, left));
+        file.Flush(flushToDisk: true);
+    }
+
     internal static void ImageGenSelfTest()
     {
         static void Check(bool ok, string what)
@@ -344,6 +364,17 @@ internal static class ImageGen
             if (!ok)
                 throw new InvalidOperationException($"Image generation self-test: {what}");
         }
+        var shredDir = Directory.CreateTempSubdirectory("ao-shred-").FullName;
+        try
+        {
+            var victim = Path.Combine(shredDir, "secret.png");
+            File.WriteAllBytes(victim, [.. Enumerable.Range(0, 200_000).Select(i => (byte)(i % 251 + 1))]);
+            Overwrite(victim);
+            Check(File.ReadAllBytes(victim) is { Length: 200_000 } wiped && wiped.All(b => b == 0), "Shred: every byte overwritten before the delete");
+            Shred(victim);
+            Check(Directory.GetFileSystemEntries(shredDir).Length == 0, "Shred: the file is gone, renamed copy and all");
+        }
+        finally { Directory.Delete(shredDir, recursive: true); }
         var root = @"C:\m";
         var z = Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
