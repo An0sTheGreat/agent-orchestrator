@@ -217,9 +217,10 @@ internal static class ImageGen
             if (file.Flag == LoraFlag)
             {
                 args.AddRange([file.Flag, Path.GetDirectoryName(path)!]);
-                var tag = $"<lora:{Path.GetFileNameWithoutExtension(path)}:1>";
-                if (!prompt.Contains(tag, StringComparison.OrdinalIgnoreCase)) // a dropped picture's prompt may carry it already
-                    prompt += " " + tag;
+                var name = Path.GetFileNameWithoutExtension(path);
+                // a dropped picture's prompt may carry it already, perhaps at another weight
+                if (!Regex.IsMatch(prompt, $@"<lora:{Regex.Escape(name)}(:[^>]*)?>", RegexOptions.IgnoreCase))
+                    prompt += $" <lora:{name}:1>";
             }
             else
                 args.AddRange([file.Flag, path]);
@@ -244,6 +245,7 @@ internal static class ImageGen
 
     // sd-server (kept running between generations): Args split into what it starts with (the model files, Low VRAM: a change
     // restarts it) and one generation's /sdcpp/v1/img_gen body. Each generation flag takes a value; the rest are the context.
+    private static readonly Regex LoraTag = new(@"\s*<lora:([^:>]+)(?::([^>]*))?>");
     private static readonly string[] GenerationFlags = ["-p", "-n", "--cfg-scale", "--steps", "-W", "-H", "-s", "-b", "--sampling-method", "--scheduler", "-i", "--strength", "-o"];
 
     public static (List<string> Context, JsonObject Request) ServerArgs(ImageRecipe recipe, ImageSettings s, IReadOnlyList<string> paths)
@@ -261,11 +263,27 @@ internal static class ImageGen
             sample["sample_method"] = sampler;
         if (G("--scheduler") is { } scheduler)
             sample["scheduler"] = scheduler;
+        // sd-server ignores <lora:name:weight> in the prompt: each tag leaves the prompt and goes in "lora" by its file name in the
+        // LoRA folder (the recipe's own file, else <name>.safetensors there); a tag for a LoRA that isn't there is dropped, as sd-cli did.
+        var loraDir = context.IndexOf(LoraFlag) is var at and >= 0 ? context[at + 1] : null;
+        var loras = new JsonArray();
+        var prompt = LoraTag.Replace(gen["-p"], m =>
+        {
+            var name = m.Groups[1].Value;
+            var file = recipe.Files.Zip(paths).Where(f => f.First.Flag == LoraFlag).Select(f => Path.GetFileName(f.Second))
+                .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f).Equals(name, StringComparison.OrdinalIgnoreCase))
+                ?? (loraDir is not null && File.Exists(Path.Combine(loraDir, name + ".safetensors")) ? name + ".safetensors" : null);
+            if (file is not null)
+                loras.Add(new JsonObject { ["path"] = file, ["multiplier"] = double.TryParse(m.Groups[2].Value, NumberStyles.Float, CultureInfo.InvariantCulture, out var w) ? w : 1 });
+            return "";
+        }).Trim();
         var request = new JsonObject
         {
-            ["prompt"] = gen["-p"], ["negative_prompt"] = G("-n") ?? "", ["width"] = int.Parse(gen["-W"]), ["height"] = int.Parse(gen["-H"]),
+            ["prompt"] = prompt, ["negative_prompt"] = G("-n") ?? "", ["width"] = int.Parse(gen["-W"]), ["height"] = int.Parse(gen["-H"]),
             ["seed"] = long.Parse(gen["-s"]), ["batch_count"] = int.Parse(G("-b") ?? "1"), ["sample_params"] = sample,
         };
+        if (loras.Count > 0)
+            request["lora"] = loras;
         if (G("--strength") is { } strength) // the start image itself goes as base64 "init_image" (MainWindow reads the file)
             request["strength"] = double.Parse(strength, CultureInfo.InvariantCulture);
         return (context, request);
@@ -366,8 +384,12 @@ internal static class ImageGen
             @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 --offload-to-cpu --vae-tiling",
             "sd-server context: the model files, the LoRA folder and Low VRAM");
         Check(omniRequest.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) ==
-            @"{""prompt"":""a cat <lora:chatrlabs-omni-turbo-8step-fp32:1>"",""negative_prompt"":"""",""width"":768,""height"":512,""seed"":42,""batch_count"":2," +
-            @"""sample_params"":{""sample_steps"":8,""guidance"":{""txt_cfg"":2.5},""sample_method"":""euler""}}", "sd-server request: prompt with the LoRA tag, size, seed, batch, steps, cfg, sampler");
+            @"{""prompt"":""a cat"",""negative_prompt"":"""",""width"":768,""height"":512,""seed"":42,""batch_count"":2," +
+            @"""sample_params"":{""sample_steps"":8,""guidance"":{""txt_cfg"":2.5},""sample_method"":""euler""},""lora"":[{""path"":""chatrlabs-omni-turbo-8step-fp32.safetensors"",""multiplier"":1}]}",
+            "sd-server request: the LoRA by file name (not a prompt tag, which sd-server ignores), size, seed, batch, steps, cfg, sampler");
+        Check(ServerArgs(omni, new() { Prompt = "a dog <lora:chatrlabs-omni-turbo-8step-fp32:0.5> <lora:missing:1>, park" }, Paths(omni, "", [], root)).Request is var tagged2 &&
+            (string?)tagged2["prompt"] == "a dog, park" && tagged2["lora"]!.AsArray().Count == 1 && (double?)tagged2["lora"]![0]!["multiplier"] == 0.5,
+            "sd-server: a typed tag's weight is kept, a tag for a LoRA that isn't there is dropped, and neither stays in the prompt");
         Check(ServerArgs(sdxl, new() { Prompt = "p", Negative = "n", Scheduler = "karras", InitImage = @"C:\in.png", Strength = 0.6 }, Paths(sdxl, "", [], root)).Request is var img &&
             (string?)img["negative_prompt"] == "n" && (string?)img["sample_params"]!["scheduler"] == "karras" && (double?)img["strength"] == 0.6, "sd-server request: negative, scheduler, strength");
         Check(ServerArgs(z, new() { Prompt = "another", Seed = 9, Width = 1024, Steps = 20, Cfg = 4, Batch = 3, Sampler = "euler" }, Paths(z, "", [], root)).Context.SequenceEqual(
