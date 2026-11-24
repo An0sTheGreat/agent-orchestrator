@@ -4261,7 +4261,9 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
     calls. After a batch that ran another model (delegate, generate_image), the role's model is ensured again: a single-model server may
-    have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another)."""
+    have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another). Without
+    `nudge`, a batch that made a picture ends the turn there: its reply is the picture's details line (the last one's), the model
+    not asked again; a steer still waiting is left undelivered."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
@@ -4308,7 +4310,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             nudges += 1
             messages.append({"role": "user", "content": nudge() if callable(nudge) else nudge})
             continue
-        nudges, results, images, acted = 0, [], [], False
+        nudges, results, images, acted, picture = 0, [], [], False, ""
         for call in calls:
             function = call.get("function") or {}
             tool = str(function.get("name") or "?")
@@ -4329,11 +4331,15 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
+            if tool == "generate_image" and not result.startswith("ERROR"):
+                picture = str(result)
             images += getattr(result, "images", [])
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": str(result)})
             else:
                 results.append(f"{tool}: {result}")
+        if picture and not nudge:  # the user sees the picture: no commentary after it
+            return picture
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
@@ -4735,9 +4741,8 @@ IMAGE_STYLE_TIPS = {
 IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style in clear, concrete words."
 
 
-# The end of a painted picture's tool result: the chat model, back on the GPU, has the picture's details but stays quiet.
-IMAGE_DONE = ("The user sees the picture now. Do not describe, review or critique it and do not offer changes: reply with one "
-              "short line at most (such as \"Here it is.\") and wait for the user's next message. Describe it only if the user asks.")
+# The end of a failed picture's tool result (a made one ends the turn: code_loop).
+IMAGE_FAILED = "No picture was made. Briefly explain the failure to the user."
 
 
 def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
@@ -4765,10 +4770,10 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
             unload_models()  # the image model paints on this PC's GPU: the chat model leaves it until code_loop loads it again
         answer = launcher_call("image", prompt=str(prompt), negative=str(negative or "") if takes_negative else "", seed=seed)
         if answer is None:
-            return "ERROR: image generation is only there when the app runs this turn"
+            return f"ERROR: image generation is only there when the app runs this turn\n{IMAGE_FAILED}"
         result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
-        if result and not result.startswith("ERROR"):
-            result = f"{result}\n{IMAGE_DONE}"
+        if result.startswith("ERROR"):
+            return f"{result}\n{IMAGE_FAILED}"
         return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
 
     note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
@@ -4777,8 +4782,7 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
             f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
             + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")
             + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. Do not paste the "
-            "prompt as a code block unless the user asks for it. After the tool returns, the user already sees the picture: "
-            "follow its result and say no more than one short line.")
+            "prompt as a code block unless the user asks for it.")
     return [tool], {"generate_image": generate_image}, note
 
 
