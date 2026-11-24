@@ -85,6 +85,9 @@ public partial class MainWindow
                 thumb.Margin = new Thickness(0, 0, 6, 6);
                 row.Children.Add(thumb);
             }
+        // generated pictures (the gallery's files) are the reply's result, not a working step: View thinking off never folds them
+        if (paths?.All(p => Path.GetFullPath(p).StartsWith(Path.GetFullPath(ImageGen.ImagesFolder) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) == true)
+            row.Tag = PictureRow;
         return row.Children.Count > 0 ? row : null;
     }
 
@@ -223,6 +226,29 @@ public partial class MainWindow
             _reply = null;
             if (reply.Content.Children.Contains(pending) || _pendingPicture is not null)
                 return Fail("the placeholder stayed after the picture");
+            // View thinking off: a generated picture (a gallery file) stays in view; a browser screenshot folds with its step
+            var view = _settings.ViewThinking;
+            Directory.CreateDirectory(ImageGen.ImagesFolder);
+            var made = Path.Combine(ImageGen.ImagesFolder, $"smoke-thinking-{Guid.NewGuid():N}.png");
+            File.Copy(photo, made);
+            try
+            {
+                var steps = AddReply("planner");
+                steps.Content.Children.Add(BuildToolExpander("browser", "x", new TextBlock(), out _));
+                var shotRow = ThumbRow([shot!], 160, HorizontalAlignment.Left)!;
+                var madeRow = ThumbRow([made], 160, HorizontalAlignment.Left)!;
+                steps.Content.Children.Add(shotRow);
+                steps.Content.Children.Add(madeRow);
+                _settings.ViewThinking = false;
+                Regroup(steps.Content);
+                if (madeRow.Visibility != Visibility.Visible || shotRow.Visibility != Visibility.Collapsed)
+                    return Fail($"View thinking off: picture {madeRow.Visibility}, screenshot {shotRow.Visibility}");
+            }
+            finally
+            {
+                _settings.ViewThinking = view;
+                File.Delete(made);
+            }
             return true;
         }
         finally

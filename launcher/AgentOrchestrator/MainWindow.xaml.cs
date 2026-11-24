@@ -4096,7 +4096,8 @@ public partial class MainWindow : Window
             if (_chatQueue.Select(q => q.Text).SequenceEqual(["auto", "late"]) is false)
                 return Fail();
             AfterTurn(completed: true);
-            await Task.Delay(300);
+            for (var wait = 0; wait < 30 && ChatInput.Text != "auto\n\nlate\n\ndraft"; wait++) // SendQueued runs when the dispatcher is idle: busy, later
+                await Task.Delay(100);
             if (ChatInput.Text != "auto\n\nlate\n\ndraft" || _chatQueue.Count != 0 || _chatBusy || _chat.Panel.Children.Count != bubbles)
                 return Fail();
         }

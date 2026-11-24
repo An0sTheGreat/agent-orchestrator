@@ -70,7 +70,9 @@ public partial class MainWindow
     }
 
     // A reply's working steps; its answers, notes and rules are not.
-    private static bool IsWork(UIElement e) => e is Expander { Tag: not WorkGroup } or TextBlock { Tag: "stats" } or WrapPanel;
+    private static bool IsWork(UIElement e) => e is Expander { Tag: not WorkGroup } or TextBlock { Tag: "stats" } or WrapPanel { Tag: not PictureRow };
+
+    private const string PictureRow = "picture-row"; // a row of generated pictures (ThumbRow): shown even with View thinking off
 
     private void Regroup(StackPanel content, bool inRun = false)
     {
