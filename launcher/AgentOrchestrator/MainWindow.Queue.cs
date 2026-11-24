@@ -114,7 +114,8 @@ public partial class MainWindow
     private void Unqueue(Conversation c, QueuedMessage? item = null)
     {
         var queue = QueueOf(c);
-        var taken = item is null ? queue.ToList() : queue.Contains(item) ? [item] : [];
+        // (the running turn may still deliver one in Send now's flight: it stays queued, and the turn's end sorts it out)
+        var taken = item is null ? queue.Where(m => !_steering.Values.Any(s => s.Item == m)).ToList() : queue.Contains(item) ? [item] : [];
         if (taken.Count == 0)
             return;
         queue.RemoveAll(taken.Contains);

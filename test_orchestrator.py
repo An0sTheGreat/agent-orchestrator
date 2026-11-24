@@ -3045,6 +3045,59 @@ class CodeTests(unittest.TestCase):
         self.assertIn(("steered", {"role": "planner", "key": "k1"}), events)
         self.assertIsNone(orchestrator.STEER_HANDLER)  # the turn's end takes no more
 
+    def steer_during_tool(self):
+        """A launcher whose Send now arrives while the first tool runs: (the stdin to patch in, cap_result to patch in)."""
+        read, write = os.pipe()
+        stdin, launcher = os.fdopen(read, encoding="utf-8"), os.fdopen(write, "w", encoding="utf-8")
+        self.addCleanup(stdin.close)
+        cap = orchestrator.cap_result
+
+        def send_now(*args):
+            if not launcher.closed:
+                launcher.write(json.dumps({"steer": "also list the docs", "key": "k1"}) + "\n")
+                launcher.close()
+                self.assertIsNone(orchestrator.stdin_lines().get(timeout=5))
+            return cap(*args)
+        return stdin, send_now
+
+    def test_a_steer_joins_a_chat_turn_after_its_tool_batch(self):
+        stdin, send_now = self.steer_during_tool()
+        note = self.root / "note.txt"
+        note.write_text("hi", encoding="utf-8")
+        with patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator, "cap_result", send_now):
+            code, log, events, *_ = ChatTests.chat(self, {"worker": "planner", "messages": self.MSGS, "sandbox": {"full_access": True}},
+                                         {"planner": [tool_call("read_file", path=str(note)), "Done."]})
+        self.assertEqual(code, 0)
+        self.assertNotIn("also list the docs", log[0]["input"])
+        self.assertTrue(log[1]["input"].endswith("also list the docs"), log[1]["input"])  # the next model call sees it, last
+        self.assertIn(("steered", {"role": "planner", "key": "k1"}), events)
+
+    def test_a_steer_still_waiting_at_the_final_reply_is_not_reported_delivered(self):
+        stdin, send_now = self.steer_during_tool()
+        reply_text = orchestrator.reply_text
+
+        def late(response):  # the steer arrives while the model writes its tool-free reply
+            if not response.get("tool_calls"):
+                send_now("list_files", "x", {}, None)
+            return reply_text(response)
+
+        with patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator, "cap_result", lambda *a: "x"),                 patch.object(orchestrator, "reply_text", late):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS}, {"planner": [tool_call("list_files"), "Done."]})
+        self.assertEqual(code, 0)
+        self.assertEqual([d for e, d in events if e == "steered"], [])  # the launcher sends it as the next turn
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["Done."])
+
+    def test_a_reviewed_turn_keeps_the_steer_for_the_reviewer_and_the_fix_round(self):
+        stdin, send_now = self.steer_during_tool()
+        with patch.object(orchestrator.sys, "stdin", stdin), patch.object(orchestrator, "cap_result", send_now):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "review": True},
+                                             {"planner": [tool_call("list_files"), "Listed.", "Fixed."],
+                                              "reviewer": ["VERDICT: FAIL\nno docs", "VERDICT: PASS\nok"]})
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner", "planner", "reviewer", "planner", "reviewer"]))
+        self.assertIn("also list the docs", json.dumps(log[2]["messages"]))  # the reviewer judges the reply against it too
+        fix = [m["content"] for m in log[3]["messages"] if m["role"] != "tool" and "tool_calls" not in m]
+        self.assertEqual(fix[:3], ["add a readme", "also list the docs", "Listed."])  # the steer comes before the reply it shaped
+
     def test_a_tool_result_is_cut_before_the_model_sees_it(self):
         for n in range(300):
             (self.root / f"file{n:03}.txt").write_text("x", encoding="utf-8")

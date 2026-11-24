@@ -878,6 +878,8 @@ def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any
 
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 6, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
+SHOT_NOTE = "The screenshot the tool took:"  # the user message code_loop puts a tool's screenshot in
+STEERED: list[dict[str, Any]] = []  # the Send now messages code_loop delivered this turn: a review's fix round starts from the original messages
 SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
 
@@ -895,7 +897,7 @@ def slim_tool_results(messages: list[dict[str, Any]], n_ctx: int | None = None) 
     sent = []
     for i, m in enumerate(messages):
         text = m.get("content")
-        if i < keep_from and m.get("images"):  # an older screenshot: its text stays, the image goes
+        if i < keep_from and m.get("images") and m.get("content") == SHOT_NOTE:  # an older screenshot: its text stays, the image goes (a steer's photos stay, as the turn's own do)
             m = {k: v for k, v in m.items() if k != "images"} | {"content": f"{text} (the image is left out to save context; take it again if you need it)"}
         elif i < keep_from and isinstance(text, str) and len(text) > STUB_OVER and (
                 m.get("role") == "tool" or (m.get("role") == "user" and text.startswith("TOOL RESULTS\n"))):
@@ -4333,12 +4335,13 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
-            messages.append({"role": "user", "content": "The screenshot the tool took:", "images": images})
+            messages.append({"role": "user", "content": SHOT_NOTE, "images": images})
         if steers:
             with STDIN_LOCK:  # (the stdin reader adds to it under this lock)
                 taken, steers[:] = steers[:], []
             for key, message in taken:
                 messages.append(message)
+                STEERED.append(message)
                 emit("steered", role=role, key=key)
         if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
@@ -6028,10 +6031,12 @@ def reviewed_turn(config: dict[str, Any], folders: list[dict[str, str]], message
     message and fixes them in the same turn, up to TURN_REVIEW_FIXES times. Returns the final reply with the verdict."""
     review = lead_setup(config, folders, request, role)[1]["delegate"].uncounted
     asked = str(messages[-1].get("content") or "")
+    steered = STEERED[:]  # (what the lead's first loop took in; each fix round's adds to it)
     for rounds in range(1, TURN_REVIEW_FIXES + 2):
         diff = make_diff(before, project_texts(folders))
         report = review(worker="reviewer", brief=TURN_REVIEW_BRIEF, context=(
-            f"USER'S REQUEST\n{clip(asked, 6000)}\n\nLEAD'S REPLY\n{clip(text, 6000)}\n\nCHANGES THIS TURN\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
+            f"USER'S REQUEST\n{clip(asked, 6000)}\n\n" + "".join(f"USER'S LATER MESSAGE (sent while the lead worked)\n{clip(str(m['content']), 6000)}\n\n" for m in steered)
+            + f"LEAD'S REPLY\n{clip(text, 6000)}\n\nCHANGES THIS TURN\n{clip(diff, REVIEW_DIFF_LIMIT)}"))
         verdicts = {v.upper() for v in REVIEW_VERDICT.findall(report)}
         verdict = verdicts.pop() if len(verdicts) == 1 else ""  # none, or both: unreadable, which counts as FAIL
         emit("verdict", role="reviewer", id="turn", verdict=verdict or "FAIL", round=rounds)
@@ -6041,10 +6046,11 @@ def reviewed_turn(config: dict[str, Any], folders: list[dict[str, str]], message
         if rounds > TURN_REVIEW_FIXES:
             return f"{text.rstrip()}\n\n**Review: FAIL** after {TURN_REVIEW_FIXES} fix rounds. {summary}".rstrip()
         why = "failed your work" if verdict else "gave no readable verdict, which counts as FAIL"
-        messages = [*messages, {"role": "assistant", "content": text},
+        messages = [*messages, *steered, {"role": "assistant", "content": text},
                     {"role": "user", "content": f"The reviewer {why}. Fix the problems it reports, verify, and reply with what "
                                                 f"you changed.\n\nREVIEW\n{report}"}]
         text = lead(config, folders, messages, request, role) or text
+        steered = [*steered, *STEERED[len(steered):]]
     return text
 
 
@@ -6079,6 +6085,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     turn_images(request, messages[-1]["content"])
     messages = blind_images(config, role, messages)
     before = project_texts(folders) if request.get("review") else {}
+    STEERED.clear()
     lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
     global THINKING
     THINKING = ThinkingFile(folders[0]["path"], role)
