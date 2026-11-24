@@ -46,12 +46,33 @@ public partial class MainWindow
             Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill }, Cursor = Cursors.Hand, ToolTip = Path.GetFileName(path),
         };
         thumb.SetResourceReference(Border.BorderBrushProperty, "Border");
+        DragOut(thumb, () => path);
         thumb.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
             ShowImage(path);
         };
         return thumb;
+    }
+
+    // A picture dragged out of the app (to a folder, the desktop, another app) as its file: a copy, the original stays. A drag
+    // starts past the system's drag distance, so a plain click still opens or picks the picture.
+    private static void DragOut(FrameworkElement source, Func<string?> path)
+    {
+        Point? down = null;
+        source.PreviewMouseLeftButtonDown += (_, e) => down = e.GetPosition(source);
+        source.PreviewMouseLeftButtonUp += (_, _) => down = null;
+        source.MouseMove += (_, e) =>
+        {
+            if (down is not { } start || e.LeftButton != MouseButtonState.Pressed)
+                return;
+            var at = e.GetPosition(source);
+            if (Math.Abs(at.X - start.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(at.Y - start.Y) < SystemParameters.MinimumVerticalDragDistance)
+                return;
+            down = null;
+            if (path() is { } file && File.Exists(file))
+                DragDrop.DoDragDrop(source, new DataObject(DataFormats.FileDrop, new[] { file }), DragDropEffects.Copy);
+        };
     }
 
     // Thumbnails in a row (those that still load), or null when none does.
@@ -191,6 +212,17 @@ public partial class MainWindow
             ImageViewer_KeyDown(ImageViewer, new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.KeyDownEvent });
             if (ImageViewer.Visibility != Visibility.Collapsed || ImageViewerPicture.Source is not null)
                 return Fail("Esc did not close the viewer");
+            // the chat's picture while it is made: the status line above the dots, the percentage, gone once it ends
+            var reply = _reply = AddReply("planner");
+            ShowPendingPicture(1024, 1536);
+            PendingPictureStatus("Step 7/8 · 3.83 s/it", 0.88);
+            if (_pendingPicture is not var (pending, status, percent, _) || !reply.Content.Children.Contains(pending) ||
+                ((Panel)pending).Children.IndexOf(status) != 0 || status.Text != "Making a picture… Step 7/8 · 3.83 s/it" || percent.Text != "88%")
+                return Fail("the picture's placeholder");
+            RemovePendingPicture();
+            _reply = null;
+            if (reply.Content.Children.Contains(pending) || _pendingPicture is not null)
+                return Fail("the placeholder stayed after the picture");
             return true;
         }
         finally

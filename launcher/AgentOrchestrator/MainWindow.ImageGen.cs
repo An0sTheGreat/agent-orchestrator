@@ -460,6 +460,7 @@ public partial class MainWindow
         // right: the stage (the picture centred and fitted; the wheel zooms at the cursor, a drag pans, a double-click fits it
         // again), the progress under it, and the gallery as a strip along the bottom (a click puts a picture on the stage)
         _imgResult = new Image { Stretch = Stretch.Uniform, Tag = "ImagesResult", LayoutTransform = _imgScale };
+        DragOut(_imgResult, () => _imgResultPath);
         RenderOptions.SetBitmapScalingMode(_imgResult, BitmapScalingMode.HighQuality);
         _imgStage = new ScrollViewer
         {
@@ -1097,6 +1098,7 @@ public partial class MainWindow
                 Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill }, ToolTip = Path.GetFileName(path),
             };
             MarkThumb(thumb);
+            DragOut(thumb, () => path);
             thumb.MouseLeftButtonDown += (_, e) =>
             {
                 if (e.ClickCount == 2)
@@ -1407,6 +1409,9 @@ public partial class MainWindow
         var local = run.SharedModel.Length == 0 && run.RemoteModel.Length == 0;
         string? file = null;
         var cancelled = false; // Stop or Cancel ended the job
+        ShowPendingPicture(run.Width, run.Height); // until the picture (or the failure) replaces it
+        try
+        {
         await RunImageJob(async ct =>
         {
             using var watch = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1424,8 +1429,12 @@ public partial class MainWindow
                 if (!watch.IsCancellationRequested)
                     CancelImageGen();
             }
-            if (asker == _chatProcess)
-                _imgStatusTap = (text, _) => SetChatStatus($"Making a picture… {text}");
+            _imgStatusTap = (text, progress) =>
+            {
+                PendingPictureStatus(text, progress);
+                if (asker == _chatProcess)
+                    SetChatStatus($"Making a picture… {text}");
+            };
             try
             {
                 ImageStatus("Generating for the chat…", indeterminate: true);
@@ -1456,6 +1465,8 @@ public partial class MainWindow
         NoteTurnPicture(file);
         var (copy, width, height) = ChatCopy(file);
         return (ImageGen.ChatResult(name, run, width, height), copy, false);
+        }
+        finally { RemovePendingPicture(); }
     }
 
     // The picture as a data URL for a model that can see (a JPEG at most 1024 px long) and its own size.
