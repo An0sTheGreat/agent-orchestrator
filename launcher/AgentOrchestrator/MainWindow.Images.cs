@@ -215,6 +215,11 @@ public partial class MainWindow
             ImageViewer_KeyDown(ImageViewer, new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.KeyDownEvent });
             if (ImageViewer.Visibility != Visibility.Collapsed || ImageViewerPicture.Source is not null)
                 return Fail("Esc did not close the viewer");
+            // a picture's reply (its details line, for the model) shows no text: the picture is the reply
+            var made1 = _reply = AddReply("planner");
+            SetChatFinal(ImageGen.ChatResult("m", new ImageSettings { Prompt = "p" }, 1, 1));
+            if (made1.Answer is not null || made1.Final is null)
+                return Fail("a picture's reply showed its details line");
             // the chat's picture while it is made: the dots, the step inside the card and the percentage; the status line hidden; gone once it ends
             var reply = _reply = AddReply("planner");
             ShowPendingPicture(1024, 1536);

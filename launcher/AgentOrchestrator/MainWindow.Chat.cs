@@ -1724,9 +1724,17 @@ public partial class MainWindow
             foreach (var section in r.Content.Children.OfType<Expander>().ToList())
                 if (section.Content is StackPanel { Children.Count: > 0 } body && body.Children[0] is TextBox thought && thought.Text.Trim() == text.Trim())
                     r.Content.Children.Remove(section);
-        EnsureAnswer(r).Text = ImageGen.ResultCaption(text) ?? text; // /image's reply: its saved line for the model, a caption to read
         r.AnswerText.Clear().Append(text);
-        ShowMarkdown(r);
+        if (ImageGen.ResultCaption(text) is null)
+        {
+            EnsureAnswer(r).Text = text;
+            ShowMarkdown(r);
+        }
+        else if (r.Answer is not null) // a picture's reply: its saved line is for the model; the picture says it all, so nothing shows
+        {
+            r.Answer.Text = "";
+            ShowMarkdown(r);
+        }
         if (!_turn.Follow)
             Reveal(_turn.Jump, true, slide: 10);
     }
