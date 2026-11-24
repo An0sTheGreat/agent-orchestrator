@@ -11,6 +11,56 @@ internal sealed class UsageStats
     public long Lifetime { get; set; }
     public Dictionary<string, long> Daily { get; set; } = new(); // local day "yyyy-MM-dd" -> tokens (prompt + generated)
     public double LongestTaskSeconds { get; set; } // the longest chat turn or project run
+    // The other connected PCs' own usage by PC name, passed through the primary PC (Exchange); the profile shows them all summed.
+    public Dictionary<string, UsageStats> Others { get; set; } = new();
+
+    // This PC's own figures, without Others: what it sends.
+    public UsageStats Own() => new() { Lifetime = Lifetime, Daily = new(Daily), LongestTaskSeconds = LongestTaskSeconds };
+
+    // Every PC's usage in one: tokens and days summed, the longest task the longest of any.
+    public UsageStats Combined()
+    {
+        var all = Own();
+        foreach (var other in Others.Values)
+        {
+            all.Lifetime += other.Lifetime;
+            foreach (var (day, tokens) in other.Daily)
+                all.Daily[day] = all.Daily.GetValueOrDefault(day) + tokens;
+            all.LongestTaskSeconds = Math.Max(all.LongestTaskSeconds, other.LongestTaskSeconds);
+        }
+        return all;
+    }
+
+    // POST /share/usage: a connected PC sends {"pc": name, "usage": its own}; the primary PC keeps it and answers with every
+    // PC's own usage by name (its own included), which the connected PC keeps as its Others less itself.
+    public sealed record Report(string Pc, UsageStats Usage);
+    public static string ReportJson(string pc, UsageStats own) => JsonSerializer.Serialize(new Report(pc, own));
+
+    // Primary PC: takes a report (null: not one) and returns the reply.
+    public string? Receive(string json, string self)
+    {
+        Report? report;
+        try { report = JsonSerializer.Deserialize<Report>(json); }
+        catch (JsonException) { return null; }
+        if (report is not { Pc.Length: > 0, Usage: not null } || report.Pc == self)
+            return null;
+        report.Usage.Others = new(); // only a PC's own figures travel
+        Others[report.Pc] = report.Usage;
+        var all = new Dictionary<string, UsageStats>(Others) { [self] = Own() };
+        return JsonSerializer.Serialize(all);
+    }
+
+    // Connected PC: the primary PC's reply becomes Others (false: not a reply).
+    public bool Take(string json, string self)
+    {
+        Dictionary<string, UsageStats>? all;
+        try { all = JsonSerializer.Deserialize<Dictionary<string, UsageStats>>(json); }
+        catch (JsonException) { return false; }
+        if (all is null)
+            return false;
+        Others = all.Where(p => p.Key != self && p.Value is not null).ToDictionary(p => p.Key, p => { p.Value.Others = new(); return p.Value; });
+        return true;
+    }
 
     private static string FilePath => Path.Combine(AppSettings.DataRoot, "stats.json");
 
@@ -111,5 +161,16 @@ internal sealed class UsageStats
             throw new InvalidOperationException("UsageStats totals");
         if (Short(5_700_000_000) != "5.7B" || Short(419_000_000) != "419M" || Short(950) != "950" || Duration(37260) != "10h 21m" || Duration(245) != "4m 05s")
             throw new InvalidOperationException("UsageStats formatting");
+
+        // Two PCs through the primary: each sees both summed, and nobody counts itself twice.
+        var primary = new UsageStats();
+        primary.Add(1000, d);
+        primary.AddTask(TimeSpan.FromMinutes(10));
+        var reply = primary.Receive(ReportJson("laptop", s.Own()), "desk");
+        if (reply is null || !s.Take(reply, "laptop") || s.Others.Keys.Single() != "desk" || primary.Others.Keys.Single() != "laptop")
+            throw new InvalidOperationException("UsageStats exchange");
+        if (s.Combined() is not { Lifetime: 1660, LongestTaskSeconds: 600 } both || both.Daily[Key(d)] != 1150 || primary.Combined().Lifetime != 1660
+            || s.Lifetime != 660 || primary.Receive(ReportJson("desk", s.Own()), "desk") is not null || primary.Receive("nope", "desk") is not null)
+            throw new InvalidOperationException("UsageStats combined");
     }
 }

@@ -44,11 +44,12 @@ public partial class MainWindow
 
     private void RefreshProfile()
     {
+        var all = _stats.Combined(); // every connected PC's
         ProfileNameText.Text = ProfileName;
-        ProfileTokensText.Text = $"{UsageStats.Short(_stats.Lifetime)} lifetime tokens";
+        ProfileTokensText.Text = $"{UsageStats.Short(all.Lifetime)} lifetime tokens";
         ProfileAvatar.Content = Avatar(30);
         RailAvatar.Content = Avatar(26);
-        StatsSummary.Text = $"{UsageStats.Short(_stats.Lifetime)} tokens · longest task {UsageStats.Duration(_stats.LongestTaskSeconds)}";
+        StatsSummary.Text = $"{UsageStats.Short(all.Lifetime)} tokens · longest task {UsageStats.Duration(all.LongestTaskSeconds)}";
     }
 
     // The picture in a circle, or the name's initial on the accent colour.
@@ -134,12 +135,13 @@ public partial class MainWindow
         AutomationProperties.SetName(name, "Profile name");
         panel.Children.Add(name);
 
+        var stats = _stats.Combined(); // every connected PC's
         var tiles = new UniformGrid { Columns = 3, Margin = new Thickness(0, 0, 0, 4) };
         foreach (var (value, label) in new[]
         {
-            (UsageStats.Short(_stats.Lifetime), "Lifetime tokens"), (UsageStats.Short(_stats.Peak), "Peak tokens"),
-            (UsageStats.Duration(_stats.LongestTaskSeconds), "Longest task"), (Days(_stats.LongestStreak), "Longest streak"),
-            (Days(_stats.CurrentStreak(DateTime.Today)), "Current streak"), (_stats.Daily.Count(d => d.Value > 0).ToString(), "Active days"),
+            (UsageStats.Short(stats.Lifetime), "Lifetime tokens"), (UsageStats.Short(stats.Peak), "Peak tokens"),
+            (UsageStats.Duration(stats.LongestTaskSeconds), "Longest task"), (Days(stats.LongestStreak), "Longest streak"),
+            (Days(stats.CurrentStreak(DateTime.Today)), "Current streak"), (stats.Daily.Count(d => d.Value > 0).ToString(), "Active days"),
         })
         {
             var tile = new StackPanel { Margin = new Thickness(4, 6, 4, 6) };
@@ -152,11 +154,11 @@ public partial class MainWindow
         tilesCard.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         panel.Children.Add(tilesCard);
 
-        var activity = Text("Token activity · last 26 weeks", "Muted", 11);
+        var activity = Text(_stats.Others.Count > 0 ? $"Token activity · last 26 weeks · {_stats.Others.Count + 1} PCs" : "Token activity · last 26 weeks", "Muted", 11);
         activity.TextAlignment = TextAlignment.Left;
         activity.Margin = new Thickness(2, 12, 0, 6);
         panel.Children.Add(activity);
-        panel.Children.Add(Heatmap(26));
+        panel.Children.Add(Heatmap(stats, 26));
         panel.Children.Add(TailnetSection(() => popup.IsOpen = false));
 
         var card = new Border { Child = panel, Padding = new Thickness(16, 16, 16, 14), BorderThickness = new Thickness(1) };
@@ -179,30 +181,38 @@ public partial class MainWindow
 
     private static string Days(int n) => n == 1 ? "1 day" : $"{n} days";
 
-    // One square per day, a column per week (oldest left), shaded by that day's share of the busiest day shown.
-    private FrameworkElement Heatmap(int weeks)
+    // One square per day, a column per week (oldest left), on a darker well: a day with use is shaded by its share of the busiest
+    // day shown; one without is a grey cell, and the rest of this week (still to come) a fainter one.
+    private static FrameworkElement Heatmap(UsageStats stats, int weeks)
     {
-        var grid = new UniformGrid { Rows = 7, Columns = weeks, HorizontalAlignment = HorizontalAlignment.Left };
+        var grid = new UniformGrid { Rows = 7, Columns = weeks, HorizontalAlignment = HorizontalAlignment.Center };
         var today = DateTime.Today;
         var start = today.AddDays(-(int)today.DayOfWeek - 7 * (weeks - 1)); // a Sunday
-        var max = Math.Max(1, Enumerable.Range(0, weeks * 7).Select(i => _stats.Daily.GetValueOrDefault(UsageStats.Key(start.AddDays(i)))).Max());
+        var max = Math.Max(1, Enumerable.Range(0, weeks * 7).Select(i => stats.Daily.GetValueOrDefault(UsageStats.Key(start.AddDays(i)))).Max());
         for (var row = 0; row < 7; row++)
             for (var col = 0; col < weeks; col++)
             {
                 var day = start.AddDays(col * 7 + row);
-                var tokens = _stats.Daily.GetValueOrDefault(UsageStats.Key(day));
+                var tokens = stats.Daily.GetValueOrDefault(UsageStats.Key(day));
                 var cell = new Border { Width = 8, Height = 8, Margin = new Thickness(1.25), CornerRadius = new CornerRadius(2),
-                    ToolTip = $"{day:ddd d MMM yyyy}: {tokens:N0} tokens", Visibility = day > today ? Visibility.Hidden : Visibility.Visible };
+                    ToolTip = day > today ? null : $"{day:ddd d MMM yyyy}: {tokens:N0} tokens" };
                 if (tokens > 0)
                 {
                     cell.SetResourceReference(Border.BackgroundProperty, "Accent");
                     cell.Opacity = 0.3 + 0.7 * tokens / max;
                 }
                 else
-                    cell.SetResourceReference(Border.BackgroundProperty, "Hover");
+                {
+                    cell.SetResourceReference(Border.BackgroundProperty, "Muted");
+                    cell.Opacity = day > today ? 0.06 : 0.16;
+                }
                 grid.Children.Add(cell);
             }
-        return grid;
+        var well = new Border { Child = grid, Padding = new Thickness(6), BorderThickness = new Thickness(1), Tag = "Heatmap" };
+        well.SetResourceReference(Border.BackgroundProperty, "AppBackground");
+        well.SetResourceReference(Border.BorderBrushProperty, "Border");
+        well.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        return well;
     }
 
     private void ChoosePicture()
@@ -295,6 +305,7 @@ public partial class MainWindow
         _stats.Lifetime = 0;
         _stats.Daily.Clear();
         _stats.LongestTaskSeconds = 0;
+        _stats.Others.Clear(); // until the PCs next sync (each keeps its own)
         _stats.Save();
         RefreshProfile();
     }

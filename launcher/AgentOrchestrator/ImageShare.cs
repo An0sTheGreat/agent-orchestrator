@@ -24,6 +24,7 @@ internal static class ImageShare
     public const string ProfilePath = "/share/profile";
     // POST {"model","options"}: this PC's memory estimate for one of its shared models with those load options (ServeEstimate).
     public const string EstimatePath = "/share/estimate";
+    public const string UsagePath = "/share/usage"; // the profile's token usage, every PC's (UsageStats.Receive)
     private static readonly JsonSerializerOptions Web = new(JsonSerializerDefaults.Web);
 
     // Query: what follows the path's "?" ("" = none). Remote: the caller's address (set by Server).
@@ -107,7 +108,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", EstimatePath => "POST", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", EstimatePath => "POST", UsagePath => "POST", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -257,6 +258,9 @@ internal static class ImageShare
     // times (two profiles set before syncing existed carry none) with different profiles: the primary PC's wins.
     public static string ProfileSync(DateTime mine, DateTime theirs, bool differ = false) =>
         theirs > mine ? "pull" : mine > theirs ? "push" : differ ? "pull" : "";
+
+    public static Task<string> ExchangeUsageAsync(HttpClient http, string baseUrl, string key, string report, CancellationToken ct) =>
+        SendAsync(http, new(HttpMethod.Post, baseUrl + UsagePath) { Content = new StringContent(report, Encoding.UTF8, "application/json") }, key, ct);
 
     public static async Task<Profile?> FetchProfileAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         ParseProfile(await SendAsync(http, new(HttpMethod.Get, baseUrl + ProfilePath), key, ct));

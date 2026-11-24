@@ -67,9 +67,8 @@ public partial class MainWindow
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             var url = ModelShare.ImagesUrl(host);
-            if (await ImageShare.FetchProfileAsync(http, url, key, CancellationToken.None) is not { } theirs)
-                return;
             var mine = OwnProfile();
+            if (await ImageShare.FetchProfileAsync(http, url, key, CancellationToken.None) is { } theirs)
             switch (ImageShare.ProfileSync(mine.Changed, theirs.Changed, differ: mine.Name.Trim() != theirs.Name.Trim() || mine.Png != theirs.Png))
             {
                 case "pull":
@@ -81,6 +80,18 @@ public partial class MainWindow
             }
         }
         catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException) { } // an older primary PC (404) or not reachable: next minute
+        try
+        {
+            // The token usage too: this PC's own goes there, every PC's comes back (UsageStats.Receive).
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+            var reply = await ImageShare.ExchangeUsageAsync(http, ModelShare.ImagesUrl(host), key, UsageStats.ReportJson(Environment.MachineName, _stats.Own()), CancellationToken.None);
+            if (_stats.Take(reply, Environment.MachineName))
+            {
+                _stats.Save();
+                RefreshProfile();
+            }
+        }
+        catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException) { } // as above
     }
 
     // The account's online PCs, each asked for its key; the first that shares becomes this PC's primary PC.

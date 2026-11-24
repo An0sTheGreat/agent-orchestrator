@@ -239,6 +239,15 @@ public partial class MainWindow
                 }
                 return new ImageShare.Response(200, ImageShare.ProfileJson(OwnProfile()));
             });
+        if (request.Path == ImageShare.UsagePath)
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                if (_stats.Receive(System.Text.Encoding.UTF8.GetString(request.Body), Environment.MachineName) is not { } reply)
+                    return ImageShare.Error(400, "Not a usage report");
+                _stats.Save();
+                RefreshProfile();
+                return new ImageShare.Response(200, reply);
+            });
         if (request.Path == ImageShare.PresetsPath)
             return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
         if (request.Path == ImageShare.LoadPath)

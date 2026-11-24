@@ -611,7 +611,7 @@
                 </Setter.Value>
             </Setter>
         </Style>
-        <!-- Model Settings header: a segment of a rounded track (Connection); the checked one lifts on the page colour. -->
+        <!-- Model Settings header: a segment of a rounded track (Connection); the checked one lifts on a lighter fill. -->
         <Style x:Key="HeaderSeg" TargetType="ToggleButton">
             <Setter Property="Foreground" Value="{DynamicResource Muted}" />
             <Setter Property="FontSize" Value="11" />
@@ -622,7 +622,7 @@
                 <Setter.Value>
                     <ControlTemplate TargetType="ToggleButton">
                         <Grid>
-                            <Border x:Name="Seg" Background="{DynamicResource AppBackground}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
+                            <Border x:Name="Seg" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
                                 <Border.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.3" /></Border.Effect>
                             </Border>
                             <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Center" VerticalAlignment="Center" />
@@ -935,17 +935,18 @@
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
                         <Grid>
-                            <Border x:Name="Seg" Background="{DynamicResource AppBackground}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
+                            <Border x:Name="Seg" Background="{DynamicResource Hover}" CornerRadius="{DynamicResource ControlRadius}" Opacity="0">
                                 <Border.Effect><DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.3" /></Border.Effect>
                             </Border>
-                            <ContentPresenter Margin="{TemplateBinding Padding}" VerticalAlignment="Center" />
+                            <!-- the text colour is set here, by name: the Button's own (local) Foreground would beat a trigger on it -->
+                            <ContentPresenter x:Name="Text" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Grid>
                         <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></Trigger>
+                            <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Text" Property="TextElement.Foreground" Value="{DynamicResource TextPrimary}" /></Trigger>
                             <DataTrigger Binding="{Binding IsSelected}" Value="True">
                                 <Setter TargetName="Seg" Property="Opacity" Value="1" />
-                                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-                                <Setter Property="FontWeight" Value="SemiBold" />
+                                <Setter TargetName="Text" Property="TextElement.Foreground" Value="{DynamicResource TextPrimary}" />
+                                <Setter TargetName="Text" Property="TextElement.FontWeight" Value="SemiBold" />
                             </DataTrigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>

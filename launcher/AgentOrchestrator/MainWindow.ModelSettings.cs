@@ -285,9 +285,10 @@ public partial class MainWindow
         var body = new StackPanel { Margin = new Thickness(20, 16, 20, 20), Children = { head, divider, settingsHead, sections } };
         var cardShell = new StackPanel { Children = { body } };
         var cardBorder = new Border { Child = cardShell, BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 0, 0, 24) };
-        cardBorder.SetResourceReference(Border.BackgroundProperty, "Card");
+        // The panel colour, a shade off the page, with the large radius: the card sits in the page rather than on it.
+        cardBorder.SetResourceReference(Border.BackgroundProperty, "Panel");
         cardBorder.SetResourceReference(Border.BorderBrushProperty, "Border");
-        cardBorder.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
+        cardBorder.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
         var scroll = new ScrollViewer { Content = cardBorder, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         // 65% of the whole main panel (right of the nav), not of the page column; never wider than the scroller.
         scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Max(680, ModelSettingsView.ActualWidth * 0.65)));
