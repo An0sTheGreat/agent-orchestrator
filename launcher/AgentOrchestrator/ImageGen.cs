@@ -12,6 +12,7 @@ namespace AgentOrchestrator;
 // One model file: the sd-cli flag that takes it, its repo and path in the repo, and its size (shown before the download;
 // the download asks the hub for the real size).
 // Local: a file of this kind (by name) in the user's models folder is used instead of downloading it, e.g. any Qwen3.5-9B GGUF.
+// Flag --lora-model-dir: a LoRA. sd-cli gets its folder, and the prompt it is sent (not the one shown or saved) gets <lora:<name>:1>.
 internal sealed record ImageFile(string Flag, string Repo, string Path, long Size, string Local = "");
 
 // Family: a model file whose name matches it (the user's models folder) is this recipe's main model (Files[0]); the rest of
@@ -89,12 +90,19 @@ internal static class ImageGen
             new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
             new("--llm", "unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf", 2497281312, Local: @"^qwen3-4b-(?!instruct).*\.gguf$"),
         ], Steps: 4, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?2[-_.]?klein[-_.]?4b"),
+        new("qwen-image-2.1-omni", "Qwen-Image 2.1 Omni", "Turbo LoRA · 8 steps",
+        [
+            new("--diffusion-model", "chatrlabs/Qwen-Image-2.1-Uncensored-Omni-Quantized", "qwen-image-2.1-step90000-FP8-comfy.safetensors", 7116789419),
+            new("--vae", "Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors", 675509688, Local: @"^qwen_image_2\.1_vae.*\.safetensors$"),
+            new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800, Local: @"^qwen3-?vl[-_]?8b.*\.(gguf|safetensors)$"),
+            new(LoraFlag, "chatrlabs/Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1", "chatrlabs-omni-turbo-8step-fp32.safetensors", 671148320, Local: @"^chatrlabs-omni-turbo-8step.*\.safetensors$"),
+        ], Steps: 8, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image.*(omni|step90000)"),
         new("qwen-image-2.1", "Qwen-Image 2.1", "Large",
         [
             new("--diffusion-model", "leejet/Qwen-Image-2.1-GGUF", "qwen_image_2.1-Q4_K.gguf", 4197494816),
             new("--vae", "Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors", 675509688),
             new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800, Local: @"^qwen3-?vl-8b.*\.gguf$"),
-        ], Steps: 20, Cfg: 6.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image"),
+        ], Steps: 20, Cfg: 6.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image(?!.*(omni|step90000))"),
         new("moss-image-sft", "MOSS-Image SFT", "",
         [
             new("--diffusion-model", "leejet/MOSS-Image-SFT-GGUF", "MOSS-Image-SFT-Q4_K.gguf", 3327400800),
@@ -108,6 +116,8 @@ internal static class ImageGen
             new("--vae", "madebyollin/sdxl-vae-fp16-fix", "sdxl_vae.safetensors", 334641162),
         ], Steps: 30, Cfg: 7.0, Sampler: "", Negative: true, Multiple: 64, Family: @"sd_?xl"),
     ];
+
+    public const string LoraFlag = "--lora-model-dir";
 
     public static ImageRecipe Recipe(string id) => Recipes.FirstOrDefault(r => r.Id == id) ?? Recipes[0];
 
@@ -201,10 +211,19 @@ internal static class ImageGen
     public static List<string> Args(ImageRecipe recipe, ImageSettings s, IReadOnlyList<string> paths, string output)
     {
         var args = new List<string>();
+        var prompt = s.Prompt;
         foreach (var (file, path) in recipe.Files.Zip(paths))
-            args.AddRange([file.Flag, path]);
+            if (file.Flag == LoraFlag)
+            {
+                args.AddRange([file.Flag, Path.GetDirectoryName(path)!]);
+                var tag = $"<lora:{Path.GetFileNameWithoutExtension(path)}:1>";
+                if (!prompt.Contains(tag, StringComparison.OrdinalIgnoreCase)) // a dropped picture's prompt may carry it already
+                    prompt += " " + tag;
+            }
+            else
+                args.AddRange([file.Flag, path]);
         static string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
-        args.AddRange(["-p", s.Prompt]);
+        args.AddRange(["-p", prompt]);
         if (recipe.Negative && s.Negative.Trim().Length > 0)
             args.AddRange(["-n", s.Negative]);
         args.AddRange(["--cfg-scale", F(s.Cfg), "--steps", s.Steps.ToString(), "-W", s.Width.ToString(), "-H", s.Height.ToString(), "-s", s.Seed.ToString()]);
@@ -291,6 +310,15 @@ internal static class ImageGen
             "SDXL args with negative prompt, Low VRAM, init image");
         s.Negative = "  ";
         Check(!Args(sdxl, s, Paths(sdxl, "", [], root), "o.png").Contains("-n"), "a blank negative prompt is left out");
+        var omni = Recipe("qwen-image-2.1-omni");
+        var omniRun = new ImageSettings { Prompt = "a cat", Steps = 8, Cfg = 1, Seed = 42, Width = 1024, Height = 1024, LowVram = false };
+        Check(string.Join(" ", Args(omni, omniRun, Paths(omni, "", [], root), "o.png")) ==
+            @"--diffusion-model C:\m\Qwen-Image-2.1-Uncensored-Omni-Quantized\qwen-image-2.1-step90000-FP8-comfy.safetensors --vae C:\m\Qwen-Image-2.1\vae\qwen_image_2.1_vae_bf16.safetensors " +
+            @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 " +
+            @"-p a cat <lora:chatrlabs-omni-turbo-8step-fp32:1> --cfg-scale 1 --steps 8 -W 1024 -H 1024 -s 42 -o o.png" && omniRun.Prompt == "a cat",
+            "LoRA: sd-cli gets its folder and the prompt sent gets its tag (the settings' prompt unchanged)");
+        omniRun.Prompt = "a cat <lora:chatrlabs-omni-turbo-8step-fp32:1>";
+        Check(Args(omni, omniRun, Paths(omni, "", [], root), "o.png") is var tagged && tagged[tagged.IndexOf("-p") + 1] == omniRun.Prompt, "LoRA: a prompt with the tag already gets it once");
         // the models folder: image models only (no chat GGUF, no parts), one per name and size; their parts found there or downloaded
         var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-imgscan-{Guid.NewGuid():N}");
         try
@@ -298,18 +326,25 @@ internal static class ImageGen
             foreach (var (rel, bytes) in new[] { (@"a\MOSS-Image-SFT-Q8_0.gguf", 3), (@"a\diffusion_models\MOSS\MOSS-Image-SFT-Q8_0.gguf", 3), (@"b\Qwen3.5-9B-Q8_0.gguf", 2),
                 (@"b\Qwen3.5-9B-mmproj-F16.gguf", 1), (@"c\gemma-4-E4B-it-Q4_K_M.gguf", 1), (@"d\Qwen-Image-2.1-text_encoder-INT8.safetensors", 1), (@"d\qwen-image-2.1-Q4_K_M.gguf", 1),
                 (@"e\Z-Image-Turbo-FP8.safetensors", 1), (@"e\notes.txt", 1), (@"f\flux-2-klein-4b-Q5_K_M.gguf", 1), (@"f\flux-2-klein-9b-Q4_0.gguf", 1),
-                (@"g\Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 1) })
+                (@"g\Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 1), (@"h\diffusion_models\qwen-image-2.1-omni-step90000-FP8-comfy.safetensors", 1),
+                (@"h\text_encoders\qwen3vl_8b_int8_convrot.safetensors", 1), (@"h\vae\qwen_image_2.1_vae_bf16.safetensors", 1), (@"h\loras\chatrlabs-omni-turbo-8step-fp32.safetensors", 1) })
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(Path.Combine(folder, rel))!);
                 File.WriteAllBytes(Path.Combine(folder, rel), new byte[bytes]);
             }
             var (found, all) = ScanFolder(folder);
             Check(string.Join(",", found.Select(m => $"{m.Recipe.Id}={Path.GetFileName(m.Path)}")) ==
-                "z-image-turbo=Z-Image-Turbo-FP8.safetensors,flux2-klein-4b=flux-2-klein-4b-Q5_K_M.gguf,qwen-image-2.1=qwen-image-2.1-Q4_K_M.gguf,moss-image-sft=MOSS-Image-SFT-Q8_0.gguf", "the folder's image models");
+                "z-image-turbo=Z-Image-Turbo-FP8.safetensors,flux2-klein-4b=flux-2-klein-4b-Q5_K_M.gguf,qwen-image-2.1-omni=qwen-image-2.1-omni-step90000-FP8-comfy.safetensors,qwen-image-2.1=qwen-image-2.1-Q4_K_M.gguf,moss-image-sft=MOSS-Image-SFT-Q8_0.gguf", "the folder's image models");
             var klein = found.First(m => m.Recipe.Id == "flux2-klein-4b");
             var kleinPaths = Paths(klein.Recipe, klein.Path, all, root);
             Check(kleinPaths[0] == klein.Path && kleinPaths[1] == LocalPath(root, klein.Recipe.Files[1]) && kleinPaths[2] == LocalPath(root, klein.Recipe.Files[2]),
                 "Klein: its own model, VAE and Qwen3-4B downloaded (the Instruct-2507 file is not its text encoder)");
+            var omniLocal = found.First(m => m.Recipe.Id == "qwen-image-2.1-omni");
+            var omniPaths = Paths(omniLocal.Recipe, omniLocal.Path, all, root);
+            Check(omniPaths.SequenceEqual([omniLocal.Path, Path.Combine(folder, @"h\vae\qwen_image_2.1_vae_bf16.safetensors"), Path.Combine(folder, @"h\text_encoders\qwen3vl_8b_int8_convrot.safetensors"),
+                Path.Combine(folder, @"h\loras\chatrlabs-omni-turbo-8step-fp32.safetensors")]), "Omni: its own model, the folder's VAE, Qwen3-VL-8B and LoRA");
+            Check(Args(omniLocal.Recipe, new() { Prompt = "p" }, omniPaths, "o.png") is var omniArgs && omniArgs[omniArgs.IndexOf("--lora-model-dir") + 1] == Path.Combine(folder, @"h\loras") &&
+                omniArgs[omniArgs.IndexOf("-p") + 1] == "p <lora:chatrlabs-omni-turbo-8step-fp32:1>", "Omni: the folder's LoRA goes as its folder and the prompt's tag");
             var moss = found[^1];
             var paths = Paths(moss.Recipe, moss.Path, all, root);
             Check(paths[0] == moss.Path && paths[2] == Path.Combine(folder, @"b\Qwen3.5-9B-Q8_0.gguf") && paths[1] == LocalPath(root, moss.Recipe.Files[1]) &&
