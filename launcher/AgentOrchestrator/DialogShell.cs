@@ -12,7 +12,7 @@ namespace AgentOrchestrator;
 // the owner's work area. Themed live through the owner's resources.
 internal sealed class DialogShell : Window
 {
-    private const double ShadowRoom = 16; // transparent margin around the panel that its shadow falls into
+    private const double ShadowRoom = 44; // transparent margin around the panel that its shadow falls into
 
     public DialogShell(Window owner, string? title, UIElement body, bool large = false)
     {
@@ -77,7 +77,7 @@ internal sealed class DialogShell : Window
         };
         Frame = new Border { BorderThickness = new Thickness(1), Child = inside };
         // The shadow is a sibling under the panel, so the effect never rasterizes the panel's text.
-        var shadow = new Border { Effect = new DropShadowEffect { BlurRadius = 18, ShadowDepth = 3, Direction = 270, Opacity = 0.28 } };
+        var shadow = new Border { Effect = new DropShadowEffect { BlurRadius = 48, ShadowDepth = 10, Direction = 270, Opacity = 0.6 } };
         foreach (var part in new[] { Frame, shadow })
         {
             part.SetResourceReference(Border.BackgroundProperty, "DialogBackground");
