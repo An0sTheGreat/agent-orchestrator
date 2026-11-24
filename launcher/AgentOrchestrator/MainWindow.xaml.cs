@@ -3041,7 +3041,7 @@ public partial class MainWindow : Window
                         var expandedFits = Fits();
                         SmokeClick(more);
                         await Settle();
-                        if (compact > 110 || compact < 60 || !compactFits || expanded < compact + 100 || !expandedFits || Math.Abs(_imgPrompt.ActualHeight - compact) > 0.5)
+                        if (compact > 300 || compact < 250 || !compactFits || expanded < compact + 40 || !expandedFits || Math.Abs(_imgPrompt.ActualHeight - compact) > 0.5)
                         {
                             Console.Error.WriteLine($"ui-smoke: the Images prompts at 1600x1000: compact {compact:0} (fits {compactFits}), View more {expanded:0} (fits {expandedFits}), View less {_imgPrompt.ActualHeight:0}");
                             return Fail();

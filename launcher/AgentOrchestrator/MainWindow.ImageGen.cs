@@ -318,7 +318,7 @@ public partial class MainWindow
         _imgNegativeRow = negativeCell;
         var promptsSection = Section(Pair(0, positiveCell, negativeCell));
         // compact: the row stops where the boxes are CompactPrompt tall and the spare row above Generate takes the rest; View more lifts the cap
-        const double CompactPrompt = 96; // about four lines (SizeAdvancedRow keeps them two)
+        const double CompactPrompt = 288; // about twelve lines; a short window gives less (SizeAdvancedRow keeps them two)
         var cardGrid = new Grid();
         var promptsRow = new RowDefinition { Height = new GridLength(1, GridUnitType.Star) };
         var spareRow = new RowDefinition();
