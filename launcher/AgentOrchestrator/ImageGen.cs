@@ -443,6 +443,10 @@ internal static class ImageGen
         // The chat's Image Gen: the model resolved, the run as the page would make it, the request field and the reply line.
         Check(ChatModel(new()) is ({ Id: "z-image-turbo" }, "Z-Image Turbo") && ChatModel(new() { RecipeId = "nope" }) is null && ChatRequest(new() { RecipeId = "nope" }, false) is null,
             "Image Gen: a recipe resolves, an unknown one does not");
+        var unchosen = new AppSettings().ChatImage;
+        Check(ChatModel(unchosen) is null && ChatRequest(unchosen, false) is null &&
+            !JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], new(false, false, [], ImageGen: ChatRequest(unchosen, false))))!.AsObject().ContainsKey("image_gen"),
+            "Image Gen: no model is chosen at first, so the request carries no image_gen (and nothing downloads unasked)");
         var chatRun = ChatRun(new(), z, " a cat\n", "blurry", 42, true);
         Check(chatRun is { RecipeId: "z-image-turbo", Prompt: "a cat", Negative: "", Width: 1024, Height: 1024, Steps: 8, Cfg: 1.0, Sampler: "", Seed: 42, Batch: 1, LowVram: true, InitImage: "", SharedModel: "", RemoteModel: "" },
             "Image Gen: the default run");

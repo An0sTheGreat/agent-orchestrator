@@ -210,7 +210,7 @@ public partial class MainWindow : Window
     // effort) and the workflow mode ("workflow": "dual", "tri" or "solo", Settings > Agents).
     private string RunRequest(string project)
     {
-        var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
+        var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras() with { ImageGen = null }, // Image Gen: Chat and Code chat turns only
             effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess))!;
         request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
@@ -2828,20 +2828,37 @@ public partial class MainWindow : Window
                 // Its dropdown: a model pick, an aspect ratio, the swap, the lock and the keep-both switch each write the setting.
                 var imgSaved = (_settings.UseImageGen, JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth);
                 JsonNode? ImgReq() => JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!["image_gen"];
-                (_settings.ChatImage, _settings.ImageKeepBoth) = (new ImageSettings { RecipeId = ImageGen.Recipes[0].Id }, false);
+                (_settings.UseImageGen, _settings.ChatImage, _settings.ImageKeepBoth) = (false, new AppSettings().ChatImage, false); // the default: no model chosen
+                if (CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
+                    return Fail();
+                // the caret opens the dropdown and leaves Image Gen as it was; Esc in the window closes it
+                SmokeClick(ChatImageGenCaret);
+                await Settle();
+                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || _imageChipPopup is not { IsOpen: true })
+                    return Fail();
+                RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+                if (_imageChipPopup.IsOpen)
+                    return Fail();
+                // the label with no model chosen: the dropdown opens and Image Gen stays off; a press on the label while it is open keeps it open
                 ChatImageGenToggle.IsChecked = true;
                 ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
-                if (!_settings.UseImageGen || CodeImageGenToggle.IsChecked != true || AppSettings.Load() is not { UseImageGen: true } || ImgReq() is null ||
-                    CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
+                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
                     return Fail();
-                ImageGenCaret_Click(ChatImageGenCaret, new RoutedEventArgs());
+                RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent }); // the press closes it
+                ChatImageGenToggle.IsChecked = true;
+                ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
                 await Settle();
+                if (_settings.UseImageGen || _imageChipPopup is not { IsOpen: true })
+                    return Fail();
                 var lastRecipe = ImageGen.Recipes[^1];
                 T? InChip<T>(string tag) where T : FrameworkElement => SmokeFind<T>(_imageChipPopup!.Child, e => e.Tag as string == tag);
-                if (_imageChipPopup is not { IsOpen: true } || _chipSize is null || InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRow)
+                if (_chipSize is null || InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRow ||
+                    !SmokeVisuals(recipeRow).OfType<TextBlock>().Any(t => t.Text == "Downloaded" || t.Text.StartsWith("Download (", StringComparison.Ordinal))) // the Images page's label
                     return Fail();
+                // picking a model there turns Image Gen on (no download until the first picture)
                 SmokeClick(recipeRow);
-                if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load().ChatImage.RecipeId != lastRecipe.Id)
+                if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { UseImageGen: true } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
+                    CodeImageGenToggle.IsChecked != true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
                     return Fail();
                 _chipSize.Aspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "16:9");
                 var wide = ImageGen.Size("16:9", ImageGen.RecommendedLongSide, lastRecipe.Multiple);

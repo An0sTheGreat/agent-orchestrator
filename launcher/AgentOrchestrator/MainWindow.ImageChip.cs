@@ -39,7 +39,9 @@ public partial class MainWindow
         if (chip.IsChecked == true && !ChatImageReady)
         {
             chip.IsChecked = false;
-            OpenImageChip(chip, turnOn: true); // nothing to paint with yet: choose first
+            _imageChipClosedAt = default; // the press on the label closed an open dropdown: it stays open
+            if (_imageChipPopup is not { IsOpen: true })
+                OpenImageChip(chip, turnOn: true); // nothing to paint with yet: choose first
             return;
         }
         _settings.UseImageGen = chip.IsChecked == true;
@@ -66,7 +68,7 @@ public partial class MainWindow
             t.SetResourceReference(TextBlock.ForegroundProperty, brush);
             return t;
         }
-        TextBlock Head(string text, double top) => new() { Text = text.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(0, top, 0, 4) };
+        TextBlock Head(string text, double top, double left = 0) => new() { Text = text.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(left, top, 0, 4) };
 
         // MODEL: this PC's (the recipes and the models folder's), the primary PC's while connected; the pick is marked
         ScanImageFolder();
@@ -86,22 +88,22 @@ public partial class MainWindow
             ShowRows();
             RefreshExtras();
         }
-        void Row(string tag, string name, string note, bool current, Action click)
+        // note: right of the name, which gets the room first; tip: the tooltip's extra (the recipe's own note)
+        void Row(string tag, string name, string note, bool current, Action click, string tip = "")
         {
             var check = Text(current ? "" : "", "AccentLight", 11);
             (check.FontFamily, check.Width) = (new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), 18);
             var label = new TextBlock { Text = name, TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center };
-            var cells = new DockPanel { Children = { check } };
+            DockPanel.SetDock(label, Dock.Left);
+            var cells = new DockPanel { Children = { check, label } };
             if (note.Length > 0)
             {
                 var n = Text(note, size: 11);
-                (n.TextWrapping, n.Margin) = (TextWrapping.NoWrap, new Thickness(8, 0, 0, 0));
-                DockPanel.SetDock(n, Dock.Right);
+                (n.TextWrapping, n.TextTrimming, n.TextAlignment, n.Margin) = (TextWrapping.NoWrap, TextTrimming.CharacterEllipsis, TextAlignment.Right, new Thickness(8, 0, 0, 0));
                 cells.Children.Add(n);
             }
-            cells.Children.Add(label);
             var row = new Button { Content = cells, Tag = tag, Style = (Style)FindResource("GhostButton"), HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Padding = new Thickness(6, 4, 8, 4), FontSize = 12, ToolTip = note.Length > 0 ? $"{name} · {note}" : name };
+                Padding = new Thickness(6, 4, 8, 4), FontSize = 12, ToolTip = string.Join(" · ", new[] { name, tip, note }.Where(t => t.Length > 0)) };
             row.Click += (_, _) => click();
             rows.Children.Add(row);
         }
@@ -110,24 +112,37 @@ public partial class MainWindow
             var c = _settings.ChatImage;
             var own = c.SharedModel.Length == 0 && c.RemoteModel.Length == 0;
             rows.Children.Clear();
-            rows.Children.Add(Head("This PC", 0));
+            rows.Children.Add(Head("This PC", 0, 6));
             foreach (var m in local)
-                Row("chatimg:" + m.Id, m.Name, m.Note, own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
+                Row("chatimg:" + m.Id, m.Name, Files(m.Id), own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
                     ? Path.GetFileName(c.LocalModel).Equals(m.Id[6..], StringComparison.OrdinalIgnoreCase) : c.LocalModel.Length == 0 && c.RecipeId == m.Id),
-                    () => Pick(s => (s.RecipeId, s.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "")));
+                    () => Pick(s => (s.RecipeId, s.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "")), m.Note);
             if (_settings.ShareHost.Length > 0)
             {
-                rows.Children.Add(Head("Primary PC", 8));
+                rows.Children.Add(Head("Primary PC", 8, 6));
                 if (shared is null || shared.Count == 0)
-                    rows.Children.Add(Text(sharedNote, size: 11));
+                {
+                    var note = Text(sharedNote, size: 11);
+                    note.Margin = new Thickness(6, 0, 0, 0);
+                    rows.Children.Add(note);
+                }
                 foreach (var m in shared ?? [])
                     Row("chatimgshared:" + m.Id, m.Name, m.Note, c.SharedModel == m.Id, () => Pick(s => (s.SharedModel, s.RecipeId) = (m.Id, m.Id)));
             }
             if (c.SharedModel.Length == 0 && c.RemoteModel.Length > 0) // chosen before; OpenRouter models are not offered here
             {
-                rows.Children.Add(Head("OpenRouter", 8));
+                rows.Children.Add(Head("OpenRouter", 8, 6));
                 Row("chatimgremote:" + c.RemoteModel, c.RemoteModel, "", true, () => { });
             }
+        }
+        // what the Images page's list says of a model's files: picking one marked Download downloads it on first use, as there
+        string Files(string id)
+        {
+            if (ImageShare.Resolve(id, _imgLocal) is not var (recipe, path))
+                return "";
+            var missing = MissingImageFiles(recipe, path).Sum(f => f.Size);
+            var gb = $"{missing / (double)(1L << 30):0.0} GB";
+            return path.Length == 0 ? missing == 0 ? "Downloaded" : $"Download ({gb})" : missing == 0 ? "on this PC" : $"on this PC, needs {gb} of parts";
         }
         async void LoadShared()
         {
@@ -164,6 +179,11 @@ public partial class MainWindow
         var aspectLabel = new TextBlock { Text = "Aspect ratio", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
         DockPanel.SetDock(aspectLabel, Dock.Left);
         size.SizeRow.Margin = new Thickness(0, 8, 0, 0);
+        foreach (var field in new Control[] { size.Aspect, size.WidthBox, size.HeightBox }) // as on the Images page
+        {
+            field.SetResourceReference(Control.BackgroundProperty, "Field");
+            field.SetResourceReference(Control.BorderBrushProperty, "Border");
+        }
 
         // the keep-both switch
         var keep = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), Tag = "ChatImageKeepBoth", IsChecked = _settings.ImageKeepBoth, Margin = new Thickness(8, 0, 0, 0),
@@ -207,21 +227,25 @@ public partial class MainWindow
             _imageChipClosedAt = DateTime.UtcNow;
             popup.IsOpen = false;
         }
-        PreviewMouseDown += OnPress;
-        popup.Closed += (_, _) =>
-        {
-            PreviewMouseDown -= OnPress;
-            if (Mouse.LeftButton == MouseButtonState.Pressed)
-                _imageChipClosedAt = DateTime.UtcNow;
-        };
-        card.PreviewKeyDown += (_, e) =>
+        // Esc closes it, with the keyboard in the dropdown or still in the window (the chip)
+        void OnKey(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Escape)
             {
                 popup.IsOpen = false;
                 e.Handled = true;
             }
+        }
+        PreviewMouseDown += OnPress;
+        PreviewKeyDown += OnKey;
+        popup.Closed += (_, _) =>
+        {
+            PreviewMouseDown -= OnPress;
+            PreviewKeyDown -= OnKey;
+            if (Mouse.LeftButton == MouseButtonState.Pressed)
+                _imageChipClosedAt = DateTime.UtcNow;
         };
+        card.PreviewKeyDown += OnKey;
         popup.IsOpen = true;
     }
 
@@ -297,7 +321,7 @@ public partial class MainWindow
                 if (e.Key == Key.Enter)
                     Commit(width);
             };
-            var icon = new TextBlock { Text = width ? "⇆" : "⇅", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0), ToolTip = width ? "Width" : "Height" };
+            var icon = new TextBlock { Text = width ? "⇆" : "⇅", FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 6, 0), ToolTip = width ? "Width" : "Height" };
             icon.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
             DockPanel.SetDock(icon, Dock.Left);
             return new DockPanel { Children = { icon, new Grid { Children = { b, h } } } };
