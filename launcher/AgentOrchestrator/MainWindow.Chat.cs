@@ -1460,7 +1460,7 @@ public partial class MainWindow
         if (_reply is not { } r)
             return;
         r.Status.Text = text;
-        r.Status.Visibility = Visibility.Visible;
+        r.Status.Visibility = _pendingPicture is null ? Visibility.Visible : Visibility.Collapsed; // a picture being made: its card says it
     }
 
     // A Code turn's tool call as its arguments stream (a whole-file write can take minutes): its name, file and size so far

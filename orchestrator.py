@@ -3931,9 +3931,17 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
     return reply_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
 
+PICTURE_LINE = "Image generated and shown to the user. "  # the launcher's ImageGen.ChatResult: a picture turn's saved reply
+FAKE_PICTURE = ("No picture was made: you wrote the picture's details line yourself instead of calling generate_image. "
+                "Call generate_image now to make the picture.")
+
+
 def chat_messages(request: dict[str, Any]) -> list[dict[str, str]]:
+    """The conversation; a picture turn's saved reply (the bare details line) is told as the tool call it was, so the
+    model never learns to answer a picture request by writing that line."""
     return [
-        {"role": m["role"], "content": str(m["content"])}
+        {"role": m["role"], "content": f"(I called generate_image; its result: {m['content']})"
+         if m.get("role") == "assistant" and str(m["content"]).startswith(PICTURE_LINE) else str(m["content"])}
         for m in request.get("messages") or []
         if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
     ]
@@ -4303,6 +4311,10 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
             continue
         cutoffs = 0
+        if not calls and "generate_image" in handlers and content.lstrip().startswith(PICTURE_LINE) and nudges < 1:
+            nudges += 1  # the details line written as text: no picture exists; once, then the reply stands
+            messages.append({"role": "user", "content": FAKE_PICTURE})
+            continue
         if not calls and not nudge:
             return reply_text(response)
         if not calls:

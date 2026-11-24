@@ -3060,6 +3060,17 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(log[1]["messages"][-1]["content"], "ERROR: out of memory\n" + orchestrator.IMAGE_FAILED)
         self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["The GPU ran out of memory."])
 
+    def test_image_gen_a_picture_line_written_as_text_is_sent_back_to_call_the_tool(self):
+        line = "Image generated and shown to the user. Model: SDXL Base. Size: 1536x1152. Seed: 7. Prompt: a fox"
+        history = [{"role": "user", "content": "a fox"}, {"role": "assistant", "content": line}, {"role": "user", "content": "another"}]
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": line, "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": history, "image_gen": self.IMAGE_GEN},
+                                             {"planner": [line, self.image_call(prompt="a fox")]})
+        self.assertEqual((code, len(log)), (0, 2))
+        self.assertEqual(log[0]["messages"][-2]["content"], f"(I called generate_image; its result: {line})")  # the past picture told as the call it was
+        self.assertEqual(log[1]["messages"][-1]["content"], orchestrator.FAKE_PICTURE)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+
     def test_image_gen_unload_chat_stops_the_model_before_painting_and_loads_it_after(self):
         order = []
         with patch.object(orchestrator, "unload_models", lambda: order.append("unload")), \

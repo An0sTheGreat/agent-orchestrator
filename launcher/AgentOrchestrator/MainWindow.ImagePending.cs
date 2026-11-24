@@ -7,11 +7,12 @@ using System.Windows.Threading;
 
 namespace AgentOrchestrator;
 
-// The chat's picture while it is made (generate_image, /image), under the reply's status line ("Making a picture… Step 3/8 · …"):
-// a field of dots in the picture's shape that light in slow drifting glows, with the percentage in its corner. The picture replaces it.
+// The chat's picture while it is made (generate_image, /image): a field of dots in the picture's shape that light in slow drifting
+// glows, with the step ("Making a picture… Step 3/8 · 2.1 s/it") in its lower left and the percentage in its corner. The reply's
+// status line stays hidden meanwhile (SetChatStatus): the card says it. The picture replaces it.
 public partial class MainWindow
 {
-    private (FrameworkElement Root, TextBlock Percent, DispatcherTimer Timer)? _pendingPicture;
+    private (FrameworkElement Root, TextBlock Percent, TextBlock Status, DispatcherTimer Timer)? _pendingPicture;
 
     private void ShowPendingPicture(int width, int height)
     {
@@ -37,8 +38,11 @@ public partial class MainWindow
         var pill = new Border { Child = percent, CornerRadius = new CornerRadius(10), HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(8), Visibility = Visibility.Collapsed };
         pill.SetResourceReference(Border.BackgroundProperty, "Hover");
+        var status = new TextBlock { Text = "Making a picture…", FontSize = 11, TextTrimming = TextTrimming.CharacterEllipsis, MaxWidth = w - 76,
+            HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(12, 0, 0, 12), Tag = "PendingPictureStatus" };
+        status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         var field = new Border { Width = w, Height = h, CornerRadius = new CornerRadius(14), BorderThickness = new Thickness(1), ClipToBounds = true,
-            Child = new Grid { Children = { canvas, pill } }, Tag = "PendingPicture" };
+            Child = new Grid { Children = { canvas, status, pill } }, Tag = "PendingPicture" };
         field.SetResourceReference(Border.BackgroundProperty, "Card");
         field.SetResourceReference(Border.BorderBrushProperty, "Border");
         var root = new StackPanel { Margin = new Thickness(0, 2, 0, 6), HorizontalAlignment = HorizontalAlignment.Left, Children = { field } };
@@ -55,14 +59,17 @@ public partial class MainWindow
         };
         timer.Start();
         _reply.Content.Children.Add(root);
-        _pendingPicture = (root, percent, timer);
+        _reply.Status.Visibility = Visibility.Collapsed; // the card says the step
+        _pendingPicture = (root, percent, status, timer);
     }
 
-    // The generation's progress (ImageStatus): the percentage, once there is one.
-    private void PendingPictureProgress(double? progress)
+    // The generation's progress (ImageStatus): the step in the card (its percentage is the pill's), and the percentage once there is one.
+    private void PendingPictureProgress(double? progress, string? text = null)
     {
-        if (_pendingPicture is not var (_, percent, _))
+        if (_pendingPicture is not var (_, percent, status, _))
             return;
+        if (text is not null)
+            status.Text = "Making a picture… " + System.Text.RegularExpressions.Regex.Replace(text, @"\s*·\s*\d+%\s*\z", "");
         if (progress is { } p && percent.Parent is Border pill)
         {
             percent.Text = $"{Math.Clamp(p, 0, 1) * 100:0}%";
@@ -72,7 +79,7 @@ public partial class MainWindow
 
     private void RemovePendingPicture()
     {
-        if (_pendingPicture is not var (root, _, timer))
+        if (_pendingPicture is not var (root, _, _, timer))
             return;
         _pendingPicture = null;
         timer.Stop();

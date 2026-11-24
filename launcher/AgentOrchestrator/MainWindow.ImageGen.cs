@@ -236,7 +236,12 @@ public partial class MainWindow
             b.Click += (_, _) => click();
             return b;
         }
-        _imgLocalPanel = new StackPanel { Children = { _imgRecipe } };
+        var hideMissing = HideMissingSwitch("ImagesHideMissing", RefreshImageRecipes);
+        hideMissing.Margin = new Thickness(12, 0, 0, 0);
+        hideMissing.VerticalAlignment = VerticalAlignment.Center;
+        _imgHideMissing = (ToggleButton)hideMissing.Children[0];
+        DockPanel.SetDock(hideMissing, Dock.Right);
+        _imgLocalPanel = new StackPanel { Children = { new DockPanel { Children = { hideMissing, _imgRecipe } } } }; // beside the list: the page's height stays
         _imgRemoteModelButton = SourceButton("", "ImagesRemoteModelButton", ChooseImageModel);
         _imgRemoteProvidersButton = SourceButton("", "ImagesRemoteProvidersButton", ChooseImageProviders);
         (_imgRemoteModelButton.Margin, _imgRemoteModelButton.FontSize, _imgRemoteProvidersButton.FontSize) = (new Thickness(0), 12, 12);
@@ -1060,15 +1065,20 @@ public partial class MainWindow
         _imgApplying = true;
         string Gb(long b) => $"{b / (double)(1L << 30):0.0} GB";
         long Missing(ImageRecipe r, string local) => MissingImageFiles(r, local).Sum(f => f.Size);
-        _imgRecipe.ItemsSource = ImageGen.Recipes.Select(r =>
+        // the items keep their places (ImageChoice reads the index): one not downloaded is only collapsed while the switch is on, never the current pick
+        _imgRecipe.ItemsSource = ImageGen.Recipes.Select((r, i) =>
             {
                 var missing = Missing(r, "");
-                return $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}";
+                return new ComboBoxItem
+                {
+                    Content = $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}",
+                    Visibility = _settings.ImageHideMissing && missing > 0 && i != index ? Visibility.Collapsed : Visibility.Visible,
+                };
             })
             .Concat(_imgLocal.Select(m =>
             {
                 var missing = Missing(m.Recipe, m.Path);
-                return $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}";
+                return new ComboBoxItem { Content = $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}" };
             })).ToList();
         _imgRecipe.SelectedIndex = Math.Clamp(index, 0, _imgRecipe.Items.Count - 1);
         _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
@@ -1431,9 +1441,7 @@ public partial class MainWindow
             }
             _imgStatusTap = (text, progress) =>
             {
-                PendingPictureProgress(progress);
-                if (asker is null || asker == _chatProcess) // /image (no asker) too: its reply's status line is the only one now
-                    SetChatStatus($"Making a picture… {text}");
+                PendingPictureProgress(progress, text.StartsWith("Generating for the chat", StringComparison.Ordinal) ? null : text); // the card shows the step; the reply's status line waits behind it
             };
             try
             {

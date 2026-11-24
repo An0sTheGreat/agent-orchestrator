@@ -2824,25 +2824,25 @@ public partial class MainWindow : Window
                 Flip(ChatToolsToggle);
                 if (!_settings.UseSearch || !_settings.UseTools || ChatSearchToggle.IsChecked != true || CodeToolsToggle.IsChecked != true || AppSettings.Load() is not { UseSearch: true, UseTools: true })
                     return Fail();
-                // Image Gen chip: a dropdown in both composers, never lit; with a model chosen the request carries image_gen at the chat's
+                // Image Gen chip: a dropdown in both composers, always lit (always on); with a model chosen the request carries image_gen at the chat's
                 // size, with none it carries none. The dropdown: a model pick, an aspect ratio, the swap, the lock and keep-both each write the setting.
-                var imgSaved = (JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth);
+                var imgSaved = (JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth, _settings.ImageHideMissing);
                 JsonNode? ImgReq() => JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!["image_gen"];
-                (_settings.ChatImage, _settings.ImageKeepBoth) = (new AppSettings().ChatImage, false); // the default: no model chosen
+                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing) = (new AppSettings().ChatImage, false, false); // the default: no model chosen, all shown
                 if (CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
                     return Fail();
                 // the caret opens the dropdown; Esc in the window closes it
                 SmokeClick(ChatImageGenCaret);
                 await Settle();
-                if (ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
+                if (ChatImageGenToggle.IsChecked != true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
                     return Fail();
                 RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
                 if (_imageChipPopup.IsOpen)
                     return Fail();
-                // the label opens it too, unlit; a second click closes it
-                ChatImageGenToggle.IsChecked = true;
+                // the label opens it too and stays lit (WPF unticks it first); a second click closes it
+                ChatImageGenToggle.IsChecked = false;
                 ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
-                if (ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
+                if (ChatImageGenToggle.IsChecked != true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
                     return Fail();
                 ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
                 if (_imageChipPopup.IsOpen)
@@ -2857,10 +2857,25 @@ public partial class MainWindow : Window
                 if (_chipSize is null || InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRow ||
                     !SmokeVisuals(recipeRow).OfType<TextBlock>().Any(t => t.Text == "Downloaded" || t.Text.StartsWith("Download (", StringComparison.Ordinal))) // the Images page's label
                     return Fail();
+                // Hide models not downloaded: no Download row is left (none is the pick yet); off again, they are back
+                InChip<ToggleButton>("ChatImageHideMissing")!.IsChecked ^= true; // as a real click: the switch flips, then Click
+                SmokeClick(InChip<ToggleButton>("ChatImageHideMissing")!);
+                await Settle(); // the rows are rebuilt
+                var hidden = SmokeVisuals(_imageChipPopup!.Child).OfType<Button>().Any(b => (b.Tag as string)?.StartsWith("chatimg:", StringComparison.Ordinal) == true &&
+                    SmokeVisuals(b).OfType<TextBlock>().Any(t => t.Text.StartsWith("Download (", StringComparison.Ordinal)));
+                var saved = AppSettings.Load()?.ImageHideMissing;
+                InChip<ToggleButton>("ChatImageHideMissing")!.IsChecked ^= true; // as a real click: the switch flips, then Click
+                SmokeClick(InChip<ToggleButton>("ChatImageHideMissing")!);
+                await Settle(); // the rows are rebuilt
+                if (_settings.ImageHideMissing || hidden || saved != true)
+                    return Fail();
+                if (InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRowAgain)
+                    return Fail();
+                recipeRow = recipeRowAgain;
                 // picking a model there is all it takes (no download until the first picture)
                 SmokeClick(recipeRow);
                 if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
-                    CodeImageGenToggle.IsChecked == true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
+                    CodeImageGenToggle.IsChecked != true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
                     return Fail();
                 _chipSize.Aspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "16:9");
                 var wide = ImageGen.Size("16:9", ImageGen.RecommendedLongSide, lastRecipe.Multiple);
@@ -2882,7 +2897,7 @@ public partial class MainWindow : Window
                 if (!_settings.ImageKeepBoth || AppSettings.Load() is not { ImageKeepBoth: true } || ImgReq() is not { } keepReq || (bool)keepReq["unload_chat"]!)
                     return Fail();
                 _imageChipPopup.IsOpen = false;
-                (_settings.ChatImage, _settings.ImageKeepBoth) = (JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item1)!, imgSaved.ImageKeepBoth);
+                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing) = (JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item1)!, imgSaved.ImageKeepBoth, imgSaved.ImageHideMissing);
                 _settings.Save();
                 RefreshExtras();
                 answer = "Smoke skill";
@@ -2984,7 +2999,7 @@ public partial class MainWindow : Window
                 if (SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesPage") is not { IsVisible: true } || ImagesView.Visibility != Visibility.Visible ||
                     ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
                     SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { } recipes || recipes.Items.Count != ImageGen.Recipes.Length + 1 ||
-                    recipes.Items[^1] is not string mossItem || !mossItem.StartsWith("MOSS-Image-SFT-Q8_0.gguf · MOSS-Image SFT") ||
+                    (recipes.Items[^1] as ComboBoxItem)?.Content is not string mossItem || !mossItem.StartsWith("MOSS-Image-SFT-Q8_0.gguf · MOSS-Image SFT") ||
                     SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
                     return Fail();
                 // the gallery: a strip of the three, the newest on the stage and outlined; the wheel zooms at the cursor, Fit undoes it

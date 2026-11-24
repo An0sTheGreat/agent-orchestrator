@@ -29,13 +29,13 @@ public partial class MainWindow
             tip = ChatImageReady && ImageGen.ChatRequest(_settings.ChatImage, _settings.ImageKeepBoth) is { } r ? $"Image Gen: {name}, {r.Width} × {r.Height}"
                 : $"Image Gen: {name} is on the primary PC, which is not connected";
         foreach (var chip in new[] { ChatImageGenToggle, CodeImageGenToggle })
-            (chip.IsChecked, chip.ToolTip) = (false, tip); // a dropdown, never lit as a switch
+            (chip.IsChecked, chip.ToolTip) = (true, tip); // always on: lit as the other chips that are on
     }
 
     private void ImageGenToggle_Click(object sender, RoutedEventArgs e)
     {
         var chip = (ToggleButton)sender;
-        chip.IsChecked = false;
+        chip.IsChecked = true; // a click opens the dropdown, never turns it off
         OpenImageChip(chip);
     }
 
@@ -104,9 +104,15 @@ public partial class MainWindow
             rows.Children.Clear();
             rows.Children.Add(Head("This PC", 0, 6));
             foreach (var m in local)
-                Row("chatimg:" + m.Id, m.Name, Files(m.Id), own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
-                    ? Path.GetFileName(c.LocalModel).Equals(m.Id[6..], StringComparison.OrdinalIgnoreCase) : c.LocalModel.Length == 0 && c.RecipeId == m.Id),
+            {
+                var current = own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
+                    ? Path.GetFileName(c.LocalModel).Equals(m.Id[6..], StringComparison.OrdinalIgnoreCase) : c.LocalModel.Length == 0 && c.RecipeId == m.Id);
+                var files = Files(m.Id);
+                if (_settings.ImageHideMissing && files.StartsWith("Download (", StringComparison.Ordinal) && !current)
+                    continue; // not downloaded: hidden while the switch is on (the current pick stays)
+                Row("chatimg:" + m.Id, m.Name, files, current,
                     () => Pick(s => (s.RecipeId, s.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "")), m.Note);
+            }
             if (_settings.ShareHost.Length > 0)
             {
                 rows.Children.Add(Head("Primary PC", 8, 6));
@@ -154,6 +160,16 @@ public partial class MainWindow
             LoadShared(); // shows "Loading…" until it answers
         ShowRows();
         var models = new ScrollViewer { Content = rows, MaxHeight = 220, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(-6, 0, -6, 0) };
+        var hide = HideMissingSwitch("ChatImageHideMissing", () =>
+        {
+            ShowRows();
+            if (_imgHideMissing is { } page) // the Images page's, when built: the same setting
+            {
+                page.IsChecked = _settings.ImageHideMissing;
+                RefreshImageRecipes();
+            }
+        });
+        hide.Margin = new Thickness(0, 6, 0, 0);
 
         // SIZE: the page's controls and behaviour; every change is the chat's size
         var size = _chipSize = new ImageSizeControls("ChatImage", ChatImageMultiple);
@@ -198,7 +214,7 @@ public partial class MainWindow
             {
                 Children =
                 {
-                    Head("Model", 0), models,
+                    Head("Model", 0), models, hide,
                     Head("Size", 12), new DockPanel { Children = { aspectLabel, size.AspectRow } }, size.SizeRow,
                     line,
                     new DockPanel { Children = { keep, new TextBlock { Text = "Keep both models loaded", FontSize = 12, VerticalAlignment = VerticalAlignment.Center } } },
@@ -237,6 +253,25 @@ public partial class MainWindow
         };
         card.PreviewKeyDown += OnKey;
         popup.IsOpen = true;
+    }
+
+    // "Hide models not downloaded" (AppSettings.ImageHideMissing), one setting for the Images page's list and the chip's dropdown.
+    private ToggleButton? _imgHideMissing; // the Images page's switch
+
+    private DockPanel HideMissingSwitch(string tag, Action changed)
+    {
+        var toggle = new ToggleButton { Style = (Style)FindResource("ToggleSwitch"), Tag = tag, IsChecked = _settings.ImageHideMissing, Margin = new Thickness(8, 0, 0, 0),
+            VerticalAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetName(toggle, "Hide models not downloaded");
+        toggle.ToolTip = "Hide models not downloaded yet (the chosen one stays)";
+        toggle.Click += (_, _) =>
+        {
+            _settings.ImageHideMissing = toggle.IsChecked == true;
+            _settings.Save();
+            changed();
+        };
+        DockPanel.SetDock(toggle, Dock.Right);
+        return new DockPanel { Children = { toggle, new TextBlock { Text = "Hide not downloaded", FontSize = 12, VerticalAlignment = VerticalAlignment.Center } } };
     }
 
     // The size controls: the aspect ratio list with its ↑↓ swap, the width and height boxes and the lock. The Images page has one set
