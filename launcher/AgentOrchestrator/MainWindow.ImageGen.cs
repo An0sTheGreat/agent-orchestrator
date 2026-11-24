@@ -1510,7 +1510,9 @@ public partial class MainWindow
     {
         string result;
         string? image = null;
-        try { (result, image) = await PaintForChatAsync(ev, asker); }
+        long? seed = ev.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) ? n : null;
+        var negative = ev.TryGetProperty("negative", out var neg) && neg.ValueKind == JsonValueKind.String ? neg.GetString() : null;
+        try { (result, image) = await PaintForChatAsync(Str(ev, "prompt"), negative, seed, asker); }
         catch (Exception x) // whatever broke, the engine must hear back
         {
             Log($"Image Gen failed: {x.Message}");
@@ -1519,7 +1521,9 @@ public partial class MainWindow
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
 
-    private async Task<(string Result, string? Image)> PaintForChatAsync(JsonElement ev, Process? asker)
+    // The chat's picture, for generate_image (asker: the turn's process) and /image (no asker; the turn's own Stop cancels it): the
+    // ChatResult line ("ERROR: …" when nothing was painted) and the picture's copy for the model. The picture joins the turn's.
+    private async Task<(string Result, string? Image)> PaintForChatAsync(string prompt, string? negative, long? seed, Process? asker)
     {
         ScanImageFolder();
         if (ImagesView.Children.Count == 0)
@@ -1528,9 +1532,7 @@ public partial class MainWindow
             return ("ERROR: the image generator is busy", null);
         if (ImageGen.ChatModel(_settings.ChatImage) is not var (recipe, name))
             return ("ERROR: no image model is chosen for Image Gen", null);
-        long? seed = ev.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) ? n : null;
-        var negative = ev.TryGetProperty("negative", out var neg) && neg.ValueKind == JsonValueKind.String ? neg.GetString() : null;
-        var run = ImageGen.ChatRun(_settings.ChatImage, recipe, Str(ev, "prompt"), negative, seed, _settings.ImageGen.LowVram);
+        var run = ImageGen.ChatRun(_settings.ChatImage, recipe, prompt, negative, seed, _settings.ImageGen.LowVram);
         if (run.Prompt.Length == 0)
             return ("ERROR: the prompt is empty", null);
         var local = run.SharedModel.Length == 0 && run.RemoteModel.Length == 0;
@@ -1538,7 +1540,8 @@ public partial class MainWindow
         await RunImageJob(async ct =>
         {
             using var watch = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            Forget(CancelWhenGone());
+            if (asker is not null)
+                Forget(CancelWhenGone());
             async Task CancelWhenGone() // the turn's Stop ends its process: the picture is not wanted any more
             {
                 try
