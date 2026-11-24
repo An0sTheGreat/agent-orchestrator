@@ -30,6 +30,7 @@ public partial class MainWindow
     {
         ("clear", "Start this conversation over with no history: same name, project and folders", []),
         ("compact", "Summarize the conversation now (add what to keep: /compact keep the API decisions)", []),
+        ("image", "<prompt>: paint it now with the chat's image model and size, without asking the chat model", []),
         ("ponytail", "Ponytail for every model: the smallest change that works (off, lite, full, ultra)",
             [("off", "Turn Ponytail off"), ("lite", "Build what was asked; name the smaller option"),
              ("full", "Shortest complete change (the default)"), ("ultra", "Also push back on what the request does not need")]),
@@ -41,8 +42,14 @@ public partial class MainWindow
     // The commands the launcher answers itself, before anything is sent or queued; true when the box held one.
     // /clear: a new conversation where this one is (its folder and sidebar project), as the "+" buttons start one.
     // /ponytail [off|lite|full|ultra]: the global level (Settings > Ponytail); no word means full.
+    // /image <prompt>: ImageCommand.
     private bool RunLocalCommand(Conversation c)
     {
+        if (Regex.Match(c.Input.Text, @"\A\s*/image(?:\s+(.*))?\z", RegexOptions.IgnoreCase | RegexOptions.Singleline) is { Success: true } image)
+        {
+            ImageCommand(c, image.Groups[1].Value.Trim());
+            return true;
+        }
         var m = Regex.Match(c.Input.Text, @"\A\s*/(clear|ponytail)(?:\s+(\w*))?\s*\z", RegexOptions.IgnoreCase);
         if (!m.Success)
             return false;
@@ -108,6 +115,50 @@ public partial class MainWindow
         else
             ClearConversation(_code);
         return true;
+    }
+
+    // /image <prompt>: painted now with the chat's image model and size (AppSettings.ChatImage, Image Gen on or off), the chat model
+    // not asked. A turn of its own: the user's line, then a reply with the picture whose saved text is the ChatResult line (shown as
+    // its caption), so later turns know the picture. Refused, as other commands run at once, while a reply or a run uses the GPU.
+    // Painted on this PC with Keep both off: the chat model is unloaded first, as a turn's end does with Keep loaded off.
+    private void ImageCommand(Conversation c, string prompt)
+    {
+        if (prompt.Length == 0)
+            Toast("Use /image <prompt>", "#F7C873");
+        else if (ImageGen.ChatModel(_settings.ChatImage) is null)
+            Toast("Choose an image model in the Image Gen menu first", "#F7C873");
+        else if (_chatBusy || _process is not null || _loadingRole is not null)
+            Toast("A reply or run is using the GPU: try /image when it finishes", "#F7C873");
+        else if (ImageBusy)
+            Toast("The image generator is busy", "#F7C873");
+        else if (!c.IsCode || EnsureCodeConversation(SelectedProjectPath()))
+            Forget(ImageTurn(c, c.Input.Text.Trim(), prompt));
+    }
+
+    private async Task ImageTurn(Conversation c, string text, string prompt)
+    {
+        c.Input.Clear();
+        _turnImages = [];
+        StartTurn(c, text, (c.IsCode ? CodeTarget() : ChatTarget())?.Role ?? "", queued: true); // queued: the composer's attachments stay there
+        SetChatStatus("Making a picture…");
+        if (!_settings.ImageKeepBoth && _settings.ChatImage is { SharedModel: "", RemoteModel: "" })
+            StopLocalServer();
+        string result;
+        var cancelled = false; // the composer's stop or the Images page's Cancel
+        try { (result, _, cancelled) = await PaintForChatAsync(prompt, null, null, null); }
+        catch (Exception x) // the turn must end whatever broke
+        {
+            Log($"Image Gen failed: {x.Message}");
+            result = "ERROR: " + x.Message;
+        }
+        var error = result.StartsWith("ERROR: ", StringComparison.Ordinal) ? result[7..] : null;
+        if (error is null && _reply is { } reply)
+        {
+            SetChatFinal(result);
+            ShowPendingShot(reply);
+        }
+        FinishChatTurn(cancelled ? -1 : 0, cancelled, cancelled ? null : error);
+        AfterTurn(_turnCompleted);
     }
 
     // Settings > Ponytail shows the saved level; a click there saves it as /ponytail does.
@@ -478,6 +529,23 @@ public partial class MainWindow
             ChatInput.Text = "/clear";
             if (!RunLocalCommand(_chat) || _chat.History.Count != 0 || ChatInput.Text.Length > 0 || _chatConv is not null)
                 return Fail("/clear left the chat");
+            var (chosen, shown) = (_settings.ChatImage, _chat.Panel.Children.Count);
+            try
+            {
+                ChatInput.Text = "/image  ";
+                if (!RunLocalCommand(_chat) || _chatBusy || _chat.History.Count != 0 || _chat.Panel.Children.Count != shown || ChatInput.Text != "/image  ")
+                    return Fail("/image with no prompt was not refused");
+                _settings.ChatImage = new() { RecipeId = "nope" }; // no model
+                ChatInput.Text = "/IMAGE a cat";
+                if (!RunLocalCommand(_chat) || _chatBusy || ImageBusy || _chat.History.Count != 0 || _chat.Panel.Children.Count != shown || ChatInput.Text != "/IMAGE a cat")
+                    return Fail("/image with no image model started something");
+                if (!IsCommand("/image a cat") || SkillMatches("/ima", 4) is not [("image", _), ..])
+                    return Fail("/image is not in the command list");
+            }
+            finally
+            {
+                _settings.ChatImage = chosen;
+            }
             return true;
         }
         finally

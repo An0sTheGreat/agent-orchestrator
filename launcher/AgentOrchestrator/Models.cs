@@ -311,6 +311,12 @@ internal sealed class AppSettings
     public List<string> SkillsOff { get; set; } = new();
     public static string SkillsRoot => Path.Combine(DataRoot, "skills");
     public ImageSettings ImageGen { get; set; } = new(); // the Images page's last-used settings (MainWindow.ImageGen.cs)
+    // The composer's Image Gen: the chat model may call generate_image (the request's "image_gen", MainWindow.ImageGen.cs AnswerImageAsync).
+    // ChatImage: the chat's own image model (RecipeId/LocalModel, SharedModel or RemoteModel, as on the page) and size (Aspect, the
+    // Width/Height boxes, SizeUnlocked); nothing else of it is read. ImageKeepBoth: the image model stays loaded beside the chat model.
+    public bool UseImageGen { get; set; }
+    public ImageSettings ChatImage { get; set; } = new() { RecipeId = "" }; // "": no model chosen yet (ImageGen.ChatModel null), so nothing downloads unasked
+    public bool ImageKeepBoth { get; set; }
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
     // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models through a
     // Cloudflare quick tunnel. ShareHost: on the other PC, the primary PC's tunnel host while connected ("" = not). Keys: ApiKeys.

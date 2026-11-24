@@ -2586,6 +2586,16 @@ class ChatTests(unittest.TestCase):
 
     MSGS = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}, {"role": "user", "content": "explain X"}]
 
+    def test_image_gen_tool_and_note_reach_the_chat_answer_only_when_switched_on(self):
+        gen = {"model": "Z-Image Turbo", "style": "z-image-turbo", "width": 1024, "height": 1024, "negative": False, "unload_chat": True}
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS, "image_gen": gen})
+        self.assertIn("generate_image", [t["function"]["name"] for t in log[0]["tools"]])
+        self.assertIn("IMAGE GENERATION", log[0]["system"])
+        self.assertIn("Z-Image Turbo at 1024x1024", log[0]["system"])
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS})
+        self.assertNotIn("generate_image", [t["function"]["name"] for t in log[0]["tools"]])
+        self.assertNotIn("IMAGE GENERATION", log[0]["system"])
+
     def test_images_join_only_the_turns_message_in_the_request_body(self):
         with tempfile.TemporaryDirectory() as folder:
             image = Path(folder) / "p.png"
@@ -2988,6 +2998,69 @@ class CodeTests(unittest.TestCase):
         return code, log, events, unloaded
 
     MSGS = [{"role": "user", "content": "add a readme"}]
+    IMAGE_GEN = {"model": "SDXL Base", "style": "sdxl", "width": 1536, "height": 1152, "negative": True, "unload_chat": False}
+
+    def image_call(self, **arguments):
+        return {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "i1", "type": "function", "function": {"name": "generate_image", "arguments": json.dumps(arguments)}}]}
+
+    def test_image_gen_tool_and_note_reach_the_code_lead_only_when_switched_on(self):
+        code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN}, {"planner": ["done"]})
+        self.assertEqual(code, 0)
+        tool = next(t for t in log[0]["tools"] if t["function"]["name"] == "generate_image")
+        self.assertIn("1536x1152", tool["function"]["description"])
+        self.assertEqual(set(tool["function"]["parameters"]["properties"]), {"prompt", "negative", "seed"})
+        self.assertIn("IMAGE GENERATION", log[0]["system"])
+        self.assertIn("SDXL Base at 1536x1152", log[0]["system"])
+        self.assertIn("comma-separated tags", log[0]["system"])  # the recipe's tips
+        self.assertIn("in negative", log[0]["system"])
+        self.assertIn("generate_image", orchestrator.PI_GATEWAY_TOOLS)
+        _, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": None}, {"planner": ["done"]})
+        self.assertNotIn("generate_image", [t["function"]["name"] for t in log[0]["tools"]])
+        self.assertNotIn("IMAGE GENERATION", log[0]["system"])
+        # no negative prompt for this model: no negative parameter or advice; an unknown recipe gets the generic tips
+        tools, _, note = orchestrator.image_gen_extras({"image_gen": {**self.IMAGE_GEN, "negative": False, "style": "new"}})
+        self.assertNotIn("negative", tools[0]["function"]["parameters"]["properties"])
+        self.assertNotIn("in negative", note)
+        self.assertIn(orchestrator.IMAGE_GENERIC_TIP, note)
+
+    def test_image_gen_openrouter_size_is_not_promised_exactly(self):
+        tools, _, note = orchestrator.image_gen_extras({"image_gen": {**self.IMAGE_GEN, "style": ""}})
+        self.assertIn("about 1536x1152", tools[0]["function"]["description"])
+        self.assertNotIn("always", tools[0]["function"]["description"] + note)
+        self.assertIn("always", orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[0][0]["function"]["description"])
+
+    def test_image_gen_handler_sends_the_prompt_and_the_model_sees_the_picture(self):
+        asked, image = [], "data:image/png;base64,iVBOR"
+        answer = lambda event, **d: asked.append((event, d)) or {"id": "x", "result": "Painted 1536x1152, seed 7", "image": image}
+        call = self.image_call(prompt="a red fox, snow", negative="blur", seed=7)
+        with patch.object(orchestrator, "launcher_call", answer):
+            code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN}, {"planner": [call, "done"]})
+            self.assertEqual(code, 0)
+            self.assertEqual(asked, [("image", {"prompt": "a red fox, snow", "negative": "blur", "seed": 7})])
+            tool, shot = log[1]["messages"][-2:]
+            self.assertEqual((tool["content"], shot["images"]), ("Painted 1536x1152, seed 7", [image]))
+            with patch.object(orchestrator, "vision_off", lambda config, role: True):  # a model that cannot see gets the text only
+                _, blind, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
+                                         {"planner": [self.image_call(prompt="a fox"), "done"]})
+            self.assertEqual(blind[1]["messages"][-1]["content"], "Painted 1536x1152, seed 7")
+            self.assertEqual(asked[1], ("image", {"prompt": "a fox", "negative": "", "seed": None}))
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: None):  # stdin closed
+            self.assertTrue(orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("x").startswith("ERROR:"))
+
+    def test_image_gen_unload_chat_stops_the_model_before_painting_and_loads_it_after(self):
+        order = []
+        with patch.object(orchestrator, "unload_models", lambda: order.append("unload")), \
+                patch.object(orchestrator, "launcher_call", lambda event, **d: order.append(event) or {"result": "ok"}):
+            orchestrator.image_gen_extras({"image_gen": {**self.IMAGE_GEN, "unload_chat": True}})[1]["generate_image"]("a fox")
+            orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a fox")
+        self.assertEqual(order, ["unload", "image", "image"])  # kept loaded when unload_chat is false
+        seen = []
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: seen.append(list(self.ensured)) or {"result": "ERROR: out of memory"}):
+            _, log, _, unloaded = self.code({"action": "chat", "messages": self.MSGS, "image_gen": {**self.IMAGE_GEN, "unload_chat": True}},
+                                            {"planner": [self.image_call(prompt="a fox"), "done"]})
+        self.assertEqual((seen, unloaded), ([["planner"]], [1]))
+        self.assertEqual(self.ensured, ["planner", "planner"])  # loaded again after the call (an error too), before the next model call
 
     def test_read_file_reads_a_window_of_lines_and_says_where_to_read_on(self):
         (self.root / "big.py").write_text("\n".join(f"line {n}" for n in range(1, 701)), encoding="utf-8", newline="\n")

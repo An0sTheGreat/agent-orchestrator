@@ -1437,6 +1437,13 @@
                                                   ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
                                         <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
                                     </ToggleButton>
+                                    <!-- Image Gen (MainWindow.ImageChip.cs): the label turns it on or off; the caret opens its model, size and VRAM choice -->
+                                    <ToggleButton x:Name="CodeImageGenToggle" Style="{StaticResource ChipToggle}" Click="ImageGenToggle_Click" AutomationProperties.Name="Image Gen">
+                                        <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE91B;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Image Gen" />
+                                            <Button x:Name="CodeImageGenCaret" Style="{StaticResource BareButton}" Click="ImageGenCaret_Click" Padding="6,3,8,3" Margin="0,-3,-8,-3" ToolTip="Image model and size"
+                                                    AutomationProperties.Name="Image Gen settings"><TextBlock Text="▾" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></Button>
+                                        </StackPanel>
+                                    </ToggleButton>
                                     <!-- Reviewer: the Reviewer checks each Code turn at its end (orchestrator.reviewed_turn) -->
                                     <ToggleButton x:Name="CodeReviewerToggle" Style="{StaticResource ChipToggle}" Click="ReviewerToggle_Click" AutomationProperties.Name="Reviewer"
                                                   ToolTip="Review every turn: when the lead finishes, the Reviewer checks the work. Problems it finds go back to the lead to fix, up to 2 rounds">
@@ -1695,6 +1702,13 @@
                                 <ToggleButton x:Name="ChatToolsToggle" Style="{StaticResource ChipToggle}" Tag="tools" Click="ExtraToggle_Click" AutomationProperties.Name="Tools"
                                               ToolTip="Give the worker utilities: calculator, current date and time, and reading a web page by URL">
                                     <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Tools" /></StackPanel>
+                                </ToggleButton>
+                                <!-- Image Gen (MainWindow.ImageChip.cs): the label turns it on or off; the caret opens its model, size and VRAM choice -->
+                                <ToggleButton x:Name="ChatImageGenToggle" Style="{StaticResource ChipToggle}" Click="ImageGenToggle_Click" AutomationProperties.Name="Image Gen">
+                                    <StackPanel Orientation="Horizontal"><TextBlock Text="&#xE91B;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,5,0" /><TextBlock Text="Image Gen" />
+                                        <Button x:Name="ChatImageGenCaret" Style="{StaticResource BareButton}" Click="ImageGenCaret_Click" Padding="6,3,8,3" Margin="0,-3,-8,-3" ToolTip="Image model and size"
+                                                AutomationProperties.Name="Image Gen settings"><TextBlock Text="▾" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></Button>
+                                    </StackPanel>
                                 </ToggleButton>
                             </WrapPanel>
                         </DockPanel>

@@ -4003,6 +4003,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
         extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role), computer_asked(request))}, note)
     if pc_tools:
         extras = ([*extras[0], *pc_tools], {**extras[1], **pc_handlers}, note + pc_note)
+    image_tools, image_handlers, image_note = image_gen_extras(request, not vision_off(turn, role))  # the answering model's only
+    extras = ([*extras[0], *image_tools], {**extras[1], **image_handlers}, extras[2] + image_note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
@@ -4258,7 +4260,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     undelivered (the launcher sends it as the next turn). With
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
-    calls. After a batch that ran another model (delegate), the role's model is ensured again: a single-model server may
+    calls. After a batch that ran another model (delegate, generate_image), the role's model is ensured again: a single-model server may
     have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another)."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
@@ -4343,7 +4345,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 messages.append(message)
                 STEERED.append(message)
                 emit("steered", role=role, key=key)
-        if "delegate" in {str((c.get("function") or {}).get("name")) for c in calls}:
+        if {"delegate", "generate_image"} & {str((c.get("function") or {}).get("name")) for c in calls}:
             model = client.ensure_model(role, False)
         if stop and stop():
             return reply_text(response)
@@ -4714,7 +4716,66 @@ def browser_handler(folders: list[dict[str, str]], request: dict[str, Any], visi
     return browser
 
 
-COMPUTER_ACTIONS = ("apps", "open", "screenshot", "zoom", *BROWSER_INPUT)
+# The launcher's Image Gen switch (the request's "image_gen"): how to write a prompt for each of its image model recipes.
+IMAGE_STYLE_TIPS = {
+    "z-image-turbo": "Z-Image Turbo: write natural-language sentences describing the subject, setting, lighting, camera and "
+                     "style; put any text to render in quotes. Describe what you want to see, not what to leave out.",
+    "flux3-klein": "FLUX: write natural-language sentences describing the subject, setting, lighting, camera and style; put "
+                   "any text to render in quotes. Describe what you want to see, not what to leave out.",
+    "flux2-klein-4b": "FLUX: write natural-language sentences describing the subject, setting, lighting, camera and style; put "
+                      "any text to render in quotes. Describe what you want to see, not what to leave out.",
+    "qwen-image-2.1-omni": "Qwen-Image: write natural-language sentences describing the subject, setting, lighting, camera and "
+                           "style; it renders text well, so put any text to render in quotes.",
+    "qwen-image-2.1": "Qwen-Image: write natural-language sentences describing the subject, setting, lighting, camera and "
+                      "style; it renders text well, so put any text to render in quotes.",
+    "moss-image-sft": "MOSS-Image: write natural-language sentences describing the subject, setting, lighting, camera and style.",
+    "sdxl": "SDXL: write comma-separated tags, most important first, with quality tags (masterpiece, best quality, highly "
+            "detailed); it follows short phrases better than long sentences.",
+}
+IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style in clear, concrete words."
+
+
+def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+    """The Image Gen switch (the request's "image_gen"): the generate_image tool, its handler and the system prompt note,
+    the answering model's only, like the browser; nothing when it is off. The launcher paints the picture (an "image"
+    request) and shows it; the model gets its text and, when it can see (`vision`), the picture. With "unload_chat" the
+    models this turn loaded leave the GPU first (code_loop loads the answering model again before its next call)."""
+    gen = request.get("image_gen")
+    if not isinstance(gen, dict):
+        return [], {}, ""
+    size, takes_negative = f"{gen.get('width')}x{gen.get('height')}", gen.get("negative") is True
+    exact = bool(gen.get("style"))  # OpenRouter models (no style) honour only the aspect: the provider picks the exact size
+    properties = {"prompt": {"type": "string", "description": "The full picture description, written for this image model."},
+                  **({"negative": {"type": "string", "description": "What to keep out of the picture."}} if takes_negative else {}),
+                  "seed": {"type": "integer", "description": "To adjust an earlier picture, its seed; leave out for a new one."}}
+    tool = function_tool("generate_image", "Make a picture for the user with the image model; the user sees it beside the chat. "
+                         f"The picture is {'always' if exact else 'about'} {size} pixels{'' if exact else ' (the provider picks the exact size)'}. To adjust an earlier picture, call it again with the revised full "
+                         "prompt and the same seed.", properties, ["prompt"])
+
+    def generate_image(prompt: str, negative: str = "", seed: Any = None) -> str:
+        if not str(prompt or "").strip():
+            raise WorkflowError("prompt is empty: describe the picture")
+        seed = None if seed is None else int(seed)
+        if gen.get("unload_chat") is True:
+            unload_models()  # the image model paints on this PC's GPU: the chat model leaves it until code_loop loads it again
+        answer = launcher_call("image", prompt=str(prompt), negative=str(negative or "") if takes_negative else "", seed=seed)
+        if answer is None:
+            return "ERROR: image generation is only there when the app runs this turn"
+        result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+        return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
+
+    note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
+            f"at {size} pixels ({'always that size' if exact else 'about that size, the provider picks the exact one'}). Use it when the user asks you to generate, create, draw or make a picture, or "
+            "to change one you made. Write the prompt yourself, refined for this image model, rather than passing the user's "
+            f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
+            + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")
+            + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. Do not paste the "
+            "prompt as a code block unless the user asks for it. After the tool returns, say in one or two sentences what you "
+            "made: the user already sees the picture.")
+    return [tool], {"generate_image": generate_image}, note
+
+
+COMPUTER_ACTIONS =("apps", "open", "screenshot", "zoom", *BROWSER_INPUT)
 
 
 def computer_apps(request: dict[str, Any]) -> list[str]:
@@ -5318,6 +5379,9 @@ def lead_setup(config: dict[str, Any], folders: list[dict[str, str]], request: d
     tools, handlers["browser"] = tools + [BROWSER_TOOL], browser_handler(folders, request, not vision_off(config, role))  # the lead's only
     if apps := computer_apps(request):
         tools, handlers["computer"] = tools + [computer_tool(apps)], computer_handler(not vision_off(config, role), computer_asked(request))
+    image_tools, image_handlers, image_note = image_gen_extras(request, not vision_off(config, role))  # the lead's only
+    tools, note = tools + image_tools, note + image_note
+    handlers.update(image_handlers)
     if asked_to_start(request):
         def start_project() -> str:
             if not (Path(folders[0]["path"]) / "PROJECT.md").is_file():
@@ -5561,7 +5625,7 @@ def write_project(config: dict[str, Any], role: str, folders: list[dict[str, str
 PI_EXTENSION = ROOT / "pi" / "agent_orchestrator.ts"
 PI_PACKAGE_CLI = Path("node_modules") / "@earendil-works" / "pi-coding-agent" / "dist" / "cli.js"
 PI_OWN_TOOLS = ["read", "edit", "write"]  # Pi's; its bash, grep, find and ls stay off (no grant checks inside them)
-PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "browser", "computer", "web_search", "fetch_page", "calculator",
+PI_GATEWAY_TOOLS = ("list_files", "search_files", "todo", "run_checks", "run_command", "delegate", "start_project", "browser", "computer", "generate_image", "web_search", "fetch_page", "calculator",
                     "current_time")
 PI_TOOL_RESULT_LIMIT = 6000
 
@@ -5744,6 +5808,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     client, sampling = role_settings(config, model_role)
     model = client.ensure_model(model_role, False)
     n_ctx = client.context_size() or int((client.auto_load or {}).get("max_seq_length") or 32768)
+    if isinstance(request.get("image_gen"), dict) and request["image_gen"].get("unload_chat") is True and client.llama_port:
+        request = {**request, "image_gen": None}  # Pi talks to this llama-server itself: it is never stopped mid-turn for a picture
     tools, handlers, note, skills = lead_setup(config, folders, request, role)
     lead_delegate = handlers["delegate"]
 

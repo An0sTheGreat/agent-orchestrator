@@ -122,6 +122,68 @@ internal static class ImageGen
 
     public static ImageRecipe Recipe(string id) => Recipes.FirstOrDefault(r => r.Id == id) ?? Recipes[0];
 
+    // The chat's Image Gen model (AppSettings.ChatImage), in the page's order: the primary PC's, OpenRouter's, else this PC's. Recipe:
+    // what it paints with (a primary PC's "local:<file>" by the file's family; null for OpenRouter); Name: what the model and the
+    // user are told. Null when nothing is chosen or the recipe is unknown.
+    public static (ImageRecipe? Recipe, string Name)? ChatModel(ImageSettings c)
+    {
+        if (c.SharedModel.Length > 0)
+        {
+            var file = c.SharedModel.StartsWith("local:", StringComparison.Ordinal) ? c.SharedModel[6..] : null;
+            var recipe = file is null ? Recipes.FirstOrDefault(r => r.Id == c.SharedModel)
+                : Recipes.FirstOrDefault(r => Regex.IsMatch(file, r.Family, RegexOptions.IgnoreCase));
+            return recipe is null ? null : (recipe, file is null ? recipe.Name : $"{file} · {recipe.Name}");
+        }
+        if (c.RemoteModel.Length > 0)
+            return (null, c.RemoteModel);
+        return Recipes.FirstOrDefault(r => r.Id == c.RecipeId) is { } own ? (own, c.LocalModel.Length > 0 ? System.IO.Path.GetFileName(c.LocalModel) : own.Name) : null;
+    }
+
+    // The request's "image_gen" for the chat's pick; null when it resolves to no model. keepBoth: AppSettings.ImageKeepBoth.
+    public static LauncherLogic.ImageGenRequest? ChatRequest(ImageSettings c, bool keepBoth)
+    {
+        if (ChatModel(c) is not var (recipe, name))
+            return null;
+        var run = ChatRun(c, recipe, "", null, 0, false);
+        return new(name, recipe?.Id ?? "", run.Width, run.Height, recipe?.Negative == true, c.SharedModel.Length == 0 && c.RemoteModel.Length == 0 && !keepBoth);
+    }
+
+    // One generate_image call as the page would run it: the chat's model and size (the Width/Height boxes over the aspect's recommended
+    // size, rounded to the model's multiple unless unlocked), the recipe's steps, guidance and sampler, one picture, no start image.
+    // seed null: a random one, chosen here so the reply reports it. OpenRouter keeps what it reads only (as the page records it).
+    public static ImageSettings ChatRun(ImageSettings c, ImageRecipe? recipe, string prompt, string? negative, long? seed, bool lowVram)
+    {
+        var multiple = recipe?.Multiple ?? 16;
+        var ratio = c.Aspect.Length > 0 && Presets.Any(p => p.Ratio.Length > 0 && (p.Ratio == c.Aspect || Flip(p.Ratio) == c.Aspect));
+        var (rw, rh) = ratio ? Size(c.Aspect, RecommendedLongSide, multiple) : (c.Width, c.Height);
+        var step = c.SizeUnlocked ? 1 : multiple;
+        var remote = c.SharedModel.Length == 0 && c.RemoteModel.Length > 0;
+        return new()
+        {
+            RecipeId = c.SharedModel.Length > 0 ? c.SharedModel : recipe?.Id ?? Recipes[0].Id, LocalModel = c.SharedModel.Length > 0 || remote ? "" : c.LocalModel,
+            SharedModel = c.SharedModel, RemoteModel = c.SharedModel.Length > 0 ? "" : c.RemoteModel, RemoteProvider = remote ? c.RemoteProvider : "",
+            Prompt = prompt.Trim(), Negative = recipe is { Negative: true } && !remote ? (negative ?? "").Trim() : "",
+            Aspect = c.Aspect, CustomWidth = c.CustomWidth, CustomHeight = c.CustomHeight, SizeUnlocked = c.SizeUnlocked,
+            Width = Math.Clamp(Pick(c.CustomWidth, rw, step), 64, 4096), Height = Math.Clamp(Pick(c.CustomHeight, rh, step), 64, 4096),
+            Steps = remote ? 0 : recipe?.Steps ?? 8, Cfg = remote ? 0 : recipe?.Cfg ?? 1, Sampler = remote ? "" : recipe?.Sampler ?? "", Scheduler = "",
+            Seed = seed is >= 0 ? seed.Value : Random.Shared.Next(), Batch = 1, LowVram = lowVram, Strength = remote ? 0 : 0.75, InitImage = "",
+        };
+    }
+
+    // The reply's one line: the model's memory of the picture it made (seed -1: OpenRouter, which takes none).
+    public static string ChatResult(string model, ImageSettings run, int width, int height)
+    {
+        static string Line(string t) => string.Join(' ', t.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
+        return $"Image generated and shown to the user. Model: {model}. Size: {width}x{height}." + (run.Seed >= 0 ? $" Seed: {run.Seed}." : "") +
+            $" Prompt: {Line(run.Prompt)}" + (run.Negative.Trim().Length > 0 ? $" Negative: {Line(run.Negative)}" : "");
+    }
+
+    // What a reply that is exactly one ChatResult line shows (/image's saved reply): "model · size · seed n"; null for any other text,
+    // such as a model that echoes the line and goes on (the line is one line, so the match ends at the text's end).
+    public static string? ResultCaption(string text) =>
+        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)? Prompt: [^\r\n]*\z") is { Success: true } m
+            ? $"{m.Groups[1].Value} · {m.Groups[2].Value}" + (m.Groups[3].Success ? $" · seed {m.Groups[3].Value}" : "") : null;
+
     public static string LocalPath(string root, ImageFile file) => Path.Combine(root, file.Repo.Split('/')[^1], file.Path.Replace('/', Path.DirectorySeparatorChar));
 
     // Width and height for an aspect ("16:9") and long side, each rounded to the nearest multiple (at least one multiple).
@@ -378,6 +440,38 @@ internal static class ImageGen
         var root = @"C:\m";
         var z = Recipe("z-image-turbo");
         var sdxl = Recipe("sdxl");
+        // The chat's Image Gen: the model resolved, the run as the page would make it, the request field and the reply line.
+        Check(ChatModel(new()) is ({ Id: "z-image-turbo" }, "Z-Image Turbo") && ChatModel(new() { RecipeId = "nope" }) is null && ChatRequest(new() { RecipeId = "nope" }, false) is null,
+            "Image Gen: a recipe resolves, an unknown one does not");
+        var unchosen = new AppSettings().ChatImage;
+        Check(ChatModel(unchosen) is null && ChatRequest(unchosen, false) is null &&
+            !JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], new(false, false, [], ImageGen: ChatRequest(unchosen, false))))!.AsObject().ContainsKey("image_gen"),
+            "Image Gen: no model is chosen at first, so the request carries no image_gen (and nothing downloads unasked)");
+        var chatRun = ChatRun(new(), z, " a cat\n", "blurry", 42, true);
+        Check(chatRun is { RecipeId: "z-image-turbo", Prompt: "a cat", Negative: "", Width: 1024, Height: 1024, Steps: 8, Cfg: 1.0, Sampler: "", Seed: 42, Batch: 1, LowVram: true, InitImage: "", SharedModel: "", RemoteModel: "" },
+            "Image Gen: the default run");
+        var wide = ChatRun(new() { RecipeId = "sdxl", Aspect = "16:9", LocalModel = @"C:\m\my_sdxl.safetensors" }, sdxl, "p", "blurry", null, false);
+        Check(wide is { Width: 1024, Height: 576, Steps: 30, Cfg: 7.0, Negative: "blurry", LocalModel: @"C:\m\my_sdxl.safetensors", Seed: >= 0 },
+            "Image Gen: the aspect's size, the recipe's numbers, a negative it reads, a random seed");
+        Check(ChatRun(new() { Aspect = "Custom", CustomWidth = 1000, CustomHeight = 700 }, sdxl, "p", null, 1, false) is { Width: 1024, Height: 704 } &&
+            ChatRun(new() { Aspect = "Custom", CustomWidth = 1000, CustomHeight = 700, SizeUnlocked = true }, sdxl, "p", null, 1, false) is { Width: 1000, Height: 700 },
+            "Image Gen: typed sizes round to the multiple unless unlocked");
+        var shared = new ImageSettings { SharedModel = "local:z_image_turbo-Q8_0.gguf" };
+        Check(ChatModel(shared) is ({ Id: "z-image-turbo" }, "z_image_turbo-Q8_0.gguf · Z-Image Turbo") &&
+            ChatRun(shared, z, "p", null, 1, false) is { RecipeId: "local:z_image_turbo-Q8_0.gguf", LocalModel: "", SharedModel: "local:z_image_turbo-Q8_0.gguf" } &&
+            ChatRequest(shared, false) is { Style: "z-image-turbo", UnloadChat: false } && ChatModel(new() { SharedModel = "local:unknown.gguf" }) is null,
+            "Image Gen: a primary PC's model resolves by its file, is painted there and needs no unload here");
+        var remote = new ImageSettings { RemoteModel = "google/x-image", RemoteProvider = "a" };
+        Check(ChatModel(remote) is (null, "google/x-image") && ChatRun(remote, null, "p", "n", 3, false) is { RemoteModel: "google/x-image", RemoteProvider: "a", Negative: "", Steps: 0, Sampler: "" } &&
+            ChatRequest(remote, false) is { Style: "", Negative: false, UnloadChat: false }, "Image Gen: an OpenRouter model");
+        Check(ChatRequest(new() { RecipeId = "sdxl" }, false) is { Model: "SDXL 1.0", Style: "sdxl", Width: 1024, Height: 1024, Negative: true, UnloadChat: true } &&
+            ChatRequest(new(), true) is { UnloadChat: false }, "Image Gen: the request for this PC's model unloads the chat model unless both stay loaded");
+        Check(ChatResult("SDXL 1.0", wide, 1024, 576) is var line && line.StartsWith("Image generated and shown to the user. Model: SDXL 1.0. Size: 1024x576. Seed: ") &&
+            line.EndsWith(" Prompt: p Negative: blurry") && ChatResult("m", chatRun, 1, 1) == "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 42. Prompt: a cat" &&
+            !ChatResult("m", new() { Seed = -1, Prompt = "two\nlines" }, 1, 1).Contains("Seed") && ChatResult("m", new() { Seed = -1, Prompt = "two\nlines" }, 1, 1).EndsWith("Prompt: two lines") &&
+            ResultCaption(line) == "SDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(ChatResult("m", new() { Seed = -1, Prompt = "p" }, 1, 1)) == "m · 1x1" && ResultCaption("Hello") is null &&
+            ResultCaption(line + "\nIt is a nice picture.") is null && ResultCaption(line + "\n") is null,
+            "Image Gen: the reply line and its caption");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
             @"--diffusion-model C:\m\Z-Image-Turbo-GGUF\z_image_turbo-Q4_K.gguf --vae C:\m\Z-Image-Turbo\split_files\vae\ae.safetensors " +

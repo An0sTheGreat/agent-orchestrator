@@ -622,6 +622,8 @@ public partial class MainWindow
             }
             catch (InvalidOperationException) { } // already gone
         }
+        else if (_chatBusy) // /image paints with no process
+            CancelImageGen();
     }
 
     private void NewChat_Click(object sender, RoutedEventArgs e)
@@ -1359,6 +1361,10 @@ public partial class MainWindow
                 SetChatStatus("Looking at the page in the browser…");
                 Forget(AnswerBrowserAsync(ev, _chatProcess));
                 break;
+            case "image": // the model's generate_image tool (Image Gen): painted with the Images page's generation
+                SetChatStatus("Making a picture…");
+                Forget(AnswerImageAsync(ev, _chatProcess));
+                break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 SetChatStatus("Using an application on your computer… (Esc stops it)");
                 Forget(AnswerComputerAsync(ev, _chatProcess));
@@ -1708,7 +1714,7 @@ public partial class MainWindow
             foreach (var section in r.Content.Children.OfType<Expander>().ToList())
                 if (section.Content is StackPanel { Children.Count: > 0 } body && body.Children[0] is TextBox thought && thought.Text.Trim() == text.Trim())
                     r.Content.Children.Remove(section);
-        EnsureAnswer(r).Text = text;
+        EnsureAnswer(r).Text = ImageGen.ResultCaption(text) ?? text; // /image's reply: its saved line for the model, a caption to read
         r.AnswerText.Clear().Append(text);
         ShowMarkdown(r);
         if (!_turn.Follow)

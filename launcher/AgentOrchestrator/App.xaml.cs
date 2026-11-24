@@ -102,6 +102,20 @@ public partial class App : Application
             return;
         }
 
+        // --image-chat-live <recipe id> <prompt> [main model file]: one real picture through the chat's paint path (a live test of
+        // Image Gen's PaintForChatAsync; uses the GPU), the window off-screen. The result line goes to stderr; exit 0 when a
+        // picture was saved and the image server was stopped after it.
+        if (Array.FindIndex(e.Args, a => a.Equals("--image-chat-live", StringComparison.OrdinalIgnoreCase)) is var live and >= 0 && live + 2 < e.Args.Length)
+        {
+            var window = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false,
+                WindowState = WindowState.Normal };
+            window.Show();
+            KeepBehind();
+            _ = window.Dispatcher.InvokeAsync(async () =>
+                Shutdown(await window.ImageChatLiveAsync(e.Args[live + 1], e.Args[live + 2], live + 3 < e.Args.Length ? e.Args[live + 3] : "") ? 0 : 1));
+            return;
+        }
+
         base.OnStartup(e);
         // A UI exception is logged and shown, and the app keeps running; one that ends the process is logged first.
         DispatcherUnhandledException += (_, args) =>

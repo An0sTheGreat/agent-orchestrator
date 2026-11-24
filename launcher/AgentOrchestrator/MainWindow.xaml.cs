@@ -210,7 +210,7 @@ public partial class MainWindow : Window
     // effort) and the workflow mode ("workflow": "dual", "tri" or "solo", Settings > Agents).
     private string RunRequest(string project)
     {
-        var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras(),
+        var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras() with { ImageGen = null }, // Image Gen: Chat and Code chat turns only
             effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess))!;
         request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
@@ -509,6 +509,9 @@ public partial class MainWindow : Window
                 break;
             case "browser": // the model's browser tool: the in-app browser opens on the page
                 Forget(AnswerBrowserAsync(ev, _process));
+                break;
+            case "image": // the model's generate_image tool (Image Gen): painted with the Images page's generation
+                Forget(AnswerImageAsync(ev, _process));
                 break;
             case "computer": // the model's computer tool: one window of an approved application (MainWindow.Computer.cs)
                 Forget(AnswerComputerAsync(ev, _process));
@@ -2821,6 +2824,69 @@ public partial class MainWindow : Window
                 Flip(ChatToolsToggle);
                 if (!_settings.UseSearch || !_settings.UseTools || ChatSearchToggle.IsChecked != true || CodeToolsToggle.IsChecked != true || AppSettings.Load() is not { UseSearch: true, UseTools: true })
                     return Fail();
+                // Image Gen chip: in both composers and in sync; on with a model the request carries image_gen at the chat's size, off none.
+                // Its dropdown: a model pick, an aspect ratio, the swap, the lock and the keep-both switch each write the setting.
+                var imgSaved = (_settings.UseImageGen, JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth);
+                JsonNode? ImgReq() => JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!["image_gen"];
+                (_settings.UseImageGen, _settings.ChatImage, _settings.ImageKeepBoth) = (false, new AppSettings().ChatImage, false); // the default: no model chosen
+                if (CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
+                    return Fail();
+                // the caret opens the dropdown and leaves Image Gen as it was; Esc in the window closes it
+                SmokeClick(ChatImageGenCaret);
+                await Settle();
+                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || _imageChipPopup is not { IsOpen: true })
+                    return Fail();
+                RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+                if (_imageChipPopup.IsOpen)
+                    return Fail();
+                // the label with no model chosen: the dropdown opens and Image Gen stays off; a press on the label while it is open keeps it open
+                ChatImageGenToggle.IsChecked = true;
+                ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
+                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
+                    return Fail();
+                RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent }); // the press closes it
+                ChatImageGenToggle.IsChecked = true;
+                ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
+                await Settle();
+                if (_settings.UseImageGen || _imageChipPopup is not { IsOpen: true })
+                    return Fail();
+                var lastRecipe = ImageGen.Recipes[^1];
+                T? InChip<T>(string tag) where T : FrameworkElement => SmokeFind<T>(_imageChipPopup!.Child, e => e.Tag as string == tag);
+                if (_chipSize is null || InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRow ||
+                    !SmokeVisuals(recipeRow).OfType<TextBlock>().Any(t => t.Text == "Downloaded" || t.Text.StartsWith("Download (", StringComparison.Ordinal))) // the Images page's label
+                    return Fail();
+                // picking a model there turns Image Gen on (no download until the first picture)
+                SmokeClick(recipeRow);
+                if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { UseImageGen: true } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
+                    CodeImageGenToggle.IsChecked != true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
+                    return Fail();
+                _chipSize.Aspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "16:9");
+                var wide = ImageGen.Size("16:9", ImageGen.RecommendedLongSide, lastRecipe.Multiple);
+                if (_settings.ChatImage.Aspect != "16:9" || ImgReq() is not { } wideReq || (int)wideReq["width"]! != wide.Width || (int)wideReq["height"]! != wide.Height)
+                    return Fail();
+                SmokeClick(InChip<Button>("ChatImageSwapSize")!);
+                if (_settings.ChatImage.Aspect != "9:16" || ImgReq() is not { } tallReq || (int)tallReq["width"]! != wide.Height || (int)tallReq["height"]! != wide.Width)
+                    return Fail();
+                SmokeClick(InChip<Button>("ChatImageSizeLock")!);
+                (_chipSize.WidthBox.Text, _chipSize.HeightBox.Text) = ("1001", "777");
+                _chipSize.Commit(true);
+                _chipSize.Commit(false);
+                if (_settings.ChatImage is not { SizeUnlocked: true, CustomWidth: 1001, CustomHeight: 777 } || ImgReq() is not { } typedReq ||
+                    (int)typedReq["width"]! != 1001 || (int)typedReq["height"]! != 777 || !(bool)typedReq["unload_chat"]!)
+                    return Fail();
+                var keepBoth = InChip<ToggleButton>("ChatImageKeepBoth")!;
+                keepBoth.IsChecked = true;
+                SmokeClick(keepBoth);
+                if (!_settings.ImageKeepBoth || AppSettings.Load() is not { ImageKeepBoth: true } || ImgReq() is not { } keepReq || (bool)keepReq["unload_chat"]!)
+                    return Fail();
+                _imageChipPopup.IsOpen = false;
+                CodeImageGenToggle.IsChecked = false;
+                ImageGenToggle_Click(CodeImageGenToggle, new RoutedEventArgs());
+                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || ImgReq() is not null)
+                    return Fail();
+                (_settings.UseImageGen, _settings.ChatImage, _settings.ImageKeepBoth) = (imgSaved.UseImageGen, JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item2)!, imgSaved.ImageKeepBoth);
+                _settings.Save();
+                RefreshExtras();
                 answer = "Smoke skill";
                 NewSkill();
                 var skillFolder = Path.Combine(AppSettings.SkillsRoot, "Smoke skill");
@@ -2950,12 +3016,12 @@ public partial class MainWindow : Window
                     _imgAspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "1:1");
                     var sizeLock = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesSizeLock");
                     _imgWidth.Text = "1001";
-                    CommitImageSize(true);
+                    _imgSize.Commit(true);
                     var lockedPair = (_imgWidth.Text, _imgHeight.Text);
                     SmokeClick(sizeLock!);
                     (_imgWidth.Text, _imgHeight.Text) = ("1001", "777");
-                    CommitImageSize(true);
-                    CommitImageSize(false);
+                    _imgSize.Commit(true);
+                    _imgSize.Commit(false);
                     var open = ReadImageSettings();
                     var openIcon = sizeLock!.Content as string;
                     SmokeClick(sizeLock);
