@@ -1376,6 +1376,20 @@ public partial class MainWindow
         ToTurn(asker, JsonSerializer.Serialize(new { id = Str(ev, "id"), result, image }));
     }
 
+    // --image-chat-live (App.xaml.cs): one picture through PaintForChatAsync with this recipe (and main model file, if given), not
+    // saved as the chat's choice. True when a picture is in the gallery, the model got its copy and the image server is stopped.
+    internal async Task<bool> ImageChatLiveAsync(string recipeId, string prompt, string localModel)
+    {
+        _settings.ChatImage = new ImageSettings { RecipeId = recipeId, LocalModel = localModel };
+        var before = Directory.Exists(ImageGen.ImagesFolder) ? Directory.GetFiles(ImageGen.ImagesFolder, "*.png").Length : 0;
+        var clock = Stopwatch.StartNew();
+        var (result, image, _) = await PaintForChatAsync(prompt, null, 42, null);
+        var after = Directory.Exists(ImageGen.ImagesFolder) ? Directory.GetFiles(ImageGen.ImagesFolder, "*.png").Length : 0;
+        Console.Error.WriteLine($"image-chat-live: {result}\nimage-chat-live: {clock.Elapsed.TotalSeconds:0.0} s, pictures {before} -> {after}, " +
+            $"model's copy {image?.Length ?? 0} chars, image server {(_sdServer is null ? "stopped" : "still running")}, status \"{_imgStatus.Text}\"");
+        return !result.StartsWith("ERROR") && after == before + 1 && image is { Length: > 0 } && _sdServer is null;
+    }
+
     // The chat's picture, for generate_image (asker: the turn's process) and /image (no asker; the turn's own Stop cancels it): the
     // ChatResult line ("ERROR: …" when nothing was painted) and the picture's copy for the model. The picture joins the turn's.
     private async Task<(string Result, string? Image, bool Cancelled)> PaintForChatAsync(string prompt, string? negative, long? seed, Process? asker)

@@ -49,8 +49,11 @@ public partial class MainWindow
         RefreshExtras();
     }
 
-    private void ImageGenCaret_Click(object sender, RoutedEventArgs e) =>
+    private void ImageGenCaret_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true; // the caret sits inside the chip: its click must not reach the chip's own handler
         OpenImageChip(sender == ChatImageGenCaret ? ChatImageGenToggle : CodeImageGenToggle, turnOn: false);
+    }
 
     // turnOn: opened by turning the chip on with no model; picking one turns Image Gen on.
     private void OpenImageChip(ToggleButton chip, bool turnOn)
