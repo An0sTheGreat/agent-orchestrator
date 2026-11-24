@@ -19,7 +19,7 @@ public partial class MainWindow
         if (_reply is null)
             return;
         const double w = 256, step = 11;
-        var h = Math.Clamp(w * height / Math.Max(1.0, width), 144, 384);
+        var h = Math.Clamp(w * height / Math.Max(1.0, width), 144, 320); // a tall picture's field stops at 320: still upright, not a tower
         var canvas = new Canvas { Width = w, Height = h };
         var dots = new List<(Ellipse Dot, double X, double Y)>();
         for (var y = step / 2; y < h; y += step)
