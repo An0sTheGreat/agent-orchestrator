@@ -39,25 +39,28 @@ public partial class MainWindow
     {
         InitStartSlide();
         WorkerRail.IsVisibleChanged += (_, _) => Dispatcher.BeginInvoke(RefreshContextPins); // the cards line up with the rail's
-        foreach (var (box, empty, panel) in new[] { (ChatComposer, (FrameworkElement)ChatEmpty, (Panel)ChatPanel), (CodeComposer, CodeEmpty, CodePanel) })
+        // The panel is whatever the scroller shows now: parking a chat or switching Code views puts another one there.
+        foreach (var (box, empty, scroll) in new[] { (ChatComposer, (FrameworkElement)ChatEmpty, ChatScroll), (CodeComposer, CodeEmpty, CodeScroll) })
         {
             box.RenderTransform = new TranslateTransform();
             empty.RenderTransform = new TranslateTransform();
-            void Again() => PlaceComposer(box, empty, panel, animate: false);
+            void Again() => PlaceComposer(box, empty, scroll.Content as Panel, animate: false);
             box.SizeChanged += (_, _) => Again();
             ((FrameworkElement)empty.Parent).SizeChanged += (_, _) => Again();
             empty.SizeChanged += (_, _) => Again();
-            empty.IsVisibleChanged += (_, _) => PlaceComposer(box, empty, panel, animate: !empty.IsVisible);
+            // back from another page: the conversation may have filled (or emptied) while hidden, when no event above fired
+            box.IsVisibleChanged += (_, _) => { if (box.IsVisible) Again(); };
+            empty.IsVisibleChanged += (_, _) => PlaceComposer(box, empty, scroll.Content as Panel, animate: !empty.IsVisible);
         }
     }
 
     // The box's offset up from its place (and the text's, to centre the two together); 0 once the conversation has messages.
-    private void PlaceComposer(FrameworkElement box, FrameworkElement empty, Panel panel, bool animate)
+    private void PlaceComposer(FrameworkElement box, FrameworkElement empty, Panel? panel, bool animate)
     {
         if (box.RenderTransform is not TranslateTransform move || empty.RenderTransform is not TranslateTransform lift)
             return;
         double boxY = 0, textY = 0;
-        if (empty.Visibility == Visibility.Visible && panel.Children.Count == 0 && empty.Parent is FrameworkElement area)
+        if (empty.Visibility == Visibility.Visible && panel is { Children.Count: 0 } && empty.Parent is FrameworkElement area)
         {
             var (rows, text, height) = (area.ActualHeight, empty.ActualHeight, box.ActualHeight);
             var below = box.Margin.Top; // the gap between the rows and the box

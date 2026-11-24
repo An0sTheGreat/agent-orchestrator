@@ -2895,6 +2895,28 @@ public partial class MainWindow : Window
                 }
                 SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Images")]);
                 await Settle();
+                {
+                    // a chat that filled while Images showed: back on it, the box sits at the bottom, not where the empty chat
+                    // centred it (MainWindow.Landing.cs re-places it when it reappears)
+                    var composerMove = (TranslateTransform)ChatComposer.RenderTransform;
+                    var wasEmpty = ChatEmpty.Visibility;
+                    ChatEmpty.Visibility = Visibility.Collapsed;
+                    composerMove.BeginAnimation(TranslateTransform.YProperty, null);
+                    composerMove.Y = -200;
+                    Reveal(ImagesView, false);
+                    Reveal(ChatView, true);
+                    await Settle();
+                    var placed = composerMove.Y;
+                    ChatEmpty.Visibility = wasEmpty;
+                    Reveal(ChatView, false);
+                    Reveal(ImagesView, true);
+                    await Settle();
+                    if (placed != 0)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: back from Images, the chat box stayed {placed} px above its place");
+                        return Fail();
+                    }
+                }
                 if (SmokeFind<Grid>(ImagesView, g => g.Tag as string == "ImagesPage") is not { IsVisible: true } || ImagesView.Visibility != Visibility.Visible ||
                     ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
                     SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { } recipes || recipes.Items.Count != ImageGen.Recipes.Length + 1 ||
