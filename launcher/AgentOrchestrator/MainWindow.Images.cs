@@ -220,13 +220,13 @@ public partial class MainWindow
             SetChatFinal(ImageGen.ChatResult("m", new ImageSettings { Prompt = "p" }, 1, 1));
             if (made1.Answer is not null || made1.Final is null)
                 return Fail("a picture's reply showed its details line");
-            // the chat's picture while it is made: the dots, the step inside the card and the percentage; the status line hidden; gone once it ends
+            // the chat's picture while it is made: the dots, "Making a picture..." at its top and the percentage; the status line hidden; gone once it ends
             var reply = _reply = AddReply("planner");
             ShowPendingPicture(1024, 1536);
-            PendingPictureProgress(0.88, "Step 7/8 · 2.11 s/it · 88%");
+            PendingPictureProgress(0.88);
             SetChatStatus("Making a picture… Step 7/8");
             if (_pendingPicture is not var (pending, percent, status, _) || !reply.Content.Children.Contains(pending) || percent.Text != "88%" ||
-                status.Text != "Making a picture… Step 7/8 · 2.11 s/it" || reply.Status.Visibility == Visibility.Visible)
+                !status.Text.StartsWith("Making a picture.", StringComparison.Ordinal) || status.VerticalAlignment != VerticalAlignment.Top || reply.Status.Visibility == Visibility.Visible)
                 return Fail("the picture's placeholder");
             RemovePendingPicture();
             _reply = null;

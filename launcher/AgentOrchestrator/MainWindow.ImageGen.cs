@@ -1441,7 +1441,7 @@ public partial class MainWindow
             }
             _imgStatusTap = (text, progress) =>
             {
-                PendingPictureProgress(progress, text.StartsWith("Generating for the chat", StringComparison.Ordinal) ? null : text); // the card shows the step; the reply's status line waits behind it
+                PendingPictureProgress(progress); // the card says it; the reply's status line waits behind it
             };
             try
             {
