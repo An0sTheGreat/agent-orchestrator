@@ -622,6 +622,8 @@ public partial class MainWindow
             }
             catch (InvalidOperationException) { } // already gone
         }
+        else if (_chatBusy) // /image paints with no process
+            CancelImageGen();
     }
 
     private void NewChat_Click(object sender, RoutedEventArgs e)
@@ -1712,7 +1714,7 @@ public partial class MainWindow
             foreach (var section in r.Content.Children.OfType<Expander>().ToList())
                 if (section.Content is StackPanel { Children.Count: > 0 } body && body.Children[0] is TextBox thought && thought.Text.Trim() == text.Trim())
                     r.Content.Children.Remove(section);
-        EnsureAnswer(r).Text = text;
+        EnsureAnswer(r).Text = ImageGen.ResultCaption(text) ?? text; // /image's reply: its saved line for the model, a caption to read
         r.AnswerText.Clear().Append(text);
         ShowMarkdown(r);
         if (!_turn.Follow)

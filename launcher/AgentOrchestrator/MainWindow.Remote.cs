@@ -134,7 +134,7 @@ public partial class MainWindow
     {
         if (text.Trim().Length == 0)
             return (400, new { error = "Empty message" });
-        if (text.TrimStart().StartsWith('/')) // a slash command changes settings (RunLocalCommand): those stay at the PC
+        if (text.TrimStart().StartsWith('/') && !System.Text.RegularExpressions.Regex.IsMatch(text, @"\A\s*/image(\s|\z)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) // a slash command changes settings (RunLocalCommand): those stay at the PC; /image paints
             return (400, new { error = "Slash commands only work at the PC." });
         if (DesktopDialogOpen())
             return DialogOpen;
