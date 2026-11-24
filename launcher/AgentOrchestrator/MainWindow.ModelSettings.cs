@@ -289,7 +289,8 @@ public partial class MainWindow
         cardBorder.SetResourceReference(Border.BorderBrushProperty, "Border");
         cardBorder.SetResourceReference(Border.CornerRadiusProperty, "ControlRadius");
         var scroll = new ScrollViewer { Content = cardBorder, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Clamp(e.NewSize.Width * 0.65, 680, 1280)));
+        // 65% of the whole main panel (right of the nav), not of the page column; never wider than the scroller.
+        scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Max(680, ModelSettingsView.ActualWidth * 0.65)));
         var blocks = new Dictionary<string, FrameworkElement>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
         StackPanel Section(string name, string help, bool showHelp = true)

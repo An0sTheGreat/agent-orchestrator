@@ -1212,7 +1212,7 @@
             <!-- The Model Settings page (the sidebar's Model Settings, the rail's gear): presets, the Connection and Target agent header and the selected
                  worker's settings (MainWindow.WorkerTabs.cs); in place of Code and Chat while open -->
             <Grid x:Name="ModelSettingsView" Grid.Column="1" Visibility="Collapsed">
-              <DockPanel x:Name="ModelSettingsPage" Tag="ModelSettingsPage" MaxWidth="1400" Margin="19,8,19,0">
+              <DockPanel x:Name="ModelSettingsPage" Tag="ModelSettingsPage" Margin="19,8,19,0">
                 <!-- Header: the title and the workflow presets left; Connection and Target agent in a pill exactly centred (the
                      right column balances the left); too narrow for that, they stack centred (MainWindow.WorkerTabs.cs). -->
                 <Grid DockPanel.Dock="Top" MinHeight="64" Margin="0,0,0,14">
