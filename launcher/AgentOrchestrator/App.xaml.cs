@@ -94,7 +94,8 @@ public partial class App : Application
         if (Array.FindIndex(e.Args, a => a.Equals("--image-share-loopback", StringComparison.OrdinalIgnoreCase)) is var share and >= 0 && share + 1 < e.Args.Length &&
             int.TryParse(e.Args[share + 1], out var port))
         {
-            var window = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false };
+            var window = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false,
+                WindowState = WindowState.Normal }; // a saved maximized window can't be shown without activating
             window.Show();
             KeepBehind();
             window.StartImageShare(share + 2 < e.Args.Length ? System.Net.IPAddress.Parse(e.Args[share + 2]) : System.Net.IPAddress.Loopback, port);
