@@ -2824,41 +2824,43 @@ public partial class MainWindow : Window
                 Flip(ChatToolsToggle);
                 if (!_settings.UseSearch || !_settings.UseTools || ChatSearchToggle.IsChecked != true || CodeToolsToggle.IsChecked != true || AppSettings.Load() is not { UseSearch: true, UseTools: true })
                     return Fail();
-                // Image Gen chip: in both composers and in sync; on with a model the request carries image_gen at the chat's size, off none.
-                // Its dropdown: a model pick, an aspect ratio, the swap, the lock and the keep-both switch each write the setting.
-                var imgSaved = (_settings.UseImageGen, JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth);
+                // Image Gen chip: a dropdown in both composers, never lit; with a model chosen the request carries image_gen at the chat's
+                // size, with none it carries none. The dropdown: a model pick, an aspect ratio, the swap, the lock and keep-both each write the setting.
+                var imgSaved = (JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth);
                 JsonNode? ImgReq() => JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!["image_gen"];
-                (_settings.UseImageGen, _settings.ChatImage, _settings.ImageKeepBoth) = (false, new AppSettings().ChatImage, false); // the default: no model chosen
+                (_settings.ChatImage, _settings.ImageKeepBoth) = (new AppSettings().ChatImage, false); // the default: no model chosen
                 if (CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
                     return Fail();
-                // the caret opens the dropdown and leaves Image Gen as it was; Esc in the window closes it
+                // the caret opens the dropdown; Esc in the window closes it
                 SmokeClick(ChatImageGenCaret);
                 await Settle();
-                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || _imageChipPopup is not { IsOpen: true })
+                if (ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
                     return Fail();
                 RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
                 if (_imageChipPopup.IsOpen)
                     return Fail();
-                // the label with no model chosen: the dropdown opens and Image Gen stays off; a press on the label while it is open keeps it open
+                // the label opens it too, unlit; a second click closes it
                 ChatImageGenToggle.IsChecked = true;
                 ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
-                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
+                if (ChatImageGenToggle.IsChecked == true || ImgReq() is not null || _imageChipPopup is not { IsOpen: true })
                     return Fail();
-                RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseDownEvent }); // the press closes it
-                ChatImageGenToggle.IsChecked = true;
+                ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
+                if (_imageChipPopup.IsOpen)
+                    return Fail();
+                await Task.Delay(450); // past the guard that keeps the closing press from reopening it
                 ImageGenToggle_Click(ChatImageGenToggle, new RoutedEventArgs());
                 await Settle();
-                if (_settings.UseImageGen || _imageChipPopup is not { IsOpen: true })
+                if (_imageChipPopup is not { IsOpen: true })
                     return Fail();
                 var lastRecipe = ImageGen.Recipes[^1];
                 T? InChip<T>(string tag) where T : FrameworkElement => SmokeFind<T>(_imageChipPopup!.Child, e => e.Tag as string == tag);
                 if (_chipSize is null || InChip<Button>("chatimg:" + lastRecipe.Id) is not { } recipeRow ||
                     !SmokeVisuals(recipeRow).OfType<TextBlock>().Any(t => t.Text == "Downloaded" || t.Text.StartsWith("Download (", StringComparison.Ordinal))) // the Images page's label
                     return Fail();
-                // picking a model there turns Image Gen on (no download until the first picture)
+                // picking a model there is all it takes (no download until the first picture)
                 SmokeClick(recipeRow);
-                if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { UseImageGen: true } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
-                    CodeImageGenToggle.IsChecked != true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
+                if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
+                    CodeImageGenToggle.IsChecked == true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
                     return Fail();
                 _chipSize.Aspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "16:9");
                 var wide = ImageGen.Size("16:9", ImageGen.RecommendedLongSide, lastRecipe.Multiple);
@@ -2880,11 +2882,7 @@ public partial class MainWindow : Window
                 if (!_settings.ImageKeepBoth || AppSettings.Load() is not { ImageKeepBoth: true } || ImgReq() is not { } keepReq || (bool)keepReq["unload_chat"]!)
                     return Fail();
                 _imageChipPopup.IsOpen = false;
-                CodeImageGenToggle.IsChecked = false;
-                ImageGenToggle_Click(CodeImageGenToggle, new RoutedEventArgs());
-                if (_settings.UseImageGen || ChatImageGenToggle.IsChecked == true || ImgReq() is not null)
-                    return Fail();
-                (_settings.UseImageGen, _settings.ChatImage, _settings.ImageKeepBoth) = (imgSaved.UseImageGen, JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item2)!, imgSaved.ImageKeepBoth);
+                (_settings.ChatImage, _settings.ImageKeepBoth) = (JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item1)!, imgSaved.ImageKeepBoth);
                 _settings.Save();
                 RefreshExtras();
                 answer = "Smoke skill";

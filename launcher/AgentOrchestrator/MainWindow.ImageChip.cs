@@ -9,9 +9,8 @@ using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
-// The composers' Image Gen chip (Chat and Code): its label turns the chat's image generation on or off (AppSettings.UseImageGen), its
-// caret opens a dropdown with the chat's own image model and size (AppSettings.ChatImage, apart from the Images page's) and the
-// keep-both switch (AppSettings.ImageKeepBoth). The size controls are the Images page's (ImageSizeControls), one more set.
+// The composers' Image Gen chip (Chat and Code): a dropdown (the whole chip) with the chat's own image model and size (AppSettings.ChatImage, apart from the Images page's) and the
+// keep-both switch (AppSettings.ImageKeepBoth). Image Gen is always on: once a model is chosen, the chat model can paint. The size controls are the Images page's (ImageSizeControls), one more set.
 public partial class MainWindow
 {
     internal Popup? _imageChipPopup; // the dropdown open last (--ui-smoke)
@@ -25,38 +24,28 @@ public partial class MainWindow
 
     private void RefreshImageChip()
     {
-        var tip = "Let the model make pictures as it answers (generate_image)";
-        if (_settings.UseImageGen && ImageGen.ChatModel(_settings.ChatImage) is var (_, name))
+        var tip = "Choose an image model so the model can make pictures as it answers";
+        if (ImageGen.ChatModel(_settings.ChatImage) is var (_, name))
             tip = ChatImageReady && ImageGen.ChatRequest(_settings.ChatImage, _settings.ImageKeepBoth) is { } r ? $"Image Gen: {name}, {r.Width} × {r.Height}"
                 : $"Image Gen: {name} is on the primary PC, which is not connected";
         foreach (var chip in new[] { ChatImageGenToggle, CodeImageGenToggle })
-            (chip.IsChecked, chip.ToolTip) = (_settings.UseImageGen, tip);
+            (chip.IsChecked, chip.ToolTip) = (false, tip); // a dropdown, never lit as a switch
     }
 
     private void ImageGenToggle_Click(object sender, RoutedEventArgs e)
     {
         var chip = (ToggleButton)sender;
-        if (chip.IsChecked == true && !ChatImageReady)
-        {
-            chip.IsChecked = false;
-            _imageChipClosedAt = default; // the press on the label closed an open dropdown: it stays open
-            if (_imageChipPopup is not { IsOpen: true })
-                OpenImageChip(chip, turnOn: true); // nothing to paint with yet: choose first
-            return;
-        }
-        _settings.UseImageGen = chip.IsChecked == true;
-        _settings.Save();
-        RefreshExtras();
+        chip.IsChecked = false;
+        OpenImageChip(chip);
     }
 
     private void ImageGenCaret_Click(object sender, RoutedEventArgs e)
     {
         e.Handled = true; // the caret sits inside the chip: its click must not reach the chip's own handler
-        OpenImageChip(sender == ChatImageGenCaret ? ChatImageGenToggle : CodeImageGenToggle, turnOn: false);
+        OpenImageChip(sender == ChatImageGenCaret ? ChatImageGenToggle : CodeImageGenToggle);
     }
 
-    // turnOn: opened by turning the chip on with no model; picking one turns Image Gen on.
-    private void OpenImageChip(ToggleButton chip, bool turnOn)
+    private void OpenImageChip(ToggleButton chip)
     {
         if (_imageChipPopup is { IsOpen: true } open)
         {
@@ -84,8 +73,6 @@ public partial class MainWindow
             var c = _settings.ChatImage;
             (c.SharedModel, c.RemoteModel, c.RemoteProvider, c.LocalModel) = ("", "", "", "");
             write(c);
-            if (turnOn)
-                _settings.UseImageGen = true;
             _settings.Save();
             _chipSize?.Show(); // the new model's multiple
             ShowRows();

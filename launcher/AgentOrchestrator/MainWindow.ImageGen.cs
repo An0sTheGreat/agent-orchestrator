@@ -1359,7 +1359,7 @@ public partial class MainWindow
         return files;
     }
 
-    // The chat model's generate_image (AppSettings.UseImageGen; the request's image_gen): painted with the chat's model and size
+    // The chat model's generate_image (a chat image model chosen; the request's image_gen): painted with the chat's model and size
     // (AppSettings.ChatImage) by the page's own generation, one job at a time. The picture joins the reply's from the gallery; the
     // reply is one line for the model's memory and a copy at most 1024 px long. Every outcome answers (busy, cancelled, failed, the
     // turn gone: "ERROR: …"), as the engine waits without a timeout. The turn's Stop (its process ends) cancels the generation.

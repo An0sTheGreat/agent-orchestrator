@@ -118,7 +118,7 @@ internal static class LauncherLogic
     public sealed record Extras(bool Search, bool Tools, IReadOnlyList<string> Skills, IReadOnlyList<string>? Images = null, bool Vision = true,
         string Emoji = "standard", IReadOnlyList<string>? Computer = null, ImageGenRequest? ImageGen = null);
 
-    // Image Gen on (AppSettings.UseImageGen): the generate_image tool's model (its display name), recipe id ("" = OpenRouter), size,
+    // Image Gen (a chat image model chosen, AppSettings.ChatImage): the generate_image tool's model (its display name), recipe id ("" = OpenRouter), size,
     // whether it reads a negative prompt, and UnloadChat: it paints on this PC's GPU, so the engine unloads its chat model around the call.
     public sealed record ImageGenRequest(string Model, string Style, int Width, int Height, bool Negative, bool UnloadChat);
 
