@@ -36,6 +36,7 @@ public partial class MainWindow
             (search == ChatSearchToggle ? ChatVisionToggle : CodeVisionToggle).IsChecked = _settings.UseVision;
             tools.IsChecked = _settings.UseTools;
         }
+        RefreshImageChip();
         RefreshVision();
     }
 

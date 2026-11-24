@@ -20,17 +20,19 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     private CancellationTokenSource? _imgCts; // the download or generation in progress; Cancel and OnClosing cancel it
-    private ComboBox _imgRecipe = null!, _imgAspect = null!, _imgWidth = null!, _imgHeight = null!,_imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
+    private ComboBox _imgRecipe = null!, _imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
     private TextBox _imgPrompt = null!, _imgNegative = null!, _imgSeed = null!;
-    private bool _imgUnlocked; // the size lock open: width and height as typed (ImageSettings.SizeUnlocked)
-    private Button _imgSizeLock = null!;
-    private bool _imgFlipped; // the swap button: the presets show and give their ratios flipped (portrait)
-    private int _imgLastRatio = 1; // the preset whose recommended size Custom keeps showing
+    private ImageSizeControls _imgSize = null!; // the aspect ratio, swap, width and height boxes and lock (also the chat's Image Gen chip's)
+    private ComboBox _imgAspect => _imgSize.Aspect;
+    private ComboBox _imgWidth => _imgSize.WidthBox;
+    private ComboBox _imgHeight => _imgSize.HeightBox;
+    private TextBlock _imgWidthHint => _imgSize.WidthHint;
+    private TextBlock _imgHeightHint => _imgSize.HeightHint;
     private FrameworkElement _imgNegativeRow = null!;
     private Slider _imgSteps = null!, _imgCfg = null!, _imgStrength = null!;
     private CheckBox _imgLowVram = null!;
     private string _imgInit = "";
-    private TextBlock _imgWidthHint = null!, _imgHeightHint = null!,_imgRuntimeText = null!, _imgStatus = null!, _imgVramHint = null!, _imgInitText = null!;
+    private TextBlock _imgRuntimeText = null!, _imgStatus = null!, _imgVramHint = null!, _imgInitText = null!;
     private Border _imgVramHintRow = null!; // the hint's row under the stage: shown for local runs only (the hint itself while llama-server runs)
     private Button _imgRuntimeButton = null!, _imgGenerate = null!, _imgCancel = null!;
     private ProgressBar _imgProgress = null!;
@@ -245,7 +247,7 @@ public partial class MainWindow
             _imgSharedId = m.Id;
             (_imgSteps.Value, _imgCfg.Value, _imgSampler.SelectedIndex) = (m.Steps, m.Cfg, Array.IndexOf(ImageGen.Samplers, m.Sampler) + 1);
             ShowImageSource(); // the negative row
-            ShowImageSize(); // the multiple
+            _imgSize.Show(); // the multiple
         };
         _imgSharedNote = new TextBlock();
         _imgSharedPanel = new StackPanel { Visibility = Visibility.Collapsed, Children = { _imgSharedModel } };
@@ -341,64 +343,11 @@ public partial class MainWindow
         var guidance = SliderCell("Guidance", 0, 20, 0.5, "0.0", "ImagesGuidanceBox", out _imgCfg);
         var stepsRow = Pair(0, steps, guidance);
         _imgLocalOnly.AddRange([stepsRow, steps, guidance]);
-        _imgAspect = new ComboBox { Tag = "ImagesAspect" };
-        _imgAspect.SelectionChanged += (_, _) => ImageAspectChanged();
-        var swap = new Button { Content = "↑↓", Tag = "ImagesSwapSize", ToolTip = "Swap width and height (portrait or landscape)", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand, Margin = new Thickness(8, 0, 0, 0) };
-        swap.Click += (_, _) => SwapImageSize();
-        DockPanel.SetDock(swap, Dock.Right);
-        var aspectRow = Inline("Aspect ratio", new DockPanel { Children = { swap, _imgAspect } });
+        _imgSize = new ImageSizeControls("Images", () => _imgSharedMode && SharedPick is { } shared ? shared.Multiple : ImageChoice(_imgRecipe.SelectedIndex).Recipe.Multiple);
+        var aspectRow = Inline("Aspect ratio", _imgSize.AspectRow);
         aspectRow.Margin = new Thickness(0, 8, 0, 0);
-        // Width and height: editable lists. Empty shows the recommended value greyed where typed text starts (the caret sits at its left
-        // edge); a typed or picked value is rounded to the model's multiple when the box loses focus, and with a ratio chosen the other follows.
-        var editable = ParseTemplate(EditableComboXaml);
-        DockPanel SizeBox(string tag, bool width, out ComboBox box, out TextBlock hint)
-        {
-            var b = box = new ComboBox { Tag = tag, MinWidth = 70, IsEditable = true, IsTextSearchEnabled = false, Template = editable, ItemsSource = ImageGen.SizeChoices,
-                ToolTip = $"Any {(width ? "width" : "height")}, rounded to the model's multiple; empty: the aspect ratio's recommended one" };
-            var h = hint = new TextBlock { IsHitTestVisible = false, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center, Tag = tag + "Hint" };
-            h.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-            b.Loaded += (_, _) =>
-            {
-                // the template's text box sits at the combo's left padding; WPF draws text 2 px inside a text box
-                (h.FontSize, h.FontFamily, h.Margin) = (b.FontSize, b.FontFamily, new Thickness(b.Padding.Left + 2, 0, 0, 0));
-                h.Visibility = b.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            };
-            b.AddHandler(TextBoxBase.TextChangedEvent, new TextChangedEventHandler((_, e) =>
-            {
-                var t = (TextBox)e.OriginalSource;
-                var digits = new string(t.Text.Where(char.IsAsciiDigit).ToArray()); // typed or pasted
-                if (digits != t.Text)
-                {
-                    var caret = Math.Max(0, t.CaretIndex - (t.Text.Length - digits.Length));
-                    t.Text = digits; // raises TextChanged again
-                    t.CaretIndex = caret;
-                    return;
-                }
-                h.Visibility = t.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
-            }));
-            b.LostKeyboardFocus += (_, _) =>
-            {
-                if (!b.IsKeyboardFocusWithin && !b.IsDropDownOpen)
-                    CommitImageSize(width);
-            };
-            b.DropDownClosed += (_, _) => CommitImageSize(width); // a value picked from the list
-            b.KeyDown += (_, e) =>
-            {
-                if (e.Key == Key.Enter)
-                    CommitImageSize(width);
-            };
-            var icon = Muted(width ? "⇆" : "⇅");
-            (icon.VerticalAlignment, icon.Margin, icon.ToolTip) = (VerticalAlignment.Center, new Thickness(0, 0, 6, 0), width ? "Width" : "Height");
-            DockPanel.SetDock(icon, Dock.Left);
-            return new DockPanel { Children = { icon, new Grid { Children = { b, h } } } };
-        }
-        _imgSizeLock = new Button { Tag = "ImagesSizeLock", Template = ParseTemplate(RoundButtonXaml), Cursor = Cursors.Hand, Margin = new Thickness(8, 0, 0, 0),
-            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"), VerticalAlignment = VerticalAlignment.Center };
-        _imgSizeLock.Click += (_, _) => { _imgUnlocked = !_imgUnlocked; ShowSizeLock(); };
-        ShowSizeLock();
-        DockPanel.SetDock(_imgSizeLock, Dock.Right);
-        var sizeBoxes = new DockPanel { Margin = new Thickness(0, 8, 0, 0),
-            Children = { _imgSizeLock, Pair(0, SizeBox("ImagesWidth", true, out _imgWidth, out _imgWidthHint), SizeBox("ImagesHeight", false, out _imgHeight, out _imgHeightHint)) } };
+        var sizeBoxes = _imgSize.SizeRow;
+        sizeBoxes.Margin = new Thickness(0, 8, 0, 0);
         _imgLocalOnly.Add(sizeBoxes); // OpenRouter is sent the nearest aspect ratio only, not this size
         _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 } };
         // the style's padding filled a fixed 32 px and hid the text: a slim padding, as the other small boxes
@@ -734,15 +683,7 @@ public partial class MainWindow
         ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
-        var preset = Array.FindIndex(ImageGen.Presets, p => p.Ratio.Length > 0 && (p.Ratio == s.Aspect || ImageGen.Flip(p.Ratio) == s.Aspect));
-        (_imgFlipped, _imgLastRatio) = (preset > 0 && ImageGen.Presets[preset].Ratio != s.Aspect, Math.Max(preset, 1));
-        _imgAspect.ItemsSource = AspectLabels();
-        _imgAspect.SelectedIndex = s.Aspect == "Custom" ? 0 : _imgLastRatio; // unknown: Square
-        var before = s.CustomWidth == 0 && s.CustomHeight == 0 && s.LongSide != ImageGen.RecommendedLongSide; // saved with the old long side list: its size, typed
-        _imgUnlocked = s.SizeUnlocked;
-        ShowSizeLock();
-        _imgWidth.Text = before ? s.Width.ToString() : s.CustomWidth > 0 ? s.CustomWidth.ToString() : "";
-        _imgHeight.Text = before ? s.Height.ToString() : s.CustomHeight > 0 ? s.CustomHeight.ToString() : "";
+        _imgSize.Load(s);
         _imgSteps.Value = s.Steps;
         _imgCfg.Value = s.Cfg;
         _imgSeed.Text = s.Seed >= 0 ? s.Seed.ToString() : "";
@@ -753,25 +694,18 @@ public partial class MainWindow
         _imgStrength.Value = s.Strength;
         SetInitImage(s.InitImage);
         _imgApplying = false;
-        ShowImageSize();
-        if (!_imgUnlocked && ImageRatio() is { Length: > 0 } ratio && TypedSize(_imgWidth) is > 0 and var w && TypedSize(_imgHeight) is > 0 and var h &&
-            !ImageGen.Matches(w, h, ratio, RecommendedImageSize().Multiple))
-            _imgAspect.SelectedIndex = 0; // a saved pair that is not its ratio: Custom
     }
 
     private ImageSettings ReadImageSettings()
     {
         var (recipe, local) = ImageChoice(_imgRecipe.SelectedIndex);
         var negative = _imgSharedMode && SharedPick is { } shared ? shared.Negative : recipe.Negative;
-        var (multiple, rw, rh) = RecommendedImageSize();
-        var (cw, ch) = (TypedSize(_imgWidth), TypedSize(_imgHeight));
-        int w = ImageGen.Pick(cw, rw, _imgUnlocked ? 1 : multiple), h = ImageGen.Pick(ch, rh, _imgUnlocked ? 1 : multiple);
-        var custom = _imgAspect.SelectedIndex == 0; // saves both sizes: Custom's recommended one is not restored
+        var size = _imgSize.Read();
         return new()
         {
             RecipeId = _imgSharedMode ? _imgSharedId : recipe.Id, LocalModel = _imgSharedMode ? "" : local, SharedModel = _imgSharedMode ? _imgSharedId : "",
-            Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = custom ? "Custom" : ImageRatio(),
-            SizeUnlocked = _imgUnlocked, Width = w, Height = h, CustomWidth = custom || cw > 0 ? w : 0, CustomHeight = custom || ch > 0 ? h : 0, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
+            Prompt = _imgPrompt.Text.Trim(), Negative = negative ? _imgNegative.Text.Trim() : "", Aspect = size.Aspect,
+            SizeUnlocked = size.Unlocked, Width = size.Width, Height = size.Height, CustomWidth = size.CustomWidth, CustomHeight = size.CustomHeight, Steps = (int)_imgSteps.Value, Cfg = _imgCfg.Value, Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1,
             Sampler = _imgSampler.SelectedIndex > 0 ? ImageGen.Samplers[_imgSampler.SelectedIndex - 1] : "", LowVram = _imgLowVram.IsChecked == true,
             Scheduler = _imgScheduler.SelectedIndex > 0 ? ImageGen.Schedulers[_imgScheduler.SelectedIndex - 1] : "",
             Strength = Math.Round(_imgStrength.Value, 2), InitImage = _imgInit,
@@ -859,7 +793,7 @@ public partial class MainWindow
         _imgSharedModel.SelectedIndex = models.FindIndex(m => m.Id == _imgSharedId);
         _imgApplying = false;
         ShowImageSource();
-        ShowImageSize();
+        _imgSize.Show();
     }
 
     private void ShowImagePopup(DialogShell popup)
@@ -1055,88 +989,6 @@ public partial class MainWindow
         done.Click += (_, _) => popup.Close();
         Load();
         ShowImagePopup(popup);
-    }
-
-    private void ShowImageSize()
-    {
-        if (_imgApplying || _imgAspect.SelectedIndex < 0)
-            return;
-        var (_, w, h) = RecommendedImageSize();
-        (_imgWidthHint.Text, _imgHeightHint.Text) = (w.ToString(), h.ToString());
-    }
-
-    // The chosen preset's (Custom: the last preset's) width and height, and the multiple a typed size rounds to. The primary PC resolves
-    // its model from RecipeId; before its list loads, the local recipe stands in for the multiple (and in ReadImageSettings for the negative).
-    private (int Multiple, int Width, int Height) RecommendedImageSize()
-    {
-        var multiple = _imgSharedMode && SharedPick is { } shared ? shared.Multiple : ImageChoice(_imgRecipe.SelectedIndex).Recipe.Multiple;
-        var (w, h) = ImageGen.Size(PresetRatio(_imgAspect.SelectedIndex > 0 ? _imgAspect.SelectedIndex : _imgLastRatio), ImageGen.RecommendedLongSide, multiple);
-        return (multiple, w, h);
-    }
-
-    private string PresetRatio(int index) => _imgFlipped ? ImageGen.Flip(ImageGen.Presets[index].Ratio) : ImageGen.Presets[index].Ratio;
-    private string ImageRatio() => _imgAspect.SelectedIndex > 0 ? PresetRatio(_imgAspect.SelectedIndex) : ""; // "" = Custom
-    private List<string> AspectLabels() => ImageGen.Presets.Select(p => ImageGen.PresetLabel(p, _imgFlipped)).ToList();
-
-    // digits only (the boxes drop anything else) and far below int.MaxValue in practice; 0 = empty
-    private static int TypedSize(ComboBox box) => int.TryParse(box.Text, out var v) ? v : 0;
-
-    // A box is done (focus left, Enter, or a value picked): round it and, with a ratio chosen, make the other follow. A pair that
-    // cannot keep the ratio (one side clamped at 4096) turns the preset to Custom. Clearing a linked box clears both: the recommended size.
-    private void CommitImageSize(bool width)
-    {
-        if (_imgApplying || _imgAspect.SelectedIndex < 0)
-            return;
-        var (box, other) = width ? (_imgWidth, _imgHeight) : (_imgHeight, _imgWidth);
-        var multiple = _imgUnlocked ? 1 : RecommendedImageSize().Multiple;
-        var typed = TypedSize(box);
-        var value = ImageGen.Pick(typed, 0, multiple);
-        box.Text = typed > 0 ? value.ToString() : "";
-        if (_imgUnlocked || ImageRatio() is not { Length: > 0 } ratio)
-            return;
-        other.Text = typed > 0 ? ImageGen.Linked(value, ratio, width, multiple).ToString() : "";
-        if (typed > 0 && !ImageGen.Matches(TypedSize(_imgWidth), TypedSize(_imgHeight), ratio, multiple))
-            _imgAspect.SelectedIndex = 0;
-    }
-
-    // The lock beside the size boxes: closed, width and height keep the aspect ratio and round to the model's multiple; open, they
-    // are taken as typed (kept to 64-4096). Closing it again fits the typed sizes to the chosen ratio.
-    private void ShowSizeLock()
-    {
-        _imgSizeLock.Content = _imgUnlocked ? "" : ""; // Unlock, Lock
-        _imgSizeLock.ToolTip = _imgUnlocked ? "Unlocked: any width and height, as typed. Click to keep the aspect ratio"
-            : "Locked: width and height keep the aspect ratio and round to the model's multiple. Click to type any size";
-        System.Windows.Automation.AutomationProperties.SetName(_imgSizeLock, _imgUnlocked ? "Aspect ratio unlocked" : "Aspect ratio locked");
-        if (!_imgUnlocked && !_imgApplying && _imgWidth is not null)
-            ImageAspectChanged();
-    }
-
-    private void ImageAspectChanged()
-    {
-        if (_imgApplying || _imgAspect.SelectedIndex < 0)
-            return;
-        if (_imgAspect.SelectedIndex > 0) // a preset: typed sizes take its ratio (from the width first); Custom keeps them as they are
-        {
-            _imgLastRatio = _imgAspect.SelectedIndex;
-            if (TypedSize(_imgWidth) > 0)
-                CommitImageSize(true);
-            else if (TypedSize(_imgHeight) > 0)
-                CommitImageSize(false);
-        }
-        ShowImageSize();
-    }
-
-    // The ↑↓ button: width and height trade places, and the presets show their flipped ratios ("Photo (2:3)").
-    private void SwapImageSize()
-    {
-        var index = _imgAspect.SelectedIndex;
-        _imgFlipped = !_imgFlipped;
-        _imgApplying = true;
-        _imgAspect.ItemsSource = AspectLabels();
-        _imgAspect.SelectedIndex = index;
-        (_imgWidth.Text, _imgHeight.Text) = (_imgHeight.Text, _imgWidth.Text);
-        _imgApplying = false;
-        ShowImageSize();
     }
 
     private static ControlTemplate ParseTemplate(string xaml) => (ControlTemplate)System.Windows.Markup.XamlReader.Parse(
