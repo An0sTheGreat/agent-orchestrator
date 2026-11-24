@@ -3020,6 +3020,31 @@ public partial class MainWindow : Window
                     (Width, Height) = (1600, 1000);
                     await Settle();
                     SavePicture(ImagesView, Path.Combine(Path.GetTempPath(), "ao-images.png"));
+                    // the prompt boxes are about four lines; View more gives them the card's spare height, and the card still fits
+                    {
+                        var more = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesPromptsMore")!;
+                        bool Fits()
+                        {
+                            var was = card.ActualHeight;
+                            card.Measure(new Size(card.ActualWidth, double.PositiveInfinity));
+                            var fits = card.DesiredSize.Height <= was + 0.5 && _imgGenerate.TranslatePoint(new Point(0, _imgGenerate.ActualHeight), card).Y <= was + 0.5;
+                            card.InvalidateMeasure();
+                            return fits;
+                        }
+                        var compact = _imgPrompt.ActualHeight;
+                        var compactFits = Fits();
+                        SmokeClick(more);
+                        await Settle();
+                        var expanded = _imgPrompt.ActualHeight;
+                        var expandedFits = Fits();
+                        SmokeClick(more);
+                        await Settle();
+                        if (compact > 110 || compact < 60 || !compactFits || expanded < compact + 100 || !expandedFits || Math.Abs(_imgPrompt.ActualHeight - compact) > 0.5)
+                        {
+                            Console.Error.WriteLine($"ui-smoke: the Images prompts at 1600x1000: compact {compact:0} (fits {compactFits}), View more {expanded:0} (fits {expandedFits}), View less {_imgPrompt.ActualHeight:0}");
+                            return Fail();
+                        }
+                    }
                     (Width, Height) = (1280, 720);
                     SmokeClick(advancedToggle);
                     await Settle();
@@ -3044,6 +3069,20 @@ public partial class MainWindow : Window
                     var twoLines = 2 * _imgPrompt.FontSize * _imgPrompt.FontFamily.LineSpacing;
                     var advancedView = SmokeFind<ScrollViewer>(ImagesView, v => v.Tag as string == "ImagesAdvancedScroll")?.ActualHeight ?? 0;
                     var promptView = _imgPrompt.ActualHeight - _imgPrompt.Padding.Top - _imgPrompt.Padding.Bottom - _imgPrompt.BorderThickness.Top - _imgPrompt.BorderThickness.Bottom;
+                    // View more there too: the prompts and Advanced share the space, Generate still whole in the card
+                    var promptsMore = SmokeFind<Button>(ImagesView, b => b.Tag as string == "ImagesPromptsMore")!;
+                    SmokeClick(promptsMore);
+                    await Settle();
+                    var moreGenerateBottom = _imgGenerate.TranslatePoint(new Point(0, _imgGenerate.ActualHeight), card).Y;
+                    var moreCardBottom = card.TranslatePoint(new Point(0, card.ActualHeight), ImagesView).Y;
+                    var morePrompt = _imgPrompt.ActualHeight;
+                    var lessPrompt = promptView + _imgPrompt.Padding.Top + _imgPrompt.Padding.Bottom + _imgPrompt.BorderThickness.Top + _imgPrompt.BorderThickness.Bottom;
+                    SmokeClick(promptsMore);
+                    if (moreGenerateBottom > tinyCard + 0.5 || moreCardBottom > tinyView + 0.5 || morePrompt + 0.5 < lessPrompt)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: the Images page at {MinWidth}x{MinHeight}, Advanced open and View more: Generate ends at {moreGenerateBottom:0} in a card of {tinyCard:0}, the card at {moreCardBottom:0} of {tinyView:0}, the prompt {morePrompt:0} (compact {lessPrompt:0})");
+                        return Fail();
+                    }
                     SmokeClick(advancedToggle);
                     RefreshImageRuntime(); // the hint as it really is
                     ImagesView.ClearValue(Panel.BackgroundProperty);

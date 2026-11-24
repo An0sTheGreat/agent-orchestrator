@@ -115,8 +115,9 @@ public partial class MainWindow
     private bool ImageBusy => _imgCts is not null;
 
     // The page never scrolls: a header (title, the CONNECTION pill, the model badge), then the settings card on the left and the
-    // stage with the gallery on the right, both reaching the bottom. The card's prompt boxes take what its other sections leave
-    // (Advanced open or a short window shrinks them); the stage takes what the gallery leaves.
+    // stage with the gallery on the right, both reaching the bottom. The card's prompt boxes are about four lines (the card's spare
+    // height sits above Generate); View more gives them that spare height (Advanced open or a short window shrinks them); the stage
+    // takes what the gallery leaves.
     private void BuildImagesPage()
     {
         TextBlock Muted(string text, double size = 12)
@@ -292,20 +293,50 @@ public partial class MainWindow
 
         var modelSection = Section(Inline("Model", new StackPanel { Children = { _imgLocalPanel, _imgRemotePanel, _imgSharedPanel } }));
 
-        // PROMPTS: positive and negative side by side, filling the height the card leaves them
+        // PROMPTS: positive and negative side by side, about four lines each; View more lets them fill the height the card leaves
         _imgPrompt = new TextBox { Tag = "ImagesPrompt", Padding = new Thickness(10, 4, 10, 4), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
         _imgNegative = new TextBox { Padding = new Thickness(10, 4, 10, 4), AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalContentAlignment = VerticalAlignment.Top };
-        DockPanel PromptCell(string label, TextBox box)
+        // View more / View less: at the right of the positive prompt's header (always shown, the negative cell is not), for both boxes;
+        // on the header line because a line of its own would cost a short window's Advanced its last rows
+        var promptsMore = new Button { Content = "View more ▾", Tag = "ImagesPromptsMore", Style = (Style)FindResource("BareButton"), FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center, Padding = new Thickness(0), Height = 15, Margin = new Thickness(8, 0, 0, 4), ToolTip = "Taller prompt boxes, using the card's spare height" };
+        promptsMore.SetResourceReference(ForegroundProperty, "Muted");
+        DockPanel PromptCell(string label, TextBox box, Button? link = null)
         {
-            var head = Head(label, 4);
+            var head = new DockPanel { Children = { Head(label, 4) } };
+            if (link is not null)
+            {
+                DockPanel.SetDock(link, Dock.Right);
+                head.Children.Insert(0, link);
+            }
             DockPanel.SetDock(head, Dock.Top);
             return new DockPanel { Children = { head, AttachPromptFade(box) } };
         }
-        var positiveCell = PromptCell("Positive prompt", _imgPrompt);
+        var positiveCell = PromptCell("Positive prompt", _imgPrompt, promptsMore);
         var negativeCell = PromptCell("Negative prompt", _imgNegative);
         negativeCell.Tag = "ImagesNegative";
         _imgNegativeRow = negativeCell;
         var promptsSection = Section(Pair(0, positiveCell, negativeCell));
+        // compact: the row stops where the boxes are CompactPrompt tall and the spare row above Generate takes the rest; View more lifts the cap
+        const double CompactPrompt = 96; // about four lines (SizeAdvancedRow keeps them two)
+        var cardGrid = new Grid();
+        var promptsRow = new RowDefinition { Height = new GridLength(1, GridUnitType.Star) };
+        var spareRow = new RowDefinition();
+        var promptsExpanded = false;
+        void SizePromptsRow()
+        {
+            var chrome = promptsSection.ActualHeight - _imgPrompt.ActualHeight;
+            promptsRow.MaxHeight = promptsExpanded || _imgPrompt.ActualHeight <= 0 ? double.PositiveInfinity : chrome + CompactPrompt;
+            spareRow.Height = promptsExpanded ? new GridLength(0) : new GridLength(0.001, GridUnitType.Star); // the prompts' 1 is served first, up to their cap
+        }
+        promptsSection.SizeChanged += (_, _) => SizePromptsRow();
+        promptsMore.Click += (_, _) =>
+        {
+            promptsExpanded = !promptsExpanded;
+            promptsMore.Content = promptsExpanded ? "View less ▴" : "View more ▾";
+            SizePromptsRow();
+        };
+        SizePromptsRow();
 
         // the parameters (no header of their own: the line above sets them off, and the page has no height to spare)
         var steps = SliderCell("Steps", 1, 100, 1, "0", "ImagesStepsBox", out _imgSteps);
@@ -384,18 +415,24 @@ public partial class MainWindow
         var toggle = new Button { Content = "▸  ADVANCED SETTINGS", Tag = "ImagesAdvanced", Style = (Style)FindResource("BareButton"), HorizontalAlignment = HorizontalAlignment.Left, FontSize = 11 };
         toggle.SetResourceReference(ForegroundProperty, "Muted");
         // open, the band shares the card's leftover height with the prompts: all of its content when there is room, else what is left
-        // once the prompts have their two lines, scrolling inside (Generate under it always shows)
+        // once the prompts have their two lines, scrolling inside (Generate under it always shows). The two lines are kept here, not
+        // as the prompts row's MinHeight: the Grid settles a binding MinHeight first and would hand the rest to the spare row.
         var advancedRow = new RowDefinition { Height = GridLength.Auto };
         Border advancedSection = null!;
         void SizeAdvancedRow()
         {
             var open = advanced.Visibility == Visibility.Visible;
             var chrome = advancedSection.Padding.Top + advancedSection.Padding.Bottom + advancedSection.BorderThickness.Bottom + toggle.ActualHeight;
-            advancedRow.Height = open ? new GridLength(1000, GridUnitType.Star) : GridLength.Auto; // 1000 to the prompts' 1: Advanced is served first, up to its MaxHeight
-            advancedRow.MaxHeight = open ? chrome + advanced.Margin.Top + advanced.ActualHeight : double.PositiveInfinity;
-            advancedRow.MinHeight = open ? chrome : 0; // the toggle always: a short window leaves the content a scroll away
+            var p = _imgPrompt;
+            var promptsMin = promptsSection.ActualHeight - p.ActualHeight + 2 * p.FontSize * p.FontFamily.LineSpacing + p.Padding.Top + p.Padding.Bottom + p.BorderThickness.Top + p.BorderThickness.Bottom + 1;
+            var room = cardGrid.ActualHeight - cardGrid.RowDefinitions.Where(r => r.Height.IsAuto && r != advancedRow).Sum(r => r.ActualHeight) - promptsMin;
+            // a fixed height, not a star: beside the prompts' 1* and the spare row's 0.001* a 1000* row trips the Grid's star rounding
+            // (the prompts stopped short and the spare row took the difference)
+            advancedRow.Height = open ? new GridLength(Math.Max(chrome, Math.Min(chrome + advanced.Margin.Top + advanced.ActualHeight, room))) : GridLength.Auto;
         }
         advanced.SizeChanged += (_, _) => SizeAdvancedRow();
+        cardGrid.SizeChanged += (_, _) => SizeAdvancedRow();
+        promptsSection.SizeChanged += (_, _) => SizeAdvancedRow(); // its chrome, unknown until the boxes have a height
         toggle.Click += (_, _) =>
         {
             var show = advanced.Visibility != Visibility.Visible;
@@ -448,15 +485,16 @@ public partial class MainWindow
         _imgGenerate.Click += async (_, _) => await RunImageJob(GenerateImagesAsync);
         var generateSection = Section(_imgGenerate, last: true);
 
-        // the card: its sections top to bottom, the prompts taking the rest (at least two lines), Advanced sharing it when open, Generate at the foot
-        var cardGrid = new Grid();
-        var sections = new FrameworkElement[] { band, modelSection, promptsSection, paramsSection, advancedSection, generateSection };
+        // the card: its sections top to bottom, the prompts (at least two lines) and Advanced sharing the rest, the spare row (null) over Generate at the foot
+        var sections = new FrameworkElement?[] { band, modelSection, promptsSection, paramsSection, advancedSection, null, generateSection };
         for (var i = 0; i < sections.Length; i++)
         {
-            cardGrid.RowDefinitions.Add(sections[i] == promptsSection ? new RowDefinition { Height = new GridLength(1, GridUnitType.Star), MinHeight = 84 } // two lines in the boxes
-                : sections[i] == advancedSection ? advancedRow : new RowDefinition { Height = GridLength.Auto });
-            Grid.SetRow(sections[i], i);
-            cardGrid.Children.Add(sections[i]);
+            cardGrid.RowDefinitions.Add(sections[i] == promptsSection ? promptsRow : sections[i] == advancedSection ? advancedRow
+                : sections[i] is null ? spareRow : new RowDefinition { Height = GridLength.Auto });
+            if (sections[i] is not { } section)
+                continue;
+            Grid.SetRow(section, i);
+            cardGrid.Children.Add(section);
         }
         foreach (var field in new Control[] { _imgRecipe, _imgSharedModel, _imgPrompt, _imgNegative, _imgAspect, _imgWidth, _imgHeight, _imgBatch, _imgSeed, _imgSampler, _imgScheduler,
             (Control)((DockPanel)((StackPanel)steps).Children[0]).Children[0], (Control)((DockPanel)((StackPanel)guidance).Children[0]).Children[0] })
