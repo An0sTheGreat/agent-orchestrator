@@ -4735,6 +4735,11 @@ IMAGE_STYLE_TIPS = {
 IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style in clear, concrete words."
 
 
+# The end of a painted picture's tool result: the chat model, back on the GPU, has the picture's details but stays quiet.
+IMAGE_DONE = ("The user sees the picture now. Do not describe, review or critique it and do not offer changes: reply with one "
+              "short line at most (such as \"Here it is.\") and wait for the user's next message. Describe it only if the user asks.")
+
+
 def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
     """The Image Gen switch (the request's "image_gen"): the generate_image tool, its handler and the system prompt note,
     the answering model's only, like the browser; nothing when it is off. The launcher paints the picture (an "image"
@@ -4762,6 +4767,8 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
         if answer is None:
             return "ERROR: image generation is only there when the app runs this turn"
         result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+        if result and not result.startswith("ERROR"):
+            result = f"{result}\n{IMAGE_DONE}"
         return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
 
     note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
@@ -4770,8 +4777,8 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
             f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
             + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")
             + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. Do not paste the "
-            "prompt as a code block unless the user asks for it. After the tool returns, say in one or two sentences what you "
-            "made: the user already sees the picture.")
+            "prompt as a code block unless the user asks for it. After the tool returns, the user already sees the picture: "
+            "follow its result and say no more than one short line.")
     return [tool], {"generate_image": generate_image}, note
 
 

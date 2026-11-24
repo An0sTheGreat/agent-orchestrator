@@ -3039,11 +3039,11 @@ class CodeTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(asked, [("image", {"prompt": "a red fox, snow", "negative": "blur", "seed": 7})])
             tool, shot = log[1]["messages"][-2:]
-            self.assertEqual((tool["content"], shot["images"]), ("Painted 1536x1152, seed 7", [image]))
+            self.assertEqual((tool["content"], shot["images"]), ("Painted 1536x1152, seed 7\n" + orchestrator.IMAGE_DONE, [image]))
             with patch.object(orchestrator, "vision_off", lambda config, role: True):  # a model that cannot see gets the text only
                 _, blind, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
                                          {"planner": [self.image_call(prompt="a fox"), "done"]})
-            self.assertEqual(blind[1]["messages"][-1]["content"], "Painted 1536x1152, seed 7")
+            self.assertEqual(blind[1]["messages"][-1]["content"], "Painted 1536x1152, seed 7\n" + orchestrator.IMAGE_DONE)
             self.assertEqual(asked[1], ("image", {"prompt": "a fox", "negative": "", "seed": None}))
         with patch.object(orchestrator, "launcher_call", lambda event, **d: None):  # stdin closed
             self.assertTrue(orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("x").startswith("ERROR:"))
