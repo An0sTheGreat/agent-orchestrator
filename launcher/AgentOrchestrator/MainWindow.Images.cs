@@ -212,12 +212,12 @@ public partial class MainWindow
             ImageViewer_KeyDown(ImageViewer, new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.KeyDownEvent });
             if (ImageViewer.Visibility != Visibility.Collapsed || ImageViewerPicture.Source is not null)
                 return Fail("Esc did not close the viewer");
-            // the chat's picture while it is made: the status line above the dots, the percentage, gone once it ends
+            // the chat's picture while it is made: the dots and the percentage (the reply's status line says the step), gone once it ends
             var reply = _reply = AddReply("planner");
             ShowPendingPicture(1024, 1536);
-            PendingPictureStatus("Step 7/8 · 3.83 s/it", 0.88);
-            if (_pendingPicture is not var (pending, status, percent, _) || !reply.Content.Children.Contains(pending) ||
-                ((Panel)pending).Children.IndexOf(status) != 0 || status.Text != "Making a picture… Step 7/8 · 3.83 s/it" || percent.Text != "88%")
+            PendingPictureProgress(0.88);
+            if (_pendingPicture is not var (pending, percent, _) || !reply.Content.Children.Contains(pending) || percent.Text != "88%" ||
+                ((Panel)pending).Children.OfType<TextBlock>().Any())
                 return Fail("the picture's placeholder");
             RemovePendingPicture();
             _reply = null;

@@ -7,11 +7,11 @@ using System.Windows.Threading;
 
 namespace AgentOrchestrator;
 
-// The chat's picture while it is made (generate_image, /image): the status line ("Making a picture… Step 3/8 · …") over a field
-// of dots in the picture's shape that light in slow drifting glows, with the percentage in its corner. The picture replaces it.
+// The chat's picture while it is made (generate_image, /image), under the reply's status line ("Making a picture… Step 3/8 · …"):
+// a field of dots in the picture's shape that light in slow drifting glows, with the percentage in its corner. The picture replaces it.
 public partial class MainWindow
 {
-    private (FrameworkElement Root, TextBlock Status, TextBlock Percent, DispatcherTimer Timer)? _pendingPicture;
+    private (FrameworkElement Root, TextBlock Percent, DispatcherTimer Timer)? _pendingPicture;
 
     private void ShowPendingPicture(int width, int height)
     {
@@ -41,9 +41,7 @@ public partial class MainWindow
             Child = new Grid { Children = { canvas, pill } }, Tag = "PendingPicture" };
         field.SetResourceReference(Border.BackgroundProperty, "Card");
         field.SetResourceReference(Border.BorderBrushProperty, "Border");
-        var status = new TextBlock { Text = "Making a picture…", FontSize = 12, FontStyle = FontStyles.Italic, Margin = new Thickness(2, 0, 0, 6) };
-        status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
-        var root = new StackPanel { Margin = new Thickness(0, 2, 0, 6), HorizontalAlignment = HorizontalAlignment.Left, Children = { status, field } };
+        var root = new StackPanel { Margin = new Thickness(0, 2, 0, 6), HorizontalAlignment = HorizontalAlignment.Left, Children = { field } };
         static double Glow(double x, double y, double cx, double cy) => Math.Exp(-((x - cx) * (x - cx) + (y - cy) * (y - cy)) / 0.035);
         var clock = Stopwatch.StartNew();
         var timer = new DispatcherTimer(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(50) };
@@ -57,15 +55,14 @@ public partial class MainWindow
         };
         timer.Start();
         _reply.Content.Children.Add(root);
-        _pendingPicture = (root, status, percent, timer);
+        _pendingPicture = (root, percent, timer);
     }
 
-    // The generation's status (ImageStatus): the line above the field, and the percentage once there is one.
-    private void PendingPictureStatus(string text, double? progress)
+    // The generation's progress (ImageStatus): the percentage, once there is one.
+    private void PendingPictureProgress(double? progress)
     {
-        if (_pendingPicture is not var (_, status, percent, _))
+        if (_pendingPicture is not var (_, percent, _))
             return;
-        status.Text = $"Making a picture… {text}";
         if (progress is { } p && percent.Parent is Border pill)
         {
             percent.Text = $"{Math.Clamp(p, 0, 1) * 100:0}%";
@@ -75,7 +72,7 @@ public partial class MainWindow
 
     private void RemovePendingPicture()
     {
-        if (_pendingPicture is not var (root, _, _, timer))
+        if (_pendingPicture is not var (root, _, timer))
             return;
         _pendingPicture = null;
         timer.Stop();

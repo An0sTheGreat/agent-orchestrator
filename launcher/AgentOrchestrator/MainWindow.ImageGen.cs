@@ -1431,8 +1431,8 @@ public partial class MainWindow
             }
             _imgStatusTap = (text, progress) =>
             {
-                PendingPictureStatus(text, progress);
-                if (asker == _chatProcess)
+                PendingPictureProgress(progress);
+                if (asker is null || asker == _chatProcess) // /image (no asker) too: its reply's status line is the only one now
                     SetChatStatus($"Making a picture… {text}");
             };
             try
