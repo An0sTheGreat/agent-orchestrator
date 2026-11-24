@@ -13,7 +13,7 @@ using Microsoft.Win32;
 
 namespace AgentOrchestrator;
 
-// The Images page (the sidebar's Images): local image generation with stable-diffusion.cpp's sd-cli (ImageGen.cs).
+// The Images page (the sidebar's Images): local image generation with stable-diffusion.cpp's sd-server (ImageGen.cs).
 // Settings on the left, the current picture and the gallery (<data>\images\*.png, each with its settings as <name>.json)
 // on the right. Generate downloads the runtime and the recipe's model files first when they are missing.
 public partial class MainWindow
@@ -1179,7 +1179,7 @@ public partial class MainWindow
         string[] version;
         try { version = File.ReadAllLines(Path.Combine(ImageGen.RuntimeFolder, "version.txt")); }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException) { version = []; }
-        var installed = File.Exists(ImageGen.CliPath);
+        var installed = File.Exists(ImageGen.ServerPath);
         _imgRuntimeText.Text = !installed ? "Image runtime (stable-diffusion.cpp) not installed; Generate downloads it."
             : version.Length >= 2 ? $"stable-diffusion.cpp {version[0]} ({version[1]})" : "stable-diffusion.cpp installed";
         _imgRuntimeButton.Content = installed ? "Update" : "Download image runtime";
@@ -1500,17 +1500,23 @@ public partial class MainWindow
         var (context, request) = ImageGen.ServerArgs(recipe, run, ImageGen.Paths(recipe, run.LocalModel, _imgFolderFiles, ImageGen.ModelsRoot));
         if (run.InitImage.Length > 0)
             request["init_image"] = Convert.ToBase64String(await File.ReadAllBytesAsync(run.InitImage, ct));
-        var fresh = await StartImageServerAsync(context, ct);
-        using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_sdPort}"), Timeout = TimeSpan.FromSeconds(30) };
+        var mark = SdMark(); // only this generation's log lines are read for its error
         JsonNode? job = null;
-        string? error = null;
+        string? error = null, why = null;
+        Exception? broken = null;
         try
         {
-            using (var posted = await http.PostAsync("/sdcpp/v1/img_gen", new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"), ct))
-                job = JsonNode.Parse(await posted.Content.ReadAsStringAsync(ct));
+            var fresh = await StartImageServerAsync(context, ct);
+            using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{_sdPort}"), Timeout = TimeSpan.FromSeconds(30) };
+            // not cancelled midway: a job it took would run on unseen; a Cancel meanwhile cancels it by id below
+            using (var posted = await http.PostAsync("/sdcpp/v1/img_gen", new StringContent(request.ToJsonString(), Encoding.UTF8, "application/json"), CancellationToken.None))
+                job = JsonNode.Parse(await posted.Content.ReadAsStringAsync(CancellationToken.None));
             var id = (string?)job?["id"] ?? throw new InvalidOperationException("sd-server took no job: " + job?.ToJsonString());
+            if (!fresh)
+                ImageStatus("Encoding prompt…", indeterminate: true); // not the last picture's "Done"
             try
             {
+                ct.ThrowIfCancellationRequested();
                 while ((string?)job?["status"] is "queued" or "generating")
                 {
                     await Task.Delay(500, ct);
@@ -1540,12 +1546,19 @@ public partial class MainWindow
             }
             error = (string?)job?["error"]?["message"];
         }
-        catch (HttpRequestException) when (_sdServer is not { HasExited: false }) { } // it crashed: its log says why
-        var tail = SdTail();
-        Log($"sd-server failed: {error}\n{tail}");
+        // it crashed, is dying, stopped answering or answered nonsense (not a Cancel): it goes, once its last lines are in
+        catch (Exception x) when (x is HttpRequestException or JsonException or OperationCanceledException && !ct.IsCancellationRequested)
+        {
+            (broken, why) = (x, x is OperationCanceledException ? "it stopped answering" : x.Message);
+            for (var i = 0; i < 10 && _sdServer is { HasExited: false }; i++)
+                await Task.Delay(200, CancellationToken.None);
+            await Task.Delay(200, CancellationToken.None);
+        }
+        var tail = SdTail(mark);
+        Log($"sd-server failed: {error ?? why}\n{tail}");
         var all = $"{error}\n{tail}";
         var outOfMemory = all.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || all.Contains("out of memory", StringComparison.OrdinalIgnoreCase);
-        if (_sdServer is not { HasExited: false })
+        if (broken is not null || _sdServer is not { HasExited: false })
             StopImageServer();
         if (outOfMemory && !run.LowVram) // once more with the weights in RAM (another context: a new server)
         {
@@ -1555,24 +1568,32 @@ public partial class MainWindow
         }
         throw new InvalidOperationException(outOfMemory
             ? "Not enough GPU memory for this model even with Low VRAM: unload the chat models, pick a smaller size, or a smaller model"
-            : $"sd-server failed: {error ?? FirstError(tail) ?? "no picture"} (the log has its output)");
+            : $"sd-server failed: {error ?? FirstError(tail) ?? why ?? "no picture"} (the log has its output)");
     }
 
     private static string? FirstError(string log) => log.Split('\n').FirstOrDefault(t => t.StartsWith("[E]"))?[3..].Split(" --- ")[0].Trim();
 
     // sd-server, kept running with its models loaded between generations (Unload models, a runtime update and closing the app
     // stop it): the one running is reused while its context (ImageGen.ServerArgs) is the same, else replaced. Its last log lines
-    // are kept for the error text. True when it was just started (its first generation reads the weights in: "Loading…").
+    // are kept for the error text (_sdLines counts every line: a generation reads those after its SdMark). True when it was just
+    // started (its first generation reads the weights in: "Loading…"). Exiting while it loads: HttpRequestException, as a crash later.
     // ponytail: a crash of the app leaves it running (no Job object); add one if orphans show up.
     private Process? _sdServer;
     private List<string> _sdContext = [];
     private int _sdPort;
     private readonly Queue<string> _sdTail = new();
+    private long _sdLines;
 
-    private string SdTail()
+    private long SdMark()
     {
         lock (_sdTail)
-            return string.Join("\n", _sdTail);
+            return _sdLines;
+    }
+
+    private string SdTail(long since)
+    {
+        lock (_sdTail)
+            return ImageGen.TailSince(_sdTail, _sdLines, since);
     }
 
     private async Task<bool> StartImageServerAsync(List<string> context, CancellationToken ct)
@@ -1603,6 +1624,7 @@ public partial class MainWindow
             lock (_sdTail)
             {
                 _sdTail.Enqueue(line);
+                _sdLines++;
                 if (_sdTail.Count > 40)
                     _sdTail.Dequeue();
             }
@@ -1615,6 +1637,7 @@ public partial class MainWindow
         process.BeginErrorReadLine();
         Log($"sd-server started (pid {process.Id}, port {_sdPort})");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+        var loading = Stopwatch.StartNew();
         try
         {
             while (true)
@@ -1622,18 +1645,24 @@ public partial class MainWindow
                 if (process.HasExited)
                 {
                     await Task.Delay(200, CancellationToken.None); // its last lines
-                    var tail = SdTail();
                     var code = process.ExitCode;
                     StopImageServer();
-                    Log($"sd-server exited with {code}:\n{tail}");
-                    var outOfMemory = tail.Contains("enough memory", StringComparison.OrdinalIgnoreCase) || tail.Contains("out of memory", StringComparison.OrdinalIgnoreCase);
-                    throw new InvalidOperationException($"sd-server failed{(outOfMemory ? " (out of memory)" : "")}: {FirstError(tail) ?? $"exit code {code}"} (the log has its output)");
+                    throw new HttpRequestException($"it stopped while loading the model (exit code {code})");
+                }
+                if (loading.Elapsed > TimeSpan.FromMinutes(10)) // ponytail: fixed limit; a huge model on a very slow disk may need more
+                {
+                    StopImageServer();
+                    Log($"sd-server still loading after 10 minutes:\n{SdTail(0)}");
+                    throw new InvalidOperationException("sd-server was still loading the model after 10 minutes (the log has its output)");
                 }
                 try
                 {
                     using var up = await http.GetAsync($"http://127.0.0.1:{_sdPort}/sdcpp/v1/capabilities", ct);
                     if (up.IsSuccessStatusCode)
                         return true;
+                    StopImageServer(); // it listens once its model is loaded, so this is an answer: an older sd-server without /sdcpp/v1
+                    Log($"sd-server answered {(int)up.StatusCode} to /sdcpp/v1/capabilities");
+                    throw new InvalidOperationException("The image runtime is too old for this version of the app: press Update on the Images page");
                 }
                 catch (HttpRequestException) { }
                 catch (TaskCanceledException) when (!ct.IsCancellationRequested) { }

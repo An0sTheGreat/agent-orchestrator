@@ -6,14 +6,14 @@ using System.Text.RegularExpressions;
 
 namespace AgentOrchestrator;
 
-// Local image generation (the Images page, MainWindow.ImageGen.cs) with stable-diffusion.cpp's sd-cli.exe, installed into
+// Local image generation (the Images page, MainWindow.ImageGen.cs) with stable-diffusion.cpp's sd-server.exe, installed into
 // <data>\sd.cpp the way llama-server is. The curated recipes download from Hugging Face into <data>\image-models
 // (HubLayout.Flat: root\<repo name>\<file>); a file two recipes share downloads once.
 
 // One model file: the sd-cli flag that takes it, its repo and path in the repo, and its size (shown before the download;
 // the download asks the hub for the real size).
 // Local: a file of this kind (by name) in the user's models folder is used instead of downloading it, e.g. any Qwen3.5-9B GGUF.
-// Flag --lora-model-dir: a LoRA. sd-cli gets its folder, and the prompt it is sent (not the one shown or saved) gets <lora:<name>:1>.
+// Flag --lora-model-dir: a LoRA. sd-server gets its folder, and the prompt it is sent (not the one shown or saved) gets <lora:<name>:1>.
 internal sealed record ImageFile(string Flag, string Repo, string Path, long Size, string Local = "");
 
 // Family: a model file whose name matches it (the user's models folder) is this recipe's main model (Files[0]); the rest of
@@ -58,7 +58,6 @@ internal sealed record ImageProgress(int Step, int Steps, string Speed, bool Loa
 internal static class ImageGen
 {
     public static string RuntimeFolder => Path.Combine(AppSettings.DataRoot, "sd.cpp");
-    public static string CliPath => Path.Combine(RuntimeFolder, "sd-cli.exe");
     public static string ServerPath => Path.Combine(RuntimeFolder, "sd-server.exe");
     public static string ModelsRoot => Path.Combine(AppSettings.DataRoot, "image-models");
     public static string ImagesFolder => Path.Combine(AppSettings.DataRoot, "images");
@@ -285,13 +284,9 @@ internal static class ImageGen
         return new(done, total, perStep >= 1 || perStep <= 0 ? $"{perStep:0.00} s/it" : $"{1 / perStep:0.00} it/s", false);
     }
 
-    // sd-cli's progress line (stdout, \r-separated): "  |=====>    | 3/8 - 1.23s/it" while sampling (it/s when faster),
-    // "  |#####     | 120/500 - 300.00MB/s" while loading weights. Null for any other line.
-    public static ImageProgress? ParseProgress(string line)
-    {
-        var m = Regex.Match(line, @"\|\s*(\d+)/(\d+) - +([\d.]+)(s/it|it/s|MB/s|GB/s)");
-        return m.Success ? new(int.Parse(m.Groups[1].Value), int.Parse(m.Groups[2].Value), m.Groups[3].Value + " " + m.Groups[4].Value, m.Groups[4].Value.EndsWith("B/s")) : null;
-    }
+    // The log lines from line number since on, of the last lines kept (lines) of total lines so far: one generation's own.
+    public static string TailSince(IReadOnlyCollection<string> lines, long total, long since) =>
+        string.Join("\n", lines.Skip((int)Math.Clamp(since - (total - lines.Count), 0, lines.Count)));
 
     // The release's Windows build for this machine: NVIDIA → the CUDA zip and its matching cudart zip, else Vulkan, else CPU.
     public static LauncherLogic.LlamaAssets PickAssets(string releaseJson, bool nvidia)
@@ -430,10 +425,8 @@ internal static class ImageGen
         Check(PresetLabel(Presets[3], true) == "Photo (2:3)" && PresetLabel(Presets[2], true) == "4:5" && PresetLabel(Presets[1], true) == "Square (1:1)" && PresetLabel(Presets[0], true) == "Custom",
             "the swap flips the presets' ratios");
         Check(RemoteAspect(1024, 576) == "16:9" && RemoteAspect(1000, 1000) == "1:1" && RemoteAspect(448, 1024) == "9:16" && RemoteAspect(1024, 448) == "21:9", "OpenRouter gets the nearest aspect ratio");
-        Check(ParseProgress("\r  |================>                                 | 3/8 - 1.23s/it\u001b[K") == new ImageProgress(3, 8, "1.23 s/it", false), "a sampling line");
-        Check(ParseProgress("  |==================================================| 20/20 -     4.56it/s - ETA 00:01") is { Step: 20, Steps: 20, Speed: "4.56 it/s" }, "it/s");
-        Check(ParseProgress("  |#########                                         | 120/662 - 812.40MB/s") is { Loading: true, Step: 120 }, "a loading line");
-        Check(ParseProgress("[INFO ] stable-diffusion.cpp:123 - loading model") is null, "a log line is not progress");
+        Check(TailSince(["[E] an earlier job's error", "[I] job 2", "[E] out of memory"], 12, 10) == "[I] job 2\n[E] out of memory", "a generation reads only its own log lines");
+        Check(TailSince(["a", "b"], 50, 10) == "a\nb" && TailSince(["a", "b"], 50, 50) == "", "older lines dropped: all kept; nothing new: none");
         var release = """
             {"tag_name": "master-1106-532d2c1", "assets": [
              {"name": "cudart-sd-bin-win-cu12-x64.zip", "browser_download_url": "u/cudart"},

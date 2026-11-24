@@ -760,7 +760,7 @@ internal static class LauncherLogic
     // Entry names are cut to their last segment ("..\x.dll" is x.dll) and must still land inside the new folder.
     // moveDirectory is a test seam for a swap that fails.
     public static void InstallLlamaServer(IEnumerable<string> zips, string target, string version, Action<string, string>? moveDirectory = null,
-        string exe = "llama-server.exe") // the image runtime installs sd-cli.exe the same way (ImageGen)
+        string exe = "llama-server.exe") // the image runtime installs sd-server.exe the same way (ImageGen)
     {
         moveDirectory ??= Directory.Move;
         CleanLlamaLeftovers(target);
