@@ -4744,11 +4744,12 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
     if not isinstance(gen, dict):
         return [], {}, ""
     size, takes_negative = f"{gen.get('width')}x{gen.get('height')}", gen.get("negative") is True
+    exact = bool(gen.get("style"))  # OpenRouter models (no style) honour only the aspect: the provider picks the exact size
     properties = {"prompt": {"type": "string", "description": "The full picture description, written for this image model."},
                   **({"negative": {"type": "string", "description": "What to keep out of the picture."}} if takes_negative else {}),
                   "seed": {"type": "integer", "description": "To adjust an earlier picture, its seed; leave out for a new one."}}
     tool = function_tool("generate_image", "Make a picture for the user with the image model; the user sees it beside the chat. "
-                         f"The picture is always {size} pixels. To adjust an earlier picture, call it again with the revised full "
+                         f"The picture is {'always' if exact else 'about'} {size} pixels{'' if exact else ' (the provider picks the exact size)'}. To adjust an earlier picture, call it again with the revised full "
                          "prompt and the same seed.", properties, ["prompt"])
 
     def generate_image(prompt: str, negative: str = "", seed: Any = None) -> str:
@@ -4764,7 +4765,7 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
         return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
 
     note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
-            f"at {size} pixels (always that size). Use it when the user asks you to generate, create, draw or make a picture, or "
+            f"at {size} pixels ({'always that size' if exact else 'about that size, the provider picks the exact one'}). Use it when the user asks you to generate, create, draw or make a picture, or "
             "to change one you made. Write the prompt yourself, refined for this image model, rather than passing the user's "
             f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
             + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")

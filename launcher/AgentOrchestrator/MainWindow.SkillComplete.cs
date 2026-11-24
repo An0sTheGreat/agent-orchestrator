@@ -144,7 +144,8 @@ public partial class MainWindow
         if (!_settings.ImageKeepBoth && _settings.ChatImage is { SharedModel: "", RemoteModel: "" })
             StopLocalServer();
         string result;
-        try { (result, _) = await PaintForChatAsync(prompt, null, null, null); }
+        var cancelled = false; // the composer's stop or the Images page's Cancel
+        try { (result, _, cancelled) = await PaintForChatAsync(prompt, null, null, null); }
         catch (Exception x) // the turn must end whatever broke
         {
             Log($"Image Gen failed: {x.Message}");
@@ -156,7 +157,6 @@ public partial class MainWindow
             SetChatFinal(result);
             ShowPendingShot(reply);
         }
-        var cancelled = error == "the picture was cancelled"; // the composer's stop or the Images page's Cancel
         FinishChatTurn(cancelled ? -1 : 0, cancelled, cancelled ? null : error);
         AfterTurn(_turnCompleted);
     }

@@ -178,9 +178,10 @@ internal static class ImageGen
             $" Prompt: {Line(run.Prompt)}" + (run.Negative.Trim().Length > 0 ? $" Negative: {Line(run.Negative)}" : "");
     }
 
-    // What a reply that is a ChatResult line shows (/image's saved reply): "model · size · seed n"; null for any other text.
+    // What a reply that is exactly one ChatResult line shows (/image's saved reply): "model · size · seed n"; null for any other text,
+    // such as a model that echoes the line and goes on (the line is one line, so the match ends at the text's end).
     public static string? ResultCaption(string text) =>
-        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)? Prompt: ") is { Success: true } m
+        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)? Prompt: [^\r\n]*\z") is { Success: true } m
             ? $"{m.Groups[1].Value} · {m.Groups[2].Value}" + (m.Groups[3].Success ? $" · seed {m.Groups[3].Value}" : "") : null;
 
     public static string LocalPath(string root, ImageFile file) => Path.Combine(root, file.Repo.Split('/')[^1], file.Path.Replace('/', Path.DirectorySeparatorChar));
@@ -464,7 +465,8 @@ internal static class ImageGen
         Check(ChatResult("SDXL 1.0", wide, 1024, 576) is var line && line.StartsWith("Image generated and shown to the user. Model: SDXL 1.0. Size: 1024x576. Seed: ") &&
             line.EndsWith(" Prompt: p Negative: blurry") && ChatResult("m", chatRun, 1, 1) == "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 42. Prompt: a cat" &&
             !ChatResult("m", new() { Seed = -1, Prompt = "two\nlines" }, 1, 1).Contains("Seed") && ChatResult("m", new() { Seed = -1, Prompt = "two\nlines" }, 1, 1).EndsWith("Prompt: two lines") &&
-            ResultCaption(line) == "SDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(ChatResult("m", new() { Seed = -1, Prompt = "p" }, 1, 1)) == "m · 1x1" && ResultCaption("Hello") is null,
+            ResultCaption(line) == "SDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(ChatResult("m", new() { Seed = -1, Prompt = "p" }, 1, 1)) == "m · 1x1" && ResultCaption("Hello") is null &&
+            ResultCaption(line + "\nIt is a nice picture.") is null && ResultCaption(line + "\n") is null,
             "Image Gen: the reply line and its caption");
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==

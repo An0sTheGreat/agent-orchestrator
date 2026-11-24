@@ -110,7 +110,10 @@ public partial class MainWindow
     private void CancelImageGen()
     {
         _imgCts?.Cancel(); // the generation's job is cancelled on sd-server, which keeps its models loaded
+        _imgUnloadCts?.Cancel(); // and a chat picture's wait for the primary PC to unload ends
     }
+
+    private CancellationTokenSource? _imgUnloadCts; // PaintForChatAsync's wait for the primary PC's unload
 
     private bool ImageBusy => _imgCts is not null;
 
@@ -1364,7 +1367,7 @@ public partial class MainWindow
         string? image = null;
         long? seed = ev.TryGetProperty("seed", out var s) && s.ValueKind == JsonValueKind.Number && s.TryGetInt64(out var n) ? n : null;
         var negative = ev.TryGetProperty("negative", out var neg) && neg.ValueKind == JsonValueKind.String ? neg.GetString() : null;
-        try { (result, image) = await PaintForChatAsync(Str(ev, "prompt"), negative, seed, asker); }
+        try { (result, image, _) = await PaintForChatAsync(Str(ev, "prompt"), negative, seed, asker); }
         catch (Exception x) // whatever broke, the engine must hear back
         {
             Log($"Image Gen failed: {x.Message}");
@@ -1375,20 +1378,21 @@ public partial class MainWindow
 
     // The chat's picture, for generate_image (asker: the turn's process) and /image (no asker; the turn's own Stop cancels it): the
     // ChatResult line ("ERROR: …" when nothing was painted) and the picture's copy for the model. The picture joins the turn's.
-    private async Task<(string Result, string? Image)> PaintForChatAsync(string prompt, string? negative, long? seed, Process? asker)
+    private async Task<(string Result, string? Image, bool Cancelled)> PaintForChatAsync(string prompt, string? negative, long? seed, Process? asker)
     {
         ScanImageFolder();
         if (ImagesView.Children.Count == 0)
             BuildImagesPage();
         if (ImageBusy)
-            return ("ERROR: the image generator is busy", null);
+            return ("ERROR: the image generator is busy", null, false);
         if (ImageGen.ChatModel(_settings.ChatImage) is not var (recipe, name))
-            return ("ERROR: no image model is chosen for Image Gen", null);
+            return ("ERROR: no image model is chosen for Image Gen", null, false);
         var run = ImageGen.ChatRun(_settings.ChatImage, recipe, prompt, negative, seed, _settings.ImageGen.LowVram);
         if (run.Prompt.Length == 0)
-            return ("ERROR: the prompt is empty", null);
+            return ("ERROR: the prompt is empty", null, false);
         var local = run.SharedModel.Length == 0 && run.RemoteModel.Length == 0;
         string? file = null;
+        var cancelled = false; // Stop or Cancel ended the job
         await RunImageJob(async ct =>
         {
             using var watch = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -1417,24 +1421,27 @@ public partial class MainWindow
             }
             finally
             {
+                cancelled = ct.IsCancellationRequested;
                 watch.Cancel();
                 _imgStatusTap = null;
             }
         });
         if (local && !_settings.ImageKeepBoth && !ImageBusy)
             StopImageServer(); // the GPU back for the chat model, which the engine loads again
-        if (file is null) // RunImageJob showed the failure: "Failed: …" or "Cancelled"
-            return ("ERROR: " + (_imgStatus.Text.StartsWith("Failed: ") ? "the picture failed: " + _imgStatus.Text[8..] : "the picture was cancelled"), null);
+        if (file is null) // RunImageJob showed a failure as "Failed: …"; no failure and no cancel: the run made no file
+            return (cancelled ? "ERROR: the picture was cancelled" : "ERROR: " + (_imgStatus.Text.StartsWith("Failed: ") ? "the picture failed: " + _imgStatus.Text[8..] : "the image generator returned no picture"), null, cancelled);
         if (run.SharedModel.Length > 0 && !_settings.ImageKeepBoth)
-            try // before the reply: the engine's next call may load a chat model there again
+            try // before the reply: the engine's next call may load a chat model there again; Stop (CancelImageGen) ends the wait
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-                await ImageShare.UnloadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
+                using var unload = _imgUnloadCts = new CancellationTokenSource();
+                await ImageShare.UnloadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", unload.Token);
             }
-            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or TaskCanceledException) { Log($"Image Gen: the primary PC did not unload: {x.Message}"); }
+            catch (Exception x) when (x is InvalidOperationException or HttpRequestException or OperationCanceledException) { Log($"Image Gen: the primary PC did not unload: {x.Message}"); }
+            finally { _imgUnloadCts = null; }
         NoteTurnPicture(file);
         var (copy, width, height) = ChatCopy(file);
-        return (ImageGen.ChatResult(name, run, width, height), copy);
+        return (ImageGen.ChatResult(name, run, width, height), copy, false);
     }
 
     // The picture as a data URL for a model that can see (a JPEG at most 1024 px long) and its own size.

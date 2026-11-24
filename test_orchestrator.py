@@ -3024,6 +3024,12 @@ class CodeTests(unittest.TestCase):
         self.assertNotIn("in negative", note)
         self.assertIn(orchestrator.IMAGE_GENERIC_TIP, note)
 
+    def test_image_gen_openrouter_size_is_not_promised_exactly(self):
+        tools, _, note = orchestrator.image_gen_extras({"image_gen": {**self.IMAGE_GEN, "style": ""}})
+        self.assertIn("about 1536x1152", tools[0]["function"]["description"])
+        self.assertNotIn("always", tools[0]["function"]["description"] + note)
+        self.assertIn("always", orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[0][0]["function"]["description"])
+
     def test_image_gen_handler_sends_the_prompt_and_the_model_sees_the_picture(self):
         asked, image = [], "data:image/png;base64,iVBOR"
         answer = lambda event, **d: asked.append((event, d)) or {"id": "x", "result": "Painted 1536x1152, seed 7", "image": image}
