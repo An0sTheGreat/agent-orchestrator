@@ -41,6 +41,7 @@ public partial class MainWindow
         public string? Summary; // the engine's summary of History[..SummaryCovers] (history_compacted; saved with it)
         public int SummaryCovers;
         public string? Scratch; // the temp folder a chat without a project works in: kept across its turns, so its files stay
+        public (string File, string Line)? LastPicture; // the chat's last generated picture, for the model with the next message only
         public bool Owns(object o) => o == Input || o == Send || o == Scroll || o == Jump || o == Plus || o == Chip;
     }
 
@@ -753,6 +754,7 @@ public partial class MainWindow
         c.Tokens = 0;
         (c.Summary, c.SummaryCovers) = (null, 0);
         c.Scratch = null;
+        c.LastPicture = null;
         if (c == _turn) // a running turn elsewhere keeps its reply
             _reply = null;
         c.Empty.Visibility = Visibility.Visible;
@@ -772,10 +774,18 @@ public partial class MainWindow
     }
 
     // The request of a Chat turn: the stored summary stands in for the messages it covers.
-    private string ChatRequest(string role, string text) =>
-        LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", text)), CurrentExtras(message: text) with { Images = _turnImages }, title: _chatHistory.Count == 0,
+    private string ChatRequest(string role, string text)
+    {
+        var (said, images) = ForModel(_chat, text);
+        return LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", said!)), CurrentExtras(message: text) with { Images = images }, title: _chatHistory.Count == 0,
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers,
             permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess);
+    }
+
+    // The user's message as the model gets it: the first one after a picture carries it (ImageGen.TakeLastPicture); a command,
+    // or no message (a Code action), goes as it is.
+    private (string? Text, List<string> Images) ForModel(Conversation c, string? text) =>
+        text is null || IsCommand(text) ? (text, _turnImages) : ImageGen.TakeLastPicture(ref c.LastPicture, text, _turnImages, _settings.UseVision);
 
     // Shared by Chat and Code: the checks, then one orchestrator process whose events stream into a new reply in c.
     // text null: no user message (a Code action such as write_project). buildRequest gets the target role.

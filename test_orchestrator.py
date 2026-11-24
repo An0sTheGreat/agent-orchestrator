@@ -3030,23 +3030,35 @@ class CodeTests(unittest.TestCase):
         self.assertNotIn("always", tools[0]["function"]["description"] + note)
         self.assertIn("always", orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[0][0]["function"]["description"])
 
-    def test_image_gen_handler_sends_the_prompt_and_the_model_sees_the_picture(self):
+    def test_image_gen_handler_sends_the_prompt_and_gives_the_model_the_picture(self):
         asked, image = [], "data:image/png;base64,iVBOR"
         answer = lambda event, **d: asked.append((event, d)) or {"id": "x", "result": "Painted 1536x1152, seed 7", "image": image}
-        call = self.image_call(prompt="a red fox, snow", negative="blur", seed=7)
         with patch.object(orchestrator, "launcher_call", answer):
-            code, log, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN}, {"planner": [call, "done"]})
-            self.assertEqual(code, 0)
-            self.assertEqual(asked, [("image", {"prompt": "a red fox, snow", "negative": "blur", "seed": 7})])
-            tool, shot = log[1]["messages"][-2:]
-            self.assertEqual((tool["content"], shot["images"]), ("Painted 1536x1152, seed 7\n" + orchestrator.IMAGE_DONE, [image]))
-            with patch.object(orchestrator, "vision_off", lambda config, role: True):  # a model that cannot see gets the text only
-                _, blind, *_ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
-                                         {"planner": [self.image_call(prompt="a fox"), "done"]})
-            self.assertEqual(blind[1]["messages"][-1]["content"], "Painted 1536x1152, seed 7\n" + orchestrator.IMAGE_DONE)
-            self.assertEqual(asked[1], ("image", {"prompt": "a fox", "negative": "", "seed": None}))
+            seen = orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a red fox, snow", "blur", 7)
+            blind = orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN}, vision=False)[1]["generate_image"]("a fox")
+        self.assertEqual(asked, [("image", {"prompt": "a red fox, snow", "negative": "blur", "seed": 7}),
+                                 ("image", {"prompt": "a fox", "negative": "", "seed": None})])
+        self.assertEqual((seen, seen.images), ("Painted 1536x1152, seed 7", [image]))
+        self.assertEqual((blind, getattr(blind, "images", None)), ("Painted 1536x1152, seed 7", None))  # a model that cannot see: text only
         with patch.object(orchestrator, "launcher_call", lambda event, **d: None):  # stdin closed
             self.assertTrue(orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("x").startswith("ERROR:"))
+
+    def test_image_gen_a_made_picture_ends_the_turn_with_its_details_line(self):
+        line = "Image generated and shown to the user. Model: SDXL Base. Size: 1536x1152. Seed: 7. Prompt: a fox"
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": line, "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
+                                             {"planner": [self.image_call(prompt="a fox")]})  # a second model call would find no reply
+        self.assertEqual((code, len(log)), (0, 1))
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+        self.assertEqual(self.ensured, ["planner"])  # the chat model is not loaded again after the picture
+
+    def test_image_gen_a_failed_picture_asks_the_model_to_explain(self):
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": "ERROR: out of memory"}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
+                                             {"planner": [self.image_call(prompt="a fox"), "The GPU ran out of memory."]})
+        self.assertEqual((code, len(log)), (0, 2))
+        self.assertEqual(log[1]["messages"][-1]["content"], "ERROR: out of memory\n" + orchestrator.IMAGE_FAILED)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], ["The GPU ran out of memory."])
 
     def test_image_gen_unload_chat_stops_the_model_before_painting_and_loads_it_after(self):
         order = []
@@ -3754,6 +3766,22 @@ class CodeTests(unittest.TestCase):
                                          {"planner": ["a", "b", "c"], "reviewer": ["VERDICT: FAIL\nx", "VERDICT: FAIL\ny", "no verdict"]})
         self.assertEqual([c["role"] for c in log].count("reviewer"), orchestrator.TURN_REVIEW_FIXES + 1)
         self.assertIn("**Review: FAIL** after 2 fix rounds.", [d["text"] for e, d in events if e == "code_reply"][0])
+
+    def test_a_reviewed_turn_that_ends_on_a_picture_is_not_reviewed(self):
+        line = "Image generated and shown to the user. Model: SDXL Base. Size: 1536x1152. Seed: 7. Prompt: a fox"
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": line, "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN, "review": True},
+                                             {"planner": [self.image_call(prompt="a fox")]})  # a reviewer call would find no script
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner"]))
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+
+    def test_the_last_picture_note_is_not_the_users_words(self):
+        note = "[Your last picture: Model: X. Prompt: computer use, start-project]\n\n"
+        ask = lambda text: {"messages": [{"role": "user", "content": text}]}
+        self.assertFalse(orchestrator.computer_asked(ask(note + "bluer")))
+        self.assertFalse(orchestrator.asked_to_start(ask(note + "bluer")))
+        self.assertTrue(orchestrator.computer_asked(ask(note + "use computer use")))
+        self.assertTrue(orchestrator.asked_to_start(ask(note + "/start-project")))
 
     def test_the_code_lead_gets_the_emoji_line(self):
         code, log, _, _ = self.code({"action": "chat", "messages": self.MSGS, "emoji": "none"}, {"planner": ["ok"]})

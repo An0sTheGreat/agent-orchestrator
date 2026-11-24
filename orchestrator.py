@@ -879,6 +879,7 @@ def blind_images(config: dict[str, Any], role: str, messages: list[dict[str, Any
 
 KEEP_TOOL_ROUNDS, STUB_OVER = 6, 600  # pi/agent_orchestrator.ts's "context" handler uses the same two values
 SHOT_NOTE = "The screenshot the tool took:"  # the user message code_loop puts a tool's screenshot in
+PICTURE_REPLY = ""  # the picture line a code_loop turn ended on (the turn's reply): a reviewed turn that ends so is not reviewed
 STEERED: list[dict[str, Any]] = []  # the Send now messages code_loop delivered this turn: a review's fix round starts from the original messages
 SLIM_AT = 0.5  # share of the window the history must pass before older results become notes (Pi gets it as AO_SLIM_CHARS)
 
@@ -4261,7 +4262,9 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     `nudge` (text, or a function returning it), such a reply gets it sent back instead (at most 3 times in a row, then an
     error), and only `stop()` turning true after a tool batch ends the loop. At most config[cap[0]] (default cap[1]) model
     calls. After a batch that ran another model (delegate, generate_image), the role's model is ensured again: a single-model server may
-    have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another)."""
+    have swapped it (ensure_model keeps a compatible loaded model, so this reloads only when the worker needed another). Without
+    `nudge`, a batch that made a picture ends the turn there: its reply is the picture's details line (the last one's), the model
+    not asked again; a steer still waiting is left undelivered."""
     client, sampling = role_settings(config, role)
     model = client.ensure_model(role, False)
     messages = [{"role": "system", "content": system}, *messages]
@@ -4308,7 +4311,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             nudges += 1
             messages.append({"role": "user", "content": nudge() if callable(nudge) else nudge})
             continue
-        nudges, results, images, acted = 0, [], [], False
+        nudges, results, images, acted, picture = 0, [], [], False, ""
         for call in calls:
             function = call.get("function") or {}
             tool = str(function.get("name") or "?")
@@ -4329,11 +4332,17 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
+            if tool == "generate_image" and not result.startswith("ERROR"):
+                picture = str(result)
             images += getattr(result, "images", [])
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": str(result)})
             else:
                 results.append(f"{tool}: {result}")
+        if picture and not nudge:  # the user sees the picture: no commentary after it
+            global PICTURE_REPLY
+            PICTURE_REPLY = picture
+            return picture
         if not native:
             messages.append({"role": "user", "content": "TOOL RESULTS\n" + "\n".join(results)})
         if images:  # tool messages carry text only: a screenshot goes to the model in a user message after them
@@ -4735,9 +4744,8 @@ IMAGE_STYLE_TIPS = {
 IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style in clear, concrete words."
 
 
-# The end of a painted picture's tool result: the chat model, back on the GPU, has the picture's details but stays quiet.
-IMAGE_DONE = ("The user sees the picture now. Do not describe, review or critique it and do not offer changes: reply with one "
-              "short line at most (such as \"Here it is.\") and wait for the user's next message. Describe it only if the user asks.")
+# The end of a failed picture's tool result (a made one ends the turn: code_loop).
+IMAGE_FAILED = "No picture was made. Briefly explain the failure to the user."
 
 
 def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
@@ -4765,10 +4773,10 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
             unload_models()  # the image model paints on this PC's GPU: the chat model leaves it until code_loop loads it again
         answer = launcher_call("image", prompt=str(prompt), negative=str(negative or "") if takes_negative else "", seed=seed)
         if answer is None:
-            return "ERROR: image generation is only there when the app runs this turn"
+            return f"ERROR: image generation is only there when the app runs this turn\n{IMAGE_FAILED}"
         result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
-        if result and not result.startswith("ERROR"):
-            result = f"{result}\n{IMAGE_DONE}"
+        if result.startswith("ERROR"):
+            return f"{result}\n{IMAGE_FAILED}"
         return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
 
     note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
@@ -4777,8 +4785,7 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
             f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
             + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")
             + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. Do not paste the "
-            "prompt as a code block unless the user asks for it. After the tool returns, the user already sees the picture: "
-            "follow its result and say no more than one short line.")
+            "prompt as a code block unless the user asks for it.")
     return [tool], {"generate_image": generate_image}, note
 
 
@@ -4834,11 +4841,15 @@ COMPUTER_ASKED = re.compile(r"(?i)\bcomputer[- ]use\b|\buse (?:my|the) (?:comput
                             r"\b(?:take over|control) (?:my|the) (?:computer|pc|desktop|mouse|screen)\b")
 
 
+# The launcher's note before a user message that follows a picture (ImageGen.NotePrefix; the model's own prompt is in it): not the user's words.
+PICTURE_NOTE = re.compile(r"\A\[Your last picture: .*?\]\n\n", re.S)
+
+
 def computer_asked(request: dict[str, Any]) -> bool:
     """The user's latest message asks for computer use in words ("use computer use", "use my computer", ...): then the
     computer tool works without asking first this turn."""
     users = [m for m in request.get("messages") or [] if isinstance(m, dict) and m.get("role") == "user"]
-    return bool(users) and bool(COMPUTER_ASKED.search(str(users[-1].get("content") or "")))
+    return bool(users) and bool(COMPUTER_ASKED.search(PICTURE_NOTE.sub("", str(users[-1].get("content") or ""))))
 
 
 def computer_handler(vision: bool = True, permitted: bool = False):
@@ -5341,7 +5352,7 @@ def asked_to_start(request: dict[str, Any]) -> bool:
     """The request's latest message is the user's and invokes start-project (start-project, /start-project, $start-project)."""
     messages = request.get("messages") if isinstance(request.get("messages"), list) else []
     last = messages[-1] if messages and isinstance(messages[-1], dict) else {}
-    return last.get("role") == "user" and bool(START_WORDS.search(str(last.get("content") or "")))
+    return last.get("role") == "user" and bool(START_WORDS.search(PICTURE_NOTE.sub("", str(last.get("content") or ""))))
 
 
 def lead_loop(config: dict[str, Any], folders: list[dict[str, str]], messages: list[dict[str, str]], request: dict[str, Any],
@@ -6159,6 +6170,8 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     messages = blind_images(config, role, messages)
     before = project_texts(folders) if request.get("review") else {}
     STEERED.clear()
+    global PICTURE_REPLY
+    PICTURE_REPLY = ""
     lead = pi_lead_turn if request.get("engine") == "pi" else lead_loop
     global THINKING
     THINKING = ThinkingFile(folders[0]["path"], role)
@@ -6168,7 +6181,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
         THINKING = None
     if not text:
         raise WorkflowError("The model returned an empty reply")
-    if request.get("review"):
+    if request.get("review") and not (PICTURE_REPLY and text == PICTURE_REPLY and before == project_texts(folders)):  # a picture that changed no files: nothing to review, the reply stays the bare caption line
         text = reviewed_turn(config, folders, messages, request, role, lead, text, before)
     emit("code_reply", role=role, text=text)
     if request.get("title") and (title := chat_title(plain, "planner", messages, text)):
