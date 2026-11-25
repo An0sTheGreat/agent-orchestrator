@@ -1076,9 +1076,23 @@ public partial class MainWindow
         _imgRuntimeText.Text = !installed ? "Image runtime (stable-diffusion.cpp) not installed; Generate downloads it."
             : version.Length >= 2 ? $"stable-diffusion.cpp {version[0]} ({version[1]})" : "stable-diffusion.cpp installed";
         _imgRuntimeButton.Content = installed ? "Update" : "Download image runtime";
+        // the hint only where the chat models stay beside the picture: Keep both on, or a reply or run using them (else Generate unloads them)
         using var running = LauncherLogic.RecordedLlamaServer(_llamaStateFile);
-        _imgVramHint.Visibility = running is not null ? Visibility.Visible : Visibility.Collapsed;
+        _imgVramHint.Visibility = running is not null && (_settings.ImageKeepBoth || ChatModelsInUse) ? Visibility.Visible : Visibility.Collapsed;
     }
+
+    // One model at a time (Keep both models loaded off, the Image Gen menu): a picture made on this PC first sends the chat models off
+    // the GPU, as the chat's own pictures do; the next chat message loads its model again. Not while a reply or a run is using them.
+    private async Task FreeGpuForImageAsync(ImageSettings s, CancellationToken ct)
+    {
+        if (s.RemoteModel.Length > 0 || s.SharedModel.Length > 0 || _settings.ImageKeepBoth || ChatModelsInUse)
+            return;
+        StopLocalServer();
+        if (_settings.ShareModels)
+            await UnloadSharedChatModelsAsync(ct);
+    }
+
+    private bool ChatModelsInUse => _chatBusy || _process is { HasExited: false };
 
     private void RefreshImageRecipes()
     {
@@ -1432,6 +1446,7 @@ public partial class MainWindow
             throw new FileNotFoundException($"The start image is gone: {s.InitImage}");
         _settings.ImageGen = s;
         _settings.Save();
+        await FreeGpuForImageAsync(s, ct);
         RefreshImageRuntime(); // the VRAM hint
         var run = JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
         if (run.Seed < 0)

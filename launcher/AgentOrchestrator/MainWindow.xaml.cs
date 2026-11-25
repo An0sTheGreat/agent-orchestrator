@@ -3043,6 +3043,47 @@ public partial class MainWindow : Window
                     recipes.SelectedIndex = recipeBefore;
                     await Settle();
                 }
+                {
+                    // one model at a time (Keep both off): a chat model loaded shows no VRAM hint, and Generate sends it off the GPU first;
+                    // with Keep both on the hint shows and it stays. A copy of ping.exe named llama-server stands in for the engine's server.
+                    var fakeDir = Directory.CreateTempSubdirectory("ao-fake-llama-").FullName;
+                    var fakeExe = Path.Combine(fakeDir, "llama-server.exe");
+                    File.Copy(Path.Combine(Environment.SystemDirectory, "PING.EXE"), fakeExe);
+                    using var fake = Process.Start(new ProcessStartInfo(fakeExe, "-n 600 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false })!;
+                    var keepBefore = _settings.ImageKeepBoth;
+                    try
+                    {
+                        File.WriteAllText(_llamaStateFile, $$"""{"pid": {{fake.Id}}, "port": 8899}""");
+                        _settings.ImageKeepBoth = false;
+                        RefreshImageRuntime();
+                        var hintOff = _imgVramHint.Visibility;
+                        _settings.ImageKeepBoth = true;
+                        RefreshImageRuntime();
+                        var hintKeep = _imgVramHint.Visibility;
+                        await FreeGpuForImageAsync(new ImageSettings(), CancellationToken.None);
+                        var keptAlive = !fake.HasExited;
+                        _settings.ImageKeepBoth = false;
+                        await FreeGpuForImageAsync(new ImageSettings { RemoteModel = "x/y" }, CancellationToken.None); // OpenRouter's picture: the GPU is not needed
+                        var remoteAlive = !fake.HasExited;
+                        await FreeGpuForImageAsync(new ImageSettings(), CancellationToken.None);
+                        fake.WaitForExit(5000);
+                        if (hintOff != Visibility.Collapsed || hintKeep != Visibility.Visible || !keptAlive || !remoteAlive || !fake.HasExited)
+                        {
+                            Console.Error.WriteLine($"ui-smoke: one model at a time: hint {hintOff}/{hintKeep}, alive with Keep both {keptAlive}, for OpenRouter {remoteAlive}, gone after {fake.HasExited}");
+                            return Fail();
+                        }
+                    }
+                    finally
+                    {
+                        _settings.ImageKeepBoth = keepBefore;
+                        if (!fake.HasExited)
+                            fake.Kill();
+                        fake.WaitForExit(5000);
+                        File.Delete(_llamaStateFile);
+                        Directory.Delete(fakeDir, true);
+                        RefreshImageRuntime();
+                    }
+                }
                 // the gallery: a strip of the three, the newest on the stage and outlined; the wheel zooms at the cursor, Fit undoes it
                 Snap("40-images-page");
                 var strip = SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery");
