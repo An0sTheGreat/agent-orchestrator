@@ -104,6 +104,7 @@ public partial class MainWindow
     private static string Kind(string kind) => kind == "chat" ? "chat" : "code";
 
     // A conversation as a remote page shows it (Remote access and the phone app's MainWindow.WebApp.cs); null: no such one.
+    // A streaming reply's text is what the desktop shows so far: the sections before its tool calls, then the current one.
     private (ConversationStore.Conversation Saved, bool Busy, IReadOnlyList<LauncherLogic.ChatMessage> Messages, int Queued, object? Prompt, object? Reply)? ConversationNow(string id)
     {
         if (_store.Get(id) is not { } saved)
@@ -115,7 +116,7 @@ public partial class MainWindow
         var prompt = PromptFor(id) is { } p
             ? new { title = p.Title, message = p.Message, nonce = p.Nonce, choices = p.Options.Select(o => new { label = o.Label, value = o.Value }).ToList() } : null;
         var reply = live && _reply is { } r
-            ? new { text = r.Final ?? r.AnswerText.ToString(), status = r.Status.Visibility == Visibility.Visible ? r.Status.Text : "" } : null;
+            ? new { text = string.Join("\n\n", r.Earlier.Append(r.Final ?? r.AnswerText.ToString()).Where(t => t.Length > 0)), status = r.Status.Visibility == Visibility.Visible ? r.Status.Text : "" } : null;
         return (saved, busy, messages, queued, prompt, reply);
     }
 

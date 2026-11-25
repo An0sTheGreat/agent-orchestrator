@@ -537,6 +537,7 @@ public partial class MainWindow
         private Stream _stream = Stream.Null;
         public string Head = "";
         public int KeepAlives;
+        public static readonly TimeSpan Within = TimeSpan.FromSeconds(10); // every read's deadline: keepalives never extend it
 
         public static async Task<SseClient> Open(int port, string path, string? login = "smoke@example.com", string? site = null)
         {
@@ -546,30 +547,29 @@ public partial class MainWindow
             var request = $"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n" + (login is null ? "" : $"Tailscale-User-Login: {login}\r\n") +
                 (site is null ? "" : $"Sec-Fetch-Site: {site}\r\n") + "\r\n";
             await c._stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes(request));
-            for (string line; (line = await c.Line()).Length > 0;)
+            using var deadline = new CancellationTokenSource(Within);
+            for (string line; (line = await c.Line(deadline.Token)).Length > 0;)
                 c.Head += line + "\r\n";
             return c;
         }
 
-        private async Task<string> Line()
+        private async Task<string> Line(CancellationToken deadline)
         {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             var bytes = new List<byte>();
             var one = new byte[1];
-            while (await _stream.ReadAsync(one, timeout.Token) == 1 && one[0] != '\n')
+            while (await _stream.ReadAsync(one, deadline) == 1 && one[0] != '\n')
                 bytes.Add(one[0]);
             return System.Text.Encoding.ASCII.GetString(bytes.ToArray()).TrimEnd('\r');
         }
 
-        // The next event (keepalives counted and skipped); throws when a chunk is not exactly one frame.
-        public async Task<JsonNode> Next()
+        // The next event by the deadline (keepalives counted and skipped); throws when a chunk is not exactly one frame.
+        public async Task<JsonNode> Next(CancellationToken deadline)
         {
             while (true)
             {
-                var size = Convert.ToInt32(await Line(), 16);
-                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var size = Convert.ToInt32(await Line(deadline), 16);
                 var data = new byte[size + 2];
-                await _stream.ReadExactlyAsync(data, timeout.Token);
+                await _stream.ReadExactlyAsync(data, deadline);
                 var text = System.Text.Encoding.UTF8.GetString(data, 0, size);
                 if (text == ": keepalive\n\n")
                 {
@@ -588,8 +588,8 @@ public partial class MainWindow
     // Live events (WebAppSmoke, while on), a chat turn on a stand-in engine whose deltas wait for gate files: the stream is
     // text/event-stream, chunked, one frame per chunk, keepalives while idle; hello, the deltas in order, saved; a PC popup opened
     // during the turn shows as the state's prompt, send waits for it and /api/answer with its nonce resolves it; a stream that
-    // reconnects mid-turn gets the reply so far in its hello and the rest as deltas, once; the gates refuse it; a client that
-    // leaves is unsubscribed.
+    // reconnects mid-turn gets the reply so far in its hello and the rest as deltas, once, and after a tool call that reply so far
+    // holds both sections; the gates refuse it; a client that leaves is unsubscribed. A missing event fails by its read's deadline.
     private async Task<bool> WebEventsSmoke(int port)
     {
         static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: events: {what}"); return false; }
@@ -606,20 +606,30 @@ public partial class MainWindow
             "def ev(**e): print('@@AO ' + json.dumps(e), flush=True)\n" +
             "def wait(name):\n    while not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)): time.sleep(0.05)\n" +
             "wait('go0')\nev(e='delta', role='planner', kind='text', text='One ')\nwait('go1')\nev(e='delta', role='planner', kind='text', text='two ')\n" +
-            "wait('go2')\nev(e='delta', role='planner', kind='text', text='three')\nev(e='chat_reply', role='planner', text='One two three')\n");
+            "ev(e='tool', role='planner', name='read_file', args='{}', result='OK')\nev(e='delta', role='planner', kind='text', text='three')\n" +
+            "wait('go2')\nev(e='delta', role='planner', kind='text', text=' four')\nev(e='chat_reply', role='planner', text='three four')\n");
         File.WriteAllText(Path.Combine(engine, "config.json"), """{"roles": {}}""");
         void Go(string gate) => File.WriteAllText(Path.Combine(engine, gate), "");
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         http.DefaultRequestHeaders.Add("Tailscale-User-Login", "smoke@example.com");
         var streams = new List<SseClient>();
         async Task<SseClient> Open(string id) { var s = await SseClient.Open(port, $"/api/conversation/{id}/events"); streams.Add(s); return s; }
-        // events up to the first that `last` accepts
-        static async Task<List<JsonNode>> ReadTo(SseClient s, Func<JsonNode, bool> last)
+        // events up to the first that `last` accepts, all by one deadline: a missing event fails the check (keepalives never extend it)
+        static async Task<List<JsonNode>> ReadTo(SseClient s, string what, Func<JsonNode, bool> last)
         {
             var got = new List<JsonNode>();
-            do got.Add(await s.Next()); while (!last(got[^1]));
+            using var deadline = new CancellationTokenSource(SseClient.Within);
+            try
+            {
+                do got.Add(await s.Next(deadline.Token)); while (!last(got[^1]));
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException($"no {what} within {SseClient.Within.TotalSeconds} s, got [{string.Join(" ", got.Select(n => n.ToJsonString()))}]");
+            }
             return got;
         }
+        static async Task<JsonNode> One(SseClient s, string what) => (await ReadTo(s, what, _ => true))[0];
         static string E(JsonNode n) => n["e"]?.ToString() ?? "";
         static string Deltas(IEnumerable<JsonNode> events) => string.Concat(events.Where(n => E(n) == "delta").Select(n => n["text"]?.ToString()));
         try
@@ -640,17 +650,17 @@ public partial class MainWindow
             if (!a.Head.StartsWith("HTTP/1.1 200") || !a.Head.Contains("Content-Type: text/event-stream", StringComparison.OrdinalIgnoreCase) ||
                 !a.Head.Contains("Transfer-Encoding: chunked", StringComparison.OrdinalIgnoreCase))
                 return Fail($"the stream's head: {a.Head}");
-            if (await a.Next() is not { } hello || E(hello) != "hello" || hello["busy"]?.GetValue<bool>() != true || hello["reply"]?["text"]?.ToString() != "")
+            if (await One(a, "hello") is not { } hello || E(hello) != "hello" || hello["busy"]?.GetValue<bool>() != true || hello["reply"]?["text"]?.ToString() != "")
                 return Fail("the hello");
             await Task.Delay(500); // idle: keepalives
             Go("go0");
-            var first = await ReadTo(a, n => E(n) == "delta");
+            var first = await ReadTo(a, "first delta", n => E(n) == "delta");
             if (a.KeepAlives == 0)
                 return Fail("no keepalive while idle");
 
             // a PC popup during the turn: mirrored as the state's prompt; send waits for it; the phone's answer resolves it
             var asked = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
-            var shown = (await ReadTo(a, n => E(n) == "state" && n["prompt"] is not null))[^1]["prompt"]!;
+            var shown = (await ReadTo(a, "state with the prompt", n => E(n) == "state" && n["prompt"] is not null))[^1]["prompt"]!;
             if (shown["title"]?.ToString() != "Folder access" || shown["nonce"]?.ToString() is not { Length: > 0 } nonce)
                 return Fail($"the prompt: {shown}");
             if (RemoteAct("POST", "/api/send", WebBody(System.Text.Encoding.UTF8.GetBytes($$"""{"id":"{{id}}","text":"during the popup"}"""))) is not (409, _))
@@ -663,11 +673,11 @@ public partial class MainWindow
             if (await Answer($$"""{"id":"{{id}}","choice":"write","nonce":"0123"}""") != 409 || await Answer($$"""{"id":"{{id}}","choice":"write","nonce":"{{nonce}}"}""") != 200 ||
                 await Task.WhenAny(asked.Task, Task.Delay(5000)) != asked.Task || asked.Result != "write")
                 return Fail("the phone's answer did not resolve the popup");
-            await ReadTo(a, n => E(n) == "state" && n["prompt"] is null);
+            await ReadTo(a, "state without the prompt", n => E(n) == "state" && n["prompt"] is null);
 
             // one that leaves mid-turn is unsubscribed; one that reconnects gets the reply so far, then the rest, once
             var b = await Open(id);
-            await b.Next();
+            await One(b, "hello on the second stream");
             if (_webEvents.Count != 2)
                 return Fail($"{_webEvents.Count} subscribers with two streams");
             b.Dispose();
@@ -675,17 +685,26 @@ public partial class MainWindow
                 return Fail($"a client that left is still subscribed ({_webEvents.Count})");
             var sofar = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/conversation/{id}"))?["reply"]?["text"]?.ToString();
             var c = await Open(id);
-            var again = await c.Next();
+            var again = await One(c, "hello on the reconnect");
             Go("go1");
+            var second = await ReadTo(a, "second section's delta", n => E(n) == "delta" && n["text"]?.ToString() == "three");
+            // a reconnect after a tool call started a second section: the reply so far holds both sections, once
+            var sections = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/conversation/{id}"))?["reply"]?["text"]?.ToString();
+            var d = await Open(id);
+            var twoSections = await One(d, "hello after the tool call");
             Go("go2");
-            var rest = await ReadTo(a, n => E(n) == "saved");
-            var resumed = await ReadTo(c, n => E(n) == "saved");
-            if (Deltas(first.Concat(rest)) != "One two three" || !rest.Any(n => E(n) == "chat_reply"))
-                return Fail($"stream A: {string.Join(" ", first.Concat(rest).Select(n => n.ToJsonString()))}");
-            if (sofar != "One " || again["reply"]?["text"]?.ToString() != sofar || sofar + Deltas(resumed) != "One two three")
+            var rest = await ReadTo(a, "saved on the first stream", n => E(n) == "saved");
+            var resumed = await ReadTo(c, "saved on the reconnect", n => E(n) == "saved");
+            var late = await ReadTo(d, "saved after the tool call", n => E(n) == "saved");
+            var all = first.Concat(second).Concat(rest).ToList();
+            if (Deltas(all) != "One two three four" || !second.Any(n => E(n) == "tool") || !rest.Any(n => E(n) == "chat_reply"))
+                return Fail($"stream A: {string.Join(" ", all.Select(n => n.ToJsonString()))}");
+            if (sofar != "One " || again["reply"]?["text"]?.ToString() != sofar || sofar + Deltas(resumed) != "One two three four")
                 return Fail($"the reconnect: so far {sofar}, hello {again.ToJsonString()}, then {Deltas(resumed)}");
-            if (_store.Get(id)?.Messages.LastOrDefault()?.Content != "One two three")
-                return Fail("saved before the reply was");
+            if (sections != "One two\n\nthree" || twoSections["reply"]?["text"]?.ToString() != sections || Deltas(late) != " four")
+                return Fail($"the reconnect after a tool call: so far {sections}, hello {twoSections.ToJsonString()}, then {Deltas(late)}");
+            if (_store.Get(id)?.Messages.LastOrDefault()?.Content != "One two\n\nthree four")
+                return Fail($"saved before the reply was: {_store.Get(id)?.Messages.LastOrDefault()?.Content}");
 
             // the gates: no owner, another account, a cross-site page
             foreach (var (login, site) in new[] { ((string?)null, (string?)null), ("other@example.com", null), ("smoke@example.com", "cross-site") })
@@ -702,7 +721,7 @@ public partial class MainWindow
                 return Fail($"{_webEvents.Count} subscribers after the streams closed");
             return true;
         }
-        catch (Exception x) when (x is IOException or InvalidDataException or OperationCanceledException or FormatException or HttpRequestException)
+        catch (Exception x) when (x is IOException or InvalidDataException or OperationCanceledException or TimeoutException or FormatException or HttpRequestException)
         {
             return Fail(x.Message);
         }

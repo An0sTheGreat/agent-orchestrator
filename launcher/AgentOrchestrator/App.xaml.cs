@@ -67,6 +67,8 @@ public partial class App : Application
             };
             window.Show();
             KeepBehind();
+            if (webAppSmoke) // a check that never ends fails the run instead of hanging it
+                _ = Task.Delay(TimeSpan.FromMinutes(3)).ContinueWith(_ => { Console.Error.WriteLine("webapp-smoke: still running after 3 minutes"); Environment.Exit(1); });
             window.Dispatcher.InvokeAsync(async () =>
             {
                 var ok = false;
