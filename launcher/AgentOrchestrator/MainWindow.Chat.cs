@@ -1749,7 +1749,16 @@ public partial class MainWindow
         public required TextBox Raw;
         public int Shown; // characters of Raw.Text on screen
         public int Stable, StableBlocks; // the kept prefix (Markdown.StableLength) and the document blocks rendered from it
+        // A code block still open at the tail: between colourings (ColourEveryMs) new code is appended to its text plain
+        public TextBlock? OpenCode; // null: none, or rebuild the tail next frame
+        public Button? OpenCopy;
+        public int OpenCodeAt, OpenShown; // where its code starts in the text; the characters on screen when last appended to
+        public double ColouredAt; // when the tail was last rendered (and the block coloured)
     }
+
+    // An unfinished code block is rebuilt (and coloured) at most about 9 times a second; the frames between only append the new code
+    // uncoloured, so a long listing streams as fast as text does without being rebuilt every frame.
+    private const double ColourEveryMs = 110;
 
     private readonly HashSet<RichTextBox> _markdownDirty = new(); // views still revealing
     private bool _framing; // OnMarkdownFrame is subscribed
@@ -1778,7 +1787,7 @@ public partial class MainWindow
         view.Document = DocumentOf(s, text);
         Markdown.NoTopMargin(view.Document.Blocks.FirstBlock);
         WireCodeBlocks(view.Document.Blocks);
-        (s.Shown, s.Stable, s.StableBlocks) = (text.Length, 0, 0);
+        (s.Shown, s.Stable, s.StableBlocks, s.OpenCode) = (text.Length, 0, 0, null);
     }
 
     private static FlowDocument DocumentOf(MarkdownState s, string markdown) =>
@@ -1799,6 +1808,14 @@ public partial class MainWindow
     // the unfinished tail is rendered again.
     private void RenderShown(RichTextBox view, MarkdownState s, string shown)
     {
+        var now = _clockMs();
+        if (s.OpenCode is { } open && now - s.ColouredAt < ColourEveryMs && shown.Length > s.OpenShown && Markdown.StableLength(shown, s.Stable) == s.Stable)
+        {
+            open.Inlines.Add(new Run(shown[s.OpenShown..].Replace("\r", ""))); // the block's code colour until the next colouring
+            s.OpenShown = shown.Length;
+            s.OpenCopy!.Tag = shown[s.OpenCodeAt..].Replace("\r\n", "\n");
+            return;
+        }
         var blocks = view.Document.Blocks;
         while (blocks.Count > s.StableBlocks)
         {
@@ -1814,6 +1831,10 @@ public partial class MainWindow
             s.Stable = stable;
         }
         AddBlocks(view, s, shown[stable..]);
+        s.OpenCode = null;
+        if (Markdown.OpenCodeStart(shown, stable) is { } at && blocks.LastBlock is BlockUIContainer { Child: Border openCard } && Markdown.CodeBlocks([blocks.LastBlock]).Any() &&
+            CodeTextOf(openCard) is { } code)
+            (s.OpenCode, s.OpenCopy, s.OpenCodeAt, s.OpenShown, s.ColouredAt) = (code, CopyButtonOf(openCard), at, shown.Length, now);
     }
 
     private int AddBlocks(RichTextBox view, MarkdownState s, string markdown)
@@ -1837,6 +1858,8 @@ public partial class MainWindow
     private Action<string>? _copyCodeHook; // --ui-smoke: receives the copied code instead of the clipboard
 
     private static Button CopyButtonOf(Border card) => (Button)((Grid)card.Child).Children[1];
+    // An unfinished block's code text (Markdown.CodeText under its header); null for a closed block's listing.
+    private static TextBlock? CodeTextOf(Border card) => ((Border)((StackPanel)((Grid)card.Child).Children[0]).Children[1]).Child as TextBlock;
 
     private void CopyCode(Button copy)
     {

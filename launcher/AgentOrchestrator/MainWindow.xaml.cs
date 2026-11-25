@@ -1834,6 +1834,28 @@ public partial class MainWindow : Window
                 var openCard = Markdown.CodeBlocks(answerView.Document.Blocks).SingleOrDefault();
                 if (openCard is null || !_codeBlocks.Contains(openCard))
                     return Fail();
+                // more code into the open block: each frame shows what arrived (appended plain to the same card, its Copy up to date),
+                // and the card is rebuilt and coloured only every ColourEveryMs
+                var (appended, recoloured, liveCard) = (0, 0, openCard);
+                AppendChatDelta("reviewer", "text", string.Concat(Enumerable.Range(13, 40).Select(n => $"print({n})\n")));
+                for (var frames = 0; answer.Shown < answer.Raw.Text.Length; frames++)
+                {
+                    var before = answer.Shown;
+                    if (frames > 500 || !Frame())
+                        return Fail();
+                    var card = Markdown.CodeBlocks(answerView.Document.Blocks).Single();
+                    var shownCode = answer.Raw.Text[(answer.Raw.Text.IndexOf("```python\n", StringComparison.Ordinal) + 10)..answer.Shown];
+                    if (CodeTextOf(card) is not { } liveText || string.Concat(liveText.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text)) != shownCode || (string)CopyButtonOf(card).Tag != shownCode)
+                        return Fail();
+                    if (card != liveCard)
+                        recoloured++;
+                    else if (answer.Shown > before)
+                        appended++;
+                    liveCard = card;
+                }
+                if (appended < 3 || recoloured < 2)
+                    return Fail();
+                code = string.Join("\n", Enumerable.Range(1, 52).Select(n => $"print({n})"));
                 AppendChatDelta("reviewer", "text", "```\n\n" + string.Join("\n\n", Enumerable.Range(1, 30).Select(n => $"After {n}")) + "\n\n- one\n- two 😀😀😀");
                 if (!CatchUp() || Structure(answerView.Document) != Structure(Markdown.ToDocument(answer.Raw.Text, answer.Raw.FontSize)))
                     return Fail();

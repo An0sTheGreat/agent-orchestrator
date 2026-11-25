@@ -344,6 +344,27 @@ internal static class Markdown
         return stable;
     }
 
+    // Where the code of a code block still open at the text's end starts (after its fence line, which must be complete); null when
+    // none is open. from: a length StableLength returned (outside any block).
+    public static int? OpenCodeStart(string text, int from)
+    {
+        string? fence = null;
+        var start = 0;
+        for (int at = from, end; (end = text.IndexOf('\n', at)) >= 0; at = end + 1)
+        {
+            var line = text[at..end];
+            if (fence is not null)
+            {
+                if (line.TrimStart().StartsWith(fence))
+                    fence = null;
+                continue;
+            }
+            if (Fence.Match(line) is { Success: true } open)
+                (fence, start) = (open.Groups[1].Value, end + 1);
+        }
+        return fence is null ? null : start;
+    }
+
     // A reply's first block starts right under its header: a heading's or a rule's room above goes.
     public static void NoTopMargin(Block? first)
     {
