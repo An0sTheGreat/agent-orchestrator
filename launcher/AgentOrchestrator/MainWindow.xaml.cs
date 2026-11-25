@@ -3000,6 +3000,9 @@ public partial class MainWindow : Window
                     ChatView.Visibility == Visibility.Visible || CodeView.Visibility == Visibility.Visible ||
                     SmokeFind<ComboBox>(ImagesView, c => c.Tag as string == "ImagesRecipe") is not { } recipes || recipes.Items.Count != ImageGen.Recipes.Length + 1 ||
                     (recipes.Items[^1] as ComboBoxItem)?.Content is not string mossItem || !mossItem.StartsWith("MOSS-Image-SFT-Q8_0.gguf · MOSS-Image SFT") ||
+                    // the MOSS recipe's Download row is not offered: its model is in the folder as another file
+                    Array.FindIndex(ImageGen.Recipes, r => r.Id == "moss-image-sft") is var mossAt && MissingImageFiles(ImageGen.Recipes[mossAt], "").Count > 0 &&
+                        mossAt != recipes.SelectedIndex && (recipes.Items[mossAt] as ComboBoxItem)?.Visibility != Visibility.Collapsed ||
                     SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
                     return Fail();
                 // the gallery: a strip of the three, the newest on the stage and outlined; the wheel zooms at the cursor, Fit undoes it

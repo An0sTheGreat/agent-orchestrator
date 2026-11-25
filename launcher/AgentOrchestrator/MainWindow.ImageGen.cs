@@ -1072,13 +1072,14 @@ public partial class MainWindow
                 return new ComboBoxItem
                 {
                     Content = $"{r.Name}{(r.Note.Length > 0 ? " · " + r.Note : "")} — {(missing == 0 ? "Downloaded" : $"Download ({Gb(missing)})")}",
-                    Visibility = _settings.ImageHideMissing && missing > 0 && i != index ? Visibility.Collapsed : Visibility.Visible,
+                    Visibility = (_settings.ImageHideMissing && missing > 0 || RecipeCovered(r)) && i != index ? Visibility.Collapsed : Visibility.Visible,
                 };
             })
-            .Concat(_imgLocal.Select(m =>
+            .Concat(_imgLocal.Select((m, i) =>
             {
                 var missing = Missing(m.Recipe, m.Path);
-                return new ComboBoxItem { Content = $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}" };
+                return new ComboBoxItem { Content = $"{Path.GetFileName(m.Path)} · {m.Recipe.Name} — {(missing == 0 ? "on this PC" : $"on this PC, needs {Gb(missing)} of parts")}",
+                    Visibility = IsRecipeFile(m) && ImageGen.Recipes.Length + i != index ? Visibility.Collapsed : Visibility.Visible };
             })).ToList();
         _imgRecipe.SelectedIndex = Math.Clamp(index, 0, _imgRecipe.Items.Count - 1);
         _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
@@ -1271,6 +1272,13 @@ public partial class MainWindow
                 try { File.Delete(zip); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
         }
     }
+
+    // A folder model that is its recipe's own main file (the recipe's row already shows it).
+    private bool IsRecipeFile(ImageGen.LocalModel m) =>
+        string.Equals(ImageGen.Paths(m.Recipe, "", _imgFolderFiles, ImageGen.ModelsRoot)[0], m.Path, StringComparison.OrdinalIgnoreCase);
+
+    // A recipe not downloaded whose model is already on this PC as another file (another quant of it): its Download row is not offered.
+    private bool RecipeCovered(ImageRecipe r) => MissingImageFiles(r, "").Count > 0 && _imgLocal.Any(m => m.Recipe == r && !IsRecipeFile(m));
 
     // The recipe's files that are neither in the models folder nor downloaded yet.
     private List<ImageFile> MissingImageFiles(ImageRecipe recipe, string local)

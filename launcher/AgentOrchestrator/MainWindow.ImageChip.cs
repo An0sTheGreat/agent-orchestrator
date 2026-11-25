@@ -108,8 +108,8 @@ public partial class MainWindow
                 var current = own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
                     ? Path.GetFileName(c.LocalModel).Equals(m.Id[6..], StringComparison.OrdinalIgnoreCase) : c.LocalModel.Length == 0 && c.RecipeId == m.Id);
                 var files = Files(m.Id);
-                if (_settings.ImageHideMissing && files.StartsWith("Download (", StringComparison.Ordinal) && !current)
-                    continue; // not downloaded: hidden while the switch is on (the current pick stays)
+                if (!current && (_settings.ImageHideMissing && files.StartsWith("Download (", StringComparison.Ordinal) || Shown(m.Id)))
+                    continue; // not downloaded and the switch on, or the model shown by another row (the current pick stays)
                 Row("chatimg:" + m.Id, m.Name, files, current,
                     () => Pick(s => (s.RecipeId, s.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "")), m.Note);
             }
@@ -131,6 +131,9 @@ public partial class MainWindow
                 Row("chatimgremote:" + c.RemoteModel, c.RemoteModel, "", true, () => { });
             }
         }
+        // a recipe whose model is on this PC as another file, or a folder file that is a recipe's own (as the Images page skips them)
+        bool Shown(string id) => ImageShare.Resolve(id, _imgLocal) is var (recipe, path)
+            && (path.Length == 0 ? RecipeCovered(recipe) : IsRecipeFile(_imgLocal.First(l => l.Path == path)));
         // what the Images page's list says of a model's files: picking one marked Download downloads it on first use, as there
         string Files(string id)
         {
