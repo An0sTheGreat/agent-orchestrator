@@ -43,16 +43,17 @@ export const api = {
     headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name || 'photo') },
   })).path,
   // Live events for a conversation; reconnects with a 1 to 15 s backoff and sends {e:'resync'} after each reconnect. Returns stop().
-  events(id, onEvent) {
-    let es, timer, wait = 1000, stopped = false, dropped = false;
+  // onDrop(n): the n-th failure in a row (EventSource cannot tell a 403/404 from a drop; the caller can ask the API).
+  events(id, onEvent, onDrop) {
+    let es, timer, wait = 1000, stopped = false, dropped = false, drops = 0;
     const open = () => {
       es = new EventSource(api.base + '/api/conversation/' + encodeURIComponent(id) + '/events');
-      es.onopen = () => { wait = 1000; if (dropped) { dropped = false; onEvent({ e: 'resync' }); } };
+      es.onopen = () => { wait = 1000; drops = 0; if (dropped) { dropped = false; onEvent({ e: 'resync' }); } };
       es.onmessage = m => { try { onEvent(JSON.parse(m.data)); } catch { /* not JSON: skipped */ } };
       es.onerror = () => {
         es.close();
         dropped = true;
-        if (!stopped) { timer = setTimeout(open, wait); wait = nextWait(wait); }
+        if (!stopped) { timer = setTimeout(open, wait); wait = nextWait(wait); onDrop?.(++drops); }
       };
     };
     open();

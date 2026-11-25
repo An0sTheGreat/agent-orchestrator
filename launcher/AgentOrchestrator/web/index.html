@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="styles.css">
 <script type="module" src="js/main.js"></script>
 <script type="module" src="js/chats.js"></script>
+<script type="module" src="js/chat.js"></script>
 <script type="module" src="js/pcs.js"></script>
 </head>
 <body>
@@ -444,9 +445,9 @@
         <div class="ctxpop" id="ctxpop" hidden>
           <div class="ctxpop-head">
             <b>Main Context</b>
-            <span class="ctxpop-pct"><i class="ctxring mini" id="ctxpopring"><span>34%</span></i></span>
+            <span class="ctxpop-pct"><i class="ctxring mini" id="ctxpopring"><span>0%</span></i></span>
           </div>
-          <div class="ctxpop-used"><span id="ctxpopused">11,140 / 32,768</span><span id="ctxpoppct2">34% used</span></div>
+          <div class="ctxpop-used"><span id="ctxpopused"></span><span id="ctxpoppct2"></span></div>
           <div class="ctxbar" aria-hidden="true"></div>
           <ul class="ctxrows"></ul>
         </div>
@@ -591,54 +592,48 @@
 </template>
 <template id="tpl-msg-user">
               <div class="msg right">
-                <div class="bubble">I want a small weather dashboard: today's forecast and a 7-day chart. How would you split that up for the agents?</div>
-                <p class="stamp">6 minutes ago <button class="ghosttiny" data-copy>copy</button></p>
+                <div class="bubble"></div>
+                <p class="stamp"><span class="when"></span> <button class="ghosttiny" data-copy>copy</button></p>
               </div>
 </template>
 <template id="tpl-msg-reply">
               <div class="msg">
                 <p class="who"></p>
                 <div class="md"></div>
-                <p class="stamp"><button class="ghosttiny" data-copy>copy</button></p>
+                <p class="stamp"><span class="when"></span> <button class="ghosttiny" data-copy>copy</button></p>
               </div>
 </template>
 <template id="tpl-thinking">
               <details class="fold">
-                <summary><span class="fold-tag">THINKING</span><span class="fold-text">Writing PROJECT.md, then one reviewed item at a time…</span></summary>
-                <div class="fold-body md">
-                  <p>The user wants a London-first dashboard. The plan is four items; PROJECT.md holds the goal, the acceptance criteria and the checks. I will not start the run until the file is written and read back.</p>
-                </div>
+                <summary><span class="fold-tag">THINKING</span><span class="fold-text"></span></summary>
+                <div class="fold-body md"></div>
               </details>
 </template>
 <template id="tpl-tool">
               <div class="toolrow">
                 <span class="tool-tag">TOOL</span>
-                <span class="tool-name">write_file</span>
-                <code>{"path":"PROJECT.md"}</code>
+                <span class="tool-name"></span>
+                <code></code>
                 <span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span>
               </div>
 </template>
 <template id="tpl-delegate">
               <div class="delegate">
                 <div class="delegate-head">
-                  <span class="who">Reviewer · Qwen3.5-4B Q4_K_M</span>
-                  <span class="badge pass">PASS</span>
+                  <span class="who"></span>
                 </div>
                 <p></p>
               </div>
 </template>
 <template id="tpl-approval">
               <div class="approval">
-                <div class="approval-head"><svg class="ic sm"><use href="#i-shield"/></svg> Permission request · network</div>
-                <p>The model wants to run <code>npm install</code>. The command sandbox has no network access.</p>
-                <div class="approval-actions">
-                  <button class="btn ghost" data-approve="no">Deny</button>
-                  <button class="btn" data-approve="yes">Allow once</button>
-                </div>
+                <div class="approval-head"><svg class="ic sm"><use href="#i-shield"/></svg> <span class="approval-title"></span></div>
+                <p></p>
+                <div class="approval-actions"></div>
               </div>
 </template>
 <template id="tpl-sysline">
-              <p class="sysline">Context compacted: 18,204 → 7,120 tokens · summary saved above the last step</p>
+              <p class="sysline"></p>
 </template>
 
 <!-- icon sprite -->

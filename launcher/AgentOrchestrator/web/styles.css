@@ -368,6 +368,9 @@ body.landscape .drawer { padding-top: 0; }
 .approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .approval.done { border-color: var(--border); background: transparent; }
 .sysline { font-size: 11px; color: #777; text-align: center; margin: 4px 0 16px; padding-top: 10px; border-top: 1px dashed #3a3a3a; }
+/* pictures in a message (user photos, generated pictures); one that fails to load says so */
+.msg .pic { display: block; max-width: 100%; border-radius: var(--r-small); margin-top: 8px; }
+.pic-missing { display: inline-block; font-size: 11px; color: var(--muted); border: 1px dashed var(--border); border-radius: 6px; padding: 6px 9px; margin-top: 8px; }
 
 .codeblock { position: relative; background: var(--deep); border: 1px solid var(--border); border-radius: var(--r-small); margin: 0 0 12px; overflow: hidden; }
 .codeblock pre { margin: 0; padding: 11px 12px; overflow-x: auto; font-size: 11.5px; line-height: 1.65; }
