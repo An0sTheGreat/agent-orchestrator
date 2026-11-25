@@ -229,6 +229,13 @@ public partial class MainWindow
                 stepLine.Text != "Step 7/8 · 1.2 s/it" || stepLine.VerticalAlignment != VerticalAlignment.Bottom || stepLine.HorizontalAlignment != HorizontalAlignment.Left ||
                 !status.Text.StartsWith("Making a picture.", StringComparison.Ordinal) || status.VerticalAlignment != VerticalAlignment.Top || reply.Status.Visibility == Visibility.Visible)
                 return Fail("the picture's placeholder");
+            // a step preview takes the dots' place on the card, the text still over it; the stage is left alone meanwhile
+            var stageBefore = _imgResult?.Source;
+            ShowImagePreview(File.ReadAllBytes(photo));
+            if (SmokeFind<Image>(pending, i => i.Tag as string == "PendingPicturePreview") is not { Source: not null } cardFrame || cardFrame.Parent is not Grid cardGrid ||
+                cardGrid.Children[0].Visibility != Visibility.Collapsed || cardGrid.Children.IndexOf(cardFrame) >= cardGrid.Children.IndexOf(status) || _imgStagePreview ||
+                (_imgResult is not null && _imgResult.Source != stageBefore))
+                return Fail("the step preview on the picture's card");
             RemovePendingPicture();
             _reply = null;
             if (reply.Content.Children.Contains(pending) || _pendingPicture is not null)

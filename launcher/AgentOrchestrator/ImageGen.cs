@@ -78,18 +78,21 @@ internal static class ImageGen
             new("--diffusion-model", "leejet/Z-Image-Turbo-GGUF", "z_image_turbo-Q4_K.gguf", 3864250304),
             new("--vae", "Comfy-Org/Z-Image-Turbo", "split_files/vae/ae.safetensors", 335304388),
             new("--llm", "unsloth/Qwen3-4B-Instruct-2507-GGUF", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2497281120, Local: @"^qwen3-4b.*\.gguf$"),
+            new(TaesdFlag, "madebyollin/taef1", "diffusion_pytorch_model.safetensors", 9848636),
         ], Steps: 8, Cfg: 1.0, Sampler: "", Negative: false, Multiple: 16, Family: @"z[-_ ]?image"),
         new("flux3-klein", "FLUX.3 Image Klein", "",
         [
             new("--diffusion-model", "leejet/flux-3-image-klein-GGUF", "flux3-image-klein-Q4_K.gguf", 3514023104),
             new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
             new("--llm", "Qwen/Qwen3-VL-4B-Instruct-GGUF", "Qwen3VL-4B-Instruct-Q4_K_M.gguf", 2497281664, Local: @"^qwen3-?vl-4b.*\.gguf$"),
+            new(TaesdFlag, "madebyollin/taef2", "taef2.safetensors", 10723524),
         ], Steps: 16, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?3"),
         new("flux2-klein-4b", "FLUX.2 Klein 4B", "",
         [
             new("--diffusion-model", "leejet/FLUX.2-klein-4B-GGUF", "flux-2-klein-4b-Q4_0.gguf", 2460378560),
             new("--vae", "Comfy-Org/Flux-2-Klein-4B", "split_files/vae/flux2-vae.safetensors", 336211292),
             new("--llm", "unsloth/Qwen3-4B-GGUF", "Qwen3-4B-Q4_K_M.gguf", 2497281312, Local: @"^qwen3-4b-(?!instruct).*\.gguf$"),
+            new(TaesdFlag, "madebyollin/taef2", "taef2.safetensors", 10723524),
         ], Steps: 4, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 16, Family: @"flux[-_.]?2[-_.]?klein[-_.]?4b"),
         new("qwen-image-2.1-omni", "Qwen-Image 2.1 Omni", "Turbo LoRA · 8 steps",
         [
@@ -97,12 +100,14 @@ internal static class ImageGen
             new("--vae", "Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors", 675509688, Local: @"^qwen_image_2\.1_vae.*\.safetensors$"),
             new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800, Local: @"^qwen3-?vl[-_]?8b.*\.(gguf|safetensors)$"),
             new(LoraFlag, "chatrlabs/Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1", "chatrlabs-omni-turbo-8step-fp32.safetensors", 671148320, Local: @"^chatrlabs-omni-turbo-8step.*\.safetensors$"),
+            new(TaesdFlag, "madebyollin/taeqi2_1", "taeqi2_1.safetensors", 30591264),
         ], Steps: 8, Cfg: 1.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image.*(omni|step90000)"),
         new("qwen-image-2.1", "Qwen-Image 2.1", "Large",
         [
             new("--diffusion-model", "leejet/Qwen-Image-2.1-GGUF", "qwen_image_2.1-Q4_K.gguf", 4197494816),
             new("--vae", "Comfy-Org/Qwen-Image-2.1", "vae/qwen_image_2.1_vae_bf16.safetensors", 675509688),
             new("--llm", "Qwen/Qwen3-VL-8B-Instruct-GGUF", "Qwen3VL-8B-Instruct-Q4_K_M.gguf", 5027784800, Local: @"^qwen3-?vl-8b.*\.gguf$"),
+            new(TaesdFlag, "madebyollin/taeqi2_1", "taeqi2_1.safetensors", 30591264),
         ], Steps: 20, Cfg: 6.0, Sampler: "euler", Negative: false, Multiple: 32, Family: @"qwen[-_ ]?image(?!.*(omni|step90000))"),
         new("moss-image-sft", "MOSS-Image SFT", "",
         [
@@ -110,15 +115,20 @@ internal static class ImageGen
             new("--vae", "Comfy-Org/MOSS-Image", "vae/flux2-vae.safetensors", 336211292),
             new("--llm", "unsloth/Qwen3.5-9B-GGUF", "Qwen3.5-9B-Q4_K_M.gguf", 5680522464, Local: @"^qwen3\.5-9b.*\.gguf$"),
             new("--tokenizer", "OpenMOSS-Team/MOSS-Image-Base", "tokenizer/tokenizer.json", 19989325),
+            new(TaesdFlag, "madebyollin/taef2", "taef2.safetensors", 10723524),
         ], Steps: 20, Cfg: 3.0, Sampler: "", Negative: true, Multiple: 16, Family: @"moss[-_ ]?image"),
         new("sdxl", "SDXL 1.0", "",
         [
             new("-m", "stabilityai/stable-diffusion-xl-base-1.0", "sd_xl_base_1.0.safetensors", 6938078334),
             new("--vae", "madebyollin/sdxl-vae-fp16-fix", "sdxl_vae.safetensors", 334641162),
+            new(TaesdFlag, "madebyollin/taesdxl", "diffusion_pytorch_model.safetensors", 9793292),
         ], Steps: 30, Cfg: 7.0, Sampler: "", Negative: true, Multiple: 64, Family: @"sd_?xl"),
     ];
 
     public const string LoraFlag = "--lora-model-dir";
+    // The tiny autoencoder (TAESD, madebyollin's) matching the model's VAE: it only draws the step previews (--taesd-preview-only);
+    // the full VAE still decodes the picture.
+    public const string TaesdFlag = "--taesd";
 
     public static ImageRecipe Recipe(string id) => Recipes.FirstOrDefault(r => r.Id == id) ?? Recipes[0];
 
@@ -330,6 +340,8 @@ internal static class ImageGen
                 if (!Regex.IsMatch(prompt, $@"<lora:{Regex.Escape(name)}(:[^>]*)?>", RegexOptions.IgnoreCase))
                     prompt += $" <lora:{name}:1>";
             }
+            else if (file.Flag == TaesdFlag)
+                args.AddRange([file.Flag, path, "--taesd-preview-only"]);
             else
                 args.AddRange([file.Flag, path]);
         static string F(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
@@ -389,6 +401,8 @@ internal static class ImageGen
         {
             ["prompt"] = prompt, ["negative_prompt"] = G("-n") ?? "", ["width"] = int.Parse(gen["-W"]), ["height"] = int.Parse(gen["-H"]),
             ["seed"] = long.Parse(gen["-s"]), ["batch_count"] = int.Parse(G("-b") ?? "1"), ["sample_params"] = sample,
+            // a preview each step: the tiny autoencoder's, else the latent's colours projected (blurry, nearly free)
+            ["preview"] = context.Contains(TaesdFlag) ? "tae" : "proj", ["preview_interval"] = 1,
         };
         if (loras.Count > 0)
             request["lora"] = loras;
@@ -408,6 +422,15 @@ internal static class ImageGen
             return new(0, total, "", fresh);
         var perStep = (p["stage_elapsed_ms"]?.GetValue<double>() ?? 0) / 1000 / done;
         return new(done, total, perStep >= 1 || perStep <= 0 ? $"{perStep:0.00} s/it" : $"{1 / perStep:0.00} it/s", false);
+    }
+
+    // A job's latest step preview (GET /sdcpp/v1/jobs/<id>): its pass and step, which tell a new frame from the one shown, and its PNG.
+    public static (int Pass, int Step, byte[] Png)? JobPreview(JsonNode? job)
+    {
+        if (job?["preview"] is not JsonObject p || (string?)p["b64_json"] is not { Length: > 0 } png)
+            return null;
+        try { return ((int?)p["pass"] ?? 0, (int?)p["step"] ?? 0, Convert.FromBase64String(png)); }
+        catch (FormatException) { return null; }
     }
 
     // The log lines from line number since on, of the last lines kept (lines) of total lines so far: one generation's own.
@@ -527,7 +550,7 @@ internal static class ImageGen
         var s = new ImageSettings { Prompt = "a cat", Negative = "blurry", Width = 512, Height = 512, Steps = 4, Cfg = 1, Seed = 42, LowVram = false };
         Check(string.Join(" ", Args(z, s, Paths(z, "", [], root), @"C:\o\x.png")) ==
             @"--diffusion-model C:\m\Z-Image-Turbo-GGUF\z_image_turbo-Q4_K.gguf --vae C:\m\Z-Image-Turbo\split_files\vae\ae.safetensors " +
-            @"--llm C:\m\Qwen3-4B-Instruct-2507-GGUF\Qwen3-4B-Instruct-2507-Q4_K_M.gguf -p a cat --cfg-scale 1 --steps 4 -W 512 -H 512 -s 42 -o C:\o\x.png",
+            @"--llm C:\m\Qwen3-4B-Instruct-2507-GGUF\Qwen3-4B-Instruct-2507-Q4_K_M.gguf --taesd C:\m\taef1\diffusion_pytorch_model.safetensors --taesd-preview-only -p a cat --cfg-scale 1 --steps 4 -W 512 -H 512 -s 42 -o C:\o\x.png",
             "Z-Image args (no negative prompt for a recipe without one)");
         s.LowVram = true;
         s.InitImage = @"C:\in.png";
@@ -539,7 +562,8 @@ internal static class ImageGen
             "the scheduler goes as --scheduler, and only when chosen");
         s.Cfg = 7.5;
         Check(string.Join(" ", Args(sdxl, s, Paths(sdxl, "", [], root), "o.png")) ==
-            @"-m C:\m\stable-diffusion-xl-base-1.0\sd_xl_base_1.0.safetensors --vae C:\m\sdxl-vae-fp16-fix\sdxl_vae.safetensors -p a cat -n blurry " +
+            @"-m C:\m\stable-diffusion-xl-base-1.0\sd_xl_base_1.0.safetensors --vae C:\m\sdxl-vae-fp16-fix\sdxl_vae.safetensors " +
+            @"--taesd C:\m\taesdxl\diffusion_pytorch_model.safetensors --taesd-preview-only -p a cat -n blurry " +
             @"--cfg-scale 7.5 --steps 4 -W 512 -H 512 -s 42 -b 2 --sampling-method euler --offload-to-cpu --vae-tiling -i C:\in.png --strength 0.6 -o o.png",
             "SDXL args with negative prompt, Low VRAM, init image");
         s.Negative = "  ";
@@ -549,7 +573,7 @@ internal static class ImageGen
         Check(string.Join(" ", Args(omni, omniRun, Paths(omni, "", [], root), "o.png")) ==
             @"--diffusion-model C:\m\Qwen-Image-2.1-Uncensored-Omni-Quantized\qwen-image-2.1-step90000-FP8-comfy.safetensors --vae C:\m\Qwen-Image-2.1\vae\qwen_image_2.1_vae_bf16.safetensors " +
             @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 " +
-            @"-p a cat <lora:chatrlabs-omni-turbo-8step-fp32:1> --cfg-scale 1 --steps 8 -W 1024 -H 1024 -s 42 -o o.png" && omniRun.Prompt == "a cat",
+            @"--taesd C:\m\taeqi2_1\taeqi2_1.safetensors --taesd-preview-only -p a cat <lora:chatrlabs-omni-turbo-8step-fp32:1> --cfg-scale 1 --steps 8 -W 1024 -H 1024 -s 42 -o o.png" && omniRun.Prompt == "a cat",
             "LoRA: sd-cli gets its folder and the prompt sent gets its tag (the settings' prompt unchanged)");
         omniRun.Prompt = "a cat <lora:chatrlabs-omni-turbo-8step-fp32:1>";
         Check(Args(omni, omniRun, Paths(omni, "", [], root), "o.png") is var tagged && tagged[tagged.IndexOf("-p") + 1] == omniRun.Prompt, "LoRA: a prompt with the tag already gets it once");
@@ -558,11 +582,12 @@ internal static class ImageGen
             Paths(omni, "", [], root));
         Check(string.Join(" ", omniContext) ==
             @"--diffusion-model C:\m\Qwen-Image-2.1-Uncensored-Omni-Quantized\qwen-image-2.1-step90000-FP8-comfy.safetensors --vae C:\m\Qwen-Image-2.1\vae\qwen_image_2.1_vae_bf16.safetensors " +
-            @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 --offload-to-cpu --vae-tiling",
-            "sd-server context: the model files, the LoRA folder and Low VRAM");
+            @"--llm C:\m\Qwen3-VL-8B-Instruct-GGUF\Qwen3VL-8B-Instruct-Q4_K_M.gguf --lora-model-dir C:\m\Qwen-Image-2.1-Uncensored-Omni-LoRA-v0.1 " +
+            @"--taesd C:\m\taeqi2_1\taeqi2_1.safetensors --taesd-preview-only --offload-to-cpu --vae-tiling",
+            "sd-server context: the model files, the LoRA folder, the preview's tiny autoencoder and Low VRAM");
         Check(omniRequest.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping }) ==
             @"{""prompt"":""a cat"",""negative_prompt"":"""",""width"":768,""height"":512,""seed"":42,""batch_count"":2," +
-            @"""sample_params"":{""sample_steps"":8,""guidance"":{""txt_cfg"":2.5},""sample_method"":""euler""},""lora"":[{""path"":""chatrlabs-omni-turbo-8step-fp32.safetensors"",""multiplier"":1}]}",
+            @"""sample_params"":{""sample_steps"":8,""guidance"":{""txt_cfg"":2.5},""sample_method"":""euler""},""preview"":""tae"",""preview_interval"":1,""lora"":[{""path"":""chatrlabs-omni-turbo-8step-fp32.safetensors"",""multiplier"":1}]}",
             "sd-server request: the LoRA by file name (not a prompt tag, which sd-server ignores), size, seed, batch, steps, cfg, sampler");
         Check(ServerArgs(omni, new() { Prompt = "a dog <lora:chatrlabs-omni-turbo-8step-fp32:0.5> <lora:missing:1>, park" }, Paths(omni, "", [], root)).Request is var tagged2 &&
             (string?)tagged2["prompt"] == "a dog, park" && tagged2["lora"]!.AsArray().Count == 1 && (double?)tagged2["lora"]![0]!["multiplier"] == 0.5,
@@ -581,6 +606,12 @@ internal static class ImageGen
             JobProgress(Job("""{"status":"generating","progress":{"stage":"sampling","completed":0,"total":8}}"""), false) is { Loading: false, Steps: 8 } &&
             JobProgress(Job("""{"status":"generating","progress":{"stage":"vae_decode","completed":null,"total":null}}"""), false) is null,
             "sd-server job progress: steps and speed, loading only on a fresh server");
+        // step previews: the tiny autoencoder's when the recipe has one, else the latent projection; a job's frame with its pass and step
+        Check((string?)ServerArgs(z with { Files = z.Files[..3] }, new() { Prompt = "p" }, Paths(z with { Files = z.Files[..3] }, "", [], root)).Request["preview"] == "proj" &&
+            Recipes.All(r => r.Files.Count(f => f.Flag == TaesdFlag) == 1), "every recipe previews with its tiny autoencoder; without one, the projection");
+        Check(JobPreview(Job("""{"status":"generating","preview":{"pass":1,"step":3,"total_steps":8,"b64_json":"iVBORw=="}}""")) is (1, 3, [0x89, 0x50, 0x4E, 0x47]) &&
+            JobPreview(Job("""{"status":"generating","preview":null}""")) is null && JobPreview(Job("""{"status":"queued"}""")) is null &&
+            JobPreview(Job("""{"preview":{"pass":1,"step":1,"b64_json":"not base64!"}}""")) is null, "sd-server job preview: the frame, none, or unreadable");
         // the models folder: image models only (no chat GGUF, no parts), one per name and size; their parts found there or downloaded
         var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-imgscan-{Guid.NewGuid():N}");
         try
@@ -604,7 +635,7 @@ internal static class ImageGen
             var omniLocal = found.First(m => m.Recipe.Id == "qwen-image-2.1-omni");
             var omniPaths = Paths(omniLocal.Recipe, omniLocal.Path, all, root);
             Check(omniPaths.SequenceEqual([omniLocal.Path, Path.Combine(folder, @"h\vae\qwen_image_2.1_vae_bf16.safetensors"), Path.Combine(folder, @"h\text_encoders\qwen3vl_8b_int8_convrot.safetensors"),
-                Path.Combine(folder, @"h\loras\chatrlabs-omni-turbo-8step-fp32.safetensors")]), "Omni: its own model, the folder's VAE, Qwen3-VL-8B and LoRA");
+                Path.Combine(folder, @"h\loras\chatrlabs-omni-turbo-8step-fp32.safetensors"), LocalPath(root, omniLocal.Recipe.Files[4])]), "Omni: its own model, the folder's VAE, Qwen3-VL-8B and LoRA, the preview's TAE downloaded");
             Check(Args(omniLocal.Recipe, new() { Prompt = "p" }, omniPaths, "o.png") is var omniArgs && omniArgs[omniArgs.IndexOf("--lora-model-dir") + 1] == Path.Combine(folder, @"h\loras") &&
                 omniArgs[omniArgs.IndexOf("-p") + 1] == "p <lora:chatrlabs-omni-turbo-8step-fp32:1>", "Omni: the folder's LoRA goes as its folder and the prompt's tag");
             var moss = found[^1];

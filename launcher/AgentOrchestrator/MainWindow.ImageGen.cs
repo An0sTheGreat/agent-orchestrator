@@ -1239,8 +1239,32 @@ public partial class MainWindow
         thumb.SetResourceReference(Border.BorderBrushProperty, shown ? "Accent" : "Border");
     }
 
+    // A generation's step preview (sd-server's, as PNG): on the chat's picture card while one is made, else on the stage until
+    // the picture replaces it (RunImageJob puts the last picture back if none comes).
+    private bool _imgStagePreview;
+
+    private void ShowImagePreview(byte[] png)
+    {
+        BitmapImage frame;
+        try
+        {
+            frame = new BitmapImage();
+            frame.BeginInit();
+            (frame.StreamSource, frame.CacheOption) = (new MemoryStream(png), BitmapCacheOption.OnLoad);
+            frame.EndInit();
+            frame.Freeze();
+        }
+        catch (Exception x) when (x is NotSupportedException or IOException or InvalidOperationException) { return; } // a frame it could not read: the next one
+        if (PendingPicturePreview(frame))
+            return;
+        _imgStagePreview = true;
+        _imgResult.Source = frame;
+        _imgPlaceholder.Visibility = Visibility.Collapsed;
+    }
+
     private void ShowOnStage(string? path)
     {
+        _imgStagePreview = false;
         _imgResultPath = path;
         _imgResult.Source = path is null ? null : LoadPicture(path);
         _imgPlaceholder.Visibility = _imgResult.Source is null ? Visibility.Visible : Visibility.Collapsed;
@@ -1305,6 +1329,8 @@ public partial class MainWindow
             _imgCts = null;
             _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = true;
             _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Collapsed;
+            if (_imgStagePreview) // cancelled or failed: the last picture again in place of its preview
+                ShowOnStage(_imgResultPath);
             ShowImageSource(); // the pill back on
             RefreshImageRuntime();
             RefreshImageRecipes();
@@ -1618,10 +1644,16 @@ public partial class MainWindow
             try
             {
                 ct.ThrowIfCancellationRequested();
+                (int, int) shown = (0, 0); // the preview frame on show (pass, step)
                 while ((string?)job?["status"] is "queued" or "generating")
                 {
                     await Task.Delay(500, ct);
                     job = JsonNode.Parse(await http.GetStringAsync($"/sdcpp/v1/jobs/{id}", ct));
+                    if (ImageGen.JobPreview(job) is { } frame && (frame.Pass, frame.Step) != shown)
+                    {
+                        shown = (frame.Pass, frame.Step);
+                        ShowImagePreview(frame.Png);
+                    }
                     if (ImageGen.JobProgress(job, fresh) is not { } p)
                         continue;
                     if (p.Loading)

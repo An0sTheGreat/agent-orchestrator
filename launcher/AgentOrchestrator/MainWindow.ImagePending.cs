@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 
@@ -9,7 +10,7 @@ namespace AgentOrchestrator;
 
 // The chat's picture while it is made (generate_image, /image): a field of dots in the picture's shape that light in slow drifting
 // glows, "Making a picture" in its upper left (its dots counting . .. ... until the picture comes), the current step in its lower
-// left (Loading model…, Step 5/8…) and the percentage in its lower right. The reply's status line stays hidden meanwhile (SetChatStatus): the card says it. The picture replaces it.
+// left (Loading model…, Step 5/8…) and the percentage in its lower right; once the generation sends step previews, the latest takes the dots' place. The reply's status line stays hidden meanwhile (SetChatStatus): the card says it. The picture replaces it.
 public partial class MainWindow
 {
     private (FrameworkElement Root, TextBlock Percent, TextBlock Status, TextBlock Step, DispatcherTimer Timer)? _pendingPicture;
@@ -78,6 +79,21 @@ public partial class MainWindow
             percent.Text = $"{Math.Clamp(p, 0, 1) * 100:0}%";
             pill.Visibility = Visibility.Visible;
         }
+    }
+
+    // A step preview on the card: it takes the dots' place (the text stays over it). False when no picture is being made here.
+    private bool PendingPicturePreview(BitmapSource frame)
+    {
+        if (_pendingPicture is not var (root, _, _, _, _) || root is not Panel { Children: [Border { Child: Grid grid }, ..] })
+            return false;
+        if (grid.Children.OfType<Image>().FirstOrDefault() is not { } shown)
+        {
+            shown = new Image { Stretch = Stretch.UniformToFill, Tag = "PendingPicturePreview" };
+            grid.Children.Insert(1, shown); // over the dots, under the text
+            grid.Children[0].Visibility = Visibility.Collapsed;
+        }
+        shown.Source = frame;
+        return true;
     }
 
     private void RemovePendingPicture()
