@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using Microsoft.Win32;
 
 namespace AgentOrchestrator;
@@ -83,24 +84,53 @@ public partial class MainWindow
                 if (e.Command == ApplicationCommands.Paste && PasteAttachments(conv))
                     e.Handled = true;
             });
-            var box = c.IsCode ? CodeComposer : ChatComposer;
-            box.AllowDrop = true;
-            box.PreviewDragOver += (_, e) =>
-            {
-                if (!e.Data.GetDataPresent(DataFormats.FileDrop))
-                    return;
-                e.Effects = DragDropEffects.Copy;
-                e.Handled = true; // the text box would refuse files
-            };
-            box.PreviewDrop += (_, e) =>
-            {
-                if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths)
-                    return;
-                e.Handled = true;
-                foreach (var path in paths)
-                    Attach(conv, path);
-            };
+            HookConversationDrop(conv, c.IsCode ? CodeView : ChatView);
         }
+    }
+
+    // Files, pictures and folders dropped anywhere on the conversation (a new chat or an open one) are attached to its message, as
+    // the message box's paperclip does. While they are dragged over it the view dims under "Drop files here". Preview events: the
+    // message box and the editor would take or refuse the drop themselves.
+    private void HookConversationDrop(Conversation conv, Grid view)
+    {
+        var pill = new Border { CornerRadius = new CornerRadius(14), Padding = new Thickness(14, 6, 14, 7), HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center, Child = new TextBlock { Text = "Drop files here", FontSize = 13, FontWeight = FontWeights.SemiBold, Foreground = Brushes.White } };
+        pill.SetResourceReference(Border.BackgroundProperty, "Accent");
+        var overlay = new Border { BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(10), Margin = new Thickness(6), IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed, Background = new SolidColorBrush(Color.FromArgb(0x99, 0x10, 0x10, 0x12)), Child = pill, Tag = "ConversationDropOverlay" };
+        overlay.SetResourceReference(Border.BorderBrushProperty, "Accent");
+        Grid.SetRowSpan(overlay, Math.Max(1, view.RowDefinitions.Count));
+        Grid.SetColumnSpan(overlay, Math.Max(1, view.ColumnDefinitions.Count));
+        Panel.SetZIndex(overlay, 1000);
+        view.Children.Add(overlay);
+        view.Background ??= Brushes.Transparent; // the gaps between the messages take the drop too
+        view.AllowDrop = true;
+        void Over(object _, DragEventArgs e)
+        {
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
+                return;
+            e.Effects = DragDropEffects.Copy;
+            e.Handled = true;
+            overlay.Visibility = Visibility.Visible;
+        }
+        view.PreviewDragEnter += Over;
+        view.PreviewDragOver += Over;
+        view.PreviewDragLeave += (_, e) =>
+        {
+            var at = e.GetPosition(view); // a leave from one child to another is still inside: only leaving the view hides it
+            if (at.X <= 0 || at.Y <= 0 || at.X >= view.ActualWidth || at.Y >= view.ActualHeight)
+                overlay.Visibility = Visibility.Collapsed;
+        };
+        view.PreviewDrop += (_, e) =>
+        {
+            overlay.Visibility = Visibility.Collapsed;
+            if (e.Data.GetData(DataFormats.FileDrop) is not string[] paths)
+                return;
+            e.Handled = true;
+            foreach (var path in paths)
+                Attach(conv, path);
+            conv.Input.Focus();
+        };
     }
 
     private bool PasteAttachments(Conversation c)

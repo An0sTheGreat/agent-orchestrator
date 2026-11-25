@@ -3681,6 +3681,31 @@ public partial class MainWindow : Window
                 return Fail();
             _chatAttachments.Clear();
             RefreshAttachments(_chat);
+            // dragged anywhere on the conversation (here over the messages, not the message box): the view dims under "Drop files
+            // here", and the drop attaches the files and the folder; text dragged in is left to whatever is under it
+            {
+                DragEventArgs Drag(RoutedEvent ev, IDataObject data, DependencyObject target) => (DragEventArgs)Activator.CreateInstance(typeof(DragEventArgs),
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance, null, [data, DragDropKeyStates.None, DragDropEffects.Copy | DragDropEffects.Move, target, new Point(40, 40)], null)!
+                    is var a ? Init(a, ev) : null!;
+                static DragEventArgs Init(DragEventArgs a, RoutedEvent ev) { a.RoutedEvent = ev; return a; }
+                var overlay = ChatView.Children.OfType<Border>().FirstOrDefault(b => b.Tag as string == "ConversationDropOverlay");
+                var under = ChatView.Children.OfType<FrameworkElement>().First(e => e != ChatComposer && e != overlay);
+                var files = new DataObject(DataFormats.FileDrop, new[] { Path.Combine(area, "notes.txt"), Path.Combine(area, "src") });
+                var enter = Drag(DragDrop.PreviewDragEnterEvent, files, under);
+                under.RaiseEvent(enter);
+                var shownOver = overlay?.Visibility == Visibility.Visible && enter.Handled && enter.Effects == DragDropEffects.Copy;
+                var text = Drag(DragDrop.PreviewDragOverEvent, new DataObject(DataFormats.UnicodeText, "hello"), under);
+                under.RaiseEvent(text);
+                under.RaiseEvent(Drag(DragDrop.PreviewDropEvent, files, under));
+                if (overlay is null || !shownOver || text.Handled || overlay.Visibility != Visibility.Collapsed ||
+                    !_chatAttachments.SequenceEqual([Path.Combine(area, "notes.txt"), Path.Combine(area, "src")]))
+                {
+                    Console.Error.WriteLine($"ui-smoke: drop on the conversation: overlay {overlay?.Visibility}, shown over {shownOver}, text taken {text.Handled}, attached [{string.Join(", ", _chatAttachments)}]");
+                    return Fail();
+                }
+                _chatAttachments.Clear();
+                RefreshAttachments(_chat);
+            }
             Directory.Delete(area, recursive: true);
         }
         // Centered and wide: the ring pins its card beside the chat (saved) and the card follows the context; clicked again it
