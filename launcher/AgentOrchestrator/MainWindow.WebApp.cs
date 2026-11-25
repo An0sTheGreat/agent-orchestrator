@@ -129,6 +129,8 @@ public partial class MainWindow
                 Log($"Phone app: {_webFailure}");
                 if (retry && _settings.WebAppOn)
                     ArmWebRetry();
+                else
+                    _webRetry.Stop(); // a refusal after a not-ready failure ends the retries too
             }
             _webStarting = false;
             RefreshWebApp();
@@ -328,6 +330,17 @@ public partial class MainWindow
             if (WebAppFixText.Visibility == Visibility.Visible || _webFailureUrl is not null || WebAppStateText.Text != "Off")
                 return Fail($"serve refused, switched off: state {WebAppStateText.Text}, link {WebAppFixText.Visibility}");
             _settings.WebAppOn = false;
+
+            // Not ready at first (the retry timer runs), then ready and refused by tailscale serve: no more retries.
+            refusals = 0;
+            var reads = 0;
+            _webStatus = () => Task.FromResult(reads++ == 0 ? null : Tailscale.ParseStatus(tailnet.Replace("%CERTS%", ""","CertDomains":["home.tail0000.ts.net"]""")));
+            _settings.WebAppOn = true;
+            _ = StartWebAppAsync();
+            await Task.Delay(500);
+            if (refusals != 1 || _webRetry.IsEnabled || _webStarting || WebAppFixText.Visibility != Visibility.Visible)
+                return Fail($"not ready then refused: {refusals} serve calls, retry timer {_webRetry.IsEnabled}, link {WebAppFixText.Visibility}");
+            Click(false);
 
             // A failed start is retried while the switch is on: tailscaled still starting (status null at first), then ready.
             _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult((true, "")); };
