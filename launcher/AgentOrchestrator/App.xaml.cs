@@ -41,6 +41,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.TerminalSelfTest();
             ImageShare.SelfTest();
             WebServer.SelfTest();
+            WebEvents.SelfTest();
             Shutdown(0);
             return;
         }
