@@ -44,13 +44,15 @@ public partial class MainWindow
         {
             Width = size, Height = size, CornerRadius = new CornerRadius(10), BorderThickness = new Thickness(1), Tag = "Thumb",
             Background = new ImageBrush(bitmap) { Stretch = Stretch.UniformToFill }, Cursor = Cursors.Hand, ToolTip = Path.GetFileName(path),
+            DataContext = path, // read back by the click for the row's set
         };
         thumb.SetResourceReference(Border.BorderBrushProperty, "Border");
         DragOut(thumb, () => path);
         thumb.MouseLeftButtonUp += (_, e) =>
         {
             e.Handled = true;
-            ShowImage(path);
+            // the set is read from the row now: pictures may have joined it since it was built
+            ShowImage(path, (thumb.Parent as WrapPanel)?.Children.OfType<FrameworkElement>().Select(c => c.DataContext as string).OfType<string>().ToList());
         };
         return thumb;
     }
@@ -91,13 +93,22 @@ public partial class MainWindow
         return row.Children.Count > 0 ? row : null;
     }
 
-    internal void ShowImage(string path)
+    private List<string> _viewSet = [];
+    private int _viewIndex;
+
+    // The picture full size; `set` is the thumbnail row it belongs to, for Left/Right (null or one picture: no arrows).
+    internal void ShowImage(string path, IReadOnlyList<string>? set = null)
     {
         if (LoadPicture(path) is not { } picture)
         {
             Toast($"Could not open {Path.GetFileName(path)}", "#F7C873");
             return;
         }
+        _viewSet = set?.ToList() ?? [];
+        _viewIndex = _viewSet.IndexOf(path);
+        if (_viewIndex < 0)
+            _viewSet = [];
+        ShowViewCount();
         ImageViewerPicture.Source = picture;
         ImageViewer.Visibility = Visibility.Visible;
         // The browser's page is a window of its own, drawn over anything WPF puts on top: hidden while the picture shows
@@ -120,8 +131,27 @@ public partial class MainWindow
 
     private void ImageViewer_MouseUp(object sender, MouseButtonEventArgs e) => CloseImage();
 
+    private void ShowViewCount()
+    {
+        ImageViewerCount.Text = $"{_viewIndex + 1} / {_viewSet.Count}";
+        ImageViewerCount.Visibility = _viewSet.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
     private void ImageViewer_KeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key is Key.Left or Key.Right)
+        {
+            e.Handled = true;
+            var next = _viewIndex + (e.Key == Key.Right ? 1 : -1);
+            // stops at the ends; a picture that no longer loads leaves the current one showing
+            if (_viewSet.Count > 1 && next >= 0 && next < _viewSet.Count && LoadPicture(_viewSet[next]) is { } picture)
+            {
+                _viewIndex = next;
+                ImageViewerPicture.Source = picture;
+                ShowViewCount();
+            }
+            return;
+        }
         if (e.Key != Key.Escape)
             return;
         e.Handled = true;
@@ -224,6 +254,39 @@ public partial class MainWindow
             ImageViewer_KeyDown(ImageViewer, new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Escape) { RoutedEvent = Keyboard.KeyDownEvent });
             if (ImageViewer.Visibility != Visibility.Collapsed || ImageViewerPicture.Source is not null)
                 return Fail("Esc did not close the viewer");
+            // Left/Right step through the pictures of one thumbnail row, stopping at its ends; one picture ignores them
+            static void Press(MainWindow w, Key key) =>
+                w.ImageViewer_KeyDown(w.ImageViewer, new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(w)!, 0, key) { RoutedEvent = Keyboard.KeyDownEvent });
+            var temps = new[] { 0, 1, 2 }.Select(_ => Path.Combine(Path.GetTempPath(), $"smoke-set-{Guid.NewGuid():N}.png")).ToList();
+            try
+            {
+                foreach (var t in temps)
+                    File.Copy(photo, t);
+                var setRow = ThumbRow(temps, 64, HorizontalAlignment.Left)!;
+                setRow.Children[1].RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent });
+                string Seen() => ImageViewerCount.Visibility == Visibility.Visible ? ImageViewerCount.Text : "-";
+                var seen = new List<string> { Seen() };
+                Press(this, Key.Right); seen.Add(Seen());
+                Press(this, Key.Right); seen.Add(Seen());
+                Press(this, Key.Left); Press(this, Key.Left); seen.Add(Seen());
+                Press(this, Key.Left); seen.Add(Seen());
+                if (string.Join(",", seen) != "2 / 3,3 / 3,3 / 3,1 / 3,1 / 3")
+                    return Fail($"arrows through a row of three: {string.Join(",", seen)}");
+                Press(this, Key.Escape);
+                ShowImage(photo);
+                Press(this, Key.Right); Press(this, Key.Left);
+                if (ImageViewer.Visibility != Visibility.Visible || ImageViewerCount.Visibility == Visibility.Visible)
+                    return Fail("a single picture's viewer reacted to the arrows");
+                Press(this, Key.Escape);
+                if (ImageViewer.Visibility != Visibility.Collapsed)
+                    return Fail("Esc did not close the viewer after the arrows");
+            }
+            finally
+            {
+                CloseImage();
+                foreach (var t in temps)
+                    File.Delete(t);
+            }
             // a picture's reply (its details line, for the model) shows no text: the picture is the reply
             var made1 = _reply = AddReply("planner");
             SetChatFinal(ImageGen.ChatResult("m", new ImageSettings { Prompt = "p" }, 1, 1));
