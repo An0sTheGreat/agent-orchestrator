@@ -331,7 +331,7 @@ public partial class MainWindow
     // The chip's size controls' rules without the controls (ImageSizeControls: Commit, AspectChanged, Read): the boxes round to the
     // model's multiple (unlocked: as typed, 64-4096), with a ratio and locked the height follows the width (else the width the height),
     // a pair off the ratio is Custom, and Width/Height are the boxes over the ratio's recommended size (Custom: the ratio before, else Square).
-    private void WriteChatImageSize(string aspect, bool unlocked, int typedWidth, int typedHeight)
+    private void WriteChatImageSize(string aspect, bool unlocked, int typedWidth, int typedHeight, bool heightTyped)
     {
         var c = _settings.ChatImage;
         var (multiple, step) = (ChatImageMultiple(), unlocked ? 1 : ChatImageMultiple());
@@ -339,7 +339,9 @@ public partial class MainWindow
         var custom = aspect == "Custom";
         if (!custom && !unlocked)
         {
-            if (cw > 0)
+            if (heightTyped && ch > 0) // the field that was edited leads (the chip's Commit(width: false)): the width follows the height
+                cw = ImageGen.Linked(ch, aspect, false, multiple);
+            else if (cw > 0)
                 ch = ImageGen.Linked(cw, aspect, true, multiple);
             else if (ch > 0)
                 cw = ImageGen.Linked(ch, aspect, false, multiple);
@@ -398,8 +400,13 @@ public partial class MainWindow
         var unlocked = image.ValueKind == JsonValueKind.Object && image.TryGetProperty("unlocked", out var u) && u.ValueKind is JsonValueKind.True or JsonValueKind.False ? u.GetBoolean() : (bool?)null;
         var c = _settings.ChatImage;
         if (aspect.Length > 0 || unlocked is not null || Number("width") is not null || Number("height") is not null)
+        {
+            // the box the body edited leads: a height alone, or a pair where only the height differs from what is stored (a phone echoing both boxes)
+            var (bodyWidth, bodyHeight) = (Number("width"), Number("height"));
+            var heightTyped = bodyHeight is not null && (bodyWidth is null || bodyWidth == c.CustomWidth && bodyHeight != c.CustomHeight);
             WriteChatImageSize(aspect.Length > 0 ? aspect : c.Aspect == "Custom" || IsChatImageRatio(c.Aspect) ? c.Aspect : "1:1", unlocked ?? c.SizeUnlocked,
-                Number("width") ?? c.CustomWidth, Number("height") ?? c.CustomHeight);
+                bodyWidth ?? c.CustomWidth, bodyHeight ?? c.CustomHeight, heightTyped);
+        }
         _settings.Save();
         RefreshExtras();
         RefreshChatTarget();
@@ -1035,6 +1042,15 @@ public partial class MainWindow
             if (await PostJson("/api/composer", new { imageGen = new { width = 1000 } }) is not (200, _) || ImageGen.ChatRequest(_settings.ChatImage, false) is not { } typed ||
                 (typed.Width, typed.Height) != (ImageGen.Pick(1000, 0, multiple), ImageGen.Linked(ImageGen.Pick(1000, 0, multiple), "16:9", true, multiple)) || _settings.ChatImage.Aspect != "16:9")
                 return Fail($"a typed width at 16:9: {JsonSerializer.Serialize(_settings.ChatImage)}");
+            // an edited height leads, the width follows (the chip's Commit(width: false)), alone or beside the echoed width box
+            var h720 = ImageGen.Pick(720, 0, multiple);
+            if (await PostJson("/api/composer", new { imageGen = new { height = 720 } }) is not (200, _) || _settings.ChatImage is not { Aspect: "16:9" } byHeight ||
+                (byHeight.CustomHeight, byHeight.CustomWidth) != (h720, ImageGen.Linked(h720, "16:9", false, multiple)))
+                return Fail($"a typed height at 16:9: {JsonSerializer.Serialize(_settings.ChatImage)}");
+            var h540 = ImageGen.Pick(540, 0, multiple);
+            if (await PostJson("/api/composer", new { imageGen = new { width = _settings.ChatImage.CustomWidth, height = 540 } }) is not (200, _) || _settings.ChatImage is not { Aspect: "16:9" } both ||
+                (both.CustomHeight, both.CustomWidth) != (h540, ImageGen.Linked(h540, "16:9", false, multiple)))
+                return Fail($"both boxes, the height edited: {JsonSerializer.Serialize(_settings.ChatImage)}");
             if (await PostJson("/api/composer", new { imageGen = new { model = "no-such-model" } }) is not (400, _) || _settings.ChatImage.RecipeId != other)
                 return Fail("an unknown image model was taken");
             (_settings.ShareHost, _imageSharedFetch) = ("primary.test", (_, _) => Task.FromResult(new List<ImageShare.Model> { new(ImageGen.Recipes[0].Id, "Shared", "", false, 16, 8, 1, "") }));
