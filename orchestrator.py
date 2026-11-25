@@ -4280,6 +4280,22 @@ def reasoning_budget(body: dict[str, Any], remote: bool) -> dict[str, Any]:
 REPEAT_NOTE = ("\nNOTE: you ran this same command last time and it gave the same output, so repeating it changed nothing. "
                "Do not run it again: find out why (read the output), or try a different approach.")
 
+# The repeat guard (code_loop, and Pi's turns): a tool call with the same name, arguments and result runs CALL_REPEATS times
+# freely in a reply; the next CALL_WARNINGS each come with repeat_warning, and the one after them ends the reply.
+CALL_REPEATS, CALL_WARNINGS = 3, 3
+
+
+def repeat_warning(tool: str, times: int) -> str:
+    left = CALL_REPEATS + CALL_WARNINGS + 1 - times
+    return (f"REPEATED CALL: you have now made this exact {tool} call {times} times in this reply and got the same result each "
+            "time, so repeating it changes nothing. Stop repeating it: do something different, or write your answer now. "
+            f"Making it {left} more time{'s' if left != 1 else ''} ends your reply.")
+
+
+def repeat_stop(name: str, tool: str) -> str:
+    return (f"{name} kept repeating the same {tool} call after {CALL_WARNINGS} warnings, so the reply was stopped. Try a new "
+            "conversation or another model; a strongly quantized or merged model loops more")
+
 
 def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
               tools: list[dict[str, Any]], handlers: dict[str, Any], cap: tuple[str, int] = ("max_tool_steps", 30),
@@ -4299,6 +4315,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
     messages = [{"role": "system", "content": system}, *messages]
     max_steps, name, prev_text_calls, cutoffs, nudges = step_cap(config, role, *cap, remote=getattr(client, "remote", False)), display_name(config, role), None, 0, 0
     last_run: tuple[str, str] | None = None  # this turn's last run_command (command, result): a repeat that changed nothing is said so
+    repeats: dict[tuple[str, str, str], int] = {}  # (tool, arguments, result): how often (the repeat guard)
     printed_call = re.compile(r'"name"\s*:\s*"(?:' + "|".join(handlers) + ')"')
     for _ in range(max_steps):
         try:
@@ -4364,6 +4381,12 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                     last_run = ran
             except (TypeError, ValueError, KeyError, OSError, WorkflowError) as exc:
                 result = f"ERROR: {exc}"
+            key = (tool, str(function.get("arguments") or "").strip(), str(result))
+            repeats[key] = repeats.get(key, 0) + 1
+            if repeats[key] > CALL_REPEATS + CALL_WARNINGS:
+                raise WorkflowError(repeat_stop(name, tool))
+            if repeats[key] > CALL_REPEATS:
+                result = repeat_warning(tool, repeats[key])
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
             if tool == "generate_image" and not result.startswith("ERROR"):
                 picture = f"{picture}\n{result}" if picture else str(result)  # several in one reply: each picture's line
@@ -5951,6 +5974,11 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     # A reply that wrote nothing: one that loops (aborted as it repeats) or hits the output limit while still thinking. Its text is
     # saved in the project and the model is told to continue from it, at most PI_RESUMES times a turn.
     streamed, checked, looped, resume, resumes = "", 0, False, "", 0
+    # The repeat guard (as code_loop's: each of the CALL_WARNINGS calls past CALL_REPEATS is warned about with an abort and a note,
+    # the one after them ends the turn) and the role's "Tool calls per reply" (max_tool_steps: model calls that call tools, as
+    # code_loop counts them), which Pi has no limit of its own for. guarded: our abort for either; stopped: why the turn ends.
+    repeats, guarded, stopped, rounds = {}, False, "", 0
+    max_rounds = step_cap(config, role, "max_tool_steps", 30, remote=getattr(client, "remote", False))
 
     def write_out() -> None:
         """Pi's stdin has this one writer, so the main thread (the only reader of Pi's stdout) never waits on a write: a big
@@ -6074,8 +6102,16 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                      prompt_tps=round(prompt_tokens / reading, 1) if first_out and reading > 0.05 else None)
                 measured.append((prompt_tokens, completion))  # its context event follows Pi's messages (get_messages)
                 outbox.put({"id": "ctx", "type": "get_messages"})
-                if (cut or looped) and message.get("stopReason") == "aborted":
-                    cut, looped = 0, False  # our abort: the follow-up note carries the turn on (none after the last loop: error says why)
+                if calls and not stopped:
+                    rounds += 1
+                    if rounds > max_rounds:
+                        stopped = (f"the reply stopped after {max_rounds} rounds of tool calls (Tool calls per reply in the model's "
+                                   "settings): raise it if the task needs more, or ask for a smaller step")
+                        print(f"[{title}] {stopped}")
+                        guarded = True
+                        outbox.put({"type": "abort"})
+                if (cut or looped or guarded) and message.get("stopReason") == "aborted":
+                    cut, looped, guarded = 0, False, False  # our abort: the follow-up note carries the turn on (none after the last loop: error says why)
                 elif message.get("stopReason") == "length" and not calls and not pi_text(message.get("content")).strip():
                     resumes += 1
                     print(f"[{title}] the reply hit the output limit ({completion:,} tokens) before writing anything"
@@ -6096,8 +6132,20 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                 args_by_call[event.get("toolCallId")] = event.get("args")
             elif kind == "tool_execution_end":
                 result = pi_text((event.get("result") or {}).get("content"))
-                emit("tool", role=role, name=str(event.get("toolName")), args=json.dumps(args_by_call.pop(event.get("toolCallId"), {})),
-                     result=(("ERROR: " if event.get("isError") else "") + result)[:PI_TOOL_RESULT_LIMIT])
+                tool, args = str(event.get("toolName")), json.dumps(args_by_call.pop(event.get("toolCallId"), {}), sort_keys=True)
+                emit("tool", role=role, name=tool, args=args, result=(("ERROR: " if event.get("isError") else "") + result)[:PI_TOOL_RESULT_LIMIT])
+                key = (tool, args, result)
+                repeats[key] = repeats.get(key, 0) + 1
+                if repeats[key] > CALL_REPEATS and not stopped:
+                    if repeats[key] > CALL_REPEATS + CALL_WARNINGS:
+                        stopped = repeat_stop(title, tool)
+                    else:
+                        note = repeat_warning(tool, repeats[key])
+                        notes.append(note)
+                        outbox.put({"type": "follow_up", "message": note})
+                    print(f"[{title}] the same {tool} call came {repeats[key]} times; " + ("stopping the reply" if stopped else "warning the model"))
+                    guarded = True
+                    outbox.put({"type": "abort"})
             elif kind == "compaction_end" and event.get("result"):
                 result = event["result"]
                 emit("compacted", role=role, before=result.get("tokensBefore"), after=result.get("estimatedTokensAfter"))
@@ -6127,6 +6175,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
         gateway.close()
         shutil.rmtree(turn, ignore_errors=True)
         sys.stdout = stdout
+    if stopped:
+        raise WorkflowError(f"{title} (Pi): {stopped}")
     if not answer and error:
         raise WorkflowError(f"{title} (Pi): {error}")
     return answer

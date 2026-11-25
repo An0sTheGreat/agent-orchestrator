@@ -760,6 +760,30 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(client.completions, 3)
             self.assertFalse((root / "b.txt").exists())
 
+    def test_a_repeated_tool_call_is_warned_three_times_then_stops_the_reply(self):
+        call = {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "function": {"name": "look", "arguments": '{"path": "a"}'}}]}
+
+        class Client:
+            title, sent = "Lead", []
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.sent.append(str(messages[-1].get("content")))  # the last tool result the model got
+                return call
+
+        tool = [{"type": "function", "function": {"name": "look", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]
+        runs = []
+        client = Client()
+        with patch.object(orchestrator, "role_settings", return_value=(client, {})), patch.object(orchestrator, "emit"):
+            with self.assertRaisesRegex(orchestrator.WorkflowError, "kept repeating the same look call after 3 warnings"):
+                orchestrator.code_loop({}, "planner", "s", [{"role": "user", "content": "u"}], tool, {"look": lambda path: runs.append(path) or "same"})
+        self.assertEqual(len(runs), 7)  # three free, three warned, the 7th ends it
+        self.assertEqual(client.sent[1:4], ["same"] * 3)
+        self.assertTrue(all(s.startswith("REPEATED CALL: you have now made this exact look call") for s in client.sent[4:7]))
+        self.assertIn("Making it 3 more times ends your reply", client.sent[4])
+
     def test_a_final_reply_cut_off_at_the_output_limit_says_so(self):
         class Client:
             cut_off, cut_limit, title = False, 16384, "Lead"
@@ -4680,6 +4704,10 @@ for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
                                                 "stopReason": "length", "usage": {"output": 32768}}})
     elif step == "aborted":
         out({"type": "message_end", "message": {"role": "assistant", "content": [], "stopReason": "aborted", "usage": {}}})
+    elif step == "tool":  # a reply that calls a tool, then the call's run: arg {"name", "args", "result"}
+        out({"type": "message_end", "message": {"role": "assistant", "content": [{"type": "toolCall", "name": arg["name"]}], "stopReason": "toolUse", "usage": {}}})
+        out({"type": "tool_execution_start", "toolCallId": "c", "toolName": arg["name"], "args": arg.get("args", {})})
+        out({"type": "tool_execution_end", "toolCallId": "c", "toolName": arg["name"], "result": {"content": [{"type": "text", "text": arg.get("result", "")}]}})
     elif step == "note":  # the follow-up Pi delivers after an abort: its user message
         out({"type": "message_end", "message": {"role": "user", "content": [{"type": "text", "text": taken["follow_up"]["message"]}]}})
         open(os.environ["FAKE_PI_NOTEFILE"], "w").write(taken["follow_up"]["message"])
@@ -4752,6 +4780,28 @@ class PiSteerTests(unittest.TestCase):
         self.assertIn("cut off after 4,000 characters", note)
         self.assertIn("limit of 3,000", note)
         self.assertEqual([d for e, d in events if e == "steered"], [])  # the note is not one of the launcher's steers
+
+    def test_a_repeated_tool_call_is_warned_three_times_then_stops_the_turn(self):
+        # the same call with the same result: three run freely, the 4th, 5th and 6th each abort with a warning, the 7th ends the turn
+        same = ["tool", {"name": "read", "args": {"path": "index.html"}, "result": "<html>"}]
+        warn = [same, ["ctx", None], ["take", "follow_up"], ["take", "abort"], ["aborted", None], ["ctx", None], ["note", None]]
+        steps = [["take", "prompt"], ["user", None], *[same, ["ctx", None]] * 3, *warn, *warn, *warn,
+                 same, ["ctx", None], ["take", "abort"], ["aborted", None], ["ctx", None], ["settle", None]]
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "kept repeating the same read call after 3 warnings"):
+            self.run_fake(steps)
+        note = (self.cfg / "note.txt").read_text(encoding="utf-8")  # the last warning
+        self.assertIn("this exact read call 6 times", note)
+        self.assertIn("Making it 1 more time ends your reply", note)
+        # different results are not repeats: six reads of a changing file run on
+        steps = [["take", "prompt"], ["user", None], *[x for n in range(6) for x in (["tool", {"name": "read", "args": {"path": "a"}, "result": str(n)}], ["ctx", None])],
+                 ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
+        self.assertEqual([d["text"] for e, d in self.run_fake(steps)[1] if e == "code_reply"], ["Done."])
+
+    def test_a_pi_reply_stops_after_the_tool_calls_per_reply_limit(self):
+        steps = [["take", "prompt"], ["user", None], *[x for n in range(3) for x in (["tool", {"name": "read", "args": {"path": str(n)}, "result": "x"}], ["ctx", None])],
+                 ["take", "abort"], ["aborted", None], ["ctx", None], ["settle", None]]
+        with self.assertRaisesRegex(orchestrator.WorkflowError, "stopped after 2 rounds of tool calls"):
+            self.run_fake(steps, {"max_tool_steps": 2})
 
     def test_a_looping_reply_is_stopped_saved_and_continued(self):
         # Gemma 12B thought "<|channel>thought" ~10,000 times until the output limit: the repeating reply is aborted as it
