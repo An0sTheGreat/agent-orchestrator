@@ -1518,7 +1518,7 @@ public partial class MainWindow
             }
             _imgStatusTap = (text, progress) =>
             {
-                PendingPictureProgress(progress); // the card says it; the reply's status line waits behind it
+                PendingPictureProgress(text, progress); // the card says it; the reply's status line waits behind it
             };
             try
             {

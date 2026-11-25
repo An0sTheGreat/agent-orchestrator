@@ -223,9 +223,10 @@ public partial class MainWindow
             // the chat's picture while it is made: the dots, "Making a picture..." at its top and the percentage; the status line hidden; gone once it ends
             var reply = _reply = AddReply("planner");
             ShowPendingPicture(1024, 1536);
-            PendingPictureProgress(0.88);
+            PendingPictureProgress("Step 7/8 · 1.2 s/it…", 0.88);
             SetChatStatus("Making a picture… Step 7/8");
-            if (_pendingPicture is not var (pending, percent, status, _) || !reply.Content.Children.Contains(pending) || percent.Text != "88%" ||
+            if (_pendingPicture is not var (pending, percent, status, stepLine, _) || !reply.Content.Children.Contains(pending) || percent.Text != "88%" ||
+                stepLine.Text != "Step 7/8 · 1.2 s/it" || stepLine.VerticalAlignment != VerticalAlignment.Bottom || stepLine.HorizontalAlignment != HorizontalAlignment.Left ||
                 !status.Text.StartsWith("Making a picture.", StringComparison.Ordinal) || status.VerticalAlignment != VerticalAlignment.Top || reply.Status.Visibility == Visibility.Visible)
                 return Fail("the picture's placeholder");
             RemovePendingPicture();
