@@ -39,7 +39,7 @@ internal static class VramEstimate
         var context = Option("max_seq_length", 0);
         if (context <= 0)
             context = Math.Min(ModelOptions.ModelContext(meta) ?? 4096, ModelOptions.ContextCap);
-        var gpuLayers = Option("gpu_layers", -1);
+        var gpuLayers = options.GetValueOrDefault("gpu_memory_mode") == "auto" ? -1 : Option("gpu_layers", -1); // auto: the engine sends no -ngl (all, or the server's fit)
         var onGpu = gpuLayers < 0 || gpuLayers >= layers ? 1.0 : (double)gpuLayers / layers;
 
         // Weights: the file's share for the GPU layers, less the experts of the MoE layers kept on the CPU.

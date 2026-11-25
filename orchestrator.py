@@ -1464,7 +1464,9 @@ def llama_args(model_file: Path, auto_load: dict[str, Any], port: int) -> list[s
     args = ["-m", str(model_file), "--host", "127.0.0.1", "--port", str(port), "--alias", str(auto_load["model_path"])]
     if "max_seq_length" in auto_load:
         args += ["-c", str(auto_load["max_seq_length"])]
-    args += ["-ngl", str(999 if layers in (-1, None) else layers), "--jinja"]
+    if auto_load.get("gpu_memory_mode") != "auto":  # auto: no -ngl, so llama-server's fit picks the GPU layers (any -ngl turns it off)
+        args += ["-ngl", str(999 if layers in (-1, None) else layers)]
+    args += ["--jinja"]
     if auto_load.get("cache_type_kv"):
         args += ["--cache-type-k", str(auto_load["cache_type_kv"]), "--cache-type-v", str(auto_load["cache_type_kv"])]
     if "n_batch" in auto_load:

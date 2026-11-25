@@ -6317,6 +6317,14 @@ class LlamaCppTests(unittest.TestCase):
             args = orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "max_seq_length": 4096, **auto}, 9000)
             self.assertEqual(args[-5 - len(tail):], ["-c", "4096", "-ngl", layers, "--jinja", *tail])  # a budget caps thinking
 
+    def test_gpu_memory_mode_auto_sends_no_gpu_layers_so_the_server_fits_them(self):
+        def args(mode: dict) -> list[str]:
+            return orchestrator.llama_args(Path("m.gguf"), {"model_path": self.PATH, "gpu_layers": 25, **mode}, 8899)
+        self.assertNotIn("-ngl", args({"gpu_memory_mode": "auto"}))  # any -ngl turns llama-server's fit off
+        manual = args({"gpu_memory_mode": "manual"})
+        self.assertEqual(manual[manual.index("-ngl") + 1], "25")
+        self.assertIn("-ngl", args({}))  # an old config without the mode keeps its layer count
+
     def test_speculative_decoding_choice_reaches_the_server(self):
         mtp, plain = self.tmp / "mtp.gguf", self.tmp / "plain.gguf"
         MultiModelTests.gguf(mtp, {"general.architecture": "qwen35", "qwen35.nextn_predict_layers": 1})
