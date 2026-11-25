@@ -377,7 +377,7 @@ public partial class MainWindow
         var sizeBoxes = _imgSize.SizeRow;
         sizeBoxes.Margin = new Thickness(0, 8, 0, 0);
         _imgLocalOnly.Add(sizeBoxes); // OpenRouter is sent the nearest aspect ratio only, not this size
-        _imgBatch = new ComboBox { ItemsSource = new[] { 1, 2, 3, 4 } };
+        _imgBatch = new ComboBox { ItemsSource = Enumerable.Range(1, ImageGen.MaxBatch).ToArray() };
         // the style's padding filled a fixed 32 px and hid the text: a slim padding, as the other small boxes
         _imgSeed = new TextBox { Tag = "ImagesSeed", ToolTip = "Empty: a random seed (recorded with the picture)", VerticalContentAlignment = VerticalAlignment.Center,
             Height = 32, Padding = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center };
@@ -717,7 +717,7 @@ public partial class MainWindow
         _imgSteps.Value = s.Steps;
         _imgCfg.Value = s.Cfg;
         _imgSeed.Text = s.Seed >= 0 ? s.Seed.ToString() : "";
-        _imgBatch.SelectedIndex = Math.Clamp(s.Batch, 1, 4) - 1;
+        _imgBatch.SelectedIndex = Math.Clamp(s.Batch, 1, ImageGen.MaxBatch) - 1;
         _imgSampler.SelectedIndex = Array.IndexOf(ImageGen.Samplers, s.Sampler) + 1; // not found: Default
         _imgScheduler.SelectedIndex = Array.IndexOf(ImageGen.Schedulers, s.Scheduler) + 1;
         _imgLowVram.IsChecked = s.LowVram;

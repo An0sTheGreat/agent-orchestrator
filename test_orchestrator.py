@@ -3077,8 +3077,8 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(len(result.images), 2)
         asked.clear()
         with patch.object(orchestrator, "launcher_call", lambda event, **d: asked.append(d) or {"result": "line", "image": ""}):
-            orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a fox", count=9)
-        self.assertEqual(len(asked), orchestrator.IMAGE_MAX_COUNT)
+            orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a fox", count=99)
+        self.assertEqual((len(asked), orchestrator.IMAGE_MAX_COUNT), (20, 20))
 
     def test_image_gen_several_pictures_in_one_reply_end_the_turn_with_each_line(self):
         lines = iter(["Image generated and shown to the user. Model: m. Size: 1x1. Seed: 1. Prompt: a fox",

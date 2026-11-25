@@ -3469,6 +3469,8 @@ public partial class MainWindow : Window
                     }
                     System.Text.Json.Nodes.JsonNode? Request(int index) => System.Text.Json.Nodes.JsonNode.Parse(imgFake.Posted[index]);
                     _imgPrompt.Text = "a red fox";
+                    if (_imgBatch.Items.Count != 20 || ImageGen.MaxBatch != 20) // Images: 1 to 20
+                        return Fail();
                     _imgBatch.SelectedIndex = 0;
                     SetInitImage(@"C:\gone\start.png"); // OpenRouter ignores a start image and a seed: a stale path must not stop it, and neither is recorded
                     _imgSeed.Text = "123";

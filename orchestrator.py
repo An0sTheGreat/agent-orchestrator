@@ -4781,7 +4781,7 @@ IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style i
 
 # The end of a failed picture's tool result (a made one ends the turn: code_loop).
 IMAGE_FAILED = "No picture was made. Briefly explain the failure to the user."
-IMAGE_MAX_COUNT = 4  # generate_image's count: pictures of one prompt in one call
+IMAGE_MAX_COUNT = 20  # generate_image's count: pictures of one prompt in one call (the launcher's ImageGen.MaxBatch)
 
 
 def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:

@@ -43,7 +43,7 @@ internal sealed class ImageSettings
     public long Seed { get; set; } = -1;
     public string Sampler { get; set; } = ""; // "" = sd-cli's default for the model
     public string Scheduler { get; set; } = ""; // "" = sd-cli's default for the model (--scheduler)
-    public int Batch { get; set; } = 1;
+    public int Batch { get; set; } = 1; // pictures per run, 1 to ImageGen.MaxBatch
     public bool LowVram { get; set; } = true; // one model on the GPU at a time: the text encoder, then the image model
     public double Strength { get; set; } = 0.75;
     public string InitImage { get; set; } = ""; // "" = text to image
@@ -57,6 +57,7 @@ internal sealed record ImageProgress(int Step, int Steps, string Speed, bool Loa
 
 internal static class ImageGen
 {
+    public const int MaxBatch = 20; // the Images page's Images list and a shared run's cap (orchestrator.py's IMAGE_MAX_COUNT for the chat's)
     public static string RuntimeFolder => Path.Combine(AppSettings.DataRoot, "sd.cpp");
     public static string ServerPath => Path.Combine(RuntimeFolder, "sd-server.exe");
     public static string ModelsRoot => Path.Combine(AppSettings.DataRoot, "image-models");

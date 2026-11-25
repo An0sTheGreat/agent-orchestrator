@@ -178,7 +178,7 @@ internal static class ImageShare
     {
         RecipeId = recipe.Id, LocalModel = local, Prompt = s.Prompt.Trim(), Negative = s.Negative, Aspect = s.Aspect, LongSide = s.LongSide,
         Width = Math.Clamp(s.Width, 64, 4096), Height = Math.Clamp(s.Height, 64, 4096), Steps = Math.Clamp(s.Steps, 1, 100), Cfg = Math.Clamp(s.Cfg, 0, 20),
-        Seed = s.Seed >= 0 ? s.Seed : Random.Shared.Next(), Sampler = ImageGen.Samplers.Contains(s.Sampler) ? s.Sampler : "", Scheduler = ImageGen.Schedulers.Contains(s.Scheduler) ? s.Scheduler : "", Batch = Math.Clamp(s.Batch, 1, 4), LowVram = s.LowVram,
+        Seed = s.Seed >= 0 ? s.Seed : Random.Shared.Next(), Sampler = ImageGen.Samplers.Contains(s.Sampler) ? s.Sampler : "", Scheduler = ImageGen.Schedulers.Contains(s.Scheduler) ? s.Scheduler : "", Batch = Math.Clamp(s.Batch, 1, ImageGen.MaxBatch), LowVram = s.LowVram,
     };
 
     public static string ModelsJson(List<Model> models) => JsonSerializer.Serialize(new ModelList(models), Web);
@@ -535,8 +535,8 @@ internal static class ImageShare
         Assert(reply.StartsWith("HTTP/1.1 401 Unauthorized\r\n") && reply.Contains("Connection: close\r\n") && reply.EndsWith("\r\n\r\n{\"error\":\"x\"}") &&
             reply.Contains($"Content-Length: {"{\"error\":\"x\"}".Length}\r\n"), "the response bytes");
 
-        var run = Run(new() { Prompt = " a fox ", InitImage = @"C:\secret.png", LocalModel = @"C:\other.gguf", RemoteModel = "x/y", SharedModel = "z", Batch = 9, Steps = 0, Width = 99999, Sampler = "nope", Seed = -1 }, moss, "");
-        Assert(run is { RecipeId: "moss-image-sft", LocalModel: "", InitImage: "", RemoteModel: "", SharedModel: "", Prompt: "a fox", Batch: 4, Steps: 1, Width: 4096, Sampler: "" } && run.Seed >= 0,
+        var run = Run(new() { Prompt = " a fox ", InitImage = @"C:\secret.png", LocalModel = @"C:\other.gguf", RemoteModel = "x/y", SharedModel = "z", Batch = 99, Steps = 0, Width = 99999, Sampler = "nope", Seed = -1 }, moss, "");
+        Assert(run is { RecipeId: "moss-image-sft", LocalModel: "", InitImage: "", RemoteModel: "", SharedModel: "", Prompt: "a fox", Batch: 20, Steps: 1, Width: 4096, Sampler: "" } && run.Seed >= 0,
             "a request runs only the resolved model, with no start image and clamped numbers");
 
         // the server over loopback: the key gates it, the handler answers
