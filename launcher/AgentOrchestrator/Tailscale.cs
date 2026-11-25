@@ -15,7 +15,10 @@ internal static class Tailscale
     public sealed record Device(string UserId, string Name, string Os, IPAddress? Ip, bool Online);
 
     // Backend: tailscaled's BackendState ("Running", "NeedsLogin", "Stopped", …); Login: the signed-in account's login name.
-    public sealed record State(string Backend, Device? Self, IReadOnlyList<Device> Peers, string Login)
+    // DnsName: this PC's MagicDNS name (home.tail1234.ts.net); MagicDnsSuffix: the tailnet's (tail1234.ts.net), "" while MagicDNS
+    // is off; CertDomains: the names tailscaled can get HTTPS certificates for (empty until HTTPS is on for the tailnet).
+    public sealed record State(string Backend, Device? Self, IReadOnlyList<Device> Peers, string Login, string DnsName, string MagicDnsSuffix,
+        IReadOnlyList<string> CertDomains)
     {
         public bool SignedIn => Backend == "Running" && Self is { UserId.Length: > 0 };
         public IEnumerable<Device> Mine => Peers.Where(p => p.UserId == Self?.UserId); // this account's other PCs
@@ -30,7 +33,7 @@ internal static class Tailscale
                 .Where(d => d.IndexOfAny(Path.GetInvalidPathChars()) < 0).Select(d => Path.Combine(d, "tailscale.exe")))
             .FirstOrDefault(File.Exists);
 
-    private static async Task<(int Code, string Output)> RunAsync(TimeSpan timeout, params string[] args)
+    private static async Task<(int Code, string Output)> RunAsync(TimeSpan timeout, CancellationToken ct, params string[] args)
     {
         if (Exe is not { } exe)
             return (-1, "Tailscale is not installed");
@@ -40,7 +43,8 @@ internal static class Tailscale
         try
         {
             using var process = Process.Start(info)!;
-            using var stop = new CancellationTokenSource(timeout);
+            using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            stop.CancelAfter(timeout);
             var output = process.StandardOutput.ReadToEndAsync(stop.Token);
             var error = process.StandardError.ReadToEndAsync(stop.Token);
             try { await process.WaitForExitAsync(stop.Token); }
@@ -57,7 +61,7 @@ internal static class Tailscale
     // `tailscale status --json`; null when Tailscale is not installed or not answering.
     public static async Task<State?> StatusAsync()
     {
-        var (_, output) = await RunAsync(TimeSpan.FromSeconds(5), "status", "--json");
+        var (_, output) = await RunAsync(TimeSpan.FromSeconds(5), default, "status", "--json");
         // status exits non-zero when signed out but still prints the JSON
         try { return output.TrimStart().StartsWith('{') ? ParseStatus(output) : null; }
         catch (Exception x) when (x is JsonException or InvalidOperationException or KeyNotFoundException) { return null; }
@@ -79,13 +83,33 @@ internal static class Tailscale
         var peers = root.TryGetProperty("Peer", out var p) && p.ValueKind == JsonValueKind.Object ? p.EnumerateObject().Select(x => ParseDevice(x.Value)).ToList() : [];
         var login = self is not null && root.TryGetProperty("User", out var users) && users.ValueKind == JsonValueKind.Object && users.TryGetProperty(self.UserId, out var user)
             ? Text(user, "LoginName") : "";
-        return new(Text(root, "BackendState"), self, peers, login);
+        var tailnet = root.TryGetProperty("CurrentTailnet", out var t) ? t : default;
+        var certs = root.TryGetProperty("CertDomains", out var c) && c.ValueKind == JsonValueKind.Array
+            ? c.EnumerateArray().Select(d => d.GetString() ?? "").Where(d => d.Length > 0).ToList() : [];
+        return new(Text(root, "BackendState"), self, peers, login, Text(s, "DNSName").TrimEnd('.'), Text(tailnet, "MagicDNSSuffix"), certs);
     }
+
+    // The phone app (MainWindow.WebApp.cs): Serve publishes http://127.0.0.1:<port> at https://<this PC's DnsName>/ on the
+    // tailnet only (`--bg`: it stays until turned off, across restarts). True when tailscale took it.
+    public static async Task<bool> ServeAsync(int port, CancellationToken ct) =>
+        (await RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--bg", "--https=443", $"http://127.0.0.1:{port}")).Code == 0;
+
+    public static Task ServeOffAsync(CancellationToken ct) => RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--https=443", "off");
+
+    // Null when the phone app can be published; else what the user has to do first.
+    public static string? WebAppProblem(State? s) => s switch
+    {
+        null => "Tailscale is not installed",
+        { SignedIn: false } => "Tailscale is not signed in",
+        { MagicDnsSuffix.Length: 0 } or { DnsName.Length: 0 } => "Turn on MagicDNS for your tailnet in the Tailscale admin console (DNS page)",
+        { CertDomains.Count: 0 } => "Turn on HTTPS certificates for your tailnet in the Tailscale admin console (DNS page)",
+        _ => null,
+    };
 
     // `tailscale whois --json <ip>`: the id of the account that address belongs to; null = unknown.
     public static async Task<string?> WhoIsAsync(IPAddress ip)
     {
-        var (code, output) = await RunAsync(TimeSpan.FromSeconds(5), "whois", "--json", ip.ToString());
+        var (code, output) = await RunAsync(TimeSpan.FromSeconds(5), default, "whois", "--json", ip.ToString());
         return code == 0 ? ParseWhoIs(output) : null;
     }
 
@@ -157,7 +181,7 @@ internal static class Tailscale
         catch (Exception x) when (x is Win32Exception or InvalidOperationException or IOException) { return x.Message; }
     }
 
-    public static async Task<string?> SignOutAsync() => (await RunAsync(TimeSpan.FromSeconds(20), "logout")) is var (code, output) && code == 0 ? null : output.Trim();
+    public static async Task<string?> SignOutAsync() => (await RunAsync(TimeSpan.FromSeconds(20), default, "logout")) is var (code, output) && code == 0 ? null : output.Trim();
 
     // winget installs Tailscale (its installer asks for administrator rights); without winget, the download page opens.
     // Null = installed; else why not.
@@ -201,5 +225,20 @@ internal static class Tailscale
         Check(ParsePair(PairJson("K", "desk")) == new Pairing("K", "desk") && ParsePair("""{"key":""}""") is null && ParsePair("x") is null, "the pairing reply");
         Check(LoginUrl("To authenticate, visit:\n\n\thttps://login.tailscale.com/a/abc123\n") == "https://login.tailscale.com/a/abc123" &&
               LoginUrl("https://evil.example/login.tailscale.com/a/x") is null, "the sign-in page");
+        const string web = """
+            {"BackendState":"Running","Self":{"UserID":111,"HostName":"home","DNSName":"home.tail1234.ts.net."},
+             "CurrentTailnet":{"Name":"me@example.com","MagicDNSSuffix":"tail1234.ts.net","MagicDNSEnabled":true},
+             "User":{"111":{"LoginName":"me@example.com"}}%CERTS%}
+            """;
+        var https = ParseStatus(web.Replace("%CERTS%", ""","CertDomains":["home.tail1234.ts.net"]"""));
+        Check(https is { DnsName: "home.tail1234.ts.net", MagicDnsSuffix: "tail1234.ts.net", CertDomains: ["home.tail1234.ts.net"] } && WebAppProblem(https) is null,
+            "the phone app: this PC's name, the tailnet's suffix, its certificate");
+        Check(WebAppProblem(ParseStatus(web.Replace("%CERTS%", ""))) == "Turn on HTTPS certificates for your tailnet in the Tailscale admin console (DNS page)",
+            "the phone app without HTTPS certificates");
+        Check(WebAppProblem(null) == "Tailscale is not installed" &&
+              WebAppProblem(ParseStatus("""{"BackendState":"NeedsLogin","Self":{"UserID":0,"HostName":"home"}}""")) == "Tailscale is not signed in" &&
+              WebAppProblem(ParseStatus("""{"BackendState":"Running","Self":{"UserID":111,"HostName":"home"},"CertDomains":["home.tail1234.ts.net"]}""")) ==
+                  "Turn on MagicDNS for your tailnet in the Tailscale admin console (DNS page)",
+            "the phone app without Tailscale, signed out, or without MagicDNS");
     }
 }

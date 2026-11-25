@@ -289,6 +289,10 @@ internal sealed class AppSettings
     public bool RemoteAccess { get; set; }
     public int RemotePort { get; set; } = 8765;
     public string? RemotePasswordHash { get; set; }
+    // The phone app over Tailscale (WebServer.cs, MainWindow.WebApp.cs): its server on 127.0.0.1:WebAppPort (the next free port
+    // when taken), published on the tailnet by `tailscale serve`. On: the user's choice, kept while Tailscale is not ready.
+    public bool WebAppOn { get; set; }
+    public int WebAppPort { get; set; } = 8790;
     // Ponytail (prompts/ponytail.txt) added after every model's system prompt: "" (off), lite, full or ultra (/ponytail).
     public string Ponytail { get; set; } = "";
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)

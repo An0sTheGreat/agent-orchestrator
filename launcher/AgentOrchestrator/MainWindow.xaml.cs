@@ -89,6 +89,7 @@ public partial class MainWindow : Window
         StoreDo(_store.Load);
         RestoreWindowBounds();
         InitRemote();
+        InitWebApp();
         InitShare();
 
         Closing += OnClosing;
@@ -4134,7 +4135,7 @@ public partial class MainWindow : Window
             return false;
         if (!await RemoteSmoke() || !await RemoteTunnelSmoke() || !ShareSmoke() || !await TraySmoke(Settle))
             return false;
-        if (!await RemoteApiSmoke() || !await ComputerSmoke())
+        if (!await RemoteApiSmoke() || !await WebAppSmoke() || !await ComputerSmoke())
             return false;
         if (!await ModelHubSmoke(Snap))
             return false;
@@ -5937,6 +5938,7 @@ public partial class MainWindow : Window
         }
         _tunnel.Stop();
         StopRemoteServer();
+        StopWebAppAsync().Wait(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
