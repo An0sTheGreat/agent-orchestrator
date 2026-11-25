@@ -90,6 +90,7 @@ public partial class MainWindow
         if (_webApp is not null || _webStarting)
             return _webApp is not null;
         (_webStarting, _webFailure, _webFailureUrl) = (true, null, null);
+        var retry = false;
         RefreshWebApp();
         try
         {
@@ -97,6 +98,7 @@ public partial class MainWindow
             if (Tailscale.WebAppProblem(status) is { } why)
             {
                 _webFailure = why;
+                retry = true; // not ready yet (tailscaled may still be starting); a refusal by tailscale serve is not retried
                 return false;
             }
             _webTailnet = status;
@@ -125,7 +127,7 @@ public partial class MainWindow
             if (_webFailure is not null)
             {
                 Log($"Phone app: {_webFailure}");
-                if (_settings.WebAppOn)
+                if (retry && _settings.WebAppOn)
                     ArmWebRetry();
             }
             _webStarting = false;
@@ -171,7 +173,7 @@ public partial class MainWindow
     {
         _settings.WebAppOn = WebAppToggle.IsChecked == true;
         _settings.Save();
-        _webFailure = null;
+        (_webFailure, _webFailureUrl) = (null, null);
         if (_settings.WebAppOn)
             await StartWebAppAsync();
         else
@@ -312,11 +314,20 @@ public partial class MainWindow
 
             // Serve refused with tailscale's own message: the state line shows its first line and a link to enable Serve.
             const string notEnabled = "Serve is not enabled on your tailnet.\nTo enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=n123abc\n";
-            _webServe = (p, _) => Task.FromResult((false, notEnabled));
-            _settings.WebAppOn = false;
+            var refusals = 0;
+            _webServe = (p, _) => { refusals++; return Task.FromResult((false, notEnabled)); };
+            _webRetryEvery = TimeSpan.FromMilliseconds(100);
+            _settings.WebAppOn = true; // a refusal by tailscale serve itself is not retried: the message and link stay
             if (await StartWebAppAsync() || WebAppStateText.Text != "Not running: tailscale serve: Serve is not enabled on your tailnet." ||
                 WebAppFixText.Visibility != Visibility.Visible || _webFailureUrl != "https://login.tailscale.com/f/serve?node=n123abc")
                 return Fail($"serve refused: state {WebAppStateText.Text}, link {WebAppFixText.Visibility} {_webFailureUrl}");
+            await Task.Delay(500);
+            if (refusals != 1 || WebAppFixText.Visibility != Visibility.Visible || !WebAppToggle.IsEnabled || _webStarting)
+                return Fail($"serve refused: retried ({refusals} calls), link {WebAppFixText.Visibility}, switch enabled {WebAppToggle.IsEnabled}");
+            Click(false);
+            if (WebAppFixText.Visibility == Visibility.Visible || _webFailureUrl is not null || WebAppStateText.Text != "Off")
+                return Fail($"serve refused, switched off: state {WebAppStateText.Text}, link {WebAppFixText.Visibility}");
+            _settings.WebAppOn = false;
 
             // A failed start is retried while the switch is on: tailscaled still starting (status null at first), then ready.
             _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult((true, "")); };

@@ -101,7 +101,7 @@ internal static class Tailscale
 
     // The https link in tailscale serve's output ("Serve is not enabled on your tailnet. To enable, visit: <url>"); null if none.
     public static string? ServeEnableUrl(string output) =>
-        Regex.Match(output, @"https://[^\s""'<>]+") is { Success: true } m ? m.Value.TrimEnd('.', ',', ';', ')') : null;
+        Regex.Match(output, @"https://login\.tailscale\.com/[^\s""'<>]+") is { Success: true } m ? m.Value.TrimEnd('.', ',', ';', ')') : null;
 
     // The state line's reason: the first line tailscale printed, "" when it printed nothing.
     public static string ServeFailure(string output) =>
@@ -241,7 +241,7 @@ internal static class Tailscale
         const string notEnabled = "Serve is not enabled on your tailnet.\nTo enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=n123abc\n";
         Check(ServeEnableUrl(notEnabled) == "https://login.tailscale.com/f/serve?node=n123abc" &&
               ServeFailure(notEnabled) == "Serve is not enabled on your tailnet." &&
-              ServeEnableUrl("Error: listener already exists for port 443") is null && ServeFailure("\r\nError: listener already exists\r\n") == "Error: listener already exists" &&
+              ServeEnableUrl("Error: listener already exists for port 443") is null && ServeEnableUrl("visit https://evil.example/login.tailscale.com/f/serve") is null && ServeFailure("\r\nError: listener already exists\r\n") == "Error: listener already exists" &&
               ServeFailure("") == "", "why tailscale serve failed");
         const string web = """
             {"BackendState":"Running","Self":{"UserID":111,"HostName":"home","DNSName":"home.tail1234.ts.net."},
