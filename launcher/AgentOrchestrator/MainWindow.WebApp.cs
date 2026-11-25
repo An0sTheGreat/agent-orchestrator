@@ -1,4 +1,7 @@
+using System.IO;
 using System.Net.Http;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -19,6 +22,15 @@ public partial class MainWindow
     // --webapp-smoke swaps both, so tests never touch Tailscale: the status read, and Serve (a port: publish it; null: off).
     internal Func<Task<Tailscale.State?>> _webStatus = Tailscale.StatusAsync;
     internal Func<int?, CancellationToken, Task<(bool Ok, string Output)>> _webServe = ServeOnTailnet;
+    // /api/pcs asks each of the owner's other PCs for its /api/hello (null: no answer); --webapp-smoke swaps it, never the network.
+    internal Func<string, CancellationToken, Task<JsonNode?>> _webProbe = ProbeHello;
+    private static readonly HttpClient WebProbeHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+
+    private static async Task<JsonNode?> ProbeHello(string dnsName, CancellationToken ct)
+    {
+        try { return JsonNode.Parse(await WebProbeHttp.GetStringAsync($"https://{dnsName}/api/hello", ct)) as JsonObject; }
+        catch (Exception x) when (x is HttpRequestException or TaskCanceledException or JsonException) { return null; }
+    }
     private string? _webFailureUrl; // the link in tailscale's own message, shown as "Enable Serve for your tailnet"
     // A failed start is retried while the switch is on: every _webRetryEvery for _webRetryFastFor, then every _webRetrySlow
     // (tailscaled may still be starting at logon). --webapp-smoke shortens the first.
@@ -167,9 +179,91 @@ public partial class MainWindow
         timer.Stop();
     }
 
-    // No routes yet: the API comes with the app's pages.
-    private Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType) =>
-        Task.FromResult<(int, object)>((404, new { error = "Not found" }));
+    private static readonly (int, object) WebNotFound = (404, new { error = "Not found" });
+
+    // The phone app's API (WebServer has checked the caller). What reads the window's state runs on the UI thread.
+    private async Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType)
+    {
+        const string one = "/api/conversation/";
+        return (method, path) switch
+        {
+            ("GET", "/api/hello") => (200, WebHello()),
+            ("GET", "/api/pcs") => (200, await WebPcs()),
+            ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
+            ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
+            ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
+            _ => WebNotFound,
+        };
+    }
+
+    private object WebHello() => new
+    {
+        pc = Environment.MachineName, dnsName = _webTailnet?.DnsName ?? "", user = _webTailnet?.Login ?? "",
+        version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "",
+    };
+
+    // This PC first, then the owner's other PCs on the tailnet, each asked for its /api/hello at once: one that answers is online.
+    // ponytail: the peers are those of the last status read (at start and every 5 minutes); a PC added since shows up at the next.
+    private async Task<object> WebPcs()
+    {
+        var (tailnet, probe) = (_webTailnet, _webProbe);
+        var peers = tailnet?.Mine.Where(p => p.DnsName.Length > 0).ToList() ?? [];
+        var answers = await Task.WhenAll(peers.Select(p => probe(p.DnsName, CancellationToken.None)));
+        return peers.Select((p, i) => new { pc = (answers[i] as JsonObject)?["pc"]?.ToString() ?? p.Name, dnsName = p.DnsName, online = answers[i] is JsonObject, self = false })
+            .Prepend(new { pc = Environment.MachineName, dnsName = tailnet?.DnsName ?? "", online = true, self = true }).ToList();
+    }
+
+    private (int, object) WebConversations()
+    {
+        var (view, running) = (_store.View(), RunningId);
+        var item = (ConversationStore.Entry e) => new { id = e.Id, title = e.Title, kind = Kind(e.Kind), updated = e.Updated, busy = e.Id == running, folder = e.Folder };
+        return (200, new
+        {
+            projects = view.Groups.Select(g => new { id = g.Id, name = g.Name, items = g.Items.Select(item).ToList() }).ToList(),
+            recents = view.Ungrouped.Select(item).ToList(),
+            archived = view.Archived.Select(item).ToList(),
+        });
+    }
+
+    private (int, object) WebConversation(string id)
+    {
+        if (ConversationNow(id) is not (var saved, var busy, var messages, var queued, var prompt, var reply))
+            return (404, new { error = "No such conversation" });
+        // the open view's measure while it is shown (a turn updates it before saving), else the saved one
+        var context = (id == _chatConv?.Id ? _chatContext : id == _codeConv?.Id ? _codeContext : null) ?? saved.Context;
+        return (200, new
+        {
+            id, title = ConversationStore.TitleOf(saved), kind = Kind(saved.Kind), busy, queued, prompt, reply,
+            context = context is { } c ? new { nCtx = c.NCtx, used = c.Used, fraction = c.Fraction, parts = c.Parts } : null,
+            messages = messages.Select(m => new
+            {
+                role = m.Role, text = m.Content, time = m.Time, stats = m.Stats,
+                images = (m.Images ?? []).Select(i => "/api/file?path=" + Uri.EscapeDataString(i)).ToList(),
+            }).ToList(),
+        });
+    }
+
+    // A picture of the app's own (generated, pasted or a screenshot) by its full path; anything else is 404.
+    private static (int, object) WebFile(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path))
+            return WebNotFound;
+        var full = Path.GetFullPath(path);
+        var type = Path.GetExtension(full).ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".webp" => "image/webp",
+            ".gif" => "image/gif",
+            _ => null,
+        };
+        var inside = new[] { "images", "pasted", "screenshots" }.Any(folder =>
+            full.StartsWith(Path.GetFullPath(Path.Combine(AppSettings.DataRoot, folder)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        if (type is null || !inside)
+            return WebNotFound;
+        try { return (200, new WebServer.Response(200, type, File.ReadAllBytes(full))); }
+        catch (Exception x) when (x is IOException or UnauthorizedAccessException) { return WebNotFound; }
+    }
 
     private async void WebAppToggle_Click(object sender, RoutedEventArgs e)
     {
@@ -226,7 +320,10 @@ public partial class MainWindow
         }
         const string tailnet = """
             {"BackendState":"Running","Self":{"UserID":1,"HostName":"home","DNSName":"home.tail0000.ts.net."},
-             "CurrentTailnet":{"MagicDNSSuffix":"tail0000.ts.net"},"User":{"1":{"LoginName":"smoke@example.com"}}%CERTS%}
+             "CurrentTailnet":{"MagicDNSSuffix":"tail0000.ts.net"},"User":{"1":{"LoginName":"smoke@example.com"}}%CERTS%,
+             "Peer":{"k1":{"UserID":1,"HostName":"laptop","DNSName":"laptop.tail0000.ts.net.","Online":true},
+                     "k2":{"UserID":1,"HostName":"desk","DNSName":"desk.tail0000.ts.net.","Online":true},
+                     "k3":{"UserID":2,"HostName":"theirs","DNSName":"theirs.tail0000.ts.net.","Online":true}}}
             """;
         var (status, serve, on, port) = (_webStatus, _webServe, _settings.WebAppOn, _settings.WebAppPort);
         var served = new System.Collections.Concurrent.ConcurrentQueue<int?>();
@@ -266,6 +363,8 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
+            if (!await WebApiSmoke(bound))
+                return false;
 
             Click(false);
             if (!await Until(() => served.Count == 2) || _webApp is not null || !served.SequenceEqual([bound, null]) || _settings.WebAppOn || AppSettings.Load().WebAppOn ||
@@ -372,6 +471,112 @@ public partial class MainWindow
             (_webStatus, _webServe, _settings.WebAppOn, _settings.WebAppPort, _webFailure) = (status, serve, on, port, null);
             _settings.Save();
             RefreshWebApp();
+        }
+    }
+
+    // The read API over the running server's socket (WebAppSmoke, while on): every route refuses a request without the owner's
+    // login; this PC and the owner's peers, probed in parallel (the faked probe); a stored chat with an assistant picture is listed
+    // under recents and read back with its picture's URL, which returns the bytes; nothing outside the data folder's images,
+    // pasted and screenshots pictures is served; the security headers, no-store on /api only, and CORS for one tailnet label only.
+    private async Task<bool> WebApiSmoke(int port)
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: api: {what}"); return false; }
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        async Task<(int Status, System.Net.Http.Headers.HttpResponseHeaders Headers, string Type, byte[] Body)> Fetch(string path, string? login = "smoke@example.com", string? origin = null)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}{path}");
+            if (login is not null)
+                request.Headers.Add("Tailscale-User-Login", login);
+            if (origin is not null)
+                request.Headers.Add("Origin", origin);
+            using var response = await http.SendAsync(request);
+            return ((int)response.StatusCode, response.Headers, response.Content.Headers.ContentType?.MediaType ?? "", await response.Content.ReadAsByteArrayAsync());
+        }
+        async Task<JsonNode?> Json(string path) => await Fetch(path) is { Status: 200 } r ? JsonNode.Parse(r.Body) : null;
+        static string File(string path) => "/api/file?path=" + Uri.EscapeDataString(path);
+
+        var (probe, root) = (_webProbe, AppSettings.DataRoot);
+        var images = Path.Combine(root, "images");
+        Directory.CreateDirectory(images);
+        Directory.CreateDirectory(images + "-x");
+        var picture = Path.Combine(images, "smoke fox.png");
+        byte[] png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+        System.IO.File.WriteAllBytes(picture, png);
+        // pictures beside the served folders and in a look-alike folder, and a non-picture inside one: none is served
+        System.IO.File.WriteAllBytes(Path.Combine(root, "secret.png"), png);
+        System.IO.File.WriteAllBytes(Path.Combine(images + "-x", "a.png"), png);
+        System.IO.File.WriteAllText(Path.Combine(images, "notes.txt"), "text");
+        if (_store.Create("", "chat") is not { } chat)
+            return Fail("no stored chat");
+        try
+        {
+            chat.Messages.AddRange([new("user", "Paint a fox", DateTimeOffset.Now), new("assistant", "Here it is", DateTimeOffset.Now, [picture], "12 tok/s")]);
+            chat.Context = new ContextSnapshot { NCtx = 1000, Prompt = 200, Completion = 50, Parts = new() { ["system"] = 100 } };
+            _store.Save(chat);
+
+            foreach (var route in new[] { "/api/hello", "/api/pcs", "/api/conversations", "/api/conversation/" + chat.Id, File(picture), "/" })
+                if ((await Fetch(route, null)).Status != 403 || (await Fetch(route, "other@example.com")).Status != 403)
+                    return Fail($"{route} without the owner's login was not refused");
+
+            if (await Json("/api/hello") is not { } hello || $"{hello["pc"]}|{hello["dnsName"]}|{hello["user"]}" != $"{Environment.MachineName}|home.tail0000.ts.net|smoke@example.com" ||
+                hello["version"] is null)
+                return Fail($"hello: {await Json("/api/hello")}");
+
+            // the owner's two other PCs are asked at once (neither answers before both were asked); another account's never
+            var probed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var bothAsked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            _webProbe = async (dns, _) =>
+            {
+                probed.Enqueue(dns);
+                if (probed.Count == 2)
+                    bothAsked.TrySetResult();
+                return await Task.WhenAny(bothAsked.Task, Task.Delay(3000)) == bothAsked.Task && dns == "laptop.tail0000.ts.net" ? JsonNode.Parse("""{"pc":"LAPTOP"}""") : null;
+            };
+            var pcs = string.Join(",", (await Json("/api/pcs"))?.AsArray().Select(n => $"{n?["pc"]}|{n?["dnsName"]}|{n?["online"]}|{n?["self"]}") ?? []);
+            if (pcs != $"{Environment.MachineName}|home.tail0000.ts.net|true|true,LAPTOP|laptop.tail0000.ts.net|true|false,desk|desk.tail0000.ts.net|false|false" || probed.Count != 2)
+                return Fail($"pcs: {pcs}, probed [{string.Join(",", probed)}]");
+
+            var listed = (await Json("/api/conversations"))?["recents"]?.AsArray().FirstOrDefault(c => c?["id"]?.ToString() == chat.Id);
+            if ($"{listed?["title"]}|{listed?["kind"]}|{listed?["busy"]}|{listed?["folder"]}" != "Paint a fox|chat|false|")
+                return Fail($"conversations: {await Json("/api/conversations")}");
+
+            var one = await Json("/api/conversation/" + chat.Id);
+            var messages = one?["messages"]?.AsArray();
+            if (one is null || $"{one["title"]}|{one["kind"]}|{one["busy"]}|{one["queued"]}" != "Paint a fox|chat|false|0" || messages?.Count != 2 ||
+                $"{messages[0]?["role"]}|{messages[0]?["text"]}" != "user|Paint a fox" ||
+                $"{messages[1]?["role"]}|{messages[1]?["text"]}|{messages[1]?["stats"]}" != "assistant|Here it is|12 tok/s" || messages[1]?["time"] is null ||
+                messages[1]?["images"]?.AsArray().Select(i => i?.ToString()).SequenceEqual([File(picture)]) != true ||
+                $"{one["context"]?["nCtx"]}|{one["context"]?["used"]}|{one["context"]?["fraction"]}|{one["context"]?["parts"]?["system"]}" != "1000|250|0.25|100")
+                return Fail($"conversation: {one}");
+            if ((await Fetch("/api/conversation/none")).Status != 404)
+                return Fail("an unknown conversation was not 404");
+
+            if (await Fetch(File(picture)) is not { Status: 200, Type: "image/png" } served || !served.Body.SequenceEqual(png))
+                return Fail("the picture's URL did not return its bytes");
+            foreach (var path in new[] { @"C:\Windows\win.ini", Path.Combine(images, "..", "secret.png"), Path.Combine(images + "-x", "a.png"),
+                Path.Combine(images, "notes.txt"), Path.Combine(images, "none.png"), @"images\smoke fox.png", "" })
+                if ((await Fetch(File(path))).Status != 404)
+                    return Fail($"{path} was served");
+
+            // over the wire: the security headers everywhere, no-store on /api only, CORS for https://<one label>.<tailnet> only
+            foreach (var route in new[] { "/", "/api/hello" })
+                if (await Fetch(route) is not { Status: 200 } r || !r.Headers.TryGetValues("Content-Security-Policy", out var csp) || !csp.Single().Contains("default-src 'self'") ||
+                    !r.Headers.TryGetValues("X-Frame-Options", out var frame) || frame.Single() != "DENY" ||
+                    !r.Headers.TryGetValues("X-Content-Type-Options", out var sniff) || sniff.Single() != "nosniff" || (r.Headers.CacheControl?.NoStore == true) != route.StartsWith("/api/"))
+                    return Fail($"{route}: the security or cache headers");
+            var cors = await Fetch("/api/hello", origin: "https://laptop.tail0000.ts.net");
+            if (!cors.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowed) ||
+                allowed.Single() != "https://laptop.tail0000.ts.net" || !cors.Headers.Vary.Contains("Origin"))
+                return Fail("a tailnet PC's origin was not allowed");
+            foreach (var origin in new[] { "https://evil.example", "https://a.b.tail0000.ts.net", "http://laptop.tail0000.ts.net", "https://laptop.tail0000.ts.net.evil.example" })
+                if ((await Fetch("/api/hello", origin: origin)).Headers.Contains("Access-Control-Allow-Origin"))
+                    return Fail($"{origin} was allowed");
+            return true;
+        }
+        finally
+        {
+            _webProbe = probe;
+            _store.Delete(chat.Id);
         }
     }
 }

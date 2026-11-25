@@ -166,7 +166,7 @@ internal sealed class WebServer
             try
             {
                 var (status, result) = await _api(method, path, query, body, contentType);
-                return Json(status, result);
+                return result as Response ?? Json(status, result); // a Response is sent as it is (/api/file's bytes)
             }
             catch (Exception e) { return Json(500, new { error = e.Message }); }
         }

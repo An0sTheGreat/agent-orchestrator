@@ -101,10 +101,11 @@ public partial class MainWindow
 
     private static string Kind(string kind) => kind == "chat" ? "chat" : "code";
 
-    private (int, object) RemoteConversation(string id)
+    // A conversation as a remote page shows it (Remote access and the phone app's MainWindow.WebApp.cs); null: no such one.
+    private (ConversationStore.Conversation Saved, bool Busy, IReadOnlyList<LauncherLogic.ChatMessage> Messages, int Queued, object? Prompt, object? Reply)? ConversationNow(string id)
     {
         if (_store.Get(id) is not { } saved)
-            return (404, new { error = "No such conversation" });
+            return null;
         var busy = id == RunningId;
         var live = busy && _chatBusy; // a reply streams in it: the turn's own view (the store holds a placeholder reply)
         var messages = live ? _turn.History.Concat(_pendingUser is { } user ? TurnMessages(user) : Enumerable.Empty<LauncherLogic.ChatMessage>()).ToList() : saved.Messages;
@@ -113,6 +114,13 @@ public partial class MainWindow
             ? new { title = p.Title, message = p.Message, nonce = p.Nonce, choices = p.Options.Select(o => new { label = o.Label, value = o.Value }).ToList() } : null;
         var reply = live && _reply is { } r
             ? new { text = r.Final ?? r.AnswerText.ToString(), status = r.Status.Visibility == Visibility.Visible ? r.Status.Text : "" } : null;
+        return (saved, busy, messages, queued, prompt, reply);
+    }
+
+    private (int, object) RemoteConversation(string id)
+    {
+        if (ConversationNow(id) is not (var saved, var busy, var messages, var queued, var prompt, var reply))
+            return (404, new { error = "No such conversation" });
         // The Code view's run output (a project run's thinking, tool calls and results) as its plain transcript, last 40k
         // characters: it lives only in that view, not in the saved messages.
         var text = id == _codeConv?.Id ? _transcript.ToString().Trim() : "";

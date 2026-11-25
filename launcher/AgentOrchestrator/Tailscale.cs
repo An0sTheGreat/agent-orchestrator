@@ -12,7 +12,7 @@ namespace AgentOrchestrator;
 // its share key (GET /share/pair) only to a caller whose Tailscale address whois says belongs to that same account.
 internal static class Tailscale
 {
-    public sealed record Device(string UserId, string Name, string Os, IPAddress? Ip, bool Online);
+    public sealed record Device(string UserId, string Name, string Os, IPAddress? Ip, bool Online, string DnsName); // DnsName: laptop.tail1234.ts.net
 
     // Backend: tailscaled's BackendState ("Running", "NeedsLogin", "Stopped", …); Login: the signed-in account's login name.
     // DnsName: this PC's MagicDNS name (home.tail1234.ts.net); MagicDnsSuffix: the tailnet's (tail1234.ts.net), "" while MagicDNS
@@ -74,7 +74,7 @@ internal static class Tailscale
     private static Device ParseDevice(JsonElement d) => new(Text(d, "UserID"), Text(d, "HostName"), Text(d, "OS"),
         d.TryGetProperty("TailscaleIPs", out var ips) && ips.ValueKind == JsonValueKind.Array
             ? ips.EnumerateArray().Select(i => IPAddress.TryParse(i.GetString(), out var a) ? a : null).FirstOrDefault(a => a is not null && ModelShare.IsTailscale(a)) : null,
-        d.TryGetProperty("Online", out var online) && online.ValueKind == JsonValueKind.True);
+        d.TryGetProperty("Online", out var online) && online.ValueKind == JsonValueKind.True, Text(d, "DNSName").TrimEnd('.'));
 
     public static State ParseStatus(string json)
     {
