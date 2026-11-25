@@ -122,6 +122,41 @@ internal static class ImageGen
 
     public static ImageRecipe Recipe(string id) => Recipes.FirstOrDefault(r => r.Id == id) ?? Recipes[0];
 
+    // The recipes as shipped; Recipes holds each with the user's quant (AppSettings.ImageQuants) as its main file.
+    public static readonly ImageRecipe[] Defaults = [.. Recipes];
+
+    // Another quant of a recipe's main model (null = the shipped one). Its text encoder, VAE... stay: one copy serves every quant.
+    public static void SetQuant(string id, ImageFile? main)
+    {
+        var i = Array.FindIndex(Defaults, r => r.Id == id);
+        if (i >= 0)
+            Recipes[i] = main is null || main.Path == Defaults[i].Files[0].Path ? Defaults[i]
+                : Defaults[i] with { Files = [Defaults[i].Files[0] with { Path = main.Path, Size = main.Size }, .. Defaults[i].Files[1..]] };
+    }
+
+    // The quants in the main model's folder of its repo (the hub's tree listing): its model files, not its parts, smallest first.
+    public static List<ImageFile> Quants(ImageRecipe shipped, string treeJson)
+    {
+        var main = shipped.Files[0];
+        using var tree = JsonDocument.Parse(treeJson);
+        var found = tree.RootElement.EnumerateArray()
+            .Where(e => e.GetProperty("type").GetString() == "file" && e.GetProperty("path").GetString() is { } p &&
+                (p.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || p.EndsWith(".safetensors", StringComparison.OrdinalIgnoreCase)) &&
+                !Regex.IsMatch(System.IO.Path.GetFileName(p), Part, RegexOptions.IgnoreCase))
+            .Select(e => main with { Path = e.GetProperty("path").GetString()!, Size = e.GetProperty("size").GetInt64() }).ToList();
+        if (!found.Any(f => f.Path == main.Path))
+            found.Add(main);
+        return [.. found.OrderBy(f => f.Size)];
+    }
+
+    // A quant's short name: Q4_K, Q8_0, BF16, FP8... from the file name, else the file name.
+    public static string QuantName(string path)
+    {
+        var name = System.IO.Path.GetFileNameWithoutExtension(path);
+        var m = Regex.Match(name, @"(?i)(?:^|[-_.])(u?d?-?i?q\d(?:_[a-z0-9]+)*|bf16|fp?16|fp?32|fp8(?:[-_][a-z0-9]+)*)$");
+        return m.Success ? m.Groups[1].Value.ToUpperInvariant() : name;
+    }
+
     // The chat's Image Gen model (AppSettings.ChatImage), in the page's order: the primary PC's, OpenRouter's, else this PC's. Recipe:
     // what it paints with (a primary PC's "local:<file>" by the file's family; null for OpenRouter); Name: what the model and the
     // user are told. Null when nothing is chosen or the recipe is unknown.
@@ -576,6 +611,20 @@ internal static class ImageGen
             var paths = Paths(moss.Recipe, moss.Path, all, root);
             Check(paths[0] == moss.Path && paths[2] == Path.Combine(folder, @"b\Qwen3.5-9B-Q8_0.gguf") && paths[1] == LocalPath(root, moss.Recipe.Files[1]) &&
                 paths[3] == LocalPath(root, moss.Recipe.Files[3]), "MOSS: its own model, the folder's Qwen3.5-9B, the rest downloaded");
+            // quants: the repo's model files smallest first, not its parts or folders; picking one swaps only the main file
+            var zi = Defaults[0];
+            var quants = Quants(zi, """[{"type":"file","path":"z_image_turbo-Q8_0.gguf","size":7},{"type":"file","path":"z_image_turbo-Q4_K.gguf","size":4},""" +
+                """{"type":"file","path":"README.md","size":1},{"type":"file","path":"z_image_turbo-mmproj-F16.gguf","size":2},{"type":"directory","path":"old.gguf","size":0},""" +
+                """{"type":"file","path":"z_image_turbo-BF16.safetensors","size":12}]""");
+            Check(string.Join(",", quants.Select(q => $"{QuantName(q.Path)}={q.Size}")) == "Q4_K=4,Q8_0=7,BF16=12" && quants.All(q => q.Repo == zi.Files[0].Repo && q.Flag == zi.Files[0].Flag),
+                "the quants in a repo listing");
+            Check(QuantName("flux-3-image-klein-pup-UD-Q4_K_XL.gguf") == "UD-Q4_K_XL" && QuantName("qwen-image-2.1-step90000-FP8-comfy.safetensors") == "FP8-COMFY" &&
+                QuantName("sd_xl_base_1.0.safetensors") == "sd_xl_base_1.0", "quant names");
+            SetQuant(zi.Id, quants[1]);
+            Check(Recipes[0].Files[0].Path == "z_image_turbo-Q8_0.gguf" && Recipes[0].Files[1..].SequenceEqual(zi.Files[1..]) && Recipes[0].TotalSize == zi.TotalSize - zi.Files[0].Size + 7,
+                "a picked quant is the recipe's main file, its parts the same");
+            SetQuant(zi.Id, null);
+            Check(ReferenceEquals(Recipes[0], zi), "no quant: the shipped recipe");
         }
         finally { Directory.Delete(folder, recursive: true); }
         Check(Size("16:9", 1024, 32) == (1024, 576) && Size("16:9", 1024, 64) == (1024, 576), "16:9 at 1024");

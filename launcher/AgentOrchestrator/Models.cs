@@ -316,6 +316,7 @@ internal sealed class AppSettings
     // Width/Height boxes, SizeUnlocked); nothing else of it is read. ImageKeepBoth: the image model stays loaded beside the chat model.
     public ImageSettings ChatImage { get; set; } = new() { RecipeId = "" }; // "": no model chosen yet (ImageGen.ChatModel null), so nothing downloads unasked
     public bool ImageKeepBoth { get; set; }
+    public Dictionary<string, ImageFile> ImageQuants { get; set; } = []; // recipe id -> the quant picked for its main model (ImageGen.SetQuant)
     public bool ImageHideMissing { get; set; } // the Images page's model list and the chip's: models not downloaded are left out (the current pick stays)
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
     // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models through a

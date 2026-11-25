@@ -21,6 +21,9 @@ public partial class MainWindow
 {
     private CancellationTokenSource? _imgCts; // the download or generation in progress; Cancel and OnClosing cancel it
     private ComboBox _imgRecipe = null!, _imgBatch = null!, _imgSampler = null!, _imgScheduler = null!;
+    private ComboBox _imgQuant = null!; // the recipe's quants (beside the model list)
+    private readonly Dictionary<string, List<ImageFile>> _imgQuantLists = []; // recipe id -> its repo's quants (fetched once per run)
+    private readonly HashSet<string> _imgQuantFetching = [];
     private TextBox _imgPrompt = null!, _imgNegative = null!, _imgSeed = null!;
     private ImageSizeControls _imgSize = null!; // the aspect ratio, swap, width and height boxes and lock (also the chat's Image Gen chip's)
     private ComboBox _imgAspect => _imgSize.Aspect;
@@ -227,6 +230,7 @@ public partial class MainWindow
                 RecipeId = recipe.Id, LocalModel = local, Prompt = _imgPrompt.Text, Negative = _imgNegative.Text, Steps = recipe.Steps, Cfg = recipe.Cfg, Sampler = recipe.Sampler,
                 Seed = ReadSeed(), Batch = _imgBatch.SelectedIndex + 1, LowVram = _imgLowVram.IsChecked == true, Strength = _imgStrength.Value, InitImage = _imgInit,
             });
+            RefreshImageQuant();
         };
         // The source: the local model (the picker and its folder), an OpenRouter one, or the primary PC's (the header's Remote PC).
         // The panels under MODEL swap; the band above shows the same source's note and links. The local pick is never touched on the way.
@@ -241,7 +245,23 @@ public partial class MainWindow
         hideMissing.VerticalAlignment = VerticalAlignment.Center;
         _imgHideMissing = (ToggleButton)hideMissing.Children[0];
         DockPanel.SetDock(hideMissing, Dock.Right);
-        _imgLocalPanel = new StackPanel { Children = { new DockPanel { Children = { hideMissing, _imgRecipe } } } }; // beside the list: the page's height stays
+        _imgQuant = new ComboBox { Tag = "ImagesQuant", Width = 170, Margin = new Thickness(8, 0, 0, 0), ToolTip = "The model's quant: smaller downloads faster and needs less VRAM, larger looks better. The text encoder and VAE are shared by every quant." };
+        _imgQuant.SelectionChanged += (_, _) =>
+        {
+            if (_imgApplying || _imgQuant.SelectedIndex < 0 || _imgRecipe.SelectedIndex is not (>= 0 and var at) || at >= ImageGen.Recipes.Length ||
+                !_imgQuantLists.TryGetValue(ImageGen.Recipes[at].Id, out var list))
+                return;
+            var (id, pick) = (ImageGen.Recipes[at].Id, list[_imgQuant.SelectedIndex]);
+            if (pick.Path == ImageGen.Defaults[at].Files[0].Path)
+                _settings.ImageQuants.Remove(id);
+            else
+                _settings.ImageQuants[id] = pick;
+            _settings.Save();
+            ImageGen.SetQuant(id, pick);
+            RefreshImageRecipes(); // the list's Download sizes
+        };
+        DockPanel.SetDock(_imgQuant, Dock.Right);
+        _imgLocalPanel = new StackPanel { Children = { new DockPanel { Children = { hideMissing, _imgQuant, _imgRecipe } } } }; // beside the list: the page's height stays
         _imgRemoteModelButton = SourceButton("", "ImagesRemoteModelButton", ChooseImageModel);
         _imgRemoteProvidersButton = SourceButton("", "ImagesRemoteProvidersButton", ChooseImageProviders);
         (_imgRemoteModelButton.Margin, _imgRemoteModelButton.FontSize, _imgRemoteProvidersButton.FontSize) = (new Thickness(0), 12, 12);
@@ -689,6 +709,7 @@ public partial class MainWindow
         }
         else // in shared mode RecipeId is the primary PC's id: the local pick stays as it was
             _imgRecipe.SelectedIndex = local >= 0 ? ImageGen.Recipes.Length + local : Array.IndexOf(ImageGen.Recipes, recipe); // the local pick is kept in OpenRouter mode too, for the way back
+        RefreshImageQuant();
         ShowImageSource();
         _imgPrompt.Text = s.Prompt;
         _imgNegative.Text = s.Negative;
@@ -1085,6 +1106,54 @@ public partial class MainWindow
         _imgFolderText.Text = $"{(_imgLocal.Count == 0 ? "No image models" : $"{_imgLocal.Count} image model{(_imgLocal.Count == 1 ? "" : "s")}")} in {ImageModelsFolder}";
         _imgFolderText.ToolTip = ImageModelsFolder;
         _imgApplying = false;
+        RefreshImageQuant();
+    }
+
+    // The quant list beside the model list: the picked recipe's quants (fetched from its repo once), hidden for a folder model.
+    private void RefreshImageQuant()
+    {
+        var at = _imgRecipe.SelectedIndex;
+        _imgQuant.Visibility = at >= 0 && at < ImageGen.Recipes.Length ? Visibility.Visible : Visibility.Collapsed;
+        if (_imgQuant.Visibility != Visibility.Visible)
+            return;
+        var recipe = ImageGen.Recipes[at];
+        if (!_imgQuantLists.TryGetValue(recipe.Id, out var list))
+        {
+            list = [recipe.Files[0]];
+            FetchImageQuants(at);
+        }
+        var applying = _imgApplying;
+        _imgApplying = true;
+        _imgQuant.ItemsSource = list.Select(f => new ComboBoxItem
+        {
+            Content = $"{ImageGen.QuantName(f.Path)} · {f.Size / (double)(1L << 30):0.0} GB{(HubDownloader.IsDownloaded(ImageGen.ModelsRoot, HubLayout.Flat, f.Repo, f.Path) ? " ✓" : "")}",
+            ToolTip = $"{f.Repo}/{f.Path}",
+        }).ToList();
+        _imgQuant.SelectedIndex = list.FindIndex(f => f.Path == recipe.Files[0].Path);
+        _imgApplying = applying;
+    }
+
+    private async void FetchImageQuants(int at)
+    {
+        var shipped = ImageGen.Defaults[at];
+        if (!_imgQuantFetching.Add(shipped.Id))
+            return;
+        var main = shipped.Files[0];
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
+            var dir = main.Path.Contains('/') ? "/" + main.Path[..main.Path.LastIndexOf('/')] : "";
+            _imgQuantLists[shipped.Id] = ImageGen.Quants(shipped, await http.GetStringAsync($"https://huggingface.co/api/models/{main.Repo}/tree/main{dir}"));
+            if (!_imgQuantLists[shipped.Id].Any(f => f.Path == ImageGen.Recipes[at].Files[0].Path))
+                _imgQuantLists[shipped.Id].Add(ImageGen.Recipes[at].Files[0]); // the picked one, gone from the repo since
+            RefreshImageQuant();
+        }
+        catch (Exception x) when (x is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            Log($"Image quants of {main.Repo}: {x.Message}"); // the list keeps the one in use; the next pick of the model tries again
+        }
+        finally { _imgQuantFetching.Remove(shipped.Id); }
     }
 
     // ponytail: the newest 200 pictures only; page the gallery if people keep thousands.

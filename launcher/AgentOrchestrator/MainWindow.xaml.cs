@@ -52,6 +52,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         ApiKeys.ApplyAll(); // keys typed into the app, before anything reads a key variable
+        foreach (var (id, main) in _settings.ImageQuants)
+            ImageGen.SetQuant(id, main); // the image models' picked quants
         InitializeComponent();
         if (AppSettings.Unified) // one conversation view (a chat until it works in a folder), no Chat/Code switch
         {
@@ -2972,6 +2974,11 @@ public partial class MainWindow : Window
                         png.Save(file);
                     File.SetLastWriteTimeUtc(Path.Combine(ImageGen.ImagesFolder, $"smoke-{name}.png"), DateTime.UtcNow.AddMinutes(name[0] - 'd'));
                 }
+                // the quant lists as fetched (no network here): Z-Image's repo has a Q8_0 beside the shipped Q4_K
+                foreach (var shipped in ImageGen.Defaults)
+                    _imgQuantLists[shipped.Id] = [shipped.Files[0]];
+                var zShipped = ImageGen.Defaults[0].Files[0];
+                _imgQuantLists[ImageGen.Defaults[0].Id] = [zShipped, zShipped with { Path = "z_image_turbo-Q8_0.gguf", Size = 7L << 30 }];
                 SmokeClick((Button)SidebarList.Children[sidebarTags.IndexOf("+Images")]);
                 await Settle();
                 {
@@ -3005,6 +3012,37 @@ public partial class MainWindow : Window
                         mossAt != recipes.SelectedIndex && (recipes.Items[mossAt] as ComboBoxItem)?.Visibility != Visibility.Collapsed ||
                     SmokeFind<FrameworkElement>(ImagesView, e => e.Tag as string == "ImagesNegative") is not { } negative)
                     return Fail();
+                {
+                    // the quant list beside the model list: Z-Image's quants; picking Q8_0 makes it the main file (saved), the list's size follows;
+                    // a folder model has no quant list
+                    var recipeBefore = recipes.SelectedIndex;
+                    recipes.SelectedIndex = 0;
+                    await Settle();
+                    string Quants() => string.Join(",", _imgQuant.Items.OfType<ComboBoxItem>().Select(i => i.Content as string));
+                    if (_imgQuant.Visibility != Visibility.Visible || Quants() != "Q4_K · 3.6 GB,Q8_0 · 7.0 GB" || _imgQuant.SelectedIndex != 0)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: quants [{Quants()}] at {_imgQuant.SelectedIndex}, {_imgQuant.Visibility}");
+                        return Fail();
+                    }
+                    _imgQuant.SelectedIndex = 1;
+                    await Settle();
+                    if (ImageGen.Recipes[0].Files[0].Path != "z_image_turbo-Q8_0.gguf" || AppSettings.Load().ImageQuants.GetValueOrDefault("z-image-turbo")?.Path != "z_image_turbo-Q8_0.gguf" ||
+                        (recipes.Items[0] as ComboBoxItem)?.Content as string is not { } zItem || !zItem.Contains("Download (9.6 GB)") || _imgQuant.SelectedIndex != 1)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: Q8_0 picked: {ImageGen.Recipes[0].Files[0].Path}, \"{(recipes.Items[0] as ComboBoxItem)?.Content}\", at {_imgQuant.SelectedIndex}");
+                        return Fail();
+                    }
+                    _imgQuant.SelectedIndex = 0;
+                    await Settle();
+                    if (!ReferenceEquals(ImageGen.Recipes[0], ImageGen.Defaults[0]) || AppSettings.Load().ImageQuants.Count != 0)
+                        return Fail();
+                    recipes.SelectedIndex = recipes.Items.Count - 1; // the folder's MOSS
+                    await Settle();
+                    if (_imgQuant.Visibility != Visibility.Collapsed)
+                        return Fail();
+                    recipes.SelectedIndex = recipeBefore;
+                    await Settle();
+                }
                 // the gallery: a strip of the three, the newest on the stage and outlined; the wheel zooms at the cursor, Fit undoes it
                 Snap("40-images-page");
                 var strip = SmokeFind<StackPanel>(ImagesView, p => p.Tag as string == "ImagesGallery");
