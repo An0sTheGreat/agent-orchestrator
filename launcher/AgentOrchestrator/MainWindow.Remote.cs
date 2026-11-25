@@ -141,9 +141,16 @@ public partial class MainWindow
 
     // The desktop's own send: the conversation opens, the text goes through its composer (the desktop's draft and attached
     // files are set aside meanwhile, so they never go with it), and SendOrQueue sends it or queues it behind a reply.
-    private (int, object) RemoteSend(string id, string text)
+    // attachments: the phone app's uploads (MainWindow.WebApp.cs has checked they are), sent with the text.
+    private (int, object) RemoteSend(string id, string text, IReadOnlyList<string>? attachments = null)
     {
-        if (text.Trim().Length == 0)
+        var mine = new List<string>();
+        foreach (var path in (attachments ?? []).Distinct(StringComparer.OrdinalIgnoreCase))
+            if (AttachRefusal(mine, path) is { } why)
+                return (400, new { error = why });
+            else
+                mine.Add(path);
+        if (text.Trim().Length == 0 && mine.Count == 0)
             return (400, new { error = "Empty message" });
         if (text.TrimStart().StartsWith('/') && !System.Text.RegularExpressions.Regex.IsMatch(text, @"\A\s*/image(\s|\z)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) // a slash command changes settings (RunLocalCommand): those stay at the PC; /image paints
             return (400, new { error = "Slash commands only work at the PC." });
@@ -169,10 +176,12 @@ public partial class MainWindow
         }
         var (draft, files) = (c.Input.Text, AttachmentsOf(c).ToList());
         AttachmentsOf(c).Clear();
+        AttachmentsOf(c).AddRange(mine);
         c.Input.Text = text;
         SendOrQueue(c);
-        var sent = c.Input.Text != text; // sent or queued: the composer took it
+        var sent = c.Input.Text != text || text.Length == 0 && AttachmentsOf(c).Count == 0; // sent or queued: the composer took it
         c.Input.Text = draft;
+        AttachmentsOf(c).RemoveAll(mine.Contains); // not taken: they never stay in the desktop's composer
         if (AttachmentsOf(c).Count == 0)
             AttachmentsOf(c).AddRange(files);
         RefreshAttachments(c);

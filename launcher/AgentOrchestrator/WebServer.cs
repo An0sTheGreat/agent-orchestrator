@@ -18,7 +18,8 @@ internal sealed class WebServer
     public sealed record EventStream(string Hello, System.Threading.Channels.ChannelReader<string> Events, CancellationTokenSource Life)
         : Response(200, "text/event-stream; charset=utf-8", []);
 
-    public delegate Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType);
+    // `fileName`: the request's X-File-Name header (/api/upload's file, URL-encoded), null without one.
+    public delegate Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType, string? fileName);
 
     private const int MaxBody = 25 << 20;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
@@ -109,7 +110,7 @@ internal sealed class WebServer
             var query = request.QueryString.AllKeys.OfType<string>().ToDictionary(k => k, k => request.QueryString[k] ?? "");
             var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
             var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "",
-                request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"]);
+                request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"], request.Headers["X-File-Name"]);
             if (r is EventStream stream)
             {
                 using (stream.Life)
@@ -184,7 +185,7 @@ internal sealed class WebServer
     // `login`: the request's Tailscale-User-Login; `body`: null when it was over the limit.
     // `origin`, `fetchSite`, `host`: the request's Origin, Sec-Fetch-Site and Host headers.
     public async Task<Response> Handle(string method, string path, string? login, IReadOnlyDictionary<string, string> query, byte[]? body, string contentType,
-        string? origin = null, string? fetchSite = null, string? host = null)
+        string? origin = null, string? fetchSite = null, string? host = null, string? fileName = null)
     {
         if (!IsOwner(login, _owner()))
             return Json(403, new { error = "Forbidden" });
@@ -198,10 +199,10 @@ internal sealed class WebServer
             if (!known && (fetchSite == "cross-site" || origin is not null && method is not ("GET" or "HEAD")))
                 return Json(403, new { error = "Cross-site request refused" });
             if (body is null)
-                return Json(413, new { error = "Too large (25 MB at most)" });
+                return Json(413, new { error = path == "/api/upload" ? "The file is over 25 MB" : "Too large (25 MB at most)" });
             try
             {
-                var (status, result) = await _api(method, path, query, body, contentType);
+                var (status, result) = await _api(method, path, query, body, contentType, fileName);
                 return result as Response ?? Json(status, result); // a Response is sent as it is (/api/file's bytes)
             }
             catch (Exception e) { return Json(500, new { error = e.Message }); }
@@ -278,7 +279,7 @@ internal sealed class WebServer
             Asset("") is null, "refused assets");
         Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");
 
-        var server = new WebServer(() => "me@x.com", () => suffix, (method, path, query, body, type) =>
+        var server = new WebServer(() => "me@x.com", () => suffix, (method, path, query, body, type, _) =>
             Task.FromResult((200, (object)new { method, path, q = query.GetValueOrDefault("q"), length = body.Length, type })));
         Response Call(string method, string path, string? login = "Me@x.com", byte[]? body = null, string? origin = null, string? site = null) =>
             server.Handle(method, path, login, new Dictionary<string, string> { ["q"] = "1" }, body ?? [], "application/json", origin, site, "pc.tail1234.ts.net")
@@ -289,7 +290,7 @@ internal sealed class WebServer
         Check(Call("POST", "/api/send", origin: "https://pc.tail1234.ts.net", site: "same-origin").Status == 200 &&
             Call("POST", "/api/send", origin: "https://laptop.tail1234.ts.net", site: "same-site").Status == 200 && Call("POST", "/api/send").Status == 200,
             "same origin, another tailnet PC and no Origin reach the API");
-        var noSuffix = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _) => Task.FromResult((200, (object)new { })));
+        var noSuffix = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _, _) => Task.FromResult((200, (object)new { })));
         Check(noSuffix.Handle("POST", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "", "https://PC.tail1234.ts.net", "same-origin", "pc.tail1234.ts.net")
             .GetAwaiter().GetResult().Status == 200, "same origin by the Host header, suffix unknown");
         Check(Call("GET", "/", null).Status == 403 && Call("GET", "/", "other@x.com").Status == 403 && Call("GET", "/api/conversations", null).Status == 403 &&
@@ -300,7 +301,7 @@ internal sealed class WebServer
             Encoding.UTF8.GetString(api.Body) == """{"method":"POST","path":"/api/send","q":"1","length":3,"type":"application/json"}""", "the API: " + Encoding.UTF8.GetString(api.Body));
         Check(server.Handle("POST", "/api/send", "me@x.com", new Dictionary<string, string>(), null, "").GetAwaiter().GetResult().Status == 413, "too large: 413");
         Check(Call("OPTIONS", "/api/hello").Status == 204 && Call("GET", "/missing.js").Status == 404 && Call("POST", "/").Status == 405, "routing");
-        var failing = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _) => throw new InvalidOperationException("boom"));
+        var failing = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _, _) => throw new InvalidOperationException("boom"));
         Check(failing.Handle("GET", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "").GetAwaiter().GetResult() is { Status: 500 } boom &&
             Encoding.UTF8.GetString(boom.Body).Contains("boom"), "an API exception: 500");
     }

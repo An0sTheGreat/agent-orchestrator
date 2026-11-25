@@ -268,20 +268,21 @@ public partial class MainWindow
         var list = AttachmentsOf(c);
         if (list.Contains(path, StringComparer.OrdinalIgnoreCase))
             return;
-        if (File.Exists(path) && ImageExtensions.Contains(Path.GetExtension(path)) && list.Count(p => ImageExtensions.Contains(Path.GetExtension(p))) >= MaxImages)
+        if (AttachRefusal(list, path) is { } why)
         {
-            Toast($"Up to {MaxImages} photos per message; {Path.GetFileName(path)} was not added", "#F7C873");
-            return;
-        }
-        if (File.Exists(path) && !ImageExtensions.Contains(Path.GetExtension(path)) && ReadText(path, FileMaxBytes) is null)
-        {
-            Toast($"{Path.GetFileName(path)} isn't a text file or photo, so it can't be added", "#F7C873");
+            Toast(why, "#F7C873");
             return;
         }
         list.Add(path);
         RefreshAttachments(c);
         c.Input.Focus();
     }
+
+    // Why `path` cannot join the attachments in `list` (null: it can); the phone app's upload and send ask it too.
+    private static string? AttachRefusal(IEnumerable<string> list, string path) =>
+        !File.Exists(path) ? null
+        : ImageExtensions.Contains(Path.GetExtension(path)) ? list.Count(p => ImageExtensions.Contains(Path.GetExtension(p))) >= MaxImages ? $"Up to {MaxImages} photos per message; {Path.GetFileName(path)} was not added" : null
+        : ReadText(path, FileMaxBytes) is null ? $"{Path.GetFileName(path)} isn't a text file or photo, so it can't be added" : null;
 
     private void RefreshAttachments(Conversation c)
     {

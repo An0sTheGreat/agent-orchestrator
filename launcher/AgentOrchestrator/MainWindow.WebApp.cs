@@ -226,7 +226,7 @@ public partial class MainWindow
     private static readonly (int, object) WebNotFound = (404, new { error = "Not found" });
 
     // The phone app's API (WebServer has checked the caller). What reads the window's state runs on the UI thread.
-    private async Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType)
+    private async Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType, string? fileName)
     {
         const string one = "/api/conversation/";
         return (method, path) switch
@@ -236,10 +236,102 @@ public partial class MainWindow
             ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
             ("GET", _) when path.StartsWith(one) && path.EndsWith("/events") => await Dispatcher.InvokeAsync(() => WebEventsOpen(path[one.Length..^"/events".Length])),
             ("POST", "/api/answer") => await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body))),
+            ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body)))),
+            ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebSend(WebBody(body)))),
+            ("POST", "/api/upload") => WebUpload(fileName, body),
+            ("GET", "/api/composer") => await Dispatcher.InvokeAsync(WebComposer),
+            ("POST", "/api/composer") => await Dispatcher.InvokeAsync(() => WebComposerSet(WebBody(body))),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
             ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
             _ => WebNotFound,
         };
+    }
+
+    // Send and stop while a PC dialog is open: the phone app's own error word, which its page explains.
+    private static (int, object) WebDialog((int, object) result) => ReferenceEquals(result.Item2, DialogOpen.Item2) ? (409, new { error = "DialogOpen" }) : result;
+
+    private static string WebField(JsonElement body, string name) =>
+        body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString()! : "";
+
+    private static string WebPasted => Path.Combine(AppSettings.DataRoot, "pasted");
+
+    // A photo or file from the phone, saved into pasted\ as <unique id>-<its name, path and unsafe characters dropped>; one
+    // the composer would refuse is deleted again and refused with Attach's reason.
+    private static (int, object) WebUpload(string? fileName, byte[] body)
+    {
+        var name = string.Concat(Path.GetFileName(Uri.UnescapeDataString(fileName ?? "")).Select(ch => Path.GetInvalidFileNameChars().Contains(ch) ? '_' : ch)).Trim(' ', '.');
+        name = name.Length == 0 ? "upload" : name[Math.Max(0, name.Length - 100)..]; // the end keeps the extension
+        Directory.CreateDirectory(WebPasted);
+        var path = Path.Combine(WebPasted, $"{Guid.NewGuid():N}-{name}");
+        File.WriteAllBytes(path, body);
+        if (AttachRefusal([], path) is not { } why)
+            return (200, new { path });
+        File.Delete(path);
+        return (400, new { error = why });
+    }
+
+    // RemoteSend with the phone's uploads: an attachment that is not a file in pasted\ is refused, never read off the PC.
+    private (int, object) WebSend(JsonElement body)
+    {
+        var folder = Path.GetFullPath(WebPasted) + Path.DirectorySeparatorChar;
+        var files = new List<string>();
+        if (body.ValueKind == JsonValueKind.Object && body.TryGetProperty("attachments", out var list) && list.ValueKind == JsonValueKind.Array)
+            foreach (var item in list.EnumerateArray())
+            {
+                var path = item.ValueKind == JsonValueKind.String ? item.GetString()! : "";
+                if (!Path.IsPathFullyQualified(path) || Path.GetFullPath(path) is var full && (!full.StartsWith(folder, StringComparison.OrdinalIgnoreCase) || !File.Exists(full)))
+                    return (400, new { error = "Only files sent from the phone can be attached" });
+                files.Add(full);
+            }
+        return RemoteSend(WebField(body, "id"), WebField(body, "text"), files);
+    }
+
+    // The Chat composer's options as the desktop shows them: the toggles, the effort sent (and the levels the target takes),
+    // its target worker and the ones it may pick, the skills, and the chat's image model, size and steps.
+    private (int, object) WebComposer()
+    {
+        var target = ChatTarget();
+        var size = ChatImageReady && ImageGen.ChatRequest(_settings.ChatImage, _settings.ImageKeepBoth) is { } r ? $"{r.Width}×{r.Height}" : "";
+        return (200, new
+        {
+            search = _settings.UseSearch, tools = _settings.UseTools, vision = _settings.UseVision,
+            effort = EffortFor(target), efforts = EffortLevels(target), worker = target?.Role ?? "",
+            workers = ListedWorkers(_chat).Select(k => new { role = k.Role, name = ChatName(k, k.Role) }).ToList(),
+            skills = AllSkills().Select(s => new { name = Path.GetFileName(s.Folder), on = HasSkill(s) }).ToList(),
+            imageGen = new { model = ImageGen.ChatModel(_settings.ChatImage) is var (_, model) ? model : "", size, steps = _settings.ChatImageSteps },
+        });
+    }
+
+    // Writes what the body names, as the desktop's own controls do (an unknown worker, effort or skill changes nothing: 400),
+    // saves, and refreshes the desktop's chips and toggles. The image model and size stay the desktop's to pick.
+    private (int, object) WebComposerSet(JsonElement body)
+    {
+        if (body.ValueKind != JsonValueKind.Object)
+            return (400, new { error = "Expected a JSON object" });
+        bool? Flag(string name) => body.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
+        var worker = body.TryGetProperty("worker", out var w) && w.ValueKind == JsonValueKind.String ? w.GetString() : null;
+        var effort = body.TryGetProperty("effort", out var e) && e.ValueKind == JsonValueKind.String ? e.GetString() : null;
+        var skills = AllSkills();
+        var toggles = body.TryGetProperty("skills", out var s) && s.ValueKind == JsonValueKind.Array
+            ? s.EnumerateArray().Select(t => (Skill: skills.FirstOrDefault(k => Path.GetFileName(k.Folder).Equals(WebField(t, "name"), StringComparison.OrdinalIgnoreCase)),
+                On: t.ValueKind == JsonValueKind.Object && t.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True)).ToList() : [];
+        if (worker is not null && ListedWorkers(_chat).All(k => k.Role != worker) || effort is not null && Efforts.All(x => x.Value != effort) || toggles.Any(t => t.Skill is null))
+            return (400, new { error = "No such worker, effort or skill" });
+        (_settings.UseSearch, _settings.UseTools, _settings.UseVision) = (Flag("search") ?? _settings.UseSearch, Flag("tools") ?? _settings.UseTools, Flag("vision") ?? _settings.UseVision);
+        (_settings.ChatWorker, _settings.ChatEffort) = (worker ?? _settings.ChatWorker, effort ?? _settings.ChatEffort);
+        foreach (var (skill, on) in toggles)
+        {
+            var (list, key) = (skill!.BuiltIn ? _settings.SkillsOff : _settings.Skills, Path.GetFileName(skill.Folder));
+            list.RemoveAll(k => k.Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (on != skill.BuiltIn) // as SetSkill: a user skill on, or a bundled one off
+                list.Add(key);
+        }
+        if (body.TryGetProperty("imageGen", out var image) && image.ValueKind == JsonValueKind.Object && image.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Number && steps.TryGetInt32(out var n))
+            _settings.ChatImageSteps = n > 0 ? Math.Clamp(n, 1, 100) : 0; // as the chip's box: 0 is the model's own
+        _settings.Save();
+        RefreshExtras();
+        RefreshChatTarget();
+        return WebComposer();
     }
 
     private object WebHello() => new
@@ -409,7 +501,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes
@@ -741,6 +833,152 @@ public partial class MainWindow
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (root, project, choice, notify, quiet);
             if (_webApp is not null)
                 _webApp.KeepAlive = keepAlive;
+        }
+    }
+
+    // Sending (WebAppSmoke, while on), the window hidden, then minimized, and never shown by a route: a PNG uploaded into
+    // pasted\ under a unique safe name and sent with "describe this" to a new chat on a stand-in engine (the reply in the stream,
+    // the user message holding the picture); a second send leaves the minimized window minimized; 26 MB is 413 with its message;
+    // a file type Attach refuses is 400 and deleted; an attachment outside pasted\ and an empty message are 400; stop routes;
+    // the composer is read and written (saved, the desktop toggles following); send while a PC dialog is open is 409.
+    private async Task<bool> WebSendSmoke(int port)
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: send: {what}"); return false; }
+        static async Task<bool> Until(Func<bool> done)
+        {
+            for (var waited = 0; waited < 5000 && !done(); waited += 50)
+                await Task.Delay(50);
+            return done();
+        }
+        var (root, project, choice, notify, quiet, search, visible, activated) = (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch, IsVisible, ShowActivated);
+        var engine = Path.Combine(AppSettings.DataRoot, "webapp-send-engine");
+        Directory.CreateDirectory(engine);
+        File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, os, sys, time\n" +
+            "def ev(**e): print('@@AO ' + json.dumps(e), flush=True)\n" +
+            "end = time.time() + 60\n" +
+            "while not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'go')):\n" +
+            "    if time.time() > end: sys.exit(1)\n    time.sleep(0.05)\n" +
+            "ev(e='delta', role='planner', kind='text', text='A red dot')\nev(e='chat_reply', role='planner', text='A red dot')\n");
+        File.WriteAllText(Path.Combine(engine, "config.json"), """{"roles": {}}""");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        http.DefaultRequestHeaders.Add("Tailscale-User-Login", "smoke@example.com");
+        async Task<(int Status, JsonNode? Body)> Post(string path, HttpContent content, string? name = null)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}{path}") { Content = content };
+            if (name is not null)
+                request.Headers.Add("X-File-Name", name);
+            using var response = await http.SendAsync(request);
+            var text = await response.Content.ReadAsStringAsync();
+            try { return ((int)response.StatusCode, JsonNode.Parse(text)); }
+            catch (JsonException) { return ((int)response.StatusCode, null); }
+        }
+        Task<(int Status, JsonNode? Body)> PostJson(string path, object body) => Post(path, new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json"));
+        var placeholder = !File.Exists(LauncherLogic.LlamaServerPath); // a turn needs the runtime there; the stand-in engine never runs it
+        string? created = null;
+        try
+        {
+            (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (engine, "", null, (_, _) => { }, true);
+            if (placeholder)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LauncherLogic.LlamaServerPath)!);
+                File.WriteAllBytes(LauncherLogic.LlamaServerPath, []);
+            }
+            Hide();
+            var pasted = Path.Combine(AppSettings.DataRoot, "pasted");
+            byte[] png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==");
+            var up = await Post("/api/upload", new ByteArrayContent(png), Uri.EscapeDataString(@"..\phone dot.png"));
+            if (up is not (200, { } u) || u["path"]?.ToString() is not { } photo || Path.GetDirectoryName(photo) != pasted || !Path.GetFileName(photo).EndsWith("-phone dot.png") ||
+                !File.ReadAllBytes(photo).SequenceEqual(png))
+                return Fail($"upload: {up.Status} {up.Body?.ToJsonString()}");
+            var sent = await PostJson("/api/send", new { id = "", text = "describe this", attachments = new[] { photo } });
+            if (sent is not (200, { } s) || s["id"]?.ToString() is not { Length: > 0 } id || _store.Get(id) is null)
+                return Fail($"send with the photo: {sent.Status} {sent.Body?.ToJsonString()}");
+            created = id;
+            using (var stream = await SseClient.Open(port, $"/api/conversation/{id}/events"))
+            {
+                File.WriteAllText(Path.Combine(engine, "go"), "");
+                var events = new List<JsonNode>();
+                using var deadline = new CancellationTokenSource(SseClient.Within);
+                while (events.LastOrDefault()?["e"]?.ToString() != "saved")
+                    events.Add(await stream.Next(deadline.Token));
+                if (!events.Any(n => n["e"]?.ToString() == "delta" && n["text"]?.ToString() == "A red dot"))
+                    return Fail($"the reply's stream: {string.Join(" ", events.Select(n => n.ToJsonString()))}");
+            }
+            if (!await Until(() => !_chatBusy) || _store.Get(id)?.Messages is not { Count: 2 } saved || saved[0].Role != "user" || !saved[0].Content.StartsWith("describe this") ||
+                saved[0].Images?.SequenceEqual([photo]) != true || saved[1].Content != "A red dot")
+                return Fail($"the saved turn: {JsonSerializer.Serialize(_store.Get(id)?.Messages)}");
+            if (IsVisible)
+                return Fail("a send showed the hidden window");
+
+            (ShowActivated, WindowState) = (false, WindowState.Minimized);
+            Show();
+            if (await PostJson("/api/send", new { id, text = "and again" }) is not (200, _) || !await Until(() => !_chatBusy && _store.Get(id)?.Messages.Count == 4) ||
+                WindowState != WindowState.Minimized)
+                return Fail($"a send to the minimized window: {_store.Get(id)?.Messages.Count} messages, {WindowState}");
+
+            var big = await Post("/api/upload", new ByteArrayContent(new byte[26 << 20]), "big.png");
+            if (big is not (413, { } b) || b["error"]?.ToString() != "The file is over 25 MB")
+                return Fail($"26 MB: {big.Status} {big.Body?.ToJsonString()}");
+            var blob = await Post("/api/upload", new ByteArrayContent([0, 1, 2, 0, 255, 0, 7]), "blob.bin");
+            if (blob is not (400, { } r) || r["error"]?.ToString()?.Contains("isn't a text file or photo") != true || Directory.GetFiles(pasted).Length != 1)
+                return Fail($"a refused file type: {blob.Status} {blob.Body?.ToJsonString()}, {Directory.GetFiles(pasted).Length} files in pasted");
+            var outside = Path.Combine(AppSettings.DataRoot, "outside.png");
+            File.WriteAllBytes(outside, png);
+            foreach (var bad in new[] { outside, Path.Combine(pasted, "..", "outside.png"), Path.Combine(pasted, "none.png"), @"pasted\" + Path.GetFileName(photo) })
+                if (await PostJson("/api/send", new { id, text = "with a PC file", attachments = new[] { bad } }) is not (400, _))
+                    return Fail($"{bad} was attached");
+            if (await PostJson("/api/send", new { id, text = "  " }) is not (400, _) || _store.Get(id)?.Messages.Count != 4)
+                return Fail("an empty message, or a refused one, was sent");
+            if (await PostJson("/api/stop", new { id }) is not (409, { } idle) || idle["error"]?.ToString() != "Nothing is running there.")
+                return Fail("stop while idle");
+
+            _settings.UseSearch = true;
+            RefreshExtras();
+            var composer = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/composer"));
+            if (composer?["search"]?.GetValue<bool>() != true || composer["worker"]?.ToString() != ChatTarget()?.Role || composer["workers"]?.AsArray().Any(w => w?["role"]?.ToString() == "planner") != true ||
+                composer["skills"] is not JsonArray || composer["imageGen"]?["steps"] is null || composer["effort"] is null)
+                return Fail($"the composer: {composer?.ToJsonString()}");
+            if (await PostJson("/api/composer", new { search = false }) is not (200, _) || _settings.UseSearch || AppSettings.Load().UseSearch ||
+                ChatSearchToggle.IsChecked != false || CodeSearchToggle.IsChecked != false)
+                return Fail($"composer search off: setting {_settings.UseSearch}, toggle {ChatSearchToggle.IsChecked}");
+            if (await PostJson("/api/composer", new { worker = "nobody" }) is not (400, _) || await PostJson("/api/composer", new { effort = "loud" }) is not (400, _))
+                return Fail("an unknown worker or effort was taken");
+            if (WindowState != WindowState.Minimized)
+                return Fail($"the window is {WindowState} after the routes");
+
+            var asked = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
+            if (!await Until(() => _remotePrompt is not null))
+                return Fail("the popup did not open");
+            var during = await PostJson("/api/send", new { id, text = "during the popup" });
+            _remotePrompt!.Resolve("read");
+            await Task.WhenAny(asked.Task, Task.Delay(5000));
+            if (during is not (409, { } d) || d["error"]?.ToString() != "DialogOpen")
+                return Fail($"send while a dialog was open: {during.Status} {during.Body?.ToJsonString()}");
+            return true;
+        }
+        catch (Exception x) when (x is IOException or InvalidDataException or OperationCanceledException or FormatException or HttpRequestException)
+        {
+            return Fail(x.Message);
+        }
+        finally
+        {
+            foreach (var popup in OwnedWindows.OfType<DialogShell>().ToList())
+                popup.Close();
+            File.WriteAllText(Path.Combine(engine, "go"), "");
+            await Until(() => !_chatBusy);
+            if (placeholder)
+                File.Delete(LauncherLogic.LlamaServerPath);
+            if (created is not null)
+                _store.Delete(created);
+            (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch) = (root, project, choice, notify, quiet, search);
+            _settings.Save();
+            RefreshExtras();
+            WindowState = WindowState.Normal;
+            if (visible)
+                Show();
+            else
+                Hide();
+            ShowActivated = activated;
         }
     }
 
