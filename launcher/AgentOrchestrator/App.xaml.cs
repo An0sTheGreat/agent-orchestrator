@@ -40,6 +40,7 @@ public partial class App : Application
             Tailscale.SelfTest();
             AgentOrchestrator.MainWindow.TerminalSelfTest();
             ImageShare.SelfTest();
+            WebServer.SelfTest();
             Shutdown(0);
             return;
         }

@@ -26,6 +26,8 @@
     <Resource Include="Assets\Vendors\*.png" />
     <None Remove="Assets\make_icon.py" />
     <EmbeddedResource Include="remote.html" LogicalName="remote.html" />
+    <!-- the tailnet phone app (WebServer.cs), named by its path under web\ with forward slashes: web/index.html, web/assets/fonts/... -->
+    <EmbeddedResource Include="web\**" Exclude="web\test\**" LogicalName="web/$([System.String]::Copy('%(RecursiveDir)').Replace('\', '/'))%(Filename)%(Extension)" />
     <!-- the terminal panel's xterm.js (MIT; the licenses are beside it in Terminal\) -->
     <EmbeddedResource Include="Terminal\xterm.js" LogicalName="xterm.js" />
     <EmbeddedResource Include="Terminal\xterm.css" LogicalName="xterm.css" />

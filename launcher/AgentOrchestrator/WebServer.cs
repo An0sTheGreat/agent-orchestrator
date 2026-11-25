@@ -1,0 +1,252 @@
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Text.Json;
+
+namespace AgentOrchestrator;
+
+// The tailnet phone app's server: http://127.0.0.1:<port>/ only, published on the tailnet by `tailscale serve`, which adds
+// Tailscale-User-Login to every request it proxies. Every path, the page and its files included, needs that header naming
+// the PC's own Tailscale user (`ownerLogin`); anything else gets 403. "/" and the embedded web\ files are the app;
+// /api/* goes to `api` (MainWindow.WebApp.cs), which answers (status, JSON body). Apart from RemoteServer (Cloudflare).
+internal sealed class WebServer
+{
+    public sealed record Response(int Status, string Type, byte[] Body);
+
+    public delegate Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType);
+
+    private const int MaxBody = 25 << 20;
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    private readonly Func<string?> _owner;
+    private readonly Func<string?> _suffix;
+    private readonly WebApi _api;
+    private HttpListener? _listener;
+
+    // `ownerLogin`: the PC's Tailscale login; `tailnetSuffix`: its MagicDNS suffix (tail1234.ts.net), whose https origins
+    // (the user's other PCs) may call the API. Both are asked on every request: null while Tailscale is not known.
+    public WebServer(Func<string?> ownerLogin, Func<string?> tailnetSuffix, WebApi api) =>
+        (_owner, _suffix, _api) = (ownerLogin, tailnetSuffix, api);
+
+    public int? Port { get; private set; }
+
+    // The first free port from `port` (20 tries). False when none is.
+    public bool Start(int port)
+    {
+        for (var p = port; p < port + 20 && p <= 65535; p++)
+        {
+            var listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{p}/");
+            try { listener.Start(); }
+            catch (HttpListenerException)
+            {
+                listener.Close();
+                continue;
+            }
+            (_listener, Port) = (listener, p);
+            _ = Task.Run(() => Loop(listener));
+            return true;
+        }
+        return false;
+    }
+
+    public void Stop()
+    {
+        _listener?.Close();
+        (_listener, Port) = (null, null);
+    }
+
+    private async Task Loop(HttpListener listener)
+    {
+        while (listener.IsListening)
+        {
+            HttpListenerContext context;
+            try { context = await listener.GetContextAsync(); }
+            catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException) { return; }
+            _ = Serve(context);
+        }
+    }
+
+    private async Task Serve(HttpListenerContext context)
+    {
+        var (request, response) = (context.Request, context.Response);
+        try
+        {
+            var path = request.Url?.AbsolutePath ?? "/";
+            var suffix = _suffix();
+            response.Headers["Content-Security-Policy"] = Csp(suffix);
+            response.Headers["X-Frame-Options"] = "DENY";
+            response.Headers["X-Content-Type-Options"] = "nosniff";
+            if (path.StartsWith("/api/"))
+                response.Headers["Cache-Control"] = "no-store";
+            if (AllowedOrigin(request.Headers["Origin"], suffix) is { } origin)
+            {
+                response.Headers["Access-Control-Allow-Origin"] = origin;
+                response.Headers["Vary"] = "Origin";
+                if (request.HttpMethod == "OPTIONS")
+                {
+                    response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE";
+                    response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                    response.Headers["Access-Control-Max-Age"] = "600";
+                }
+            }
+            // http.sys routes on the Host header, so a LAN device naming 127.0.0.1 could reach the port and forge the
+            // header: only this PC's connections (tailscaled's Serve proxy) count.
+            if (!RemoteServer.IsAllowedClient(request.RemoteEndPoint.Address))
+            {
+                response.StatusCode = 403;
+                return;
+            }
+            var query = request.QueryString.AllKeys.OfType<string>().ToDictionary(k => k, k => request.QueryString[k] ?? "");
+            var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
+            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "");
+            response.StatusCode = r.Status;
+            response.ContentType = r.Type;
+            response.ContentLength64 = r.Body.Length;
+            await response.OutputStream.WriteAsync(r.Body);
+        }
+        catch (Exception) { } // the phone went away, or the server stopped: nothing to answer
+        finally
+        {
+            try { response.Close(); } catch (Exception) { }
+        }
+    }
+
+    // Streams `events` (JSON texts) to an owner's request as Server-Sent Events, one flush per frame, until they end, the
+    // phone goes away or `ct` is cancelled. For Serve's events route (Task 4), after the identity check.
+    internal static async Task StreamEvents(HttpListenerResponse response, IAsyncEnumerable<string> events, CancellationToken ct)
+    {
+        response.StatusCode = 200;
+        response.ContentType = "text/event-stream; charset=utf-8";
+        response.Headers["Cache-Control"] = "no-store";
+        response.SendChunked = true;
+        await foreach (var json in events.WithCancellation(ct))
+        {
+            await response.OutputStream.WriteAsync(SseFrame(json), ct);
+            await response.OutputStream.FlushAsync(ct);
+        }
+    }
+
+    // The request's body; null when it is over MaxBody.
+    private static async Task<byte[]?> ReadBody(HttpListenerRequest request)
+    {
+        if (request.ContentLength64 > MaxBody)
+            return null;
+        using var buffer = new MemoryStream();
+        var chunk = new byte[65536];
+        int read;
+        while ((read = await request.InputStream.ReadAsync(chunk)) > 0)
+        {
+            if (buffer.Length + read > MaxBody)
+                return null;
+            buffer.Write(chunk, 0, read);
+        }
+        return buffer.ToArray();
+    }
+
+    // `login`: the request's Tailscale-User-Login; `body`: null when it was over the limit.
+    public async Task<Response> Handle(string method, string path, string? login, IReadOnlyDictionary<string, string> query, byte[]? body, string contentType)
+    {
+        if (!IsOwner(login, _owner()))
+            return Json(403, new { error = "Forbidden" });
+        if (method == "OPTIONS")
+            return new Response(204, "text/plain", []);
+        if (path.StartsWith("/api/"))
+        {
+            if (body is null)
+                return Json(413, new { error = "Too large (25 MB at most)" });
+            try
+            {
+                var (status, result) = await _api(method, path, query, body, contentType);
+                return Json(status, result);
+            }
+            catch (Exception e) { return Json(500, new { error = e.Message }); }
+        }
+        if (Asset(path) is not var (resource, type))
+            return Json(404, new { error = "Not found" });
+        if (method != "GET")
+            return Json(405, new { error = "Method not allowed" });
+        using var stream = typeof(WebServer).Assembly.GetManifestResourceStream(resource)!;
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        return new Response(200, type, copy.ToArray());
+    }
+
+    private static Response Json(int status, object body) => new(status, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(body, JsonOptions));
+
+    public static bool IsOwner(string? headerLogin, string? owner) =>
+        !string.IsNullOrEmpty(headerLogin) && !string.IsNullOrEmpty(owner) && string.Equals(headerLogin, owner, StringComparison.OrdinalIgnoreCase);
+
+    // `origin` when it is one of the tailnet's machines over HTTPS (https://<name>.<suffix>, the default port), else null.
+    public static string? AllowedOrigin(string? origin, string? suffix)
+    {
+        if (string.IsNullOrEmpty(suffix) || origin is null || !origin.StartsWith("https://", StringComparison.Ordinal) ||
+            !origin.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase))
+            return null;
+        var name = origin["https://".Length..^(suffix.Length + 1)];
+        return name.Length > 0 && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '-') ? origin : null;
+    }
+
+    internal static string Csp(string? suffix) =>
+        "default-src 'self'" + (string.IsNullOrEmpty(suffix) ? "" : $"; connect-src 'self' https://*.{suffix}");
+
+    // The embedded file for a request path ("/" is index.html) and its content type; null for anything not embedded.
+    public static (string Resource, string Type)? Asset(string path)
+    {
+        if (!path.StartsWith('/') || path.Contains("..") || path.Contains('\\'))
+            return null;
+        var resource = "web" + (path == "/" ? "/index.html" : path);
+        if (typeof(WebServer).Assembly.GetManifestResourceInfo(resource) is null)
+            return null;
+        return (resource, Path.GetExtension(resource).ToLowerInvariant() switch
+        {
+            ".html" => "text/html; charset=utf-8",
+            ".css" => "text/css; charset=utf-8",
+            ".js" => "text/javascript; charset=utf-8",
+            ".ttf" => "font/ttf",
+            _ => "application/octet-stream",
+        });
+    }
+
+    public static byte[] SseFrame(string json) => Encoding.UTF8.GetBytes($"data: {json}\n\n");
+    // --self-test: the identity gate, the tailnet origins, asset lookup, routing and the SSE frame.
+    internal static void SelfTest()
+    {
+        static void Check(bool ok, string what)
+        {
+            if (!ok)
+                throw new InvalidOperationException($"Web server self-test: {what}");
+        }
+        Check(IsOwner("me@x.com", "ME@x.com") && !IsOwner(null, "me@x.com") && !IsOwner("me@x.com", null) && !IsOwner("a@x.com", "b@x.com") &&
+            !IsOwner("", ""), "owner check");
+        const string suffix = "tail1234.ts.net";
+        Check(AllowedOrigin("https://laptop.tail1234.ts.net", suffix) == "https://laptop.tail1234.ts.net" &&
+            AllowedOrigin("http://laptop.tail1234.ts.net", suffix) is null && AllowedOrigin("https://evil.com", suffix) is null &&
+            AllowedOrigin("https://x.tail1234.ts.net.evil.com", suffix) is null && AllowedOrigin("https://a.b.tail1234.ts.net", suffix) is null &&
+            AllowedOrigin("https://laptop.tail1234.ts.net:8443", suffix) is null && AllowedOrigin("https://laptop.tail1234.ts.net", null) is null &&
+            AllowedOrigin(null, suffix) is null, "tailnet origins");
+        Check(Csp(suffix).Contains("default-src 'self'") && Csp(suffix).Contains("connect-src 'self' https://*.tail1234.ts.net") &&
+            !Csp(null).Contains("connect-src"), "content security policy");
+        Check(Asset("/") is ("web/index.html", var html) && html.StartsWith("text/html") && Asset("/styles.css") is (_, var css) && css.StartsWith("text/css") &&
+            Asset("/assets/fonts/Inter-Regular.ttf") is (_, "font/ttf"), "assets");
+        Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
+            Asset("") is null, "refused assets");
+        Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");
+
+        var server = new WebServer(() => "me@x.com", () => suffix, (method, path, query, body, type) =>
+            Task.FromResult((200, (object)new { method, path, q = query.GetValueOrDefault("q"), length = body.Length, type })));
+        Response Call(string method, string path, string? login = "Me@x.com", byte[]? body = null) =>
+            server.Handle(method, path, login, new Dictionary<string, string> { ["q"] = "1" }, body ?? [], "application/json").GetAwaiter().GetResult();
+        Check(Call("GET", "/", null).Status == 403 && Call("GET", "/", "other@x.com").Status == 403 && Call("GET", "/api/conversations", null).Status == 403 &&
+            Call("OPTIONS", "/api/hello", null).Status == 403 && Call("GET", "/missing.js", null).Status == 403, "no owner header: 403 everywhere");
+        Check(Call("GET", "/") is { Status: 200 } page && page.Type.StartsWith("text/html") && page.Body.Length > 1000, "the page");
+        var api = Call("POST", "/api/send", body: [1, 2, 3]);
+        Check(api.Status == 200 && api.Type.StartsWith("application/json") &&
+            Encoding.UTF8.GetString(api.Body) == """{"method":"POST","path":"/api/send","q":"1","length":3,"type":"application/json"}""", "the API: " + Encoding.UTF8.GetString(api.Body));
+        Check(server.Handle("POST", "/api/send", "me@x.com", new Dictionary<string, string>(), null, "").GetAwaiter().GetResult().Status == 413, "too large: 413");
+        Check(Call("OPTIONS", "/api/hello").Status == 204 && Call("GET", "/missing.js").Status == 404 && Call("POST", "/").Status == 405, "routing");
+        var failing = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _) => throw new InvalidOperationException("boom"));
+        Check(failing.Handle("GET", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "").GetAwaiter().GetResult() is { Status: 500 } boom &&
+            Encoding.UTF8.GetString(boom.Body).Contains("boom"), "an API exception: 500");
+    }
+}
