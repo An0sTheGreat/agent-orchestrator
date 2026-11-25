@@ -6897,6 +6897,19 @@ class MultiModelTests(unittest.TestCase):
         self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]),
                          int((size + 2 * (16 + 16) * 2 * 100000 + self.compute()) * 1.1 / 2**20))  # only layer 4 attends
 
+    def test_vram_estimate_counts_looped_layers_per_pass_and_the_relative_attention_bias(self):
+        # Inkling 2: layers 1-2 of 4 run three times (loop.start/end/count), each pass with its own KV cache; its relative-position
+        # attention adds a context x micro-batch x heads bias of ~8 bytes each to the compute buffers (llama-server's own report).
+        meta = {"general.architecture": "ink", "ink.block_count": 4, "ink.attention.head_count": [4, 4, 4, 4], "ink.attention.head_count_kv": [2, 2, 2, 2],
+                "ink.embedding_length": 64, "ink.attention.sliding_window": 1024, "ink.attention.sliding_window_pattern": [True, False, True, False],
+                "ink.loop.start": 1, "ink.loop.end": 3, "ink.loop.count": 3, "ink.attention.relative_length": 16}
+        model = self.tmp / "ink.gguf"
+        size = self.gguf(model, meta)
+        full, window = 2 * (16 + 16) * 2 * 100000, 2 * (16 + 16) * 2 * (1024 + 512)  # f16, 2 KV heads of 64/4 wide
+        kv = window + 3 * full + 3 * window + full  # layer 0 window, layer 1 full x3, layer 2 window x3, layer 3 full
+        self.assertEqual(orchestrator.estimate_vram_mib(model, ["-m", str(model), "-c", "100000"]),
+                         int((size + kv + self.compute() + 100000 * 512 * 4 * 8) * 1.1 / 2**20))
+
 
 class ContextTests(unittest.TestCase):
     """The "context" event: after each model call of a --chat/--code turn, the prompt's split by category and n_ctx."""

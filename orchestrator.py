@@ -1327,13 +1327,18 @@ def estimate_vram_mib(model_file: Path, args: list[str]) -> int:
         swa_key, swa_value = int(get("attention.key_length_swa") or key), int(get("attention.value_length_swa") or value)
         ubatch = int(arg("-ub")) if arg("-ub").isdigit() else 512
         sliding = [bool(p) for p in pattern] if window and isinstance(pattern, list) and len(pattern) == layers else [False] * layers
-        kv = sum(h * (swa_key * k_bytes + swa_value * v_bytes) * min(ctx, window + ubatch) if swa else h * (key * k_bytes + value * v_bytes) * ctx
-                 for h, swa in zip(per_layer, sliding))
+        # looped layers (loop.start up to loop.end run loop.count times, Inkling 2): each pass caches its own KV (as VramEstimate.cs)
+        start, end, count = int(get("loop.start") or 0), int(get("loop.end") or 0), max(1, int(get("loop.count") or 1))
+        kv = sum((count if start <= i < end else 1)
+                 * (h * (swa_key * k_bytes + swa_value * v_bytes) * min(ctx, window + ubatch) if swa else h * (key * k_bytes + value * v_bytes) * ctx)
+                 for i, (h, swa) in enumerate(zip(per_layer, sliding)))
         # compute buffers, as VramEstimate.cs: one micro-batch's logits (vocabulary x 4 bytes a token) and hidden states, plus
         # ponytail: a fixed 400 MiB for the CUDA context and scratch; measure per GPU if fit mode misjudges
         tokens = meta.get("tokenizer.ggml.tokens")
         vocab = len(tokens) if isinstance(tokens, list) else 32000
         compute = ubatch * (vocab + int(get("embedding_length") or 0) * 8) * 4 + (400 << 20)
+        if get("attention.relative_length"):  # relative-position attention (Inkling 2): a context x micro-batch x heads bias, ~8 bytes each
+            compute += ctx * ubatch * heads * 8
         return int((weights + head + kv + compute) * 1.1 / 2**20)
     except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError, struct.error):
         return int((size + head) * 1.25 / 2**20)

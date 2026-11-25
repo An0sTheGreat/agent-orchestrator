@@ -855,6 +855,50 @@ internal static class LauncherLogic
 
     private static bool IsLlamaServer(Process process) => string.Equals(process.ProcessName, "llama-server", StringComparison.OrdinalIgnoreCase);
 
+    // Whether a command line runs a llama-server router on this models.ini (--models-preset <path>, quoted or not).
+    public static bool IsShareRouter(string commandLine, string iniPath) =>
+        Regex.IsMatch(commandLine, $@"--models-preset\s+(""{Regex.Escape(iniPath)}""|{Regex.Escape(iniPath)})(\s|$)", RegexOptions.IgnoreCase);
+
+    // The running llama-servers that are routers on this models.ini: a previous app's that outlived it (a crash, a kill). Only
+    // these are matched; the engine's and other programs' llama-servers are left alone.
+    public static List<Process> ShareRouters(string iniPath)
+    {
+        var found = new List<Process>();
+        foreach (var process in Process.GetProcessesByName("llama-server"))
+            if (CommandLine(process) is { } line && IsShareRouter(line, iniPath))
+                found.Add(process);
+            else
+                process.Dispose();
+        return found;
+    }
+
+    [System.Runtime.InteropServices.DllImport("ntdll.dll")]
+    private static extern int NtQueryInformationProcess(IntPtr process, int infoClass, IntPtr buffer, int length, out int returned);
+
+    // A process's command line (ProcessCommandLineInformation, Windows 8.1+); null when it cannot be read.
+    private static string? CommandLine(Process process)
+    {
+        try
+        {
+            const int ProcessCommandLineInformation = 60;
+            NtQueryInformationProcess(process.Handle, ProcessCommandLineInformation, IntPtr.Zero, 0, out var length);
+            if (length <= 0)
+                return null;
+            var buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(length);
+            try
+            {
+                if (NtQueryInformationProcess(process.Handle, ProcessCommandLineInformation, buffer, length, out _) != 0)
+                    return null;
+                // UNICODE_STRING: Length (bytes), MaximumLength, then the pointer
+                var bytes = System.Runtime.InteropServices.Marshal.ReadInt16(buffer);
+                var text = System.Runtime.InteropServices.Marshal.ReadIntPtr(buffer, IntPtr.Size);
+                return System.Runtime.InteropServices.Marshal.PtrToStringUni(text, (ushort)bytes / 2);
+            }
+            finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer); }
+        }
+        catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception) { return null; }
+    }
+
     // Kills every recorded llama-server (each one's whole tree) and deletes the state file; the file stays if a kill failed.
     // True when any server was stopped.
     public static bool StopLlamaServer(string stateFile)
@@ -1978,6 +2022,17 @@ internal static class LauncherLogic
         if (JsonSerializer.Deserialize<AppSettings>("{}")?.MultiModel != "never" ||
             JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(new AppSettings { MultiModel = "fit" }))?.MultiModel != "fit")
             throw new InvalidOperationException("Several models at once must default to never and round-trip.");
+
+        // a leftover share router: our models.ini (quoted or not, any case), never another preset or a plain llama-server
+        const string Ini = @"C:\Users\a\AppData\Roaming\Agent Orchestrator\share\models.ini";
+        var exe = @"""C:\x\llama-server.exe"" --host 127.0.0.1 --port 8781 --api-key k ";
+        if (!IsShareRouter(exe + $@"--models-preset ""{Ini}"" --models-max 1", Ini) || !IsShareRouter(exe + $"--models-preset {Ini.ToUpperInvariant()}", Ini) ||
+            IsShareRouter(exe + @"--models-preset ""C:\other\models.ini"" --models-max 1", Ini) || IsShareRouter(exe + $@"--models-preset ""{Ini}.bak""", Ini) ||
+            IsShareRouter(@"llama-server.exe -m m.gguf --port 8899", Ini))
+            throw new InvalidOperationException("The leftover share router match is wrong.");
+        using (var self = Process.GetCurrentProcess())
+            if (CommandLine(self) is not { } own || !own.Contains(Path.GetFileNameWithoutExtension(Environment.ProcessPath!), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("A process's command line could not be read.");
 
         var area = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-llama-{Guid.NewGuid():N}");
         try

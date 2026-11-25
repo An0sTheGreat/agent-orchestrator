@@ -67,14 +67,19 @@ internal static class VramEstimate
         var pattern = List(meta, arch + ".attention.sliding_window_pattern");
         var swaKey = Num(meta, arch + ".attention.key_length_swa") ?? keyWidth;
         var swaValue = Num(meta, arch + ".attention.value_length_swa") ?? valueWidth;
-        var elements = perLayer.Select((h, i) => window > 0 && pattern.Count == layers && pattern[i] != 0
+        // Looped layers (loop.start up to loop.end run loop.count times, Inkling 2): each pass caches its own KV.
+        var (loopStart, loopEnd, loopCount) = (Num(meta, arch + ".loop.start") ?? 0, Num(meta, arch + ".loop.end") ?? 0, Num(meta, arch + ".loop.count") ?? 1);
+        double Passes(int i) => i >= loopStart && i < loopEnd ? Math.Max(1, loopCount) : 1;
+        var elements = perLayer.Select((h, i) => Passes(i) * (window > 0 && pattern.Count == layers && pattern[i] != 0
             ? h * (swaKey + swaValue) * Math.Min(context, window + ubatch)
-            : h * (keyWidth + valueWidth) * context).Sum();
+            : h * (keyWidth + valueWidth) * context)).Sum();
         var kv = elements * KvBytes(options.GetValueOrDefault("cache_type_kv", "")) * onGpu;
 
         // Compute: the output logits for one micro-batch dominate (vocabulary x 4 bytes per token), plus the hidden states.
+        // Relative-position attention (attention.relative_length, Inkling 2) adds a context x micro-batch x heads bias that
+        // flash attention does not fold away: about 8 bytes each (measured on an RTX 5080: 6.5 GB at 65k context, 12 GB at 122k).
         var vocab = Num(meta, "tokenizer.ggml.tokens.count") ?? 32000;
-        var compute = ubatch * (vocab + embd * 8) * 4 + Overhead;
+        var compute = ubatch * (vocab + embd * 8) * 4 + Overhead + (Num(meta, arch + ".attention.relative_length") is > 0 ? context * ubatch * heads * 8 : 0);
 
         var vision = options.GetValueOrDefault("disable_vision") == "on" || options.GetValueOrDefault("mmproj_offload") != "on" ? 0 : visionBytes; // on the CPU unless Vision on GPU
         return new Result((long)Math.Max(0, weights), (long)kv, (long)compute, vision);
@@ -164,6 +169,21 @@ internal static class VramEstimate
         };
         if (Estimate(swa, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "8192" })!.Kv != (2 * 512 * 1024 + 2 * 1024 * 8192) * 2)
             throw new InvalidOperationException("VramEstimate swa");
+        // Inkling 2 (inkling2_loop): layers 6-17 run three times (48 passes) and attention is relative-position. llama-server's
+        // own report for the Q2_K on an RTX 5080 (f16 KV, ub 512, flash attention): KV 536 + 240 MiB at 17,152 context (8 full
+        // passes, 40 sliding at 1,536 cells), compute 1,846 MiB there and 11,969 MiB at 121,856.
+        var inkling = new Dictionary<string, string>
+        {
+            ["general.architecture"] = "i", ["i.block_count"] = "24", ["i.embedding_length"] = "2304", ["i.attention.head_count"] = string.Join(",", Enumerable.Repeat("24", 24)),
+            ["i.attention.head_count_kv"] = string.Join(",", Enumerable.Repeat("8", 24)), ["i.attention.key_length"] = "128", ["i.attention.value_length"] = "128",
+            ["i.attention.sliding_window"] = "1024", ["i.attention.sliding_window_pattern"] = string.Join(",", Enumerable.Range(0, 24).Select(i => i % 6 == 5 ? "0" : "1")),
+            ["i.loop.start"] = "6", ["i.loop.end"] = "18", ["i.loop.count"] = "3", ["i.attention.relative_length"] = "16", ["tokenizer.ggml.tokens.count"] = "201024",
+        };
+        bool Near(long estimate, double real) => Math.Abs(estimate - real) <= real * 0.1;
+        if (Estimate(inkling, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "17152" }) is not { } ink17 || ink17.Kv != (536L + 240) << 20 ||
+            !Near(ink17.Compute, (1846L << 20) + Overhead) ||
+            !Near(Estimate(inkling, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "121856" })!.Compute, (11969L << 20) + Overhead))
+            throw new InvalidOperationException("VramEstimate looped, relative-position layers");
         // MoE: experts of CPU layers leave the GPU.
         meta["llama.expert_count"] = "128";
         if (Estimate(meta, 10L << 30, 0, new Dictionary<string, string> { ["n_cpu_moe"] = "16" })!.Weights != (long)((10L << 30) * (1 - 0.85 / 2)))

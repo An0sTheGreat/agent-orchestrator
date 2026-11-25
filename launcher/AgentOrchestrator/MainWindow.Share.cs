@@ -128,6 +128,33 @@ public partial class MainWindow
         var models = await Task.Run(() => ModelShare.LocalModels(_settings.ModelsFolder, LauncherLogic.HubCache(), WorkerConfigForShare(), presets, ModelShare.ReadOverrides()));
         if (generation != _shareGeneration)
             return;
+        // a router a previous app left running holds the port with the models.ini it read at its start: it goes first, and
+        // a port still taken (another program) is reported, not started over (the new router would sit there unbound)
+        var (portTaken, stopped) = await Task.Run(() =>
+        {
+            var pids = new List<int>();
+            foreach (var old in LauncherLogic.ShareRouters(ModelShare.IniPath))
+                using (old)
+                    try
+                    {
+                        old.Kill(entireProcessTree: true);
+                        old.WaitForExit(5000);
+                        pids.Add(old.Id);
+                    }
+                    catch (Exception x) when (x is InvalidOperationException or Win32Exception) { } // gone already, or not ours to stop
+            return (System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(e => e.Port == ModelShare.ChatPort), pids);
+        });
+        foreach (var pid in stopped)
+            Log($"Share models: stopped a leftover llama-server router (pid {pid})");
+        if (generation != _shareGeneration)
+            return;
+        if (portTaken)
+        {
+            StopShare();
+            _shareState = $"Failed: port {ModelShare.ChatPort} is in use by another program";
+            SaveShare(false);
+            return;
+        }
         _sharedModels = models;
         var info =new ProcessStartInfo(LauncherLogic.LlamaServerPath) { UseShellExecute = false, CreateNoWindow = true };
         foreach (var arg in new[] { "--host", "127.0.0.1", "--port", $"{ModelShare.ChatPort}", "--api-key", Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv) ?? "",
