@@ -2829,9 +2829,9 @@ public partial class MainWindow : Window
                     return Fail();
                 // Image Gen chip: a dropdown in both composers, always lit (always on); with a model chosen the request carries image_gen at the chat's
                 // size, with none it carries none. The dropdown: a model pick, an aspect ratio, the swap, the lock and keep-both each write the setting.
-                var imgSaved = (JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth, _settings.ImageHideMissing);
+                var imgSaved = (JsonSerializer.Serialize(_settings.ChatImage), _settings.ImageKeepBoth, _settings.ImageHideMissing, _settings.ChatImageSteps);
                 JsonNode? ImgReq() => JsonNode.Parse(LauncherLogic.BuildChatRequest("implementer", [new("user", "x")], CurrentExtras()))!["image_gen"];
-                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing) = (new AppSettings().ChatImage, false, false); // the default: no model chosen, all shown
+                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing, _settings.ChatImageSteps) = (new AppSettings().ChatImage, false, false, 0); // the default: no model chosen, all shown
                 if (CodeImageGenToggle.Parent != CodeToolsToggle.Parent || ChatImageGenToggle.Parent != ChatToolsToggle.Parent)
                     return Fail();
                 // the caret opens the dropdown; Esc in the window closes it
@@ -2880,6 +2880,19 @@ public partial class MainWindow : Window
                 if (_settings.ChatImage.RecipeId != lastRecipe.Id || AppSettings.Load() is not { } imgLoaded || imgLoaded.ChatImage.RecipeId != lastRecipe.Id ||
                     CodeImageGenToggle.IsChecked != true || ImgReq() is null || JsonNode.Parse(RunRequest(@"Y:\P"))!.AsObject().ContainsKey("image_gen")) // a project run: never
                     return Fail();
+                // Steps: empty shows the model's own greyed; typed digits are the chat's (1-100); cleared, the model's again
+                var stepsBox = InChip<TextBox>("ChatImageSteps")!;
+                var stepsHint = InChip<TextBlock>("ChatImageStepsHint")!;
+                if (stepsHint.Text != lastRecipe.Steps.ToString() || stepsHint.Visibility != Visibility.Visible || _settings.ChatImageSteps != 0)
+                    return Fail();
+                stepsBox.Text = "12a";
+                if (stepsBox.Text != "12" || _settings.ChatImageSteps != 12 || AppSettings.Load() is not { ChatImageSteps: 12 } || stepsHint.Visibility == Visibility.Visible)
+                    return Fail();
+                stepsBox.Text = "500";
+                var stepsHigh = _settings.ChatImageSteps;
+                stepsBox.Text = "";
+                if (stepsHigh != 100 || _settings.ChatImageSteps != 0 || stepsHint.Visibility != Visibility.Visible)
+                    return Fail();
                 _chipSize.Aspect.SelectedIndex = Array.FindIndex(ImageGen.Presets, p => p.Ratio == "16:9");
                 var wide = ImageGen.Size("16:9", ImageGen.RecommendedLongSide, lastRecipe.Multiple);
                 if (_settings.ChatImage.Aspect != "16:9" || ImgReq() is not { } wideReq || (int)wideReq["width"]! != wide.Width || (int)wideReq["height"]! != wide.Height)
@@ -2900,7 +2913,7 @@ public partial class MainWindow : Window
                 if (!_settings.ImageKeepBoth || AppSettings.Load() is not { ImageKeepBoth: true } || ImgReq() is not { } keepReq || (bool)keepReq["unload_chat"]!)
                     return Fail();
                 _imageChipPopup.IsOpen = false;
-                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing) = (JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item1)!, imgSaved.ImageKeepBoth, imgSaved.ImageHideMissing);
+                (_settings.ChatImage, _settings.ImageKeepBoth, _settings.ImageHideMissing, _settings.ChatImageSteps) = (JsonSerializer.Deserialize<ImageSettings>(imgSaved.Item1)!, imgSaved.ImageKeepBoth, imgSaved.ImageHideMissing, imgSaved.ChatImageSteps);
                 _settings.Save();
                 RefreshExtras();
                 answer = "Smoke skill";

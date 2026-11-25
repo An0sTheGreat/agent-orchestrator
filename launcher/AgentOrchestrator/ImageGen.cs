@@ -194,9 +194,9 @@ internal static class ImageGen
     }
 
     // One generate_image call as the page would run it: the chat's model and size (the Width/Height boxes over the aspect's recommended
-    // size, rounded to the model's multiple unless unlocked), the recipe's steps, guidance and sampler, one picture, no start image.
+    // size, rounded to the model's multiple unless unlocked), the recipe's steps (steps > 0: the chip's, 1-100), guidance and sampler, one picture, no start image.
     // seed null: a random one, chosen here so the reply reports it. OpenRouter keeps what it reads only (as the page records it).
-    public static ImageSettings ChatRun(ImageSettings c, ImageRecipe? recipe, string prompt, string? negative, long? seed, bool lowVram)
+    public static ImageSettings ChatRun(ImageSettings c, ImageRecipe? recipe, string prompt, string? negative, long? seed, bool lowVram, int steps = 0)
     {
         var multiple = recipe?.Multiple ?? 16;
         var ratio = c.Aspect.Length > 0 && Presets.Any(p => p.Ratio.Length > 0 && (p.Ratio == c.Aspect || Flip(p.Ratio) == c.Aspect));
@@ -210,7 +210,7 @@ internal static class ImageGen
             Prompt = prompt.Trim(), Negative = recipe is { Negative: true } && !remote ? (negative ?? "").Trim() : "",
             Aspect = c.Aspect, CustomWidth = c.CustomWidth, CustomHeight = c.CustomHeight, SizeUnlocked = c.SizeUnlocked,
             Width = Math.Clamp(Pick(c.CustomWidth, rw, step), 64, 4096), Height = Math.Clamp(Pick(c.CustomHeight, rh, step), 64, 4096),
-            Steps = remote ? 0 : recipe?.Steps ?? 8, Cfg = remote ? 0 : recipe?.Cfg ?? 1, Sampler = remote ? "" : recipe?.Sampler ?? "", Scheduler = "",
+            Steps = remote ? 0 : steps > 0 ? Math.Min(steps, 100) : recipe?.Steps ?? 8, Cfg = remote ? 0 : recipe?.Cfg ?? 1, Sampler = remote ? "" : recipe?.Sampler ?? "", Scheduler = "",
             Seed = seed is >= 0 ? seed.Value : Random.Shared.Next(), Batch = 1, LowVram = lowVram, Strength = remote ? 0 : 0.75, InitImage = "",
         };
     }
@@ -525,6 +525,8 @@ internal static class ImageGen
         Check(ChatRun(new() { Aspect = "Custom", CustomWidth = 1000, CustomHeight = 700 }, sdxl, "p", null, 1, false) is { Width: 1024, Height: 704 } &&
             ChatRun(new() { Aspect = "Custom", CustomWidth = 1000, CustomHeight = 700, SizeUnlocked = true }, sdxl, "p", null, 1, false) is { Width: 1000, Height: 700 },
             "Image Gen: typed sizes round to the multiple unless unlocked");
+        Check(ChatRun(new(), sdxl, "p", null, 1, false, 12) is { Steps: 12 } && ChatRun(new(), sdxl, "p", null, 1, false, 500) is { Steps: 100 } &&
+            ChatRun(new() { RemoteModel = "x/y" }, null, "p", null, 1, false, 12) is { Steps: 0 }, "Image Gen: the chip's steps over the recipe's (not for OpenRouter)");
         var shared = new ImageSettings { SharedModel = "local:z_image_turbo-Q8_0.gguf" };
         Check(ChatModel(shared) is ({ Id: "z-image-turbo" }, "z_image_turbo-Q8_0.gguf · Z-Image Turbo") &&
             ChatRun(shared, z, "p", null, 1, false) is { RecipeId: "local:z_image_turbo-Q8_0.gguf", LocalModel: "", SharedModel: "local:z_image_turbo-Q8_0.gguf" } &&

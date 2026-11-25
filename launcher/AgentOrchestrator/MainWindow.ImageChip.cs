@@ -9,7 +9,7 @@ using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
-// The composers' Image Gen chip (Chat and Code): a dropdown (the whole chip) with the chat's own image model and size (AppSettings.ChatImage, apart from the Images page's) and the
+// The composers' Image Gen chip (Chat and Code): a dropdown (the whole chip) with the chat's own image model, size and steps (AppSettings.ChatImage and ChatImageSteps, apart from the Images page's) and the
 // keep-both switch (AppSettings.ImageKeepBoth). Image Gen is always on: once a model is chosen, the chat model can paint. The size controls are the Images page's (ImageSizeControls), one more set.
 public partial class MainWindow
 {
@@ -62,6 +62,39 @@ public partial class MainWindow
         }
         TextBlock Head(string text, double top, double left = 0) => new() { Text = text.ToUpperInvariant(), Style = (Style)FindResource("SectionHeader"), Margin = new Thickness(left, top, 0, 4) };
 
+        // STEPS: empty shows the model's own greyed; a typed number (1-100) is the chat's. Not for OpenRouter models, which take none.
+        var steps = new TextBox { Tag = "ChatImageSteps", Width = 70, Text = _settings.ChatImageSteps > 0 ? _settings.ChatImageSteps.ToString() : "", VerticalContentAlignment = VerticalAlignment.Center };
+        steps.SetResourceReference(Control.BackgroundProperty, "Field");
+        steps.SetResourceReference(Control.BorderBrushProperty, "Border");
+        var stepsHint = Text("", size: 12);
+        (stepsHint.IsHitTestVisible, stepsHint.Margin, stepsHint.Tag) = (false, new Thickness(6, 0, 0, 0), "ChatImageStepsHint");
+        var stepsLabel = new TextBlock { Text = "Steps", FontWeight = FontWeights.SemiBold, FontSize = 12, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        DockPanel.SetDock(stepsLabel, Dock.Left);
+        var stepsRow = new DockPanel { Margin = new Thickness(0, 8, 0, 0), Children = { stepsLabel, new Grid { HorizontalAlignment = HorizontalAlignment.Left, Children = { steps, stepsHint } } } };
+        void ShowSteps()
+        {
+            var recipe = ImageGen.ChatModel(_settings.ChatImage)?.Recipe;
+            stepsRow.Visibility = recipe is null && _settings.ChatImage.RemoteModel.Length > 0 ? Visibility.Collapsed : Visibility.Visible;
+            stepsHint.Text = (recipe?.Steps ?? 8).ToString();
+            stepsHint.Visibility = steps.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+            steps.ToolTip = $"Sampling steps for the chat's pictures; empty: the model's own ({stepsHint.Text})";
+        }
+        steps.TextChanged += (_, _) =>
+        {
+            var digits = new string(steps.Text.Where(char.IsAsciiDigit).ToArray()); // typed or pasted
+            if (digits != steps.Text)
+            {
+                steps.Text = digits; // raises TextChanged again
+                steps.CaretIndex = digits.Length;
+                return;
+            }
+            _settings.ChatImageSteps = int.TryParse(digits, out var v) ? Math.Clamp(v, 1, 100) : 0;
+            _settings.Save();
+            ShowSteps();
+        };
+        steps.LostKeyboardFocus += (_, _) => steps.Text = _settings.ChatImageSteps > 0 ? _settings.ChatImageSteps.ToString() : ""; // shows the clamped value
+        ShowSteps();
+
         // MODEL: this PC's (the recipes and the models folder's), the primary PC's while connected; the pick is marked
         ScanImageFolder();
         var local = ImageShare.Models(_imgLocal);
@@ -75,6 +108,7 @@ public partial class MainWindow
             write(c);
             _settings.Save();
             _chipSize?.Show(); // the new model's multiple
+            ShowSteps(); // the new model's own steps
             ShowRows();
             RefreshExtras();
         }
@@ -218,7 +252,7 @@ public partial class MainWindow
                 Children =
                 {
                     Head("Model", 0), models, hide,
-                    Head("Size", 12), new DockPanel { Children = { aspectLabel, size.AspectRow } }, size.SizeRow,
+                    Head("Size", 12), new DockPanel { Children = { aspectLabel, size.AspectRow } }, size.SizeRow, stepsRow,
                     line,
                     new DockPanel { Children = { keep, new TextBlock { Text = "Keep both models loaded", FontSize = 12, VerticalAlignment = VerticalAlignment.Center } } },
                     keepHint,

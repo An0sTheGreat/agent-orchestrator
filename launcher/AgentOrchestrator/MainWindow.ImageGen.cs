@@ -1539,7 +1539,7 @@ public partial class MainWindow
             return ("ERROR: the image generator is busy", null, false);
         if (ImageGen.ChatModel(_settings.ChatImage) is not var (recipe, name))
             return ("ERROR: no image model is chosen for Image Gen", null, false);
-        var run = ImageGen.ChatRun(_settings.ChatImage, recipe, prompt, negative, seed, _settings.ImageGen.LowVram);
+        var run = ImageGen.ChatRun(_settings.ChatImage, recipe, prompt, negative, seed, _settings.ImageGen.LowVram, _settings.ChatImageSteps);
         if (run.Prompt.Length == 0)
             return ("ERROR: the prompt is empty", null, false);
         var local = run.SharedModel.Length == 0 && run.RemoteModel.Length == 0;
