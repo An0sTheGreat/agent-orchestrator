@@ -598,6 +598,7 @@ public partial class MainWindow
     // (it would change the conversation that turn belongs to); a project run's conversation is parked (CloseCodeConversation).
     private void OpenCodeConversation(string id)
     {
+        _newReplies.Remove(id); // its new reply is seen
         if (_codeConv?.Id != id && _codeParked?.Conv?.Id == id)
         {
             if (DiscardWorkerEdits())

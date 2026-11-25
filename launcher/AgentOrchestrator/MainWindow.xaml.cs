@@ -193,6 +193,8 @@ public partial class MainWindow : Window
             _pump.Stop();
             DrainLines();
             EndStream(false);
+            if (_process is not null)
+                NoteReplyDone(RunningId); // the run's conversation gets the dot, unless it is open
             _process?.Dispose();
             _process = null;
             EndRunLog();
@@ -206,6 +208,7 @@ public partial class MainWindow : Window
             _activeRole = null;
             StopClocks(); // a stopped or failed run freezes both; TASK TOKENS only change on task_end
             SetRunning(false, preserveStatus: true);
+            RefreshSidebarList(); // its row: the shimmer off, the dot on
         }
     }
 
@@ -2321,6 +2324,27 @@ public partial class MainWindow : Window
                 Snap("21-sidebar");
                 if (Rows() != top + ",RECENTS:code,B,A" || Rows().Contains("Work in a folder") || SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { IsChecked: true }))
                     return Fail();
+                // a reply done in a conversation not open: the dot on its row, until it is opened; the working one's title sweeps, with no
+                // dot, and a reply done in the open one leaves none
+                DockPanel RowContent(string id) => (DockPanel)SidebarList.Children.Cast<UIElement>().Select(Main).OfType<ToggleButton>().First(m => (string)m.Tag == id).Content;
+                bool NewDot(string id) => RowContent(id).Children.OfType<System.Windows.Shapes.Ellipse>().Any(e => e.Tag as string == "NewReplyDot");
+                bool Sweeps(string id) => RowContent(id).Children.OfType<TextBlock>().Last().Foreground is LinearGradientBrush;
+                NoteReplyDone(chatA.Id);
+                RefreshSidebarList();
+                if (!NewDot(chatA.Id) || NewDot(chatB.Id) || Sweeps(chatA.Id))
+                    return Fail();
+                OpenCodeConversation(chatA.Id);
+                var turnWas = _turn;
+                (_turn, _chatBusy) = (_code, true); // a reply working in the open conversation A
+                RefreshSidebarList();
+                var working = (Sweeps(chatA.Id), NewDot(chatA.Id), Sweeps(chatB.Id));
+                NoteReplyDone(RunningId); // it ends in the conversation open: no dot
+                (_turn, _chatBusy) = (turnWas, false);
+                RefreshSidebarList();
+                if (working != (true, false, false) || NewDot(chatA.Id) || Sweeps(chatA.Id))
+                    return Fail();
+                CloseCodeConversation();
+                RefreshSidebarList();
                 answer = "Renamed B";
                 ClickItem(chatB.Id, "Rename…");
                 if (_store.Get(chatB.Id)?.Title != "Renamed B" || !SidebarList.Children.OfType<Grid>().Any(g => g.Children[0] is ToggleButton { Content: DockPanel { Children: [TextBlock { Text: "" }, TextBlock { Text: "Renamed B" }] } })) // the Code braces, then the title

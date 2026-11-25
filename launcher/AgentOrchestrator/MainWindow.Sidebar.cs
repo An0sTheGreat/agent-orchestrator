@@ -230,14 +230,19 @@ public partial class MainWindow
         var glyph = new TextBlock { Text = entry.Kind == "chat" ? "\uE8BD" : "\uE943", FontSize = 11, Margin = new Thickness(0, 0, 7, 0), VerticalAlignment = VerticalAlignment.Center, Opacity = 0.7 };
         glyph.SetResourceReference(StyleProperty, "RailGlyph");
         content.Children.Add(glyph);
-        if (entry.Id == RunningId) // a reply or run is working in it
+        var working = entry.Id == RunningId; // a reply or run is working in it: its title shimmers
+        if (!working && _newReplies.Contains(entry.Id)) // a reply finished there since it was last open: the dot
         {
-            var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, ToolTip = "Working…" };
+            var dot = new System.Windows.Shapes.Ellipse { Width = 7, Height = 7, Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center,
+                ToolTip = "New reply", Tag = "NewReplyDot" };
             dot.SetResourceReference(System.Windows.Shapes.Shape.FillProperty, "Accent");
             DockPanel.SetDock(dot, Dock.Right);
             content.Children.Add(dot);
         }
-        content.Children.Add(new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis });
+        var title = new TextBlock { Text = entry.Title, TextTrimming = TextTrimming.CharacterEllipsis };
+        if (working)
+            title.Foreground = WorkingSweep();
+        content.Children.Add(title);
         var row = new ToggleButton
         {
             Content = content, Tag = entry.Id, IsChecked = open?.Id == entry.Id, Padding = new Thickness(14, 6, 30, 6),
@@ -250,6 +255,34 @@ public partial class MainWindow
             return withMenu;
         Draggable(row, "chat:" + entry.Id);
         return DropTarget(withMenu, entry.Id, (kind, id) => kind == "chat" && id != entry.Id ? () => _store.MoveTo(id, groupId, entry.Id) : null);
+    }
+
+    // Conversations whose reply (or run) finished while they were not the one open: their row's dot, until they are opened.
+    // ponytail: kept in memory only; a restart forgets them.
+    private readonly HashSet<string> _newReplies = [];
+
+    // A reply or run ended in this conversation (call before its working state clears): the dot, unless it is the one open.
+    private void NoteReplyDone(string? id)
+    {
+        var open = NavChat.IsChecked == true ? _chatConv : NavCode.IsChecked == true ? _codeConv : null;
+        if (id is not null && open?.Id != id)
+            _newReplies.Add(id);
+    }
+
+    // The working chat's title: a light band sweeping left to right over the dimmed text, again and again.
+    private Brush WorkingSweep()
+    {
+        var text = (TryFindResource("TextPrimary") as SolidColorBrush)?.Color ?? Colors.White;
+        var dim = Color.FromArgb(0x80, text.R, text.G, text.B);
+        var shift = new TranslateTransform(-1, 0);
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0.5), EndPoint = new Point(1, 0.5), RelativeTransform = shift,
+            GradientStops = { new GradientStop(dim, 0), new GradientStop(dim, 0.3), new GradientStop(text, 0.5), new GradientStop(dim, 0.7), new GradientStop(dim, 1) },
+        };
+        shift.BeginAnimation(TranslateTransform.XProperty, new System.Windows.Media.Animation.DoubleAnimation(-1, 1, TimeSpan.FromSeconds(1.8))
+            { RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever });
+        return brush;
     }
 
     private void OpenSidebarConversation(Entry entry)

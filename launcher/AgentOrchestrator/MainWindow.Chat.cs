@@ -694,6 +694,7 @@ public partial class MainWindow
     // While a chat replies, its view is parked and comes back when its chat is opened again.
     private void OpenChatConversation(string id)
     {
+        _newReplies.Remove(id); // its new reply is seen
         if (_parked is not null && _parkedConv?.Id == id)
         {
             Unqueue(_chat); // queued for the chat being left: back to the input, not sent into this one
@@ -1211,6 +1212,8 @@ public partial class MainWindow
 
     private void SetChatBusy(bool busy)
     {
+        if (!busy && _chatBusy)
+            NoteReplyDone(RunningId); // the dot on its row, unless it is open
         _chatBusy = busy;
         if (!busy)
             EndRunningCommand(); // a turn that ended mid-command: no timer left ticking
