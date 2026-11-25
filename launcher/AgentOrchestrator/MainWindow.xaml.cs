@@ -5938,7 +5938,7 @@ public partial class MainWindow : Window
         }
         _tunnel.Stop();
         StopRemoteServer();
-        StopWebAppAsync().Wait(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
+        WaitForWebAppStop(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;

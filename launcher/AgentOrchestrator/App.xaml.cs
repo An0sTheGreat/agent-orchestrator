@@ -138,7 +138,8 @@ public partial class App : Application
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) => LogCrash(args.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException += (_, args) => { LogCrash(args.Exception); args.SetObserved(); };
-        var main = new MainWindow();
+        var main = new MainWindow { LaunchStartsWebApp = true };
+        main.StartWebAppAtLaunch();
         main.InitTray(hidden: e.Args.Contains("--tray", StringComparer.OrdinalIgnoreCase)); // --tray: Start with Windows
         MainWindow = main;
         main.Show();

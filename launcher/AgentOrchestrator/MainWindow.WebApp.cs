@@ -39,12 +39,24 @@ public partial class MainWindow
             RefreshWebApp();
         };
         RefreshWebApp();
-        if (_settings.WebAppOn)
+    }
+
+    // Only the app's normal start (App.xaml.cs sets LaunchStartsWebApp there) turns the phone app on at launch: the test and tool
+    // modes use the real profile and must never run `tailscale serve`.
+    internal bool LaunchStartsWebApp;
+
+    internal void StartWebAppAtLaunch()
+    {
+        if (LaunchStartsWebApp && _settings.WebAppOn)
             _ = StartWebAppAsync();
     }
 
+    private Task<bool>? _webStart; // the start in flight, which Stop waits for
+
     // Idempotent. False when Tailscale is not ready, no port is free or Serve refused; _webFailure says which.
-    internal async Task<bool> StartWebAppAsync()
+    internal Task<bool> StartWebAppAsync() => _webStarting ? _webStart! : _webStart = StartWebAppCore();
+
+    private async Task<bool> StartWebAppCore()
     {
         if (_webApp is not null || _webStarting)
             return _webApp is not null;
@@ -86,16 +98,31 @@ public partial class MainWindow
     }
 
     // Idempotent. Serve goes off on a pool thread, so Quit can wait for it on the UI thread.
-    internal Task StopWebAppAsync()
+    // A start still in flight finishes first, so Serve's route is never left behind by a Quit mid-start.
+    internal async Task StopWebAppAsync()
     {
+        if (_webStarting && _webStart is { } start)
+            await start;
         _webTimer.Stop();
         if (_webApp is null)
-            return Task.CompletedTask;
+            return;
         _webApp.Stop();
         _webApp = null;
         RefreshWebApp();
         var serve = _webServe;
-        return Task.Run(() => serve(null, CancellationToken.None));
+        await Task.Run(() => serve(null, CancellationToken.None));
+    }
+
+    // Quit: waits for Stop on the UI thread for at most `cap`, still pumping messages (a start in flight resumes on it).
+    private void WaitForWebAppStop(TimeSpan cap)
+    {
+        var stop = StopWebAppAsync();
+        var frame = new DispatcherFrame();
+        var timer = new DispatcherTimer(cap, DispatcherPriority.Normal, (_, _) => frame.Continue = false, Dispatcher);
+        _ = stop.ContinueWith(_ => Dispatcher.BeginInvoke(() => frame.Continue = false), TaskScheduler.Default);
+        if (!stop.IsCompleted)
+            Dispatcher.PushFrame(frame);
+        timer.Stop();
     }
 
     // No routes yet: the API comes with the app's pages.
@@ -200,6 +227,41 @@ public partial class MainWindow
                 return Fail($"the server still answers ({(int)gone.StatusCode})");
             }
             catch (HttpRequestException) { }
+
+            // Quit mid-start: Stop waits for the start in flight, then turns Serve off after it was turned on.
+            var calls = new System.Collections.Concurrent.ConcurrentQueue<int?>();
+            var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _webServe = async (p, _) => { calls.Enqueue(p); if (p is not null) await gate.Task; return true; };
+            var start = StartWebAppAsync();
+            if (!await Until(() => calls.Count == 1) || !_webStarting)
+                return Fail($"mid-start: Serve on not reached, calls [{string.Join(",", calls)}]");
+            var stop = StopWebAppAsync();
+            await Task.Delay(200);
+            if (stop.IsCompleted || calls.Count != 1)
+                return Fail($"mid-start: Stop did not wait for the start, calls [{string.Join(",", calls)}]");
+            gate.SetResult(true);
+            if (!await Until(() => stop.IsCompleted) || !await start || !calls.ToArray().Select(c => c is null).SequenceEqual([false, true]) || _webApp is not null)
+                return Fail($"mid-start: calls [{string.Join(",", calls)}], running {_webApp is not null}");
+            var midPort = calls.First()!.Value;
+            try
+            {
+                using var gone = await http.GetAsync($"http://127.0.0.1:{midPort}/");
+                return Fail($"mid-start: the server still answers ({(int)gone.StatusCode})");
+            }
+            catch (HttpRequestException) { }
+
+            // Launch: only the normal start (LaunchStartsWebApp, which App sets) turns the phone app on, never a test or tool mode.
+            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult(true); };
+            served.Clear();
+            (_settings.WebAppOn, LaunchStartsWebApp) = (true, false);
+            StartWebAppAtLaunch();
+            await Task.Delay(300);
+            if (_webApp is not null || _webStarting || !served.IsEmpty)
+                return Fail($"launch: a test window started the phone app (running {_webApp is not null}, served {served.Count})");
+            LaunchStartsWebApp = true;
+            StartWebAppAtLaunch();
+            if (!await Until(() => _webApp is not null))
+                return Fail("launch: the normal start did not start the phone app");
             return true;
         }
         finally
