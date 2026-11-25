@@ -253,7 +253,8 @@ internal static class LauncherLogic
     // The <arch>.* values VramEstimate uses.
     private static readonly string[] VramKeys = [".block_count", ".embedding_length", ".attention.head_count", ".attention.head_count_kv",
         ".attention.key_length", ".attention.value_length", ".full_attention_interval", ".expert_count", ".attention.sliding_window",
-        ".attention.sliding_window_pattern", ".attention.key_length_swa", ".attention.value_length_swa"];
+        ".attention.sliding_window_pattern", ".attention.key_length_swa", ".attention.value_length_swa", ".loop.start", ".loop.end", ".loop.count",
+        ".attention.relative_length"];
 
     // A malformed or unknown entry after the header ends the scan with what was read so far.
     private static Dictionary<string, string>? ScanGgufMetadata(string path)

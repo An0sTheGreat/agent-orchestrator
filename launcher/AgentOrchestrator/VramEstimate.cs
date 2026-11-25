@@ -179,11 +179,31 @@ internal static class VramEstimate
             ["i.attention.sliding_window"] = "1024", ["i.attention.sliding_window_pattern"] = string.Join(",", Enumerable.Range(0, 24).Select(i => i % 6 == 5 ? "0" : "1")),
             ["i.loop.start"] = "6", ["i.loop.end"] = "18", ["i.loop.count"] = "3", ["i.attention.relative_length"] = "16", ["tokenizer.ggml.tokens.count"] = "201024",
         };
-        bool Near(long estimate, double real) => Math.Abs(estimate - real) <= real * 0.1;
-        if (Estimate(inkling, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "17152" }) is not { } ink17 || ink17.Kv != (536L + 240) << 20 ||
-            !Near(ink17.Compute, (1846L << 20) + Overhead) ||
-            !Near(Estimate(inkling, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "121856" })!.Compute, (11969L << 20) + Overhead))
-            throw new InvalidOperationException("VramEstimate looped, relative-position layers");
+        // through a real header (LauncherLogic.ReadGgufMetadata keeps only the keys it knows): numbers as u32, lists as u32 or bool arrays
+        var gguf = Path.Combine(Path.GetTempPath(), $"ao-vram-{Guid.NewGuid():N}.gguf");
+        try
+        {
+            using (var w = new BinaryWriter(File.Create(gguf), System.Text.Encoding.UTF8))
+            {
+                void S(string v) { w.Write((ulong)System.Text.Encoding.UTF8.GetByteCount(v)); w.Write(System.Text.Encoding.UTF8.GetBytes(v)); }
+                w.Write(0x46554747u); w.Write(3u); w.Write(0UL); w.Write((ulong)inkling.Count);
+                foreach (var (key, value) in inkling)
+                {
+                    S(key == "tokenizer.ggml.tokens.count" ? "tokenizer.ggml.tokens" : key);
+                    if (key == "general.architecture") { w.Write(8u); S(value); }
+                    else if (key == "tokenizer.ggml.tokens.count") { w.Write(9u); w.Write(8u); w.Write(ulong.Parse(value)); for (var t = 0; t < int.Parse(value); t++) S("t"); }
+                    else if (value.Contains(',')) { var bools = key.EndsWith("pattern"); w.Write(9u); w.Write(bools ? 7u : 4u); w.Write((ulong)value.Split(',').Length); foreach (var v in value.Split(',')) if (bools) w.Write((byte)int.Parse(v)); else w.Write(uint.Parse(v)); }
+                    else { w.Write(4u); w.Write(uint.Parse(value)); }
+                }
+            }
+            var read = LauncherLogic.ReadGgufMetadata(gguf);
+            bool Near(long estimate, double real) => Math.Abs(estimate - real) <= real * 0.1;
+            if (read is null || Estimate(read, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "17152" }) is not { } ink17 || ink17.Kv != (536L + 240) << 20 ||
+                !Near(ink17.Compute, (1846L << 20) + Overhead) ||
+                !Near(Estimate(read, 0, 0, new Dictionary<string, string> { ["max_seq_length"] = "121856" })!.Compute, (11969L << 20) + Overhead))
+                throw new InvalidOperationException("VramEstimate looped, relative-position layers: " + string.Join(" ", read ?? new()));
+        }
+        finally { File.Delete(gguf); }
         // MoE: experts of CPU layers leave the GPU.
         meta["llama.expert_count"] = "128";
         if (Estimate(meta, 10L << 30, 0, new Dictionary<string, string> { ["n_cpu_moe"] = "16" })!.Weights != (long)((10L << 30) * (1 - 0.85 / 2)))
