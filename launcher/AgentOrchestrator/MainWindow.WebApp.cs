@@ -236,8 +236,8 @@ public partial class MainWindow
             ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
             ("GET", _) when path.StartsWith(one) && path.EndsWith("/events") => await Dispatcher.InvokeAsync(() => WebEventsOpen(path[one.Length..^"/events".Length])),
             ("POST", "/api/answer") => await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body))),
-            ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body)))),
-            ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebSend(WebBody(body)))),
+            ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : RemoteAct(method, path, WebBody(body)))),
+            ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : WebSend(WebBody(body)))),
             ("POST", "/api/upload") => WebUpload(fileName, body),
             ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
             ("POST", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposerSet(WebBody(body), await WebSharedImageModels())),
@@ -246,6 +246,10 @@ public partial class MainWindow
             _ => WebNotFound,
         };
     }
+
+    // Send and stop wait for any PC popup, one tied to a conversation too (the sandbox's command approval, which the phone may answer):
+    // either would otherwise run inside its dialog loop. RemoteAct (remote.html) keeps DesktopDialogOpen alone.
+    private bool WebPromptOpen() => _remotePrompt is not null || DesktopDialogOpen();
 
     // Send and stop while a PC dialog is open: the phone app's own error word, which its page explains.
     private static (int, object) WebDialog((int, object) result) => ReferenceEquals(result.Item2, DialogOpen.Item2) ? (409, new { error = "DialogOpen" }) : result;
@@ -1048,6 +1052,16 @@ public partial class MainWindow
             await Task.WhenAny(asked.Task, Task.Delay(5000));
             if (during is not (409, { } d) || d["error"]?.ToString() != "DialogOpen")
                 return Fail($"send while a dialog was open: {during.Status} {during.Body?.ToJsonString()}");
+
+            // a popup tied to the conversation (as the sandbox's command approval): send and stop still wait for it
+            var bound = Dispatcher.InvokeAsync(() => Choose(remote: id, "Run this command?", "git status", ("Allow", "allow"), ("Deny", "deny")));
+            if (!await Until(() => _remotePrompt is not null))
+                return Fail("the bound popup did not open");
+            var (boundSend, boundStop) = (await PostJson("/api/send", new { id, text = "during the bound popup" }), await PostJson("/api/stop", new { id }));
+            _remotePrompt!.Resolve("deny");
+            await Task.WhenAny(bound.Task, Task.Delay(5000));
+            if (boundSend is not (409, { } bs) || bs["error"]?.ToString() != "DialogOpen" || boundStop is not (409, { } bt) || bt["error"]?.ToString() != "DialogOpen")
+                return Fail($"send and stop while a bound popup was open: {boundSend.Status} {boundSend.Body?.ToJsonString()}, {boundStop.Status} {boundStop.Body?.ToJsonString()}");
             return true;
         }
         catch (Exception x) when (x is IOException or InvalidDataException or OperationCanceledException or FormatException or HttpRequestException)
