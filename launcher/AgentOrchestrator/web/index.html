@@ -6,10 +6,13 @@
 <meta name="theme-color" content="#1E1E1E">
 <title>Agent Orchestrator</title>
 <link rel="stylesheet" href="styles.css">
+<script type="module" src="js/main.js"></script>
 </head>
 <body>
 
 <div class="shell">
+      <div class="banner" id="bannerOffline" role="status">You're offline. The app reconnects when the network is back.</div>
+      <div class="banner" id="bannerLost" role="status"><span>Can't reach <b data-pc-name>this PC</b>. Retrying…</span><button class="ghosttiny" data-retry>Retry now</button></div>
       <div class="app" id="app">
         <div class="views" id="views">
 
@@ -19,7 +22,7 @@
               <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
               <div class="vhead-main">
                 <h2 class="vtitle">Chats</h2>
-                <p class="vsub">Lead · Qwen3.5-4B</p>
+                <p class="vsub" data-pc-subtitle>Connecting…</p>
               </div>
               <button class="iconbtn" data-sheet="sheet-search" aria-label="Search"><svg class="ic"><use href="#i-search"/></svg></button>
               <button class="iconbtn" data-newchat aria-label="New chat"><svg class="ic"><use href="#i-plus"/></svg></button>
@@ -37,75 +40,19 @@
               </div>
 
               <p class="secthead">PROJECTS</p>
-              <div class="list">
-                <div class="item">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-folder"/></svg></span>
-                    <span class="item-text"><b>weather-dashboard</b><small>3 chats · C:\dev\weather-dashboard</small></span>
-                  </button>
-                  <button class="iconbtn sm" aria-label="New chat in project" data-newchat><svg class="ic"><use href="#i-plus"/></svg></button>
-                </div>
-                <div class="item indent" data-kind="code">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-code"/></svg></span>
-                    <span class="item-text"><b>Add the 7-day chart</b><small>Lead · 6 min ago · task 2 of 4</small></span>
-                    <span class="dot live" aria-label="replying"></span>
-                  </button>
-                </div>
-                <div class="item indent" data-kind="chat">
-                  <button class="item-main" data-open="view-chat">
-                    <span class="item-ic"><svg class="ic"><use href="#i-chat"/></svg></span>
-                    <span class="item-text"><b>Plan a weather dashboard</b><small>Lead · 3 min ago</small></span>
-                  </button>
-                </div>
-                <div class="item">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-folder"/></svg></span>
-                    <span class="item-text"><b>pixel-runner</b><small>1 chat · Godot 4 platformer</small></span>
-                  </button>
-                </div>
+              <div class="list" id="projects">
               </div>
               </div><!-- /col -->
 
               <div class="col">
               <p class="secthead">RECENTS</p>
               <div class="list" id="recents">
-                <div class="item" data-kind="chat">
-                  <button class="item-main" data-open="view-chat">
-                    <span class="item-ic"><svg class="ic"><use href="#i-chat"/></svg></span>
-                    <span class="item-text"><b>Reviewer keeps failing chart.js</b><small>Reviewer · yesterday</small></span>
-                  </button>
-                </div>
-                <div class="item" data-kind="code">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-code"/></svg></span>
-                    <span class="item-text"><b>Theme tokens for Graphite</b><small>Lead · yesterday</small></span>
-                  </button>
-                </div>
-                <div class="item" data-kind="code">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-code"/></svg></span>
-                    <span class="item-text"><b>Sandbox: allow npm test</b><small>Lead · 2 days ago</small></span>
-                  </button>
-                </div>
               </div>
 
               <button class="archive-row" data-disclose="archived">
-                <svg class="ic sm"><use href="#i-chevron"/></svg> Archived <span class="count">2</span>
+                <svg class="ic sm"><use href="#i-chevron"/></svg> Archived <span class="count">0</span>
               </button>
               <div class="list hidden" id="archived">
-                <div class="item" data-kind="chat">
-                  <button class="item-main" data-open="view-chat">
-                    <span class="item-ic"><svg class="ic"><use href="#i-chat"/></svg></span>
-                    <span class="item-text"><b>Docs: remote access page</b><small>Lead · last week</small></span>
-                  </button>
-                </div>
-                <div class="item" data-kind="code">
-                  <button class="item-main" data-open="view-code">
-                    <span class="item-ic"><svg class="ic"><use href="#i-code"/></svg></span>
-                    <span class="item-text"><b>Old: weather.js rewrite</b><small>Lead · last week</small></span>
-                  </button>
-                </div>
               </div>
 
               <div class="pad">
@@ -121,107 +68,14 @@
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
               <div class="vhead-main">
-                <h2 class="vtitle">Plan a weather dashboard</h2>
-                <p class="vsub">Chat · to Lead</p>
+                <h2 class="vtitle">New chat</h2>
+                <p class="vsub" data-pc-subtitle></p>
               </div>
-              <button class="ctxring" id="ctxchat" data-ctx aria-label="Context used"><span>34%</span></button>
+              <button class="ctxring" id="ctxchat" data-ctx aria-label="Context used"><span>0%</span></button>
               <button class="iconbtn" data-sheet="sheet-chatmenu" aria-label="Chat menu"><svg class="ic"><use href="#i-more"/></svg></button>
             </header>
 
             <div class="vbody msgs">
-              <div class="msg right">
-                <div class="bubble">I want a small weather dashboard: today's forecast and a 7-day chart. How would you split that up for the agents?</div>
-                <p class="stamp">6 minutes ago <button class="ghosttiny" data-copy>copy</button></p>
-              </div>
-
-              <div class="msg">
-                <p class="who">Lead</p>
-                <div class="md">
-                  <h3>🌦️ Weather dashboard: the plan</h3>
-                  <p>Here's how the team can split it, one verified step at a time.</p>
-                  <ol>
-                    <li>🧱 Page skeleton: <code>index.html</code> with a header, a today card and a chart area</li>
-                    <li>🌐 Forecast fetch: <code>weather.js</code> calls the API and caches the result</li>
-                    <li>🌡️ Today card: temperature, conditions and an icon</li>
-                    <li>📈 7-day chart: a lightweight SVG line chart, no libraries</li>
-                  </ol>
-
-                  <p><b>Who does what</b></p>
-                  <div class="tablewrap">
-                    <table>
-                      <thead><tr><th>Step</th><th>Files</th><th>Check</th></tr></thead>
-                      <tbody>
-                        <tr><td>1</td><td><code>index.html</code>, <code>style.css</code></td><td>page loads</td></tr>
-                        <tr><td>2</td><td><code>weather.js</code></td><td>fetch test passes</td></tr>
-                        <tr><td>3</td><td><code>today.js</code></td><td>card shows data</td></tr>
-                        <tr><td>4</td><td><code>chart.js</code></td><td>7 points drawn</td></tr>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <blockquote>💡 Each step is reviewed before the next one starts, so a mistake never piles up.</blockquote>
-
-                  <p><b>What I need from you</b></p>
-                  <ul>
-                    <li>📍 Which city to show first</li>
-                    <li>🌗 Light or dark by default</li>
-                  </ul>
-                  <p>Want me to write this into <code>PROJECT.md</code>? 🚀</p>
-                </div>
-                <p class="stamp">3 minutes ago <button class="ghosttiny" data-copy>copy</button></p>
-              </div>
-
-              <div class="msg right">
-                <div class="bubble">Yes — start the project after that. London first, dark by default.</div>
-                <p class="stamp">2 minutes ago</p>
-              </div>
-
-              <details class="fold">
-                <summary><span class="fold-tag">THINKING</span><span class="fold-text">Writing PROJECT.md, then one reviewed item at a time…</span></summary>
-                <div class="fold-body md">
-                  <p>The user wants a London-first dashboard. The plan is four items; PROJECT.md holds the goal, the acceptance criteria and the checks. I will not start the run until the file is written and read back.</p>
-                </div>
-              </details>
-
-              <div class="toolrow">
-                <span class="tool-tag">TOOL</span>
-                <span class="tool-name">write_file</span>
-                <code>{"path":"PROJECT.md"}</code>
-                <span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span>
-              </div>
-              <div class="toolrow">
-                <span class="tool-tag">TOOL</span>
-                <span class="tool-name">run_checks</span>
-                <code>{}</code>
-                <span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span>
-              </div>
-
-              <div class="delegate">
-                <div class="delegate-head">
-                  <span class="who">Reviewer · Qwen3.5-4B Q4_K_M</span>
-                  <span class="badge pass">PASS</span>
-                </div>
-                <p>PROJECT.md lists four checkable items, names the files each one may touch, and every check is a command the sandbox can run.</p>
-              </div>
-
-              <div class="approval" id="approval">
-                <div class="approval-head"><svg class="ic sm"><use href="#i-shield"/></svg> Permission request · network</div>
-                <p>The model wants to run <code>npm install</code>. The command sandbox has no network access.</p>
-                <div class="approval-actions">
-                  <button class="btn ghost" data-approve="no">Deny</button>
-                  <button class="btn" data-approve="yes">Allow once</button>
-                </div>
-              </div>
-
-              <p class="sysline">Context compacted: 18,204 → 7,120 tokens · summary saved above the last step</p>
-
-              <div class="msg">
-                <p class="who">Lead</p>
-                <div class="md">
-                  <p>PROJECT.md is ready. Press <b>Start project</b> in the Code view and I'll take it one item at a time — the Reviewer signs off each one before the next starts.</p>
-                </div>
-                <p class="stamp">just now</p>
-              </div>
             </div>
 
             <footer class="composer">
@@ -249,206 +103,15 @@
           </section>
 
           <!-- ============================= CODE ============================= -->
-          <section class="view immersive" id="view-code">
+          <section class="view spage" id="view-code">
             <header class="vhead">
-              <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
-              <div class="vhead-main">
-                <h2 class="vtitle">Add the 7-day chart</h2>
-                <p class="vsub"><svg class="ic xs"><use href="#i-folder"/></svg> weather-dashboard · Project</p>
-              </div>
-              <button class="ctxring" id="ctxcode" data-ctx aria-label="Context used"><span>34%</span></button>
-              <button class="iconbtn" id="starthead" aria-label="Start project"><svg class="ic"><use href="#i-play"/></svg></button>
-              <button class="iconbtn" data-sheet="sheet-project" aria-label="Project menu"><svg class="ic"><use href="#i-more"/></svg></button>
+              <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle">Code</h2><p class="vsub" data-pc-subtitle></p></div>
             </header>
-
-            <div class="runstrip">
-              <span>Task <b id="taskline">2 of 4</b></span>
-              <span>TASK TIME <b>00:04:12</b></span>
-              <span>TURN <b id="turnline">00:00:38</b></span>
-            </div>
-
-            <div class="segbar">
-              <div class="seg" data-pane-group="code">
-                <button class="on" data-pane-on="pane-chat">Chat</button>
-                <button data-pane-on="pane-run">Run</button>
-                <button data-pane-on="pane-files">Files</button>
-                <button data-pane-on="pane-browser">Browser</button>
-              </div>
-            </div>
-
-            <div class="panes">
-              <div class="pane on" id="pane-chat">
-                <div class="vbody msgs">
-                  <div class="todo">
-                    <p class="secthead inline">TODO</p>
-                    <ol class="todolist">
-                      <li class="done">Page skeleton with header, today card, chart area</li>
-                      <li class="done">Forecast fetch in <code>weather.js</code>, cached 10 min</li>
-                      <li class="doing">Today card shows temperature and conditions</li>
-                      <li>7-day chart, SVG line, 7 points</li>
-                    </ol>
-                  </div>
-
-                  <div class="msg right">
-                    <div class="bubble">Add the 7-day chart under the today card.</div>
-                    <p class="stamp">6 minutes ago</p>
-                  </div>
-
-                  <div class="msg">
-                    <p class="who">Lead · Qwen3.5-4B</p>
-                    <div class="md">
-                      <h3>Done ✅</h3>
-                      <p>I added <code>chart.js</code> and wired it into <code>index.html</code>:</p>
-                    </div>
-                    <div class="codeblock">
-                      <button class="copybtn" data-copy><svg class="ic xs"><use href="#i-copy"/></svg></button>
-                      <pre><code><span class="k">export function</span> <span class="f">drawChart</span>(svg, days) {
-  <span class="k">const</span> max = Math.<span class="f">max</span>(...days.<span class="f">map</span>(d =&gt; d.high));
-  <span class="k">const</span> points = days.<span class="f">map</span>((d, i) =&gt; <span class="s">`${i * 50},${100 - (d.high / max) * 90}`</span>);
-  svg.innerHTML = <span class="s">`&lt;polyline points="${points.join(' ')}" fill="none" /&gt;`</span>;
-}</code></pre>
-                    </div>
-                    <div class="md">
-                      <ul>
-                        <li>The chart reads the cached forecast, so it makes no extra requests</li>
-                        <li><code>run_checks</code> passed: 4 of 4 tests</li>
-                      </ul>
-                      <p>The Reviewer approved the change.</p>
-                    </div>
-                    <p class="stamp">3 minutes ago <button class="ghosttiny" data-copy>copy</button></p>
-                  </div>
-
-                  <div class="runlog">
-                    <p class="runlog-head">LEAD · Qwen3.5-4B</p>
-                    <details class="fold"><summary><span class="fold-tag">RESPONSE</span><span class="fold-text">Item 2 of 4: the forecast fetch…</span></summary><div class="fold-body md"><p>The page skeleton is in place, so I'll add weather.js and call it from index.html.</p></div></details>
-                    <details class="fold"><summary><span class="fold-tag">TOOL</span><span class="fold-text">write_file {"path":"weather.js"}</span></summary><div class="fold-body md"><p>Wrote 62 lines · cached fetch with a 10 minute TTL.</p></div></details>
-                    <p class="runlog-head">REVIEWER · Qwen3.5-4B Q4_K_M</p>
-                    <details class="fold"><summary><span class="fold-tag">RESPONSE</span><span class="fold-text">PASS. The fetch is cached, errors fall back to the last forecast…</span></summary><div class="fold-body md"><p>Nothing outside weather.js changed.</p></div></details>
-                  </div>
-                </div>
-
-                <footer class="composer">
-                  <div class="inputwrap">
-                    <textarea id="codebox" rows="1" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
-                    <div class="chips">
-                      <button class="chip square" data-sheet="sheet-tools" aria-label="More options"><svg class="ic"><use href="#i-plus"/></svg></button>
-                      <button class="chip" data-toggle><svg class="ic sm"><use href="#i-eye"/></svg> Vision</button>
-                      <button class="chip" data-toggle><svg class="ic sm"><use href="#i-image"/></svg> Image Gen</button>
-                    </div>
-                    <div class="sendrow">
-                      <button class="chip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> Effort: Default</button>
-                      <button class="stop hidden" data-stop aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
-                      <button class="send" data-send="codebox" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
-                    </div>
-                  </div>
-                </footer>
-              </div>
-
-              <div class="pane" id="pane-run">
-                <div class="vbody">
-                  <div class="runbar">
-                    <button class="btn" id="runbtn"><svg class="ic sm"><use href="#i-play"/></svg> <span>Start project</span></button>
-                    <button class="btn ghost" id="runstop" disabled><svg class="ic sm"><use href="#i-stop"/></svg> Stop</button>
-                  </div>
-                  <div class="runlog tall" id="runstream">
-                    <p class="note">PROJECT RUN · weather-dashboard · Lead + Reviewer</p>
-                    <p class="runlog-head">LEAD · Qwen3.5-4B</p>
-                    <p class="line"><span class="fold-tag">PLAN</span> 4 items in PROJECT.md; item 1 first.</p>
-                    <p class="line"><span class="fold-tag">TOOL</span> list_files {}</p>
-                    <p class="line"><span class="fold-tag">TOOL</span> write_file {"path":"index.html"}</p>
-                    <p class="line"><span class="fold-tag">TOOL</span> run_checks {}</p>
-                    <p class="runlog-head">REVIEWER · Qwen3.5-4B Q4_K_M</p>
-                    <p class="line passline"><span class="badge pass">PASS</span> skeleton loads, no console errors.</p>
-                    <p class="record"><svg class="ic sm"><use href="#i-check"/></svg> Item 1 recorded in STATE.md · 00:01:54</p>
-                  </div>
-                  <p class="hintline">Each finished item is recorded only after a PASS. Progress lives in STATE.md, so a stopped run resumes where it left off.</p>
-                </div>
-              </div>
-
-              <div class="pane" id="pane-files">
-                <div class="vbody">
-                  <div class="card folder-card">
-                    <div>
-                      <b>weather-dashboard</b>
-                      <small>C:\dev\weather-dashboard · full edit</small>
-                    </div>
-                    <button class="iconbtn sm" aria-label="Add a folder"><svg class="ic sm"><use href="#i-plus"/></svg></button>
-                  </div>
-                  <p class="secthead">FILES</p>
-                  <div class="list">
-                    <div class="filerow"><svg class="ic sm"><use href="#i-file"/></svg> index.html <small>1.2 KB</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-file"/></svg> style.css <small>3.4 KB</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-file"/></svg> weather.js <small>2.0 KB</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-file"/></svg> chart.js <small>1.6 KB</small></div>
-                  </div>
-                  <p class="secthead">WORKFLOW RECORDS · read-only to the model</p>
-                  <div class="list">
-                    <div class="filerow"><svg class="ic sm"><use href="#i-lock"/></svg> PROJECT.md <small>the goal</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-lock"/></svg> STATE.md <small>2 items done</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-lock"/></svg> TASK.md <small>task 2</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-lock"/></svg> REVIEW.md <small>PASS</small></div>
-                    <div class="filerow"><svg class="ic sm"><use href="#i-lock"/></svg> config.json <small>validation commands</small></div>
-                  </div>
-                  <div class="card">
-                    <p class="secthead inline">EDITOR · chart.js</p>
-                    <div class="codeblock">
-                      <button class="copybtn" data-copy><svg class="ic xs"><use href="#i-copy"/></svg></button>
-                      <pre><code><span class="k">export function</span> <span class="f">drawChart</span>(svg, days) { … }</code></pre>
-                    </div>
-                    <div class="pad two">
-                      <button class="btn ghost tight" data-toggle>Edit</button>
-                      <button class="btn ghost tight" data-more>Open externally</button>
-                    </div>
-                  </div>
-
-                  <div class="card">
-                    <p class="secthead inline">TERMINAL · PowerShell in weather-dashboard</p>
-                    <div class="term">
-                      <p><span class="cwd">C:\dev\weather-dashboard&gt;</span> npm test</p>
-                      <p class="term-out">4 checks passed · 0 errors · 1.8s</p>
-                    </div>
-                    <p class="muted">Runs inside the sandbox with this conversation's folders. <b>Allow Safe</b> asks before network or other folders.</p>
-                  </div>
-
-                  <div class="card">
-                    <p class="cardline"><svg class="ic sm"><use href="#i-terminal"/></svg> <b>Run logs</b></p>
-                    <p class="muted">Kept 14 days in the data folder's logs. <b>Copy run log</b> copies the last run.</p>
-                  </div>
-                </div>
-              </div>
-
-              <div class="pane" id="pane-browser">
-                <div class="vbody nopad">
-                  <div class="browsertabs">
-                    <span class="btab on">localhost:5173</span>
-                    <span class="btab">docs</span>
-                    <button class="iconbtn sm" aria-label="New tab"><svg class="ic sm"><use href="#i-plus"/></svg></button>
-                  </div>
-                  <div class="browserbar">
-                    <button class="iconbtn sm" aria-label="Back"><svg class="ic sm"><use href="#i-back"/></svg></button>
-                    <span class="url">localhost:5173</span>
-                    <button class="iconbtn sm" aria-label="Reload"><svg class="ic sm"><use href="#i-globe"/></svg></button>
-                  </div>
-                  <div class="page">
-                    <div class="page-card">
-                      <p class="page-city">London</p>
-                      <p class="page-temp">14°</p>
-                      <p class="page-cond">Partly cloudy · cached 2 min ago</p>
-                    </div>
-                    <svg class="chart" viewBox="0 0 300 90" aria-hidden="true">
-                      <polyline points="10,60 58,42 106,50 154,28 202,36 250,18 290,26" fill="none" stroke="var(--accent-light)" stroke-width="2"/>
-                      <circle cx="290" cy="26" r="3.5" fill="var(--accent)"/>
-                    </svg>
-                    <span class="clickring" aria-hidden="true"></span>
-                  </div>
-                  <div class="pad">
-                    <div class="rowline">
-                      <div><b>Let the model use mouse and keyboard</b><small>Its own pointer and keys; yours stay free.</small></div>
-                      <button class="switch on" data-switch aria-label="Let the model use mouse and keyboard"></button>
-                    </div>
-                    <p class="hintline">The model clicked <code>#chart</code> at (240, 188) · your clipboard is never touched.</p>
-                  </div>
-                </div>
+            <div class="vbody">
+              <div class="card empty">
+                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
+                <p class="muted">Code conversations and project runs from the phone arrive in a later update. They keep running on the PC.</p>
               </div>
             </div>
           </section>
@@ -457,31 +120,12 @@
           <section class="view spage" id="view-skills">
             <header class="vhead">
               <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Skills</h2><p class="vsub">Sent with every Chat and Code turn</p></div>
+              <div class="vhead-main"><h2 class="vtitle">Skills</h2><p class="vsub" data-pc-subtitle></p></div>
             </header>
             <div class="vbody">
-              <div class="card">
-                <p class="cardline"><svg class="ic sm"><use href="#i-layers"/></svg> <b>On skills are named in the system prompt</b></p>
-                <p class="muted">The model reads one with <code>load_skill</code>. Any skill, on or off, goes with a message that names it as <code>/name</code> or <code>$name</code>.</p>
-              </div>
-              <p class="secthead">BUILT IN</p>
-              <div class="list">
-                <div class="rowline"><div><b>init-projMD</b><small>Turn a conversation into PROJECT.md</small></div><button class="switch on" data-switch aria-label="init-projMD"></button></div>
-                <div class="rowline"><div><b>start-project</b><small>Begin the autonomous run</small></div><button class="switch on" data-switch aria-label="start-project"></button></div>
-                <div class="rowline"><div><b>review</b><small>Check changed code for bugs</small></div><button class="switch on" data-switch aria-label="review"></button></div>
-                <div class="rowline"><div><b>debug</b><small>Find the cause, smallest safe fix</small></div><button class="switch on" data-switch aria-label="debug"></button></div>
-                <div class="rowline"><div><b>plan</b><small>Plan with a check per step</small></div><button class="switch on" data-switch aria-label="plan"></button></div>
-                <div class="rowline"><div><b>test</b><small>Add focused tests and run them</small></div><button class="switch on" data-switch aria-label="test"></button></div>
-                <div class="rowline"><div><b>godot</b><small>Import, run, export a Godot 4 project</small></div><button class="switch" data-switch aria-label="godot"></button></div>
-                <div class="rowline"><div><b>ffmpeg</b><small>Cut, convert and inspect video</small></div><button class="switch" data-switch aria-label="ffmpeg"></button></div>
-              </div>
-              <p class="secthead">YOURS</p>
-              <div class="list">
-                <div class="rowline"><div><b>weather-api</b><small>House rules for the forecast provider</small></div><button class="switch on" data-switch aria-label="weather-api"></button></div>
-              </div>
-              <div class="pad two">
-                <button class="btn ghost">New skill…</button>
-                <button class="btn ghost">Open skills folder</button>
+              <div class="card empty">
+                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
+                <p class="muted">Turning skills on and off from the phone arrives in a later update. Use the desktop app for now.</p>
               </div>
             </div>
           </section>
@@ -490,23 +134,13 @@
           <section class="view spage" id="view-settings">
             <header class="vhead">
               <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Settings</h2><p class="vsub">Graphite · light gray accent</p></div>
+              <div class="vhead-main"><h2 class="vtitle">Settings</h2><p class="vsub" data-pc-subtitle></p></div>
             </header>
             <div class="vbody">
-              <div class="list">
-                <button class="navrow" data-open="view-general"><span class="item-ic"><svg class="ic"><use href="#i-gear"/></svg></span><span class="item-text"><b>General</b><small>Notifications · links · computer use</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-appearance"><span class="item-ic"><svg class="ic"><use href="#i-image"/></svg></span><span class="item-text"><b>Appearance</b><small>Graphite · Light gray accent</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-models"><span class="item-ic"><svg class="ic"><use href="#i-orb"/></svg></span><span class="item-text"><b>Models</b><small>Per-worker model, sampling and request settings</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-agents"><span class="item-ic"><svg class="ic"><use href="#i-user"/></svg></span><span class="item-text"><b>Agents</b><small>Lead + Reviewer · Built-in engine</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-plugins"><span class="item-ic"><svg class="ic"><use href="#i-spark"/></svg></span><span class="item-text"><b>Plugins</b><small>Ponytail · Full</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+              <div class="card empty">
+                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
+                <p class="muted">Settings from the phone arrive in a later update. Use the desktop app for now.</p>
               </div>
-              <p class="secthead">CONNECT</p>
-              <div class="list">
-                <button class="navrow" data-open="view-remoteapi"><span class="item-ic"><svg class="ic"><use href="#i-key"/></svg></span><span class="item-text"><b>Remote API</b><small>Run a worker on a remote service</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-usage"><span class="item-ic"><svg class="ic"><use href="#i-gauge"/></svg></span><span class="item-text"><b>Usage &amp; tokens</b><small>1,284,930 lifetime tokens</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-                <button class="navrow" data-open="view-about"><span class="item-ic"><svg class="ic"><use href="#i-orb"/></svg></span><span class="item-text"><b>About</b><small>Version 1.9.4 · 871 commits</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
-              </div>
-              <p class="hintline">No telemetry, no account, no auto-update. Model downloads and sharing (the Models hub) stay on the desktop app.</p>
             </div>
           </section>
 
@@ -591,151 +225,14 @@
           <section class="view spage" id="view-models">
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Models</h2><p class="vsub">Model settings · <span id="mdlAgent">Lead</span></p></div>
-              <button class="iconbtn" data-sheet="sheet-mdlpresets" aria-label="Presets"><svg class="ic"><use href="#i-more"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle">Models</h2><p class="vsub" data-pc-subtitle></p></div>
             </header>
 
-            <div class="vram" id="vram">
-              <div class="vram-head">
-                <span class="vram-label" id="vramLabel">GPU USAGE ON THIS PC</span>
-                <span class="vram-total" id="vramTotal">9.1 GB</span>
+            <div class="vbody">
+              <div class="card empty">
+                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
+                <p class="muted">Model settings from the phone arrive in a later update. Use the desktop app for now.</p>
               </div>
-              <div class="vram-sub"><span id="vramOf">of 15.9 GB · whole model 9.1 GB</span></div>
-              <div class="vrambar"><i class="vw" id="vramWBar"></i><i class="vk" id="vramKBar"></i><i class="vc" id="vramCBar"></i></div>
-              <div class="vramlegend">
-                <span><i class="vw"></i>Weights <b id="vramW">4.1 GB</b></span>
-                <span><i class="vk"></i>KV cache <b id="vramK">1.2 GB</b></span>
-                <span><i class="vc"></i>Compute <b id="vramC">3.8 GB</b></span>
-              </div>
-              <p class="vramwarn" id="vramWarn" hidden></p>
-            </div>
-
-            <div class="vbody" id="modelsBody" data-conn="local">
-              <div class="cols">
-              <div class="col">
-              <p class="secthead">CONNECTION</p>
-              <div class="seg wide" data-conn-seg>
-                <button class="on" data-conn="local">Local</button>
-                <button data-conn="pc">Remote PC</button>
-                <button data-conn="api">Remote API</button>
-              </div>
-              <p class="hintline only-pc">Runs on the primary PC over its Remote API page: the weights stay there, this worker only sends requests.</p>
-              <p class="hintline only-api">Sends this worker's requests to an OpenAI-compatible service. Keys are kept encrypted for your Windows account.</p>
-
-              <p class="secthead">TARGET AGENT</p>
-              <div class="chips wrap" data-agent-seg>
-                <button class="chip on" data-agent="Lead"><svg class="ic sm"><use href="#i-orb"/></svg> Lead</button>
-                <button class="chip" data-agent="Compactor">Compactor</button>
-                <button class="chip" data-agent="Implementer">Implementer</button>
-                <button class="chip" data-agent="Reviewer">Reviewer</button>
-              </div>
-
-              <div class="card preset-card">
-                <span class="pill mono" id="mdlChip">Qwen3.5-4B</span>
-                <span class="grow"></span>
-                <button class="btn ghost tight" data-sheet="sheet-mdlpresets">Presets <svg class="ic xs"><use href="#i-down"/></svg></button>
-                <button class="btn ghost tight" data-revert>Revert</button>
-                <button class="btn tight" data-save>Save</button>
-              </div>
-
-              <p class="secthead">MODEL</p>
-              <div class="card">
-                <p class="muted top">The model this worker runs, its quantization and where it runs.</p>
-
-                <label class="field"><span>Model</span>
-                  <button class="selectrow" data-sheet="sheet-models"><span id="mdlModel">Qwen3.5-4B</span><svg class="ic sm"><use href="#i-down"/></svg></button>
-                </label>
-                <p class="hintline tight">Open the list for the installed models.</p>
-
-                <label class="field"><span>Favorite models</span>
-                  <button class="selectrow" data-sheet="sheet-favs"><span id="mdlFav">No favorites yet</span><svg class="ic sm"><use href="#i-down"/></svg></button>
-                </label>
-                <p class="hintline tight">Star models (★) in the model list to list them here.</p>
-
-                <div class="rowline only-local only-pc"><div><b>Quantization</b><small>From the GGUF file next to the weights</small></div><span class="pill mono" id="mdlQuant">Q4_K_M</span></div>
-                <div class="rowline only-pc"><div><b>Run on the primary PC</b><small>The desktop machine serves this model</small></div><button class="switch" data-switch aria-label="Run on the primary PC"></button></div>
-
-                <p class="secthead inline">MODEL SOURCE</p>
-                <p class="muted" id="mdlSource">Local: this PC loads Qwen3.5-4B on llama-server.</p>
-
-                <div class="only-api">
-                  <label class="field"><span>API Model</span>
-                    <button class="selectrow" data-more><span>deepseek/deepseek-v4.1-flash-1017</span><svg class="ic sm"><use href="#i-down"/></svg></button>
-                  </label>
-                  <p class="hintline tight">Your Remote API favorites: pick one to run this worker on it.</p>
-                  <label class="field"><span>Provider</span><button class="selectrow" data-more><span>wafer/us</span><svg class="ic sm"><use href="#i-down"/></svg></button></label>
-                  <label class="field"><span>API key</span><button class="selectrow" data-open="view-remoteapi"><span>On the Remote API page</span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button></label>
-                </div>
-
-                <div class="links-row">
-                  <button class="linkbtn" data-open="view-remoteapi">Edit in Remote API</button>
-                  <button class="linkbtn" data-conn-switch="local">Switch to Local</button>
-                </div>
-              </div>
-              </div><!-- /col -->
-
-              <div class="col">
-              <details class="sysprompt">
-                <summary><span class="secthead inline">SYSTEM PROMPT (WORKFLOW)</span><span class="fold-text" id="mdlPromptHint">The instructions this worker follows in Code conversations and project runs.</span></summary>
-                <pre class="promptbody">You are the lead agent of Agent Orchestrator.
-Work through PROJECT.md one small, checkable item at a time.
-Verify with run_checks and by reading files before recording
-an item; only a reviewed PASS reaches STATE.md.</pre>
-              </details>
-
-              <div class="rowline"><div><b>Advanced</b><small>KV cache, GPU layers, batch sizes, extra args, seed</small></div><button class="switch" data-adv aria-label="Advanced settings"></button></div>
-
-              <p class="secthead">SAMPLING</p>
-              <div class="fields">
-                <label>Temperature<input class="v-local" value="0.6" placeholder="provider default"></label>
-                <label>Top P<input class="v-local" value="0.95" placeholder="provider default"></label>
-                <label>Top K<input class="v-local" value="20" placeholder="provider default"></label>
-                <label>Min P<input class="v-local" value="0.05" placeholder="provider default"></label>
-                <label>Repetition penalty<input class="v-local" value="1.0" placeholder="provider default"></label>
-                <label>Presence penalty<input class="v-local" value="0" placeholder="provider default"></label>
-                <label>Frequency penalty<input class="v-local" value="0" placeholder="provider default"></label>
-                <label class="adv">Seed<input placeholder="random"></label>
-              </div>
-              <div class="rowline"><div><b>Thinking</b><small>enable_thinking for this worker's requests</small></div>
-                <div class="seg small" data-seg="think"><button>Off</button><button class="on">Auto</button><button>On</button></div>
-              </div>
-
-              <p class="secthead">OUTPUT</p>
-              <div class="fields">
-                <label>Max tokens<input value="8192"></label>
-              </div>
-              <label class="field"><span>Stop strings</span><textarea rows="2" placeholder="Stop strings: one per line, or comma separated">none</textarea></label>
-
-              <p class="secthead">REQUEST</p>
-              <div class="fields">
-                <label>Timeout (seconds)<input value="600"></label>
-                <label>Max tool call (characters)<input placeholder="no limit"></label>
-              </div>
-
-              <div class="only-local only-pc">
-                <p class="secthead">CONTEXT</p>
-                <div class="card">
-                  <div class="rowline"><div><b>Context length</b><small>max_seq_length</small></div><span class="pill mono" id="ctxPill">32,768</span></div>
-                  <input class="slider" id="ctxRange" type="range" min="4096" max="131072" step="2048" value="32768" aria-label="Context length">
-                  <p class="muted between"><span>Auto</span><span>131,072</span></p>
-                  <div class="rowline"><div><b>KV cache type</b><small>Smaller types fit more context</small></div>
-                    <div class="seg small" data-kv><button class="on" data-kv-on="f16">f16</button><button data-kv-on="q8_0">q8_0</button><button data-kv-on="q4_0">q4_0</button></div>
-                  </div>
-                  <div class="rowline"><div><b>GPU layers</b><small>-1 = all</small></div><span class="pill mono">-1</span></div>
-                  <div class="rowline"><div><b>Batch</b></div><span class="pill mono">2048</span></div>
-                  <div class="rowline"><div><b>Ubatch</b></div><span class="pill mono">512</span></div>
-                  <div class="rowline adv"><div><b>Reasoning budget</b><small>0 leaves it to the model</small></div><span class="pill mono">0</span></div>
-                  <label class="field adv"><span>Extra llama-server args</span><textarea rows="2" placeholder="--flash-attn --no-mmap"></textarea></label>
-                </div>
-              </div>
-
-              <div class="pad two">
-                <button class="btn ghost" data-revert>Revert</button>
-                <button class="btn" data-save>Save settings</button>
-              </div>
-              <p class="hintline">Saved to this conversation's worker preset, or to the app's own worker config when the project has none.</p>
-              </div><!-- /col -->
-              </div><!-- /cols -->
             </div>
           </section>
 
@@ -963,25 +460,16 @@ an item; only a reviewed PASS reaches STATE.md.</pre>
       <!-- drawer -->
       <div class="drawer" id="drawer" aria-hidden="true">
         <div class="drawer-top">
-          <span class="avatar">A</span>
-          <div><b>Alex</b><small>1,284,930 lifetime tokens</small></div>
+          <span class="avatar" id="meAvatar">·</span>
+          <div><b id="meName">Tailscale</b><small id="meTailnet"></small></div>
           <button class="iconbtn sm" data-open="view-settings" aria-label="Settings"><svg class="ic sm"><use href="#i-gear"/></svg></button>
         </div>
         <div class="drawer-body">
-          <div class="seg full" data-seg="drawer"><button class="on">Chat</button><button>Code</button></div>
           <button class="drawer-item" data-newchat><svg class="ic sm"><use href="#i-plus"/></svg> New chat</button>
-          <button class="drawer-item" data-open="view-code"><svg class="ic sm"><use href="#i-folder"/></svg> Work in a folder</button>
-          <button class="drawer-item" data-open="view-remoteapi"><svg class="ic sm"><use href="#i-key"/></svg> Remote API</button>
-          <button class="drawer-item" data-open="view-skills"><svg class="ic sm"><use href="#i-spark"/></svg> Skills</button>
-          <p class="secthead">PROJECTS</p>
-          <button class="drawer-item" data-open="view-code"><svg class="ic sm"><use href="#i-folder"/></svg> weather-dashboard</button>
-          <button class="drawer-item" data-open="view-code"><svg class="ic sm"><use href="#i-folder"/></svg> pixel-runner</button>
-          <p class="secthead">RECENTS</p>
-          <button class="drawer-item" data-open="view-chat"><svg class="ic sm"><use href="#i-chat"/></svg> Plan a weather dashboard</button>
-          <button class="drawer-item" data-open="view-chat"><svg class="ic sm"><use href="#i-chat"/></svg> Reviewer keeps failing chart.js</button>
+          <p class="secthead">PCS</p>
+          <div id="pcList"></div>
         </div>
         <div class="drawer-foot">
-          <button class="drawer-item" data-open="view-appearance"><svg class="ic sm"><use href="#i-image"/></svg> Graphite · Light gray</button>
           <button class="drawer-item" data-open="view-settings"><svg class="ic sm"><use href="#i-gear"/></svg> Settings</button>
         </div>
       </div>
@@ -1064,14 +552,92 @@ an item; only a reviewed PASS reaches STATE.md.</pre>
       <div class="sheet" id="sheet-search" role="dialog" aria-label="Search conversations">
         <div class="grab"></div>
         <label class="field"><span>Search</span><input placeholder="Conversations, projects, folders"></label>
-        <p class="secthead">SUGGESTED</p>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-chat"/></svg> Plan a weather dashboard</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-code"/></svg> Add the 7-day chart</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-folder"/></svg> weather-dashboard</button>
+        <div id="searchResults"></div>
       </div>
 
       <div class="toast" id="toast" role="status"></div>
 </div><!-- /shell -->
+
+<!-- templates the renderers clone (text goes in with textContent) -->
+<template id="tpl-project">
+                <div class="item">
+                  <button class="item-main">
+                    <span class="item-ic"><svg class="ic"><use href="#i-folder"/></svg></span>
+                    <span class="item-text"><b></b><small></small></span>
+                  </button>
+                  <button class="iconbtn sm" aria-label="New chat in project" data-newchat><svg class="ic"><use href="#i-plus"/></svg></button>
+                </div>
+</template>
+<template id="tpl-project-chat">
+                <div class="item indent" data-kind="chat">
+                  <button class="item-main">
+                    <span class="item-ic"><svg class="ic"><use href="#i-chat"/></svg></span>
+                    <span class="item-text"><b></b><small></small></span>
+                  </button>
+                </div>
+</template>
+<template id="tpl-chat">
+                <div class="item" data-kind="chat">
+                  <button class="item-main">
+                    <span class="item-ic"><svg class="ic"><use href="#i-chat"/></svg></span>
+                    <span class="item-text"><b></b><small></small></span>
+                  </button>
+                </div>
+</template>
+<template id="tpl-pc">
+<button class="drawer-item pc"><svg class="ic sm"><use href="#i-terminal"/></svg> <span class="pc-name"></span><svg class="ic sm pc-self" hidden><use href="#i-check"/></svg><span class="dot off"></span></button>
+</template>
+<template id="tpl-msg-user">
+              <div class="msg right">
+                <div class="bubble">I want a small weather dashboard: today's forecast and a 7-day chart. How would you split that up for the agents?</div>
+                <p class="stamp">6 minutes ago <button class="ghosttiny" data-copy>copy</button></p>
+              </div>
+</template>
+<template id="tpl-msg-reply">
+              <div class="msg">
+                <p class="who"></p>
+                <div class="md"></div>
+                <p class="stamp"><button class="ghosttiny" data-copy>copy</button></p>
+              </div>
+</template>
+<template id="tpl-thinking">
+              <details class="fold">
+                <summary><span class="fold-tag">THINKING</span><span class="fold-text">Writing PROJECT.md, then one reviewed item at a time…</span></summary>
+                <div class="fold-body md">
+                  <p>The user wants a London-first dashboard. The plan is four items; PROJECT.md holds the goal, the acceptance criteria and the checks. I will not start the run until the file is written and read back.</p>
+                </div>
+              </details>
+</template>
+<template id="tpl-tool">
+              <div class="toolrow">
+                <span class="tool-tag">TOOL</span>
+                <span class="tool-name">write_file</span>
+                <code>{"path":"PROJECT.md"}</code>
+                <span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span>
+              </div>
+</template>
+<template id="tpl-delegate">
+              <div class="delegate">
+                <div class="delegate-head">
+                  <span class="who">Reviewer · Qwen3.5-4B Q4_K_M</span>
+                  <span class="badge pass">PASS</span>
+                </div>
+                <p></p>
+              </div>
+</template>
+<template id="tpl-approval">
+              <div class="approval">
+                <div class="approval-head"><svg class="ic sm"><use href="#i-shield"/></svg> Permission request · network</div>
+                <p>The model wants to run <code>npm install</code>. The command sandbox has no network access.</p>
+                <div class="approval-actions">
+                  <button class="btn ghost" data-approve="no">Deny</button>
+                  <button class="btn" data-approve="yes">Allow once</button>
+                </div>
+              </div>
+</template>
+<template id="tpl-sysline">
+              <p class="sysline">Context compacted: 18,204 → 7,120 tokens · summary saved above the last step</p>
+</template>
 
 <!-- icon sprite -->
 <svg class="sprite" aria-hidden="true" focusable="false">

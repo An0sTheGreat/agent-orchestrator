@@ -13,6 +13,12 @@ export function parseSse(chunk, state = {}) {
   return out;
 }
 
+// The next retry wait: doubles from 1 s up to 15 s.
+export const nextWait = ms => Math.min(ms * 2, 15000);
+
+// The tailnet of a Tailscale DNS name: "home.tail0000.ts.net." -> "tail0000.ts.net".
+export const tailnetOf = dnsName => (dnsName || '').replace(/\.$/, '').split('.').slice(1).join('.');
+
 async function call(path, init) {
   let res;
   try { res = await fetch(api.base + path, { credentials: 'omit', ...init }); }
@@ -41,7 +47,7 @@ export const api = {
       es.onerror = () => {
         es.close();
         dropped = true;
-        if (!stopped) { timer = setTimeout(open, wait); wait = Math.min(wait * 2, 15000); }
+        if (!stopped) { timer = setTimeout(open, wait); wait = nextWait(wait); }
       };
     };
     open();

@@ -672,3 +672,11 @@ body.landscape .drawer { padding-top: 0; }
 .drawer { padding-top: 0; }
 .drawer-top { padding-top: 16px; }
 .toast { bottom: 84px; }
+
+/* ============================== phone app: banners, empty states, PCs ============================== */
+.banner { display: none; align-items: center; gap: 10px; flex: none; padding: 8px 12px; background: #3a3a3a; border-bottom: 1px solid #4a4a4a; color: var(--text); font-size: 12px; }
+.banner.on { display: flex; }
+.banner .ghosttiny { margin-left: auto; color: var(--text); }
+.card.empty { margin-top: 4px; }
+.dot.off { background: #5a5a5a; }
+.drawer-item.pc .pc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
