@@ -99,7 +99,8 @@ internal sealed class WebServer
             }
             var query = request.QueryString.AllKeys.OfType<string>().ToDictionary(k => k, k => request.QueryString[k] ?? "");
             var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
-            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "");
+            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "",
+                request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"]);
             response.StatusCode = r.Status;
             response.ContentType = r.Type;
             response.ContentLength64 = r.Body.Length;
@@ -145,7 +146,9 @@ internal sealed class WebServer
     }
 
     // `login`: the request's Tailscale-User-Login; `body`: null when it was over the limit.
-    public async Task<Response> Handle(string method, string path, string? login, IReadOnlyDictionary<string, string> query, byte[]? body, string contentType)
+    // `origin`, `fetchSite`, `host`: the request's Origin, Sec-Fetch-Site and Host headers.
+    public async Task<Response> Handle(string method, string path, string? login, IReadOnlyDictionary<string, string> query, byte[]? body, string contentType,
+        string? origin = null, string? fetchSite = null, string? host = null)
     {
         if (!IsOwner(login, _owner()))
             return Json(403, new { error = "Forbidden" });
@@ -153,6 +156,11 @@ internal sealed class WebServer
             return new Response(204, "text/plain", []);
         if (path.StartsWith("/api/"))
         {
+            // Serve adds the owner's login to whatever the owner's device sends, so a page on another site could call the
+            // API as the owner (CSRF): only this page and the user's other PCs may; tools that send no Origin still can.
+            var known = origin is not null && (string.Equals(origin, "https://" + host, StringComparison.OrdinalIgnoreCase) || AllowedOrigin(origin, _suffix()) is not null);
+            if (!known && (fetchSite == "cross-site" || origin is not null && method is not ("GET" or "HEAD")))
+                return Json(403, new { error = "Cross-site request refused" });
             if (body is null)
                 return Json(413, new { error = "Too large (25 MB at most)" });
             try
@@ -236,8 +244,18 @@ internal sealed class WebServer
 
         var server = new WebServer(() => "me@x.com", () => suffix, (method, path, query, body, type) =>
             Task.FromResult((200, (object)new { method, path, q = query.GetValueOrDefault("q"), length = body.Length, type })));
-        Response Call(string method, string path, string? login = "Me@x.com", byte[]? body = null) =>
-            server.Handle(method, path, login, new Dictionary<string, string> { ["q"] = "1" }, body ?? [], "application/json").GetAwaiter().GetResult();
+        Response Call(string method, string path, string? login = "Me@x.com", byte[]? body = null, string? origin = null, string? site = null) =>
+            server.Handle(method, path, login, new Dictionary<string, string> { ["q"] = "1" }, body ?? [], "application/json", origin, site, "pc.tail1234.ts.net")
+                .GetAwaiter().GetResult();
+        Check(Call("POST", "/api/send", origin: "https://evil.com", site: "cross-site").Status == 403 && Call("POST", "/api/send", origin: "https://evil.com").Status == 403 &&
+            Call("DELETE", "/api/x", origin: "https://evil.com").Status == 403 && Call("GET", "/api/x", origin: "https://evil.com", site: "cross-site").Status == 403 &&
+            Call("GET", "/api/x", site: "cross-site").Status == 403, "cross-site API calls: 403");
+        Check(Call("POST", "/api/send", origin: "https://pc.tail1234.ts.net", site: "same-origin").Status == 200 &&
+            Call("POST", "/api/send", origin: "https://laptop.tail1234.ts.net", site: "same-site").Status == 200 && Call("POST", "/api/send").Status == 200,
+            "same origin, another tailnet PC and no Origin reach the API");
+        var noSuffix = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _) => Task.FromResult((200, (object)new { })));
+        Check(noSuffix.Handle("POST", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "", "https://PC.tail1234.ts.net", "same-origin", "pc.tail1234.ts.net")
+            .GetAwaiter().GetResult().Status == 200, "same origin by the Host header, suffix unknown");
         Check(Call("GET", "/", null).Status == 403 && Call("GET", "/", "other@x.com").Status == 403 && Call("GET", "/api/conversations", null).Status == 403 &&
             Call("OPTIONS", "/api/hello", null).Status == 403 && Call("GET", "/missing.js", null).Status == 403, "no owner header: 403 everywhere");
         Check(Call("GET", "/") is { Status: 200 } page && page.Type.StartsWith("text/html") && page.Body.Length > 1000, "the page");
