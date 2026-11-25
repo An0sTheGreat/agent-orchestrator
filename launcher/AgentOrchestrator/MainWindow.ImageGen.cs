@@ -1092,6 +1092,14 @@ public partial class MainWindow
             await UnloadSharedChatModelsAsync(ct);
     }
 
+    // The reverse, before the engine loads a chat model (a reply, Load models, a project run): an image model the Images page left
+    // loaded leaves the GPU, unless Keep both is on or a picture is being made (the chat's own: generate_image runs inside its turn).
+    private void FreeGpuForChat()
+    {
+        if (!_settings.ImageKeepBoth && !ImageBusy)
+            StopImageServer();
+    }
+
     private bool ChatModelsInUse => _chatBusy || _process is { HasExited: false };
 
     private void RefreshImageRecipes()

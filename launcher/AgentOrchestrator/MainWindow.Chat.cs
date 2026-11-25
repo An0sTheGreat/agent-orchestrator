@@ -484,6 +484,7 @@ public partial class MainWindow
             var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out _);
             (folder, temp) = (prepared.Path, prepared.IsTemp ? prepared.Path : null);
             var info = LauncherLogic.BuildLoadRoleStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, role);
+            FreeGpuForChat();
             ApplyRuntime(info);
             using var process = new Process { StartInfo = info };
             var output = new System.Collections.Concurrent.ConcurrentQueue<string>();
@@ -835,6 +836,7 @@ public partial class MainWindow
             }
             File.WriteAllText(requestFile, buildRequest(role));
             var startInfo = buildStartInfo(LauncherLogic.FindPython(), _workflowRoot, folder, requestFile);
+            FreeGpuForChat();
             ApplyRuntime(startInfo);
             var process = _chatProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };

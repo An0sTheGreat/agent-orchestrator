@@ -149,6 +149,7 @@ public partial class MainWindow : Window
             File.WriteAllText(requestFile, RunRequest(project));
             var python = LauncherLogic.FindPython();
             var startInfo = LauncherLogic.BuildStartInfo(python, _workflowRoot, project, _settings.Once, requestFile);
+            FreeGpuForChat();
             ApplyRuntime(startInfo);
             _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
             _process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
@@ -3070,6 +3071,29 @@ public partial class MainWindow : Window
                         if (hintOff != Visibility.Collapsed || hintKeep != Visibility.Visible || !keptAlive || !remoteAlive || !fake.HasExited)
                         {
                             Console.Error.WriteLine($"ui-smoke: one model at a time: hint {hintOff}/{hintKeep}, alive with Keep both {keptAlive}, for OpenRouter {remoteAlive}, gone after {fake.HasExited}");
+                            return Fail();
+                        }
+                        // and back: before a chat model loads (a reply, Load models, a run), the image model the page left loaded goes
+                        var fakeSd = Path.Combine(fakeDir, "sd-server.exe");
+                        File.Copy(fakeExe, fakeSd);
+                        var sd = _sdServer = Process.Start(new ProcessStartInfo(fakeSd, "-n 600 127.0.0.1") { CreateNoWindow = true, UseShellExecute = false })!;
+                        var sdId = sd.Id;
+                        static bool Gone(int pid)
+                        {
+                            try { using var p = Process.GetProcessById(pid); p.WaitForExit(5000); return p.HasExited; }
+                            catch (ArgumentException) { return true; }
+                        }
+                        _settings.ImageKeepBoth = true;
+                        FreeGpuForChat();
+                        var sdKept = _sdServer == sd && !Gone(sdId) is var alive && alive;
+                        _settings.ImageKeepBoth = false;
+                        FreeGpuForChat();
+                        var sdGone = _sdServer is null && Gone(sdId);
+                        if (!sdKept || !sdGone)
+                        {
+                            try { using var left = Process.GetProcessById(sdId); left.Kill(); } catch (ArgumentException) { }
+                            _sdServer = null;
+                            Console.Error.WriteLine($"ui-smoke: one model at a time, back to chat: kept with Keep both {sdKept}, gone after {sdGone}");
                             return Fail();
                         }
                     }
