@@ -458,8 +458,8 @@ public partial class MainWindow
         _imgLocalOnly.Add(advancedSection);
 
         _imgGenerate = new Button { Content = "Generate", Tag = "ImagesGenerate", Style = (Style)FindResource("PrimaryButton"), Padding = new Thickness(16, 7, 16, 7) };
-        _imgGenerate.Click += async (_, _) => await RunImageJob(GenerateImagesAsync);
-        var generateSection = Section(_imgGenerate, last: true);
+        _imgGenerate.Click += async (_, _) => await GenerateClickAsync();
+        var generateSection = Section(QueueRow(), last: true);
 
         // the card: its sections top to bottom, the prompts (at least two lines) and Advanced sharing the rest, the spare row (null) over Generate at the foot
         var sections = new FrameworkElement?[] { band, modelSection, promptsSection, paramsSection, advancedSection, null, generateSection };
@@ -1329,13 +1329,14 @@ public partial class MainWindow
             _imgProgress.Value = p;
     }
 
-    // One download or generation at a time: Generate and the runtime button are off meanwhile, Cancel is on.
+    // One download or generation at a time: the runtime button is off meanwhile, Cancel is on. Generate stays on: it queues
+    // (MainWindow.ImageQueue.cs), and a queue left waiting behind another job (a chat's picture, an install) starts after it.
     private async Task RunImageJob(Func<CancellationToken, Task> job)
     {
         if (ImageBusy)
             return;
         using var cts = _imgCts = new CancellationTokenSource();
-        _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = false;
+        _imgRuntimeButton.IsEnabled = false;
         ShowImageSource(); // the CONNECTION pill off (ImageBusy)
         _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Visible;
         try { await job(cts.Token); }
@@ -1349,13 +1350,15 @@ public partial class MainWindow
         finally
         {
             _imgCts = null;
-            _imgGenerate.IsEnabled = _imgRuntimeButton.IsEnabled = true;
+            _imgRuntimeButton.IsEnabled = true;
             _imgCancel.Visibility = _imgProgress.Visibility = Visibility.Collapsed;
             if (_imgStagePreview) // cancelled or failed: the last picture again in place of its preview
                 ShowOnStage(_imgResultPath);
             ShowImageSource(); // the pill back on
             RefreshImageRuntime();
             RefreshImageRecipes();
+            if (_imgQueue.Count > 0) // queued behind this job: their turn now
+                _ = Dispatcher.BeginInvoke(async () => await RunImageJob(RunQueueAsync));
         }
     }
 
@@ -1437,35 +1440,73 @@ public partial class MainWindow
         }
     }
 
-    private async Task GenerateImagesAsync(CancellationToken ct)
+    // Generate: the settings as they are now, as pictures to make (QueuedPicture), or null with a toast saying what is missing.
+    // A batch is one picture each, seeds counting up from the first (as one sd-server batch numbers them), so each shows when it
+    // is done; OpenRouter's stays one request for them all.
+    private List<QueuedPicture>? PicturesToMake()
     {
         var s = ReadImageSettings();
         if (s.Prompt.Length == 0)
         {
             Toast("Write a prompt first", "#F7C873");
-            return;
+            return null;
         }
         if ((_imgRemoteMode && s.RemoteModel.Length == 0) || (_imgSharedMode && s.SharedModel.Length == 0))
         {
             Toast("Choose an image model first", "#F7C873");
-            return;
+            return null;
         }
         if (s.RemoteModel.Length == 0 && s.SharedModel.Length == 0 && s.InitImage.Length > 0 && !File.Exists(s.InitImage))
-            throw new FileNotFoundException($"The start image is gone: {s.InitImage}");
+        {
+            Toast($"The start image is gone: {s.InitImage}", "#FF667A");
+            return null;
+        }
         _settings.ImageGen = s;
         _settings.Save();
-        await FreeGpuForImageAsync(s, ct);
-        RefreshImageRuntime(); // the VRAM hint
-        var run = JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
+        static ImageSettings Copy(ImageSettings s) => JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
+        var run = Copy(s);
         if (run.Seed < 0)
             run.Seed = Random.Shared.Next(); // chosen here so the sidecar records it
-        var files = await PaintAsync(run, () =>
+        if (run.RemoteModel.Length > 0)
+            return [new(run)];
+        return [.. Enumerable.Range(0, Math.Max(1, run.Batch)).Select(i =>
         {
-            Toast("Not enough GPU memory: trying again with Low VRAM");
-            _imgLowVram.IsChecked = s.LowVram = true; // Low VRAM stays ticked for next time
-            _settings.Save();
-        }, ct);
-        ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
+            var one = Copy(run);
+            (one.Batch, one.Seed) = (1, run.Seed + i);
+            return new QueuedPicture(one);
+        })];
+    }
+
+    // The queue's job: its pictures one after another, each saved and shown when done. A failure or Cancel ends the queue too.
+    private async Task RunQueueAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (_imgQueue.Count > 0)
+            {
+                var next = _imgQueue[0];
+                _imgQueue.RemoveAt(0);
+                RefreshQueue();
+                var run = next.Run;
+                await FreeGpuForImageAsync(run, ct);
+                RefreshImageRuntime(); // the VRAM hint
+                var files = await PaintAsync(run, () =>
+                {
+                    Toast("Not enough GPU memory: trying again with Low VRAM");
+                    _imgLowVram.IsChecked = _settings.ImageGen.LowVram = true; // Low VRAM stays ticked for next time, and for the queue
+                    foreach (var waiting in _imgQueue)
+                        waiting.Run.LowVram = true;
+                    _settings.Save();
+                }, ct);
+                ImageStatus(run.RemoteModel.Length > 0 ? "Done" : $"Done · seed {files[0].Seed}", 1);
+            }
+        }
+        catch
+        {
+            _imgQueue.Clear();
+            RefreshQueue();
+            throw;
+        }
     }
 
     // The generation itself, the page's and the chat's (AnswerImageAsync): run (its seed chosen) goes to the primary PC, OpenRouter or
@@ -1597,6 +1638,8 @@ public partial class MainWindow
             catch (Exception x) when (x is InvalidOperationException or HttpRequestException or OperationCanceledException) { Log($"Image Gen: the primary PC did not unload: {x.Message}"); }
             finally { _imgUnloadCts = null; }
         NoteTurnPicture(file);
+        if (_reply is { } shownIn) // shown now, not when the tool call ends: a count of several shows each one as it is done
+            ShowPendingShot(shownIn);
         var (copy, width, height) = ChatCopy(file);
         var line = ImageGen.ChatResult(name, run, width, height, file);
         if (asker is null ? _chatBusy : asker == _chatProcess) // the running chat/Code turn's picture (generate_image or /image), not a project run's: the conversation's next message shows it to the model

@@ -3463,8 +3463,8 @@ public partial class MainWindow : Window
                     async Task RunGenerate()
                     {
                         SmokeClick(_imgGenerate);
-                        pillWrong |= !_imgGenerate.IsEnabled && (_imgConnLocal.IsEnabled || _imgConnRemote.IsEnabled); // the CONNECTION pill is off while a job runs
-                        for (var i = 0; i < 250 && !_imgGenerate.IsEnabled; i++)
+                        pillWrong |= ImageBusy && (_imgConnLocal.IsEnabled || _imgConnRemote.IsEnabled); // the CONNECTION pill is off while a job runs
+                        for (var i = 0; i < 250 && ImageBusy; i++)
                             await Task.Delay(20);
                     }
                     System.Text.Json.Nodes.JsonNode? Request(int index) => System.Text.Json.Nodes.JsonNode.Parse(imgFake.Posted[index]);
@@ -3536,7 +3536,7 @@ public partial class MainWindow : Window
                     _imgPrompt.Text = "a red fox";
                     _imgRemoteModel = ("", ""); // remote with no model chosen: refused, and it does not run the local model instead
                     await RunGenerate();
-                    if (imgFake.Posted.Count != posted || !Toasted("Choose an image model first") || _imgStatus.Text.StartsWith("Looking up") || !_imgGenerate.IsEnabled)
+                    if (imgFake.Posted.Count != posted || !Toasted("Choose an image model first") || _imgStatus.Text.StartsWith("Looking up") || ImageBusy)
                         return Fail();
                     _imgRemoteModel = ("acme/img-two", "Acme: Image Two");
                     // the controls OpenRouter never reads are hidden (steps, guidance, seed, runtime, size, Advanced, negative prompt) and back after Switch to Local
@@ -3564,6 +3564,51 @@ public partial class MainWindow : Window
                     if (ReadImageSettings().RecipeId != "flux3-klein" || recipes.SelectedIndex != flux)
                         return Fail();
                     recipes.SelectedIndex = recipeWas;
+                    // the queue: Generate while a job runs adds the batch, one picture each with the seeds counting up; Generate
+                    // narrows and the queue button slides out to its width; hovering lists a row each at 0%, and a row's ✕ takes that one out
+                    SetInitImage("");
+                    (_imgPrompt.Text, _imgSeed.Text, _imgBatch.SelectedIndex) = ("a queued fox", "123", 2);
+                    var queueRunning = _imgCts = new CancellationTokenSource(); // another job is running
+                    try
+                    {
+                        var generateWide = _imgGenerate.ActualWidth;
+                        SmokeClick(_imgGenerate);
+                        await Task.Delay(500); // the slide
+                        await Settle();
+                        if (_imgQueue.Select(q => q.Run.Seed).SequenceEqual([123L, 124, 125]) is false || _imgQueue.Any(q => q.Run.Batch != 1) || _imgQueueText.Text != "3 queued" ||
+                            Math.Abs(_imgQueueButton.ActualWidth - _imgGenerate.ActualWidth) > 2 || _imgGenerate.ActualWidth > generateWide * 0.6)
+                        {
+                            Console.Error.WriteLine($"ui-smoke: queue: seeds {string.Join(",", _imgQueue.Select(q => q.Run.Seed))}, \"{_imgQueueText.Text}\", queue {_imgQueueButton.ActualWidth:0} vs generate {_imgGenerate.ActualWidth:0} (was {generateWide:0})");
+                            return Fail();
+                        }
+                        _imgQueueButton.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseEnterEvent });
+                        await Settle();
+                        var queueRows = SmokeVisuals(_imgQueuePopup!.Child).OfType<StackPanel>().Where(p => p.Tag as string == "ImagesQueueRow").ToList();
+                        if (_imgQueuePopup is not { IsOpen: true } || queueRows.Count != 3 || queueRows.Any(r => SmokeVisuals(r).OfType<ProgressBar>().Single().Value != 0))
+                            return Fail();
+                        SmokeClick(SmokeVisuals(queueRows[1]).OfType<Button>().Single(b => b.Tag as string == "ImagesQueueCancel"));
+                        await Settle();
+                        if (_imgQueue.Select(q => q.Run.Seed).SequenceEqual([123L, 125]) is false || _imgQueueText.Text != "2 queued" ||
+                            SmokeVisuals(_imgQueuePopup.Child).OfType<StackPanel>().Count(p => p.Tag as string == "ImagesQueueRow") != 2)
+                            return Fail();
+                        _imgQueue.Clear(); // emptied: the button slides back and the list closes
+                        RefreshQueue();
+                        await Task.Delay(500);
+                        await Settle();
+                        if (_imgQueuePopup.IsOpen || _imgQueueButton.Visibility != Visibility.Collapsed || Math.Abs(_imgGenerate.ActualWidth - _imgQueueRow.ActualWidth) > 2)
+                        {
+                            Console.Error.WriteLine($"ui-smoke: queue emptied: list open {_imgQueuePopup.IsOpen}, button {_imgQueueButton.Visibility} {_imgQueueButton.ActualWidth:0}, generate {_imgGenerate.ActualWidth:0} of {_imgQueueRow.ActualWidth:0}");
+                            return Fail();
+                        }
+                    }
+                    finally
+                    {
+                        _imgQueue.Clear();
+                        RefreshQueue();
+                        _imgCts = null;
+                        queueRunning.Dispose();
+                        (_imgSeed.Text, _imgBatch.SelectedIndex) = ("", 0);
+                    }
                 }
                 finally
                 {
