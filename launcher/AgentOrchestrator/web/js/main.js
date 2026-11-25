@@ -2,6 +2,7 @@
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
 import { api, nextWait, tailnetOf } from './api.js';
+import { screensToPop } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -33,8 +34,20 @@ function showScreen(name, params, view) {
   s.show?.(params, view);
 }
 
-export function go(name, params = {}) { stack.push({ name: name.replace(/^view-/, ''), params }); render(); }
-export function back() { if (stack.length > 1) stack.pop(); render(); }
+// Every go is a browser history entry, so the phone's back gesture goes back one screen (popstate) and the Back
+// button goes through history too, keeping the two in step. At the root a back gesture pops nothing.
+let depth = history.state?.depth ?? 0; // our place in the tab's history (kept across a reload)
+export function go(name, params = {}) {
+  stack.push({ name: name.replace(/^view-/, ''), params });
+  history.pushState({ depth: ++depth }, '');
+  render();
+}
+export function back() { if (stack.length > 1) history.back(); else render(); }
+addEventListener('popstate', e => {
+  const to = e.state?.depth ?? 0, n = screensToPop(stack.length, depth, to);
+  depth = to;
+  if (n) { stack.splice(-n); render(); } else closeOverlays();
+});
 function tabTo(name) { stack = [{ name: name.replace(/^view-/, ''), params: {} }]; render(); }
 
 document.addEventListener('click', e => {
@@ -45,7 +58,7 @@ document.addEventListener('click', e => {
   else if (el.dataset.open) go(el.dataset.open);
   else if (el.hasAttribute('data-back')) back();
   else if (el.hasAttribute('data-drawer')) toggleDrawer();
-  else if (el.hasAttribute('data-newchat')) { stack = [{ name: 'chats', params: {} }]; go('chat'); }
+  else if (el.hasAttribute('data-newchat')) { stack = [{ name: 'chats', params: {} }]; go('chat', { id: null }); }
   else if (el.dataset.sheet) openSheet(el.dataset.sheet);
   else if (el.hasAttribute('data-close')) closeOverlays();
   else if (el.hasAttribute('data-retry')) connect();
