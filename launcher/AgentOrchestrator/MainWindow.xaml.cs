@@ -377,6 +377,8 @@ public partial class MainWindow : Window
         while (_lines.TryDequeue(out var line))
         {
             var ev = LauncherLogic.TryParseEvent(line);
+            if (ev is not null)
+                PublishWebEvent(RunningId, line[LauncherLogic.EventPrefix.Length..]); // the phone's live view: each event as it came, before coalescing
             if (ev is { } e && Str(e, "e") == "delta")
             {
                 var next = (Str(e, "role"), Str(e, "kind"), (int)Num(e, "index"));

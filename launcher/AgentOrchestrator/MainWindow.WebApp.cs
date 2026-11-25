@@ -38,6 +38,46 @@ public partial class MainWindow
     private readonly DispatcherTimer _webRetry = new();
     private DateTime _webRetrySince;
 
+    // The live events (GET /api/conversation/{id}/events): the engine's events from DrainLines, `saved` from FinishChatTurn, and
+    // `state` whenever busy, queued or the prompt of a watched conversation changes (polled: one place sees all those changes).
+    private readonly WebEvents _webEvents = new();
+    private readonly Dictionary<string, string> _webStates = []; // the last state event per watched conversation
+    private readonly DispatcherTimer _webStatePoll = new() { Interval = TimeSpan.FromMilliseconds(250) };
+
+    private void PublishWebEvent(string? conversationId, string json)
+    {
+        if (_webApp is not null && conversationId is not null)
+            _webEvents.Publish(conversationId, json);
+    }
+
+    private static string WebState(bool busy, int queued, object? prompt) => JsonSerializer.Serialize(new { e = "state", busy, queued, prompt });
+
+    private void PollWebStates()
+    {
+        var watched = _webEvents.Conversations();
+        foreach (var gone in _webStates.Keys.Except(watched).ToList())
+            _webStates.Remove(gone);
+        foreach (var id in watched)
+            if (ConversationNow(id) is (_, var busy, _, var queued, var prompt, _) && WebState(busy, queued, prompt) is var state && _webStates.GetValueOrDefault(id) != state)
+                PublishWebEvent(id, _webStates[id] = state);
+    }
+
+    // On the UI thread, so the hello's reply and the deltas after it never overlap nor leave a gap (DrainLines publishes there too).
+    private (int, object) WebEventsOpen(string id)
+    {
+        if (ConversationNow(id) is not (_, var busy, _, var queued, var prompt, var reply))
+            return (404, new { error = "No such conversation" });
+        _webStates.TryAdd(id, WebState(busy, queued, prompt));
+        var life = new CancellationTokenSource();
+        return (200, new WebServer.EventStream(JsonSerializer.Serialize(new { e = "hello", busy, queued, prompt, reply }), _webEvents.Subscribe(id, life.Token), life));
+    }
+
+    private static JsonElement WebBody(byte[] body)
+    {
+        try { return JsonDocument.Parse(body).RootElement.Clone(); }
+        catch (JsonException) { return default; }
+    }
+
     internal string? WebAppAddress => _webApp is not null && _webTailnet is { } t ? $"https://{t.DnsName}/" : null; // null while off
 
     private static async Task<(bool Ok, string Output)> ServeOnTailnet(int? port, CancellationToken ct)
@@ -73,6 +113,7 @@ public partial class MainWindow
     private void InitWebApp()
     {
         _webRetry.Tick += WebRetry_Tick;
+        _webStatePoll.Tick += (_, _) => PollWebStates();
         _webTimer.Tick += async (_, _) =>
         {
             if (await _webStatus() is { } status && _webApp is not null)
@@ -131,6 +172,7 @@ public partial class MainWindow
             _webApp = server;
             _webRetry.Stop();
             _webTimer.Start();
+            _webStatePoll.Start();
             Log($"Phone app: {WebAppAddress} serves http://127.0.0.1:{server.Port}/");
             return true;
         }
@@ -158,9 +200,11 @@ public partial class MainWindow
             await start;
         _webRetry.Stop(); // a failed start re-arms it
         _webTimer.Stop();
+        _webStatePoll.Stop();
+        _webStates.Clear();
         if (_webApp is null)
             return;
-        _webApp.Stop();
+        _webApp.Stop(); // ends the open event streams, which unsubscribes them
         _webApp = null;
         RefreshWebApp();
         var serve = _webServe;
@@ -190,6 +234,8 @@ public partial class MainWindow
             ("GET", "/api/hello") => (200, WebHello()),
             ("GET", "/api/pcs") => (200, await WebPcs()),
             ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
+            ("GET", _) when path.StartsWith(one) && path.EndsWith("/events") => await Dispatcher.InvokeAsync(() => WebEventsOpen(path[one.Length..^"/events".Length])),
+            ("POST", "/api/answer") => await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body))),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
             ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
             _ => WebNotFound,
@@ -363,10 +409,20 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound))
                 return false;
 
+            // the server stops with a stream open: its subscription goes
+            if (_store.Create("", "chat") is not { } idle)
+                return Fail("no chat for the open stream");
+            _store.Save(idle);
+            using var open = await SseClient.Open(bound, $"/api/conversation/{idle.Id}/events");
+            if (!open.Head.StartsWith("HTTP/1.1 200") || _webEvents.Count != 1)
+                return Fail($"a stream before the stop: {open.Head.Split('\r')[0]}, {_webEvents.Count} subscribers");
             Click(false);
+            _store.Delete(idle.Id);
+            if (!await Until(() => _webEvents.Count == 0))
+                return Fail($"the server stopped with {_webEvents.Count} subscribers left");
             if (!await Until(() => served.Count == 2) || _webApp is not null || !served.SequenceEqual([bound, null]) || _settings.WebAppOn || AppSettings.Load().WebAppOn ||
                 WebAppStateText.Text != "Off" || WebAppOnlinePanel.Visibility == Visibility.Visible || WebAppAddress is not null)
                 return Fail($"off: served [{string.Join(",", served)}], on {_settings.WebAppOn}, state {WebAppStateText.Text}");
@@ -471,6 +527,192 @@ public partial class MainWindow
             (_webStatus, _webServe, _settings.WebAppOn, _settings.WebAppPort, _webFailure) = (status, serve, on, port, null);
             _settings.Save();
             RefreshWebApp();
+        }
+    }
+
+    // An events stream read off a raw socket, so the framing is checked as sent: chunked, one `data:` frame or keepalive per chunk.
+    private sealed class SseClient : IDisposable
+    {
+        private readonly System.Net.Sockets.TcpClient _tcp = new();
+        private Stream _stream = Stream.Null;
+        public string Head = "";
+        public int KeepAlives;
+
+        public static async Task<SseClient> Open(int port, string path, string? login = "smoke@example.com", string? site = null)
+        {
+            var c = new SseClient();
+            await c._tcp.ConnectAsync(System.Net.IPAddress.Loopback, port);
+            c._stream = c._tcp.GetStream();
+            var request = $"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n" + (login is null ? "" : $"Tailscale-User-Login: {login}\r\n") +
+                (site is null ? "" : $"Sec-Fetch-Site: {site}\r\n") + "\r\n";
+            await c._stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes(request));
+            for (string line; (line = await c.Line()).Length > 0;)
+                c.Head += line + "\r\n";
+            return c;
+        }
+
+        private async Task<string> Line()
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var bytes = new List<byte>();
+            var one = new byte[1];
+            while (await _stream.ReadAsync(one, timeout.Token) == 1 && one[0] != '\n')
+                bytes.Add(one[0]);
+            return System.Text.Encoding.ASCII.GetString(bytes.ToArray()).TrimEnd('\r');
+        }
+
+        // The next event (keepalives counted and skipped); throws when a chunk is not exactly one frame.
+        public async Task<JsonNode> Next()
+        {
+            while (true)
+            {
+                var size = Convert.ToInt32(await Line(), 16);
+                using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var data = new byte[size + 2];
+                await _stream.ReadExactlyAsync(data, timeout.Token);
+                var text = System.Text.Encoding.UTF8.GetString(data, 0, size);
+                if (text == ": keepalive\n\n")
+                {
+                    KeepAlives++;
+                    continue;
+                }
+                if (!text.StartsWith("data: ") || !text.EndsWith("\n\n") || text[..^2].Contains('\n'))
+                    throw new InvalidDataException($"not one frame: {text}");
+                return JsonNode.Parse(text[6..^2])!;
+            }
+        }
+
+        public void Dispose() => _tcp.Dispose();
+    }
+
+    // Live events (WebAppSmoke, while on), a chat turn on a stand-in engine whose deltas wait for gate files: the stream is
+    // text/event-stream, chunked, one frame per chunk, keepalives while idle; hello, the deltas in order, saved; a PC popup opened
+    // during the turn shows as the state's prompt, send waits for it and /api/answer with its nonce resolves it; a stream that
+    // reconnects mid-turn gets the reply so far in its hello and the rest as deltas, once; the gates refuse it; a client that
+    // leaves is unsubscribed.
+    private async Task<bool> WebEventsSmoke(int port)
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: events: {what}"); return false; }
+        static async Task<bool> Until(Func<bool> done)
+        {
+            for (var waited = 0; waited < 5000 && !done(); waited += 50)
+                await Task.Delay(50);
+            return done();
+        }
+        var (root, project, choice, notify, quiet, keepAlive) = (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _webApp!.KeepAlive);
+        var engine = Path.Combine(AppSettings.DataRoot, "webapp-engine");
+        Directory.CreateDirectory(engine);
+        File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, os, time\n" +
+            "def ev(**e): print('@@AO ' + json.dumps(e), flush=True)\n" +
+            "def wait(name):\n    while not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)): time.sleep(0.05)\n" +
+            "wait('go0')\nev(e='delta', role='planner', kind='text', text='One ')\nwait('go1')\nev(e='delta', role='planner', kind='text', text='two ')\n" +
+            "wait('go2')\nev(e='delta', role='planner', kind='text', text='three')\nev(e='chat_reply', role='planner', text='One two three')\n");
+        File.WriteAllText(Path.Combine(engine, "config.json"), """{"roles": {}}""");
+        void Go(string gate) => File.WriteAllText(Path.Combine(engine, gate), "");
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        http.DefaultRequestHeaders.Add("Tailscale-User-Login", "smoke@example.com");
+        var streams = new List<SseClient>();
+        async Task<SseClient> Open(string id) { var s = await SseClient.Open(port, $"/api/conversation/{id}/events"); streams.Add(s); return s; }
+        // events up to the first that `last` accepts
+        static async Task<List<JsonNode>> ReadTo(SseClient s, Func<JsonNode, bool> last)
+        {
+            var got = new List<JsonNode>();
+            do got.Add(await s.Next()); while (!last(got[^1]));
+            return got;
+        }
+        static string E(JsonNode n) => n["e"]?.ToString() ?? "";
+        static string Deltas(IEnumerable<JsonNode> events) => string.Concat(events.Where(n => E(n) == "delta").Select(n => n["text"]?.ToString()));
+        try
+        {
+            (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _webApp.KeepAlive) = (engine, "", null, (_, _) => { }, true, TimeSpan.FromMilliseconds(200));
+            var placeholder = !File.Exists(LauncherLogic.LlamaServerPath); // a turn needs the runtime there; the stand-in engine never runs it
+            if (placeholder)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LauncherLogic.LlamaServerPath)!);
+                File.WriteAllBytes(LauncherLogic.LlamaServerPath, []);
+            }
+            var started = RemoteSend("", "Count to three");
+            if (placeholder)
+                File.Delete(LauncherLogic.LlamaServerPath);
+            if (started is not (200, _) || RunningId is not { } id)
+                return Fail($"the turn did not start: {started.Item1} {JsonSerializer.Serialize(started.Item2)}, running {RunningId}, busy {_chatBusy}");
+            var a = await Open(id);
+            if (!a.Head.StartsWith("HTTP/1.1 200") || !a.Head.Contains("Content-Type: text/event-stream", StringComparison.OrdinalIgnoreCase) ||
+                !a.Head.Contains("Transfer-Encoding: chunked", StringComparison.OrdinalIgnoreCase))
+                return Fail($"the stream's head: {a.Head}");
+            if (await a.Next() is not { } hello || E(hello) != "hello" || hello["busy"]?.GetValue<bool>() != true || hello["reply"]?["text"]?.ToString() != "")
+                return Fail("the hello");
+            await Task.Delay(500); // idle: keepalives
+            Go("go0");
+            var first = await ReadTo(a, n => E(n) == "delta");
+            if (a.KeepAlives == 0)
+                return Fail("no keepalive while idle");
+
+            // a PC popup during the turn: mirrored as the state's prompt; send waits for it; the phone's answer resolves it
+            var asked = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
+            var shown = (await ReadTo(a, n => E(n) == "state" && n["prompt"] is not null))[^1]["prompt"]!;
+            if (shown["title"]?.ToString() != "Folder access" || shown["nonce"]?.ToString() is not { Length: > 0 } nonce)
+                return Fail($"the prompt: {shown}");
+            if (RemoteAct("POST", "/api/send", WebBody(System.Text.Encoding.UTF8.GetBytes($$"""{"id":"{{id}}","text":"during the popup"}"""))) is not (409, _))
+                return Fail("send ran while the popup was open");
+            async Task<int> Answer(string body)
+            {
+                using var answer = await http.PostAsync($"http://127.0.0.1:{port}/api/answer", new StringContent(body, System.Text.Encoding.UTF8, "application/json"));
+                return (int)answer.StatusCode;
+            }
+            if (await Answer($$"""{"id":"{{id}}","choice":"write","nonce":"0123"}""") != 409 || await Answer($$"""{"id":"{{id}}","choice":"write","nonce":"{{nonce}}"}""") != 200 ||
+                await Task.WhenAny(asked.Task, Task.Delay(5000)) != asked.Task || asked.Result != "write")
+                return Fail("the phone's answer did not resolve the popup");
+            await ReadTo(a, n => E(n) == "state" && n["prompt"] is null);
+
+            // one that leaves mid-turn is unsubscribed; one that reconnects gets the reply so far, then the rest, once
+            var b = await Open(id);
+            await b.Next();
+            if (_webEvents.Count != 2)
+                return Fail($"{_webEvents.Count} subscribers with two streams");
+            b.Dispose();
+            if (!await Until(() => _webEvents.Count == 1))
+                return Fail($"a client that left is still subscribed ({_webEvents.Count})");
+            var sofar = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/conversation/{id}"))?["reply"]?["text"]?.ToString();
+            var c = await Open(id);
+            var again = await c.Next();
+            Go("go1");
+            Go("go2");
+            var rest = await ReadTo(a, n => E(n) == "saved");
+            var resumed = await ReadTo(c, n => E(n) == "saved");
+            if (Deltas(first.Concat(rest)) != "One two three" || !rest.Any(n => E(n) == "chat_reply"))
+                return Fail($"stream A: {string.Join(" ", first.Concat(rest).Select(n => n.ToJsonString()))}");
+            if (sofar != "One " || again["reply"]?["text"]?.ToString() != sofar || sofar + Deltas(resumed) != "One two three")
+                return Fail($"the reconnect: so far {sofar}, hello {again.ToJsonString()}, then {Deltas(resumed)}");
+            if (_store.Get(id)?.Messages.LastOrDefault()?.Content != "One two three")
+                return Fail("saved before the reply was");
+
+            // the gates: no owner, another account, a cross-site page
+            foreach (var (login, site) in new[] { ((string?)null, (string?)null), ("other@example.com", null), ("smoke@example.com", "cross-site") })
+            {
+                using var refused = await SseClient.Open(port, $"/api/conversation/{id}/events", login, site);
+                if (!refused.Head.StartsWith("HTTP/1.1 403"))
+                    return Fail($"{login} {site}: {refused.Head.Split('\r')[0]}");
+            }
+            if ((await http.GetAsync($"http://127.0.0.1:{port}/api/conversation/none/events")).StatusCode != System.Net.HttpStatusCode.NotFound)
+                return Fail("an unknown conversation's events");
+            foreach (var s in streams)
+                s.Dispose();
+            if (!await Until(() => _webEvents.Count == 0))
+                return Fail($"{_webEvents.Count} subscribers after the streams closed");
+            return true;
+        }
+        catch (Exception x) when (x is IOException or InvalidDataException or OperationCanceledException or FormatException or HttpRequestException)
+        {
+            return Fail(x.Message);
+        }
+        finally
+        {
+            foreach (var s in streams)
+                s.Dispose();
+            (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (root, project, choice, notify, quiet);
+            if (_webApp is not null)
+                _webApp.KeepAlive = keepAlive;
         }
     }
 

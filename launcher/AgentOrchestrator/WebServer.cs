@@ -11,7 +11,12 @@ namespace AgentOrchestrator;
 // /api/* goes to `api` (MainWindow.WebApp.cs), which answers (status, JSON body). Apart from RemoteServer (Cloudflare).
 internal sealed class WebServer
 {
-    public sealed record Response(int Status, string Type, byte[] Body);
+    public record Response(int Status, string Type, byte[] Body);
+
+    // What the API answers an events route with (it goes through every gate like any API answer): `Hello` first, then `Events`
+    // until they end, the phone goes away or the server stops; `Life` is cancelled then (it ends the subscription).
+    public sealed record EventStream(string Hello, System.Threading.Channels.ChannelReader<string> Events, CancellationTokenSource Life)
+        : Response(200, "text/event-stream; charset=utf-8", []);
 
     public delegate Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType);
 
@@ -22,6 +27,9 @@ internal sealed class WebServer
     private readonly Func<string?> _suffix;
     private readonly WebApi _api;
     private HttpListener? _listener;
+    private readonly CancellationTokenSource _stopping = new(); // ends the open event streams
+
+    internal TimeSpan KeepAlive { get; set; } = TimeSpan.FromSeconds(15); // an event stream's comment line, when nothing else was sent
 
     // `ownerLogin`: the PC's Tailscale login; `tailnetSuffix`: its MagicDNS suffix (tail1234.ts.net), whose https origins
     // (the user's other PCs) may call the API. Both are asked on every request: null while Tailscale is not known.
@@ -52,6 +60,7 @@ internal sealed class WebServer
 
     public void Stop()
     {
+        _stopping.Cancel();
         _listener?.Close();
         (_listener, Port) = (null, null);
     }
@@ -101,6 +110,13 @@ internal sealed class WebServer
             var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
             var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "",
                 request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"]);
+            if (r is EventStream stream)
+            {
+                using (stream.Life)
+                    try { await StreamEvents(response, stream, KeepAlive, _stopping.Token); }
+                    finally { stream.Life.Cancel(); } // ends the subscription
+                return;
+            }
             response.StatusCode = r.Status;
             response.ContentType = r.Type;
             response.ContentLength64 = r.Body.Length;
@@ -113,20 +129,40 @@ internal sealed class WebServer
         }
     }
 
-    // Streams `events` (JSON texts) to an owner's request as Server-Sent Events, one flush per frame, until they end, the
-    // phone goes away or `ct` is cancelled. For Serve's events route (Task 4), after the identity check.
-    internal static async Task StreamEvents(HttpListenerResponse response, IAsyncEnumerable<string> events, CancellationToken ct)
+    // Server-Sent Events: the hello, then each event as it comes, one write and flush per frame (with chunked encoding, one
+    // chunk each), and `: keepalive` after `keepAlive` without one; until the events end, the phone goes away (a write fails)
+    // or `ct` is cancelled.
+    private static async Task StreamEvents(HttpListenerResponse response, EventStream stream, TimeSpan keepAlive, CancellationToken ct)
     {
         response.StatusCode = 200;
-        response.ContentType = "text/event-stream; charset=utf-8";
-        response.Headers["Cache-Control"] = "no-store";
+        response.ContentType = stream.Type;
         response.SendChunked = true;
-        await foreach (var json in events.WithCancellation(ct))
+        async Task Send(byte[] frame)
         {
-            await response.OutputStream.WriteAsync(SseFrame(json), ct);
+            await response.OutputStream.WriteAsync(frame, ct);
             await response.OutputStream.FlushAsync(ct);
         }
+        await Send(SseFrame(stream.Hello));
+        while (true)
+        {
+            using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            wait.CancelAfter(keepAlive);
+            try
+            {
+                if (!await stream.Events.WaitToReadAsync(wait.Token))
+                    return;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                await Send(KeepAliveFrame);
+                continue;
+            }
+            while (stream.Events.TryRead(out var json))
+                await Send(SseFrame(json));
+        }
     }
+
+    private static readonly byte[] KeepAliveFrame = Encoding.UTF8.GetBytes(": keepalive\n\n");
 
     // The request's body; null when it is over MaxBody.
     private static async Task<byte[]?> ReadBody(HttpListenerRequest request)

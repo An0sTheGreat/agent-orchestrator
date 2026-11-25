@@ -1080,6 +1080,7 @@ public partial class MainWindow
     private bool FinishChatTurn(int exitCode, bool stopped, string? failure)
     {
         var c = _turn;
+        var id = RunningId; // null once SetChatBusy(false) ran
         var completed = false;
         var kept = false; // a stopped or failed turn kept in the history: the message and what of the reply arrived
         FlushMarkdown(); // a stopped or failed turn shows all it received
@@ -1150,6 +1151,8 @@ public partial class MainWindow
             else
                 SaveChatConversation();
         }
+        if (completed || kept)
+            PublishWebEvent(id, """{"e":"saved"}""");
         if (_turn == _parked) // its chat is saved; the parked view goes (opening the chat loads it from the store)
             (_parked, _parkedConv, _parkedContext) = (null, null, null);
         return stopped;

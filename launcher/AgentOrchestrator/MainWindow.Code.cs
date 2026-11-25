@@ -547,10 +547,12 @@ public partial class MainWindow
         panel.Children.Add(buttons);
         dialog = new DialogShell(this, title, panel) { ShowActivated = !_dialogsQuiet };
         // While it is open the remote page shows it with its choices; an answer from there (with its nonce) resolves it as a click would.
+        // With the phone app on, every popup is mirrored there (in the running conversation, or "" when none runs).
         var outer = _remotePrompt;
-        _remotePrompt = remote is null ? null
-            : new RemotePrompt(remote, Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)), title, message, options, dialog,
-                value => { result = value; dialog.Close(); });
+        var shownIn = remote ?? (_webApp is not null ? RunningId ?? "" : null);
+        _remotePrompt = shownIn is null ? null
+            : new RemotePrompt(shownIn, Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(16)), title, message, options, dialog,
+                value => { result = value; dialog.Close(); }, Mirrored: remote is null);
         try { dialog.ShowDialog(); }
         finally { _remotePrompt = outer; }
         return result;

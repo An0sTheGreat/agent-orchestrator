@@ -22,14 +22,16 @@ public partial class MainWindow
 
     // The open remote-answerable Choose popup (null: none), the conversation it is shown in, and a nonce an answer must
     // carry, so an answer meant for an earlier popup never resolves this one.
-    private sealed record RemotePrompt(string Conversation, string Nonce, string Title, string Message, (string Label, string Value)[] Options, Window Dialog, Action<string> Resolve);
+    // `Mirrored`: a PC popup the phone app shows while it is on; it may be answered remotely, but send and stop still wait for it.
+    private sealed record RemotePrompt(string Conversation, string Nonce, string Title, string Message, (string Label, string Value)[] Options, Window Dialog, Action<string> Resolve,
+        bool Mirrored = false);
     private RemotePrompt? _remotePrompt;
 
     // The remote prompt for conversation `id`, while nothing is open on top of it.
     private RemotePrompt? PromptFor(string id) => _remotePrompt is { } p && p.Conversation == id && !Disabled(p.Dialog) ? p : null;
 
-    // A popup the remote page cannot answer is open at the PC: a remote action now would run inside its dialog loop.
-    private bool DesktopDialogOpen() => _remotePrompt is { } p ? Disabled(p.Dialog)
+    // A popup the remote page cannot answer (or a mirrored one) is open at the PC: a remote action now would run inside its dialog loop.
+    private bool DesktopDialogOpen() => _remotePrompt is { Mirrored: false } p ? Disabled(p.Dialog)
         : System.Windows.Interop.ComponentDispatcher.IsThreadModal || Disabled(this);
 
     // A modal on top disables its owner (WPF's ShowDialog every other window of the thread).
