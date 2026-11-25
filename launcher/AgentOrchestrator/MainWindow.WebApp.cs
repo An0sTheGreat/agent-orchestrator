@@ -239,8 +239,8 @@ public partial class MainWindow
             ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body)))),
             ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebSend(WebBody(body)))),
             ("POST", "/api/upload") => WebUpload(fileName, body),
-            ("GET", "/api/composer") => await Dispatcher.InvokeAsync(WebComposer),
-            ("POST", "/api/composer") => await Dispatcher.InvokeAsync(() => WebComposerSet(WebBody(body))),
+            ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
+            ("POST", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposerSet(WebBody(body), await WebSharedImageModels())),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
             ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
             _ => WebNotFound,
@@ -287,24 +287,73 @@ public partial class MainWindow
     }
 
     // The Chat composer's options as the desktop shows them: the toggles, the effort sent (and the levels the target takes),
-    // its target worker and the ones it may pick, the skills, and the chat's image model, size and steps.
-    private (int, object) WebComposer()
+    // its target worker and the ones it may pick, the skills, and the chat's image model, size and steps: the Image Gen chip's model
+    // choices and pick (model: a choice's id; name: what the chip shows), its aspect ratios (Custom first) and pick, its width and
+    // height boxes (0 = empty: the ratio's recommended), its lock, and the size the request carries ("" while no model is ready).
+    private (int, object) WebComposer(List<ImageShare.Model>? shared)
     {
         var target = ChatTarget();
         var size = ChatImageReady && ImageGen.ChatRequest(_settings.ChatImage, _settings.ImageKeepBoth) is { } r ? $"{r.Width}×{r.Height}" : "";
+        var c = _settings.ChatImage;
+        ScanImageFolder();
         return (200, new
         {
             search = _settings.UseSearch, tools = _settings.UseTools, vision = _settings.UseVision,
             effort = EffortFor(target), efforts = EffortLevels(target), worker = target?.Role ?? "",
             workers = ListedWorkers(_chat).Select(k => new { role = k.Role, name = ChatName(k, k.Role) }).ToList(),
             skills = AllSkills().Select(s => new { name = Path.GetFileName(s.Folder), on = HasSkill(s) }).ToList(),
-            imageGen = new { model = ImageGen.ChatModel(_settings.ChatImage) is var (_, model) ? model : "", size, steps = _settings.ChatImageSteps },
+            imageGen = new
+            {
+                model = ChatImageKey(), name = ImageGen.ChatModel(c) is var (_, model) ? model : "",
+                models = ChatImageChoices(shared).Select(m => new { id = m.Key, name = m.Name, note = m.Note, downloaded = m.Downloaded, primary = m.Primary }).ToList(),
+                aspect = c.Aspect, aspects = ImageGen.Presets.Select(p => new { name = p.Name, ratio = p.Ratio.Length > 0 ? p.Ratio : "Custom" }).ToList(),
+                width = c.CustomWidth, height = c.CustomHeight, unlocked = c.SizeUnlocked, size, steps = _settings.ChatImageSteps,
+            },
         });
     }
 
-    // Writes what the body names, as the desktop's own controls do (an unknown worker, effort or skill changes nothing: 400),
-    // saves, and refreshes the desktop's chips and toggles. The image model and size stay the desktop's to pick.
-    private (int, object) WebComposerSet(JsonElement body)
+    // The primary PC's image models for the composer while connected: the list fetched last for this host, else fetched (5 s); null when none.
+    private async Task<List<ImageShare.Model>?> WebSharedImageModels()
+    {
+        var host = _settings.ShareHost;
+        if (host.Length == 0)
+            return null;
+        if (_imageShared is var (fetched, models) && fetched == host)
+            return models;
+        try { return await FetchSharedImageModels(host, 5); }
+        catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException) { return null; }
+    }
+
+    // The chip's size controls' rules without the controls (ImageSizeControls: Commit, AspectChanged, Read): the boxes round to the
+    // model's multiple (unlocked: as typed, 64-4096), with a ratio and locked the height follows the width (else the width the height),
+    // a pair off the ratio is Custom, and Width/Height are the boxes over the ratio's recommended size (Custom: the ratio before, else Square).
+    private void WriteChatImageSize(string aspect, bool unlocked, int typedWidth, int typedHeight)
+    {
+        var c = _settings.ChatImage;
+        var (multiple, step) = (ChatImageMultiple(), unlocked ? 1 : ChatImageMultiple());
+        int cw = typedWidth > 0 ? ImageGen.Pick(typedWidth, 0, step) : 0, ch = typedHeight > 0 ? ImageGen.Pick(typedHeight, 0, step) : 0;
+        var custom = aspect == "Custom";
+        if (!custom && !unlocked)
+        {
+            if (cw > 0)
+                ch = ImageGen.Linked(cw, aspect, true, multiple);
+            else if (ch > 0)
+                cw = ImageGen.Linked(ch, aspect, false, multiple);
+            custom = cw > 0 && !ImageGen.Matches(cw, ch, aspect, multiple);
+        }
+        var ratio = custom ? (IsChatImageRatio(c.Aspect) ? c.Aspect : "1:1") : aspect;
+        var (rw, rh) = ImageGen.Size(ratio, ImageGen.RecommendedLongSide, multiple);
+        int w = ImageGen.Pick(cw, rw, step), h = ImageGen.Pick(ch, rh, step);
+        (c.Aspect, c.SizeUnlocked, c.Width, c.Height, c.CustomWidth, c.CustomHeight) = (custom ? "Custom" : aspect, unlocked, w, h, custom || cw > 0 ? w : 0, custom || ch > 0 ? h : 0);
+    }
+
+    // An aspect the chip's list offers: a preset's ratio, or its flip (the swap button)
+    private static bool IsChatImageRatio(string aspect) => ImageGen.Presets.Any(p => p.Ratio.Length > 0 && (p.Ratio == aspect || ImageGen.Flip(p.Ratio) == aspect));
+
+    // Writes what the body names, as the desktop's own controls do (an unknown worker, effort, skill, image model or aspect changes
+    // nothing: 400), saves, and refreshes the desktop's chips and toggles. imageGen.model: one of the chip's choices (the pick itself
+    // changes nothing); aspect ("Custom", a ratio or its flip), width, height (0 = empty) and unlocked: the chip's size, missing ones as they are.
+    private (int, object) WebComposerSet(JsonElement body, List<ImageShare.Model>? shared)
     {
         if (body.ValueKind != JsonValueKind.Object)
             return (400, new { error = "Expected a JSON object" });
@@ -317,6 +366,18 @@ public partial class MainWindow
                 On: t.ValueKind == JsonValueKind.Object && t.TryGetProperty("on", out var on) && on.ValueKind == JsonValueKind.True)).ToList() : [];
         if (worker is not null && ListedWorkers(_chat).All(k => k.Role != worker) || effort is not null && Efforts.All(x => x.Value != effort) || toggles.Any(t => t.Skill is null))
             return (400, new { error = "No such worker, effort or skill" });
+        var image = body.TryGetProperty("imageGen", out var i) && i.ValueKind == JsonValueKind.Object ? i : default;
+        int? Number(string name) => image.ValueKind == JsonValueKind.Object && image.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var n) ? n : null;
+        var (modelKey, aspect) = (image.ValueKind == JsonValueKind.Object ? WebField(image, "model") : "", image.ValueKind == JsonValueKind.Object ? WebField(image, "aspect") : "");
+        ChatImageChoice? pick = null;
+        if (modelKey.Length > 0 && !modelKey.Equals(ChatImageKey(), StringComparison.OrdinalIgnoreCase))
+        {
+            ScanImageFolder();
+            if ((pick = ChatImageChoices(shared).FirstOrDefault(m => m.Key.Equals(modelKey, StringComparison.OrdinalIgnoreCase))) is null)
+                return (400, new { error = "No such image model" });
+        }
+        if (aspect.Length > 0 && aspect != "Custom" && !IsChatImageRatio(aspect))
+            return (400, new { error = "No such aspect ratio" });
         (_settings.UseSearch, _settings.UseTools, _settings.UseVision) = (Flag("search") ?? _settings.UseSearch, Flag("tools") ?? _settings.UseTools, Flag("vision") ?? _settings.UseVision);
         (_settings.ChatWorker, _settings.ChatEffort) = (worker ?? _settings.ChatWorker, effort ?? _settings.ChatEffort);
         foreach (var (skill, on) in toggles)
@@ -326,12 +387,19 @@ public partial class MainWindow
             if (on != skill.BuiltIn) // as SetSkill: a user skill on, or a bundled one off
                 list.Add(key);
         }
-        if (body.TryGetProperty("imageGen", out var image) && image.ValueKind == JsonValueKind.Object && image.TryGetProperty("steps", out var steps) && steps.ValueKind == JsonValueKind.Number && steps.TryGetInt32(out var n))
-            _settings.ChatImageSteps = n > 0 ? Math.Clamp(n, 1, 100) : 0; // as the chip's box: 0 is the model's own
+        if (Number("steps") is { } steps)
+            _settings.ChatImageSteps = steps > 0 ? Math.Clamp(steps, 1, 100) : 0; // as the chip's box: 0 is the model's own
+        if (pick is not null)
+            PickChatImage(pick); // before the size: a typed size rounds to the new model's multiple
+        var unlocked = image.ValueKind == JsonValueKind.Object && image.TryGetProperty("unlocked", out var u) && u.ValueKind is JsonValueKind.True or JsonValueKind.False ? u.GetBoolean() : (bool?)null;
+        var c = _settings.ChatImage;
+        if (aspect.Length > 0 || unlocked is not null || Number("width") is not null || Number("height") is not null)
+            WriteChatImageSize(aspect.Length > 0 ? aspect : c.Aspect == "Custom" || IsChatImageRatio(c.Aspect) ? c.Aspect : "1:1", unlocked ?? c.SizeUnlocked,
+                Number("width") ?? c.CustomWidth, Number("height") ?? c.CustomHeight);
         _settings.Save();
         RefreshExtras();
         RefreshChatTarget();
-        return WebComposer();
+        return WebComposer(shared);
     }
 
     private object WebHello() => new
@@ -851,6 +919,7 @@ public partial class MainWindow
             return done();
         }
         var (root, project, choice, notify, quiet, search, visible, activated) = (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch, IsVisible, ShowActivated);
+        var (shareHost, sharedFetch, chatImage) = (_settings.ShareHost, _imageSharedFetch, JsonSerializer.Serialize(_settings.ChatImage));
         var engine = Path.Combine(AppSettings.DataRoot, "webapp-send-engine");
         Directory.CreateDirectory(engine);
         File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, os, sys, time\n" +
@@ -943,6 +1012,31 @@ public partial class MainWindow
                 return Fail($"composer search off: setting {_settings.UseSearch}, toggle {ChatSearchToggle.IsChecked}");
             if (await PostJson("/api/composer", new { worker = "nobody" }) is not (400, _) || await PostJson("/api/composer", new { effort = "loud" }) is not (400, _))
                 return Fail("an unknown worker or effort was taken");
+
+            // the chat's image model and size: the chip's choices, picked as the chip does; the primary PC's from the swapped fetch
+            _settings.ChatImage.RecipeId = ImageGen.Recipes[0].Id;
+            var image = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/composer"))?["imageGen"];
+            if (image?["model"]?.ToString() != ImageGen.Recipes[0].Id || image["models"]?.AsArray().Any(m => m?["id"]?.ToString() == ImageGen.Recipes[0].Id && m["primary"]?.GetValue<bool>() == false) != true ||
+                image["aspects"]?.AsArray().Count != ImageGen.Presets.Length)
+                return Fail($"the composer's image models: {image?.ToJsonString()}");
+            var other = image["models"]!.AsArray().Select(m => m!["id"]!.ToString()).FirstOrDefault(m => m != ImageGen.Recipes[0].Id && ImageGen.Recipes.Any(r => r.Id == m));
+            if (other is null)
+                return Fail("no other recipe listed");
+            var multiple = ImageGen.Recipe(other).Multiple;
+            if (await PostJson("/api/composer", new { imageGen = new { model = other, aspect = "16:9" } }) is not (200, _) || _settings.ChatImage is not { LocalModel: "", Aspect: "16:9" } chosen ||
+                chosen.RecipeId != other || AppSettings.Load().ChatImage.RecipeId != other ||
+                ImageGen.ChatRequest(chosen, false) is not { } wide || (wide.Width, wide.Height) != ImageGen.Size("16:9", ImageGen.RecommendedLongSide, multiple) ||
+                ChatImageGenToggle.ToolTip as string != $"Image Gen: {ImageGen.Recipe(other).Name}, {wide.Width} × {wide.Height}")
+                return Fail($"picking {other} at 16:9: {JsonSerializer.Serialize(_settings.ChatImage)}, tip {ChatImageGenToggle.ToolTip}");
+            if (await PostJson("/api/composer", new { imageGen = new { width = 1000 } }) is not (200, _) || ImageGen.ChatRequest(_settings.ChatImage, false) is not { } typed ||
+                (typed.Width, typed.Height) != (ImageGen.Pick(1000, 0, multiple), ImageGen.Linked(ImageGen.Pick(1000, 0, multiple), "16:9", true, multiple)) || _settings.ChatImage.Aspect != "16:9")
+                return Fail($"a typed width at 16:9: {JsonSerializer.Serialize(_settings.ChatImage)}");
+            if (await PostJson("/api/composer", new { imageGen = new { model = "no-such-model" } }) is not (400, _) || _settings.ChatImage.RecipeId != other)
+                return Fail("an unknown image model was taken");
+            (_settings.ShareHost, _imageSharedFetch) = ("primary.test", (_, _) => Task.FromResult(new List<ImageShare.Model> { new(ImageGen.Recipes[0].Id, "Shared", "", false, 16, 8, 1, "") }));
+            if (await PostJson("/api/composer", new { imageGen = new { model = "primary:" + ImageGen.Recipes[0].Id } }) is not (200, { } onPrimary) ||
+                _settings.ChatImage.SharedModel != ImageGen.Recipes[0].Id || onPrimary["imageGen"]?["models"]?.AsArray().Any(m => m?["primary"]?.GetValue<bool>() == true) != true)
+                return Fail($"the primary PC's model: {JsonSerializer.Serialize(_settings.ChatImage)}");
             if (WindowState != WindowState.Minimized)
                 return Fail($"the window is {WindowState} after the routes");
 
@@ -971,6 +1065,7 @@ public partial class MainWindow
             if (created is not null)
                 _store.Delete(created);
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch) = (root, project, choice, notify, quiet, search);
+            (_settings.ShareHost, _imageSharedFetch, _imageShared, _settings.ChatImage) = (shareHost, sharedFetch, null, JsonSerializer.Deserialize<ImageSettings>(chatImage)!);
             _settings.Save();
             RefreshExtras();
             WindowState = WindowState.Normal;

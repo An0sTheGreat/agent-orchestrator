@@ -97,16 +97,12 @@ public partial class MainWindow
 
         // MODEL: this PC's (the recipes and the models folder's), the primary PC's while connected; the pick is marked
         ScanImageFolder();
-        var local = ImageShare.Models(_imgLocal);
         List<ImageShare.Model>? shared = null;
         var sharedNote = "";
         var rows = new StackPanel();
-        void Pick(Action<ImageSettings> write)
+        void Pick(ChatImageChoice m)
         {
-            var c = _settings.ChatImage;
-            (c.SharedModel, c.RemoteModel, c.RemoteProvider, c.LocalModel) = ("", "", "", "");
-            write(c);
-            _settings.Save();
+            PickChatImage(m);
             _chipSize?.Show(); // the new model's multiple
             ShowSteps(); // the new model's own steps
             ShowRows();
@@ -134,19 +130,11 @@ public partial class MainWindow
         void ShowRows()
         {
             var c = _settings.ChatImage;
-            var own = c.SharedModel.Length == 0 && c.RemoteModel.Length == 0;
+            var (choices, current) = (ChatImageChoices(shared), ChatImageKey());
             rows.Children.Clear();
             rows.Children.Add(Head("This PC", 0, 6));
-            foreach (var m in local)
-            {
-                var current = own && (m.Id.StartsWith("local:", StringComparison.Ordinal)
-                    ? Path.GetFileName(c.LocalModel).Equals(m.Id[6..], StringComparison.OrdinalIgnoreCase) : c.LocalModel.Length == 0 && c.RecipeId == m.Id);
-                var files = Files(m.Id);
-                if (!current && (_settings.ImageHideMissing && files.StartsWith("Download (", StringComparison.Ordinal) || Shown(m.Id)))
-                    continue; // not downloaded and the switch on, or the model shown by another row (the current pick stays)
-                Row("chatimg:" + m.Id, m.Name, files, current,
-                    () => Pick(s => (s.RecipeId, s.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "")), m.Note);
-            }
+            foreach (var m in choices.Where(m => !m.Primary))
+                Row("chatimg:" + m.Id, m.Name, m.Note, m.Key.Equals(current, StringComparison.OrdinalIgnoreCase), () => Pick(m), m.Tip);
             if (_settings.ShareHost.Length > 0)
             {
                 rows.Children.Add(Head("Primary PC", 8, 6));
@@ -156,8 +144,8 @@ public partial class MainWindow
                     note.Margin = new Thickness(6, 0, 0, 0);
                     rows.Children.Add(note);
                 }
-                foreach (var m in shared ?? [])
-                    Row("chatimgshared:" + m.Id, m.Name, m.Note, c.SharedModel == m.Id, () => Pick(s => (s.SharedModel, s.RecipeId) = (m.Id, m.Id)));
+                foreach (var m in choices.Where(m => m.Primary))
+                    Row("chatimgshared:" + m.Id, m.Name, m.Note, m.Key == current, () => Pick(m));
             }
             if (c.SharedModel.Length == 0 && c.RemoteModel.Length > 0) // chosen before; OpenRouter models are not offered here
             {
@@ -165,26 +153,13 @@ public partial class MainWindow
                 Row("chatimgremote:" + c.RemoteModel, c.RemoteModel, "", true, () => { });
             }
         }
-        // a recipe whose model is on this PC as another file, or a folder file that is a recipe's own (as the Images page skips them)
-        bool Shown(string id) => ImageShare.Resolve(id, _imgLocal) is var (recipe, path)
-            && (path.Length == 0 ? RecipeCovered(recipe) : IsRecipeFile(_imgLocal.First(l => l.Path == path)));
-        // what the Images page's list says of a model's files: picking one marked Download downloads it on first use, as there
-        string Files(string id)
-        {
-            if (ImageShare.Resolve(id, _imgLocal) is not var (recipe, path))
-                return "";
-            var missing = MissingImageFiles(recipe, path).Sum(f => f.Size);
-            var gb = $"{missing / (double)(1L << 30):0.0} GB";
-            return path.Length == 0 ? missing == 0 ? "Downloaded" : $"Download ({gb})" : missing == 0 ? "on this PC" : $"on this PC, needs {gb} of parts";
-        }
         async void LoadShared()
         {
             var host = _settings.ShareHost;
             sharedNote = $"Loading the models of {host}…";
             try
             {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-                shared = await ImageShare.FetchModelsAsync(http, ModelShare.ImagesUrl(host), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
+                shared = await FetchSharedImageModels(host, 30);
                 sharedNote = $"{host} has no image models";
             }
             catch (Exception x) when (x is HttpRequestException or InvalidOperationException or TaskCanceledException or JsonException)
@@ -290,6 +265,75 @@ public partial class MainWindow
         };
         card.PreviewKeyDown += OnKey;
         popup.IsOpen = true;
+    }
+
+    // One model the chip offers. Key: the pick's own name (ChatImageKey; the primary PC's prefixed "primary:"), what the phone sends.
+    // Note: right of the name (this PC's: what the Images page says of its files); Tip: the tooltip's extra; Downloaded: null on the primary PC.
+    internal sealed record ChatImageChoice(string Key, string Id, string Name, string Note, string Tip, bool? Downloaded, bool Primary);
+
+    // The chat's pick as a ChatImageChoice key: the primary PC's, OpenRouter's (never offered), a models folder file, else the recipe ("" = none).
+    private string ChatImageKey()
+    {
+        var c = _settings.ChatImage;
+        return c.SharedModel.Length > 0 ? "primary:" + c.SharedModel : c.RemoteModel.Length > 0 ? "openrouter:" + c.RemoteModel
+            : c.LocalModel.Length > 0 ? "local:" + Path.GetFileName(c.LocalModel) : c.RecipeId;
+    }
+
+    // The chip's models (call ScanImageFolder first): this PC's, less those not downloaded with the switch on and those another row
+    // shows (the pick stays), then the primary PC's while connected (shared: its list; null while not fetched).
+    private List<ChatImageChoice> ChatImageChoices(List<ImageShare.Model>? shared)
+    {
+        var current = ChatImageKey();
+        var choices = new List<ChatImageChoice>();
+        foreach (var m in ImageShare.Models(_imgLocal))
+        {
+            // what the Images page's list says of a model's files: picking one marked Download downloads it on first use, as there
+            var (files, downloaded) = ("", (bool?)null);
+            if (ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path))
+            {
+                var missing = MissingImageFiles(recipe, path).Sum(f => f.Size);
+                var gb = $"{missing / (double)(1L << 30):0.0} GB";
+                (files, downloaded) = (path.Length == 0 ? missing == 0 ? "Downloaded" : $"Download ({gb})" : missing == 0 ? "on this PC" : $"on this PC, needs {gb} of parts", missing == 0);
+            }
+            if (!m.Id.Equals(current, StringComparison.OrdinalIgnoreCase) && (_settings.ImageHideMissing && files.StartsWith("Download (", StringComparison.Ordinal) || Shown(m.Id)))
+                continue; // not downloaded and the switch on, or the model shown by another row (the current pick stays)
+            choices.Add(new(m.Id, m.Id, m.Name, files, m.Note, downloaded, false));
+        }
+        if (_settings.ShareHost.Length > 0)
+            choices.AddRange((shared ?? []).Select(m => new ChatImageChoice("primary:" + m.Id, m.Id, m.Name, m.Note, "", null, true)));
+        return choices;
+        // a recipe whose model is on this PC as another file, or a folder file that is a recipe's own (as the Images page skips them)
+        bool Shown(string id) => ImageShare.Resolve(id, _imgLocal) is var (recipe, path)
+            && (path.Length == 0 ? RecipeCovered(recipe) : IsRecipeFile(_imgLocal.First(l => l.Path == path)));
+    }
+
+    // A chip row's click (and the phone's pick): the chat's image model is that one alone, saved.
+    private void PickChatImage(ChatImageChoice m)
+    {
+        var c = _settings.ChatImage;
+        (c.SharedModel, c.RemoteModel, c.RemoteProvider, c.LocalModel) = ("", "", "", "");
+        if (m.Primary)
+            (c.SharedModel, c.RecipeId) = (m.Id, m.Id);
+        else
+            (c.RecipeId, c.LocalModel) = ImageShare.Resolve(m.Id, _imgLocal) is var (recipe, path) ? (recipe.Id, path) : (m.Id, "");
+        _settings.Save();
+    }
+
+    // The primary PC's list (the chip's dropdown fetches it at each opening; the phone's composer takes the last one fetched).
+    private (string Host, List<ImageShare.Model> Models)? _imageShared;
+    internal Func<string, int, Task<List<ImageShare.Model>>> _imageSharedFetch = FetchImageModels; // --webapp-smoke swaps it, never the network
+
+    private async Task<List<ImageShare.Model>> FetchSharedImageModels(string host, int seconds)
+    {
+        var models = await _imageSharedFetch(host, seconds);
+        _imageShared = (host, models);
+        return models;
+    }
+
+    private static async Task<List<ImageShare.Model>> FetchImageModels(string host, int seconds)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(seconds) };
+        return await ImageShare.FetchModelsAsync(http, ModelShare.ImagesUrl(host), Environment.GetEnvironmentVariable(ModelShare.KeyEnv) ?? "", CancellationToken.None);
     }
 
     // "Hide models not downloaded" (AppSettings.ImageHideMissing), one setting for the Images page's list and the chip's dropdown.
