@@ -488,6 +488,7 @@ class ApiClient:
                     "Raise sampling.max_tokens" + (" or lower the role's auto_load.reasoning_budget." if not self.remote else ".")
                 )
             self.cut_off = choice.get("finish_reason") == "length"
+            self.cut_limit = body.get("max_tokens")  # what the cut-off note names (final_reply)
             if self.cut_off:
                 print(f"[{self.title or self.role}] reply cut off at the output limit (max_tokens={body.get('max_tokens', '?')})")
             if EVENTS:
@@ -3656,6 +3657,19 @@ def reply_text(message: dict[str, Any]) -> str:
     return answer_text(message) or re.sub(r"</?think>", "", "\n".join(split_reasoning(message))).strip()
 
 
+def cut_note(limit: Any) -> str:
+    """What a reply that stopped at the output limit ends with: the user sees why it stops part-way, and the model, reading
+    it back next turn, knows to go on from there. limit: the limit in tokens, if known."""
+    size = f" ({int(limit):,} tokens)" if str(limit or "").isdigit() else ""
+    return f"\n\n(Cut off at the output limit{size}. Say \"continue\" for the rest, or raise this model's Max tokens.)"
+
+
+def final_reply(client: Any, message: dict[str, Any]) -> str:
+    """A turn's last reply as shown and saved: reply_text, with cut_note when the client says it stopped at the output limit."""
+    text = reply_text(message)
+    return text + cut_note(getattr(client, "cut_limit", None)) if text and getattr(client, "cut_off", False) else text
+
+
 # ---- extras for Chat and Code turns: web search, utilities and skills, each switched on by the request
 
 WEB_TIMEOUT, WEB_MAX_BYTES, WEB_MAX_TEXT, WEB_MAX_RESULTS = 20, 2_000_000, 100_000, 8  # WEB_MAX_TEXT: a ceiling; see TOOL_SHARE
@@ -3935,7 +3949,7 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
     if extras[0]:
         return code_loop(config, role, system + extras[2], messages, extras[0], extras[1], steers=steers)
     model = client.ensure_model(role, False)
-    return reply_text(client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
+    return final_reply(client, client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
 
 
 PICTURE_LINE = "Image generated and shown to the user. "  # the launcher's ImageGen.ChatResult: a picture turn's saved reply
@@ -4323,7 +4337,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             messages.append({"role": "user", "content": FAKE_PICTURE})
             continue
         if not calls and not nudge:
-            return reply_text(response)
+            return final_reply(client, response)
         if not calls:
             if nudges >= 3:
                 raise WorkflowError(f"{name} replied {nudges + 1} times in a row without a tool call; stopping the run")
@@ -4457,7 +4471,9 @@ def chat_pc_access(request: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[
         handlers["run_command"] = command_runner(folders, request)
     reach = "run commands as the user and read and write files" if full else "read and write files"
     note = (f"\n\nPC ACCESS: you can {reach} anywhere on this PC except Windows\\System32 (relative paths start in "
-            f"{folders[0]['path']}). Act only as the user asks, and say what you changed.")
+            f"{folders[0]['path']}). Act only as the user asks, and say what you changed. Code you wrote earlier in this chat "
+            "is in the messages above: when it is needed as a file, write it out instead of asking the user for it; a generated "
+            "picture is saved at the path its result gives (Saved: …).")
     return tools, handlers, note
 
 
@@ -6059,6 +6075,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
                     error = str(message.get("errorMessage") or message.get("stopReason"))
                 elif not calls:
                     answer = pi_text(message.get("content")).strip() or answer
+                    if message.get("stopReason") == "length" and answer:
+                        answer += cut_note(completion)
             elif kind == "tool_execution_start":
                 args_by_call[event.get("toolCallId")] = event.get("args")
             elif kind == "tool_execution_end":

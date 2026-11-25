@@ -760,6 +760,28 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(client.completions, 3)
             self.assertFalse((root / "b.txt").exists())
 
+    def test_a_final_reply_cut_off_at_the_output_limit_says_so(self):
+        class Client:
+            cut_off, cut_limit, title = False, 16384, "Lead"
+
+            def ensure_model(self, role, interactive):
+                return "m"
+
+            def complete(self, model, messages, sampling, tools=None):
+                self.cut_off = True
+                return {"role": "assistant", "content": "<html><body>"}
+
+        tool = [{"type": "function", "function": {"name": "noop", "parameters": {"type": "object", "properties": {}}}}]
+        for run in (lambda: orchestrator.code_loop({}, "planner", "s", [{"role": "user", "content": "u"}], tool, {"noop": lambda: ""}),
+                    lambda: orchestrator.chat_call({}, "planner", "answer", "s", [{"role": "user", "content": "u"}])):
+            with patch.object(orchestrator, "role_settings", return_value=(Client(), {})), patch.object(orchestrator, "emit"):
+                self.assertEqual(run(), "<html><body>\n\n(Cut off at the output limit (16,384 tokens). Say \"continue\" for the rest, "
+                                        "or raise this model's Max tokens.)")
+        whole = Client()
+        whole.complete = lambda *a, **k: {"role": "assistant", "content": "Done."}
+        with patch.object(orchestrator, "role_settings", return_value=(whole, {})), patch.object(orchestrator, "emit"):
+            self.assertEqual(orchestrator.chat_call({}, "planner", "answer", "s", [{"role": "user", "content": "u"}]), "Done.")
+
     def test_complete_reports_a_reply_cut_off_with_output(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role = "implementer"
@@ -2627,6 +2649,7 @@ class ChatTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue({"run_command", "write_file", "read_file"} <= names(log[0]))
             self.assertIn("PC ACCESS", log[0]["system"])
+            self.assertIn("write it out instead of asking the user for it", log[0]["system"])  # code from earlier replies, as files
             self.assertEqual(ran, [("echo hi", str(Path.home().resolve()))])  # as the user, from the home folder
             self.assertEqual(target.read_text(encoding="utf-8").strip(), "x")  # outside any project
             self.assertIn("protected", log[3]["input"])  # System32 stays closed
@@ -4609,7 +4632,8 @@ for step, arg in json.loads(os.environ["FAKE_PI_STEPS"]):
         out({"type": "message_end", "message": {"role": "user", "content": []}})
     elif step == "say":
         out({"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": arg.get("text", "")}],
-                                                "stopReason": "error" if arg.get("error") else "stop", "errorMessage": arg.get("error"), "usage": {}}})
+                                                "stopReason": "error" if arg.get("error") else arg.get("stop", "stop"), "errorMessage": arg.get("error"),
+                                                "usage": {"output": arg["output"]} if "output" in arg else {}}})
     elif step == "ctx":
         take("get_messages")
         out({"type": "response", "command": "get_messages", "success": True, "data": {"messages": []}})
@@ -4718,6 +4742,15 @@ class PiSteerTests(unittest.TestCase):
         text = saved[0].read_text(encoding="utf-8")
         self.assertIn("PLAN: write index.html", text)
         self.assertEqual(text.count("<|channel>thought"), 1)
+
+    def test_a_reply_cut_off_at_the_output_limit_says_so(self):
+        # a long page stopped part-way at the output limit: the reply ends with a note the user and, next turn, the model read
+        steps = [["take", "prompt"], ["user", None], ["say", {"text": "```html\n<html>", "stop": "length", "output": 16384}], ["ctx", None], ["settle", None]]
+        _, events, _ = self.run_fake(steps)
+        reply = [d["text"] for e, d in events if e == "code_reply"][0]
+        self.assertTrue(reply.startswith("```html\n<html>\n\n(Cut off at the output limit (16,384 tokens)."), reply)
+        steps = [["take", "prompt"], ["user", None], ["say", {"text": "Done."}], ["ctx", None], ["settle", None]]
+        self.assertEqual([d["text"] for e, d in self.run_fake(steps)[1] if e == "code_reply"], ["Done."])
 
     def test_a_reply_cut_off_while_thinking_is_saved_and_continued(self):
         # the whole output limit spent thinking, nothing written: once the run settles a new prompt points to the saved reasoning

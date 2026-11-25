@@ -215,18 +215,20 @@ internal static class ImageGen
         };
     }
 
-    // The reply's one line: the model's memory of the picture it made (seed -1: OpenRouter, which takes none).
-    public static string ChatResult(string model, ImageSettings run, int width, int height)
+    // The reply's one line: the model's memory of the picture it made (seed -1: OpenRouter, which takes none). file: where it was
+    // saved, so the model can use it (put it in a page, copy it into a project); "" leaves it out.
+    public static string ChatResult(string model, ImageSettings run, int width, int height, string file = "")
     {
         static string Line(string t) => string.Join(' ', t.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)).Trim();
         return $"Image generated and shown to the user. Model: {model}. Size: {width}x{height}." + (run.Seed >= 0 ? $" Seed: {run.Seed}." : "") +
+            (file.Length > 0 ? $" Saved: {file}." : "") +
             $" Prompt: {Line(run.Prompt)}" + (run.Negative.Trim().Length > 0 ? $" Negative: {Line(run.Negative)}" : "");
     }
 
     // What a reply that is exactly one ChatResult line shows (/image's saved reply): "model · size · seed n"; null for any other text,
     // such as a model that echoes the line and goes on (the line is one line, so the match ends at the text's end).
     public static string? ResultCaption(string text) =>
-        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)? Prompt: [^\r\n]*\z") is { Success: true } m
+        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)?(?: Saved: [^\r\n]+?\.)? Prompt: [^\r\n]*\z") is { Success: true } m
             ? $"{m.Groups[1].Value} · {m.Groups[2].Value}" + (m.Groups[3].Success ? $" · seed {m.Groups[3].Value}" : "") : null;
 
     // The user's next message after a picture (`last`, then cleared), for the model only: the picture's line before the text and
@@ -543,6 +545,9 @@ internal static class ImageGen
             ResultCaption(line) == "SDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(ChatResult("m", new() { Seed = -1, Prompt = "p" }, 1, 1)) == "m · 1x1" && ResultCaption("Hello") is null &&
             ResultCaption(line + "\nIt is a nice picture.") is null && ResultCaption(line + "\n") is null,
             "Image Gen: the reply line and its caption");
+        Check(ChatResult("m", chatRun, 1, 1, @"C:\Users\u\AppData\Roaming\Agent Orchestrator\images\20261125-100414-42.png") is var saved &&
+            saved == @"Image generated and shown to the user. Model: m. Size: 1x1. Seed: 42. Saved: C:\Users\u\AppData\Roaming\Agent Orchestrator\images\20261125-100414-42.png. Prompt: a cat" &&
+            ResultCaption(saved) == "m · 1x1 · seed 42", "Image Gen: the reply line tells the model where the picture was saved");
         (string, string)? last = (@"C:\g\p.png", "L");
         Check(TakeLastPicture(ref last, "bluer", [], true) is ("[Your last picture: L]\n\nbluer", [@"C:\g\p.png"]) && last is null &&
             TakeLastPicture(ref last, "again", [], true) is ("again", []) &&
