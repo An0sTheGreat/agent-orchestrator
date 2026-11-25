@@ -277,7 +277,16 @@ public partial class MainWindow
                 return new ImageShare.Response(200, reply);
             });
         if (request.Path == ImageShare.PresetsPath)
-            return new(200, ModelShare.PresetsJson(await Dispatcher.InvokeAsync(() => _settings.ModelPresets.ToList()), _sharedModels));
+            return await Dispatcher.InvokeAsync(() =>
+            {
+                if (request.Method == "POST") // the other PC saved or deleted one: this PC's presets are the one set both use
+                {
+                    if (ModelShare.ApplyPresetChange(_settings.ModelPresets, _sharedModels, System.Text.Encoding.UTF8.GetString(request.Body)) is { } refused)
+                        return ImageShare.Error(400, refused);
+                    _settings.Save();
+                }
+                return new ImageShare.Response(200, ModelShare.PresetsJson(_settings.ModelPresets.ToList(), _sharedModels));
+            });
         if (request.Path == ImageShare.LoadPath)
             return await Dispatcher.InvokeAsync(() => ServeShareLoad(request));
         if (request.Path == ImageShare.EstimatePath)

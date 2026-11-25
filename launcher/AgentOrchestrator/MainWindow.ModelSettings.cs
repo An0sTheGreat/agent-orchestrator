@@ -1184,12 +1184,31 @@ public partial class MainWindow
             _settings.Save();
             SyncSaveTo();
         }
+        // what a preset saves: the options shown (not the quantization field) and the system prompt unless it is the default
+        Dictionary<string, string> ShownOptions() => editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value));
+        string ShownPrompt() => promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "";
+        // With Run on the primary PC its presets are the ones used and changed (ModelShare.ApplyPresetChange): true when done there
+        async Task<bool> ChangePrimaryPreset(string action, string name, string model)
+        {
+            try
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+                await ImageShare.ChangePresetAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), ApiKeys.Get(ModelShare.KeyEnv) ?? "",
+                    ModelShare.PresetChangeJson(action, name, model, action == "save" ? ShownOptions() : [], action == "save" ? ShownPrompt() : ""), CancellationToken.None);
+                return true;
+            }
+            catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException or UriFormatException)
+            {
+                Toast($"The preset was not {(action == "save" ? "saved" : "deleted")} on the primary PC: " + x.Message, "#FF667A");
+                return false;
+            }
+        }
         void WritePreset(string name, int same, string model)
         {
             var preset = new ModelPreset
             {
-                Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model) ? ShownQuant() : "", Options = editors.Where(p => p.Key != "gguf_variant" && Value(p.Value).Trim().Length > 0).ToDictionary(p => p.Key, p => Value(p.Value)),
-                SystemPrompt = promptBox.Text.Trim().Length > 0 && promptBox.Text != DefaultPrompt() ? promptBox.Text : "",
+                Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model) ? ShownQuant() : "", Options = ShownOptions(),
+                SystemPrompt = ShownPrompt(),
             };
             if (same >= 0)
                 _settings.ModelPresets[same] = preset;
@@ -1244,6 +1263,16 @@ public partial class MainWindow
             // This model's presets (and those for any model), the same model's in other quantizations, then the other models'
             // presets: picking one of those puts its model in the box first, so one Save keeps the model and its options.
             var mine = (shared ?? _settings.ModelPresets).Where(Mine).ToList();
+            if (shared is not null)
+                menu.Items.Add(Item("Save as preset on the primary PC…", async () =>
+                {
+                    if (SidebarAsk("Save preset", "Name this set of model options. It is saved on the primary PC, for both PCs.", "Save", "")?.Trim() is not { Length: > 0 } name)
+                        return;
+                    if (mine.Any(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && p.Model.Length > 0) && SidebarAsk("Replace preset", $"Replace the preset {name}?", "Replace") is null)
+                        return;
+                    if (await ChangePrimaryPreset("save", name, ShownModel()))
+                        Toast($"Preset {name} saved on the primary PC");
+                }));
             if (shared is not null && mine.Count == 0)
                 menu.Items.Add(new MenuItem { Header = "No presets on the primary PC for this model", IsEnabled = false });
             var quants = remoteMode() || shared is not null ? [] : _settings.ModelPresets.Where(OtherQuant).ToList();
@@ -1273,16 +1302,21 @@ public partial class MainWindow
                 };
                 remove.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
                 remove.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
-                remove.Visibility = shared is null ? Visibility.Visible : Visibility.Collapsed; // the primary PC's are not deleted from here
                 Grid.SetColumn(remove, 1);
                 var header = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } }, Children = { name, remove } };
                 var item = new MenuItem { Header = header, Tag = label, HorizontalContentAlignment = HorizontalAlignment.Stretch };
                 item.Click += (_, _) => apply();
-                remove.Click += (_, e) =>
+                remove.Click += async (_, e) =>
                 {
                     e.Handled = true; // not the row's click: the preset is not applied
-                    if (SidebarAsk("Delete preset", $"Delete the preset {preset.Name}?", "Delete") is null)
+                    if (SidebarAsk("Delete preset", $"Delete the preset {preset.Name}{(shared is null ? "" : " on the primary PC")}?", "Delete") is null)
                         return;
+                    if (shared is not null) // the primary PC's: deleted there, for both PCs
+                    {
+                        if (await ChangePrimaryPreset("delete", preset.Name, preset.Model))
+                            menu.Items.Remove(item);
+                        return;
+                    }
                     _settings.ModelPresets.Remove(preset);
                     _settings.Save();
                     SyncSaveTo();

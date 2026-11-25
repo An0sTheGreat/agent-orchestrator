@@ -208,6 +208,50 @@ internal static class ModelShare
 
     public static List<ModelPreset> ParsePresets(string json) => JsonSerializer.Deserialize<PresetList>(json, Web)?.Presets ?? [];
 
+    // POST /share/presets: the other PC saves or deletes one of this PC's presets for a shared model ("" = an any-model preset), so
+    // both PCs use one set. A save sends request options only (as GET lists them): a preset it replaces keeps this PC's load
+    // options; a new one is saved under the shared model's id (DisplayId, the picker's name for it). Null when done, else why not.
+    public sealed record PresetChange(string? Action, string? Name, string? Model, Dictionary<string, string>? Options, string? SystemPrompt);
+
+    public static string PresetChangeJson(string action, string name, string model, IReadOnlyDictionary<string, string> options, string systemPrompt) =>
+        JsonSerializer.Serialize(new PresetChange(action, name, model, options.ToDictionary(), systemPrompt), Web);
+
+    public static string? ApplyPresetChange(List<ModelPreset> mine, IReadOnlyList<SharedModel> models, string json)
+    {
+        PresetChange? change;
+        try { change = JsonSerializer.Deserialize<PresetChange>(json, Web); }
+        catch (JsonException) { change = null; }
+        if (change is null || change.Action is not ("save" or "delete"))
+            return "Not a preset change";
+        var name = (change.Name ?? "").Trim();
+        if (name.Length is 0 or > 100)
+            return "A preset needs a name of 1 to 100 characters";
+        var model = change.Model ?? "";
+        var shared = model.Length == 0 ? null : models.FirstOrDefault(m => m.Id == model);
+        if (model.Length > 0 && shared is null)
+            return $"{model} is not shared by this PC";
+        var at = mine.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && (shared is null ? p.Model.Length == 0 : IsFor(p, shared.Id, shared.Model)));
+        if (change.Action == "delete")
+        {
+            if (at < 0)
+                return $"No preset {name} for this model";
+            mine.RemoveAt(at);
+            return null;
+        }
+        var request = (change.Options ?? []).Where(o => ModelOptions.All.Any(k => k.Key == o.Key && k.Target != "auto_load") && o.Value.Trim().Length > 0);
+        var kept = at < 0 ? [] : mine[at].Options.Where(o => ModelOptions.All.Any(k => k.Key == o.Key && k.Target == "auto_load"));
+        var preset = new ModelPreset
+        {
+            Name = at < 0 ? name : mine[at].Name, Model = at < 0 ? shared?.Id ?? "" : mine[at].Model, Quant = at < 0 ? "" : mine[at].Quant,
+            Options = kept.Concat(request).ToDictionary(), SystemPrompt = change.SystemPrompt ?? "",
+        };
+        if (at < 0)
+            mine.Add(preset);
+        else
+            mine[at] = preset;
+        return null;
+    }
+
     // The primary PC's presets into this PC's, named "<name> (Primary PC)": one of the same name and model is replaced. The count copied.
     public static int MergePresets(List<ModelPreset> mine, IEnumerable<ModelPreset?> copied)
     {
@@ -331,6 +375,18 @@ internal static class ModelShare
         Check(MergePresets(mine, sent) == 3 && mine.Select(p => $"{p.Name}|{p.Model}|{p.SystemPrompt}").SequenceEqual(["Coder (Primary PC)|Qwen3-GGUF  ·  Q4_K_M|Be terse",
             "Coder|Qwen3-GGUF  ·  Q4_K_M|", "Coder (Primary PC)|gemma|", "Any (Primary PC)||", "G (Primary PC)|gemma|"]),
             "the merge (rename, replace the same name and model, keep the others): " + string.Join("; ", mine.Select(p => p.Name + "|" + p.Model)));
+        // POST /share/presets: the other PC's save replaces request options and keeps this PC's load options; a new one takes the shared id
+        List<ModelPreset> own = [new() { Name = "Coder", Model = "qwen3-Q4_K_M", Quant = "Q4_K_M", Options = { ["temperature"] = "0.2", ["n_cpu_moe"] = "30" }, SystemPrompt = "old" }];
+        string? Change(string action, string name, string model, Dictionary<string, string>? options = null, string prompt = "") =>
+            ApplyPresetChange(own, shared, PresetChangeJson(action, name, model, options ?? [], prompt));
+        Check(Change("save", "coder", "Qwen3-GGUF  ·  Q4_K_M", new() { ["temperature"] = "0.7", ["n_cpu_moe"] = "2", ["bogus"] = "1" }, "new") is null && own is [var replaced] &&
+            replaced is { Name: "Coder", Model: "qwen3-Q4_K_M", Quant: "Q4_K_M", SystemPrompt: "new" } && replaced.Options.Count == 2 && replaced.Options["temperature"] == "0.7" &&
+            replaced.Options["n_cpu_moe"] == "30", "a save from the other PC replaces the request options only: " + string.Join("; ", own[0].Options));
+        Check(Change("save", "Chat", "gemma", new() { ["top_p"] = "0.9" }) is null && Change("save", "Any", "") is null &&
+            own.Select(p => $"{p.Name}|{p.Model}").SequenceEqual(["Coder|qwen3-Q4_K_M", "Chat|gemma", "Any|"]), "new presets from the other PC");
+        Check(Change("delete", "chat", "gemma") is null && Change("delete", "Chat", "gemma") is not null && own.Count == 2 &&
+            Change("save", "X", "Llama-70B") is not null && Change("save", " ", "gemma") is not null && ApplyPresetChange(own, shared, "{}") is not null &&
+            ApplyPresetChange(own, shared, "nope") is not null && own.Count == 2, "deletes, and refused changes change nothing");
         Check(DisplayId(new("unsloth/Qwen3-GGUF", "Q4_K_M", @"C:\x\q.gguf")) == "Qwen3-GGUF  ·  Q4_K_M" && DisplayId(new("", "", @"D:\m\My Model.gguf")) == "My Model",
             "display ids");
     }

@@ -108,7 +108,7 @@ internal static class ImageShare
     {
         if (Unauthorized(request, key) is { } refused)
             return refused;
-        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => "GET", EstimatePath => "POST", UsagePath => "POST", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
+        var method = request.Path switch { ModelsPath => "GET", GeneratePath => "POST", UnloadPath => "POST", PresetsPath => request.Method == "POST" ? "POST" : "GET", EstimatePath => "POST", UsagePath => "POST", LoadPath or ProfilePath => request.Method == "POST" ? "POST" : "GET", _ => null };
         return method is null ? Error(404, $"No such path: {request.Path}") : request.Method == method ? null : Error(405, $"{request.Path} takes {method}");
     }
 
@@ -210,6 +210,10 @@ internal static class ImageShare
     // The primary PC's model presets for its shared models (ModelShare.PresetsJson), as sent.
     public static Task<string> FetchPresetsAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>
         SendAsync(http, new(HttpMethod.Get, baseUrl + PresetsPath), key, ct);
+
+    // Saving or deleting one of them there (ModelShare.ApplyPresetChange); the answer is the presets as they are now.
+    public static Task<string> ChangePresetAsync(HttpClient http, string baseUrl, string key, string changeJson, CancellationToken ct) =>
+        SendAsync(http, new(HttpMethod.Post, baseUrl + PresetsPath) { Content = new StringContent(changeJson, Encoding.UTF8, "application/json") }, key, ct);
 
     // The primary PC's saved load options for one of its shared models (ModelShare.LoadJson), and saving changed ones there.
     public static async Task<Dictionary<string, string>> FetchLoadAsync(HttpClient http, string baseUrl, string key, string model, CancellationToken ct) =>
@@ -503,6 +507,8 @@ internal static class ImageShare
         Assert(Check(R("POST", ModelsPath, "Bearer key"), "key")?.Status == 405 && Check(R("GET", GeneratePath, "Bearer key"), "key")?.Status == 405, "405 for a wrong method");
         Assert(Check(R("GET", ModelsPath, "Bearer key"), "key") is null && Check(R("POST", GeneratePath, "Bearer key"), "key") is null, "the key lets a request through");
         Assert(Check(R("GET", PresetsPath, null), "key")?.Status == 401 && Check(R("GET", PresetsPath, "Bearer key"), "key") is null, "/share/presets takes the key");
+        Assert(Check(R("POST", PresetsPath, "Bearer key"), "key") is null && Check(R("POST", PresetsPath, null), "key")?.Status == 401 &&
+            Check(R("PUT", PresetsPath, "Bearer key"), "key")?.Status == 405, "/share/presets takes a change (POST) with the key");
         Assert(Check(R("GET", LoadPath, null), "key")?.Status == 401 && Check(R("POST", LoadPath, "Bearer nope"), "key")?.Status == 401 &&
             Check(R("GET", LoadPath, "Bearer key"), "key") is null && Check(R("POST", LoadPath, "Bearer key"), "key") is null && Check(R("PUT", LoadPath, "Bearer key"), "key")?.Status == 405,
             "/share/load: GET and POST with the key, 401 without");
