@@ -602,9 +602,12 @@ public partial class MainWindow
         var (root, project, choice, notify, quiet, keepAlive) = (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _webApp!.KeepAlive);
         var engine = Path.Combine(AppSettings.DataRoot, "webapp-engine");
         Directory.CreateDirectory(engine);
-        File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, os, time\n" +
+        // it gives up on a gate after 60 s, so a run that died early never leaves it waiting
+        File.WriteAllText(Path.Combine(engine, "orchestrator.py"), "import json, os, sys, time\n" +
             "def ev(**e): print('@@AO ' + json.dumps(e), flush=True)\n" +
-            "def wait(name):\n    while not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)): time.sleep(0.05)\n" +
+            "def wait(name):\n    end = time.time() + 60\n" +
+            "    while not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), name)):\n" +
+            "        if time.time() > end: sys.exit(1)\n        time.sleep(0.05)\n" +
             "wait('go0')\nev(e='delta', role='planner', kind='text', text='One ')\nwait('go1')\nev(e='delta', role='planner', kind='text', text='two ')\n" +
             "ev(e='tool', role='planner', name='read_file', args='{}', result='OK')\nev(e='delta', role='planner', kind='text', text='three')\n" +
             "wait('go2')\nev(e='delta', role='planner', kind='text', text=' four')\nev(e='chat_reply', role='planner', text='three four')\n");
@@ -729,6 +732,12 @@ public partial class MainWindow
         {
             foreach (var s in streams)
                 s.Dispose();
+            // after a failed check: close its popup and let the turn end, or closing the window would ask (unseen) and hang the run
+            foreach (var popup in OwnedWindows.OfType<DialogShell>().ToList())
+                popup.Close();
+            foreach (var gate in new[] { "go0", "go1", "go2" })
+                Go(gate);
+            await Until(() => !_chatBusy);
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (root, project, choice, notify, quiet);
             if (_webApp is not null)
                 _webApp.KeepAlive = keepAlive;
