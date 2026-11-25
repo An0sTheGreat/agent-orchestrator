@@ -45,13 +45,14 @@ internal static class Tailscale
             using var process = Process.Start(info)!;
             using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
             stop.CancelAfter(timeout);
-            var output = process.StandardOutput.ReadToEndAsync(stop.Token);
-            var error = process.StandardError.ReadToEndAsync(stop.Token);
+            var output = process.StandardOutput.ReadToEndAsync();
+            var error = process.StandardError.ReadToEndAsync();
             try { await process.WaitForExitAsync(stop.Token); }
             catch (OperationCanceledException)
             {
                 try { process.Kill(); } catch (InvalidOperationException) { }
-                return (-1, "tailscale did not answer");
+                var partial = await output + await error; // what it printed before it was killed (Serve's enable link)
+                return (-1, partial.Trim().Length > 0 ? partial : "tailscale did not answer");
             }
             return (process.ExitCode, await output + await error);
         }
@@ -91,8 +92,20 @@ internal static class Tailscale
 
     // The phone app (MainWindow.WebApp.cs): Serve publishes http://127.0.0.1:<port> at https://<this PC's DnsName>/ on the
     // tailnet only (`--bg`: it stays until turned off, across restarts). True when tailscale took it.
-    public static async Task<bool> ServeAsync(int port, CancellationToken ct) =>
-        (await RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--bg", "--https=443", $"http://127.0.0.1:{port}")).Code == 0;
+    // Output is what tailscale printed, also when it was killed at the timeout (it waits when Serve is not enabled on the tailnet).
+    public static async Task<(bool Ok, string Output)> ServeAsync(int port, CancellationToken ct)
+    {
+        var (code, output) = await RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--bg", "--https=443", $"http://127.0.0.1:{port}");
+        return (code == 0, output);
+    }
+
+    // The https link in tailscale serve's output ("Serve is not enabled on your tailnet. To enable, visit: <url>"); null if none.
+    public static string? ServeEnableUrl(string output) =>
+        Regex.Match(output, @"https://[^\s""'<>]+") is { Success: true } m ? m.Value.TrimEnd('.', ',', ';', ')') : null;
+
+    // The state line's reason: the first line tailscale printed, "" when it printed nothing.
+    public static string ServeFailure(string output) =>
+        output.Split('\n').Select(l => l.Trim()).FirstOrDefault(l => l.Length > 0) ?? "";
 
     public static Task ServeOffAsync(CancellationToken ct) => RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--https=443", "off");
 
@@ -225,6 +238,11 @@ internal static class Tailscale
         Check(ParsePair(PairJson("K", "desk")) == new Pairing("K", "desk") && ParsePair("""{"key":""}""") is null && ParsePair("x") is null, "the pairing reply");
         Check(LoginUrl("To authenticate, visit:\n\n\thttps://login.tailscale.com/a/abc123\n") == "https://login.tailscale.com/a/abc123" &&
               LoginUrl("https://evil.example/login.tailscale.com/a/x") is null, "the sign-in page");
+        const string notEnabled = "Serve is not enabled on your tailnet.\nTo enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=n123abc\n";
+        Check(ServeEnableUrl(notEnabled) == "https://login.tailscale.com/f/serve?node=n123abc" &&
+              ServeFailure(notEnabled) == "Serve is not enabled on your tailnet." &&
+              ServeEnableUrl("Error: listener already exists for port 443") is null && ServeFailure("\r\nError: listener already exists\r\n") == "Error: listener already exists" &&
+              ServeFailure("") == "", "why tailscale serve failed");
         const string web = """
             {"BackendState":"Running","Self":{"UserID":111,"HostName":"home","DNSName":"home.tail1234.ts.net."},
              "CurrentTailnet":{"Name":"me@example.com","MagicDNSSuffix":"tail1234.ts.net","MagicDNSEnabled":true},

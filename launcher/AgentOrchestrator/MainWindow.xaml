@@ -1869,6 +1869,7 @@
                             <TextBlock Text="Phone app over Tailscale" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock x:Name="WebAppStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <TextBlock x:Name="WebAppFixText" Visibility="Collapsed" Margin="0,4,0,0"><Hyperlink x:Name="WebAppFixLink" Click="WebAppFixLink_Click">Enable Serve for your tailnet</Hyperlink></TextBlock>
                         <StackPanel x:Name="WebAppOnlinePanel" Visibility="Collapsed" Margin="0,12,0,0">
                         <DockPanel>
                         <Button x:Name="WebAppCopyButton" DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="WebAppCopy_Click" />

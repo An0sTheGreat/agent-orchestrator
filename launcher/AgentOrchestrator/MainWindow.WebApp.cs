@@ -18,20 +18,49 @@ public partial class MainWindow
     private readonly DispatcherTimer _webTimer = new() { Interval = TimeSpan.FromMinutes(5) };
     // --webapp-smoke swaps both, so tests never touch Tailscale: the status read, and Serve (a port: publish it; null: off).
     internal Func<Task<Tailscale.State?>> _webStatus = Tailscale.StatusAsync;
-    internal Func<int?, CancellationToken, Task<bool>> _webServe = ServeOnTailnet;
+    internal Func<int?, CancellationToken, Task<(bool Ok, string Output)>> _webServe = ServeOnTailnet;
+    private string? _webFailureUrl; // the link in tailscale's own message, shown as "Enable Serve for your tailnet"
+    // A failed start is retried while the switch is on: every _webRetryEvery for _webRetryFastFor, then every _webRetrySlow
+    // (tailscaled may still be starting at logon). --webapp-smoke shortens the first.
+    internal TimeSpan _webRetryEvery = TimeSpan.FromSeconds(30), _webRetryFastFor = TimeSpan.FromMinutes(5), _webRetrySlow = TimeSpan.FromMinutes(5);
+    private readonly DispatcherTimer _webRetry = new();
+    private DateTime _webRetrySince;
 
     internal string? WebAppAddress => _webApp is not null && _webTailnet is { } t ? $"https://{t.DnsName}/" : null; // null while off
 
-    private static async Task<bool> ServeOnTailnet(int? port, CancellationToken ct)
+    private static async Task<(bool Ok, string Output)> ServeOnTailnet(int? port, CancellationToken ct)
     {
         if (port is { } p)
             return await Tailscale.ServeAsync(p, ct);
         await Tailscale.ServeOffAsync(ct);
-        return true;
+        return (true, "");
+    }
+
+    private void ArmWebRetry()
+    {
+        if (_webRetry.IsEnabled)
+            return;
+        (_webRetrySince, _webRetry.Interval) = (DateTime.UtcNow, _webRetryEvery);
+        _webRetry.Start();
+    }
+
+    private async void WebRetry_Tick(object? sender, EventArgs e)
+    {
+        if (!_settings.WebAppOn || _webApp is not null)
+        {
+            _webRetry.Stop();
+            return;
+        }
+        if (_webStarting)
+            return;
+        if (DateTime.UtcNow - _webRetrySince > _webRetryFastFor)
+            _webRetry.Interval = _webRetrySlow;
+        await StartWebAppAsync();
     }
 
     private void InitWebApp()
     {
+        _webRetry.Tick += WebRetry_Tick;
         _webTimer.Tick += async (_, _) =>
         {
             if (await _webStatus() is { } status && _webApp is not null)
@@ -60,7 +89,7 @@ public partial class MainWindow
     {
         if (_webApp is not null || _webStarting)
             return _webApp is not null;
-        (_webStarting, _webFailure) = (true, null);
+        (_webStarting, _webFailure, _webFailureUrl) = (true, null, null);
         RefreshWebApp();
         try
         {
@@ -77,13 +106,16 @@ public partial class MainWindow
                 _webFailure = $"no free port from {_settings.WebAppPort}";
                 return false;
             }
-            if (!await _webServe(server.Port, CancellationToken.None))
+            var (served, output) = await _webServe(server.Port, CancellationToken.None);
+            if (!served)
             {
                 server.Stop();
-                _webFailure = "tailscale serve did not publish it";
+                _webFailure = Tailscale.ServeFailure(output) is { Length: > 0 } line ? $"tailscale serve: {line}" : "tailscale serve did not publish it";
+                _webFailureUrl = Tailscale.ServeEnableUrl(output);
                 return false;
             }
             _webApp = server;
+            _webRetry.Stop();
             _webTimer.Start();
             Log($"Phone app: {WebAppAddress} serves http://127.0.0.1:{server.Port}/");
             return true;
@@ -91,7 +123,11 @@ public partial class MainWindow
         finally
         {
             if (_webFailure is not null)
+            {
                 Log($"Phone app: {_webFailure}");
+                if (_settings.WebAppOn)
+                    ArmWebRetry();
+            }
             _webStarting = false;
             RefreshWebApp();
         }
@@ -101,8 +137,10 @@ public partial class MainWindow
     // A start still in flight finishes first, so Serve's route is never left behind by a Quit mid-start.
     internal async Task StopWebAppAsync()
     {
+        _webRetry.Stop();
         if (_webStarting && _webStart is { } start)
             await start;
+        _webRetry.Stop(); // a failed start re-arms it
         _webTimer.Stop();
         if (_webApp is null)
             return;
@@ -141,12 +179,20 @@ public partial class MainWindow
         RefreshWebApp();
     }
 
+    private void WebAppFixLink_Click(object sender, RoutedEventArgs e)
+    {
+        if (_webFailureUrl is { } url)
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true }); }
+            catch (Exception x) when (x is System.ComponentModel.Win32Exception or InvalidOperationException) { Log($"Phone app: could not open {url}"); }
+    }
+
     private void WebAppCopy_Click(object sender, RoutedEventArgs e) => CopyToClipboard(WebAppAddressBox.Text, "Address copied", "No address yet");
 
     private void RefreshWebApp()
     {
         (WebAppToggle.IsChecked, WebAppToggle.IsEnabled) = (_settings.WebAppOn, !_webStarting);
         WebAppStateText.Text = _webStarting ? "Starting…" : _webApp is not null ? "On" : _webFailure is { } why ? "Not running: " + why : "Off";
+        WebAppFixText.Visibility = !_webStarting && _webApp is null && _webFailureUrl is not null ? Visibility.Visible : Visibility.Collapsed;
         var address = WebAppAddress;
         WebAppOnlinePanel.Visibility = address is null ? Visibility.Collapsed : Visibility.Visible;
         if (address is not null && WebAppAddressBox.Text != address)
@@ -193,7 +239,7 @@ public partial class MainWindow
         }
         try
         {
-            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult(true); };
+            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult((true, "")); };
             _settings.WebAppPort = Random.Shared.Next(20000, 60000);
             _webStatus = () => Task.FromResult<Tailscale.State?>(Tailscale.ParseStatus(tailnet.Replace("%CERTS%", "")));
             Click(true);
@@ -231,7 +277,7 @@ public partial class MainWindow
             // Quit mid-start: Stop waits for the start in flight, then turns Serve off after it was turned on.
             var calls = new System.Collections.Concurrent.ConcurrentQueue<int?>();
             var gate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _webServe = async (p, _) => { calls.Enqueue(p); if (p is not null) await gate.Task; return true; };
+            _webServe = async (p, _) => { calls.Enqueue(p); if (p is not null) await gate.Task; return (true, ""); };
             var start = StartWebAppAsync();
             if (!await Until(() => calls.Count == 1) || !_webStarting)
                 return Fail($"mid-start: Serve on not reached, calls [{string.Join(",", calls)}]");
@@ -251,7 +297,7 @@ public partial class MainWindow
             catch (HttpRequestException) { }
 
             // Launch: only the normal start (LaunchStartsWebApp, which App sets) turns the phone app on, never a test or tool mode.
-            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult(true); };
+            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult((true, "")); };
             served.Clear();
             (_settings.WebAppOn, LaunchStartsWebApp) = (true, false);
             StartWebAppAtLaunch();
@@ -262,6 +308,38 @@ public partial class MainWindow
             StartWebAppAtLaunch();
             if (!await Until(() => _webApp is not null))
                 return Fail("launch: the normal start did not start the phone app");
+            await StopWebAppAsync();
+
+            // Serve refused with tailscale's own message: the state line shows its first line and a link to enable Serve.
+            const string notEnabled = "Serve is not enabled on your tailnet.\nTo enable, visit:\n\n\thttps://login.tailscale.com/f/serve?node=n123abc\n";
+            _webServe = (p, _) => Task.FromResult((false, notEnabled));
+            _settings.WebAppOn = false;
+            if (await StartWebAppAsync() || WebAppStateText.Text != "Not running: tailscale serve: Serve is not enabled on your tailnet." ||
+                WebAppFixText.Visibility != Visibility.Visible || _webFailureUrl != "https://login.tailscale.com/f/serve?node=n123abc")
+                return Fail($"serve refused: state {WebAppStateText.Text}, link {WebAppFixText.Visibility} {_webFailureUrl}");
+
+            // A failed start is retried while the switch is on: tailscaled still starting (status null at first), then ready.
+            _webServe = (p, _) => { served.Enqueue(p); return Task.FromResult((true, "")); };
+            var statusCalls = 0;
+            _webStatus = () => Task.FromResult(statusCalls++ == 0 ? null : Tailscale.ParseStatus(tailnet.Replace("%CERTS%", ""","CertDomains":["home.tail0000.ts.net"]""")));
+            _webRetryEvery = TimeSpan.FromMilliseconds(100);
+            (_settings.WebAppOn, LaunchStartsWebApp) = (true, true);
+            StartWebAppAtLaunch();
+            if (!await Until(() => _webApp is not null) || statusCalls != 2 || WebAppStateText.Text != "On")
+                return Fail($"retry: running {_webApp is not null}, status calls {statusCalls}, state {WebAppStateText.Text}");
+            // switched off while failing: no more tries
+            await StopWebAppAsync();
+            statusCalls = 0;
+            _webStatus = () => { statusCalls++; return Task.FromResult<Tailscale.State?>(null); };
+            _webRetry.Stop();
+            _ = StartWebAppAsync();
+            await Until(() => statusCalls > 1);
+            _settings.WebAppOn = false;
+            await StopWebAppAsync();
+            var seen = statusCalls;
+            await Task.Delay(400);
+            if (statusCalls != seen || _webRetry.IsEnabled)
+                return Fail($"retry: kept trying after the switch went off ({seen} -> {statusCalls})");
             return true;
         }
         finally
