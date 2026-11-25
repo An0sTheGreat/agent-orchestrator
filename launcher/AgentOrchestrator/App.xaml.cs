@@ -6,6 +6,14 @@ public partial class App : Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        // --quit: the running app (in the tray or not) closes as its tray's Quit does; exit 1 when none is running
+        if (e.Args.Contains("--quit", StringComparer.OrdinalIgnoreCase))
+        {
+            var found = EventWaitHandle.TryOpenExisting(AgentOrchestrator.MainWindow.QuitEvent, out var quit);
+            using (quit)
+                quit?.Set();
+            Environment.Exit(found ? 0 : 1);
+        }
         if (e.Args.Contains("--self-test", StringComparer.OrdinalIgnoreCase))
         {
             LauncherLogic.SelfTest();
@@ -127,8 +135,10 @@ public partial class App : Application
         };
         AppDomain.CurrentDomain.UnhandledException += (_, args) => LogCrash(args.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException += (_, args) => { LogCrash(args.Exception); args.SetObserved(); };
-        MainWindow = new MainWindow();
-        MainWindow.Show();
+        var main = new MainWindow();
+        main.InitTray(hidden: e.Args.Contains("--tray", StringComparer.OrdinalIgnoreCase)); // --tray: Start with Windows
+        MainWindow = main;
+        main.Show();
     }
 
     // --ui-smoke runs behind the user's windows: every 100 ms each of this app's windows goes to the bottom of the z-order

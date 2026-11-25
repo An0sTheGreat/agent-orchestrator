@@ -1771,8 +1771,18 @@
                 <Grid x:Name="SettingsPages">
                     <StackPanel Tag="General">
                         <TextBlock Text="General" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Startup (MainWindow.Tray.cs): the Run key, and the tray the window's close goes to -->
+                        <TextBlock Text="Startup" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="StartupToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="Startup_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Start with Windows" />
+                            <TextBlock Text="Start with Windows" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="Opens in the system tray when you sign in to Windows, so its models, sharing and remote access are ready. Closing the window keeps the app running in the tray: click its icon to open it again, or right-click it to quit."
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Notifications (MainWindow.Notify.cs) -->
-                        <TextBlock Text="Notifications" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <TextBlock Text="Notifications" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="NotifyToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="Notify_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Notify when done" />

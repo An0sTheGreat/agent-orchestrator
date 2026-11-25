@@ -4132,7 +4132,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LocalRuntimeSmoke())
             return false;
-        if (!await RemoteSmoke() || !await RemoteTunnelSmoke() || !ShareSmoke())
+        if (!await RemoteSmoke() || !await RemoteTunnelSmoke() || !ShareSmoke() || !await TraySmoke(Settle))
             return false;
         if (!await RemoteApiSmoke() || !await ComputerSmoke())
             return false;
@@ -6077,7 +6077,7 @@ public partial class MainWindow : Window
 
     private void Maximize_Click(object sender, RoutedEventArgs e) => ToggleMaximize();
 
-    private void Close_Click(object sender, RoutedEventArgs e) => Close();
+    private void Close_Click(object sender, RoutedEventArgs e) => HideToTray(); // closes in test modes (no tray)
 
     private void ToggleMaximize() =>
         WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;

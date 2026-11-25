@@ -134,6 +134,7 @@ public partial class MainWindow
         InitAttachments();
         InitComposerLanding();
         InitNotify();
+        InitStartup();
         InitComputer();
         RefreshPonytailSetting();
         if (CardFor(_settings.ChatWorker) is null)
