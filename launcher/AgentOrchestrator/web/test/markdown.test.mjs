@@ -34,3 +34,11 @@ test('a javascript: link stays plain text', () => {
   assert.ok(p.runs.every(r => r.t === 'text'));
   assert.equal(text(p.runs), '[x](javascript:alert(1))');
 });
+
+test('underscores inside a word are not emphasis; _word_ alone is', () => {
+  assert.deepEqual(parseMarkdown('a_b_c')[0].runs, [{ t: 'text', text: 'a_b_c' }]);
+  assert.deepEqual(parseMarkdown('my_file_name.py')[0].runs, [{ t: 'text', text: 'my_file_name.py' }]);
+  assert.deepEqual(parseMarkdown('AGENT_ORCHESTRATOR_DATA and a__b__c')[0].runs, [{ t: 'text', text: 'AGENT_ORCHESTRATOR_DATA and a__b__c' }]);
+  assert.deepEqual(parseMarkdown('_word_, __bold__ and a*b*c')[0].runs, [{ t: 'italic', text: 'word' }, { t: 'text', text: ', ' },
+    { t: 'bold', text: 'bold' }, { t: 'text', text: ' and a' }, { t: 'italic', text: 'b' }, { t: 'text', text: 'c' }]);
+});

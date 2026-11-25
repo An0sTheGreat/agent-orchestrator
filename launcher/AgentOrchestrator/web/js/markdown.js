@@ -3,7 +3,8 @@
 // Runs: {t: text|bold|italic|code|link, text, href?}; links are http/https only, anything else stays plain text.
 import { h } from './h.js';
 
-const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*|__[^_]+__)|(\*[^*\s][^*]*\*|_[^_\s][^_]*_)|(\[[^\]]+\]\((https?:\/\/[^\s)]+)\))/;
+// `_` emphasis only at word edges, as CommonMark (my_file_name.py stays text); `*` may sit inside a word.
+const INLINE = /(`[^`]+`)|(\*\*[^*]+\*\*|(?<![\p{L}\p{N}_])__[^_]+__(?![\p{L}\p{N}_]))|(\*[^*\s][^*]*\*|(?<![\p{L}\p{N}_])_[^_\s][^_]*_(?![\p{L}\p{N}_]))|(\[[^\]]+\]\((https?:\/\/[^\s)]+)\))/u;
 
 export function parseInline(s) {
   const runs = [];
