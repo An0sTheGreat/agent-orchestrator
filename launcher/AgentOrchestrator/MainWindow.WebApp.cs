@@ -123,6 +123,60 @@ public partial class MainWindow
         RefreshWebApp();
     }
 
+    // --webapp-dev <port> (dev only, App.xaml.cs): the phone app on http://127.0.0.1:<port>/ for a browser on this PC, every loopback
+    // request taken as the owner's (WebServer.DevLogin), Tailscale faked (dev@example.com, this PC "home" and an online "laptop" on
+    // tail0000.ts.net; never the network, never `tailscale serve`, no setting saved), against the temp data folder App set, seeded
+    // here: a project with two chats (one with a markdown reply and a picture), two recents and one archived. False when the port is taken.
+    internal bool StartWebAppDev(int port)
+    {
+        _webTailnet = Tailscale.ParseStatus("""
+            {"BackendState":"Running","Self":{"UserID":1,"HostName":"home","DNSName":"home.tail0000.ts.net."},"CertDomains":["home.tail0000.ts.net"],
+             "CurrentTailnet":{"MagicDNSSuffix":"tail0000.ts.net"},"User":{"1":{"LoginName":"dev@example.com"}},
+             "Peer":{"k1":{"UserID":1,"HostName":"laptop","DNSName":"laptop.tail0000.ts.net.","Online":true}}}
+            """);
+        _webProbe = (dns, _) => Task.FromResult(dns == "laptop.tail0000.ts.net" ? JsonNode.Parse("""{"pc":"LAPTOP"}""") : null);
+        _webServe = (_, _) => Task.FromResult((true, "")); // a close never turns the real Serve off
+
+        var images = Path.Combine(AppSettings.DataRoot, "images");
+        Directory.CreateDirectory(images);
+        var picture = Path.Combine(images, "sunset.png");
+        var pixels = new byte[160 * 120 * 4];
+        for (var i = 0; i < pixels.Length; i += 4) // a vertical gradient, blue to orange (Bgr32)
+            (pixels[i], pixels[i + 1], pixels[i + 2]) = ((byte)(200 - i / 4 / 160), (byte)(80 + i / 4 / 160 / 2), (byte)(60 + i / 4 / 160 * 3 / 2));
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(BitmapSource.Create(160, 120, 96, 96, System.Windows.Media.PixelFormats.Bgr32, null, pixels, 160 * 4)));
+        using (var file = File.Create(picture))
+            encoder.Save(file);
+        var now = DateTimeOffset.Now;
+        string Seed(string folder, string kind, params LauncherLogic.ChatMessage[] messages)
+        {
+            var c = _store.Create(folder, kind)!;
+            c.Messages.AddRange(messages);
+            _store.Save(c);
+            return c.Id;
+        }
+        var project = _store.CreateGroup("weather-dashboard")!;
+        _store.MoveToGroup(Seed("", "chat", new("user", "Plan a weather dashboard", now.AddMinutes(-9)),
+            new("assistant", "## The plan\n\nTwo parts, **today** and a `7-day` chart:\n\n1. Fetch the forecast\n2. Draw the chart\n\n| Part | Agent |\n| --- | --- |\n| Fetch | Implementer |\n| Review | Reviewer |\n\n> Keep it dark by default.\n\nA first sketch:",
+                now.AddMinutes(-8), [picture], "24 tok/s")), project);
+        _store.MoveToGroup(Seed(@"C:\dev\weather-dashboard", "code", new("user", "Add the 7-day chart", now.AddMinutes(-6)), new("assistant", "Done: chart.js draws 7 points.", now.AddMinutes(-5))), project);
+        Seed("", "chat", new("user", "Reviewer keeps failing chart.js", now.AddHours(-20)), new("assistant", "It expects 7 points; the data has 6.", now.AddHours(-20)));
+        Seed("", "chat", new("user", "Theme tokens for Graphite", now.AddDays(-2)), new("assistant", "`#1E1E1E` window, `#303030` cards.", now.AddDays(-2)));
+        _store.Archive(Seed("", "chat", new("user", "Docs: remote access page", now.AddDays(-8)), new("assistant", "Drafted.", now.AddDays(-8))), true);
+
+        var server = new WebServer(() => _webTailnet?.Login, () => _webTailnet?.MagicDnsSuffix, WebApi) { DevLogin = _webTailnet?.Login };
+        if (!server.Start(port) || server.Port != port)
+        {
+            server.Stop();
+            Console.Error.WriteLine($"webapp-dev: port {port} is taken");
+            return false;
+        }
+        _webApp = server;
+        _webStatePoll.Start();
+        Console.Error.WriteLine($"webapp-dev: http://127.0.0.1:{port}/ (data {AppSettings.DataRoot})");
+        return true;
+    }
+
     // Only the app's normal start (App.xaml.cs sets LaunchStartsWebApp there) turns the phone app on at launch: the test and tool
     // modes use the real profile and must never run `tailscale serve`.
     internal bool LaunchStartsWebApp;

@@ -116,6 +116,23 @@ public partial class App : Application
             return;
         }
 
+        // --webapp-dev <port>: DEV ONLY, a look at the phone app in a browser on this PC: http://127.0.0.1:<port>/ with the owner's
+        // login added to loopback requests, against a fresh temp data folder of sample conversations (never the user's profile), the
+        // window off-screen and behind, no tray, never `tailscale serve` nor a setting (MainWindow.WebApp.cs StartWebAppDev). Exit 1
+        // when the port is taken; otherwise it runs until its process is stopped (the temp folder stays behind).
+        if (Array.FindIndex(e.Args, a => a.Equals("--webapp-dev", StringComparison.OrdinalIgnoreCase)) is var dev and >= 0 && dev + 1 < e.Args.Length &&
+            int.TryParse(e.Args[dev + 1], out var devPort))
+        {
+            Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"AgentOrchestrator-dev-{Guid.NewGuid():N}"));
+            var window = new MainWindow { WindowStartupLocation = WindowStartupLocation.Manual, Left = -20000, Top = -20000, ShowActivated = false, ShowInTaskbar = false,
+                WindowState = WindowState.Normal };
+            window.Show();
+            KeepBehind();
+            if (!window.StartWebAppDev(devPort))
+                Environment.Exit(1);
+            return;
+        }
+
         // --image-chat-live <recipe id> <prompt> [main model file]: one real picture through the chat's paint path (a live test of
         // Image Gen's PaintForChatAsync; uses the GPU), the window off-screen. The result line goes to stderr; exit 0 when a
         // picture was saved and the image server was stopped after it.

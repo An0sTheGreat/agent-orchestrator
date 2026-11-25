@@ -32,6 +32,10 @@ internal sealed class WebServer
 
     internal TimeSpan KeepAlive { get; set; } = TimeSpan.FromSeconds(15); // an event stream's comment line, when nothing else was sent
 
+    // --webapp-dev only (dev, never the app's own server): the login a request without Tailscale-User-Login is taken to have;
+    // only this PC's connections reach Handle at all.
+    internal string? DevLogin { get; init; }
+
     // `ownerLogin`: the PC's Tailscale login; `tailnetSuffix`: its MagicDNS suffix (tail1234.ts.net), whose https origins
     // (the user's other PCs) may call the API. Both are asked on every request: null while Tailscale is not known.
     public WebServer(Func<string?> ownerLogin, Func<string?> tailnetSuffix, WebApi api) =>
@@ -109,8 +113,8 @@ internal sealed class WebServer
             }
             var query = request.QueryString.AllKeys.OfType<string>().ToDictionary(k => k, k => request.QueryString[k] ?? "");
             var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
-            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"], query, body, request.ContentType ?? "",
-                request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"], request.Headers["X-File-Name"]);
+            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"] ?? DevLogin, query, body, request.ContentType ?? "",
+                request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"], request.Headers["X-File-Name"], request.Headers["Accept"]);
             if (r is EventStream stream)
             {
                 using (stream.Life)
@@ -183,12 +187,15 @@ internal sealed class WebServer
     }
 
     // `login`: the request's Tailscale-User-Login; `body`: null when it was over the limit.
-    // `origin`, `fetchSite`, `host`: the request's Origin, Sec-Fetch-Site and Host headers.
+    // `origin`, `fetchSite`, `host`, `accept`: the request's Origin, Sec-Fetch-Site, Host and Accept headers.
     public async Task<Response> Handle(string method, string path, string? login, IReadOnlyDictionary<string, string> query, byte[]? body, string contentType,
-        string? origin = null, string? fetchSite = null, string? host = null, string? fileName = null)
+        string? origin = null, string? fetchSite = null, string? host = null, string? fileName = null, string? accept = null)
     {
+        // A browser opening the page while signed out of Tailscale (or as someone else) gets signedout.html's instructions
+        // with the 403: a static page, no data; anything else gets the plain 403.
         if (!IsOwner(login, _owner()))
-            return Json(403, new { error = "Forbidden" });
+            return method == "GET" && path == "/" && accept?.Contains("text/html", StringComparison.OrdinalIgnoreCase) == true
+                ? Embedded(403, Asset("/signedout.html")!.Value) : Json(403, new { error = "Forbidden" });
         if (method == "OPTIONS")
             return new Response(204, "text/plain", []);
         if (path.StartsWith("/api/"))
@@ -211,10 +218,15 @@ internal sealed class WebServer
             return Json(404, new { error = "Not found" });
         if (method != "GET")
             return Json(405, new { error = "Method not allowed" });
-        using var stream = typeof(WebServer).Assembly.GetManifestResourceStream(resource)!;
+        return Embedded(200, (resource, type));
+    }
+
+    private static Response Embedded(int status, (string Resource, string Type) asset)
+    {
+        using var stream = typeof(WebServer).Assembly.GetManifestResourceStream(asset.Resource)!;
         using var copy = new MemoryStream();
         stream.CopyTo(copy);
-        return new Response(200, type, copy.ToArray());
+        return new Response(status, asset.Type, copy.ToArray());
     }
 
     private static Response Json(int status, object body) => new(status, "application/json; charset=utf-8", JsonSerializer.SerializeToUtf8Bytes(body, JsonOptions));
@@ -295,6 +307,13 @@ internal sealed class WebServer
             .GetAwaiter().GetResult().Status == 200, "same origin by the Host header, suffix unknown");
         Check(Call("GET", "/", null).Status == 403 && Call("GET", "/", "other@x.com").Status == 403 && Call("GET", "/api/conversations", null).Status == 403 &&
             Call("OPTIONS", "/api/hello", null).Status == 403 && Call("GET", "/missing.js", null).Status == 403, "no owner header: 403 everywhere");
+        const string browser = "text/html,application/xhtml+xml,*/*;q=0.8";
+        Response Page(string path, string? login) => server.Handle("GET", path, login, new Dictionary<string, string>(), [], "", accept: browser).GetAwaiter().GetResult();
+        foreach (var login in new[] { null, "other@x.com" })
+            Check(Page("/", login) is { Status: 403 } signedOut && signedOut.Type.StartsWith("text/html") &&
+                Encoding.UTF8.GetString(signedOut.Body).Contains("<title>Signed out · Agent Orchestrator</title>") &&
+                Page("/api/hello", login) is { Status: 403 } refused && refused.Type.StartsWith("application/json") && Page("/styles.css", login).Type.StartsWith("application/json"),
+                "signed out: the page GET gets signedout.html with its 403, anything else the plain 403");
         Check(Call("GET", "/") is { Status: 200 } page && page.Type.StartsWith("text/html") && page.Body.Length > 1000, "the page");
         var api = Call("POST", "/api/send", body: [1, 2, 3]);
         Check(api.Status == 200 && api.Type.StartsWith("application/json") &&

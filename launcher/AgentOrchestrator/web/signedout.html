@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1E1E1E">
+<title>Signed out · Agent Orchestrator</title>
+</head>
+<!-- Served with the 403 to a page GET without the PC owner's Tailscale login (WebServer.Handle). Nothing else loads while signed
+     out (styles.css and the fonts are refused too), so the look is in style attributes, which the CSP allows. -->
+<body style="margin:0;min-height:100vh;background:#1E1E1E;color:#F9F9F9;font:15px/1.5 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;display:flex;align-items:center;justify-content:center">
+  <main style="max-width:360px;margin:24px;padding:24px;background:#303030;border:1px solid #3B3B3B;border-radius:20px">
+    <h1 style="margin:0 0 4px;font-size:22px;font-weight:600">Agent Orchestrator</h1>
+    <p style="margin:0 0 20px;color:#9A9A9A">This phone is not signed in to the PC owner's Tailscale account.</p>
+    <ol style="margin:0;padding-left:20px">
+      <li style="margin-bottom:10px">Install Tailscale on this phone.</li>
+      <li style="margin-bottom:10px">Sign in with the same account as the PC's owner.</li>
+      <li>Open this address again.</li>
+    </ol>
+  </main>
+</body>
+</html>
