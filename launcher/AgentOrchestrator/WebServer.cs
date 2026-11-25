@@ -192,17 +192,20 @@ internal sealed class WebServer
         string? origin = null, string? fetchSite = null, string? host = null, string? fileName = null, string? accept = null)
     {
         // A browser opening the page while signed out of Tailscale (or as someone else) gets signedout.html's instructions
-        // with the 403: a static page, no data; anything else gets the plain 403.
+        // with the 403: a static page, no data; anything else gets the plain 403, whose SignedOut tells the page to reload (and so
+        // get signedout.html), which no other 403 says.
         if (!IsOwner(login, _owner()))
             return method == "GET" && path == "/" && accept?.Contains("text/html", StringComparison.OrdinalIgnoreCase) == true
-                ? Embedded(403, Asset("/signedout.html")!.Value) : Json(403, new { error = "Forbidden" });
+                ? Embedded(403, Asset("/signedout.html")!.Value) : Json(403, new { error = "SignedOut" });
         if (method == "OPTIONS")
             return new Response(204, "text/plain", []);
         if (path.StartsWith("/api/"))
         {
             // Serve adds the owner's login to whatever the owner's device sends, so a page on another site could call the
             // API as the owner (CSRF): only this page and the user's other PCs may; tools that send no Origin still can.
-            var known = origin is not null && (string.Equals(origin, "https://" + host, StringComparison.OrdinalIgnoreCase) || AllowedOrigin(origin, _suffix()) is not null);
+            // --webapp-dev's page is plain http on 127.0.0.1, so there (only) its own http origin is this page too.
+            var known = origin is not null && (string.Equals(origin, "https://" + host, StringComparison.OrdinalIgnoreCase) || AllowedOrigin(origin, _suffix()) is not null ||
+                DevLogin is not null && string.Equals(origin, "http://" + host, StringComparison.OrdinalIgnoreCase));
             if (!known && (fetchSite == "cross-site" || origin is not null && method is not ("GET" or "HEAD")))
                 return Json(403, new { error = "Cross-site request refused" });
             if (body is null)
@@ -314,6 +317,15 @@ internal sealed class WebServer
                 Encoding.UTF8.GetString(signedOut.Body).Contains("<title>Signed out · Agent Orchestrator</title>") &&
                 Page("/api/hello", login) is { Status: 403 } refused && refused.Type.StartsWith("application/json") && Page("/styles.css", login).Type.StartsWith("application/json"),
                 "signed out: the page GET gets signedout.html with its 403, anything else the plain 403");
+        // The page reloads (to get signedout.html) on this body only, so the other 403s must not send it.
+        Check(Encoding.UTF8.GetString(Call("GET", "/api/hello", null).Body) == """{"error":"SignedOut"}""" &&
+            !Encoding.UTF8.GetString(Call("POST", "/api/send", origin: "https://evil.com").Body).Contains("SignedOut"), "signed out: the API's 403 says SignedOut, a refused origin does not");
+        // --webapp-dev's page is http://127.0.0.1:<port>: its own origin reaches the API there, never on the app's server.
+        var dev = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _, _) => Task.FromResult((200, (object)new { }))) { DevLogin = "me@x.com" };
+        Response Local(WebServer s, string origin) => s.Handle("POST", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "", origin, "same-origin", "127.0.0.1:48741")
+            .GetAwaiter().GetResult();
+        Check(Local(dev, "http://127.0.0.1:48741").Status == 200 && Local(dev, "http://127.0.0.1:9999").Status == 403 && Local(dev, "http://evil.com").Status == 403 &&
+            Local(noSuffix, "http://127.0.0.1:48741").Status == 403, "the dev page's own http origin reaches the API under --webapp-dev only");
         Check(Call("GET", "/") is { Status: 200 } page && page.Type.StartsWith("text/html") && page.Body.Length > 1000, "the page");
         var api = Call("POST", "/api/send", body: [1, 2, 3]);
         Check(api.Status == 200 && api.Type.StartsWith("application/json") &&

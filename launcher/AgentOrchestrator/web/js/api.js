@@ -16,6 +16,11 @@ export function parseSse(chunk, state = {}) {
 // The next retry wait: doubles from 1 s up to 15 s.
 export const nextWait = ms => Math.min(ms * 2, 15000);
 
+// What an API error does: 'reload' for the signed-out 403 (the server then answers the page with signedout.html) unless this
+// tab already reloaded for it (`reloaded`: no reload loop when a cached page keeps getting it), 'lost' when unreachable, else 'toast'.
+export const failAction = (err, reloaded) =>
+  err?.status === 0 ? 'lost' : err?.status === 403 && err.message === 'SignedOut' && !reloaded ? 'reload' : 'toast';
+
 // The tailnet of a Tailscale DNS name: "home.tail0000.ts.net." -> "tail0000.ts.net".
 export const tailnetOf = dnsName => (dnsName || '').replace(/\.$/, '').split('.').slice(1).join('.');
 

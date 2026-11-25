@@ -1,7 +1,7 @@
 // The app shell: screens, the drawer, sheets, segments and switches, the landscape layout and the connection to the PC.
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
-import { api, nextWait, tailnetOf } from './api.js';
+import { api, nextWait, tailnetOf, failAction } from './api.js';
 import { screensToPop } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -167,12 +167,14 @@ applyLandscape();
 /* ---------- the PC: /api/hello, the banners, retry ---------- */
 let retryWait = 1000, retryTimer = 0, connected = false;
 
-// For every module's API errors: 403 (signed out) reloads, so the server answers with the signed-out page;
-// unreachable shows the connection-lost banner and retries; anything else is a toast.
+// For every module's API errors: the signed-out 403 reloads once, so the server answers with the signed-out page (the flag,
+// cleared by a good /api/hello, stops a loop); unreachable shows the connection-lost banner and retries; anything else is a toast.
+const RELOADED = 'ao.signedOutReload';
 export function fail(err) {
-  if (err?.status === 403) location.reload();
-  else if (err?.status === 0) lost();
-  else toast(err?.message || String(err));
+  const action = failAction(err, sessionStorage.getItem(RELOADED) !== null);
+  if (action === 'reload') { sessionStorage.setItem(RELOADED, '1'); location.reload(); }
+  else if (action === 'lost') lost();
+  else toast(err?.message === 'SignedOut' ? 'Signed out of Tailscale' : err?.message || String(err));
 }
 
 function lost() {
@@ -187,6 +189,7 @@ async function connect() {
   retryTimer = 0;
   let me;
   try { me = await api.get('/api/hello'); } catch (err) { fail(err); return; }
+  sessionStorage.removeItem(RELOADED);
   clearTimeout(retryTimer);
   retryTimer = 0;
   retryWait = 1000;
