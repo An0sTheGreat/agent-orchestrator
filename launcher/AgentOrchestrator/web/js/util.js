@@ -1,7 +1,22 @@
 // Pure helpers the screens share (Node-testable: no DOM).
 
-// How many screens a history move pops: back from depth `from` to `to` pops that many, keeping the root; forward pops none.
-export const screensToPop = (stackLen, from, to) => Math.max(0, Math.min(stackLen - 1, from - to));
+// The screen stack ({name, params} each, Chats at the bottom), kept in the tab's `history` so the phone's back gesture and the
+// Back button go back one screen. Each entry's state is the stack it shows. Under them sits the anchor (state null): landing
+// there is a back at the root, which shows Chats and pushes it again, so the gesture never leaves the app. start() makes the
+// page's own entry the anchor, so a load or reload starts clean at Chats. A tab switch or new chat replaces the entry
+// (back from it goes to the screen before, or Chats); pop(state) is popstate's.
+export function makeRouter(history) {
+  const root = () => [{ name: 'chats', params: {} }];
+  let stack;
+  const set = (s, how) => { stack = s; if (how) history[how]({ stack }, ''); };
+  return {
+    get stack() { return stack; },
+    start() { history.replaceState(null, ''); set(root(), 'pushState'); },
+    go(screen) { set([...stack, screen], 'pushState'); },
+    reset(s) { set(s, 'replaceState'); },
+    pop(state) { if (state?.stack) set(state.stack); else set(root(), 'pushState'); },
+  };
+}
 
 // "3 min ago", "yesterday", "2 days ago", "last week", then the date: the list rows' time, as the concept writes it.
 export function ago(when, now = new Date()) {

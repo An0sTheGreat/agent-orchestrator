@@ -2,20 +2,23 @@
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
 import { api, nextWait, tailnetOf, failAction } from './api.js';
-import { screensToPop } from './util.js';
+import { makeRouter } from './util.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const IMMERSIVE = ['chat']; // no tab bar in portrait
 const screens = new Map(); // name -> {mount, show, mounted}
-let stack = [{ name: 'chats', params: {} }];
+// Every go is a browser history entry, so the phone's back gesture goes back one screen (popstate) and the Back button goes
+// through history too, keeping the two in step; at Chats a back gesture stays in the app (util.js makeRouter).
+const router = makeRouter(history);
+router.start();
 
 /* ---------- screens ---------- */
 // mount(view) runs once, on the first visit; show(params, view) on every visit (and after a reconnect).
 export function registerScreen(name, { mount, show } = {}) { screens.set(name, { mount, show, mounted: false }); }
 
 function render() {
-  const { name, params } = stack[stack.length - 1];
+  const stack = router.stack, { name, params } = stack[stack.length - 1];
   const view = document.getElementById('view-' + name);
   if (!view) return;
   $$('.view').forEach(v => v.classList.toggle('on', v === view));
@@ -34,21 +37,10 @@ function showScreen(name, params, view) {
   s.show?.(params, view);
 }
 
-// Every go is a browser history entry, so the phone's back gesture goes back one screen (popstate) and the Back
-// button goes through history too, keeping the two in step. At the root a back gesture pops nothing.
-let depth = history.state?.depth ?? 0; // our place in the tab's history (kept across a reload)
-export function go(name, params = {}) {
-  stack.push({ name: name.replace(/^view-/, ''), params });
-  history.pushState({ depth: ++depth }, '');
-  render();
-}
-export function back() { if (stack.length > 1) history.back(); else render(); }
-addEventListener('popstate', e => {
-  const to = e.state?.depth ?? 0, n = screensToPop(stack.length, depth, to);
-  depth = to;
-  if (n) { stack.splice(-n); render(); } else closeOverlays();
-});
-function tabTo(name) { stack = [{ name: name.replace(/^view-/, ''), params: {} }]; render(); }
+export function go(name, params = {}) { router.go({ name: name.replace(/^view-/, ''), params }); render(); }
+export function back() { if (router.stack.length > 1) history.back(); else render(); }
+addEventListener('popstate', e => { router.pop(e.state); render(); });
+function tabTo(name) { router.reset([{ name: name.replace(/^view-/, ''), params: {} }]); render(); }
 
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-open],[data-go],[data-back],[data-drawer],[data-sheet],[data-close],[data-newchat],[data-retry]');
@@ -58,7 +50,7 @@ document.addEventListener('click', e => {
   else if (el.dataset.open) go(el.dataset.open);
   else if (el.hasAttribute('data-back')) back();
   else if (el.hasAttribute('data-drawer')) toggleDrawer();
-  else if (el.hasAttribute('data-newchat')) { stack = [{ name: 'chats', params: {} }]; go('chat', { id: null }); }
+  else if (el.hasAttribute('data-newchat')) { router.reset([{ name: 'chats', params: {} }, { name: 'chat', params: { id: null } }]); render(); }
   else if (el.dataset.sheet) openSheet(el.dataset.sheet);
   else if (el.hasAttribute('data-close')) closeOverlays();
   else if (el.hasAttribute('data-retry')) connect();
@@ -199,7 +191,7 @@ async function connect() {
   $('#meAvatar').textContent = (me.user || '?')[0].toUpperCase();
   $('#meTailnet').textContent = tailnetOf(me.dnsName);
   if (!connected) { connected = true; render(); return; }
-  const { name, params } = stack[stack.length - 1]; // back after a loss: the screen reloads its data
+  const { name, params } = router.stack[router.stack.length - 1]; // back after a loss: the screen reloads its data
   showScreen(name, params, document.getElementById('view-' + name));
 }
 
