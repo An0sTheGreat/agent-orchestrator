@@ -2122,6 +2122,8 @@
         <Grid x:Name="ImageViewer" Grid.Row="1" Grid.RowSpan="3" Grid.ColumnSpan="2" Visibility="Collapsed" Background="#D8000000" Focusable="True"
               Cursor="Hand" MouseLeftButtonUp="ImageViewer_MouseUp" KeyDown="ImageViewer_KeyDown">
             <Image x:Name="ImageViewerPicture" Stretch="Uniform" StretchDirection="DownOnly" Margin="40" RenderOptions.BitmapScalingMode="HighQuality" />
+            <TextBlock x:Name="ImageViewerCount" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,14"
+                       Foreground="#B3FFFFFF" FontSize="13" IsHitTestVisible="False" />
         </Grid>
     </Grid>
 </Window>
