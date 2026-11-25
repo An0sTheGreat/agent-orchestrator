@@ -199,6 +199,10 @@
         <Style x:Key="SubHeader" TargetType="TextBlock" BasedOn="{StaticResource SectionHeader}">
             <Setter Property="Margin" Value="8,24,0,8" />
         </Style>
+        <!-- Settings: the hairline under each setting (its row and its description), as the setting rows of the settings mockup; none under a page's last -->
+        <Style x:Key="SettingsDivider" TargetType="Border">
+            <Setter Property="Height" Value="1" /><Setter Property="Margin" Value="0,14,0,0" /><Setter Property="Background" Value="{DynamicResource Border}" />
+        </Style>
         <!-- Large figures on the worker cards: tabular digits so streaming numbers do not jitter. -->
         <Style x:Key="CardValue" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="{StaticResource DisplayFont}" /><Setter Property="FontSize" Value="22" />
@@ -1776,6 +1780,7 @@
                         </DockPanel>
                         <TextBlock Text="A desktop notification when a reply or project run finishes, only while Agent Orchestrator is not the window in front. Click it to come back."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Links (MainWindow.Browser.cs OpenLink): where a link in a reply opens; asked on the first click -->
                         <TextBlock Text="Links" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1786,8 +1791,9 @@
                         </DockPanel>
                         <TextBlock Text="Where a link in a reply opens: the browser beside the conversation, or your own default browser."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- The model's tabs (MainWindow.Browser.cs FollowTo): 3 to 10, the last stop (11) unlimited -->
-                        <DockPanel Margin="0,16,0,0">
+                        <DockPanel Margin="0,14,0,0">
                             <TextBlock x:Name="FollowTabsValue" DockPanel.Dock="Right" Width="70" TextAlignment="Right" VerticalAlignment="Center" />
                             <Slider x:Name="FollowTabsSlider" DockPanel.Dock="Right" Width="200" Minimum="3" Maximum="11" TickFrequency="1" IsSnapToTickEnabled="True"
                                     VerticalAlignment="Center" ValueChanged="FollowTabs_Changed" AutomationProperties.Name="Tabs the model may open" />
@@ -1795,6 +1801,7 @@
                         </DockPanel>
                         <TextBlock Text="The most browser tabs the model opens on its own when it follows its searches and pages; past that it reuses its oldest. You can always open more yourself."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Computer use (MainWindow.Computer.cs): the lead drives one window of an approved application -->
                         <TextBlock Text="Computer use" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1804,11 +1811,13 @@
                         </DockPanel>
                         <TextBlock Text="In Chat and Code, the model may use one window of an approved application per reply with your real mouse and keyboard: it clicks, types and presses keys as you would, so leave the computer alone while it works. Press Esc at any time to stop it. Admin windows cannot be used."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <DockPanel Margin="0,16,0,0">
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
                             <Button x:Name="ComputerAddButton" DockPanel.Dock="Right" Content="Add application  ▾" Padding="11,6" VerticalAlignment="Center" Click="ComputerAdd_Click" />
                             <TextBlock Text="Approved applications" VerticalAlignment="Center" />
                         </DockPanel>
                         <StackPanel x:Name="ComputerAppsList" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <TextBlock Text="Usage stats" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="ResetStatsButton" Content="Reset usage stats" Padding="11,6" VerticalAlignment="Center" Click="ResetStats_Click" />
@@ -1816,6 +1825,7 @@
                         </DockPanel>
                         <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Remote access (MainWindow.Remote.cs, RemoteTunnel.cs): the server and the Cloudflare quick tunnel -->
                         <TextBlock Text="Remote access" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1823,7 +1833,8 @@
                                           AutomationProperties.Name="Remote access" />
                             <TextBlock Text="Use the app from a phone or another computer, in a browser" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
-                        <DockPanel Margin="0,12,0,0">
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
                         <Button x:Name="RemotePasswordButton" DockPanel.Dock="Right" Content="Set password" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="RemotePassword_Click" />
                         <PasswordBox x:Name="RemotePasswordBox" AutomationProperties.Name="Remote access password" />
                         </DockPanel>
@@ -1871,6 +1882,7 @@
                         </DockPanel>
                         <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ComboBox x:Name="ReadingSizeBox" DockPanel.Dock="Right" Width="150" SelectionChanged="ReadingSize_Changed" AutomationProperties.Name="Reading size">
                         <ComboBoxItem Content="Compact" Tag="compact" /><ComboBoxItem Content="Comfortable" Tag="comfortable" /><ComboBoxItem Content="Large" Tag="large" />
@@ -1879,6 +1891,7 @@
                         </DockPanel>
                         <TextBlock Text="How replies and your messages read: Comfortable and Large give the text more room, as ChatGPT does. Compact is the denser layout."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ComboBox x:Name="EmojiBox" DockPanel.Dock="Right" Width="150" SelectionChanged="Emoji_Changed" AutomationProperties.Name="Emoji in replies">
                         <ComboBoxItem Content="None" Tag="none" /><ComboBoxItem Content="Less" Tag="less" /><ComboBoxItem Content="Standard" Tag="standard" /><ComboBoxItem Content="More" Tag="more" />
@@ -1887,6 +1900,7 @@
                         </DockPanel>
                         <TextBlock Text="How many emoji the models use when they answer you, in Chat and Code. Summaries, reviews and code never get them."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ContextPercentToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ContextPercent_Click" VerticalAlignment="Center"
                         AutomationProperties.Name="Show the context percentage" />
@@ -1904,11 +1918,13 @@
                         <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
                         <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
-                        <TextBlock Text="Models folders" FontWeight="SemiBold" Margin="0,16,0,6" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <TextBlock Text="Models folders" FontWeight="SemiBold" Margin="0,14,0,6" />
                         <StackPanel x:Name="ModelsFoldersList" Tag="ModelsFoldersList" />
                         <Button Content="Add models folder…" Tag="ModelsFolderAdd" HorizontalAlignment="Left" Padding="11,6" Margin="0,4,0,0" Click="ModelsFolder_Click" />
                         <TextBlock Text="GGUF files are found in the Hugging Face cache (where Hugging Face downloads go) and in these folders, with their subfolders." TextWrapping="Wrap"
                         Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center"
@@ -1917,8 +1933,9 @@
                         </DockPanel>
                         <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Several models at once (MainWindow.Runtime.cs): settings.MultiModel, the engine's AGENT_ORCHESTRATOR_MULTI_MODEL -->
-                        <TextBlock Text="Several models at once" Margin="0,22,0,0" />
+                        <TextBlock Text="Several models at once" Margin="0,14,0,0" />
                         <StackPanel x:Name="MultiModelOptions">
                         <RadioButton GroupName="MultiModel" Tag="never" Content="Never" Margin="0,10,0,0" Checked="MultiModel_Checked" />
                         <TextBlock Text="One model at a time: loading another unloads the previous one." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
@@ -1928,6 +1945,7 @@
                         <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Checked="MultiModel_Checked" />
                         <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
                         </StackPanel>
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on 127.0.0.1 behind the image server, on the Tailscale IP or behind one Cloudflare quick tunnel; Connect on the other PC -->
                         <TextBlock Text="Share models with my other PCs" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -1935,7 +1953,8 @@
                                           AutomationProperties.Name="Share models with my other PCs" />
                             <TextBlock Text="Run this PC's models for the app on your other PCs, over Tailscale or a Cloudflare tunnel" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
-                        <WrapPanel x:Name="ShareNetworkPanel" Margin="0,12,0,0">
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <WrapPanel x:Name="ShareNetworkPanel" Margin="0,14,0,0">
                         <TextBlock Text="Network:" VerticalAlignment="Center" Margin="0,0,12,0" />
                         <RadioButton x:Name="ShareTailscaleRadio" GroupName="ShareNetwork" Tag="tailscale" Content="Tailscale (private)" Click="ShareNetwork_Click" Margin="0,0,16,0" />
                         <RadioButton x:Name="ShareCloudflareRadio" GroupName="ShareNetwork" Tag="cloudflare" Content="Cloudflare tunnel (any network)" Click="ShareNetwork_Click" />
@@ -1989,6 +2008,7 @@
                         </DockPanel>
                         <TextBlock Text="Off the sandbox: commands run as you, with your rights, anywhere on this PC and with the network, in Code and in normal chats (where the model also gets file tools on every drive except System32). The permissions button in the Code composer still decides when they ask: Always Ask asks before every command, Allow Safe and Allow All run them without asking. The Reviewer's read-only commands stay in the sandbox."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="SuperAccessToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SuperAccess_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Super access: the model's file tools reach every folder except System32" />
@@ -1996,12 +2016,14 @@
                         </DockPanel>
                         <TextBlock Text="The model can read and write files on every drive of this PC, not only the conversation's folders. Windows\System32, api_key.txt, .git folders and Agent Orchestrator's own folder stay off limits, and folders you added as read-only stay read-only. Works on its own or with Full access: commands stay in the sandbox unless Full access is on too. Normal chats get these file tools as well."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Commands may use the network without asking" />
                             <TextBlock Text="Commands may use the network without asking" VerticalAlignment="Center" />
                         </DockPanel>
-                        <DockPanel Margin="0,12,0,0">
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
                         <Button x:Name="SandboxSetupButton" Content="Set up sandbox access…" Padding="11,6" VerticalAlignment="Top" Click="SandboxSetup_Click" />
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
