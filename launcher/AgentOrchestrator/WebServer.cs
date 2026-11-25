@@ -188,7 +188,7 @@ internal sealed class WebServer
     }
 
     internal static string Csp(string? suffix) =>
-        "default-src 'self'" + (string.IsNullOrEmpty(suffix) ? "" : $"; connect-src 'self' https://*.{suffix}");
+        "default-src 'self'; style-src-attr 'unsafe-inline'" + (string.IsNullOrEmpty(suffix) ? "" : $"; connect-src 'self' https://*.{suffix}");
 
     // The embedded file for a request path ("/" is index.html) and its content type; null for anything not embedded.
     public static (string Resource, string Type)? Asset(string path)
@@ -226,7 +226,8 @@ internal sealed class WebServer
             AllowedOrigin("https://laptop.tail1234.ts.net:8443", suffix) is null && AllowedOrigin("https://laptop.tail1234.ts.net", null) is null &&
             AllowedOrigin(null, suffix) is null, "tailnet origins");
         Check(Csp(suffix).Contains("default-src 'self'") && Csp(suffix).Contains("connect-src 'self' https://*.tail1234.ts.net") &&
-            !Csp(null).Contains("connect-src"), "content security policy");
+            Csp(suffix).Contains("style-src-attr 'unsafe-inline'") && Csp(null).Contains("style-src-attr 'unsafe-inline'") &&
+            !Csp(null).Contains("connect-src"), "content security policy: " + Csp(suffix));
         Check(Asset("/") is ("web/index.html", var html) && html.StartsWith("text/html") && Asset("/styles.css") is (_, var css) && css.StartsWith("text/css") &&
             Asset("/assets/fonts/Inter-Regular.ttf") is (_, "font/ttf"), "assets");
         Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
