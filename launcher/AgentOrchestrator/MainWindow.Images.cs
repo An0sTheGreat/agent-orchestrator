@@ -172,6 +172,15 @@ public partial class MainWindow
         if (_pendingShot is not { } file)
             return;
         _pendingShot = null;
+        // a reply's generated pictures share one row: the next joins the row of the one before
+        if (reply.Content.Children.OfType<WrapPanel>().LastOrDefault(p => p.Tag as string == PictureRow) is { } pictures &&
+            ThumbRow([file], 160, HorizontalAlignment.Left) is { Tag: PictureRow } one)
+        {
+            var thumb = one.Children[0];
+            one.Children.Clear();
+            pictures.Children.Add(thumb);
+            return;
+        }
         if (ThumbRow([file], 160, HorizontalAlignment.Left) is { } row)
         {
             row.Margin = new Thickness(0, 2, 0, 4);
@@ -257,6 +266,18 @@ public partial class MainWindow
                 Regroup(steps.Content);
                 if (madeRow.Visibility != Visibility.Visible || shotRow.Visibility != Visibility.Collapsed)
                     return Fail($"View thinking off: picture {madeRow.Visibility}, screenshot {shotRow.Visibility}");
+                // several pictures in one reply share one row, past the steps between them; a screenshot keeps its own
+                var several = _reply = AddReply("planner");
+                foreach (var file in new[] { made, shot!, made, made })
+                {
+                    several.Content.Children.Add(BuildToolExpander(file == made ? "generate_image" : "browser", "x", new TextBlock(), out _));
+                    _pendingShot = file;
+                    ShowPendingShot(several);
+                }
+                _reply = null;
+                var rows = several.Content.Children.OfType<WrapPanel>().ToList();
+                if (rows.Count != 2 || rows[0].Tag as string != PictureRow || rows[0].Children.Count != 3 || rows[1].Children.Count != 1)
+                    return Fail($"several pictures: {string.Join(", ", rows.Select(r => $"{r.Tag}:{r.Children.Count}"))}");
             }
             finally
             {

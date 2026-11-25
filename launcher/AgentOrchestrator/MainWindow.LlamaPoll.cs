@@ -69,7 +69,7 @@ public partial class MainWindow
         for (var tries = 0; tries < 5 && !listener.IsListening; tries++)
         {
             port = Random.Shared.Next(20000, 60000);
-            listener.Prefixes.Clear();
+            listener = new System.Net.HttpListener(); // a failed Start disposes the listener: a new one per try
             listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             try { listener.Start(); } catch (System.Net.HttpListenerException) { }
         }

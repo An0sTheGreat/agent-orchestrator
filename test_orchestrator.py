@@ -3032,7 +3032,8 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(code, 0)
         tool = next(t for t in log[0]["tools"] if t["function"]["name"] == "generate_image")
         self.assertIn("1536x1152", tool["function"]["description"])
-        self.assertEqual(set(tool["function"]["parameters"]["properties"]), {"prompt", "negative", "seed"})
+        self.assertEqual(set(tool["function"]["parameters"]["properties"]), {"prompt", "negative", "seed", "count"})
+        self.assertIn("use that file", log[0]["system"])  # an existing image file is used, not painted again
         self.assertIn("IMAGE GENERATION", log[0]["system"])
         self.assertIn("SDXL Base at 1536x1152", log[0]["system"])
         self.assertIn("comma-separated tags", log[0]["system"])  # the recipe's tips
@@ -3065,6 +3066,32 @@ class CodeTests(unittest.TestCase):
         self.assertEqual((blind, getattr(blind, "images", None)), ("Painted 1536x1152, seed 7", None))  # a model that cannot see: text only
         with patch.object(orchestrator, "launcher_call", lambda event, **d: None):  # stdin closed
             self.assertTrue(orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("x").startswith("ERROR:"))
+
+    def test_image_gen_count_makes_pictures_one_after_another(self):
+        asked, made = [], iter(["line 1", "line 2", "ERROR: out of memory"])
+        answer = lambda event, **d: asked.append(d["seed"]) or {"result": next(made), "image": "data:image/png;base64,A"}
+        with patch.object(orchestrator, "launcher_call", answer):
+            result = orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a fox", seed=7, count=3)
+        self.assertEqual(asked, [7, None, None])  # the given seed for the first, new ones after
+        self.assertEqual(str(result), "line 1\nline 2\nPicture 3 of 3 was not made: ERROR: out of memory")  # the ones made stand
+        self.assertEqual(len(result.images), 2)
+        asked.clear()
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: asked.append(d) or {"result": "line", "image": ""}):
+            orchestrator.image_gen_extras({"image_gen": self.IMAGE_GEN})[1]["generate_image"]("a fox", count=9)
+        self.assertEqual(len(asked), orchestrator.IMAGE_MAX_COUNT)
+
+    def test_image_gen_several_pictures_in_one_reply_end_the_turn_with_each_line(self):
+        lines = iter(["Image generated and shown to the user. Model: m. Size: 1x1. Seed: 1. Prompt: a fox",
+                      "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 2. Prompt: an owl"])
+        two = {"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"i{n}", "type": "function", "function": {"name": "generate_image", "arguments": json.dumps({"prompt": p})}}
+            for n, p in enumerate(["a fox", "an owl"])]}
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": next(lines), "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN}, {"planner": [two]})
+        self.assertEqual((code, len(log)), (0, 1))
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"],
+                         ["Image generated and shown to the user. Model: m. Size: 1x1. Seed: 1. Prompt: a fox\n"
+                          "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 2. Prompt: an owl"])
 
     def test_image_gen_a_made_picture_ends_the_turn_with_its_details_line(self):
         line = "Image generated and shown to the user. Model: SDXL Base. Size: 1536x1152. Seed: 7. Prompt: a fox"

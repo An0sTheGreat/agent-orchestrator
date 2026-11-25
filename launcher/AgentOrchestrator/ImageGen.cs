@@ -227,8 +227,12 @@ internal static class ImageGen
 
     // What a reply that is exactly one ChatResult line shows (/image's saved reply): "model · size · seed n"; null for any other text,
     // such as a model that echoes the line and goes on (the line is one line, so the match ends at the text's end).
+    // Several pictures in one reply: one such line each, every line a picture's (else null).
     public static string? ResultCaption(string text) =>
-        Regex.Match(text, @"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)?(?: Saved: [^\r\n]+?\.)? Prompt: [^\r\n]*\z") is { Success: true } m
+        text.Split('\n').Select(OneCaption).ToList() is var captions && captions.All(c => c is not null) ? string.Join("\n", captions) : null;
+
+    private static string? OneCaption(string text) =>
+        Regex.Match(text,@"\AImage generated and shown to the user\. Model: (.+?)\. Size: (\d+x\d+)\.(?: Seed: (\d+)\.)?(?: Saved: [^\r\n]+?\.)? Prompt: [^\r\n]*\z") is { Success: true } m
             ? $"{m.Groups[1].Value} · {m.Groups[2].Value}" + (m.Groups[3].Success ? $" · seed {m.Groups[3].Value}" : "") : null;
 
     // The user's next message after a picture (`last`, then cleared), for the model only: the picture's line before the text and
@@ -548,6 +552,8 @@ internal static class ImageGen
         Check(ChatResult("m", chatRun, 1, 1, @"C:\Users\u\AppData\Roaming\Agent Orchestrator\images\20261125-100414-42.png") is var saved &&
             saved == @"Image generated and shown to the user. Model: m. Size: 1x1. Seed: 42. Saved: C:\Users\u\AppData\Roaming\Agent Orchestrator\images\20261125-100414-42.png. Prompt: a cat" &&
             ResultCaption(saved) == "m · 1x1 · seed 42", "Image Gen: the reply line tells the model where the picture was saved");
+        Check(ResultCaption(saved + "\n" + line) == "m · 1x1 · seed 42\nSDXL 1.0 · 1024x576 · seed " + wide.Seed && ResultCaption(saved + "\nPicture 2 of 2 was not made: x") is null,
+            "Image Gen: several pictures' lines are a picture reply; a failure line is shown");
         (string, string)? last = (@"C:\g\p.png", "L");
         Check(TakeLastPicture(ref last, "bluer", [], true) is ("[Your last picture: L]\n\nbluer", [@"C:\g\p.png"]) && last is null &&
             TakeLastPicture(ref last, "again", [], true) is ("again", []) &&

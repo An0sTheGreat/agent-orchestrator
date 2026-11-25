@@ -4366,7 +4366,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
                 result = f"ERROR: {exc}"
             emit("tool", role=role, name=tool, args=str(function.get("arguments") or ""), result=result[:6000])
             if tool == "generate_image" and not result.startswith("ERROR"):
-                picture = str(result)
+                picture = f"{picture}\n{result}" if picture else str(result)  # several in one reply: each picture's line
             images += getattr(result, "images", [])
             if native:
                 messages.append({"role": "tool", "tool_call_id": call.get("id", "tool"), "content": str(result)})
@@ -4781,6 +4781,7 @@ IMAGE_GENERIC_TIP = "Describe the subject, setting, lighting, camera and style i
 
 # The end of a failed picture's tool result (a made one ends the turn: code_loop).
 IMAGE_FAILED = "No picture was made. Briefly explain the failure to the user."
+IMAGE_MAX_COUNT = 4  # generate_image's count: pictures of one prompt in one call
 
 
 def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
@@ -4795,31 +4796,45 @@ def image_gen_extras(request: dict[str, Any], vision: bool = True) -> tuple[list
     exact = bool(gen.get("style"))  # OpenRouter models (no style) honour only the aspect: the provider picks the exact size
     properties = {"prompt": {"type": "string", "description": "The full picture description, written for this image model."},
                   **({"negative": {"type": "string", "description": "What to keep out of the picture."}} if takes_negative else {}),
-                  "seed": {"type": "integer", "description": "To adjust an earlier picture, its seed; leave out for a new one."}}
-    tool = function_tool("generate_image", "Make a picture for the user with the image model; the user sees it beside the chat. "
+                  "seed": {"type": "integer", "description": "To adjust an earlier picture, its seed; leave out for a new one."},
+                  "count": {"type": "integer", "description": f"How many pictures of this prompt to make, 1 to {IMAGE_MAX_COUNT}, each "
+                            "with a new seed, one after another (default 1)."}}
+    tool = function_tool("generate_image", "Make a new picture for the user with the image model; the user sees it beside the chat. "
                          f"The picture is {'always' if exact else 'about'} {size} pixels{'' if exact else ' (the provider picks the exact size)'}. To adjust an earlier picture, call it again with the revised full "
-                         "prompt and the same seed.", properties, ["prompt"])
+                         "prompt and the same seed. For several pictures of one idea set count; for several different pictures, call it "
+                         "once per picture in the same reply. Only when the user wants a new picture: to use an image file that already "
+                         "exists (in the project, or one made earlier), use that file instead.", properties, ["prompt"])
 
-    def generate_image(prompt: str, negative: str = "", seed: Any = None) -> str:
+    def generate_image(prompt: str, negative: str = "", seed: Any = None, count: Any = 1) -> str:
         if not str(prompt or "").strip():
             raise WorkflowError("prompt is empty: describe the picture")
-        seed = None if seed is None else int(seed)
-        if gen.get("unload_chat") is True:
-            unload_models()  # the image model paints on this PC's GPU: the chat model leaves it until code_loop loads it again
-        answer = launcher_call("image", prompt=str(prompt), negative=str(negative or "") if takes_negative else "", seed=seed)
-        if answer is None:
-            return f"ERROR: image generation is only there when the app runs this turn\n{IMAGE_FAILED}"
-        result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
-        if result.startswith("ERROR"):
-            return f"{result}\n{IMAGE_FAILED}"
-        return ToolResult(result, [image]) if vision and image.startswith("data:image/") else result
+        seed, count = None if seed is None else int(seed), min(max(int(count or 1), 1), IMAGE_MAX_COUNT)
+        lines, images = [], []
+        for n in range(count):  # one after another: the launcher paints one picture at a time
+            if gen.get("unload_chat") is True:
+                unload_models()  # the image model paints on this PC's GPU: the chat model leaves it until code_loop loads it again
+            answer = launcher_call("image", prompt=str(prompt), negative=str(negative or "") if takes_negative else "", seed=seed if n == 0 else None)
+            if answer is None:
+                return f"ERROR: image generation is only there when the app runs this turn\n{IMAGE_FAILED}"
+            result, image = str(answer.get("result") or ""), str(answer.get("image") or "")
+            if result.startswith("ERROR"):
+                if not lines:
+                    return f"{result}\n{IMAGE_FAILED}"
+                lines.append(f"Picture {n + 1} of {count} was not made: {result}")  # the ones made stand
+                break
+            lines.append(result)
+            images += [image] if vision and image.startswith("data:image/") else []
+        return ToolResult("\n".join(lines), images) if images else "\n".join(lines)
 
     note = (f"\n\nIMAGE GENERATION\nYou can make pictures with generate_image, painted by {gen.get('model') or 'a local image model'} "
             f"at {size} pixels ({'always that size' if exact else 'about that size, the provider picks the exact one'}). Use it when the user asks you to generate, create, draw or make a picture, or "
             "to change one you made. Write the prompt yourself, refined for this image model, rather than passing the user's "
             f"words through. {IMAGE_STYLE_TIPS.get(str(gen.get('style') or ''), IMAGE_GENERIC_TIP)}"
             + (" Put what to keep out of the picture (such as blur, extra fingers, watermarks or text) in negative." if takes_negative else "")
-            + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. Do not paste the "
+            + " To adjust an earlier picture, call it again with the revised full prompt and the same seed. When the user asks "
+            "for several pictures, set count (one idea) or call generate_image once per picture in the same reply (different ones). "
+            "To use an image file that already exists (in the project, or one made earlier), use that file: do not make a new "
+            "picture unless the user asks for one. Do not paste the "
             "prompt as a code block unless the user asks for it.")
     return [tool], {"generate_image": generate_image}, note
 
