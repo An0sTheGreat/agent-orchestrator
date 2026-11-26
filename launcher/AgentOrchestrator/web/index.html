@@ -21,6 +21,7 @@
 <script type="module" src="js/images.js"></script>
 <script type="module" src="js/settings.js"></script>
 <script type="module" src="js/skills.js"></script>
+<script type="module" src="js/agents.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -362,6 +363,8 @@
               <div class="vhead-main"><h2 class="vtitle">Agents</h2></div>
             </header>
             <div class="vbody">
+              <div data-rows></div>
+              <div id="workerlist"></div>
             </div>
           </section>
 
@@ -369,43 +372,11 @@
           <section class="view spage" id="view-agent">
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Lead</h2><p class="vsub">Worker options</p></div>
-              <button class="iconbtn" data-more aria-label="Presets"><svg class="ic"><use href="#i-more"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle"></h2><p class="vsub">Worker options</p></div>
+              <button class="iconbtn" id="agentpresets" data-sheet="sheet-mdlpresets" aria-label="Presets"><svg class="ic"><use href="#i-layers"/></svg></button>
+              <button class="iconbtn" id="agentmore" data-sheet="sheet-workermenu" aria-label="More" hidden><svg class="ic"><use href="#i-more"/></svg></button>
             </header>
             <div class="vbody">
-              <div class="card">
-                <p class="secthead inline">MODEL</p>
-                <button class="selectrow"><span>Qwen3.5-4B</span><svg class="ic sm"><use href="#i-down"/></svg></button>
-                <p class="muted">Quantization <b>Q4_K_M</b> · installed models only</p>
-                <p class="secthead inline">MODEL SOURCE</p>
-                <div class="seg" data-seg="source"><button class="on">Local</button><button>Remote API</button></div>
-                <p class="muted">Remote API sends this worker's requests to an OpenAI-compatible endpoint.</p>
-              </div>
-
-              <div class="card">
-                <div class="rowline"><div><b>Context length</b></div><span class="pill">32,768</span></div>
-                <input class="slider" type="range" min="4096" max="131072" step="2048" value="32768" aria-label="Context length">
-                <p class="muted between"><span>Auto</span><span>131,072</span></p>
-                <div class="rowline"><div><b>Advanced settings</b><small>KV cache, batch, GPU layers, extra args</small></div><button class="switch" data-switch aria-label="Advanced settings"></button></div>
-              </div>
-
-              <p class="secthead">SAMPLING</p>
-              <div class="fields">
-                <label>Temperature<input value="0.6"></label>
-                <label>Top P<input value="0.95"></label>
-                <label>Top K<input value="20"></label>
-                <label>Min P<input value="0.05"></label>
-                <label>Repetition penalty<input value="1.0"></label>
-                <label>Seed<input placeholder="random"></label>
-              </div>
-              <div class="rowline"><div><b>Thinking</b><small>Enable or disable reasoning per request</small></div>
-                <div class="seg small" data-seg="think"><button>Off</button><button class="on">On</button></div>
-              </div>
-              <div class="pad two">
-                <button class="btn ghost">Presets</button>
-                <button class="btn ghost">Revert</button>
-                <button class="btn">Save</button>
-              </div>
             </div>
           </section>
 
@@ -668,6 +639,7 @@
       <div class="sheet" id="sheet-models" role="dialog" aria-label="Installed models">
         <div class="grab"></div>
         <p class="secthead inline">INSTALLED MODELS</p>
+        <button class="drawer-item" data-sheet="sheet-favs"><svg class="ic sm"><use href="#i-spark"/></svg> Favorite models</button>
         <div id="mdlList"></div>
         <p class="hintline">Star a model to list it under Favorite models. Sizes are the GGUF file plus the compute buffer.</p>
       </div>
@@ -681,10 +653,20 @@
       <div class="sheet" id="sheet-mdlpresets" role="dialog" aria-label="Model presets">
         <div class="grab"></div>
         <p class="secthead inline">MODEL PRESETS</p>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-orb"/></svg> weather-dashboard <small class="count">current</small></button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-orb"/></svg> graphite-fast</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-orb"/></svg> code-hero (remote)</button>
-        <div class="rowline"><div><b>Save to “weather-dashboard”</b><small>Stores every worker's settings in this preset</small></div><button class="switch on" data-switch aria-label="Save to preset"></button></div>
+        <div id="presetList"></div>
+        <button class="drawer-item" id="presetsave"><svg class="ic sm"><use href="#i-plus"/></svg> Save as…</button>
+        <p class="hintline">Tap a preset to fill the form; Save keeps it. Hold one to delete it.</p>
+      </div>
+
+      <div class="sheet" id="sheet-primary" role="dialog" aria-label="Primary PC models">
+        <div class="grab"></div>
+        <p class="secthead inline">MODELS ON THE PRIMARY PC</p>
+        <div id="primList"></div>
+      </div>
+
+      <div class="sheet" id="sheet-workermenu" role="dialog" aria-label="Worker">
+        <div class="grab"></div>
+        <button class="drawer-item danger" id="workerremove"><svg class="ic sm"><use href="#i-trash"/></svg> Remove worker</button>
       </div>
 
       <div class="sheet" id="sheet-search" role="dialog" aria-label="Search conversations">

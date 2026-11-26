@@ -123,7 +123,13 @@ body.landscape .vram-total { font-size: 14px; }
 body.landscape .vram-sub { display: none; }
 body.landscape .vrambar { margin: 4px 0 4px; height: 5px; }
 body.landscape .vramlegend { font-size: 9px; gap: 2px 10px; }
-body.landscape .vramwarn { font-size: 9.5px; margin-top: 3px; }
+body.landscape .vrambar .vv, .vramlegend i.vv { background: #3DDC84; }
+.item-text small.danger, small.danger { color: #FF8A9B; }
+.fields label small.danger { display: block; margin-top: 3px; }
+.fields .rowline.span { padding: 4px 0; }
+.field select, .fields textarea { width: 100%; margin-top: 4px; background: var(--field); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; font-size: 12.5px; color: var(--text); outline: none; font-family: inherit; }
+.vramcard { padding-top: 10px; }
+.vramwarn { font-size: 9.5px; margin-top: 3px; }
 body.landscape .toast { bottom: 18px; }
 
 /* chats: projects and recents side by side */

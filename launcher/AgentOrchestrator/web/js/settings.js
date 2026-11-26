@@ -214,7 +214,10 @@ if (typeof document !== 'undefined') {
   registerScreen('usage', { show() { page = 'usage'; loadUsage(); } });
 
   for (const name of ['settings', ...PAGES])
-    registerScreen(name, { show() { page = name; draw(); load(); } });
+    registerScreen(name, { show() {
+      page = name; draw(); load();
+      if (name === 'agents') document.dispatchEvent(new Event('ao:agents')); // agents.js: the workers under the global rows
+    } });
 
   // Connected (main.js): the PC's accent from the start, before Settings is opened; a PC without the route keeps the default.
   document.addEventListener('ao:hello', () => api.get('/api/settings').then(s => { state = normalize(s); applyAccent(); draw(); }, () => {}));

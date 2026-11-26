@@ -1,4 +1,5 @@
-// The PC's API. `api.base` is the PC's origin ('' = this page's own). A failure throws an Error with .status (0 = unreachable).
+// The PC's API. `api.base` is the PC's origin ('' = this page's own). A failure throws an Error with .status (0 = unreachable) and
+// .body (the server's JSON answer, e.g. a 400's {errors}).
 
 // parseSse(chunk, state): the events this chunk completes; `state` carries a split frame to the next call. Pure.
 export function parseSse(chunk, state = {}) {
