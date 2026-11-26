@@ -75,6 +75,8 @@ export const api = {
     method: 'POST', body: file,
     headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name || 'photo') },
   })).path,
+  // Dictation: 16 kHz mono 16-bit PCM (an Int16Array) to the PC, which answers { text }.
+  dictate: pcm => call('/api/dictate', { method: 'POST', body: pcm, headers: { 'Content-Type': 'application/octet-stream' } }),
   // Live events for a conversation; reconnects with a 1 to 15 s backoff (each connection starts with the server's hello). Returns stop().
   // onDrop(n): the n-th failure in a row (EventSource cannot tell a 403/404 from a drop; the caller can ask the API).
   // Watchdog: a connection with no frame for WATCHDOG ms (half-open after a network switch) is dropped and reopened. EventSource

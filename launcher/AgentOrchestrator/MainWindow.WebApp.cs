@@ -349,6 +349,8 @@ public partial class MainWindow
             ("GET", "/api/models/local") => await WebLocalModels(),
             ("POST", "/api/favorites") => await Dispatcher.InvokeAsync(() => WebFavorite(WebBody(body))),
             ("GET", "/api/primary/models") => await WebPrimaryModels(),
+            ("GET", "/api/dictate") => WebDictateState(),
+            ("POST", "/api/dictate") => await WebDictate(body),
             ("GET", "/api/remote/services") => await Dispatcher.InvokeAsync(WebRemoteServices),
             ("GET", "/api/remote/models") => await WebRemoteModels(query.GetValueOrDefault("service") ?? "", query.GetValueOrDefault("baseUrl") ?? ""),
             ("GET", "/api/remote/providers") => await WebRemoteProviders(query.GetValueOrDefault("model") ?? ""),
@@ -714,7 +716,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound) || !await WebModelsSmoke2(bound) ||!await WebToolsSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound) || !await WebModelsSmoke2(bound) ||!await WebToolsSmoke(bound) || !await WebVoiceSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes

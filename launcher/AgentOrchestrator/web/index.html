@@ -22,6 +22,7 @@
 <script type="module" src="js/settings.js"></script>
 <script type="module" src="js/skills.js"></script>
 <script type="module" src="js/agents.js"></script>
+<script type="module" src="js/dictate.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -112,6 +113,7 @@
                 <div class="sendrow">
                   <button class="chip" id="effortchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> <span>Effort: Default</span></button>
                   <button class="stop hidden" id="stopbtn" data-stop aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
+                  <button class="mic" data-mic aria-label="Dictate"><svg class="ic"><use href="#i-mic"/></svg></button>
                   <button class="send" id="sendbtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
                 </div>
               </div>
@@ -163,6 +165,7 @@
                     <div class="sendrow">
                       
                       <button class="stop hidden" data-stop aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
+                      <button class="mic" data-mic aria-label="Dictate"><svg class="ic"><use href="#i-mic"/></svg></button>
                       <button class="send" id="codesend" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
                     </div>
                   </div>
@@ -754,6 +757,7 @@
   <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.6v2.2M12 18.2v2.2M3.6 12h2.2M18.2 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M18 6l-1.6 1.6M7.6 16.4L6 18"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7h6l2 2.5h10V19H3z"/></symbol>
   <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0013 0M12 18v2.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-clip" viewBox="0 0 24 24"><path d="M9 12.5l5.5-5.5a3 3 0 014.2 4.2l-8 8a5 5 0 01-7-7l7.5-7.5"/></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 6.5 12 6.5 21.5 12 21.5 12 18 17.5 12 17.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>

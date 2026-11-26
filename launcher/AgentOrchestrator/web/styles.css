@@ -432,6 +432,15 @@ body.landscape .drawer { padding-top: 0; }
 .chip .ic { color: inherit; }
 .sendrow { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
 .send { margin-left: auto; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); flex: none; }
+/* dictation (dictate.js): the mic just left of Send; while listening the meter covers the text area, the text hidden under it */
+.mic { margin-left: auto; width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); flex: none; transition: background .15s, color .15s; }
+.mic + .send { margin-left: 0; }
+.mic.on { background: var(--accent); color: var(--on-accent); animation: pulse 1.4s ease-in-out infinite; }
+.mic:disabled { opacity: .5; }
+.inputwrap { position: relative; }
+.inputwrap textarea.dictating { visibility: hidden; }
+.dictmeter { position: absolute; display: flex; align-items: center; gap: 2px; font-size: 12px; pointer-events: none; }
+.dictmeter canvas { width: 100%; height: 100%; display: block; }
 .stop { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--border); color: var(--text); flex: none; }
 .queue { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
 .queue .dot { animation: pulse 1.4s ease-in-out infinite; }
