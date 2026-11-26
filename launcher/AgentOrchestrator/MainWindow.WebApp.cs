@@ -487,7 +487,7 @@ public partial class MainWindow
     private (int, object) WebConversations()
     {
         var (view, running) = (_store.View(), RunningId);
-        var item = (ConversationStore.Entry e) => new { id = e.Id, title = e.Title, kind = Kind(e.Kind), updated = e.Updated, busy = e.Id == running, folder = e.Folder };
+        var item = (ConversationStore.Entry e) => new { id = e.Id, title = e.Title, kind = Kind(e.Kind), updated = e.Updated, busy = e.Id == running, folder = e.Folder, worker = WebWorker(_store.Get(e.Id)) };
         return (200, new
         {
             projects = view.Groups.Select(g => new { id = g.Id, name = g.Name, items = g.Items.Select(item).ToList() }).ToList(),
@@ -495,6 +495,13 @@ public partial class MainWindow
             archived = view.Archived.Select(item).ToList(),
         });
     }
+
+    // The worker a conversation sends to, named as the desktop names it ("Lead" for the planner); "" when its card is unknown.
+    private string WebWorker(ConversationStore.Conversation? c) => c is null ? "" : ChatName(CardFor(c.Worker), c.Worker);
+
+    // A reply's worker: the saved stats line starts with it ("Lead · 81.1 tok/s · ..."); null when the line has none ("12 tok/s", "5 generated · 7 prompt").
+    internal static string? StatsWorker(string? stats) =>
+        stats?.IndexOf(" · ", StringComparison.Ordinal) is > 0 and var i && !char.IsDigit(stats[0]) ? stats[..i] : null;
 
     private (int, object) WebConversation(string id)
     {
@@ -504,11 +511,11 @@ public partial class MainWindow
         var context = (id == _chatConv?.Id ? _chatContext : id == _codeConv?.Id ? _codeContext : null) ?? saved.Context;
         return (200, new
         {
-            id, title = ConversationStore.TitleOf(saved), kind = Kind(saved.Kind), busy, queued, prompt, reply,
+            id, title = ConversationStore.TitleOf(saved), kind = Kind(saved.Kind), worker = WebWorker(saved), busy, queued, prompt, reply,
             context = context is { } c ? new { nCtx = c.NCtx, used = c.Used, fraction = c.Fraction, parts = c.Parts } : null,
             messages = messages.Select(m => new
             {
-                role = m.Role, text = m.Content, time = m.Time, stats = m.Stats,
+                role = m.Role, text = m.Content, time = m.Time, stats = m.Stats, worker = m.Role == "assistant" ? StatsWorker(m.Stats) : null,
                 images = (m.Images ?? []).Select(i => "/api/file?path=" + Uri.EscapeDataString(i)).ToList(),
             }).ToList(),
         });
@@ -1202,7 +1209,9 @@ public partial class MainWindow
             return Fail("no stored chat");
         try
         {
-            chat.Messages.AddRange([new("user", "Paint a fox", DateTimeOffset.Now), new("assistant", "Here it is", DateTimeOffset.Now, [picture], "12 tok/s")]);
+            chat.Messages.AddRange([new("user", "Paint a fox", DateTimeOffset.Now), new("assistant", "Here it is", DateTimeOffset.Now, [picture], "12 tok/s"),
+                new("assistant", "Done", DateTimeOffset.Now, null, "Lead · 81.1 tok/s · 5 generated"), new("assistant", "Again", DateTimeOffset.Now, null, "5 generated · 7 prompt")]);
+            chat.Worker = "planner";
             chat.Context = new ContextSnapshot { NCtx = 1000, Prompt = 200, Completion = 50, Parts = new() { ["system"] = 100 } };
             _store.Save(chat);
 
@@ -1229,12 +1238,13 @@ public partial class MainWindow
                 return Fail($"pcs: {pcs}, probed [{string.Join(",", probed)}]");
 
             var listed = (await Json("/api/conversations"))?["recents"]?.AsArray().FirstOrDefault(c => c?["id"]?.ToString() == chat.Id);
-            if ($"{listed?["title"]}|{listed?["kind"]}|{listed?["busy"]}|{listed?["folder"]}" != "Paint a fox|chat|false|")
+            if ($"{listed?["title"]}|{listed?["kind"]}|{listed?["busy"]}|{listed?["folder"]}|{listed?["worker"]}" != "Paint a fox|chat|false||Lead")
                 return Fail($"conversations: {await Json("/api/conversations")}");
 
             var one = await Json("/api/conversation/" + chat.Id);
             var messages = one?["messages"]?.AsArray();
-            if (one is null || $"{one["title"]}|{one["kind"]}|{one["busy"]}|{one["queued"]}" != "Paint a fox|chat|false|0" || messages?.Count != 2 ||
+            if (one is null || $"{one["title"]}|{one["kind"]}|{one["busy"]}|{one["queued"]}|{one["worker"]}" != "Paint a fox|chat|false|0|Lead" || messages?.Count != 4 ||
+                $"{messages[0]?["worker"]}|{messages[1]?["worker"]}|{messages[2]?["worker"]}|{messages[3]?["worker"]}" != "||Lead|" ||
                 $"{messages[0]?["role"]}|{messages[0]?["text"]}" != "user|Paint a fox" ||
                 $"{messages[1]?["role"]}|{messages[1]?["text"]}|{messages[1]?["stats"]}" != "assistant|Here it is|12 tok/s" || messages[1]?["time"] is null ||
                 messages[1]?["images"]?.AsArray().Select(i => i?.ToString()).SequenceEqual([File(picture)]) != true ||

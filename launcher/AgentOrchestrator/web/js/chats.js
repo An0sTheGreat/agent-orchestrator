@@ -14,7 +14,7 @@ function chatRow(tpl, c) {
   el.dataset.kind = c.kind;
   if (c.kind === 'code') el.querySelector('use').setAttribute('href', '#i-code');
   el.querySelector('b').textContent = c.title;
-  el.querySelector('small').textContent = ago(c.updated);
+  el.querySelector('small').textContent = [c.worker, ago(c.updated)].filter(Boolean).join(' · ');
   if (c.busy) main.append(h('span', { class: 'dot live', 'aria-label': 'replying' }));
   main.addEventListener('click', () => go('chat', { id: c.id }));
   return el;

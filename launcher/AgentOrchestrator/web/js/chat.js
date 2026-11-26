@@ -77,6 +77,7 @@ if (typeof document !== 'undefined') {
     const body = el.querySelector(user ? '.bubble' : '.md');
     if (user) body.textContent = m.text; else body.append(renderMarkdown(m.text || ''));
     body.after(...(m.images || []).map(img));
+    if (!user) { const who = el.querySelector('.who'); who.textContent = (m.worker || '').toUpperCase(); who.hidden = !m.worker; }
     el.querySelector('.when').textContent = [m.time && ago(m.time), m.stats].filter(Boolean).join(' · ');
     copyBtn(el, m.text || '');
     return el;
@@ -178,6 +179,7 @@ if (typeof document !== 'undefined') {
     catch (err) { if (mine === gen) { if (err.status === 404) notFound(); else fail(err); } return false; }
     if (mine !== gen) return false;
     view.querySelector('.vtitle').textContent = conv.title || 'Chat';
+    view.querySelector('.vsub').textContent = conv.worker ? `${conv.kind === 'code' ? 'Code' : 'Chat'} · to ${conv.worker}` : '';
     saved = conv.messages;
     context = conv.context ?? context;
     if (after === 'saved') live = { ...live, parts: [] };
@@ -214,6 +216,7 @@ if (typeof document !== 'undefined') {
     context = null;
     pop.hidden = true;
     view.querySelector('.vtitle').textContent = id ? '' : 'New chat';
+    view.querySelector('.vsub').textContent = '';
     draw(true);
     if (!id || !await load(mine)) return; // a new chat stays empty until the composer sends
     stopEvents = api.events(id, ev => onEvent(mine, ev), n => dropped(mine, n));
