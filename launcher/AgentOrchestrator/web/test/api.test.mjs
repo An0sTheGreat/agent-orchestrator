@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSse, nextWait, tailnetOf, failAction } from '../js/api.js';
+import { parseSse, nextWait, tailnetOf, failAction, baseOf, startBase } from '../js/api.js';
 
 test('two events in one chunk', () => {
   assert.deepEqual(parseSse('data: {"e":"a"}\n\ndata: {"e":"b"}\n\n'), [{ e: 'a' }, { e: 'b' }]);
@@ -29,4 +29,23 @@ test('only the signed-out 403 reloads, once; unreachable is lost; the rest is a 
   assert.equal(failAction(err(403, 'Cross-site request refused'), false), 'toast');
   assert.equal(failAction(err(0, 'The PC could not be reached'), false), 'lost');
   assert.equal(failAction(err(500, 'boom'), false), 'toast');
+});
+
+test('a PC is reached at its https origin; this page\'s own PC (or none) is the page\'s origin', () => {
+  assert.equal(baseOf('laptop.tail0000.ts.net', 'pc.tail0000.ts.net'), 'https://laptop.tail0000.ts.net');
+  assert.equal(baseOf('laptop.tail0000.ts.net.', 'pc.tail0000.ts.net'), 'https://laptop.tail0000.ts.net');
+  assert.equal(baseOf('PC.tail0000.ts.net', 'pc.tail0000.ts.net'), '');
+  assert.equal(baseOf(null, 'pc.tail0000.ts.net'), '');
+});
+
+test('on start: the remembered PC if it answers, else this one', async () => {
+  const asked = [];
+  const answers = async base => { asked.push(base); };
+  const silent = async base => { asked.push(base); throw new Error('no'); };
+  assert.equal(await startBase('laptop.tail0000.ts.net', 'pc.tail0000.ts.net', answers), 'https://laptop.tail0000.ts.net');
+  assert.equal(await startBase('laptop.tail0000.ts.net', 'pc.tail0000.ts.net', silent), '');
+  assert.deepEqual(asked, ['https://laptop.tail0000.ts.net', 'https://laptop.tail0000.ts.net']);
+  assert.equal(await startBase('pc.tail0000.ts.net', 'pc.tail0000.ts.net', silent), ''); // this PC: nothing to ask first
+  assert.equal(await startBase(null, 'pc.tail0000.ts.net', silent), '');
+  assert.equal(asked.length, 2);
 });

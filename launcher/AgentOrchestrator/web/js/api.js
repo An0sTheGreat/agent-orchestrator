@@ -24,6 +24,19 @@ export const failAction = (err, reloaded) =>
 // The tailnet of a Tailscale DNS name: "home.tail0000.ts.net." -> "tail0000.ts.net".
 export const tailnetOf = dnsName => (dnsName || '').replace(/\.$/, '').split('.').slice(1).join('.');
 
+// The API base for a PC's DNS name: its https origin, or '' (this page's own origin) for the page's own PC (`here`) or none.
+export const baseOf = (host, here) => {
+  const h = (host || '').replace(/\.$/, '').toLowerCase();
+  return !h || h === here.toLowerCase() ? '' : 'https://' + h;
+};
+
+// The base the app starts on: the remembered PC's if `probe(base)` (its /api/hello) resolves, else this page's own.
+export async function startBase(remembered, here, probe) {
+  const base = baseOf(remembered, here);
+  if (!base) return '';
+  try { await probe(base); return base; } catch { return ''; }
+}
+
 async function call(path, init) {
   let res;
   try { res = await fetch(api.base + path, { credentials: 'omit', ...init }); }

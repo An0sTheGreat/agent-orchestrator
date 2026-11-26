@@ -1302,8 +1302,13 @@ public partial class MainWindow
             if (!page.Contains("""<link rel="manifest" href="manifest.webmanifest">""") || !page.Contains("""<meta name="theme-color" content="#1E1E1E">""") ||
                 !page.Contains("""<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">"""))
                 return Fail("the page's manifest, theme colour or apple-touch-icon");
-            if ((await Fetch("/sw.js")).Headers.CacheControl?.NoCache != true)
-                return Fail("sw.js is not no-cache");
+            var sw = await Fetch("/sw.js");
+            if (sw.Status != 200 || !sw.Type.StartsWith("text/javascript") || sw.Headers.CacheControl?.NoCache != true)
+                return Fail($"sw.js: {sw.Status} {sw.Type} {sw.Headers.CacheControl}");
+            // an upload from another of the owner's PCs names its file in X-File-Name: the preflight allows it
+            if (!(await Fetch("/api/upload", origin: "https://laptop.tail0000.ts.net", method: HttpMethod.Options)).Headers.TryGetValues("Access-Control-Allow-Headers", out var allowHeaders) ||
+                !allowHeaders.Single().Split(',').Select(x => x.Trim()).Contains("X-File-Name", StringComparer.OrdinalIgnoreCase))
+                return Fail("the preflight does not allow X-File-Name");
             return true;
         }
         finally

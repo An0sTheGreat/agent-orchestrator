@@ -103,7 +103,7 @@ internal sealed class WebServer
                 if (request.HttpMethod == "OPTIONS")
                 {
                     response.Headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE";
-                    response.Headers["Access-Control-Allow-Headers"] = "Content-Type";
+                    response.Headers["Access-Control-Allow-Headers"] = AllowHeaders;
                     response.Headers["Access-Control-Max-Age"] = "600";
                 }
             }
@@ -273,6 +273,9 @@ internal sealed class WebServer
         _ => "application/octet-stream",
     };
 
+    // The request headers another of the owner's PCs' pages may send: the upload's file name rides in X-File-Name.
+    internal const string AllowHeaders = "Content-Type, X-File-Name";
+
     public static byte[] SseFrame(string json) => Encoding.UTF8.GetBytes($"data: {json}\n\n");
     // --self-test: the identity gate, the owner's PCs' origins, the CSP, asset lookup, routing and the SSE frame.
     internal static void SelfTest()
@@ -297,7 +300,9 @@ internal sealed class WebServer
             !Csp([]).Contains("connect-src") && !Csp([]).Contains("img-src"), "content security policy: " + Csp(mine));
         Check(Asset("/") is ("web/index.html", var html) && html.StartsWith("text/html") && Asset("/styles.css") is (_, var css) && css.StartsWith("text/css") &&
             Asset("/assets/fonts/Inter-Regular.ttf") is (_, "font/ttf") && Asset("/manifest.webmanifest") is (_, "application/manifest+json") &&
-            Asset("/icons/icon-192.png") is (_, "image/png") && ContentType("x.json") == "application/json", "assets");
+            Asset("/icons/icon-192.png") is (_, "image/png") && ContentType("x.json") == "application/json" &&
+            Asset("/sw.js") is (_, var sw) && sw.StartsWith("text/javascript"), "assets");
+        Check(AllowHeaders.Split(", ").Order().SequenceEqual(["Content-Type", "X-File-Name"]), "preflight headers: " + AllowHeaders);
         Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
             Asset("") is null, "refused assets");
         Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");

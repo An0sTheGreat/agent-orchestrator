@@ -683,6 +683,10 @@ body.landscape .drawer { padding-top: 0; }
 .banner { display: none; align-items: center; gap: 10px; flex: none; padding: 8px 12px; background: #3a3a3a; border-bottom: 1px solid #4a4a4a; color: var(--text); font-size: 12px; }
 .banner.on { display: flex; }
 .banner .ghosttiny { margin-left: auto; color: var(--text); }
+.banner { flex-wrap: wrap; }
+.banner-pcs { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; flex-basis: 100%; color: var(--muted); }
+.banner-pcs:empty { display: none; }
+.banner .banner-pcs .ghosttiny { margin-left: 0; }
 .card.empty { margin-top: 4px; }
 .dot.off { background: #5a5a5a; }
 .drawer-item.pc .pc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

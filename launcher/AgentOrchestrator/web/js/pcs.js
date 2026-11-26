@@ -1,16 +1,14 @@
 // The drawer's PC list: this PC first and ticked, then the owner's other PCs with their online state; tap one to switch.
 import { api } from './api.js';
-import { fail, toast, closeOverlays } from './main.js';
+import { fail, toast, closeOverlays, usePc, rememberPcs } from './main.js';
 
-export const list = () => api.get('/api/pcs');
+export const list = () => api.get('/api/pcs').then(rememberPcs);
 
-// Step 1 opens the other PC's own page (Task 8 switches in place) and remembers it.
+// Switches in place (main.js usePc); the PC the app talks to now (self) just closes the drawer.
 export function switchTo(pc) {
   if (pc.self) { closeOverlays(); return; }
   if (!pc.online) { toast(`${pc.pc} is offline`); return; }
-  const host = pc.dnsName.replace(/\.$/, '');
-  localStorage.setItem('ao.lastPc', host);
-  location.href = `https://${host}/`;
+  usePc(pc.dnsName, pc.pc);
 }
 
 async function draw() {

@@ -1,8 +1,9 @@
 // The app shell: screens, the drawer, sheets, segments and switches, the landscape layout and the connection to the PC.
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
-import { api, nextWait, tailnetOf, failAction } from './api.js';
+import { api, nextWait, tailnetOf, failAction, baseOf, startBase } from './api.js';
 import { makeRouter } from './util.js';
+import { h } from './h.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -165,6 +166,7 @@ export function fail(err) {
 
 function lost() {
   $('#bannerLost').classList.add('on');
+  drawOtherPcs();
   if (retryTimer) return;
   retryTimer = setTimeout(connect, retryWait);
   retryWait = nextWait(retryWait);
@@ -184,6 +186,7 @@ async function connect() {
   $('#meName').textContent = me.user || 'Tailscale';
   $('#meAvatar').textContent = (me.user || '?')[0].toUpperCase();
   $('#meTailnet').textContent = tailnetOf(me.dnsName);
+  api.get('/api/pcs').then(rememberPcs, () => {});
   if (!connected) { connected = true; render(); return; }
   const { name, params } = router.stack[router.stack.length - 1]; // back after a loss: the screen reloads its data
   showScreen(name, params, document.getElementById('view-' + name));
@@ -196,4 +199,48 @@ const applyOnline = () => {
 addEventListener('online', applyOnline);
 addEventListener('offline', applyOnline);
 
-document.addEventListener('DOMContentLoaded', () => { applyOnline(); connect(); });
+/* ---------- the PCs: api.base is the PC the app talks to ('' = this page's own) ---------- */
+const LAST_PC = 'ao.lastPc', PCS = 'ao.pcs';
+// The owner's PCs from the last good /api/pcs, for the connection-lost banner when the PC the app talks to stops answering.
+export const rememberPcs = pcs => { localStorage.setItem(PCS, JSON.stringify(pcs)); return pcs; };
+
+// Talks to another PC in place, no navigation: its API, then Chats, the titles and the drawer's ticks come from it; an open
+// chat's stream closes (chat.js, on 'ao:pc'). Remembered for the next start.
+export function usePc(dnsName, name) {
+  localStorage.setItem(LAST_PC, dnsName.replace(/\.$/, ''));
+  api.base = baseOf(dnsName, location.host);
+  document.dispatchEvent(new Event('ao:pc'));
+  $$('[data-pc-subtitle], [data-pc-name]').forEach(el => { el.textContent = name; });
+  router.reset([{ name: 'chats', params: {} }]);
+  render();
+  connect();
+}
+
+// The connection-lost banner's other PCs (any but the one not answering), each a tap away.
+function drawOtherPcs() {
+  let pcs;
+  try { pcs = JSON.parse(localStorage.getItem(PCS)) || []; } catch { pcs = []; }
+  const others = pcs.filter(pc => pc.dnsName && baseOf(pc.dnsName, location.host) !== api.base);
+  $('#lostPcs').replaceChildren(...(others.length ? [h('span', {}, 'Switch to'),
+    ...others.map(pc => h('button', { class: 'ghosttiny', onclick: () => usePc(pc.dnsName, pc.pc) }, pc.pc))] : []));
+}
+
+// The service worker (sw.js) comes from this page's own PC, so its version is that PC's, whichever PC the app talks to. A new
+// one takes over at once; the page then reloads, so the index (network-first) and its scripts come from the same publish.
+function registerWorker() {
+  const sw = navigator.serviceWorker;
+  if (!sw) return;
+  const had = !!sw.controller;
+  sw.addEventListener('controllerchange', () => { if (had) location.reload(); });
+  fetch('/api/hello').then(r => r.ok ? r.json() : Promise.reject())
+    .then(me => sw.register('sw.js?v=' + encodeURIComponent(me.version), { type: 'module' })).catch(() => {});
+}
+
+// On start: the remembered PC if it answers within 5 s, else this one.
+document.addEventListener('DOMContentLoaded', async () => {
+  applyOnline();
+  const hello = base => fetch(base + '/api/hello', { credentials: 'omit', signal: AbortSignal.timeout(5000) }).then(r => r.ok || Promise.reject());
+  api.base = await startBase(localStorage.getItem(LAST_PC), location.host, hello);
+  connect();
+  registerWorker();
+});
