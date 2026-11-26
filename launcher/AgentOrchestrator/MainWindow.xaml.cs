@@ -55,6 +55,9 @@ public partial class MainWindow : Window
         foreach (var (id, main) in _settings.ImageQuants)
             ImageGen.SetQuant(id, main); // the image models' picked quants
         InitializeComponent();
+        // Chatterbox voices ("cb:" + Name) resolve against the library; a read whose Chatterbox voice could not read says so once
+        VoiceChoice.Library = () => _settings.ChatterboxVoices;
+        SpeechPlayer.FellBack += note => Dispatcher.BeginInvoke(() => Toast(note, "#F7C873"));
         if (AppSettings.Unified) // one conversation view (a chat until it works in a folder), no Chat/Code switch
         {
             NavSwitch.Visibility = Visibility.Collapsed;

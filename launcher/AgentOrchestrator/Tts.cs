@@ -62,15 +62,62 @@ internal static class TtsModels
 // A built-in Kokoro voice: its name (the key saved in settings, e.g. "af_heart"), sherpa-onnx speaker id, and how it sounds.
 internal sealed record VoiceInfo(string Name, int Id, string Language, string Accent, string Gender);
 
-// What to read with: a built-in voice by name (Mix null), or a custom blend (built-in name -> weight; Name is the blend's).
-internal sealed record VoiceChoice(string Name, IReadOnlyDictionary<string, double>? Mix = null)
+// What to read with: a built-in voice by name (Mix null), a custom blend (built-in name -> weight; Name is the blend's), or a
+// Chatterbox voice (Name "cb:" + its name; Mix then holds its Kokoro stand-in's blend weights, when the stand-in is a blend).
+internal sealed record VoiceChoice(string Name, IReadOnlyDictionary<string, double>? Mix = null, ChatterboxVoice? Chatterbox = null)
 {
-    // A saved voice name (TtsSettings.Voice, WorkerVoices) to a choice: a built-in first, then a saved blend; an unknown name
-    // stays as it is, and Tts.Weights turns it into the default voice with a note.
-    public static VoiceChoice Find(string name, IEnumerable<CustomVoice> customs) =>
-        Tts.Voices.Any(v => v.Name == name) || customs.FirstOrDefault(c => c.Name == name) is not { } custom
+    public const string ChatterboxPrefix = "cb:", ChatterboxDefault = "cb:Default"; // the built-in voice: default.wav
+
+    // The Chatterbox voice library (AppSettings.ChatterboxVoices) for callers that do not pass one; the window sets it.
+    public static Func<IEnumerable<ChatterboxVoice>> Library { get; set; } = () => [];
+
+    // What Kokoro reads with: this voice, or a Chatterbox voice's stand-in.
+    public VoiceChoice Kokoro => Chatterbox is null ? this : new(Chatterbox.Fallback, Mix);
+
+    // A saved voice name (TtsSettings.Voice, WorkerVoices) to a choice: a Chatterbox voice ("cb:" + its name, case-insensitive,
+    // "cb:Default" built in), a built-in, then a saved blend; an unknown name stays as it is, and Tts.Weights turns it into
+    // the default voice with a note.
+    public static VoiceChoice Find(string name, IEnumerable<CustomVoice> customs, IEnumerable<ChatterboxVoice>? chatterboxes = null)
+    {
+        if (name.StartsWith(ChatterboxPrefix, StringComparison.OrdinalIgnoreCase) &&
+            (name.Equals(ChatterboxDefault, StringComparison.OrdinalIgnoreCase) ? ChatterboxVoice.Default
+                : (chatterboxes ?? Library()).FirstOrDefault(v => v.Name.Equals(name[ChatterboxPrefix.Length..], StringComparison.OrdinalIgnoreCase))) is { } cb)
+            return new(name, Find(cb.Fallback, customs, []).Mix, cb);
+        return Tts.Voices.Any(v => v.Name == name) || customs.FirstOrDefault(c => c.Name == name) is not { } custom
             ? new(name)
             : new(name, custom.Mix);
+    }
+}
+
+// The Chatterbox engine as the speak paths use it; the tests' stand-in replaces it. CannotRun: null when it can read now,
+// else why not.
+internal sealed record ChatterboxSeam(Func<string?> CannotRun, Func<string, ChatterboxVoice, CancellationToken, float[]> Synthesize, Action WarmUp)
+{
+    public static readonly ChatterboxSeam Real = new(() => AgentOrchestrator.Chatterbox.CanRunNow(out var why) ? null : why,
+        AgentOrchestrator.Chatterbox.Synthesize, () => _ = AgentOrchestrator.Chatterbox.WarmUpAsync());
+}
+
+// One read's sentences in one voice: a Chatterbox voice reads through Chatterbox while it can; when it cannot run (not
+// installed, no room) or a sentence fails, that sentence and the rest are read by its Kokoro stand-in and Note says so once.
+// Kokoro never gets the paralinguistic tags.
+internal sealed class VoiceReader(VoiceChoice voice, Func<string, VoiceChoice, float, CancellationToken, float[]> kokoro, ChatterboxSeam chatterbox)
+{
+    public string? Note { get; private set; }
+
+    public float[] Read(string sentence, float speed, CancellationToken ct)
+    {
+        if (voice.Chatterbox is { } cb && Note is null)
+        {
+            var reason = chatterbox.CannotRun();
+            if (reason is null)
+                try { return chatterbox.Synthesize(sentence, cb, ct); } // ponytail: Chatterbox has no speed; it reads at its own pace
+                catch (Exception e) when (e is not OperationCanceledException && !ct.IsCancellationRequested) { reason = e.Message; }
+            Note = FallbackNote(reason, cb.Fallback);
+        }
+        return kokoro(SpeechText.WithoutTags(sentence), voice.Kokoro, speed, ct);
+    }
+
+    internal static string FallbackNote(string reason, string standIn) => $"Chatterbox unavailable: {reason.TrimEnd('.')} — reading with {standIn}";
 }
 
 internal static class Tts
@@ -114,6 +161,7 @@ internal static class Tts
     public static (Dictionary<string, double> weights, string? note) Weights(VoiceChoice voice)
     {
         bool Known(string name) => Voices.Any(v => v.Name == name);
+        voice = voice.Kokoro; // a Chatterbox voice's stand-in
         var mix = voice.Mix?.Where(kv => kv.Value > 0).ToDictionary(kv => kv.Key, kv => kv.Value) ?? new() { [voice.Name] = 1 };
         if (mix.Count == 0 || !mix.Keys.All(Known))
             return (new() { [Default] = 1 }, $"The voice \"{voice.Name}\" is not available, so the default voice reads instead");
@@ -372,6 +420,54 @@ internal static class Tts
         Thread.Sleep(100);
         unplugged.Lose(new InvalidOperationException("gone"));
         Check(SpinWait.SpinUntil(() => lost.IsCompleted, 2000) && lost.IsFaulted && !lonely.Speaking, $"an unplugged speaker: {lost.Status}");
+
+        // Chatterbox: the tags kept (lower-cased) by ForSpeech and dropped for Kokoro; "cb:" names resolve; the fallback rules
+        Check(Say("Ha [LAUGH] that is it [sigh], [clear throat] ok") == "Ha [laugh] that is it [sigh], [clear throat] ok.", $"tags gave [{Say("Ha [LAUGH] that is it [sigh], [clear throat] ok")}]");
+        Check(SpeechText.WithoutTags("Ha [laugh] that is it [sigh], [clear throat] ok.") == "Ha that is it, ok." && SpeechText.WithoutTags("[chuckle].") == ""
+            && SpeechText.WithoutTags("[note] stays.") == "[note] stays.", $"tags stripped gave [{SpeechText.WithoutTags("Ha [laugh] that is it [sigh], [clear throat] ok.")}]");
+        var library = new List<ChatterboxVoice> { new() { Name = "Narrator", Clip = "n.wav", Fallback = "Calm" } };
+        var narrator = VoiceChoice.Find("cb:narrator", customs, library);
+        Check(narrator.Chatterbox?.Clip == "n.wav" && narrator.Kokoro is { Name: "Calm", Mix.Count: 2 } && Weights(narrator).weights.Count == 2, "a library voice with a blend stand-in");
+        Check(VoiceChoice.Find("cb:Default", customs, []) is { Chatterbox.Clip: ChatterboxRuntime.DefaultClipName, Kokoro.Name: Default }
+            && VoiceChoice.Find("cb:Gone", customs, library) is { Chatterbox: null } gone && Weights(gone).note is not null
+            && VoiceChoice.Find("af_sky", customs, library).Chatterbox is null, "cb:Default, a deleted voice, a Kokoro voice");
+        var kokoroHeard = new List<string>();
+        float[] Kokoro(string text, VoiceChoice voice, float speed, CancellationToken ct) { kokoroHeard.Add($"{voice.Name}|{text}"); return [0.1f]; }
+        var cbHeard = new List<string>();
+        string? why = null;
+        var seam = new ChatterboxSeam(() => why, (text, voice, ct) =>
+        {
+            if (text == "Boom.") throw new InvalidOperationException("Out of memory.");
+            cbHeard.Add(text);
+            return [0.2f];
+        }, () => { });
+        var reader = new VoiceReader(VoiceChoice.Find(VoiceChoice.ChatterboxDefault, customs, []), Kokoro, seam);
+        Check(reader.Read("Hi [laugh].", 1, default) is [0.2f] && reader.Note is null && kokoroHeard.Count == 0 && cbHeard is ["Hi [laugh]."], "Chatterbox reads with the tags");
+        Check(reader.Read("Boom.", 1, default) is [0.1f] && reader.Read("After [sigh].", 1, default) is [0.1f] && cbHeard.Count == 1
+            && kokoroHeard is ["af_heart|Boom.", "af_heart|After."] && reader.Note == "Chatterbox unavailable: Out of memory — reading with af_heart",
+            $"a failing sentence: the stand-in for the rest, once: [{string.Join(", ", kokoroHeard)}] {reader.Note}");
+        why = "Chatterbox is not installed";
+        var absentReader = new VoiceReader(narrator, Kokoro, seam);
+        Check(absentReader.Read("x.", 1, default) is [0.1f] && kokoroHeard[^1] == "Calm|x." && absentReader.Note == "Chatterbox unavailable: Chatterbox is not installed — reading with Calm", "not installed");
+        using var halt = new CancellationTokenSource();
+        halt.Cancel();
+        var halted = false;
+        why = null;
+        try { new VoiceReader(narrator, Kokoro, seam with { Synthesize = (_, _, ct) => { ct.ThrowIfCancellationRequested(); return []; } }).Read("x.", 1, halt.Token); }
+        catch (OperationCanceledException) { halted = true; }
+        Check(halted, "Stop mid-sentence is not a fallback");
+        // the player: a fallback raises FellBack once a read
+        var notes = new List<string>();
+        void Noted(string n) { lock (notes) notes.Add(n); }
+        SpeechPlayer.FellBack += Noted;
+        try
+        {
+            why = "Chatterbox is not installed";
+            using var cbPlayer = new SpeechPlayer(Stub, () => new FakeOutput(), seam);
+            cbPlayer.Speak(["One [laugh].", "Two."], VoiceChoice.Find("cb:Default", customs, []), quiet, CancellationToken.None).Wait(10_000);
+            Check(notes is ["Chatterbox unavailable: Chatterbox is not installed — reading with af_heart"], $"the player's notes [{string.Join(", ", notes)}]");
+        }
+        finally { SpeechPlayer.FellBack -= Noted; }
     }
 
     // An output that plays at 20x speed on its own thread: it reads the player's samples and keeps the loud ones' count and peak.
@@ -424,22 +520,25 @@ internal sealed class SpeechPlayer : IDisposable
 {
     private readonly Func<string, VoiceChoice, float, CancellationToken, float[]> _synthesize;
     private readonly Func<TtsSettings, IWavePlayer> _output;
+    private readonly ChatterboxSeam _chatterbox;
     private readonly object _gate = new();
     private CancellationTokenSource? _current;
     private Task _running = Task.CompletedTask;
     private bool _speaking;
 
     public event Action<bool>? SpeakingChanged;
+    // A read's one note that its Chatterbox voice could not read (VoiceReader.Note); the window shows it as a toast.
+    public static event Action<string>? FellBack;
     public bool Speaking => _speaking;
 
     public SpeechPlayer() : this(Tts.Synthesize, s => new WaveOutEvent { DeviceNumber = OutputDevice(s.Device), DesiredLatency = 200 }) { }
 
     // The seam for tests: a stub engine and an output that is not an audio device.
-    internal SpeechPlayer(Func<string, VoiceChoice, float, CancellationToken, float[]> synthesize, Func<IWavePlayer> output)
-        : this(synthesize, _ => output()) { }
+    internal SpeechPlayer(Func<string, VoiceChoice, float, CancellationToken, float[]> synthesize, Func<IWavePlayer> output, ChatterboxSeam? chatterbox = null)
+        : this(synthesize, _ => output(), chatterbox) { }
 
-    private SpeechPlayer(Func<string, VoiceChoice, float, CancellationToken, float[]> synthesize, Func<TtsSettings, IWavePlayer> output) =>
-        (_synthesize, _output) = (synthesize, output);
+    private SpeechPlayer(Func<string, VoiceChoice, float, CancellationToken, float[]> synthesize, Func<TtsSettings, IWavePlayer> output, ChatterboxSeam? chatterbox = null) =>
+        (_synthesize, _output, _chatterbox) = (synthesize, output, chatterbox ?? ChatterboxSeam.Real);
 
     // The speakers Windows lists (WinMM names), in device order; TtsSettings.Device saves one by name.
     public static List<string> Speakers() =>
@@ -458,6 +557,8 @@ internal sealed class SpeechPlayer : IDisposable
     {
         Task previous;
         CancellationTokenSource cancel;
+        if (voice.Chatterbox is not null)
+            _chatterbox.WarmUp(); // the engine starts loading now, not at the first sentence
         lock (_gate)
         {
             _current?.Cancel();
@@ -505,9 +606,13 @@ internal sealed class SpeechPlayer : IDisposable
             var pause = new float[Tts.Rate * Math.Max(0, settings.SentencePauseMs) / 1000];
             var volume = (float)settings.Volume;
             var previous = TimeSpan.Zero; // the audio of the sentence added last
+            var reader = new VoiceReader(voice, _synthesize, _chatterbox);
             foreach (var sentence in sentences)
             {
-                var samples = _synthesize(sentence, voice, (float)settings.Speed, ended.Token);
+                var noted = reader.Note is not null;
+                var samples = reader.Read(sentence, (float)settings.Speed, ended.Token);
+                if (!noted && reader.Note is { } note)
+                    FellBack?.Invoke(note);
                 for (var i = 0; i < samples.Length; i++)
                     samples[i] = Math.Clamp(samples[i] * volume, -1f, 1f);
                 ended.Token.ThrowIfCancellationRequested();

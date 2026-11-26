@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { speechOf, keyOf, playState, IDLE, voiceGroups, voiceLabel, readSentences, autoReadKey, readAutoRead, writeAutoRead } from '../js/speak.js';
+import { speechOf, keyOf, playState, IDLE, voiceGroups, voiceLabel, fallbackNote, readSentences, autoReadKey, readAutoRead, writeAutoRead } from '../js/speak.js';
 
 test("speechOf: an assistant reply's text and worker; nothing for the user's messages or a reply with no words", () => {
   assert.deepEqual(speechOf({ role: 'assistant', text: '  Hi there. ', worker: 'Reviewer' }), { text: 'Hi there.', worker: 'Reviewer' });
@@ -49,6 +49,22 @@ test('voiceGroups: built-ins by language and accent in order, then the blends; l
   assert.deepEqual(voiceGroups([]), []);
   assert.equal(voiceLabel(voices[0]), 'heart · Female');
   assert.equal(voiceLabel(voices[1]), 'mine');
+});
+
+test('voiceGroups: Chatterbox voices in their own group before the blends; their label; the fallback note', () => {
+  const voices = [
+    { name: 'af_heart', language: 'English', accent: 'American', gender: 'Female', engine: 'kokoro' },
+    { name: 'mine', custom: true, engine: 'kokoro' },
+    { name: 'cb:Default', label: 'Default', engine: 'chatterbox' },
+    { name: 'cb:Narrator', label: 'Narrator', engine: 'chatterbox' },
+  ];
+  assert.deepEqual(voiceGroups(voices).map(([label, list]) => [label, list.map(v => v.name)]), [
+    ['English (American)', ['af_heart']], ['Chatterbox', ['cb:Default', 'cb:Narrator']], ['Your voices', ['mine']]]);
+  assert.equal(voiceLabel(voices[3]), 'Narrator');
+  assert.equal(voiceLabel({ name: 'cb:Old', engine: 'chatterbox' }), 'Old');
+  assert.equal(fallbackNote(null), null);
+  assert.equal(fallbackNote('af_heart'), 'Chatterbox is unavailable on the PC, reading with af_heart');
+  assert.equal(fallbackNote('My%20blend'), 'Chatterbox is unavailable on the PC, reading with My blend');
 });
 
 const tick = () => new Promise(r => setTimeout(r, 5));

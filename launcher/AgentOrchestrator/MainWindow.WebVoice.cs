@@ -133,6 +133,7 @@ public partial class MainWindow
 
     // The smoke's stand-in for Tts.Synthesize, so audio comes back without the models (null: the real engine).
     private Func<string, VoiceChoice, float, CancellationToken, float[]>? _webSynthesize;
+    private ChatterboxSeam? _webChatterbox; // the smoke's stand-in for the Chatterbox engine (null: the real one)
 
     // Cancelled when the app closes (OnClosing, before the web server stops and Tts.Shutdown). A sentence being made also stops
     // when a newer one is asked for: HttpListener does not say when the phone aborts, and the phone asks one sentence at a time
@@ -145,10 +146,15 @@ public partial class MainWindow
     {
         ready = _webSynthesize is not null || TtsModels.Ready,
         model = TtsModels.Active.Key, // the Kokoro build that reads ("full" or "compact"; the chosen one when none is downloaded)
-        voices = Tts.Voices.Select(v => new { name = v.Name, language = v.Language, accent = v.Accent, gender = v.Gender, custom = false })
-            .Concat(_settings.CustomVoices.Select(c => new { name = c.Name, language = "", accent = "", gender = "", custom = true })),
+        voices = Tts.Voices.Select(v => new { name = v.Name, label = v.Name, language = v.Language, accent = v.Accent, gender = v.Gender, custom = false, engine = "kokoro" })
+            .Concat(_settings.CustomVoices.Select(c => new { name = c.Name, label = c.Name, language = "", accent = "", gender = "", custom = true, engine = "kokoro" }))
+            .Concat(ChatterboxChoices().Select(c => new { name = c.Name, label = c.Label, language = "", accent = "", gender = "", custom = false, engine = "chatterbox" })),
         settings = new { voice = _settings.Tts.Voice, speed = _settings.Tts.Speed },
     });
+
+    // The Chatterbox voices to pick: the built-in "cb:Default" and the library, by their saved names ("cb:" + Name).
+    private IEnumerable<(string Name, string Label)> ChatterboxChoices() =>
+        _settings.ChatterboxVoices.Select(v => (VoiceChoice.ChatterboxPrefix + v.Name, v.Name)).Prepend((VoiceChoice.ChatterboxDefault, "Default"));
 
     // {voice?, speed?}: each one given is checked, then both are saved together; the answer is GET's.
     private (int, object) WebVoiceSet(JsonElement body)
@@ -160,7 +166,7 @@ public partial class MainWindow
         if (body.TryGetProperty("voice", out var v))
         {
             voice = v.ValueKind == JsonValueKind.String ? v.GetString() : null;
-            if (voice is null || !Tts.Voices.Any(x => x.Name == voice) && !_settings.CustomVoices.Any(c => c.Name == voice))
+            if (voice is null || !Tts.Voices.Any(x => x.Name == voice) && !_settings.CustomVoices.Any(c => c.Name == voice) && !ChatterboxChoices().Any(c => c.Name == voice))
                 return (400, new { error = "No such voice" });
         }
         if (body.TryGetProperty("speed", out var sp))
@@ -182,7 +188,9 @@ public partial class MainWindow
         var text = WebField(body, "text");
         if (string.IsNullOrWhiteSpace(text))
             return (400, new { error = "Nothing to read" });
-        var settings = await Dispatcher.InvokeAsync(() => _settings.Tts);
+        var (settings, chatterboxes) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.ChatterboxVoices.ToList()));
+        if (VoiceChoice.Find(WebField(body, "voice") is { Length: > 0 } asked ? asked : settings.WorkerVoices.GetValueOrDefault(WebField(body, "worker")) is { Length: > 0 } worker ? worker : settings.Voice, [], chatterboxes).Chatterbox is not null)
+            (_webChatterbox ?? ChatterboxSeam.Real).WarmUp(); // the engine loads while the phone asks for the first sentence
         return await Task.Run<(int, object)>(() =>
         {
             var said = SpeechText.ForSpeech(text, settings);
@@ -196,26 +204,27 @@ public partial class MainWindow
     }
 
     // {text, voice?, worker?}: one sentence of the plan (at most WebSentenceMax characters, else 413), read as it is with the
-    // body's voice, else the worker's voice (TtsSettings.WorkerVoices), else the PC's voice, at the PC's speed.
+    // body's voice, else the worker's voice (TtsSettings.WorkerVoices), else the PC's voice, at the PC's speed. A Chatterbox
+    // voice that cannot read it (VoiceReader) is read by its Kokoro stand-in, named in the X-Voice-Fallback header (URL-encoded).
     private async Task<(int, object)> WebSpeak(JsonElement body)
     {
         var text = WebField(body, "text").Trim();
         // worker: a role id, or the name a reply carries ("Lead", a custom worker's title), mapped to its role on the UI thread
         var askedWorker = WebField(body, "worker");
-        var (settings, customs, role) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.CustomVoices.ToList(),
+        var (settings, customs, chatterboxes, role) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.CustomVoices.ToList(), _settings.ChatterboxVoices.ToList(),
             _cards.FirstOrDefault(c => c.Role == askedWorker || ChatName(c, c.Role).Equals(askedWorker, StringComparison.OrdinalIgnoreCase))?.Role ?? askedWorker));
         if (text.Length == 0)
             return (400, new { error = "Nothing to read" });
         if (text.Length > WebSentenceMax)
             return (413, new { error = $"One sentence at a time ({WebSentenceMax} characters at most)" });
-        var stand = _webSynthesize;
-        if (stand is null && !TtsModels.Ready)
-            return (409, new { error = WebSpeakNotReady });
         var name = WebField(body, "voice") is { Length: > 0 } asked ? asked
             : settings.WorkerVoices.GetValueOrDefault(role) is { Length: > 0 } worker ? worker
             : settings.Voice;
-        var choice = VoiceChoice.Find(name, customs);
-        var speak = stand ?? Tts.Synthesize;
+        var choice = VoiceChoice.Find(name, customs, chatterboxes);
+        var stand = _webSynthesize;
+        if (stand is null && !TtsModels.Ready && choice.Chatterbox is null)
+            return (409, new { error = WebSpeakNotReady });
+        var reader = new VoiceReader(choice, stand ?? Tts.Synthesize, _webChatterbox ?? ChatterboxSeam.Real);
         var cancel = CancellationTokenSource.CreateLinkedTokenSource(_speechClosing.Token);
         try { Interlocked.Exchange(ref _webSpeaking, cancel)?.Cancel(); } // the older sentence, if still being made
         catch (ObjectDisposedException) { } // it ended meanwhile
@@ -223,7 +232,12 @@ public partial class MainWindow
         {
             return await Task.Run<(int, object)>(() =>
             {
-                try { return (200, new WebServer.Response(200, "audio/wav", Wav(speak(text, choice, (float)settings.Speed, cancel.Token)))); }
+                try
+                {
+                    var wav = Wav(reader.Read(text, (float)settings.Speed, cancel.Token));
+                    return (200, new WebServer.Response(200, "audio/wav", wav)
+                        { Headers = reader.Note is null ? null : new Dictionary<string, string> { ["X-Voice-Fallback"] = Uri.EscapeDataString(choice.Kokoro.Name) } });
+                }
                 catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException) { return (503, new { error = "Stopped" }); }
                 catch (InvalidOperationException) when (stand is null) { return (409, new { error = WebSpeakNotReady }); } // the model went since the check
                 catch (Exception exception) { return (500, new { error = "Speech failed: " + exception.Message }); }
@@ -278,14 +292,15 @@ public partial class MainWindow
         try { WebSpeakSelfTest(); }
         catch (InvalidOperationException exception) { return Fail(exception.Message); }
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        async Task<(int Status, string Type, byte[] Body)> Send(string path, object? json, CancellationToken ct = default)
+        async Task<(int Status, string Type, byte[] Body, string? Fallback)> Send(string path, object? json, CancellationToken ct = default)
         {
             using var request = new HttpRequestMessage(json is null ? HttpMethod.Get : HttpMethod.Post, $"http://127.0.0.1:{port}{path}");
             if (json is not null)
                 request.Content = new StringContent(JsonSerializer.Serialize(json), Encoding.UTF8, "application/json");
             request.Headers.Add("Tailscale-User-Login", "smoke@example.com");
             using var response = await http.SendAsync(request, ct);
-            return ((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType ?? "", await response.Content.ReadAsByteArrayAsync(ct));
+            return ((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType ?? "", await response.Content.ReadAsByteArrayAsync(ct),
+                response.Headers.TryGetValues("X-Voice-Fallback", out var fallback) ? Uri.UnescapeDataString(fallback.Single()) : null);
         }
         static JsonNode? Json(byte[] body) { try { return JsonNode.Parse(body); } catch (JsonException) { return null; } }
         List<string>? Plan(byte[] body) => Json(body)?["sentences"]?.AsArray().Select(n => n!.ToString()).ToList();
@@ -295,14 +310,19 @@ public partial class MainWindow
             if (await Send("/api/voice", null) is not { Status: 200 } got || Json(got.Body) is not { } state || state["ready"]?.GetValue<bool>() != false ||
                 state["model"]?.ToString() != TtsModels.Full.Key || // nothing downloaded: the default, chosen build
 
-                state["voices"]?.AsArray() is not { } voices || voices.Count != Tts.Voices.Count + _settings.CustomVoices.Count ||
+                state["voices"]?.AsArray() is not { } voices || voices.Count != Tts.Voices.Count + _settings.CustomVoices.Count + 1 + _settings.ChatterboxVoices.Count ||
                 voices[0]?["name"]?.ToString() != Tts.Voices[0].Name || voices[0]?["custom"]?.GetValue<bool>() != false || voices[0]?["gender"] is null ||
+                voices[0]?["engine"]?.ToString() != "kokoro" ||
+                voices.FirstOrDefault(v => v?["engine"]?.ToString() == "chatterbox") is not { } cb || cb["name"]?.ToString() != VoiceChoice.ChatterboxDefault || cb["label"]?.ToString() != "Default" ||
                 state["settings"]?["voice"]?.ToString() != voice || state["settings"]?["autoRead"] is not null || state["settings"]?["speed"] is null)
                 return Fail("GET's shape");
             // Read replies aloud is the phone's own: an autoRead in the body leaves the PC's AutoRead as it was
             if (await Send("/api/voice", new { voice = "bm_george", speed = 1.25, autoRead = !autoRead }) is not { Status: 200 } set ||
                 Json(set.Body)?["settings"]?["voice"]?.ToString() != "bm_george" || AppSettings.Load().Tts is not { Voice: "bm_george", Speed: 1.25 } saved || saved.AutoRead != autoRead)
                 return Fail("POST does not persist the voice and speed, or wrote the PC's AutoRead");
+            if (await Send("/api/voice", new { voice = VoiceChoice.ChatterboxDefault }) is not { Status: 200 } chose || Json(chose.Body)?["settings"]?["voice"]?.ToString() != VoiceChoice.ChatterboxDefault ||
+                (await Send("/api/voice", new { voice = "bm_george" })).Status != 200)
+                return Fail("a Chatterbox voice is not accepted as the PC's voice");
             if ((await Send("/api/voice", new { voice = "nobody" })).Status != 400 || (await Send("/api/voice", new { speed = 9 })).Status != 400 ||
                 AppSettings.Load().Tts.Voice != "bm_george")
                 return Fail("a bad voice or speed is not 400, or was saved");
@@ -347,12 +367,46 @@ public partial class MainWindow
             finally { _settings.Tts.WorkerVoices.Remove("reviewer"); }
             if ((await Send("/api/speak", new { text = "  " })).Status != 400 || (await Send("/api/speak", new { })).Status != 400)
                 return Fail("empty is not 400");
+
+            if (_speechClosing.IsCancellationRequested) // --ui-smoke ran OnClosing earlier in this process; a real close ends the app
+                _speechClosing = new();
+            // Chatterbox voices (a stand-in engine): the sentence as given, tags and all, through Chatterbox; when it is not
+            // installed, or a sentence fails, the voice's Kokoro stand-in reads it without the tags, named in X-Voice-Fallback
+            var made = new List<string>();
+            string? cannot = null;
+            _webChatterbox = new(() => cannot, (text, v, _) =>
+            {
+                if (v.Name == "Smoke cb") throw new InvalidOperationException("out of GPU memory");
+                lock (made) made.Add($"{v.Clip}|{text}");
+                return new float[2400];
+            }, () => { });
+            _settings.ChatterboxVoices.Add(new ChatterboxVoice { Name = "Smoke cb", Clip = "smoke.wav", Fallback = "af_bella" });
+            try
+            {
+                heard.Clear();
+                if (await Send("/api/speak", new { text = "Ha [laugh] yes.", voice = "cb:default" }) is not { Status: 200, Type: "audio/wav", Fallback: null } ||
+                    made is not [$"{ChatterboxRuntime.DefaultClipName}|Ha [laugh] yes."] || heard.Count != 0)
+                    return Fail($"a Chatterbox voice through Chatterbox: [{string.Join("; ", made)}], Kokoro [{string.Join("; ", heard)}]");
+                cannot = "Chatterbox is not installed";
+                if (await Send("/api/speak", new { text = "Ha [laugh] yes.", voice = VoiceChoice.ChatterboxDefault }) is not { Status: 200, Fallback: Tts.Default } ||
+                    made.Count != 1 || heard is not [{ Text: "Ha yes.", Voice: Tts.Default }])
+                    return Fail($"not installed: the stand-in without the tags and the header: Kokoro [{string.Join("; ", heard)}]");
+                cannot = null;
+                if (await Send("/api/speak", new { text = "Hi.", voice = "cb:Smoke cb" }) is not { Status: 200, Fallback: "af_bella" } || heard[^1] != ("Hi.", "af_bella", 1.25f))
+                    return Fail($"a failing sentence: the voice's own stand-in: Kokoro [{string.Join("; ", heard)}]");
+                var listed = Json((await Send("/api/voice", null)).Body)?["voices"]?.AsArray();
+                if (listed?.Any(v => v?["name"]?.ToString() == "cb:Smoke cb" && v["label"]?.ToString() == "Smoke cb" && v["engine"]?.ToString() == "chatterbox") != true)
+                    return Fail("a library voice is not listed");
+            }
+            finally
+            {
+                _webChatterbox = null;
+                _settings.ChatterboxVoices.RemoveAll(v => v.Name == "Smoke cb");
+            }
             if ((await Send("/api/speak", new { text = new string('a', WebSentenceMax + 1) })).Status != 413 ||
                 (await Send("/api/speak", new { text = new string('a', WebSentenceMax) })).Status != 200)
                 return Fail("over WebSentenceMax is not 413, or WebSentenceMax is refused");
 
-            if (_speechClosing.IsCancellationRequested) // --ui-smoke ran OnClosing earlier in this process; a real close ends the app
-                _speechClosing = new();
             // cancellation: the stand-in makes one sentence at a time, as the engine does; a request the phone aborted mid-sentence
             // stops being made when the next is asked for, so the next is not stuck behind it
             using var engine = new SemaphoreSlim(1);

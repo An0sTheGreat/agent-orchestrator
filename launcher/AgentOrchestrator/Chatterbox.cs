@@ -275,13 +275,7 @@ internal static class Chatterbox
             ObjectDisposedException.ThrowIf(_shutdown, typeof(Chatterbox));
             if (!ChatterboxRuntime.Ready)
                 throw new InvalidOperationException("Install Chatterbox in Settings > Voice");
-            Engine engine;
-            try { engine = Slot.Get(() => new Engine()); }
-            catch (Exception e) when (e is not OperationCanceledException)
-            {
-                _failure = e.Message;
-                throw;
-            }
+            var engine = Load();
             var clip = ChatterboxRuntime.ClipPath(voice);
             var key = clip + "|" + File.GetLastWriteTimeUtc(clip).Ticks;
             if (!Conds.TryGetValue(key, out var cond) || cond.Owner != engine)
@@ -294,6 +288,30 @@ internal static class Chatterbox
         }
         finally { Monitor.Exit(Gate); }
     }
+
+    // The engine, loaded when it is not (under Gate); a load error is kept for CanRunNow (no retry until Unload).
+    private static Engine Load()
+    {
+        try { return Slot.Get(() => new Engine()); }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            _failure = e.Message;
+            throw;
+        }
+    }
+
+    // Starts loading the engine in the background, so a read's first sentence does not wait the ~20 s cold load: called when a
+    // read in a Chatterbox voice starts (SpeechPlayer, /api/speak/plan), and when one is chosen. Nothing when it is loaded or
+    // cannot run now; a load error is kept as Synthesize keeps it (the read falls back to Kokoro).
+    public static Task WarmUpAsync() => Loaded || !ChatterboxRuntime.Ready ? Task.CompletedTask : Task.Run(() =>
+    {
+        if (!CanRunNow(out _))
+            return;
+        lock (Gate)
+            if (!_shutdown)
+                try { Load(); }
+                catch (Exception) { } // kept in _failure
+    });
 
     // Frees the GPU now (before a model load that needs the room, Uninstall); the next Synthesize loads again.
     public static void Unload()

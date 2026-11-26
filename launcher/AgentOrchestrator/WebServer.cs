@@ -12,7 +12,10 @@ namespace AgentOrchestrator;
 // /api/* goes to `api` (MainWindow.WebApp.cs), which answers (status, JSON body).
 internal sealed class WebServer
 {
-    public record Response(int Status, string Type, byte[] Body);
+    public record Response(int Status, string Type, byte[] Body)
+    {
+        public IReadOnlyDictionary<string, string>? Headers { get; init; } // extra headers (exposed to the PC's other origins)
+    }
 
     // What the API answers an events route with (it goes through every gate like any API answer): `Hello` first, then `Events`
     // until they end, the phone goes away or the server stops; `Life` is cancelled then (it ends the subscription).
@@ -130,6 +133,10 @@ internal sealed class WebServer
             }
             response.StatusCode = r.Status;
             response.ContentType = r.Type;
+            foreach (var (name, value) in r.Headers ?? new Dictionary<string, string>())
+                response.Headers[name] = value;
+            if (r.Headers is { Count: > 0 } && response.Headers["Access-Control-Allow-Origin"] is not null)
+                response.Headers["Access-Control-Expose-Headers"] = string.Join(", ", r.Headers.Keys);
             response.ContentLength64 = r.Body.Length;
             await response.OutputStream.WriteAsync(r.Body);
         }

@@ -1,6 +1,6 @@
 // Replies read aloud: a "read" button beside copy on each saved assistant reply, "stop" while it plays; one at a time. The PC
 // splits the reply into sentences (POST /api/speak/plan, its reading rules and length limit) and makes one WAV per sentence with
-// Kokoro (POST /api/speak); the phone plays sentence n while asking for n+1, so reading starts after the first sentence, and Stop
+// Kokoro or Chatterbox (POST /api/speak; a toast once a read when a Chatterbox voice fell back to its Kokoro stand-in); the phone plays sentence n while asking for n+1, so reading starts after the first sentence, and Stop
 // asks for nothing more. iOS lets audio play only from a tap, so the first tap of any read
 // or ▶ button plays a silent sound on the one audio element, which unlocks it; after that Read replies aloud plays each finished
 // reply. Stops on leaving the screen, a new send, another conversation, another PC, or the app going to the background.
@@ -33,21 +33,30 @@ export function playState(s, a) {
   }
 }
 
-// The picker's groups: built-in voices by language and accent in the PC's order, then the user's blends.
+// The picker's groups: built-in voices by language and accent in the PC's order, then the Chatterbox voices, then the user's blends.
 export function voiceGroups(voices = []) {
   const groups = new Map();
   for (const v of voices) {
-    const label = v.custom ? 'Your voices' : [v.language, v.accent && `(${v.accent})`].filter(Boolean).join(' ');
+    const label = v.custom ? 'Your voices' : v.engine === 'chatterbox' ? 'Chatterbox' : [v.language, v.accent && `(${v.accent})`].filter(Boolean).join(' ');
     if (!groups.has(label)) groups.set(label, []);
     groups.get(label).push(v);
   }
-  const mine = groups.get('Your voices');
-  groups.delete('Your voices');
-  return [...groups, ...(mine ? [['Your voices', mine]] : [])];
+  const last = ['Chatterbox', 'Your voices'].filter(k => groups.has(k)).map(k => [k, groups.get(k)]);
+  for (const [k] of last) groups.delete(k);
+  return [...groups, ...last];
 }
 
-// The picker's label for a voice: "heart · Female" for af_heart, a blend by its name.
-export const voiceLabel = v => v.custom ? v.name : `${v.name.replace(/^[a-z]{2}_/, '')} · ${v.gender}`;
+// The picker's label for a voice: "heart · Female" for af_heart, a blend by its name, a Chatterbox voice by its label.
+export const voiceLabel = v => v.engine === 'chatterbox' ? v.label || v.name.slice(3)
+  : v.custom ? v.name : `${v.name.replace(/^[a-z]{2}_/, '')} · ${v.gender}`;
+
+// The note when the PC read with a Chatterbox voice's Kokoro stand-in (its X-Voice-Fallback header, URL-encoded); null when not.
+export function fallbackNote(header) {
+  if (!header) return null;
+  let name = header;
+  try { name = decodeURIComponent(header); } catch { /* not encoded: as it is */ }
+  return `Chatterbox is unavailable on the PC, reading with ${name}`;
+}
 
 // Reads `sentences` in order: fetchOne(sentence, signal) -> a clip, playOne(clip, signal) -> settles when it has played. Sentence
 // n plays while n+1 is fetched (one request at a time: the PC drops a sentence still being made when the next is asked for). After
@@ -85,6 +94,7 @@ if (typeof document !== 'undefined') {
   const SILENCE = 'data:audio/wav;base64,UklGRmQGAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YUAG' + 'A'.repeat(2136);
   const audio = new Audio();
   let state = IDLE, url = null, abort = null, owner = null, watch = null, unlocked = false, voice = null; // voice: GET /api/voice
+  let noted = null; // the read (its AbortController) whose fallback was toasted
   const lastAuto = { key: null };
 
   // Every read/▶ button on the page shows the player's state for its key.
@@ -131,6 +141,8 @@ if (typeof document !== 'undefined') {
       const answer = await res.json().catch(() => null);
       throw Object.assign(new Error(answer?.error || `HTTP ${res.status}`), { status: res.status, body: answer });
     }
+    const note = fallbackNote(res.headers.get('X-Voice-Fallback'));
+    if (note && noted !== abort) { noted = abort; toast(note); } // once a read
     return res.blob();
   }
 
@@ -166,7 +178,7 @@ if (typeof document !== 'undefined') {
       watch.observe(owner, { attributes: true, attributeFilter: ['class'] });
     }
     try {
-      const { sentences } = await api.post('/api/speak/plan', { text: body.text, worker: body.worker });
+      const { sentences } = await api.post('/api/speak/plan', { text: body.text, worker: body.worker, voice: body.voice });
       if (mine.signal.aborted) return; // stopped, or another started, while the PC planned it
       await readSentences(sentences || [], (text, signal) => speakOne({ ...body, text }, signal),
         (blob, signal) => playClip(blob, signal, () => set({ t: 'playing', key })), mine.signal);

@@ -105,6 +105,7 @@ internal static partial class SpeechText
         text = text.Replace("**", "").Replace("__", "").Replace("~~", "").Replace("*", "");
         text = Underscored().Replace(text, "$1");
         text = Number().Replace(text, m => NumberWords(m.Value));
+        text = Paralinguistic().Replace(text, m => m.Value.ToLowerInvariant()); // as the tokenizer has them (and not spelled out below)
         // the lexicon has no "API": spelled out; a word it has ("NOTE", "DONE") is read as the word
         text = Acronym().Replace(text, m => Known(m.Value.ToLowerInvariant()) ? m.Value.ToLowerInvariant() : string.Join(' ', m.Value.ToCharArray()));
         var kept = new StringBuilder(text.Length);
@@ -132,6 +133,15 @@ internal static partial class SpeechText
         catch (IOException) { } // not downloaded: the common words only
         catch (UnauthorizedAccessException) { }
         return words;
+    }
+
+    // Chatterbox Turbo's paralinguistic tags: the added tokens of its tokenizer.json (ResembleAI/chatterbox-turbo-ONNX at
+    // d21799bd), in Paralinguistic(). ForSpeech keeps them (lower-cased) for Chatterbox; Kokoro reads WithoutTags.
+    // A sentence for Kokoro: the tags dropped; "" when nothing but tags and punctuation is left.
+    public static string WithoutTags(string sentence)
+    {
+        var text = SpaceBeforePunctuation().Replace(Spaces().Replace(Paralinguistic().Replace(sentence, " "), " "), "$1").Trim();
+        return text.Any(char.IsLetterOrDigit) ? text : "";
     }
 
     // Sentences no longer than `max` characters: a longer one is cut at the last space before the limit (or at the limit).
@@ -237,6 +247,8 @@ internal static partial class SpeechText
     [GeneratedRegex(@"(?<!\w)_(\S(?:[^_]*\S)?)_(?!\w)")] private static partial Regex Underscored();
     [GeneratedRegex(@"(?<![0-9.])(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)*%?(?!\w)")] private static partial Regex Number();
     [GeneratedRegex(@"\b[A-Z]{2,6}\b")] private static partial Regex Acronym();
+    [GeneratedRegex(@"\[(angry|fear|surprised|whispering|advertisement|dramatic|narration|crying|happy|sarcastic|clear throat|sigh|shush|cough|groan|sniff|gasp|chuckle|laugh)\]", RegexOptions.IgnoreCase)]
+    private static partial Regex Paralinguistic();
     [GeneratedRegex(@"\s+")] private static partial Regex Spaces();
     [GeneratedRegex(@" ([,.;:!?])")] private static partial Regex SpaceBeforePunctuation();
 }
