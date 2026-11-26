@@ -28,6 +28,38 @@ test("a generate_image tool's Saved: line shows the picture", () => {
   assert.deepEqual(bare(s.parts)[1], { t: 'image', src: '/api/file?path=' + encodeURIComponent('C:\\d\\images\\a b.png') });
 });
 
+const pic = (state, more) => ({ e: 'picture', state, ...more });
+const PATH = 'C:\\d\\images\\p q.png', SRC = '/api/file?path=' + encodeURIComponent(PATH);
+
+test('a picture card follows its steps and becomes the saved picture', () => {
+  const s = run({ e: 'delta', kind: 'text', text: 'Sure' }, pic('start', { width: 512, height: 768 }));
+  assert.deepEqual(bare(s.parts)[1], { t: 'picture', width: 512, height: 768, text: '', progress: null, frame: 0, open: true });
+  const p = [pic('progress', { text: 'Step 5/8', progress: 0.62 }), pic('preview', { frame: 3 })].reduce(applyEvent, s);
+  assert.deepEqual(bare(p.parts)[1], { t: 'picture', width: 512, height: 768, text: 'Step 5/8', progress: 0.62, frame: 3, open: true });
+  const d = [pic('done', { path: PATH }), pic('end')].reduce(applyEvent, p);
+  assert.deepEqual(bare(d.parts), [{ t: 'text', text: 'Sure' }, { t: 'image', src: SRC }]);
+  assert.equal(d.parts[1].turn, s.parts[1].turn); // still its turn's part: a landed `saved` drops it
+});
+
+test('a picture that ends without done leaves no card', () => {
+  const open = run(pic('start', { width: 1, height: 1 }), pic('progress', { text: 'Loading model', progress: null }));
+  assert.deepEqual(open.parts.map(p => p.t), ['picture']);
+  assert.deepEqual(applyEvent(open, pic('end')).parts, []);
+});
+
+test('hello mid-picture shows the card at once, after the reply so far', () => {
+  const s = run({ e: 'hello', busy: true, reply: { text: 'so far' }, picture: { width: 512, height: 512, text: 'Step 2/8', progress: 0.25, frame: 2 } });
+  assert.deepEqual(bare(s.parts), [{ t: 'text', text: 'so far' },
+    { t: 'picture', width: 512, height: 512, text: 'Step 2/8', progress: 0.25, frame: 2, open: true }]);
+  assert.deepEqual(bare(run({ e: 'hello', busy: true, reply: { text: 'x' }, picture: null }).parts), [{ t: 'text', text: 'x' }]);
+});
+
+test("the tool result's Saved: line adds no second copy of a picture done already showed", () => {
+  const s = run(pic('start', { width: 1, height: 1 }), pic('done', { path: PATH }), pic('end'),
+    { e: 'tool', name: 'generate_image', args: '{}', result: `Image generated. Saved: ${PATH}. Prompt: x` });
+  assert.deepEqual(bare(s.parts).map(p => p.t), ['image', 'tool']);
+});
+
 test('saved and resync set refetch', () => {
   assert.equal(run({ e: 'saved' }).refetch, true);
   assert.equal(run({ e: 'resync' }).refetch, true);

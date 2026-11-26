@@ -690,3 +690,39 @@ body.landscape .drawer { padding-top: 0; }
 .card.empty { margin-top: 4px; }
 .dot.off { background: #5a5a5a; }
 .drawer-item.pc .pc-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ============================== phone app: the picture while it is made ============================== */
+/* The PC's card (MainWindow.ImagePending.cs): 2.6 px dots every 11 px, faint (0.08) but where two slow glows drift over them (up
+   to 0.88); "Making a picture" counting . .. ... top left, the step bottom left, the percentage in a pill bottom right; the latest
+   step preview over the dots, under the text. --ar: the picture's height / width. */
+.pcard { position: relative; width: 256px; max-width: 100%; height: clamp(144px, calc(256px * var(--ar, 1)), 320px); margin-top: 8px;
+  border: 1px solid var(--border); border-radius: var(--r-card); background: var(--card); overflow: hidden; }
+.pcard-dots, .pcard-dots::before, .pcard-dots::after, .pcard-img { position: absolute; inset: 0; }
+.pcard-dots { background: radial-gradient(circle, color-mix(in srgb, var(--accent) 8%, transparent) 1.3px, transparent 1.6px) 0 0 / 11px 11px; }
+.pcard-dots::before, .pcard-dots::after { content: ""; background: radial-gradient(circle, color-mix(in srgb, var(--accent) 87%, transparent) 1.3px, transparent 1.6px) 0 0 / 11px 11px;
+  -webkit-mask: radial-gradient(closest-side, #000, rgba(0, 0, 0, .45) 45%, transparent) -40% 50% / 70% 70% no-repeat;
+  mask: radial-gradient(closest-side, #000, rgba(0, 0, 0, .45) 45%, transparent) -40% 50% / 70% 70% no-repeat;
+  animation: pglow-a 9s ease-in-out infinite; }
+.pcard-dots::after { animation: pglow-b 11s ease-in-out infinite; }
+/* mask-position p puts a 70% glow's centre at 0.35 + 0.3p of the card: -50%..150% spans 0.2..0.8, like the PC's loops */
+@keyframes pglow-a {
+  0%, 100% { -webkit-mask-position: -40% 50%; mask-position: -40% 50%; }
+  25% { -webkit-mask-position: 50% -30%; mask-position: 50% -30%; }
+  50% { -webkit-mask-position: 140% 60%; mask-position: 140% 60%; }
+  75% { -webkit-mask-position: 40% 140%; mask-position: 40% 140%; }
+}
+@keyframes pglow-b {
+  0%, 100% { -webkit-mask-position: 130% 120%; mask-position: 130% 120%; }
+  33% { -webkit-mask-position: -30% 90%; mask-position: -30% 90%; }
+  66% { -webkit-mask-position: 60% -40%; mask-position: 60% -40%; }
+}
+.pcard.shot .pcard-dots { display: none; } /* a preview covers them */
+.pcard-img { width: 100%; height: 100%; object-fit: cover; }
+.pcard-status { position: absolute; left: 12px; top: 10px; font-size: 12px; color: var(--muted); }
+.pcard-status::after { content: "..."; display: inline-block; animation: pcount 1.2s steps(1, end) infinite; } /* . .. ... 0.4 s each */
+@keyframes pcount { 0% { clip-path: inset(0 67% 0 0); } 33.3% { clip-path: inset(0 34% 0 0); } 66.6% { clip-path: none; } }
+.pcard-step { position: absolute; left: 12px; bottom: 11px; max-width: calc(100% - 84px); font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* clear of the percentage */
+.pcard-pct { position: absolute; right: 8px; bottom: 8px; padding: 2px 8px; border-radius: 10px; background: var(--hover);
+  color: var(--accent); font-size: 11px; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .pcard-dots::before, .pcard-dots::after { animation: none; } }

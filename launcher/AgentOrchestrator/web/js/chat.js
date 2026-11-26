@@ -14,6 +14,9 @@ export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 const SAVED = /\bSaved: ([^\r\n]+?)\. Prompt: /g; // generate_image's line (ImageGen.ChatResult) names the saved picture
+const pct = p => typeof p === 'number' ? p : null; // null: no percentage yet (Loading model…)
+// A picture being made (the `picture` events, or hello's `picture`): its card until `done` makes it the picture, or `end` drops it.
+const card = c => ({ t: 'picture', width: c.width || 1, height: c.height || 1, text: c.text || '', progress: pct(c.progress), frame: c.frame || 0, open: true });
 
 export function applyEvent(s, ev) {
   const last = s.parts[s.parts.length - 1];
@@ -22,14 +25,29 @@ export function applyEvent(s, ev) {
     ? { ...s, parts: [...s.parts.slice(0, -1), tag({ t, text: last.text + text })] }
     : { ...s, parts: [...s.parts, tag({ t, text })] };
   switch (ev.e) {
-    case 'hello': // refetch too: a turn saved between the first GET and the subscription is in neither, and no `saved` follows
-      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [], turn: 0, epoch: s.epoch + 1 };
+    case 'hello': { // refetch too: a turn saved between the first GET and the subscription is in neither, and no `saved` follows
+      const parts = ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [];
+      if (ev.picture) parts.push({ ...card(ev.picture), turn: 0 }); // a picture in progress: its card at once
+      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts, turn: 0, epoch: s.epoch + 1 };
+    }
     case 'state':
       return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null };
     case 'delta':
       return ev.kind === 'text' || ev.kind === 'thinking' ? append(ev.kind, ev.text || '') : s; // 'tool': a call's arguments streaming
-    case 'tool': {
-      const pics = [...String(ev.result || '').matchAll(SAVED)].map(m => ({ t: 'image', src: picture(m[1]) }));
+    case 'picture': {
+      if (ev.state === 'start') return { ...s, parts: [...s.parts, tag(card(ev))] };
+      const i = s.parts.findLastIndex(p => p.t === 'picture' && p.open), p = s.parts[i];
+      if (!p) return ev.state === 'done' ? { ...s, parts: [...s.parts, tag({ t: 'image', src: picture(ev.path) })] } : s; // no card to finish: show the picture anyway
+      const put = q => ({ ...s, parts: s.parts.map((x, j) => j === i ? q : x) });
+      if (ev.state === 'progress') return put({ ...p, text: ev.text || '', progress: pct(ev.progress) });
+      if (ev.state === 'preview') return put({ ...p, frame: ev.frame || 0 });
+      if (ev.state === 'done') return put({ t: 'image', src: picture(ev.path), turn: p.turn });
+      if (ev.state === 'end') return { ...s, parts: s.parts.filter((_, j) => j !== i) }; // failed or cancelled: a done card is a picture already
+      return s;
+    }
+    case 'tool': { // a picture `done` showed already is not shown again
+      const pics = [...String(ev.result || '').matchAll(SAVED)].map(m => ({ t: 'image', src: picture(m[1]) }))
+        .filter(m => !s.parts.some(p => p.t === 'image' && p.src === m.src));
       const args = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args ?? '');
       return { ...s, parts: [...s.parts, tag({ t: 'tool', name: ev.name || '', args, result: ev.result || '' }), ...pics.map(tag)] };
     }
@@ -99,9 +117,34 @@ if (typeof document !== 'undefined') {
     return el;
   }
 
+  // A picture being made: dots with drifting glows, "Making a picture…", the step and the percentage, then the latest step preview
+  // over the dots. Its node is kept across live redraws (a new node would refetch the no-store preview); only what changed is set.
+  const cards = new Map(); // part key → card
+  function pictureCard(p, key) {
+    let el = cards.get(key);
+    if (!el) {
+      el = h('div', { class: 'pcard' }, h('div', { class: 'pcard-dots' }),
+        h('img', { class: 'pcard-img', alt: '', hidden: true, onload: () => el.classList.add('shot') }), // shown: the dots stop under it
+        h('span', { class: 'pcard-status' }, 'Making a picture'), h('span', { class: 'pcard-step' }), h('span', { class: 'pcard-pct', hidden: true }));
+      el.style.setProperty('--ar', p.height / p.width);
+      cards.set(key, el);
+    }
+    const [, shot, , step, pill] = el.children, pc = p.progress == null ? '' : Math.round(Math.min(1, Math.max(0, p.progress)) * 100) + '%';
+    if (step.textContent !== p.text) step.textContent = p.text;
+    if (pill.textContent !== pc) { pill.textContent = pc; pill.hidden = !pc; }
+    if (el.dataset.frame !== String(p.frame)) { // a new preview: the only time src is set; the old frame shows until the new one loads
+      el.dataset.frame = p.frame;
+      if (p.frame) shot.src = api.base + '/api/conversation/' + encodeURIComponent(id) + '/picture?frame=' + p.frame;
+      else el.classList.remove('shot');
+      shot.hidden = !p.frame;
+    }
+    return el;
+  }
+
   function part(p, key) {
     if (p.t === 'text') return h('div', { class: 'md' }, renderMarkdown(p.text));
     if (p.t === 'image') return img(p.src);
+    if (p.t === 'picture') return pictureCard(p, key);
     if (p.t === 'thinking') {
       const el = clone('tpl-thinking');
       el.dataset.key = key; // which part this fold is, so an opened fold stays open across live redraws
@@ -187,6 +230,9 @@ if (typeof document !== 'undefined') {
     liveEls = liveNodes();
     liveEls.forEach(el => el.querySelectorAll('details').forEach(d => { if (open.has(d.dataset.key)) d.open = true; }));
     msgs.append(...liveEls);
+    // A kept card still moved into the new reply node, and a moved node restarts its CSS animations: pin them to the page's clock
+    // so the glow and the counting dots run on unbroken. A card no longer drawn is let go.
+    cards.forEach((el, k) => el.isConnected ? el.getAnimations({ subtree: true }).forEach(a => { a.startTime = 0; }) : cards.delete(k));
   }
 
   function draw(toEnd, all = false) {
