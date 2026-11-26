@@ -269,10 +269,14 @@ public partial class MainWindow
             File.WriteAllText(builtIn, "---\nname: builtin-smoke\ndescription: Ships with the app.\n---\n");
             var n = await Send("/api/skills/new", """{"name":"phone-skill","description":"Made on the phone."}""");
             var mine = Path.Combine(AppSettings.SkillsRoot, "phone-skill", "SKILL.md");
+            // other smokes (--ui-smoke) may have made skills of their own in this data folder: look ours up by key; user skills come first
+            var listed = (await Send("/api/skills")).Body?["skills"]?.AsArray().OfType<JsonNode>().ToList() ?? [];
+            var first = listed.FirstOrDefault(s => s["key"]?.ToString() == "phone-skill");
+            var second = listed.FirstOrDefault(s => s["key"]?.ToString() == "builtin-smoke");
             if (n.Status != 200 || n.Body?["key"]?.ToString() != "phone-skill" || !File.ReadAllText(mine).Contains("description: Made on the phone.") ||
-                (await Send("/api/skills")).Body?["skills"]?.AsArray() is not [{ } first, { } second] ||
-                first["key"]?.ToString() != "phone-skill" || first["on"]?.GetValue<bool>() != true || first["builtIn"]?.GetValue<bool>() != false ||
-                second["key"]?.ToString() != "builtin-smoke" || second["builtIn"]?.GetValue<bool>() != true || second["on"]?.GetValue<bool>() != true)
+                first is null || second is null || listed.IndexOf(first) > listed.IndexOf(second) ||
+                first["on"]?.GetValue<bool>() != true || first["builtIn"]?.GetValue<bool>() != false ||
+                second["builtIn"]?.GetValue<bool>() != true || second["on"]?.GetValue<bool>() != true)
                 return Fail($"new skill: {n.Status} {n.Body} {(await Send("/api/skills")).Body}");
             var bad = await Send("/api/skills/new", """{"name":"a/b","description":""}""");
             var exists = await Send("/api/skills/new", """{"name":"PHONE-SKILL","description":""}""");

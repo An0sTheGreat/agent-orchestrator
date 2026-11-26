@@ -802,7 +802,9 @@ public partial class MainWindow
                 return Fail($"vram with no model: {v.Status} {v.Body}");
 
             var l = await Send("/api/models/local");
-            if (l.Status != 200 || l.Body?["models"]?.AsArray() is not [{ } model] || model["label"]?.ToString() != "smoke-model" || model["group"]?.ToString() != "text" ||
+            // other smokes (--ui-smoke) may have put models of their own in this data folder: find ours by label
+            var model = l.Body?["models"]?.AsArray().OfType<JsonNode>().FirstOrDefault(x => x["label"]?.ToString() == "smoke-model");
+            if (l.Status != 200 || model is null || model["group"]?.ToString() != "text" ||
                 model["pickable"]?.GetValue<bool>() != true || model["favorite"]?.GetValue<bool>() != false || model["size"] is null || model["quant"] is null)
                 return Fail($"local models: {l.Status} {l.Body}");
             var m = await Send(w + "/model", """{"label":"smoke-model"}""");
@@ -824,7 +826,7 @@ public partial class MainWindow
             foreach (var on in new[] { true, false })
                 if ((await Send("/api/favorites", $$"""{"kind":"local","id":"smoke-model","on":{{(on ? "true" : "false")}}}""")).Status != 200 ||
                     AppSettings.Load().LocalFavorites.Contains("smoke-model") != on ||
-                    (await Send("/api/models/local")).Body?["models"]?[0]?["favorite"]?.GetValue<bool>() != on)
+                    (await Send("/api/models/local")).Body?["models"]?.AsArray().FirstOrDefault(x => x?["label"]?.ToString() == "smoke-model")?["favorite"]?.GetValue<bool>() != on)
                     return Fail($"favorite {on}");
             if ((await Send("/api/favorites", """{"kind":"other","id":"x","on":true}""")).Status != 400)
                 return Fail("a bad favorite was not 400");

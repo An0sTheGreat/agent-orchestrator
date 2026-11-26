@@ -330,9 +330,9 @@ public partial class MainWindow
                 return Fail("shot or reload with no tab is not 404");
             if ((await Send("/api/browser/navigate", new { url = "javascript:alert(1)" })).Status != 400)
                 return Fail("a javascript: address is not 400");
-            if (await Send("/api/browser/navigate", new { url = $"http://127.0.0.1:{port}/" }) is not { Status: 200, Body: { } nav } || nav["tabs"]!.AsArray().Count != tabsBefore.Count + 1)
+            if (await Send("/api/browser/navigate", new { url = $"http://127.0.0.1:{port}/" }) is not { Status: 200, Body: { } nav } || nav["tabs"]!.AsArray().Count != Math.Max(tabsBefore.Count, 1)) // navigate loads in the shown tab, a new one only when none is open (--ui-smoke leaves tabs)
                 return Fail($"navigate: {(await Send("/api/browser")).Body}");
-            var index = tabsBefore.Count;
+            var index = nav["tabs"]!.AsArray().Select((t, i) => (t, i)).FirstOrDefault(x => x.t?["shown"]?.GetValue<bool>() == true).i;
             var shot = (Status: 0, Body: (JsonNode?)null, Type: "");
             for (var i = 0; i < 20 && shot.Status != 200; i++) // the engine starts and loads the page first
             {
@@ -387,7 +387,7 @@ public partial class MainWindow
             if (await Send("/api/browser/options", new { follow = !follow, input = !input }) is not { Status: 200, Body: { } opts } || opts["follow"]?.GetValue<bool>() != !follow ||
                 AppSettings.Load() is var saved && (saved.BrowserFollow == follow || saved.BrowserInput == input) || (await Send("/api/browser/options", new { })).Status != 400)
                 return Fail("options");
-            if (await Send("/api/browser/close", new { index }) is not { Status: 200, Body: { } closed } || closed["tabs"]!.AsArray().Count != tabsBefore.Count ||
+            if (await Send("/api/browser/close", new { index }) is not { Status: 200, Body: { } closed } || closed["tabs"]!.AsArray().Count != Math.Max(tabsBefore.Count, 1) - 1 ||
                 (await Send("/api/browser/close", new { index = 99 })).Status != 404)
                 return Fail("close");
             return true;
