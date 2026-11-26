@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
-import { route, cacheName, stale, SHELL } from '../sw.js';
+import { route, cacheName, stale, SHELL, page } from '../sw.js';
 
 const here = 'https://pc.tail0000.ts.net';
 const req = (path, mode = 'cors', method = 'GET') => ({ url: new URL(path, here).href, mode, method });
@@ -30,6 +30,20 @@ test("the cache is named by the worker's version; activation drops the shell cac
   assert.equal(cacheName('1.4.2'), 'ao-shell-1.4.2');
   assert.notEqual(cacheName('1.4.2'), cacheName('1.4.3'));
   assert.deepEqual(stale(['ao-shell-1.4.1', 'ao-shell-1.4.2', 'someone-else'], '1.4.2'), ['ao-shell-1.4.1']);
+});
+
+test('a page: the network when it answers in time, else the cached shell (a PC that is off can leave the connect hanging)', async () => {
+  const hang = new Promise(() => {});
+  const cached = async () => 'cached';
+  assert.equal(await page(Promise.resolve('net'), cached, 50), 'net');
+  assert.equal(await page(Promise.reject(new TypeError('Failed to fetch')), cached, 50), 'cached');
+  assert.equal(await page(hang, cached, 20), 'cached');
+  // nothing cached yet (the first visit): a slow network is still waited for
+  let answer;
+  const slow = new Promise(r => { answer = r; });
+  const shown = page(slow, async () => undefined, 20);
+  setTimeout(() => answer('net'), 40);
+  assert.equal(await shown, 'net');
 });
 
 test('the shell holds the page, its styles, manifest and every script, font and icon in web/', () => {

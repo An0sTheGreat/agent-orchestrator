@@ -30,11 +30,28 @@ export const baseOf = (host, here) => {
   return !h || h === here.toLowerCase() ? '' : 'https://' + h;
 };
 
-// The base the app starts on: the remembered PC's if `probe(base)` (its /api/hello) resolves, else this page's own.
-export async function startBase(remembered, here, probe) {
+// The base the app starts on: the remembered PC's if `probe(base)` (its /api/hello) resolves, else this page's own. A probe
+// that fails with an HTTP answer (.status: the PC refused, 403/404) calls `forget`; one that is off or too slow keeps it.
+export async function startBase(remembered, here, probe, forget) {
   const base = baseOf(remembered, here);
   if (!base) return '';
-  try { await probe(base); return base; } catch { return ''; }
+  try { await probe(base); return base; } catch (err) { if (err?.status > 0) forget?.(); return ''; }
+}
+
+// Whether the remembered PC is gone: a fresh /api/pcs (`pcs`) whose own PC is on the tailnet (a dnsName) no longer lists it.
+export const gone = (remembered, pcs) => !!remembered && pcs.some(pc => pc.self && pc.dnsName) &&
+  !pcs.some(pc => pc.dnsName && baseOf(pc.dnsName, remembered) === '');
+
+// `fn` wrapped so only its latest call settles: an earlier call still in flight never resolves or rejects (a late answer from
+// the PC the app no longer talks to is dropped).
+export function latestOnly(fn) {
+  let calls = 0;
+  return (...args) => {
+    const mine = ++calls;
+    return new Promise((resolve, reject) => fn(...args).then(
+      v => { if (mine === calls) resolve(v); },
+      e => { if (mine === calls) reject(e); }));
+  };
 }
 
 async function call(path, init) {

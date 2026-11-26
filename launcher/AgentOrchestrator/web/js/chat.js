@@ -82,7 +82,7 @@ if (typeof document !== 'undefined') {
   let id = null, live = emptyLive(), saved = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
-  const img = src => h('img', { class: 'pic', src: api.base + src, alt: '', // a path on the PC the app talks to loading: 'lazy',
+  const img = src => h('img', { class: 'pic', src: api.base + src, alt: '', loading: 'lazy', // a path on the PC the app talks to
     onerror: e => e.currentTarget.replaceWith(h('span', { class: 'pic-missing' }, 'Picture not available')) });
   const copyBtn = (el, text) => el.querySelector('[data-copy]').addEventListener('click', () =>
     navigator.clipboard.writeText(text).then(() => toast('Copied'), () => toast('Could not copy')));

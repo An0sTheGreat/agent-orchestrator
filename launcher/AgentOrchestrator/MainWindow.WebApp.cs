@@ -470,7 +470,7 @@ public partial class MainWindow
     private object WebHello() => new
     {
         pc = Environment.MachineName, dnsName = _webTailnet?.DnsName ?? "", user = _webTailnet?.Login ?? "",
-        version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "",
+        version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "", shell = WebServer.Shell,
     };
 
     // This PC first, then the owner's other PCs on the tailnet, each asked for its /api/hello at once: one that answers is online.
@@ -1222,7 +1222,7 @@ public partial class MainWindow
                     return Fail($"{route} without the owner's login was not refused");
 
             if (await Json("/api/hello") is not { } hello || $"{hello["pc"]}|{hello["dnsName"]}|{hello["user"]}" != $"{Environment.MachineName}|home.tail0000.ts.net|smoke@example.com" ||
-                hello["version"] is null)
+                hello["version"] is null || $"{hello["shell"]}" != WebServer.Shell || $"{hello["shell"]}" == $"{hello["version"]}")
                 return Fail($"hello: {await Json("/api/hello")}");
 
             // the owner's two other PCs are asked at once (neither answers before both were asked); another account's never

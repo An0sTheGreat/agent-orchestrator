@@ -1,7 +1,7 @@
 // The app shell: screens, the drawer, sheets, segments and switches, the landscape layout and the connection to the PC.
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
-import { api, nextWait, tailnetOf, failAction, baseOf, startBase } from './api.js';
+import { api, nextWait, tailnetOf, failAction, baseOf, startBase, gone, latestOnly } from './api.js';
 import { makeRouter } from './util.js';
 import { h } from './h.js';
 
@@ -153,6 +153,8 @@ applyLandscape();
 
 /* ---------- the PC: /api/hello, the banners, retry ---------- */
 let retryWait = 1000, retryTimer = 0, connected = false;
+// A switch, retry or Retry during a connect supersedes it: the earlier PC's late hello (or failure) is dropped.
+const hello = latestOnly(() => api.get('/api/hello'));
 
 // For every module's API errors: the signed-out 403 reloads once, so the server answers with the signed-out page (the flag,
 // cleared by a good /api/hello, stops a loop); unreachable shows the connection-lost banner and retries; anything else is a toast.
@@ -176,7 +178,7 @@ async function connect() {
   clearTimeout(retryTimer);
   retryTimer = 0;
   let me;
-  try { me = await api.get('/api/hello'); } catch (err) { fail(err); return; }
+  try { me = await hello(); } catch (err) { fail(err); return; }
   sessionStorage.removeItem(RELOADED);
   clearTimeout(retryTimer);
   retryTimer = 0;
@@ -202,7 +204,12 @@ addEventListener('offline', applyOnline);
 /* ---------- the PCs: api.base is the PC the app talks to ('' = this page's own) ---------- */
 const LAST_PC = 'ao.lastPc', PCS = 'ao.pcs';
 // The owner's PCs from the last good /api/pcs, for the connection-lost banner when the PC the app talks to stops answering.
-export const rememberPcs = pcs => { localStorage.setItem(PCS, JSON.stringify(pcs)); return pcs; };
+// A remembered PC the list no longer has is forgotten.
+export const rememberPcs = pcs => {
+  localStorage.setItem(PCS, JSON.stringify(pcs));
+  if (gone(localStorage.getItem(LAST_PC), pcs)) localStorage.removeItem(LAST_PC);
+  return pcs;
+};
 
 // Talks to another PC in place, no navigation: its API, then Chats, the titles and the drawer's ticks come from it; an open
 // chat's stream closes (chat.js, on 'ao:pc'). Remembered for the next start.
@@ -225,7 +232,8 @@ function drawOtherPcs() {
     ...others.map(pc => h('button', { class: 'ghosttiny', onclick: () => usePc(pc.dnsName, pc.pc) }, pc.pc))] : []));
 }
 
-// The service worker (sw.js) comes from this page's own PC, so its version is that PC's, whichever PC the app talks to. A new
+// The service worker (sw.js) comes from this page's own PC, so its shell (a hash of the PC's web/ files) is that PC's, whichever
+// PC the app talks to. A new
 // one takes over at once; the page then reloads, so the index (network-first) and its scripts come from the same publish.
 function registerWorker() {
   const sw = navigator.serviceWorker;
@@ -233,14 +241,16 @@ function registerWorker() {
   const had = !!sw.controller;
   sw.addEventListener('controllerchange', () => { if (had) location.reload(); });
   fetch('/api/hello').then(r => r.ok ? r.json() : Promise.reject())
-    .then(me => sw.register('sw.js?v=' + encodeURIComponent(me.version), { type: 'module' })).catch(() => {});
+    .then(me => sw.register('sw.js?v=' + encodeURIComponent(me.shell), { type: 'module' }))
+    .catch(err => console.warn('Service worker not registered:', err));
 }
 
-// On start: the remembered PC if it answers within 5 s, else this one.
+// On start: the remembered PC if it answers within 5 s, else this one; one that refuses (an HTTP answer) is forgotten.
 document.addEventListener('DOMContentLoaded', async () => {
   applyOnline();
-  const hello = base => fetch(base + '/api/hello', { credentials: 'omit', signal: AbortSignal.timeout(5000) }).then(r => r.ok || Promise.reject());
-  api.base = await startBase(localStorage.getItem(LAST_PC), location.host, hello);
+  const probe = base => fetch(base + '/api/hello', { credentials: 'omit', signal: AbortSignal.timeout(5000) })
+    .then(r => r.ok || Promise.reject({ status: r.status }));
+  api.base = await startBase(localStorage.getItem(LAST_PC), location.host, probe, () => localStorage.removeItem(LAST_PC));
   connect();
   registerWorker();
 });

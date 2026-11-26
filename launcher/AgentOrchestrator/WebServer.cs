@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -273,6 +274,23 @@ internal sealed class WebServer
         _ => "application/octet-stream",
     };
 
+    // The app shell's identity: the first 12 hex digits of a SHA-256 over every embedded web/ file's name and bytes (in name
+    // order). /api/hello sends it as `shell`; main.js registers sw.js?v=<shell>, whose cache is named by it, so every publish
+    // that changes a web/ file installs a new worker and cache (the csproj Version does not change with a publish).
+    internal static string ShellHash(IEnumerable<(string Name, byte[] Bytes)> files)
+    {
+        using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var (name, bytes) in files.OrderBy(f => f.Name, StringComparer.Ordinal))
+        {
+            sha.AppendData(Encoding.UTF8.GetBytes($"{name}\n{bytes.Length}\n"));
+            sha.AppendData(bytes);
+        }
+        return Convert.ToHexString(sha.GetHashAndReset())[..12].ToLowerInvariant();
+    }
+
+    public static readonly string Shell = ShellHash(typeof(WebServer).Assembly.GetManifestResourceNames()
+        .Where(n => n.StartsWith("web/", StringComparison.Ordinal)).Select(n => (n, Embedded(200, (n, "")).Body)));
+
     // The request headers another of the owner's PCs' pages may send: the upload's file name rides in X-File-Name.
     internal const string AllowHeaders = "Content-Type, X-File-Name";
 
@@ -303,6 +321,10 @@ internal sealed class WebServer
             Asset("/icons/icon-192.png") is (_, "image/png") && ContentType("x.json") == "application/json" &&
             Asset("/sw.js") is (_, var sw) && sw.StartsWith("text/javascript"), "assets");
         Check(AllowHeaders.Split(", ").Order().SequenceEqual(["Content-Type", "X-File-Name"]), "preflight headers: " + AllowHeaders);
+        (string, byte[])[] files = [("web/a.js", [1, 2]), ("web/b.css", [3])], edited = [("web/a.js", [1, 2]), ("web/b.css", [4])];
+        Check(ShellHash(files) == ShellHash(files.Reverse()) && ShellHash(files) != ShellHash(edited) &&
+            ShellHash([("web/a", [1])]) != ShellHash([("web/a\u0001", [])]) && ShellHash(files).Length == 12 &&
+            Shell.Length == 12 && Shell != typeof(WebServer).Assembly.GetName().Version?.ToString(3), "shell hash: " + Shell);
         Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
             Asset("") is null, "refused assets");
         Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");
