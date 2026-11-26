@@ -79,7 +79,7 @@ internal static class ChatterboxRuntime
         Models.All(f => Size(ModelFile(f.Name)) == f.Size) && Natives.All(n => Size(RuntimeFile(n.File)) == n.Size)
         && Size(Path.Combine(VoicesFolder, DefaultClipName)) > 44;
     public static long InstallBytes => Models.Sum(f => f.Size) + Natives.Sum(n => n.Size); // on disk
-    public static long DownloadBytes => Models.Sum(f => f.Size) + PackageBytes + (TtsModels.Ready ? 0 : TtsModels.DownloadBytes);
+    public static long DownloadBytes => Models.Sum(f => f.Size) + PackageBytes + (TtsModels.Ready ? 0 : TtsModels.Find(TtsModels.Chosen).DownloadBytes);
     private static long Size(string path) => new FileInfo(path) is { Exists: true } info ? info.Length : -1;
 
     // The runtime, the models (resumable), Kokoro when missing, then the default voice. Progress over DownloadBytes.
@@ -129,7 +129,7 @@ internal static class ChatterboxRuntime
         if (!TtsModels.Ready)
         {
             var start = done;
-            await TtsModels.DownloadAsync(new Relay<(long done, long total)>(p => progress.Report((start + p.done, total))), ct);
+            await TtsModels.Find(TtsModels.Chosen).DownloadAsync(new Relay<(long done, long total)>(p => progress.Report((start + p.done, total))), ct);
         }
         var clip = Path.Combine(VoicesFolder, DefaultClipName);
         if (Size(clip) <= 44)
