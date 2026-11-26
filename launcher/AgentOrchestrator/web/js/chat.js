@@ -141,6 +141,8 @@ export const follow = id => replaceScreen('chat', { id });
 let tap = null;
 export const tapEvents = fn => { tap = fn; };
 export let showIn = () => {};
+// The composer's send (composer.js): outgoing(id, text, paths) shows the message at once; sent(ok, queued) settles it.
+export let outgoing = () => {}, sent = () => {};
 
 if (typeof document !== 'undefined') {
   const { registerScreen, fail, toast, replace, confirmSheet, askDeleteChat, closeOverlays, askName, openSheet } = await import('./main.js');
@@ -149,6 +151,7 @@ if (typeof document !== 'undefined') {
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
   let view = $('#view-chat'), msgs = view.querySelector('.msgs');
   const pop = $('#ctxpop'), use = v => { view = v; msgs = v.querySelector('.msgs'); };
+  let outbox = null; // a message just sent from here: shown until a load's messages hold it ({message, after: messages then})
   let id = null, live = emptyLive(), saved = [], liveEls = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
@@ -280,7 +283,7 @@ if (typeof document !== 'undefined') {
   }
 
   function liveNodes() {
-    const out = [];
+    const out = outbox ? [message(outbox.message)] : [];
     if (live.parts.length) {
       const el = clone('tpl-msg-reply');
       const n = {}; // a part's key: epoch, turn and place in its turn (landSaved drops whole turns from the front)
@@ -373,6 +376,7 @@ if (typeof document !== 'undefined') {
     if (r) {
       applied = seq;
       saved = r.messages;
+      if (outbox && saved.length > outbox.after) outbox = null; // the PC has it now
       context = r.context;
       view.querySelector('.vtitle').textContent = r.title;
       if (view.id === 'view-chat') view.querySelector('.vsub').textContent = r.sub; // the Code screen's shows the folder
@@ -412,6 +416,7 @@ if (typeof document !== 'undefined') {
     chatId = id = params?.id ?? null;
     live = emptyLive();
     answered = null;
+    outbox = null;
     saved = [];
     context = null;
     pop.hidden = true;
@@ -421,6 +426,17 @@ if (typeof document !== 'undefined') {
     if (!id || !await load(mine)) return; // a new chat stays empty until the composer sends
     listen(mine);
   }
+
+  outgoing = (to, text, paths) => {
+    if (!to || to !== id) return; // a new chat: the follow to it loads the message
+    outbox = { message: { role: 'user', text, time: new Date().toISOString(), images: paths.map(picture) }, after: saved.length };
+    draw(true);
+  };
+  sent = (ok, queued) => {
+    if (!outbox) return;
+    if (!ok || queued) { outbox = null; draw(false); return; } // failed (the text stays in the box) or queued (the queue chip says it)
+    load(gen, null, true);
+  };
 
   // Another PC (main.js usePc): this chat's stream and any load on its way are the old PC's.
   document.addEventListener('ao:pc', () => { gen++; stopEvents(); stopEvents = () => {}; });

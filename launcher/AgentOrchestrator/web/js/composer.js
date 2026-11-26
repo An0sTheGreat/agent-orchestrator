@@ -115,13 +115,16 @@ if (typeof document !== 'undefined') {
     const body = sendPayload(chat.chatId, box.value, own ? photos.map(p => p.path) : []);
     if (!body) return;
     sending = sendBtn.disabled = true;
+    chat.outgoing(body.id, body.text, body.attachments);
+    let ok = false, r = null;
     try {
-      const r = await api.post('/api/send', body);
+      r = await api.post('/api/send', body);
+      ok = true;
       box.value = '';
       box.dispatchEvent(new Event('input'));
       if (own) { photos = []; drawStrip(); }
       if (!body.id && r?.id) chat.follow(r.id);
-    } catch (err) { fail(err); } finally { sending = sendBtn.disabled = false; }
+    } catch (err) { fail(err); } finally { sending = sendBtn.disabled = false; chat.sent(ok, !!r?.queued); }
   }
 
   box.addEventListener('input', drawPop);
