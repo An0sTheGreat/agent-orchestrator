@@ -41,11 +41,13 @@ function showScreen(name, params, view) {
 // A page opened scrolled down (its list, or an ancestor a focus scrolled) starts at the top.
 export function resetScroll(view) { for (let e = view; e; e = e.parentElement) e.scrollTop = 0; }
 export function go(name, params = {}) { router.go({ name: name.replace(/^view-/, ''), params }); render(); }
-export function back() { if (router.stack.length > 1) history.back(); else render(); }
+// With no screen to go back to (a tab's own screen, e.g. Code, which has no tab bar), Back goes to Chats.
+export function back() { if (router.stack.length > 1) history.back(); else if (router.stack[0].name !== 'chats') tabTo('chats'); else render(); }
 addEventListener('popstate', e => { router.pop(e.state); render(); });
 // Replaces the top screen (its history entry too) and shows it.
 export function replace(name, params = {}) { router.reset([...router.stack.slice(0, -1), { name, params }]); render(); }
-function tabTo(name) { router.reset([{ name: name.replace(/^view-/, ''), params: {} }]); render(); }
+// A tab's screen, told it came from the tab bar (Code then opens the latest code chat instead of asking for a folder).
+function tabTo(name) { router.reset([{ name: name.replace(/^view-/, ''), params: { tab: true } }]); render(); }
 
 // iOS Safari ignores user-scalable=no: a pinch is cancelled here, so the app never zooms (touch-action covers double-tap).
 document.addEventListener('gesturestart', e => e.preventDefault());

@@ -70,6 +70,10 @@ export const workflowRecords = entries => RECORDS.map(n => (entries || []).find(
 
 const size = n => n == null ? '' : n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(1) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
 
+// The id of the most recently updated code chat that is not archived (projects and recents), or null.
+export const latestCode = list => [...(list.recents || []), ...(list.projects || []).flatMap(p => p.items || [])]
+  .filter(c => c.kind === 'code').sort((a, b) => new Date(b.updated) - new Date(a.updated))[0]?.id ?? null;
+
 /* ---------- the screen ---------- */
 if (typeof document !== 'undefined') {
   const { registerScreen, fail, toast, confirmSheet, openSheet, closeOverlays, replace } = await import('./main.js');
@@ -280,7 +284,13 @@ if (typeof document !== 'undefined') {
     if (!id) {
       view.querySelector('.vtitle').textContent = 'New code chat';
       view.querySelector('.vsub').textContent = '';
-      newCodeChat(params?.project);
+      if (!params?.tab) { newCodeChat(params?.project); return; } // "New code chat" asks for a folder at once
+      // The Code tab: the latest code chat, else the empty card (its Pick a folder button asks).
+      let list = {};
+      try { list = await api.get('/api/conversations'); } catch { return; }
+      if (mine !== gen) return;
+      const latest = latestCode(list);
+      if (latest) replace('code', { id: latest });
       return;
     }
     chat.showIn(view, { id });

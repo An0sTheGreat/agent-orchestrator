@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { codeView, tick, fmtClock, todoFromTool, runLine, crumbs, diffClass, workflowRecords } from '../js/code.js';
+import { codeView, tick, fmtClock, todoFromTool, runLine, crumbs, diffClass, workflowRecords, latestCode } from '../js/code.js';
 
 test('codeView: the header and run strip from the snapshot', () => {
   const v = codeView({ title: '', folder: 'C:\\dev\\weather\\', taskId: null, startLabel: 'Resume Project — 2', canStart: true, busy: true, once: true, hasProjectMd: true });
@@ -54,4 +54,12 @@ test('diffClass and workflowRecords', () => {
   assert.deepEqual(['+', '-', ' '].map(diffClass), ['add', 'del', '']);
   const e = [{ name: 'src', dir: true }, { name: 'state.md', dir: false }, { name: 'PROJECT.md', dir: false }, { name: 'index.html', dir: false }, { name: 'REVIEW.md', dir: true }];
   assert.deepEqual(workflowRecords(e).map(x => x.name), ['PROJECT.md', 'state.md']);
+});
+
+test('the Code tab opens the latest code chat (archived ones are not listed), else none', () => {
+  const c = (id, kind, updated) => ({ id, kind, updated });
+  assert.equal(latestCode({ recents: [c('a', 'code', '2026-11-20'), c('b', 'chat', '2026-11-26')],
+    projects: [{ items: [c('p', 'code', '2026-11-25')] }], archived: [c('x', 'code', '2026-11-27')] }), 'p');
+  assert.equal(latestCode({ recents: [c('b', 'chat', '2026-11-26')], projects: [] }), null);
+  assert.equal(latestCode({}), null);
 });
