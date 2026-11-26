@@ -18,6 +18,7 @@
 <script type="module" src="js/pcs.js"></script>
 <script type="module" src="js/composer.js"></script>
 <script type="module" src="js/images.js"></script>
+<script type="module" src="js/settings.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -190,10 +191,15 @@
               <div class="vhead-main"><h2 class="vtitle">Settings</h2><p class="vsub" data-pc-subtitle></p></div>
             </header>
             <div class="vbody">
-              <div class="card empty">
-                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
-                <p class="muted">Settings from the phone arrive in a later update. Use the desktop app for now.</p>
+              <div class="list">
+                <button class="navrow" data-open="view-general"><span class="item-ic"><svg class="ic"><use href="#i-gear"/></svg></span><span class="item-text"><b>General</b><small>Startup · notifications · links · computer use</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-appearance"><span class="item-ic"><svg class="ic"><use href="#i-image"/></svg></span><span class="item-text"><b>Appearance</b><small>Theme · accent · conversation</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-models"><span class="item-ic"><svg class="ic"><use href="#i-orb"/></svg></span><span class="item-text"><b>Models</b><small>Loading · sharing with your other PCs</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-agents"><span class="item-ic"><svg class="ic"><use href="#i-user"/></svg></span><span class="item-text"><b>Agents</b><small>Workflow · code engine · command sandbox</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-plugins"><span class="item-ic"><svg class="ic"><use href="#i-spark"/></svg></span><span class="item-text"><b>Plugins</b><small>Ponytail</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-about"><span class="item-ic"><svg class="ic"><use href="#i-phone"/></svg></span><span class="item-text"><b>About</b><small id="setabout">Version · this PC</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
               </div>
+              <p class="hintline">Downloads, folders, sandbox setup, remote access and sharing codes stay on the desktop app.</p>
             </div>
           </section>
 
@@ -204,27 +210,6 @@
               <div class="vhead-main"><h2 class="vtitle">General</h2></div>
             </header>
             <div class="vbody">
-              <p class="secthead">NOTIFICATIONS</p>
-              <div class="rowline"><div><b>Notify when done</b><small>When a reply has fully finished or a run ends, while the app is not in front.</small></div><button class="switch" data-switch aria-label="Notify when done"></button></div>
-
-              <p class="secthead">LINKS</p>
-              <div class="rowline"><div><b>Open links in</b><small>web and mail links only</small></div>
-                <div class="seg small" data-seg="links"><button class="on">In-app</button><button>System</button></div>
-              </div>
-              <div class="rowline"><div><b>Tabs the model may open</b></div>
-                <div class="seg small" data-seg="tabs"><button class="on">In-app</button><button>External</button></div>
-              </div>
-
-              <p class="secthead">COMPUTER USE</p>
-              <div class="rowline"><div><b>Let the model use applications</b><small>Off by default. One window per reply, your real mouse; Esc stops it.</small></div><button class="switch" data-switch aria-label="Computer use"></button></div>
-              <div class="card">
-                <p class="cardline"><svg class="ic sm"><use href="#i-lock"/></svg> <b>Approved applications</b></p>
-                <p class="muted">None approved. Only listed programs can be used; admin windows never are.</p>
-                <button class="btn ghost tight">Add application…</button>
-              </div>
-
-              <p class="secthead">USAGE STATS</p>
-              <div class="rowline"><div><b>Collect token stats</b><small>Per worker, per turn, saved with the chat.</small></div><button class="switch on" data-switch aria-label="Usage stats"></button></div>
             </div>
           </section>
 
@@ -235,42 +220,6 @@
               <div class="vhead-main"><h2 class="vtitle">Appearance</h2></div>
             </header>
             <div class="vbody">
-              <p class="secthead">THEME</p>
-              <div class="list" data-radio-group>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#101116;--b:#4C8DFF"></span><span class="item-text"><b>Flat</b><small>Modern, rounded, borderless</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#0A0A0C;--b:#D4A017"></span><span class="item-text"><b>Track Gold</b><small>The original dark gold theme</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#111827;--b:#6EA8FF"></span><span class="item-text"><b>Liquid Glass</b><small>Translucent blue</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#000000;--b:#9B6BFF"></span><span class="item-text"><b>OLED</b><small>Pure black, purple accents</small></span><span class="tick"></span></button>
-                <button class="radiorow on" data-radio><span class="swash" style="--a:#1E1E1E;--b:#C0C0C0"></span><span class="item-text"><b>Graphite <em>· default</em></b><small>Flat dark gray, light gray accents</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#F4F3EE;--b:#C15F3C"></span><span class="item-text"><b>Parchment</b><small>Light warm paper</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#1E1C1B;--b:#C15F3C"></span><span class="item-text"><b>Dark Parchment</b><small>Warm dark gray</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="swash" style="--a:#17181A;--b:#F2F3F4"></span><span class="item-text"><b>Beautiful UI</b><small>Cool neutrals, hairline borders</small></span><span class="tick"></span></button>
-              </div>
-              <p class="hintline">This concept previews Graphite. The other themes are listed for completeness; the accent below is live.</p>
-
-              <p class="secthead">ACCENT · <span id="accentname">Light gray</span></p>
-              <div class="accents" data-accents>
-                <button class="acc" data-accent="#3DDC84|#8EEBB4|#07140C|Green" style="--a:#3DDC84" aria-label="Green"></button>
-                <button class="acc" data-accent="#1FC8C8|#86E8E4|#061314|Aqua" style="--a:#1FC8C8" aria-label="Aqua"></button>
-                <button class="acc" data-accent="#9B6BFF|#C0A3FF|#FFFFFF|Purple" style="--a:#9B6BFF" aria-label="Purple"></button>
-                <button class="acc" data-accent="#6EA8FF|#BDD7FF|#101522|Light blue" style="--a:#6EA8FF" aria-label="Light blue"></button>
-                <button class="acc" data-accent="#2B4FB0|#6F8FE0|#FFFFFF|Navy" style="--a:#2B4FB0" aria-label="Navy"></button>
-                <button class="acc" data-accent="#D4A017|#F0C040|#0A0A0C|Track gold" style="--a:#D4A017" aria-label="Track gold"></button>
-                <button class="acc" data-accent="#4C8DFF|#86B3FF|#FFFFFF|Flat blue" style="--a:#4C8DFF" aria-label="Flat blue"></button>
-                <button class="acc" data-accent="#FF6FB5|#FFA6D2|#1A0A12|Pink" style="--a:#FF6FB5" aria-label="Pink"></button>
-                <button class="acc" data-accent="#FF8A3D|#FFB880|#1A0D04|Orange" style="--a:#FF8A3D" aria-label="Orange"></button>
-                <button class="acc on" data-accent="#C0C0C0|#DCDCDC|#141414|Light gray" style="--a:#C0C0C0" aria-label="Light gray"></button>
-                <button class="acc" data-accent="#CF8E4E|#E6B587|#1A0F05|Peru" style="--a:#CF8E4E" aria-label="Peru"></button>
-                <button class="acc" data-accent="#C15F3C|#D97757|#FFFFFF|Clay" style="--a:#C15F3C" aria-label="Clay"></button>
-              </div>
-
-              <p class="secthead">CONVERSATION</p>
-              <div class="rowline"><div><b>Center the conversation</b><small>Narrow column on a wide screen</small></div><button class="switch" data-switch aria-label="Center the conversation"></button></div>
-              <div class="rowline"><div><b>Reading size</b></div>
-                <div class="seg small" data-seg="size"><button>Small</button><button class="on">Normal</button><button>Large</button></div>
-              </div>
-              <div class="rowline"><div><b>Emoji in replies</b></div><button class="switch on" data-switch aria-label="Emoji in replies"></button></div>
-              <div class="rowline"><div><b>Show the context percentage</b></div><button class="switch on" data-switch aria-label="Show context percentage"></button></div>
             </div>
           </section>
 
@@ -282,10 +231,6 @@
             </header>
 
             <div class="vbody">
-              <div class="card empty">
-                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
-                <p class="muted">Model settings from the phone arrive in a later update. Use the desktop app for now.</p>
-              </div>
             </div>
           </section>
 
@@ -293,42 +238,9 @@
           <section class="view spage" id="view-agents">
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Agents</h2><p class="vsub">Presets: weather-dashboard</p></div>
-              <button class="iconbtn" data-more aria-label="Presets"><svg class="ic"><use href="#i-more"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle">Agents</h2></div>
             </header>
             <div class="vbody">
-              <p class="secthead">WORKFLOW</p>
-              <div class="list" data-radio-group>
-                <button class="radiorow on" data-radio><span class="item-text"><b>Lead + Reviewer</b><small>Lead does the work; every item needs a PASS</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="item-text"><b>Lead + Implementer + Reviewer</b><small>Lead plans and directs</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="item-text"><b>Lead only</b><small>No independent check</small></span><span class="tick"></span></button>
-              </div>
-
-              <p class="secthead">WORKERS</p>
-              <div class="workercards">
-                <button class="wcard" data-open="view-agent"><span class="wdot on"></span><b>Lead</b><small>Qwen3.5-4B</small><small class="dim">— task · 0 turn</small></button>
-                <button class="wcard" data-open="view-agent"><span class="wdot"></span><b>Compactor</b><small>Same as Lead</small><small class="dim">— task · 0 turn</small></button>
-                <button class="wcard" data-open="view-agent"><span class="wdot"></span><b>Implementer</b><small>Qwen2.5-Coder-3B</small><small class="dim">— task · 0 turn</small></button>
-                <button class="wcard" data-open="view-agent"><span class="wdot on"></span><b>Reviewer</b><small>Qwen3.5-4B Q4_K_M</small><small class="dim">— task · 0 turn</small></button>
-                <button class="wcard add" data-more><svg class="ic"><use href="#i-plus"/></svg><b>Add agent</b><small>Specialist or extra reviewer</small></button>
-              </div>
-
-              <p class="secthead">CODE ENGINE</p>
-              <div class="list" data-radio-group>
-                <button class="radiorow on" data-radio><span class="item-text"><b>Built-in</b><small>The app's own agent loop and tools</small></span><span class="tick"></span></button>
-                <button class="radiorow" data-radio><span class="item-text"><b>Pi</b><small>pi.dev harness · not installed</small></span><span class="tick"></span></button>
-              </div>
-              <div class="pad"><button class="btn ghost">Install Pi</button></div>
-
-              <p class="secthead">COMMAND SANDBOX</p>
-              <div class="rowline"><div><b>Permissions</b><small>Ask before every command</small></div>
-                <div class="seg small" data-seg="perm"><button class="on">Safe</button><button>Ask</button><button>All</button></div>
-              </div>
-              <div class="rowline"><div><b>Internet for commands</b><small>Off: no network, loopback closed</small></div><button class="switch" data-switch aria-label="Internet for commands"></button></div>
-              <div class="card">
-                <p class="muted">Commands run in a Windows AppContainer with only this turn's folders. Secret-looking variables are replaced by <code>[secret removed]</code>, <code>.git</code> stays read-only, and <code>api_key.txt</code> is always refused.</p>
-                <button class="btn ghost tight">Set up sandbox access…</button>
-              </div>
             </div>
           </section>
 
@@ -383,12 +295,6 @@
               <div class="vhead-main"><h2 class="vtitle">Plugins</h2></div>
             </header>
             <div class="vbody">
-              <p class="secthead">PONYTAIL</p>
-              <div class="seg wide" data-seg="pony"><button>Off</button><button>Lite</button><button class="on">Full</button><button>Ultra</button></div>
-              <div class="card">
-                <p>Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for.</p>
-                <p class="muted">Lite names the smaller option; Ultra also pushes back on the request. Also <code>/ponytail off</code>, <code>lite</code>, <code>full</code> or <code>ultra</code>. About 1,000 tokens a message.</p>
-              </div>
             </div>
           </section>
 
@@ -479,13 +385,10 @@
             </header>
             <div class="vbody">
               <div class="card">
-                <div class="about-head"><span class="deck-mark"><svg class="ic"><use href="#i-orb"/></svg></span><div><b>Agent Orchestrator</b><small>Version 1.9.4 · 871 commits</small></div></div>
+                <div class="about-head"><span class="deck-mark"><svg class="ic"><use href="#i-orb"/></svg></span><div><b>Agent Orchestrator</b><small id="aboutver"></small></div></div>
                 <p class="muted">A harness for your local AI setup: a team of local models that builds software with you, one reviewed step at a time.</p>
               </div>
-              <div class="list">
-                <div class="rowline"><div><b>Reference</b><small>Every feature, setting and command</small></div><svg class="ic sm chev"><use href="#i-chevron"/></svg></div>
-                <div class="rowline"><div><b>Update</b><small>git pull — nothing changes until you do</small></div><svg class="ic sm chev"><use href="#i-chevron"/></svg></div>
-              </div>
+              <div class="list" data-rows></div>
               <p class="hintline">Fonts: Inter, Newsreader, JetBrains Mono (SIL OFL). No telemetry, no account, no auto-update.</p>
             </div>
           </section>
@@ -570,7 +473,7 @@
         <div class="grab"></div>
         <p class="confirm-title"></p>
         <p class="hintline confirm-text"></p>
-        <button class="drawer-item danger" id="confirmyes"><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
+        <button class="drawer-item danger" id="confirmyes"><svg class="ic sm"><use href="#i-trash"/></svg> <span>Delete</span></button>
         <button class="drawer-item" data-close>Cancel</button>
       </div>
 

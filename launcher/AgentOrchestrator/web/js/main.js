@@ -83,11 +83,13 @@ export function closeOverlays() {
 }
 $('#scrim').addEventListener('click', closeOverlays);
 
-// The confirm sheet: a title, its text, a red Delete (calls onYes) and Cancel.
+// The confirm sheet: a title, its text, a red button (calls onYes; "Delete" with the bin, or `yes` without it) and Cancel.
 let onConfirm = null;
-export function confirmSheet(title, text, onYes) {
+export function confirmSheet(title, text, onYes, yes = 'Delete') {
   $('#sheet-confirm .confirm-title').textContent = title;
   $('#sheet-confirm .confirm-text').textContent = text;
+  $('#confirmyes span').textContent = yes;
+  $('#confirmyes svg').style.display = yes === 'Delete' ? '' : 'none';
   onConfirm = onYes;
   openSheet('sheet-confirm');
 }
@@ -223,6 +225,7 @@ async function connect() {
   $('#meAvatar').textContent = (me.user || '?')[0].toUpperCase();
   $('#meTailnet').textContent = tailnetOf(me.dnsName);
   api.get('/api/pcs').then(rememberPcs, () => {});
+  document.dispatchEvent(new Event('ao:hello')); // connected (again): settings.js applies the PC's accent
   if (!connected) { connected = true; render(); return; }
   const { name, params } = router.stack[router.stack.length - 1]; // back after a loss: the screen reloads its data
   showScreen(name, params, document.getElementById('view-' + name));
