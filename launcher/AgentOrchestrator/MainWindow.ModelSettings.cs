@@ -168,6 +168,46 @@ public partial class MainWindow
         WriteIndented = true, Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     }));
 
+    // A worker's model presets as its Presets menu groups them (the phone app's too), for the model shown: model is the picker's
+    // name or a remote worker's model id, quant the picked quantization ("" for none or a remote model). A preset for this model in
+    // another quantization is listed apart (OTHER QUANTIZATIONS); one saved without a quant matches any. mineOnly: a remote worker
+    // or the primary PC's presets, where only ANY MODEL and THIS MODEL apply.
+    private static bool PresetSameModel(ModelPreset p, string model) => p.Model.Equals(model, StringComparison.OrdinalIgnoreCase);
+    private static bool PresetOtherQuant(ModelPreset p, string model, string quant) =>
+        PresetSameModel(p, model) && p.Quant.Length > 0 && quant.Length > 0 && !p.Quant.Equals(quant, StringComparison.OrdinalIgnoreCase);
+    private static bool PresetMine(ModelPreset p, string model, string quant) => p.Model.Length == 0 || PresetSameModel(p, model) && !PresetOtherQuant(p, model, quant);
+
+    private static List<(string Name, List<ModelPreset> Items)> ModelPresetGroups(IReadOnlyList<ModelPreset> presets, string model, string quant, bool mineOnly)
+    {
+        var mine = presets.Where(p => PresetMine(p, model, quant)).ToList();
+        return [("ANY MODEL", mine.Where(p => p.Model.Length == 0).ToList()), ("THIS MODEL", mine.Where(p => p.Model.Length > 0).ToList()),
+            ("OTHER QUANTIZATIONS", mineOnly ? [] : presets.Where(p => PresetOtherQuant(p, model, quant)).ToList()),
+            ("OTHER MODELS", mineOnly ? [] : presets.Where(p => !PresetMine(p, model, quant) && !PresetOtherQuant(p, model, quant)).ToList())];
+    }
+
+    // The preset a worker last applied or saved (its Save to button's).
+    private void SetActiveModelPreset(string role, string name)
+    {
+        _settings.ActiveModelPresets[role] = name;
+        _settings.Save();
+    }
+
+    // A preset saved: over the one at index same (a replace), else added; it becomes the worker's active one.
+    private void PutModelPreset(string role, ModelPreset preset, int same)
+    {
+        if (same >= 0)
+            _settings.ModelPresets[same] = preset;
+        else
+            _settings.ModelPresets.Add(preset);
+        SetActiveModelPreset(role, preset.Name);
+    }
+
+    private void RemoveModelPreset(ModelPreset preset)
+    {
+        _settings.ModelPresets.Remove(preset);
+        _settings.Save();
+    }
+
     // The settings body, or null when a built-in role has no readable config.json. saved: after a successful Save; close:
     // closeLabel's button, Remove worker, or a config.json that could not be written. IsDirty: a field differs from what the
     // body was built with. Save: the Save button; true when it wrote the edits. The radio buttons share fixed group names,
@@ -1163,10 +1203,9 @@ public partial class MainWindow
             : (modelBox.SelectedItem as ComboBoxItem)?.Content as string ?? card.ModelName;
         // and its quantization: the one picked (the Quantization field follows the pick), else the card's; none for a remote model
         string ShownQuant() => remoteMode() ? "" : editors["gguf_variant"] is TextBox { Text: var v } && v.Trim().Length > 0 ? v.Trim() : card.Quant is "—" ? "" : card.Quant;
-        bool SameModel(ModelPreset p) => p.Model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
-        // a preset for this model in another quantization is listed apart (OTHER QUANTIZATIONS); one saved without a quant matches any
-        bool OtherQuant(ModelPreset p) => SameModel(p) && p.Quant.Length > 0 && ShownQuant() is { Length: > 0 } q && !p.Quant.Equals(q, StringComparison.OrdinalIgnoreCase);
-        bool Mine(ModelPreset p) => p.Model.Length == 0 || SameModel(p) && !OtherQuant(p);
+        bool SameModel(ModelPreset p) => PresetSameModel(p, ShownModel());
+        bool OtherQuant(ModelPreset p) => PresetOtherQuant(p, ShownModel(), ShownQuant());
+        bool Mine(ModelPreset p) => PresetMine(p, ShownModel(), ShownQuant());
         ModelPreset? Active() => _settings.ActiveModelPresets.GetValueOrDefault(card.Role) is { Length: > 0 } name
             ? _settings.ModelPresets.FirstOrDefault(p => Mine(p) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) : null;
         void SyncSaveTo()
@@ -1180,8 +1219,7 @@ public partial class MainWindow
         }
         void MakeActive(string name)
         {
-            _settings.ActiveModelPresets[card.Role] = name;
-            _settings.Save();
+            SetActiveModelPreset(card.Role, name);
             SyncSaveTo();
         }
         // what a preset saves: the options shown (not the quantization field) and the system prompt unless it is the default
@@ -1210,11 +1248,8 @@ public partial class MainWindow
                 Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model) ? ShownQuant() : "", Options = ShownOptions(),
                 SystemPrompt = ShownPrompt(),
             };
-            if (same >= 0)
-                _settings.ModelPresets[same] = preset;
-            else
-                _settings.ModelPresets.Add(preset);
-            MakeActive(name);
+            PutModelPreset(card.Role, preset, same);
+            SyncSaveTo();
             Toast($"Preset {name} saved");
         }
         bool SameModelName(string model) => model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
@@ -1275,8 +1310,8 @@ public partial class MainWindow
                 }));
             if (shared is not null && mine.Count == 0)
                 menu.Items.Add(new MenuItem { Header = "No presets on the primary PC for this model", IsEnabled = false });
-            var quants = remoteMode() || shared is not null ? [] : _settings.ModelPresets.Where(OtherQuant).ToList();
-            var others = remoteMode() || shared is not null ? [] : _settings.ModelPresets.Where(p => !Mine(p) && !OtherQuant(p)).ToList();
+            var groups = ModelPresetGroups(shared ?? _settings.ModelPresets, ShownModel(), ShownQuant(), remoteMode() || shared is not null);
+            var (quants, others) = (groups[2].Items, groups[3].Items);
             void Apply(ModelPreset preset)
             {
                 // values only; load options only with a model to load (Save would refuse them)
@@ -1317,15 +1352,13 @@ public partial class MainWindow
                             menu.Items.Remove(item);
                         return;
                     }
-                    _settings.ModelPresets.Remove(preset);
-                    _settings.Save();
+                    RemoveModelPreset(preset);
                     SyncSaveTo();
                     menu.Items.Remove(item);
                 };
                 return item;
             }
-            foreach (var (group, list) in new[] { ("ANY MODEL", mine.Where(p => p.Model.Length == 0).ToList()), ("THIS MODEL", mine.Where(p => p.Model.Length > 0).ToList()),
-                         ("OTHER QUANTIZATIONS", quants), ("OTHER MODELS", others) })
+            foreach (var (group, list) in groups)
             {
                 if (list.Count == 0)
                     continue;

@@ -114,10 +114,13 @@ public partial class MainWindow
     private async Task<(int, object)> WebWorker(string role)
     {
         var entries = await WebLocalEntries();
-        return await WebWithWorker(role, (s, bases, _) => (200, WebWorkerBody(s, bases, entries)));
+        List<ModelPreset>? shared;
+        try { shared = await WebPrimaryPresets(role); }
+        catch (Exception e) when (WebNetFailure(e)) { shared = []; } // ponytail: the primary PC unreachable lists no presets; the preset routes say why
+        return await WebWithWorker(role, (s, bases, _) => (200, WebWorkerBody(s, bases, entries, shared)));
     }
 
-    private object WebWorkerBody(WebWorkerState s, Dictionary<string, string> bases, List<PickerEntry> entries)
+    private object WebWorkerBody(WebWorkerState s, Dictionary<string, string> bases, List<PickerEntry> entries, List<ModelPreset>? shared)
     {
         var (card, r, shown) = (s.Card, s.Remote, ModelOptions.Prefill(s.Current, bases));
         var (path, variant, file) = (s.Load?["model_path"]?.ToString(), s.Load?["gguf_variant"]?.ToString(), s.Load?["gguf_file"]?.ToString());
@@ -141,17 +144,22 @@ public partial class MainWindow
                 apiOnly = ModelOptions.ApiOnly.Contains(x.Option.Key),
             }).ToList(),
             custom = card.IsCustom ? new { kind = card.Config.Kind, description = card.Config.Description, systemPrompt = card.Config.SystemPrompt } : null,
-            presets = new { active = "", groups = Array.Empty<object>() },
+            presets = WebPresetsBody(s, shown, shared),
         };
     }
 
     // POST /api/worker/{role}/...: remove, rename and shown on the UI thread; the rest read the worker's GGUF first.
     private async Task<(int, object)> WebWorkerPost(string rest, JsonElement body)
     {
-        if (rest.Split('/') is not [var role, var action])
+        var cut = rest.IndexOf('/');
+        if (cut <= 0)
             return WebNotFound;
+        var (role, action) = (rest[..cut], rest[(cut + 1)..]);
         return action switch
         {
+            "primary" => await WebSaved(role, await Dispatcher.InvokeAsync(() => WebUsePrimary(role, WebField(body, "model").Trim()))),
+            "remote" => await WebSaved(role, await Dispatcher.InvokeAsync(() => WebApplyRemote(role, body))),
+            "preset/apply" or "preset/save" or "preset/delete" => await WebPreset(role, action["preset/".Length..], body),
             "remove" or "rename" or "shown" => await Dispatcher.InvokeAsync(() => CardFor(role) is not { } card ? WebNotFound
                 : action == "remove" ? WebRemoveWorker(card) : action == "rename" ? WebRenameWorker(card, body) : WebShowWorker(card, body)),
             "save" => await WebSaved(role, await WebWithWorker(role, (s, bases, _) => WebSaveWorker(s, bases, body))),
@@ -375,6 +383,287 @@ public partial class MainWindow
             list.Add(id);
         _settings.Save();
         return WebOk;
+    }
+
+    // ---- the primary PC, Remote API services and presets: keys stay on the PC (only hasKey goes out); lists load with the stored key.
+    private static bool WebNetFailure(Exception e) => e is HttpRequestException or TaskCanceledException or InvalidOperationException or UriFormatException or JsonException;
+
+    private static string? WebKey(string name) => name.Trim() is not { Length: > 0 } n ? null
+        : ApiKeys.Get(n) is { Length: > 0 } key ? key : Environment.GetEnvironmentVariable(n) is { Length: > 0 } env ? env : null;
+
+    private async Task<(int, object)> WebPrimaryModels()
+    {
+        if (_settings.ShareHost is not { Length: > 0 } host)
+            return (404, new { error = "No primary PC is set" });
+        try
+        {
+            var models = await RemoteCatalog.FetchModelsAsync(_remoteHttp, ModelShare.ChatUrl(host), WebKey(ModelShare.KeyEnv), CancellationToken.None);
+            return (200, new { host, models = models.Select(m => new { id = m.Id }).ToList() });
+        }
+        catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = "Could not list the primary PC's models: " + e.Message }); }
+    }
+
+    // A primary PC model for the worker, as Model Settings' UsePrimaryModel (no unsaved-edits dialog: the phone has none open).
+    private (int, object) WebUsePrimary(string role, string model)
+    {
+        if (CardFor(role) is not { } card)
+            return WebNotFound;
+        if (_settings.ShareHost is not { Length: > 0 } host)
+            return (404, new { error = "No primary PC is set" });
+        if (CodeBusy)
+            return (409, new { error = WebBusyText });
+        if (model.Length == 0)
+            return (400, new { error = "Send the model's id" });
+        return ApplyRemoteRole(card, new(ModelShare.ChatUrl(host), model, ModelShare.KeyEnv, ""), "in Settings › Models") is { } problem ? (400, new { error = problem }) : (200, "");
+    }
+
+    private (int, object) WebRemoteServices() => (200, new
+    {
+        services = RemoteCatalog.Services.Select(s => new
+        {
+            id = s.Id, name = s.Name, baseUrl = s.BaseUrl, keyEnv = s.KeyEnv, hasKey = WebHasKey(s.KeyEnv), hasProviders = s.HasProviders, modelsNeedKey = s.ModelsNeedKey,
+        }).ToList(),
+        favorites = _settings.RemoteFavorites.ToList(),
+    });
+
+    // A service's model list with its stored key (a custom URL's: none); vision is per provider on OpenRouter, so null here.
+    private async Task<(int, object)> WebRemoteModels(string id, string baseUrl)
+    {
+        if (RemoteCatalog.Services.FirstOrDefault(s => s.Id == id) is not { } service)
+            return (400, new { error = "Unknown service" });
+        var custom = service.BaseUrl.Length == 0;
+        var url = custom ? baseUrl.Trim() : service.BaseUrl;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme is not ("http" or "https"))
+            return (400, new { error = "Send the custom server's http(s) address as baseUrl" });
+        var key = custom ? null : WebKey(service.KeyEnv);
+        if (service.ModelsNeedKey && !custom && key is null)
+            return (409, new { error = $"Add a key for {service.Name} on the PC" });
+        try
+        {
+            var models = await RemoteCatalog.FetchModelsAsync(_remoteHttp, url, key, CancellationToken.None);
+            return (200, new
+            {
+                models = models.Select(m => new { id = m.Id, name = m.Name, vision = (bool?)null, priceIn = m.InputPerM, priceOut = m.OutputPerM, context = m.ContextLength }).ToList(),
+            });
+        }
+        catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = $"Could not load {service.Name}'s models: {e.Message}" }); }
+    }
+
+    // OpenRouter's providers for a model; tag is what the worker's provider order lists.
+    private async Task<(int, object)> WebRemoteProviders(string model)
+    {
+        if (model.Trim().Length == 0)
+            return (400, new { error = "Send the model's id" });
+        try
+        {
+            var rows = await RemoteCatalog.FetchProvidersAsync(_remoteHttp, model, CancellationToken.None, WebKey("OPENROUTER_API_KEY"));
+            return (200, new
+            {
+                providers = rows.Select(r => new
+                {
+                    name = r.Name, tag = r.Tag, priceIn = r.InputPerM, priceOut = r.OutputPerM, latency = r.LatencySeconds, tps = r.ThroughputTps, uptime = r.Uptime,
+                    quant = r.Quantization, vision = r.Vision,
+                }).ToList(),
+            });
+        }
+        catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = "Could not load OpenRouter's providers: " + e.Message }); }
+    }
+
+    // {service, baseUrl (custom only), model, provider, sortPrice, maxInput, maxOutput, keyEnv (custom only)} -> ApplyRemoteRole.
+    private (int, object) WebApplyRemote(string role, JsonElement body)
+    {
+        if (CardFor(role) is not { } card)
+            return WebNotFound;
+        if (RemoteCatalog.Services.FirstOrDefault(s => s.Id == WebField(body, "service")) is not { } service)
+            return (400, new { error = "Unknown service" });
+        string Text(string name) => body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetRawText() : WebField(body, name).Trim();
+        var custom = service.BaseUrl.Length == 0;
+        var remote = new LauncherLogic.RemoteRole(custom ? Text("baseUrl") : service.BaseUrl, Text("model"), custom ? Text("keyEnv") : service.KeyEnv, "",
+            Text("provider"), WebFlag(body, "sortPrice") == true, Text("maxInput"), Text("maxOutput"));
+        return ApplyRemoteRole(card, remote, "on the PC's Remote API page") is { } problem ? (400, new { error = problem }) : (200, "");
+    }
+
+    // The primary PC's presets when the worker runs there (null: it doesn't); throws when they can't be read.
+    private async Task<List<ModelPreset>?> WebPrimaryPresets(string role)
+    {
+        var host = await Dispatcher.InvokeAsync(() =>
+        {
+            try { return CardFor(role) is { } card && WebSource(WebState(card).Remote) == "primary" ? _settings.ShareHost : null; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException) { return null; }
+        });
+        if (host is null)
+            return null;
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        return ModelShare.ParsePresets(await ImageShare.FetchPresetsAsync(http, ModelShare.ImagesUrl(host), WebKey(ModelShare.KeyEnv) ?? "", CancellationToken.None));
+    }
+
+    // The model a worker's presets are for (its remote model id, else the card's name) and its quantization ("" remote or none).
+    private static (string Model, string Quant) WebPresetModel(WebWorkerState s, Dictionary<string, string> shown) => s.Remote is { } r ? (r.Model.Trim(), "")
+        : (s.Card.ModelName, shown.GetValueOrDefault("gguf_variant", "").Trim() is { Length: > 0 } v ? v : s.Card.Quant is "—" ? "" : s.Card.Quant);
+
+    private object WebPresetsBody(WebWorkerState s, Dictionary<string, string> shown, List<ModelPreset>? shared)
+    {
+        var (model, quant) = WebPresetModel(s, shown);
+        var active = shared is null && _settings.ActiveModelPresets.GetValueOrDefault(s.Card.Role) is { Length: > 0 } name
+            && _settings.ModelPresets.Any(p => PresetMine(p, model, quant) && p.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ? name : "";
+        return new
+        {
+            active,
+            groups = ModelPresetGroups(shared ?? _settings.ModelPresets, model, quant, s.Remote is not null || shared is not null).Where(g => g.Items.Count > 0)
+                .Select(g => new { name = g.Name, items = g.Items.Select(p => new { name = p.Name, model = p.Model, quant = p.Quant }).ToList() }).ToList(),
+        };
+    }
+
+    // The named preset, in the menu's order (this model's, other quantizations', other models').
+    private static ModelPreset? WebFindPreset(IReadOnlyList<ModelPreset> presets, string model, string quant, bool mineOnly, string name) =>
+        ModelPresetGroups(presets, model, quant, mineOnly).SelectMany(g => g.Items).FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    // apply {name} -> {fields}; save {name, fields} / delete {name} -> {ok, presets}. On the primary PC: its presets, changed there.
+    private async Task<(int, object)> WebPreset(string role, string action, JsonElement body)
+    {
+        var name = WebField(body, "name").Trim();
+        if (name.Length == 0)
+            return (400, new { error = "Send the preset's name" });
+        List<ModelPreset>? shared;
+        try { shared = await WebPrimaryPresets(role); }
+        catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = "Could not read the primary PC's presets: " + e.Message }); }
+        var done = await WebWithWorker(role, (s, bases, _) => WebPresetAct(s, bases, action, name, body, shared));
+        if (done.Item2 is not string change) // done here, or refused
+            return done;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            shared = ModelShare.ParsePresets(await ImageShare.ChangePresetAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), WebKey(ModelShare.KeyEnv) ?? "", change, CancellationToken.None));
+        }
+        catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = $"The preset was not {(action == "save" ? "saved" : "deleted")} on the primary PC: {e.Message}" }); }
+        return await WebWithWorker(role, (s, bases, _) => (200, new { ok = true, presets = WebPresetsBody(s, ModelOptions.Prefill(s.Current, bases), shared) }));
+    }
+
+    // UI thread. A string answer is the change to send to the primary PC.
+    private (int, object) WebPresetAct(WebWorkerState s, Dictionary<string, string> bases, string action, string name, JsonElement body, List<ModelPreset>? shared)
+    {
+        var shown = ModelOptions.Prefill(s.Current, bases);
+        var (model, quant) = WebPresetModel(s, shown);
+        var mineOnly = s.Remote is not null || shared is not null;
+        var (card, w) = (s.Card, s.Card.Config);
+        object Listed() => new { ok = true, presets = WebPresetsBody(s, shown, shared) };
+        if (action == "save")
+        {
+            if (WebFields(body) is not { } phone)
+                return (400, new { error = "fields must be an object" });
+            if (phone.Keys.FirstOrDefault(k => ModelOptions.All.All(o => o.Key != k)) is { } unknown)
+                return (400, new { errors = new Dictionary<string, string> { [unknown] = "Unknown option" } });
+            foreach (var (key, value) in phone)
+                shown[key] = value;
+            // as the desktop's ShownOptions / ShownPrompt: the options shown but the quantization, the prompt unless it is the default
+            var options = shown.Where(p => p.Key != "gguf_variant" && p.Value.Trim().Length > 0).ToDictionary(p => p.Key, p => p.Value);
+            var prompt = card.IsCustom ? (w.SystemPrompt.Trim().Length > 0 && w.SystemPrompt != LauncherLogic.DefaultSystemPrompt(w.Kind) ? w.SystemPrompt : "")
+                : s.FollowsMain ? "" : s.Role?["chat_system_prompt"]?.ToString() ?? "";
+            if (shared is not null)
+                return (200, ModelShare.PresetChangeJson("save", name, model, options, prompt));
+            var same = _settings.ModelPresets.FindIndex(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && PresetSameModel(p, model) && !PresetOtherQuant(p, model, quant));
+            PutModelPreset(card.Role, new ModelPreset { Name = name, Model = model, Quant = quant, Options = options, SystemPrompt = prompt }, same); // a same name: replaced (the phone asked)
+            return (200, Listed());
+        }
+        if (WebFindPreset(shared ?? _settings.ModelPresets, model, quant, mineOnly, name) is not { } preset)
+            return (404, new { error = "No such preset" });
+        if (action == "delete")
+        {
+            if (shared is not null)
+                return (200, ModelShare.PresetChangeJson("delete", preset.Name, preset.Model, new Dictionary<string, string>(), ""));
+            RemoveModelPreset(preset);
+            return (200, Listed());
+        }
+        // apply: values only; load options only with a local model to load (as the desktop's Apply)
+        var load = s.Remote is null && s.Load?["model_path"] is not null;
+        var fields = preset.Options.Where(p => p.Value.Trim().Length > 0 && ModelOptions.All.FirstOrDefault(o => o.Key == p.Key) is { } o && (load || o.Target != "auto_load"))
+            .ToDictionary(p => p.Key, p => p.Value);
+        if (shared is null) // the primary PC's is not a local preset Save to could overwrite
+            SetActiveModelPreset(card.Role, preset.Name);
+        return (200, new { fields });
+    }
+
+    // The routes above (WebAppSmoke, while on), on the smoke's data folder with a fake catalog (RemoteApiFakeHandler: no network):
+    // services and key status, a service needing a key with none 409, models and providers, a custom worker put on a stub service and
+    // back to local, primary models with no primary PC 404, and a preset saved, listed, applied and deleted. The primary PC's presets
+    // (ImageShare to ModelShare.ImagesUrl, a fixed https host or port 8782) are not stubbed.
+    private async Task<bool> WebModelsSmoke2(int port)
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: models 2: {what}"); return false; }
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        async Task<(int Status, JsonNode? Body)> Send(string path, string? json = null)
+        {
+            using var request = new HttpRequestMessage(json is null ? HttpMethod.Get : HttpMethod.Post, $"http://127.0.0.1:{port}{path}")
+                { Content = json is null ? null : new StringContent(json, Encoding.UTF8, "application/json") };
+            request.Headers.Add("Tailscale-User-Login", "smoke@example.com");
+            using var response = await http.SendAsync(request);
+            var text = await response.Content.ReadAsStringAsync();
+            return ((int)response.StatusCode, text.Length > 0 ? JsonNode.Parse(text) : null);
+        }
+        if (!ActiveConfigPath().StartsWith(AppSettings.DataRoot, StringComparison.OrdinalIgnoreCase))
+            return Fail($"the active config is not the smoke's: {ActiveConfigPath()}");
+        var (remoteHttp, shareHost, mistral) = (_remoteHttp, _settings.ShareHost, Environment.GetEnvironmentVariable("MISTRAL_API_KEY"));
+        string? custom = null;
+        try
+        {
+            _remoteHttp = new HttpClient(new RemoteApiFakeHandler());
+            _settings.ShareHost = "";
+            Environment.SetEnvironmentVariable("MISTRAL_API_KEY", null); // this process only
+
+            var sv = await Send("/api/remote/services");
+            var services = sv.Body?["services"]?.AsArray();
+            if (sv.Status != 200 || sv.Body?["favorites"] is not JsonArray || services?.FirstOrDefault(x => x!["id"]!.ToString() == "openrouter") is not { } or ||
+                or["hasProviders"]?.GetValue<bool>() != true || or["keyEnv"]?.ToString() != "OPENROUTER_API_KEY" ||
+                services.FirstOrDefault(x => x!["id"]!.ToString() == "mistral")?["hasKey"]?.GetValue<bool>() != false)
+                return Fail($"services: {sv.Status} {sv.Body}");
+            var nokey = await Send("/api/remote/models?service=mistral");
+            if (nokey.Status != 409 || nokey.Body?["error"]?.ToString() != "Add a key for Mistral on the PC")
+                return Fail($"models with no key: {nokey.Status} {nokey.Body}");
+            var ms = await Send("/api/remote/models?service=openrouter");
+            if (ms.Status != 200 || ms.Body?["models"]?.AsArray() is not { Count: 3 } models || models[0]?["id"]?.ToString() != "openai/gpt-4o-mini" || models[0]?["context"] is null)
+                return Fail($"models: {ms.Status} {ms.Body}");
+            var pv = await Send("/api/remote/providers?model=z-ai/glm-5.3-flash");
+            if (pv.Status != 200 || pv.Body?["providers"]?.AsArray() is not { Count: > 0 } rows || rows[0]?["tag"] is null || rows[0]?["priceIn"] is null)
+                return Fail($"providers: {pv.Status} {pv.Body}");
+            if ((await Send("/api/primary/models")).Status != 404)
+                return Fail("primary models with no primary PC were not 404");
+
+            custom = (await Send("/api/workers/add", "{}")).Body?["role"]?.ToString();
+            var w = "/api/worker/" + custom;
+            var ap = await Send(w + "/remote", """{"service":"custom","baseUrl":"http://127.0.0.1:9/v1","model":"stub-model","keyEnv":"SMOKE_NO_SUCH_KEY"}""");
+            if (ap.Status != 200 || ap.Body?["worker"]?["source"]?.ToString() != "api" || ap.Body["worker"]?["remote"]?["model"]?.ToString() != "stub-model" ||
+                (await Send(w)).Body?["model"]?["name"] is null)
+                return Fail($"apply remote: {ap.Status} {ap.Body}");
+            if ((await Send(w + "/remote", """{"service":"nope","model":"x"}""")).Status != 400 || (await Send("/api/worker/nope/remote", """{"service":"openrouter","model":"x"}""")).Status != 404)
+                return Fail("a bad service or role was not refused");
+
+            var ps = await Send(w + "/preset/save", """{"name":"Smoke preset","fields":{"temperature":"0.55"}}""");
+            if (ps.Status != 200 || ps.Body?["presets"]?["active"]?.ToString() != "Smoke preset" ||
+                ps.Body["presets"]?["groups"]?.AsArray().FirstOrDefault(g => g!["name"]!.ToString() == "THIS MODEL")?["items"]?.AsArray()
+                    .Any(i => i!["name"]!.ToString() == "Smoke preset" && i["model"]!.ToString() == "stub-model") != true ||
+                (await Send(w)).Body?["presets"]?["groups"]?.AsArray().Count is not > 0)
+                return Fail($"preset save: {ps.Status} {ps.Body}");
+            var pa = await Send(w + "/preset/apply", """{"name":"smoke preset"}""");
+            if (pa.Status != 200 || pa.Body?["fields"]?["temperature"]?.ToString() != "0.55" || ((JsonObject)pa.Body["fields"]!).ContainsKey("max_seq_length"))
+                return Fail($"preset apply: {pa.Status} {pa.Body}");
+            var pd = await Send(w + "/preset/delete", """{"name":"Smoke preset"}""");
+            if (pd.Status != 200 || _settings.ModelPresets.Any(p => p.Name == "Smoke preset") || pd.Body?["presets"]?["groups"]?.AsArray().Count != 0 ||
+                (await Send(w + "/preset/delete", """{"name":"Smoke preset"}""")).Status != 404)
+                return Fail($"preset delete: {pd.Status} {pd.Body}");
+
+            var lo = await Send(w + "/local", "{}");
+            if (lo.Status != 200 || lo.Body?["worker"]?["source"]?.ToString() != "local")
+                return Fail($"back to local: {lo.Status} {lo.Body}");
+            return true;
+        }
+        finally
+        {
+            (_remoteHttp, _settings.ShareHost) = (remoteHttp, shareHost);
+            Environment.SetEnvironmentVariable("MISTRAL_API_KEY", mistral);
+            _settings.ModelPresets.RemoveAll(p => p.Name == "Smoke preset");
+            if (custom is not null && CardFor(custom) is { } left)
+                RemoveWorker(left);
+        }
     }
 
     // The routes above (WebAppSmoke, while on), on the smoke's own data folder (its worker config, a models folder with one
