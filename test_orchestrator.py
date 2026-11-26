@@ -2639,10 +2639,12 @@ class CustomWorkerTests(unittest.TestCase):
 class ChatTests(unittest.TestCase):
     """--chat: single worker or Planner -> Implementer -> Reviewer, in a folder holding only config.json."""
 
-    def chat(self, request, replies=None, workers=None, role_prompts=None):
+    def chat(self, request, replies=None, workers=None, role_prompts=None, voice=None):
         replies = {k: list(v) for k, v in (replies or {}).items()}
         roles = {r: {"base_url": "http://x", "expected_model_contains": f"{r}-model", "sampling": {"temperature": i}}
                  for i, r in enumerate(("planner", "implementer", "reviewer"))}
+        if voice:
+            roles["voice"] = voice
         for r, text in (role_prompts or {}).items():
             roles[r]["chat_system_prompt"] = text
         config = {"roles": roles, **({"custom_workers": workers} if workers else {})}
@@ -2759,6 +2761,19 @@ class ChatTests(unittest.TestCase):
         # G3: no workflow files, models stay loaded
         self.assertEqual(files, ["config.json", "request.json"])
         self.assertEqual(unloaded, [])
+
+    def test_voice_chats_on_roles_voice_else_the_planners_and_is_never_a_delegate(self):
+        own = {"base_url": "http://x", "expected_model_contains": "voice-model", "sampling": {"temperature": 7}}
+        for voice, model, sampling in ((own, "voice-model", {"temperature": 7}), (None, "planner-model", {"temperature": 0}),
+                                       ({"same_as": "planner"}, "planner-model", {"temperature": 0})):
+            code, log, events, *_ = self.chat({"worker": "voice", "voice": True, "messages": self.MSGS}, {"voice": ["Hi there."]}, voice=voice)
+            self.assertEqual((code, log[0]["model"], log[0]["sampling"]), (0, model, sampling))
+            self.assertIn(("chat_reply", {"role": "voice", "text": "Hi there."}), events)
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS})
+        delegate = next(t for t in log[0]["tools"] if t["function"]["name"] == "delegate")
+        self.assertNotIn("voice", delegate["function"]["parameters"]["properties"]["worker"]["enum"])
+        _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS}, {"planner": [tool_call("delegate", worker="voice", brief="b"), "ok"]})
+        self.assertIn("unknown worker 'voice'", log[1]["input"])
 
     def test_builtin_chat_system_prompt_is_optional_and_appended(self):
         chat_txt = (Path(orchestrator.ROOT) / "prompts" / "chat.txt").read_text(encoding="utf-8").strip()

@@ -24,8 +24,8 @@ namespace AgentOrchestrator;
 
 public partial class MainWindow : Window
 {
-    // COMPACTOR (the compactor role) is always shown and summarizes on MAIN's model until it has its own (FollowsMain).
-    private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor"];
+    // COMPACTOR (the compactor role) is always shown and summarizes on MAIN's model until it has its own (FollowsMain). VOICE (the voice role) likewise: the chat model of calls.
+    private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor", "voice"];
 
     private Process? _process;
     private string? _workflowRoot; // not readonly: --ui-smoke (WebAppSmoke) points it at a stand-in engine
@@ -4717,14 +4717,14 @@ public partial class MainWindow : Window
             return;
         foreach (var card in _cards)
         {
-            if (!card.IsCustom && RemoteModel(card.Role == "compactor" && !LauncherLogic.CompactorHasOwn(roles) ? "planner" : card.Role) is { } remote)
+            if (!card.IsCustom && RemoteModel(LauncherLogic.FollowsLead(card.Role, roles) ? "planner" : card.Role) is { } remote)
             {
                 card.SetModel(LauncherLogic.RemoteModelInfo(remote));
                 continue;
             }
-            if (card.Role == "compactor")
-                card.FollowsMain = !LauncherLogic.CompactorHasOwn(roles);
-            var source = card.Role == "compactor" && card.FollowsMain ? "planner" : ConfigRole(card.Role);
+            if (LauncherLogic.FollowerRoles.Contains(card.Role))
+                card.FollowsMain = LauncherLogic.FollowsLead(card.Role, roles);
+            var source = card.FollowsMain ? "planner" : ConfigRole(card.Role);
             if (!roles.TryGetProperty(source, out var r) || !r.TryGetProperty("auto_load", out var load) ||
                 !load.TryGetProperty("model_path", out var path) || path.GetString() is not { } id)
                 continue;
@@ -5048,7 +5048,7 @@ public partial class MainWindow : Window
         // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR), then the custom workers in the order added.
         var saved = _settings.Workers.Where(w => w.Id.Length > 0 && (w.Custom || Roles.Contains(w.Id))).ToList();
         // the test build groups them: LEAD and COMPACTOR (always on), then the helpers
-        string[] order = AppSettings.Unified ? ["planner", "compactor", "implementer", "reviewer"] : Roles;
+        string[] order = AppSettings.Unified ? ["planner", "compactor", "voice", "implementer", "reviewer"] : Roles;
         foreach (var w in order.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };

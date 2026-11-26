@@ -225,7 +225,7 @@ public partial class MainWindow
             try
             {
                 var roles = JsonNode.Parse(File.ReadAllText(path))!["roles"]!.AsObject();
-                followsMain = card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(roles);
+                followsMain = LauncherLogic.FollowsLead(card.Role, roles);
                 role = roles[followsMain ? "planner" : card.Role]!.AsObject();
                 remoteNow = LauncherLogic.ReadRemoteRole(path, followsMain ? "planner" : card.Role);
             }
@@ -596,7 +596,7 @@ public partial class MainWindow
             if (card.Role != LauncherLogic.Compactor) // COMPACTOR never chats
             {
                 var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
-                chat.Tag = "ChatPromptSection";
+                chat.Tag = card.Role == LauncherLogic.Voice ? "PromptSection" : "ChatPromptSection"; // VOICE's shows in both views
                 chat.Children.Add(chatPrompt);
             }
             var workflow = Section("System prompt (workflow)", card.Role == LauncherLogic.Compactor
@@ -622,6 +622,8 @@ public partial class MainWindow
             };
             ShowPrompts();
             workflow.Children.Add(promptBody);
+            if (card.Role == LauncherLogic.Voice) // VOICE only talks in calls: no workflow prompts
+                blocks.Remove("System prompt (workflow)");
         }
 
         // Where the model runs. A remote role shows a summary (the Remote API page edits it) and Switch to Local; a local one
@@ -908,16 +910,18 @@ public partial class MainWindow
         var advancedRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { advancedLabel, advanced }, ToolTip = "Memory, speed, output and server options" };
         DockPanel.SetDock(advancedRow, Dock.Right);
         settingsHead.Children.Insert(0, advancedRow);
-        // COMPACTOR: whether it follows LEAD's model, and the way back to it.
+        // COMPACTOR and VOICE: whether it follows LEAD's model, and the way back to it.
         StackPanel? follow = null;
-        if (card.Role == LauncherLogic.Compactor)
+        if (LauncherLogic.FollowerRoles.Contains(card.Role))
         {
+            var voice = card.Role == LauncherLogic.Voice;
             follow = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Tag = "CompactorSource" };
             if (followsMain)
-                follow.Children.Add(Muted("Same as LEAD: compaction runs on LEAD's model and follows its changes. Pick a model (or change a setting) and Save to give COMPACTOR its own."));
+                follow.Children.Add(Muted($"Same as LEAD: {(voice ? "calls talk" : "compaction runs")} on LEAD's model and follow{(voice ? "" : "s")} its changes. Pick a model (or change a setting) and Save to give {card.Title} its own."));
             else
             {
-                follow.Children.Add(Muted("COMPACTOR has its own model: summaries load it, then LEAD's model loads again."));
+                follow.Children.Add(Muted(voice ? "VOICE has its own model: calls load it, so LEAD can stay a bigger model."
+                    : "COMPACTOR has its own model: summaries load it, then LEAD's model loads again."));
                 var back = new Button { Content = "Use LEAD's model", Tag = "UseMainModel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4),
                     HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
                 back.Click += (_, _) =>
@@ -925,7 +929,7 @@ public partial class MainWindow
                     if (WriteConfigs(WorkerConfigTargets(), target =>
                         {
                             var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
-                            ((root["roles"] ??= new JsonObject()).AsObject())[LauncherLogic.Compactor] = new JsonObject { ["same_as"] = "planner" };
+                            ((root["roles"] ??= new JsonObject()).AsObject())[card.Role] = new JsonObject { ["same_as"] = "planner" };
                             WriteJson(target, root);
                             return null;
                         }) is { } failed)
@@ -1701,8 +1705,8 @@ public partial class MainWindow
         var problem = WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
         {
             var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
-            if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
-                LauncherLogic.GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
+            if (LauncherLogic.FollowsLead(card.Role, root["roles"] as JsonObject))
+                LauncherLogic.GiveOwn(root, card.Role); // first, so Switch to Local restores its copy of MAIN's
             if (remote is null && remoteNow is not null &&
                 LauncherLogic.WriteRemoteRole(root, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
                 return failed; // nothing written: the one WriteJson below writes every change

@@ -128,6 +128,9 @@ public partial class MainWindow
         }
     }
 
+    // The call's worker: VOICE (on LEAD's model until it has its own).
+    private RoleCard? CallCard() => CardFor(LauncherLogic.Voice) ?? CardFor("planner");
+
     private VoiceChoice CallVoice() => VoiceChoice.Find(_settings.Tts.Voice, _settings.CustomVoices);
 
     private long? CallFreeGpu() => _callFreeStub is { } stub ? stub() : Chatterbox.FreeGpuBytes();
@@ -139,7 +142,7 @@ public partial class MainWindow
         var cb = voice.Chatterbox!;
         try
         {
-            var card = ChatTarget();
+            var card = CallCard();
             var size = card is null ? null : await CallModelSize(card);
             var free = _callFreeStub is { } stub ? stub() : await Task.Run(() => Chatterbox.FreeGpu.Get(wait: true));
             _callKeepsVoice = true;
@@ -274,7 +277,7 @@ public partial class MainWindow
 
     private async Task CallTurn(string phrase)
     {
-        await RunTurn(_chat, phrase, ChatTarget()!.Role, role => ChatRequest(role, phrase), LauncherLogic.BuildChatStartInfo, "Call");
+        await RunTurn(_chat, phrase, CallCard()!.Role, role => ChatRequest(role, phrase), LauncherLogic.BuildChatStartInfo, "Call");
         if (_callNow == CallState.Thinking && _callSentences is null) // refused before it started (a model loading, no runtime)
             CallFire(CallEvent.Done);
     }

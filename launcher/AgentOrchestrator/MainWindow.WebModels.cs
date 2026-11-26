@@ -33,7 +33,7 @@ public partial class MainWindow
                 LauncherLogic.InheritedOptions(ActiveConfigPath(), Path.Combine(_workflowRoot ?? "", "config.json")), folder, hub, _localModelsVersion);
         var path = ActiveConfigPath();
         var roles = JsonNode.Parse(File.ReadAllText(path))!["roles"]!.AsObject();
-        var follows = card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(roles);
+        var follows = LauncherLogic.FollowsLead(card.Role, roles);
         var role = roles[follows ? "planner" : card.Role]!.AsObject();
         return new(card, path, role, follows, LauncherLogic.ReadRemoteRole(path, follows ? "planner" : card.Role), ModelOptions.Read(role),
             role["auto_load"]?.DeepClone() as JsonObject, null, folder, hub, _localModelsVersion);

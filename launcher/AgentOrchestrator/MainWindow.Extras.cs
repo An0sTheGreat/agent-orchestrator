@@ -88,7 +88,7 @@ public partial class MainWindow
         try
         {
             var roles = JsonNode.Parse(File.ReadAllText(ActiveConfigPath()))?["roles"] as JsonObject;
-            var role = card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(roles) ? "planner" : ConfigRole(card.Role);
+            var role = LauncherLogic.FollowsLead(card.Role, roles) ? "planner" : ConfigRole(card.Role);
             return roles?[role]?["auto_load"]?.DeepClone() as JsonObject;
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or ArgumentException) { return null; }

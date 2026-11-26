@@ -1733,10 +1733,10 @@ def display_name(config: dict[str, Any], role: str) -> str:
 
 
 def role_config(config: dict[str, Any], role: str) -> dict[str, Any] | None:
-    """A built-in role's settings: the Implementer/Reviewer (and the Compactor) fall back to the Planner (the base model)
+    """A built-in role's settings: the Implementer/Reviewer (and the Compactor and Voice) fall back to the Planner (the base model)
     when missing from config roles or marked "same_as": "planner"; None when neither is configured."""
     roles = config.get("roles") or {}
-    if role in ("implementer", "reviewer", "compactor") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
+    if role in ("implementer", "reviewer", "compactor", "voice") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
         role = "planner"
     return roles.get(role)
 
@@ -1768,7 +1768,7 @@ def request_defaults(client: ApiClient, sampling: dict[str, Any]) -> dict[str, A
 
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
     """Client + sampling for a built-in role (with the Planner fallback), or for a custom worker when `role` is its id."""
-    settings = role_config(config, role) if role in (*BUILTIN_ROLES, "compactor") else (config.get("roles") or {}).get(role)
+    settings = role_config(config, role) if role in (*BUILTIN_ROLES, "compactor", "voice") else (config.get("roles") or {}).get(role)
     if settings is None:
         settings = next((w for w in custom_workers(config) if w["id"] == role), None)
     if settings is None:
@@ -3987,9 +3987,9 @@ def chat_messages(request: dict[str, Any]) -> list[dict[str, str]]:
 def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
     """The custom worker with this id, None for a built-in role; raises for an unknown or unconfigured one."""
     worker = next((w for w in custom_workers(config) if w["id"] == role), None)
-    if role not in BUILTIN_ROLES and not worker:
+    if role not in (*BUILTIN_ROLES, "voice") and not worker:  # voice: the launcher's calls; never a delegate
         raise WorkflowError(f"Unknown chat worker {role!r}")
-    if role in BUILTIN_ROLES and role_config(config, role) is None:
+    if not worker and role_config(config, role) is None:
         raise WorkflowError(f"Chat worker {role!r} is missing from config roles (and there is no planner to fall back to)")
     return worker
 

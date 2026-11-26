@@ -1327,8 +1327,8 @@ internal static class LauncherLogic
     {
         if (remote is not null && ValidateRemoteRole(remote) is { } problem)
             return problem;
-        if (remote is not null && role == Compactor && !CompactorHasOwn(root["roles"] as JsonObject))
-            GiveCompactorOwn(root);
+        if (remote is not null && FollowsLead(role, root["roles"] as JsonObject))
+            GiveOwn(root, role);
         var settings = root["roles"]![role]!.AsObject();
         if (remote is not null)
         {
@@ -1537,12 +1537,20 @@ internal static class LauncherLogic
         roles.TryGetProperty(Compactor, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _);
     public static bool CompactorHasOwn(JsonObject? roles) => roles?[Compactor] is JsonObject c && c["same_as"] is null;
 
-    // COMPACTOR on MAIN's model gets its own roles.compactor from here on: MAIN's settings to start (not MAIN's chat prompt).
-    public static void GiveCompactorOwn(JsonObject root)
+    // roles.voice (the chat model of calls): like COMPACTOR, absent or {"same_as": "planner"} runs on MAIN's model.
+    public const string Voice = "voice";
+    public static readonly string[] FollowerRoles = [Compactor, Voice];
+    public static bool FollowsLead(string role, JsonObject? roles) => FollowerRoles.Contains(role) && !(roles?[role] is JsonObject c && c["same_as"] is null);
+    public static bool FollowsLead(string role, JsonElement roles) => FollowerRoles.Contains(role) &&
+        !(roles.TryGetProperty(role, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _));
+
+    // COMPACTOR (or VOICE) on MAIN's model gets its own roles.<role> from here on: MAIN's settings to start (not MAIN's chat prompt).
+    public static void GiveCompactorOwn(JsonObject root) => GiveOwn(root, Compactor);
+    public static void GiveOwn(JsonObject root, string role)
     {
         var copy = (JsonObject)root["roles"]!["planner"]!.DeepClone();
         copy.Remove("chat_system_prompt");
-        root["roles"]![Compactor] = copy;
+        root["roles"]![role] = copy;
     }
 
     // Copies the worker list and, when the config exists, each built-in role's complete roles.<role> object.
@@ -1556,7 +1564,7 @@ internal static class LauncherLogic
         if (File.Exists(configPath) && JsonNode.Parse(File.ReadAllText(configPath)) is JsonObject root)
         {
             if (root["roles"] is JsonObject roles)
-                foreach (var role in BuiltInRoles.Append(Compactor))
+                foreach (var role in BuiltInRoles.Concat(FollowerRoles))
                     if (roles[role] is JsonObject stored)
                         preset.Roles[role] = stored.ToJsonString();
             preset.TaskLimits = root["task_limits"] is JsonObject limits ? limits.ToJsonString() : "{}";
@@ -1577,10 +1585,10 @@ internal static class LauncherLogic
         if (preset.Roles.Count > 0)
         {
             var roles = (root["roles"] ??= new JsonObject()).AsObject();
-            foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key) || r.Key == Compactor))
+            foreach (var (role, json) in preset.Roles.Where(r => BuiltInRoles.Contains(r.Key) || FollowerRoles.Contains(r.Key)))
                 roles[role] = JsonNode.Parse(json);
-            if (!preset.Roles.ContainsKey(Compactor)) // a preset from before COMPACTOR: compaction on MAIN's model
-                roles[Compactor] = new JsonObject { ["same_as"] = "planner" };
+            foreach (var follower in FollowerRoles.Where(f => !preset.Roles.ContainsKey(f))) // a preset from before it: on MAIN's model
+                roles[follower] = new JsonObject { ["same_as"] = "planner" };
         }
         if (preset.TaskLimits is { } stored)
         {
@@ -1714,7 +1722,7 @@ internal static class LauncherLogic
         return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
-    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "LEAD", "COMPACTOR"];
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "LEAD", "COMPACTOR", "VOICE"];
 
     // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
     public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
