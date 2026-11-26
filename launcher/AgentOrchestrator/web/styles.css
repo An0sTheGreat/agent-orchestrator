@@ -397,8 +397,7 @@ body.landscape .drawer { padding-top: 0; }
 .composer.collapsed .inputwrap textarea { padding: 0; max-height: 22px; }
 .composer.collapsed .chips { display: none; }
 .composer.collapsed .sendrow { margin: 0 0 0 auto; }
-.composer.collapsed .sendrow .chip,
-.composer.collapsed .sendrow .stop { display: none; }
+.composer.collapsed .sendrow .chip { display: none; } /* Stop stays while a reply runs */
 .inputwrap textarea {
   width: 100%; background: none; border: 0; outline: none; resize: none;
   font-size: 13.5px; line-height: 1.45; max-height: 96px; padding: 3px 2px 6px; display: block;
@@ -421,7 +420,9 @@ body.landscape .drawer { padding-top: 0; }
 .queue { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); margin-bottom: 6px; }
 .queue .dot { animation: pulse 1.4s ease-in-out infinite; }
 
-.skillpop { position: absolute; left: 12px; right: 12px; bottom: calc(100% - 4px); background: var(--card); border: 1px solid var(--border); border-radius: var(--r-panel); padding: 7px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); z-index: 5; }
+.attachrow { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.attachrow .x { margin-left: 2px; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1; }
+.skillpop { position: absolute; left: 12px; right: 12px; bottom: calc(100% - 4px); background: var(--card); border: 1px solid var(--border); border-radius: var(--r-panel); padding: 7px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); z-index: 5; max-height: 45vh; overflow-y: auto; }
 .skillpop-head { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin: 4px 6px 6px; }
 .skillpop button { display: block; width: 100%; text-align: left; padding: 7px 9px; border-radius: 8px; }
 .skillpop button:hover { background: var(--field); }
@@ -525,6 +526,8 @@ body.landscape .drawer { padding-top: 0; }
 .fields input:focus, .field input:focus, .field textarea:focus, .keyrow input:focus { border-color: #5c5c5c; }
 .field textarea::placeholder, .fields input::placeholder { color: #7c7c7c; }
 .field { margin-bottom: 10px; }
+.fields .span { grid-column: 1 / -1; }
+.fields select { width: 100%; margin-top: 4px; background: var(--field); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; font-size: 12.5px; color: var(--text); outline: none; font-family: inherit; }
 .keyrow { display: flex; gap: 8px; align-items: center; }
 .keyrow input { margin-top: 0; font-family: var(--mono); }
 

@@ -40,6 +40,8 @@ function showScreen(name, params, view) {
 export function go(name, params = {}) { router.go({ name: name.replace(/^view-/, ''), params }); render(); }
 export function back() { if (router.stack.length > 1) history.back(); else render(); }
 addEventListener('popstate', e => { router.pop(e.state); render(); });
+// Replaces the top screen (its history entry too) and shows it.
+export function replace(name, params = {}) { router.reset([...router.stack.slice(0, -1), { name, params }]); render(); }
 function tabTo(name) { router.reset([{ name: name.replace(/^view-/, ''), params: {} }]); render(); }
 
 document.addEventListener('click', e => {
@@ -127,9 +129,9 @@ document.addEventListener('click', e => {
   if (unfold) { unfold.classList.toggle('open'); $('#' + unfold.dataset.disclose).classList.toggle('hidden'); }
 });
 
-/* ---------- composer: a resting pill until tapped, grows with its text, / or $ opens the skill list ---------- */
+/* ---------- composer: a resting pill until tapped, grows with its text (composer.js: send, the + sheet, / completion) ---------- */
 $$('.composer').forEach(footer => {
-  const box = footer.querySelector('textarea'), wrap = footer.querySelector('.inputwrap'), pop = footer.querySelector('.skillpop');
+  const box = footer.querySelector('textarea'), wrap = footer.querySelector('.inputwrap');
   if (!box || !wrap) return;
   const collapse = () => { if (document.activeElement !== box && !box.value.trim()) footer.classList.add('collapsed'); };
   footer.classList.add('collapsed');
@@ -139,14 +141,6 @@ $$('.composer').forEach(footer => {
   box.addEventListener('input', () => {
     box.style.height = 'auto';
     box.style.height = Math.min(96, box.scrollHeight) + 'px';
-    pop?.classList.toggle('hidden', !/^[/$]$/.test(box.value));
-  });
-  footer.addEventListener('click', e => {
-    const pick = e.target.closest('[data-complete]');
-    if (!pick) return;
-    box.value = pick.dataset.complete + ' ';
-    box.focus();
-    pop?.classList.add('hidden');
   });
 });
 

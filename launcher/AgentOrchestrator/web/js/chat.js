@@ -53,8 +53,14 @@ const PARTS = [['system', 'System prompt', '#C88705'], ['tools', 'Tools', '#DD61
   ['messages', 'Messages', '#3085E2'], ['tool_results', 'Tool results', '#00A082'], ['reply', 'Reply', '#595959']];
 
 /* ---------- the screen ---------- */
+export let chatId = null; // the open chat (null: a new one), for the composer
+let replaceScreen = () => {};
+// A new chat's first send made it: the Chat screen's history entry becomes that chat, shown.
+export const follow = id => replaceScreen('chat', { id });
+
 if (typeof document !== 'undefined') {
-  const { registerScreen, fail, toast } = await import('./main.js');
+  const { registerScreen, fail, toast, replace } = await import('./main.js');
+  replaceScreen = replace;
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
   const view = $('#view-chat'), msgs = $('#view-chat .msgs'), pop = $('#ctxpop');
@@ -202,7 +208,7 @@ if (typeof document !== 'undefined') {
     const mine = ++gen;
     stopEvents();
     stopEvents = () => {};
-    id = params?.id ?? null;
+    chatId = id = params?.id ?? null;
     live = emptyLive();
     saved = [];
     context = null;

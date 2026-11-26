@@ -10,6 +10,7 @@
 <script type="module" src="js/chats.js"></script>
 <script type="module" src="js/chat.js"></script>
 <script type="module" src="js/pcs.js"></script>
+<script type="module" src="js/composer.js"></script>
 </head>
 <body>
 
@@ -84,20 +85,19 @@
             <footer class="composer">
               <div class="skillpop hidden" id="skillpop">
                 <p class="skillpop-head">Skills</p>
-                <button data-complete="/review"><b>/review</b><small>Review changed code for bugs</small></button>
-                <button data-complete="/compact"><b>/compact</b><small>Summarise this conversation now</small></button>
-                <button data-complete="/debug"><b>/debug</b><small>Find a bug, smallest safe fix</small></button>
               </div>
               <div class="queue hidden" id="queue"><span class="dot live"></span> 1 message queued</div>
+              <div class="attachrow hidden" id="attachrow"></div>
+              <input type="file" id="photoinput" accept="image/*" multiple hidden>
               <div class="inputwrap">
                 <textarea id="chatbox" rows="1" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
                 <div class="chips" data-chips>
                   <button class="chip square" data-sheet="sheet-tools" aria-label="More options"><svg class="ic"><use href="#i-plus"/></svg></button>
-                  <button class="chip" data-toggle><svg class="ic sm"><use href="#i-eye"/></svg> Vision</button>
-                  <button class="chip" data-toggle><svg class="ic sm"><use href="#i-image"/></svg> Image Gen</button>
+                  <button class="chip" id="visionchip"><svg class="ic sm"><use href="#i-eye"/></svg> Vision</button>
+                  <button class="chip" id="imgchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-image"/></svg> <span>Image Gen</span></button>
                 </div>
                 <div class="sendrow">
-                  <button class="chip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> Effort: Default</button>
+                  <button class="chip" id="effortchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> <span>Effort: Default</span></button>
                   <button class="stop hidden" id="stopbtn" aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
                   <button class="send" id="sendbtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
                 </div>
@@ -483,31 +483,27 @@
         <div class="grab"></div>
         <p class="secthead inline">ATTACH</p>
         <div class="chips wrap">
-          <button class="chip" data-close><svg class="ic sm"><use href="#i-clip"/></svg> Photos</button>
-          <button class="chip" data-close><svg class="ic sm"><use href="#i-file"/></svg> Files</button>
+          <button class="chip" id="photobtn"><svg class="ic sm"><use href="#i-clip"/></svg> Photos</button>
         </div>
         <p class="secthead">EXTRAS</p>
-        <div class="rowline"><div><b>Web search</b><small>web_search · fetch_page</small></div><button class="switch" data-switch aria-label="Web search"></button></div>
-        <div class="rowline"><div><b>Tools</b><small>calculator · current_time · fetch_page</small></div><button class="switch" data-switch aria-label="Tools"></button></div>
-        <div class="rowline"><div><b>Vision</b><small>Send photos to the model</small></div><button class="switch on" data-switch aria-label="Vision"></button></div>
-        <div class="rowline"><div><b>Image gen</b><small>Generate a picture in the chat</small></div><button class="switch" data-switch aria-label="Image gen"></button></div>
-        <p class="secthead">EFFORT</p>
-        <div class="seg wide" data-seg="effort"><button>Off</button><button>Low</button><button>Medium</button><button class="on">Default</button><button>High</button></div>
-        <p class="secthead">SEND TO</p>
-        <div class="chips"><button class="chip on"><svg class="ic sm"><use href="#i-orb"/></svg> Lead</button><button class="chip">Implementer</button><button class="chip">Reviewer</button></div>
-        <p class="secthead">PERMISSIONS</p>
-        <div class="seg wide" data-seg="perm"><button class="on">Allow Safe</button><button>Always Ask</button><button>Allow All</button></div>
-        <p class="secthead">SKILLS FOR THIS TURN</p>
-        <div class="chips wrap">
-          <button class="chip on" data-toggle><svg class="ic sm"><use href="#i-layers"/></svg> review</button>
-          <button class="chip on" data-toggle><svg class="ic sm"><use href="#i-layers"/></svg> init-projMD</button>
-          <button class="chip" data-toggle><svg class="ic sm"><use href="#i-layers"/></svg> godot</button>
-          <button class="chip" data-toggle><svg class="ic sm"><use href="#i-layers"/></svg> ffmpeg</button>
+        <div class="rowline"><div><b>Web search</b><small>web_search · fetch_page</small></div><button class="switch" data-opt="search" aria-label="Web search"></button></div>
+        <div class="rowline"><div><b>Tools</b><small>calculator · current_time · fetch_page</small></div><button class="switch" data-opt="tools" aria-label="Tools"></button></div>
+        <div class="rowline"><div><b>Vision</b><small>Send photos to the model</small></div><button class="switch" data-opt="vision" aria-label="Vision"></button></div>
+        <p class="secthead">IMAGE GEN</p>
+        <div class="fields">
+          <label class="span">Model<select id="imgmodel"></select></label>
+          <label>Aspect<select id="imgaspect"></select></label>
+          <label>Steps<input id="imgsteps" type="number" inputmode="numeric" min="0" max="100" placeholder="Model's own"></label>
+          <label>Width<input id="imgwidth" type="number" inputmode="numeric" min="0"></label>
+          <label>Height<input id="imgheight" type="number" inputmode="numeric" min="0"></label>
         </div>
-        <button class="drawer-item" data-open="view-skills"><svg class="ic sm"><use href="#i-spark"/></svg> Manage skills…</button>
-        <p class="secthead">COMMANDS</p>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-layers"/></svg> /compact — summarise now</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-stop"/></svg> Stop the run or the reply</button>
+        <div class="chips"><button class="chip" id="imglock"><svg class="ic sm"><use href="#i-lock"/></svg> Lock to the ratio</button><small class="muted" id="imgsize"></small></div>
+        <p class="secthead">EFFORT</p>
+        <div class="seg wide" id="effortseg"></div>
+        <p class="secthead">SEND TO</p>
+        <div class="chips" id="workerchips"></div>
+        <p class="secthead">SKILLS FOR THIS TURN</p>
+        <div class="chips wrap" id="skillchips"></div>
       </div>
 
       <div class="sheet" id="sheet-chatmenu" role="dialog" aria-label="Chat menu">
