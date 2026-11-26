@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { downsample, toInt16, levelOf, silenceGate, insertAt } from '../js/dictate.js';
+import { downsample, toInt16, pcmBlock, joinPcm, levelOf, silenceGate, insertAt } from '../js/dictate.js';
 
 test('downsample: 48 kHz to 16 kHz keeps a 1 kHz tone (Speech.Resample rules)', () => {
   const sine = Float32Array.from({ length: 48000 }, (_, i) => Math.sin(2 * Math.PI * 1000 * i / 48000));
@@ -53,4 +53,18 @@ test('insertAt: the Speech.Insert rules', () => {
   assert.deepEqual(insertAt('Hi', 2, '  '), { text: 'Hi', caret: 2 });
   assert.deepEqual(insertAt('Line\n', 5, 'next'), { text: 'Line\nNext', caret: 9 });
   assert.deepEqual(insertAt('Really?', 99, 'yes'), { text: 'Really? Yes', caret: 11 });
+});
+
+test('pcmBlock: a 48 kHz block becomes a third as many 16-bit samples, each the mean of three', () => {
+  const block = pcmBlock(Float32Array.from([0.5, 0.5, 0.5, -1, -1, -1]), 48000);
+  assert.ok(block instanceof Int16Array);
+  assert.deepEqual([...block], [16383, -32768]);
+  assert.equal(pcmBlock(new Float32Array(2048), 48000).length, 682);
+});
+
+test('joinPcm: the blocks end to end; none gives nothing to post', () => {
+  const all = joinPcm([Int16Array.from([1, 2]), Int16Array.from([3])]);
+  assert.ok(all instanceof Int16Array);
+  assert.deepEqual([...all], [1, 2, 3]);
+  assert.equal(joinPcm([]).length, 0);
 });

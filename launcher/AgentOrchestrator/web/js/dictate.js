@@ -1,7 +1,8 @@
 // Dictation in the Chat and Code composers: the mic left of Send records in the browser (HTTPS only), draws a level meter inside
 // the input pill over the text (hidden, not lost), stops after 2 s of silence once speech was heard, 10 s of nothing, or a tap,
 // then posts 16 kHz PCM to the PC (POST /api/dictate) and puts the text at the caret. The PC transcribes; nothing is sent.
-// downsample, toInt16, levelOf, silenceGate and insertAt are pure (Node tests them); the DOM part loads only in a page.
+// downsample, toInt16, pcmBlock, joinPcm, levelOf, silenceGate and insertAt are pure (Node tests them); the DOM part loads only in
+// a page.
 
 /* ---------- pure ---------- */
 export const RATE = 16000;
@@ -32,6 +33,17 @@ export function toInt16(input) {
     out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
   return out;
+}
+
+// One recorded block at the device rate to 16 kHz PCM, as it arrives: only 16-bit samples are kept while listening.
+// ponytail: each block is downsampled alone, so a fraction of a sample per block is dropped (0.04 at 44.1 kHz); inaudible.
+export const pcmBlock = (block, rate) => toInt16(downsample(block, rate));
+
+// The blocks end to end, for the post.
+export function joinPcm(chunks) {
+  const all = new Int16Array(chunks.reduce((n, c) => n + c.length, 0));
+  chunks.reduce((at, c) => { all.set(c, at); return at + c.length; }, 0);
+  return all;
 }
 
 // Speech.LevelOf: RMS on a dB scale, -60 dB (or silence) = 0, full scale = 1.
@@ -86,7 +98,7 @@ if (typeof document !== 'undefined') {
       return true;
     }
   });`;
-  let cur = null; // the one dictation: { box, btn, overlay, canvas, ctx, stream, chunks, levels, shown, gate, started, frame, watch }
+  let cur = null; // the one dictation: { box, btn, overlay, canvas, ctx, stream, chunks (16 kHz Int16), levels, shown, gate, started, frame, watch }
 
   const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const clock = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -159,15 +171,15 @@ if (typeof document !== 'undefined') {
   async function stop() {
     const m = cur;
     if (!m || m.posting) return;
+    const pcm = joinPcm(m.chunks);
+    if (!pcm.length) { cancel(); return; } // tapped again before anything was recorded (the permission prompt still up): nothing to post
     m.posting = true;
     release(m);
     m.btn.disabled = true;
     m.canvas.remove();
     m.overlay.append(h('span', { class: 'spin' }), h('span', { class: 'muted' }, 'Transcribing…'));
-    const all = new Float32Array(m.chunks.reduce((n, c) => n + c.length, 0));
-    m.chunks.reduce((at, c) => { all.set(c, at); return at + c.length; }, 0);
     try {
-      const { text } = await api.dictate(toInt16(downsample(all, m.ctx.sampleRate)));
+      const { text } = await api.dictate(pcm);
       if (!text) { toast('Nothing heard'); return; }
       const r = insertAt(m.box.value, m.caret, text);
       m.box.value = r.text;
@@ -201,7 +213,7 @@ if (typeof document !== 'undefined') {
       tap.port.onmessage = e => {
         if (cur !== m || m.posting) return;
         const block = e.data, ms = block.length / ctx.sampleRate * 1000, level = levelOf(block);
-        m.chunks.push(block);
+        m.chunks.push(pcmBlock(block, ctx.sampleRate));
         m.levels.push(level);
         m.levels.shift();
         m.gate = silenceGate(m.gate, level, ms);

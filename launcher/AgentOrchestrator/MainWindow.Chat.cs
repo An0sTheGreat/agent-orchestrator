@@ -36,6 +36,7 @@ public partial class MainWindow
         public required TextBox Input;
         public required TextBlock Hint, Busy;
         public readonly List<LauncherLogic.ChatMessage> History = new();
+        public int Opened; // counted up by ClearConversation: another conversation shows here now (a late dictated phrase checks it)
         public bool Follow = true;
         public long Tokens; // all turns of this conversation (saved with it)
         public string? Summary; // the engine's summary of History[..SummaryCovers] (history_compacted; saved with it)
@@ -598,7 +599,7 @@ public partial class MainWindow
         if (e.Key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Shift) != 0)
             return; // Shift+Enter inserts a new line
         e.Handled = true;
-        if (ConvOf(sender).Send.IsEnabled)
+        if (!RevealDictation() && ConvOf(sender).Send.IsEnabled)
             SendOrQueue(ConvOf(sender));
     }
 
@@ -610,7 +611,11 @@ public partial class MainWindow
             SendChat();
     }
 
-    private void ChatSend_Click(object sender, RoutedEventArgs e) => SendOrQueue(ConvOf(sender));
+    private void ChatSend_Click(object sender, RoutedEventArgs e)
+    {
+        if (!RevealDictation())
+            SendOrQueue(ConvOf(sender));
+    }
 
     // The stop icon (and Ctrl+Shift+X): stops the project run, else the reply.
     private void StopWork_Click(object sender, RoutedEventArgs e)
@@ -754,6 +759,7 @@ public partial class MainWindow
     private void ClearConversation(Conversation c)
     {
         Unqueue(c); // queued for the conversation being closed: back to the input, not sent into the next one
+        c.Opened++;
         c.Panel.Children.Clear();
         c.History.Clear();
         c.Tokens = 0;

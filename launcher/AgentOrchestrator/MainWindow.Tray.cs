@@ -57,6 +57,7 @@ public partial class MainWindow
 
     internal void HideToTray(bool quiet = false)
     {
+        StopDictation(); // the microphone is never left open in the tray
         if (_tray is null)
         {
             Close();

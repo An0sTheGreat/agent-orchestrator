@@ -63,13 +63,16 @@ internal static class Speech
     public const int Rate = 16000;
     private static readonly object Gate = new();
     private static OfflineRecognizer? _recognizer;
+    private static bool _shutdown; // the app is closing: no recognizer is made again
 
     // The shared Parakeet recognizer: created once on first use (2 threads, CPU), disposed by Shutdown when the app exits.
-    // Calls are serialised (one decode at a time, so dictation never takes more than its 2 threads). Throws when not Ready.
+    // Calls are serialised (one decode at a time, so dictation never takes more than its 2 threads). Throws when not Ready, or
+    // after Shutdown (ObjectDisposedException).
     public static Func<float[], string> Recognizer()
     {
         lock (Gate)
         {
+            ObjectDisposedException.ThrowIf(_shutdown, typeof(Speech));
             if (_recognizer is null)
             {
                 if (!SpeechModels.Ready)
@@ -155,6 +158,7 @@ internal static class Speech
         {
             _recognizer?.Dispose();
             _recognizer = null;
+            _shutdown = true;
         }
     }
 
@@ -257,10 +261,8 @@ internal static class Speech
         using var session = new DictationSession(_ => "never");
         var ended = new List<string>();
         var texts = new List<string>();
-        var levels = 0;
         session.Ended += ended.Add;
         session.Text += texts.Add;
-        session.Level += _ => levels++;
         var chunk = new float[1600]; // 100 ms
         for (var i = 0; i < 99; i++)
             session.Feed(chunk);
@@ -268,7 +270,7 @@ internal static class Speech
         for (var i = 0; i < 5; i++)
             session.Feed(chunk);
         Check(ended is ["nothing heard"], $"10 s of silence ended with [{string.Join(",", ended)}]");
-        Check(texts.Count == 0 && levels >= 100, $"silence gave {texts.Count} phrases, {levels} levels");
+        Check(texts.Count == 0, $"silence gave {texts.Count} phrases");
 
         // the energy gate: a loud second then 2 s of silence is one phrase, then "silence"
         using var gated = new DictationSession(samples => $"{samples.Length / Rate}s", vad: false);
@@ -305,7 +307,7 @@ internal static class Speech
     }
 }
 
-// One dictation: 16 kHz samples in, a Level per Feed, a Text per spoken phrase (each VAD segment transcribed as it ends), and
+// One dictation: 16 kHz samples in, a Text per spoken phrase (each VAD segment transcribed as it ends), and
 // Ended once on its own: "silence" after 2 s without speech once speech was heard, "nothing heard" after 10 s with none.
 // Stop() transcribes the phrase in progress and raises no Ended. Events fire on the feeding thread.
 internal sealed class DictationSession : IDisposable
@@ -320,7 +322,6 @@ internal sealed class DictationSession : IDisposable
     private long _total, _silence;
     private bool _heard, _done;
 
-    public event Action<float>? Level;
     public event Action<string>? Text;
     public event Action<string>? Ended;
 
@@ -347,7 +348,6 @@ internal sealed class DictationSession : IDisposable
         {
             if (_done)
                 return;
-            Level?.Invoke(Speech.LevelOf(samples16k));
             _pending.AddRange(samples16k);
             var whole = _pending.Count / Window * Window;
             for (var at = 0; at < whole && !_done; at += Window)
@@ -384,9 +384,10 @@ internal sealed class DictationSession : IDisposable
     {
         lock (_gate)
         {
-            if (!_done)
-                Flush();
-            _done = true;
+            if (_done)
+                return;
+            _done = true; // first: a transcribe that throws is not tried again by Dispose
+            Flush();
         }
     }
 
@@ -440,7 +441,7 @@ internal sealed class DictationSession : IDisposable
 
     public void Dispose()
     {
-        Stop();
-        _vad?.Dispose();
+        try { Stop(); }
+        finally { _vad?.Dispose(); } // a transcribe that throws never leaks the native VAD
     }
 }

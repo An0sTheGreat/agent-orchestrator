@@ -31,7 +31,8 @@ public partial class MainWindow
             Func<float[], string> transcribe;
             try { transcribe = stand ?? Speech.Recognizer(); }
             catch (InvalidOperationException) { return (409, new { error = WebDictateNotReady }); } // the models went since the check
-            return (200, new { text = WebTranscribe(transcribe, body) });
+            try { return (200, new { text = WebTranscribe(transcribe, body) }); }
+            catch (Exception exception) { return (500, new { error = "Transcription failed: " + exception.Message }); }
         });
     }
 

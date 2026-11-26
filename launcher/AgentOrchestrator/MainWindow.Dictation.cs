@@ -14,9 +14,11 @@ namespace AgentOrchestrator;
 
 // Dictation in the Chat and Code boxes: the mic (or Ctrl+Space held in the box) captures the microphone (NAudio, the one picked in
 // Settings > Voice) into a DictationSession; while listening the box's text is hidden under a level meter drawn in its place, and
-// each spoken phrase goes in at the caret (Speech.Insert). Dictation never sends. It stops on the mic, Esc in the box, Send,
-// switching view or conversation (ShowView), the window closing, or the session's own auto-stop; the phrase in progress is then
-// transcribed (the mic turns, "working") and still lands in the box.
+// each spoken phrase goes in at the caret (Speech.Insert). Dictation never sends: Enter or Send while listening only stops it and
+// shows the text; the next press sends. It stops on the mic, Esc in the box, Enter or Send, switching view or conversation
+// (ShowView), the window hiding to the tray or closing, focus leaving the box during hold-to-talk, or the session's own
+// auto-stop; the phrase in progress is then transcribed (the mic turns, "working") and lands in the box, unless another
+// conversation shows there by then (dropped, with a toast: the composer has no per-conversation draft to keep it in).
 public partial class MainWindow
 {
     private DictationSession? _dictation;  // listening (null: idle, or only the last phrase still transcribing)
@@ -68,6 +70,22 @@ public partial class MainWindow
             StopDictation();
     }
 
+    // Hold-to-talk whose key-up will never reach the box: focus left it, or the window was deactivated.
+    private void DictationHold_Lost(object sender, EventArgs e)
+    {
+        if (_dictationHold)
+            StopDictation();
+    }
+
+    // Enter or Send while listening: the text is hidden under the meter, so the press only stops and shows it. True when it did.
+    private bool RevealDictation()
+    {
+        if (!Dictating)
+            return false;
+        StopDictation();
+        return true;
+    }
+
     private void StartDictation(TextBox box)
     {
         StopDictation(); // the other box's
@@ -90,8 +108,10 @@ public partial class MainWindow
             session = new DictationSession(transcribe);
         }
         var queue = new BlockingCollection<float[]>();
-        void Feed(float[] samples)
+        void Feed(float[] samples) // on the capture thread: the meter follows it even while the feeding thread transcribes
         {
+            var level = Speech.LevelOf(samples);
+            Dispatcher.BeginInvoke(() => meter.Push(level));
             try { queue.Add(samples); }
             catch (InvalidOperationException) { } // stopped: the device's last buffers
         }
@@ -110,15 +130,22 @@ public partial class MainWindow
         else
             _dictationFeed(Feed);
         (_dictation, _dictationBox, _dictationQueue) = (session, box, queue);
-        session.Level += level => Dispatcher.BeginInvoke(() => meter.Push(level));
+        var (conv, opened, stored) = (ConvOf(box), ConvOf(box).Opened, box == CodeInput ? _codeConv : _chatConv);
         session.Text += phrase => Dispatcher.BeginInvoke(() =>
         {
+            if (ConvOf(box) != conv || conv.Opened != opened) // parked, opened or cleared since: this box is another conversation's now
+            {
+                Toast($"Dictation for {(stored is null ? "the new chat" : ConversationStore.TitleOf(stored))} was discarded", "#F7C873");
+                return;
+            }
             var (text, caret) = Speech.Insert(box.Text, box.CaretIndex, phrase);
             box.Text = text;
             box.CaretIndex = caret;
         });
-        session.Ended += _ => Dispatcher.BeginInvoke(() =>
+        session.Ended += reason => Dispatcher.BeginInvoke(() =>
         {
+            if (reason == "nothing heard")
+                Toast("Nothing heard — check the microphone in Settings > Voice", "#F7C873");
             if (_dictation == session)
                 StopDictation();
         });
@@ -233,7 +260,8 @@ public partial class MainWindow
     }
 
     // --ui-smoke: the mic in both composers; a fake capture and recognizer: the meter covers the box (its text hidden, kept), a
-    // phrase lands at the caret by Insert's rules, Esc stops (meter gone, text back); Send while listening stops; without the
+    // phrase lands at the caret by Insert's rules, Esc stops (meter gone, text back); Enter while listening only stops (nothing
+    // sent); hiding to the tray stops; a late phrase after a chat switch is dropped; Send while listening stops; without the
     // speech model the mic says where to download it. Never the real microphone.
     private async Task<bool> DictationSmoke()
     {
@@ -277,6 +305,39 @@ public partial class MainWindow
             await Task.Delay(300);
             if (Dictating || ChatMeter.Visibility == Visibility.Visible || ChatInput.Opacity != 1 || ChatInput.IsReadOnly || ChatInput.Text != "Hello big world" || (string)ChatMic.Tag != "")
                 return Fail("Esc did not stop, or the text did not come back");
+            // Enter while listening sends nothing (busy: a send would queue it): it only stops and shows the text
+            _chatBusy = true;
+            var queued = _chatQueue.Count;
+            Mic_Click(ChatMic, new RoutedEventArgs());
+            ChatInput.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(this)!, 0, Key.Enter) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            if (Dictating || ChatInput.Opacity != 1 || ChatInput.Text != "Hello big world" || _chatQueue.Count != queued)
+                return Fail($"Enter while listening: dictating {Dictating}, \"{ChatInput.Text}\", {_chatQueue.Count - queued} queued");
+            _chatBusy = busy;
+            // hiding to the tray releases the microphone (a stand-in tray: test modes have none, and HideToTray closes without one)
+            Mic_Click(ChatMic, new RoutedEventArgs());
+            var activated = ShowActivated;
+            _tray = new System.Windows.Forms.NotifyIcon();
+            try { HideToTray(quiet: true); }
+            finally
+            {
+                _tray.Dispose();
+                _tray = null;
+                ShowActivated = false; // back without taking the foreground
+                Show();
+                ShowActivated = activated;
+            }
+            if (Dictating)
+                return Fail("HideToTray left the microphone open");
+            // a phrase still transcribing when another chat opens is dropped, not put in that chat's box
+            ChatInput.Clear();
+            Mic_Click(ChatMic, new RoutedEventArgs());
+            for (var i = 0; i < 10; i++)
+                feed(Enumerable.Repeat(0.5f, 1600).ToArray()); // mid-phrase: it is transcribed when dictation stops
+            NewChat_Click(this, new RoutedEventArgs());
+            for (var wait = 0; wait < 20 && !ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text.EndsWith("was discarded")); wait++)
+                await Task.Delay(100);
+            if (ChatInput.Text.Length > 0 || !ToastStack.Children.OfType<Border>().Any(b => b.Child is StackPanel { Children: [_, TextBlock t] } && t.Text.EndsWith("was discarded")))
+                return Fail($"a late phrase after a chat switch: \"{ChatInput.Text}\", or no toast");
             // Send while listening stops it (busy: Send queues, and an empty box queues nothing)
             ShowView();
             CodeInput.Clear();
