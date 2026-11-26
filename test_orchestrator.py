@@ -254,6 +254,49 @@ class OrchestratorTests(unittest.TestCase):
             self.assertEqual(fake.ensured, [("reviewer", False)])
             self.assertEqual(fake.sent, warmed)  # a local model loads on llama-server; a remote one gets one token
 
+    def test_api_target_reports_a_remote_worker_without_its_key(self):
+        role = {"base_url": "https://openrouter.ai/api/v1", "model": "m/x", "api_key_env": "OPENROUTER_API_KEY",
+                "sampling": {"temperature": 0.4, "top_k": 20, "enable_thinking": False, "extra_body": {"provider": {"order": ["a"]}}}}
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-secret"}), contextlib.redirect_stdout(io.StringIO()):
+            result = orchestrator.api_target({"roles": {"planner": role}}, "planner", False)
+        self.assertEqual({k: v for k, v in result.items() if k != "defaults"},
+                         {"base_url": "https://openrouter.ai/api/v1", "model": "m/x", "key_env": "OPENROUTER_API_KEY"})
+        defaults = result["defaults"]
+        self.assertEqual(defaults["temperature"], 0.4)
+        self.assertNotIn("top_k", defaults)  # LOCAL_ONLY_FIELDS
+        self.assertEqual(defaults["provider"], {"order": ["a"]})
+        self.assertEqual(defaults["reasoning"], {"effort": "none"})
+        self.assertNotIn("sk-secret", json.dumps(result))
+
+    def test_api_target_loads_a_local_worker_and_moves_thinking_into_the_template(self):
+        role = {"auto_load": {"model_path": "m.gguf"}, "sampling": {"enable_thinking": True}}
+        def ensure(client, role_id):
+            client.llama_port = 8123
+            return "gguf-id"
+        with patch.object(orchestrator, "llama_ensure", ensure), contextlib.redirect_stdout(io.StringIO()):
+            result = orchestrator.api_target({"roles": {"planner": role}}, "planner", False)
+        self.assertEqual((result["base_url"], result["model"], result["key_env"]), ("http://127.0.0.1:8123/v1", "gguf-id", ""))
+        self.assertEqual(result["defaults"]["chat_template_kwargs"], {"enable_thinking": True})
+        self.assertNotIn("enable_thinking", result["defaults"])
+
+    def test_api_target_only_loaded_refuses_to_load(self):
+        role = {"auto_load": {"model_path": "m.gguf"}}
+        def fail(*_):
+            raise AssertionError("must not load")
+        with patch.object(orchestrator, "llama_servers", lambda live=True: []), patch.object(orchestrator, "llama_ensure", fail),                 patch.object(orchestrator, "gguf_file", lambda auto: Path("m.gguf")), patch.object(orchestrator, "llama_stop", fail):
+            with self.assertRaises(orchestrator.WorkflowError) as caught:
+                orchestrator.api_target({"roles": {"planner": role}}, "planner", True)
+        self.assertTrue(str(caught.exception).startswith("busy:"))
+
+    def test_api_target_only_loaded_reuses_a_serving_server(self):
+        role = {"auto_load": {"model_path": "m.gguf"}}
+        server = {"port": 8900, "pid": 1, "args": ["x"], "signature": "s"}
+        def fail(*_):
+            raise AssertionError("must not start or stop")
+        with patch.object(orchestrator, "llama_servers", lambda live=True: [server]), patch.object(orchestrator, "llama_save", lambda s: None),                 patch.object(orchestrator, "gguf_file", lambda auto: Path("m.gguf")), patch.object(orchestrator, "llama_args", lambda *a: ["x"]),                 patch.object(orchestrator, "llama_compatible", lambda running, wanted: (True, False)),                 patch.object(orchestrator, "llama_alive", lambda pid: True), patch.object(orchestrator, "llama_healthy", lambda port: True),                 patch.object(orchestrator, "llama_ensure", fail), patch.object(orchestrator, "llama_stop", fail),                 patch.object(orchestrator.ApiClient, "model_id", lambda self: "served"), contextlib.redirect_stdout(io.StringIO()):
+            result = orchestrator.api_target({"roles": {"planner": role}}, "planner", True)
+        self.assertEqual((result["base_url"], result["model"]), ("http://127.0.0.1:8900/v1", "served"))
+
     def test_tok_s_comes_from_llama_servers_timings_when_it_sends_them(self):
         client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role = "planner"

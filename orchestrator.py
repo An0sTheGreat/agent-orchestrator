@@ -427,23 +427,9 @@ class ApiClient:
         compacted_on_error = False
         sent = slim_tool_results(messages, n_ctx or DEFAULT_WINDOW)
         self.slimmed = slim_notice(self.slimmed, messages, sent, self.role)
-        body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(sent)), **sampling}
-        body = reasoning_budget(body, self.remote)
-        if self.remote and (urlsplit(self.base_url).hostname or "").endswith("openrouter.ai") and body.get("enable_thinking") is False:
-            body.pop("reasoning_effort", None)
-            body["reasoning"] = {"effort": "none"}  # OpenRouter's switch for no thinking (enable_thinking is llama.cpp's)
-        if self.remote and not self.send_extra_body:  # a remote API may reject llama.cpp-only fields
-            for key in LOCAL_ONLY_FIELDS:
-                body.pop(key, None)
+        body: dict[str, Any] = {"model": model, "messages": with_ponytail(with_images(sent)), **request_defaults(self, sampling)}
         if tools:
             body.update({"tools": tools, "tool_choice": "auto"})
-        if self.llama_port and "enable_thinking" in body:
-            body = self._thinking(body, bool(body["enable_thinking"]))  # llama-server reads it inside chat_template_kwargs
-        if self.llama_port and "reasoning_effort" in body:  # so does a gpt-oss template's reasoning_effort
-            effort = body.pop("reasoning_effort")
-            body["chat_template_kwargs"] = {**(body.get("chat_template_kwargs") or {}), "reasoning_effort": effort}
-        if self.thinking_off:
-            body = self._thinking(body, False)
         fell_back = False
         while True:
             started = time.time()
@@ -1565,17 +1551,10 @@ def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]
     return True, want[2] and not have[2]
 
 
-def llama_ensure(client: ApiClient, role: str) -> str:
-    """Serve the role's model on llama-server: reuse a running server whose args can serve this role (llama_compatible),
-    else start one: after stopping the others (multi_model never), beside them (always), or beside the ones that leave
-    it room on the GPU (fit: the least recently used others are stopped)."""
+def llama_serving(client: ApiClient, role: str) -> int | None:
+    """The port of a running, healthy llama-server whose args can serve this role (llama_compatible), else None."""
     name = client.title or role
-    exe = os.environ.get("AGENT_ORCHESTRATOR_LLAMA_SERVER", "")
-    if not exe or not Path(exe).is_file():
-        raise WorkflowError(f"{name}: llama-server.exe was not found ({exe or 'AGENT_ORCHESTRATOR_LLAMA_SERVER is not set'}). "
-                            "Download llama-server in Options.")
-    path, base = str(client.auto_load["model_path"]), client.llama_base or client.llama_port
-    model_file = gguf_file(client.auto_load)
+    path, model_file = str(client.auto_load["model_path"]), gguf_file(client.auto_load)
     servers = llama_servers(live=False)
     for server in servers:
         port = server.get("port")
@@ -1588,8 +1567,24 @@ def llama_ensure(client: ApiClient, role: str) -> str:
             client.thinking_off = client.thinking_off or no_thinking
             server["last_used"] = time.time()
             llama_save(servers)
-            break
-    else:
+            return port
+    return None
+
+
+def llama_ensure(client: ApiClient, role: str) -> str:
+    """Serve the role's model on llama-server: reuse a running server whose args can serve this role (llama_compatible),
+    else start one: after stopping the others (multi_model never), beside them (always), or beside the ones that leave
+    it room on the GPU (fit: the least recently used others are stopped)."""
+    name = client.title or role
+    exe = os.environ.get("AGENT_ORCHESTRATOR_LLAMA_SERVER", "")
+    if not exe or not Path(exe).is_file():
+        raise WorkflowError(f"{name}: llama-server.exe was not found ({exe or 'AGENT_ORCHESTRATOR_LLAMA_SERVER is not set'}). "
+                            "Download llama-server in Options.")
+    path, base = str(client.auto_load["model_path"]), client.llama_base or client.llama_port
+    model_file = gguf_file(client.auto_load)
+    port = llama_serving(client, role)
+    if port is None:
+        servers = llama_servers(live=False)
         # a copy of this same GGUF loaded with other settings (the user changed them) is stale: stopped first, in every
         # mode, unless another worker of this run still uses it; two copies overflow the GPU into shared memory
         in_use = {c.llama_port for c in LOADED_BY_RUN.values() if c is not client}
@@ -1748,6 +1743,25 @@ def separate_compactor(config: dict[str, Any]) -> bool:
     """Whether config roles has its own Compactor (not absent or "same_as": "planner"): it does every summary then."""
     compactor = (config.get("roles") or {}).get("compactor")
     return isinstance(compactor, dict) and compactor.get("same_as") != "planner"
+
+
+def request_defaults(client: ApiClient, sampling: dict[str, Any]) -> dict[str, Any]:
+    """The request fields a role's sampling becomes for its server (no model, messages or tools): what `complete` sends."""
+    body = reasoning_budget(dict(sampling), client.remote)
+    if client.remote and (urlsplit(client.base_url).hostname or "").endswith("openrouter.ai") and body.get("enable_thinking") is False:
+        body.pop("reasoning_effort", None)
+        body["reasoning"] = {"effort": "none"}  # OpenRouter's switch for no thinking (enable_thinking is llama.cpp's)
+    if client.remote and not client.send_extra_body:  # a remote API may reject llama.cpp-only fields
+        for key in LOCAL_ONLY_FIELDS:
+            body.pop(key, None)
+    if client.llama_port and "enable_thinking" in body:
+        body = client._thinking(body, bool(body["enable_thinking"]))  # llama-server reads it inside chat_template_kwargs
+    if client.llama_port and "reasoning_effort" in body:  # so does a gpt-oss template's reasoning_effort
+        effort = body.pop("reasoning_effort")
+        body["chat_template_kwargs"] = {**(body.get("chat_template_kwargs") or {}), "reasoning_effort": effort}
+    if client.thinking_off:
+        body = client._thinking(body, False)
+    return body
 
 
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
@@ -6310,6 +6324,9 @@ def _run() -> int:
     parser.add_argument("--unload-local", action="store_true", help="Stop the llama-servers this app started, then exit")
     parser.add_argument("--load-role", help="Load this role's model (planner, implementer, reviewer, compactor or a custom worker id) "
                         "with the project's config.json and leave it loaded, then exit")
+    parser.add_argument("--api-target", help="Make this role's worker ready for the local API and print its target as JSON "
+                        "(base_url, model, key_env, defaults) as the last line")
+    parser.add_argument("--only-loaded", action="store_true", help="With --api-target: fail with 'busy:' instead of loading a local model")
     args = parser.parse_args()
     if args.unload_local:
         llama_stop()
@@ -6318,6 +6335,10 @@ def _run() -> int:
     if args.load_role:
         CHAT_MODE = True  # main() leaves the model loaded
         return load_role(json.loads(load_text(args.project.resolve() / "config.json")), args.load_role)
+    if args.api_target:
+        CHAT_MODE = True  # the model stays loaded
+        print(json.dumps(api_target(json.loads(load_text(args.project.resolve() / "config.json")), args.api_target, args.only_loaded)))
+        return 0
     PROJECT_ROOT_ARG = args.project.resolve()
     EVENTS = args.events
     CHAT_MODE = args.chat is not None or args.code is not None
@@ -6440,6 +6461,24 @@ def load_role(config: dict[str, Any], role: str) -> int:
         client._request("POST", "/chat/completions", {"model": model, "messages": [{"role": "user", "content": "Hi"}], "max_tokens": 1})
     print(f"[{client.title or role}] loaded {model}")
     return 0
+
+
+def api_target(config: dict[str, Any], role: str, only_loaded: bool) -> dict[str, Any]:
+    """Where the local API forwards a request for this role: the worker made ready (a local model loaded, unless only_loaded
+    and none serves it: "busy"), its base URL, model, the NAME of its key variable (never the key) and its request defaults."""
+    custom_workers(config, warn=True)
+    client, sampling = role_settings(config, role)
+    if client.llama_port and only_loaded:
+        port = llama_serving(client, role)
+        if port is None:
+            raise WorkflowError(f"busy: {client.title or role} is not loaded and loading it would swap out another model")
+        client.llama_port, client.base_url = port, f"http://127.0.0.1:{port}/v1"
+        model = client.model_id()
+    else:
+        model = client.ensure_model(role, False)
+    base_url = f"http://127.0.0.1:{client.llama_port}/v1" if client.llama_port else client.base_url
+    return {"base_url": base_url, "model": model, "key_env": "" if client.llama_port or client.key_source == "api_key" else client.key_source,
+            "defaults": request_defaults(client, sampling)}
 
 
 def main() -> int:
