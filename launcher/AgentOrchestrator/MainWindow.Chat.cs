@@ -598,10 +598,15 @@ public partial class MainWindow
             e.Handled = true;
             return;
         }
+        if (e.Key == Key.Enter && RevealDictation())
+        {
+            e.Handled = true; // any Enter while listening (Shift+Enter too) only stops it and shows the text
+            return;
+        }
         if (e.Key != Key.Enter || (Keyboard.Modifiers & ModifierKeys.Shift) != 0)
             return; // Shift+Enter inserts a new line
         e.Handled = true;
-        if (!RevealDictation() && ConvOf(sender).Send.IsEnabled)
+        if (ConvOf(sender).Send.IsEnabled)
             SendOrQueue(ConvOf(sender));
     }
 

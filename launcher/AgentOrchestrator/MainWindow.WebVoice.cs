@@ -138,7 +138,7 @@ public partial class MainWindow
     // when a newer one is asked for: HttpListener does not say when the phone aborts, and the phone asks one sentence at a time
     // and asks nothing more after a stop, so the newest request is the one wanted.
     // ponytail: one reading across all the owner's phones; a second phone reading at once cuts the first's sentences
-    private readonly CancellationTokenSource _speechClosing = new();
+    private CancellationTokenSource _speechClosing = new(); // replaced only by WebSpeakSmoke: --ui-smoke runs the real close path earlier in the same process
     private CancellationTokenSource? _webSpeaking;
 
     private (int, object) WebVoiceState() => (200, new
@@ -348,6 +348,8 @@ public partial class MainWindow
                 (await Send("/api/speak", new { text = new string('a', WebSentenceMax) })).Status != 200)
                 return Fail("over WebSentenceMax is not 413, or WebSentenceMax is refused");
 
+            if (_speechClosing.IsCancellationRequested) // --ui-smoke ran OnClosing earlier in this process; a real close ends the app
+                _speechClosing = new();
             // cancellation: the stand-in makes one sentence at a time, as the engine does; a request the phone aborted mid-sentence
             // stops being made when the next is asked for, so the next is not stuck behind it
             using var engine = new SemaphoreSlim(1);
