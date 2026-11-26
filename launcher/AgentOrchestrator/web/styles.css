@@ -744,6 +744,10 @@ body.landscape .drawer { padding-top: 0; }
    and the shell takes the large viewport (lvh == dvh where there is no address bar elsewhere). The root's own dark colour is
    what shows behind the status bar and in any gap. */
 html { background-color: #1E1E1E; }
+/* iOS 26 blurs the content under the status bar unless a fixed, near-full-width, solid-coloured box covers the screen's top edge
+   (WebKit's fixedContainerEdges check): this strip is that box, the header's colour, so nothing shows. No pointer-events: none,
+   no backdrop-filter or mask (either makes WebKit skip it). Under the scrim and the drawer; 0 high where there is no inset. */
+.statusbar-strip { position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top, 0px); background: var(--bg); z-index: 20; }
 @media (display-mode: standalone) {
   html { min-height: min(100lvh, calc(100% + env(safe-area-inset-top))); }
   .shell { height: 100lvh; }
