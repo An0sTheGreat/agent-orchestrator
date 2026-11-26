@@ -124,29 +124,38 @@ public partial class MainWindow
         finally { _webTranscribe = null; }
     }
 
-    // Replies read aloud on the phone (routes /api/voice, /api/speak): the PC synthesises with Kokoro (Tts.Synthesize) and
-    // answers a 24 kHz 16-bit WAV the phone plays. Voice settings are the PC's own (AppSettings.Tts); downloads and blends stay on the PC.
+    // Replies read aloud on the phone (routes /api/voice, /api/speak/plan, /api/speak): the phone asks for the reply's sentences
+    // (SpeechText on the PC), then for each sentence's 24 kHz 16-bit WAV (Kokoro, Tts.Synthesize), playing sentence n while it
+    // fetches n+1. Voice settings are the PC's own (AppSettings.Tts); Read replies aloud is the phone's own (its localStorage),
+    // and downloads and blends stay on the PC.
     private const string WebSpeakNotReady = "Download the voice model on the PC (Settings > Voice)";
+    internal const int WebSentenceMax = 600;
 
     // The smoke's stand-in for Tts.Synthesize, so audio comes back without the models (null: the real engine).
-    private Func<string, VoiceChoice, float, float[]>? _webSynthesize;
+    private Func<string, VoiceChoice, float, CancellationToken, float[]>? _webSynthesize;
+
+    // Cancelled when the app closes (OnClosing, before the web server stops and Tts.Shutdown). A sentence being made also stops
+    // when a newer one is asked for: HttpListener does not say when the phone aborts, and the phone asks one sentence at a time
+    // and asks nothing more after a stop, so the newest request is the one wanted.
+    // ponytail: one reading across all the owner's phones; a second phone reading at once cuts the first's sentences
+    private readonly CancellationTokenSource _speechClosing = new();
+    private CancellationTokenSource? _webSpeaking;
 
     private (int, object) WebVoiceState() => (200, new
     {
         ready = _webSynthesize is not null || TtsModels.Ready,
         voices = Tts.Voices.Select(v => new { name = v.Name, language = v.Language, accent = v.Accent, gender = v.Gender, custom = false })
             .Concat(_settings.CustomVoices.Select(c => new { name = c.Name, language = "", accent = "", gender = "", custom = true })),
-        settings = new { voice = _settings.Tts.Voice, speed = _settings.Tts.Speed, autoRead = _settings.Tts.AutoRead },
+        settings = new { voice = _settings.Tts.Voice, speed = _settings.Tts.Speed },
     });
 
-    // {voice?, speed?, autoRead?}: each one given is checked, then all are saved together; the answer is GET's.
+    // {voice?, speed?}: each one given is checked, then both are saved together; the answer is GET's.
     private (int, object) WebVoiceSet(JsonElement body)
     {
         if (body.ValueKind != JsonValueKind.Object)
             return (400, new { error = "Expected a JSON object" });
         string? voice = null;
         double? speed = null;
-        bool? autoRead = null;
         if (body.TryGetProperty("voice", out var v))
         {
             voice = v.ValueKind == JsonValueKind.String ? v.GetString() : null;
@@ -159,32 +168,45 @@ public partial class MainWindow
                 return (400, new { error = "Speed is 0.5 to 2" });
             speed = Math.Round(sp.GetDouble(), 2);
         }
-        if (body.TryGetProperty("autoRead", out var ar))
-        {
-            if (ar.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
-                return (400, new { error = "autoRead is true or false" });
-            autoRead = ar.GetBoolean();
-        }
         if (voice is not null) _settings.Tts.Voice = voice;
         if (speed is { } x) _settings.Tts.Speed = x;
-        if (autoRead is { } on) _settings.Tts.AutoRead = on;
         _settings.Save();
         return WebVoiceState();
     }
 
-    // {text, voice?, worker?}: the text prepared by SpeechText.ForSpeech, read with the body's voice, else the worker's voice
-    // (TtsSettings.WorkerVoices), else the PC's voice, at the PC's speed.
-    private async Task<(int, object)> WebSpeak(JsonElement body)
+    // {text}: the reply as the sentences to ask /api/speak for, each at most WebSentenceMax characters (the PC's reading rules,
+    // SpeechText.Sentences, Pieces). Longer than MaxChars x 2 once prepared for speech (not as markdown): 413.
+    private async Task<(int, object)> WebSpeakPlan(JsonElement body)
     {
         var text = WebField(body, "text");
+        if (string.IsNullOrWhiteSpace(text))
+            return (400, new { error = "Nothing to read" });
+        var settings = await Dispatcher.InvokeAsync(() => _settings.Tts);
+        return await Task.Run<(int, object)>(() =>
+        {
+            var said = SpeechText.ForSpeech(text, settings);
+            var max = 2L * settings.MaxChars;
+            if (string.IsNullOrWhiteSpace(said))
+                return (400, new { error = "Nothing to read" });
+            if (said.Length > max)
+                return (413, new { error = $"Too long to read aloud ({max:N0} characters at most)" });
+            return (200, new { sentences = SpeechText.Pieces(SpeechText.Sentences(said), WebSentenceMax) });
+        });
+    }
+
+    // {text, voice?, worker?}: one sentence of the plan (at most WebSentenceMax characters, else 413), read as it is with the
+    // body's voice, else the worker's voice (TtsSettings.WorkerVoices), else the PC's voice, at the PC's speed.
+    private async Task<(int, object)> WebSpeak(JsonElement body)
+    {
+        var text = WebField(body, "text").Trim();
         // worker: a role id, or the name a reply carries ("Lead", a custom worker's title), mapped to its role on the UI thread
         var askedWorker = WebField(body, "worker");
         var (settings, customs, role) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.CustomVoices.ToList(),
             _cards.FirstOrDefault(c => c.Role == askedWorker || ChatName(c, c.Role).Equals(askedWorker, StringComparison.OrdinalIgnoreCase))?.Role ?? askedWorker));
-        if (string.IsNullOrWhiteSpace(text))
+        if (text.Length == 0)
             return (400, new { error = "Nothing to read" });
-        if (text.Length > settings.MaxChars * 2)
-            return (413, new { error = $"Too long to read aloud ({settings.MaxChars * 2:N0} characters at most)" });
+        if (text.Length > WebSentenceMax)
+            return (413, new { error = $"One sentence at a time ({WebSentenceMax} characters at most)" });
         var stand = _webSynthesize;
         if (stand is null && !TtsModels.Ready)
             return (409, new { error = WebSpeakNotReady });
@@ -192,16 +214,25 @@ public partial class MainWindow
             : settings.WorkerVoices.GetValueOrDefault(role) is { Length: > 0 } worker ? worker
             : settings.Voice;
         var choice = VoiceChoice.Find(name, customs);
-        var speak = stand ?? ((t, c, s) => Tts.Synthesize(t, c, s));
-        return await Task.Run<(int, object)>(() =>
+        var speak = stand ?? Tts.Synthesize;
+        var cancel = CancellationTokenSource.CreateLinkedTokenSource(_speechClosing.Token);
+        try { Interlocked.Exchange(ref _webSpeaking, cancel)?.Cancel(); } // the older sentence, if still being made
+        catch (ObjectDisposedException) { } // it ended meanwhile
+        try
         {
-            var said = SpeechText.ForSpeech(text, settings);
-            if (string.IsNullOrWhiteSpace(said))
-                return (400, new { error = "Nothing to read" });
-            try { return (200, new WebServer.Response(200, "audio/wav", Wav(speak(said, choice, (float)settings.Speed)))); }
-            catch (InvalidOperationException) when (stand is null) { return (409, new { error = WebSpeakNotReady }); } // the model went since the check
-            catch (Exception exception) { return (500, new { error = "Speech failed: " + exception.Message }); }
-        });
+            return await Task.Run<(int, object)>(() =>
+            {
+                try { return (200, new WebServer.Response(200, "audio/wav", Wav(speak(text, choice, (float)settings.Speed, cancel.Token)))); }
+                catch (Exception exception) when (exception is OperationCanceledException or ObjectDisposedException) { return (503, new { error = "Stopped" }); }
+                catch (InvalidOperationException) when (stand is null) { return (409, new { error = WebSpeakNotReady }); } // the model went since the check
+                catch (Exception exception) { return (500, new { error = "Speech failed: " + exception.Message }); }
+            });
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _webSpeaking, null, cancel);
+            cancel.Dispose();
+        }
     }
 
     // Samples (-1..1, clipped) to a mono 16-bit PCM WAV file.
@@ -239,49 +270,69 @@ public partial class MainWindow
             throw new InvalidOperationException("WebSpeak self-test failed: the WAV is " + Convert.ToHexString(wav));
     }
 
-    // /api/voice and /api/speak (WebAppSmoke, while on), on the smoke's data folder, where the voice model is absent.
+    // /api/voice, /api/speak/plan and /api/speak (WebAppSmoke, while on), on the smoke's data folder, where the voice model is absent.
     private async Task<bool> WebSpeakSmoke(int port)
     {
         static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: speak: {what}"); return false; }
         try { WebSpeakSelfTest(); }
         catch (InvalidOperationException exception) { return Fail(exception.Message); }
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        async Task<(int Status, string Type, byte[] Body)> Send(string path, object? json)
+        async Task<(int Status, string Type, byte[] Body)> Send(string path, object? json, CancellationToken ct = default)
         {
             using var request = new HttpRequestMessage(json is null ? HttpMethod.Get : HttpMethod.Post, $"http://127.0.0.1:{port}{path}");
             if (json is not null)
                 request.Content = new StringContent(JsonSerializer.Serialize(json), Encoding.UTF8, "application/json");
             request.Headers.Add("Tailscale-User-Login", "smoke@example.com");
-            using var response = await http.SendAsync(request);
-            return ((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType ?? "", await response.Content.ReadAsByteArrayAsync());
+            using var response = await http.SendAsync(request, ct);
+            return ((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType ?? "", await response.Content.ReadAsByteArrayAsync(ct));
         }
         static JsonNode? Json(byte[] body) { try { return JsonNode.Parse(body); } catch (JsonException) { return null; } }
+        List<string>? Plan(byte[] body) => Json(body)?["sentences"]?.AsArray().Select(n => n!.ToString()).ToList();
         var (voice, speed, autoRead) = (_settings.Tts.Voice, _settings.Tts.Speed, _settings.Tts.AutoRead);
         try
         {
             if (await Send("/api/voice", null) is not { Status: 200 } got || Json(got.Body) is not { } state || state["ready"]?.GetValue<bool>() != false ||
                 state["voices"]?.AsArray() is not { } voices || voices.Count != Tts.Voices.Count + _settings.CustomVoices.Count ||
                 voices[0]?["name"]?.ToString() != Tts.Voices[0].Name || voices[0]?["custom"]?.GetValue<bool>() != false || voices[0]?["gender"] is null ||
-                state["settings"]?["voice"]?.ToString() != voice || state["settings"]?["autoRead"] is null || state["settings"]?["speed"] is null)
+                state["settings"]?["voice"]?.ToString() != voice || state["settings"]?["autoRead"] is not null || state["settings"]?["speed"] is null)
                 return Fail("GET's shape");
-            if (await Send("/api/voice", new { voice = "bm_george", speed = 1.25, autoRead = true }) is not { Status: 200 } set ||
-                Json(set.Body)?["settings"]?["voice"]?.ToString() != "bm_george" || AppSettings.Load().Tts is not { Voice: "bm_george", Speed: 1.25, AutoRead: true })
-                return Fail("POST does not persist");
+            // Read replies aloud is the phone's own: an autoRead in the body leaves the PC's AutoRead as it was
+            if (await Send("/api/voice", new { voice = "bm_george", speed = 1.25, autoRead = !autoRead }) is not { Status: 200 } set ||
+                Json(set.Body)?["settings"]?["voice"]?.ToString() != "bm_george" || AppSettings.Load().Tts is not { Voice: "bm_george", Speed: 1.25 } saved || saved.AutoRead != autoRead)
+                return Fail("POST does not persist the voice and speed, or wrote the PC's AutoRead");
             if ((await Send("/api/voice", new { voice = "nobody" })).Status != 400 || (await Send("/api/voice", new { speed = 9 })).Status != 400 ||
                 AppSettings.Load().Tts.Voice != "bm_george")
                 return Fail("a bad voice or speed is not 400, or was saved");
+
+            // the plan: the reply prepared for speech, in sentences of at most WebSentenceMax characters
+            if (await Send("/api/speak/plan", new { text = "Hello **there**. Second one! It is 2026" }) is not { Status: 200 } plan ||
+                Plan(plan.Body) is not ["Hello there.", "Second one!", "It is two thousand twenty six."])
+                return Fail("the plan of a short reply");
+            var longOne = string.Join(" ", Enumerable.Repeat("word", 400)); // one 2,000-character sentence
+            if (await Send("/api/speak/plan", new { text = longOne }) is not { Status: 200 } cut || Plan(cut.Body) is not { Count: 4 } pieces ||
+                pieces.Any(p => p.Length > WebSentenceMax) || string.Join(" ", pieces) != longOne + ".")
+                return Fail("a long sentence is not cut into pieces");
+            if ((await Send("/api/speak/plan", new { text = "  " })).Status != 400 || (await Send("/api/speak/plan", new { })).Status != 400)
+                return Fail("an empty plan is not 400");
+            var max = 2 * _settings.Tts.MaxChars;
+            if ((await Send("/api/speak/plan", new { text = new string('a', max + 1) })).Status != 413)
+                return Fail("over MaxChars x 2 is not 413");
+            if (await Send("/api/speak/plan", new { text = "```\n" + new string('x', max + 100) + "\n```\nShort." }) is not { Status: 200 } code ||
+                Plan(code.Body) is not ["Code skipped.", "Short."])
+                return Fail("the limit counts the markdown, not the text read");
+
             if (await Send("/api/speak", new { text = "Hello." }) is not { Status: 409 } absent || Json(absent.Body)?["error"]?.ToString() != WebSpeakNotReady)
                 return Fail("no model is not 409");
 
             var heard = new List<(string Text, string Voice, float Speed)>();
-            _webSynthesize = (text, choice, s) => { lock (heard) heard.Add((text, choice.Name, s)); return new float[2400]; }; // 0.1 s
-            if (await Send("/api/speak", new { text = "Hello **there**." }) is not { Status: 200, Type: "audio/wav" } wav || wav.Body.Length != 44 + 4800 ||
+            _webSynthesize = (text, choice, s, _) => { lock (heard) heard.Add((text, choice.Name, s)); return new float[2400]; }; // 0.1 s
+            if (await Send("/api/speak", new { text = "Hello there." }) is not { Status: 200, Type: "audio/wav" } wav || wav.Body.Length != 44 + 4800 ||
                 Encoding.ASCII.GetString(wav.Body, 0, 4) != "RIFF" || Encoding.ASCII.GetString(wav.Body, 8, 4) != "WAVE" ||
                 BinaryPrimitives.ReadInt32LittleEndian(wav.Body.AsSpan(4)) != 36 + 4800 || BinaryPrimitives.ReadInt32LittleEndian(wav.Body.AsSpan(24)) != Tts.Rate ||
                 BinaryPrimitives.ReadInt16LittleEndian(wav.Body.AsSpan(34)) != 16 || BinaryPrimitives.ReadInt32LittleEndian(wav.Body.AsSpan(40)) != 4800)
                 return Fail("a WAV with the right header and length");
-            if (heard is not [{ Voice: "bm_george", Speed: 1.25f } first] || first.Text.Contains('*'))
-                return Fail($"the PC's voice and speed, the text for speech: {string.Join("; ", heard)}");
+            if (heard is not [{ Text: "Hello there.", Voice: "bm_george", Speed: 1.25f }])
+                return Fail($"the sentence as given, the PC's voice and speed: {string.Join("; ", heard)}");
             _settings.Tts.WorkerVoices["reviewer"] = "af_bella";
             try
             {
@@ -293,8 +344,35 @@ public partial class MainWindow
             finally { _settings.Tts.WorkerVoices.Remove("reviewer"); }
             if ((await Send("/api/speak", new { text = "  " })).Status != 400 || (await Send("/api/speak", new { })).Status != 400)
                 return Fail("empty is not 400");
-            if ((await Send("/api/speak", new { text = new string('a', _settings.Tts.MaxChars * 2 + 1) })).Status != 413)
-                return Fail("over MaxChars x 2 is not 413");
+            if ((await Send("/api/speak", new { text = new string('a', WebSentenceMax + 1) })).Status != 413 ||
+                (await Send("/api/speak", new { text = new string('a', WebSentenceMax) })).Status != 200)
+                return Fail("over WebSentenceMax is not 413, or WebSentenceMax is refused");
+
+            // cancellation: the stand-in makes one sentence at a time, as the engine does; a request the phone aborted mid-sentence
+            // stops being made when the next is asked for, so the next is not stuck behind it
+            using var engine = new SemaphoreSlim(1);
+            var cancelled = false;
+            _webSynthesize = (text, _, _, ct) =>
+            {
+                engine.Wait(ct);
+                try
+                {
+                    if (text == "Slow.")
+                    {
+                        ct.WaitHandle.WaitOne(20_000);
+                        cancelled = ct.IsCancellationRequested;
+                        ct.ThrowIfCancellationRequested();
+                    }
+                    return new float[2400];
+                }
+                finally { engine.Release(); }
+            };
+            using (var abort = new CancellationTokenSource(300))
+                try { await Send("/api/speak", new { text = "Slow." }, abort.Token); return Fail("the slow sentence was not aborted"); }
+                catch (OperationCanceledException) { }
+            var started = DateTime.UtcNow;
+            if ((await Send("/api/speak", new { text = "Next." })).Status != 200 || (DateTime.UtcNow - started).TotalSeconds > 3 || !cancelled)
+                return Fail($"the next sentence waited behind an aborted one ({(DateTime.UtcNow - started).TotalSeconds:0.0} s, cancelled {cancelled})");
             return true;
         }
         finally

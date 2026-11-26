@@ -16,6 +16,7 @@ public partial class MainWindow
     private SpeechPlayer? _speechPlayer; // made on first use; --ui-smoke puts one with a stub engine and a fake output here
     private bool _speechTest;            // --ui-smoke: the stub needs no downloaded model
     private Button? _speakingButton;     // the reply reading now (its button shows Stop); null: idle or a settings preview
+    private int _readGeneration;         // each Read's number: only the newest one puts its button back when it ends
     private readonly List<ComboBox> _voicePickers = new(); // the main voice and the per-worker pickers (filled by FillVoicePickers)
     private StackPanel? _voiceLibrary, _savedVoices, _blendRows;
     private TextBox? _blendName;
@@ -78,7 +79,14 @@ public partial class MainWindow
             return;
         }
         var s = _settings.Tts;
-        var text = SpeechText.ForSpeech(markdown, s);
+        string text;
+        try { text = SpeechText.ForSpeech(markdown, s); }
+        catch (Exception exception) // async void: an escape would be the app's error box
+        {
+            Log($"Reading aloud failed: {exception.Message}");
+            Toast("Reading aloud failed: " + exception.Message, "#FF667A");
+            return;
+        }
         if (text.Length == 0)
         {
             Toast("Nothing to read");
@@ -89,6 +97,7 @@ public partial class MainWindow
         if (Tts.Weights(voice).note is { } note)
             Toast(note, "#F7C873");
         StopSpeaking();
+        var generation = ++_readGeneration;
         _speakingButton = button;
         if (button is not null)
             ShowSpeaking(button, true);
@@ -98,7 +107,7 @@ public partial class MainWindow
             Log($"Reading aloud failed: {exception.Message}");
             Toast(exception is InvalidOperationException ? exception.Message : "Reading aloud failed: " + exception.Message, "#FF667A");
         }
-        if (_speakingButton == button) // not taken over by another reply meanwhile
+        if (generation == _readGeneration) // not taken over by a newer read meanwhile (the same reply's again too)
         {
             _speakingButton = null;
             if (button is not null)

@@ -5962,6 +5962,7 @@ public partial class MainWindow : Window
             e.Cancel = true; // the user chose to let the running task finish
             return;
         }
+        _speechClosing.Cancel(); // a phone's sentence being made stops, so neither the web server nor Tts.Shutdown waits on it
         WaitForWebAppStop(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time

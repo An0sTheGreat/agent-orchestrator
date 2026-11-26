@@ -357,6 +357,7 @@ public partial class MainWindow
             ("GET", "/api/voice") => await Dispatcher.InvokeAsync(WebVoiceState),
             ("POST", "/api/voice") => await Dispatcher.InvokeAsync(() => WebVoiceSet(WebBody(body))),
             ("POST", "/api/speak") => await WebSpeak(WebBody(body)),
+            ("POST", "/api/speak/plan") => await WebSpeakPlan(WebBody(body)),
             ("GET", "/api/remote/services") => await Dispatcher.InvokeAsync(WebRemoteServices),
             ("GET", "/api/remote/models") => await WebRemoteModels(query.GetValueOrDefault("service") ?? "", query.GetValueOrDefault("baseUrl") ?? ""),
             ("GET", "/api/remote/providers") => await WebRemoteProviders(query.GetValueOrDefault("model") ?? ""),

@@ -88,7 +88,7 @@ internal static class Tts
     private static readonly object Gate = new();
     private static OfflineTts? _builtIn, _blend;
     private static string _blendKey = "";
-    private static bool _shutdown;
+    private static volatile bool _shutdown;
 
     // The weights a choice reads with, summing to 1. A built-in is itself at 1; a blend's weights are normalised (zero and
     // negative ones dropped). A voice that no longer exists, or a blend naming one, reads with the default voice and a note.
@@ -105,13 +105,16 @@ internal static class Tts
     // The text read aloud: 24 kHz mono samples. One synthesis at a time (2 threads, CPU); the engine is made on first use and
     // a blend's on first use of that blend (sherpa-onnx takes the voice count from the model, so a blend cannot be appended to
     // voices.bin: it goes into slot 0 of a copy, speech\kokoro-blend.bin, read by a second engine). ct stops a synthesis
-    // between its chunks (OperationCanceledException). Throws InvalidOperationException when the model is not downloaded.
+    // between its chunks and while it waits for the engine (OperationCanceledException); Shutdown stops it between chunks too.
+    // Throws InvalidOperationException when the model is not downloaded.
     public static float[] Synthesize(string text, VoiceChoice voice, float speed, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(text))
             return [];
         var (weights, _) = Weights(voice);
-        lock (Gate)
+        while (!Monitor.TryEnter(Gate, 50)) // one at a time; a cancelled caller stops waiting
+            ct.ThrowIfCancellationRequested();
+        try
         {
             ObjectDisposedException.ThrowIf(_shutdown, typeof(Tts));
             if (!TtsModels.Ready)
@@ -138,7 +141,7 @@ internal static class Tts
                 engine = _blend;
                 sid = 0;
             }
-            int Continue(IntPtr samples, int n) => ct.IsCancellationRequested ? 0 : 1;
+            int Continue(IntPtr samples, int n) => ct.IsCancellationRequested || _shutdown ? 0 : 1;
             var audio = engine.GenerateWithCallback(text, speed, sid, Continue);
             try
             {
@@ -147,6 +150,7 @@ internal static class Tts
             }
             finally { audio.Dispose(); } // has Dispose without IDisposable
         }
+        finally { Monitor.Exit(Gate); }
     }
 
     // voices.bin with slot 0 replaced by the weighted sum of the named voices' styles (the way Kokoro mixes voices).
@@ -177,14 +181,20 @@ internal static class Tts
         return new OfflineTts(config);
     }
 
+    // Closing: a synthesis in progress stops at its next chunk; the engines are freed if it ends within a second, else left to
+    // the process exit, so the UI thread never waits behind it.
     public static void Shutdown()
     {
-        lock (Gate)
+        _shutdown = true;
+        if (!Monitor.TryEnter(Gate, 1000))
+            return;
+        try
         {
             _builtIn?.Dispose();
             _blend?.Dispose();
-            (_builtIn, _blend, _shutdown) = (null, null, true);
+            (_builtIn, _blend) = (null, null);
         }
+        finally { Monitor.Exit(Gate); }
     }
 
     // --speech-say "<text>" <out.wav> [voice | name:weight,name:weight]: the text through ForSpeech, Sentences and Synthesize
@@ -233,7 +243,20 @@ internal static class Tts
         Check(Say("Line one\ncontinues here") == "Line one continues here.", "a wrapped paragraph is one piece");
         Check(Say("") == "" && Say("```\nonly code\n```") == "Code skipped.", "empty and code-only replies");
         Check(Say("use `x` and `" + new string('a', 50) + "`") == "use x and.", "long inline code dropped");
-        Check(Say("The API runs on a GPU, not the PC or I") == "The A P I runs on a G P U, not the P C or I.", $"acronyms gave [{Say("The API runs on a GPU, not the PC or I")}]");
+        var lexicon = SpeechText.Lexicon;
+        SpeechText.Lexicon = new(() => ["runs", "status"]);
+        try
+        {
+            Check(Say("The API runs on a GPU, not the PC or I") == "The A P I runs on a G P U, not the P C or I.", $"acronyms gave [{Say("The API runs on a GPU, not the PC or I")}]");
+            Check(Say("NOTE: DONE, see README. STATUS RUNS") == "note: done, see readme. status runs.", $"words in capitals gave [{Say("NOTE: DONE, see README. STATUS RUNS")}]");
+        }
+        finally { SpeechText.Lexicon = lexicon; }
+        // digits other than 0-9 (fullwidth, Arabic-Indic) are not numbers to read: they never reach long.Parse
+        var wide = "";
+        try { wide = Say("\uFF12\uFF10\uFF12\uFF16 and \u0663 items, 7 left"); } catch (FormatException exception) { Check(false, "Unicode digits threw " + exception.Message); }
+        Check(wide.EndsWith("seven left."), $"Unicode digits gave [{wide}]");
+        Check(SpeechText.Pieces(["short.", new string('a', 5) + " " + new string('b', 8) + " c."], 10) is ["short.", "aaaaa", "bbbbbbbb", "c."]
+            && SpeechText.Pieces([new string('x', 25)], 10) is [{ Length: 10 }, { Length: 10 }, { Length: 5 }], "long sentences cut into pieces");
 
         var sentences = SpeechText.Sentences("Use e.g. this one. Pi is 3.5 today! Really? Mr. Smith said \"go.\" End");
         Check(sentences is ["Use e.g. this one.", "Pi is 3.5 today!", "Really?", "Mr. Smith said \"go.\"", "End"],
@@ -307,6 +330,14 @@ internal static class Tts
         var stopped = DateTime.UtcNow;
         player.Stop();
         Check(third.Wait(1000) && !player.Speaking && (DateTime.UtcNow - stopped).TotalMilliseconds < 500, "Stop stops");
+
+        // the speaker unplugged mid-read: the read ends with the error, not waiting forever
+        var unplugged = new FakeOutput();
+        using var lonely = new SpeechPlayer(Stub, () => unplugged);
+        var lost = lonely.Speak(Enumerable.Range(0, 200).Select(i => $"u{i}."), new VoiceChoice(Default), quiet, CancellationToken.None);
+        Thread.Sleep(100);
+        unplugged.Lose(new InvalidOperationException("gone"));
+        Check(SpinWait.SpinUntil(() => lost.IsCompleted, 2000) && lost.IsFaulted && !lonely.Speaking, $"an unplugged speaker: {lost.Status}");
     }
 
     // An output that plays at 20x speed on its own thread: it reads the player's samples and keeps the loud ones' count and peak.
@@ -344,6 +375,11 @@ internal static class Tts
         }
         public void Pause() => _playing = false;
         public void Dispose() => _playing = false;
+        public void Lose(Exception failure) // the device unplugged
+        {
+            _playing = false;
+            PlaybackStopped?.Invoke(this, new StoppedEventArgs(failure));
+        }
     }
 }
 
@@ -413,9 +449,20 @@ internal sealed class SpeechPlayer : IDisposable
         if (ct.IsCancellationRequested || sentences.Count == 0)
             return;
         var format = WaveFormat.CreateIeeeFloatWaveFormat(Tts.Rate, 1);
-        var buffer = new BufferedWaveProvider(format) { BufferDuration = TimeSpan.FromMinutes(10), ReadFully = true };
+        var buffer = new BufferedWaveProvider(format) { BufferDuration = TimeSpan.FromSeconds(90), ReadFully = true };
         using var output = _output(settings);
         output.Init(buffer);
+        // the device going away mid-read (unplugged) stops the output with an exception: the read ends with it
+        Exception? lost = null;
+        using var ended = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        output.PlaybackStopped += (_, e) =>
+        {
+            if (e.Exception is { } failure)
+            {
+                lost = failure;
+                ended.Cancel();
+            }
+        };
         using var stopOutput = ct.Register(output.Stop); // Stop silences at once, mid-synthesis too
         SetSpeaking(true);
         try
@@ -426,25 +473,43 @@ internal sealed class SpeechPlayer : IDisposable
             var previous = TimeSpan.Zero; // the audio of the sentence added last
             foreach (var sentence in sentences)
             {
-                var samples = _synthesize(sentence, voice, (float)settings.Speed, ct);
+                var samples = _synthesize(sentence, voice, (float)settings.Speed, ended.Token);
                 for (var i = 0; i < samples.Length; i++)
                     samples[i] = Math.Clamp(samples[i] * volume, -1f, 1f);
-                ct.ThrowIfCancellationRequested();
-                buffer.AddSamples(MemoryMarshal.AsBytes(samples.AsSpan()).ToArray(), 0, samples.Length * 4);
-                buffer.AddSamples(MemoryMarshal.AsBytes(pause.AsSpan()).ToArray(), 0, pause.Length * 4);
+                ended.Token.ThrowIfCancellationRequested();
+                await Feed(buffer, samples, ended.Token);
+                await Feed(buffer, pause, ended.Token);
                 previous = TimeSpan.FromSeconds((samples.Length + pause.Length) / (double)Tts.Rate);
                 // the next sentence is made while this one plays: wait until only this one is left in the buffer
                 while (buffer.BufferedDuration > previous)
-                    await Task.Delay(20, ct);
+                    await Task.Delay(20, ended.Token);
             }
+            // silence past the device's latency (200 ms), so the last word has left the device when the buffer runs empty
+            await Feed(buffer, new float[Tts.Rate * 3 / 10], ended.Token);
             while (buffer.BufferedBytes > 0)
-                await Task.Delay(20, ct);
+                await Task.Delay(20, ended.Token);
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (ended.IsCancellationRequested) { }
         finally
         {
             output.Stop();
             SetSpeaking(false);
+        }
+        if (lost is not null && !ct.IsCancellationRequested)
+            throw new InvalidOperationException("The speaker stopped: " + lost.Message, lost);
+    }
+
+    // Into the buffer a second at a time, waiting for room: a sentence longer than the buffer still plays whole.
+    private static async Task Feed(BufferedWaveProvider buffer, float[] samples, CancellationToken ct)
+    {
+        var bytes = MemoryMarshal.AsBytes(samples.AsSpan()).ToArray();
+        for (var at = 0; at < bytes.Length;)
+        {
+            var n = Math.Min(bytes.Length - at, Tts.Rate * 4);
+            while (buffer.BufferLength - buffer.BufferedBytes < n)
+                await Task.Delay(20, ct);
+            buffer.AddSamples(bytes, at, n);
+            at += n;
         }
     }
 

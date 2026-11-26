@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -104,12 +105,47 @@ internal static partial class SpeechText
         text = text.Replace("**", "").Replace("__", "").Replace("~~", "").Replace("*", "");
         text = Underscored().Replace(text, "$1");
         text = Number().Replace(text, m => NumberWords(m.Value));
-        text = Acronym().Replace(text, m => string.Join(' ', m.Value.ToCharArray())); // the lexicon has no "API": spelled out
+        // the lexicon has no "API": spelled out; a word it has ("NOTE", "DONE") is read as the word
+        text = Acronym().Replace(text, m => Known(m.Value.ToLowerInvariant()) ? m.Value.ToLowerInvariant() : string.Join(' ', m.Value.ToCharArray()));
         var kept = new StringBuilder(text.Length);
         foreach (var rune in text.EnumerateRunes())
             if (!IsEmoji(rune))
                 kept.Append(rune.ToString());
         return SpaceBeforePunctuation().Replace(Spaces().Replace(kept.ToString(), " "), "$1").Trim();
+    }
+
+    // Kokoro's English lexicon's words (its first column), read once when the model is downloaded; without it, a few common
+    // words. The self-test swaps in its own list so the result does not depend on the download.
+    internal static Lazy<HashSet<string>> Lexicon = new(LoadLexicon);
+    private static readonly HashSet<string> CommonWords = new(StringComparer.Ordinal)
+        { "note", "done", "todo", "readme", "warning", "error", "ok", "yes", "no", "not", "and", "or", "all", "new", "fix", "add", "important", "tip", "info" };
+    private static bool Known(string word) => CommonWords.Contains(word) || Lexicon.Value.Contains(word);
+    private static HashSet<string> LoadLexicon()
+    {
+        var words = new HashSet<string>(StringComparer.Ordinal);
+        try
+        {
+            foreach (var line in File.ReadLines(TtsModels.ModelFile("lexicon-us-en.txt")))
+                if (line.IndexOf(' ') is > 0 and var space)
+                    words.Add(line[..space].ToLowerInvariant());
+        }
+        catch (IOException) { } // not downloaded: the common words only
+        catch (UnauthorizedAccessException) { }
+        return words;
+    }
+
+    // Sentences no longer than `max` characters: a longer one is cut at the last space before the limit (or at the limit).
+    public static List<string> Pieces(IEnumerable<string> sentences, int max)
+    {
+        var result = new List<string>();
+        foreach (var sentence in sentences)
+            for (var rest = sentence; rest.Length > 0;)
+            {
+                var cut = rest.Length <= max ? rest.Length : rest.LastIndexOf(' ', max) is > 0 and var space ? space : max;
+                result.Add(rest[..cut].Trim());
+                rest = rest[cut..].TrimStart();
+            }
+        return result;
     }
 
     private static bool IsEmoji(Rune r) =>
@@ -199,7 +235,7 @@ internal static partial class SpeechText
     [GeneratedRegex(@"<?\b(?:https?://|www\.)[^\s>)]+>?")] private static partial Regex Url();
     [GeneratedRegex(@"</?[a-zA-Z][^>]*>")] private static partial Regex Tag();
     [GeneratedRegex(@"(?<!\w)_(\S(?:[^_]*\S)?)_(?!\w)")] private static partial Regex Underscored();
-    [GeneratedRegex(@"(?<![\d.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?(?!\w)")] private static partial Regex Number();
+    [GeneratedRegex(@"(?<![0-9.])(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)*%?(?!\w)")] private static partial Regex Number();
     [GeneratedRegex(@"\b[A-Z]{2,6}\b")] private static partial Regex Acronym();
     [GeneratedRegex(@"\s+")] private static partial Regex Spaces();
     [GeneratedRegex(@" ([,.;:!?])")] private static partial Regex SpaceBeforePunctuation();
