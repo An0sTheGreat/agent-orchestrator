@@ -27,7 +27,7 @@ function projectRows(p) {
   el.querySelector('b').textContent = p.name;
   el.querySelector('small').textContent = [`${n} chat${n === 1 ? '' : 's'}`, folder].filter(Boolean).join(' · ');
   longPress(el, () => projectMenu(p));
-  if (p.kind === 'code') el.querySelector('[data-newchat]').dataset.newcode = '';
+  if (p.kind === 'code') Object.assign(el.querySelector('[data-newchat]').dataset, { newcode: '', project: p.id });
   return [el, ...p.items.map(c => chatRow('tpl-project-chat', c))];
 }
 
@@ -113,7 +113,7 @@ registerScreen('chats', {
     // New under the Code filter, or in a Code project: a new Code conversation (code.js picks its folder) instead of a chat.
     document.addEventListener('click', e => {
       const b = e.target.closest('#view-chats [data-newchat]');
-      if (b && (kind === 'code' || b.hasAttribute('data-newcode'))) { e.stopImmediatePropagation(); go('code', {}); }
+      if (b && (kind === 'code' || b.hasAttribute('data-newcode'))) { e.stopImmediatePropagation(); go('code', b.dataset.project ? { project: b.dataset.project } : {}); }
     }, true);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && $('#view-chats').classList.contains('on')) load(); });
   },

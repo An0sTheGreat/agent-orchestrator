@@ -30,7 +30,9 @@ export function todoFromTool(ev) {
   if (typeof a === 'string') { try { a = JSON.parse(a); } catch { return null; } }
   const items = Array.isArray(a) ? a : a?.items || a?.todos;
   if (!Array.isArray(items)) return null;
-  return items.map(i => typeof i === 'string' ? { text: i, state: '' }
+  // The engine's items are strings with a marker, like the server's KeepWebTodo reads them: [x] done, [-] [~] [>] doing, else none.
+  const marked = s => { const m = /^\s*\[(.)\]\s*([\s\S]*)$/.exec(s); return m ? { text: m[2].trim(), state: { x: 'done', '-': 'doing', '~': 'doing', '>': 'doing' }[m[1].toLowerCase()] || '' } : { text: s.trim(), state: '' }; };
+  return items.map(i => typeof i === 'string' ? marked(i)
     : { text: String(i.text ?? i.content ?? i.title ?? ''), state: STATES[String(i.state ?? i.status ?? '').toLowerCase()] || (i.done ? 'done' : '') });
 }
 
@@ -38,8 +40,8 @@ export function todoFromTool(ev) {
 const first = t => String(t || '').trim().split('\n')[0].slice(0, 200);
 export function runLine(ev) {
   switch (ev?.e) {
-    case 'model': return { kind: 'head', text: [ev.role, ev.name || ev.model].filter(Boolean).join(' · ') };
-    case 'task_start': return { kind: 'note', text: 'TASK ' + (ev.id ?? '') };
+    case 'model': return { kind: 'head', text: [ev.role, ev.id].filter(Boolean).join(' · ') };
+    case 'task_start': return { kind: 'note', text: 'TASK' };
     case 'resume': return { kind: 'note', text: `RESUME ${ev.id ?? ''}${ev.round ? ' · round ' + ev.round : ''}` };
     case 'tool': return { kind: 'line', tag: 'TOOL', text: `${ev.name || ''} ${typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args ?? {})}`.slice(0, 200) };
     case 'message': return first(ev.text) ? { kind: 'line', tag: 'RESPONSE', text: first(ev.text) } : null;
@@ -209,14 +211,14 @@ if (typeof document !== 'undefined') {
     openSheet('sheet-dirs');
     drawDirs('');
   }
-  async function newCodeChat() {
+  async function newCodeChat(project) {
     let list = {};
     try { list = await api.get('/api/conversations'); } catch { /* recents are a convenience */ }
     const all = [...(list.recents || []), ...(list.projects || []).flatMap(p => p.items)].sort((a, b) => new Date(b.updated) - new Date(a.updated));
     const recent = [...new Set(all.filter(c => c.folder).map(c => c.folder))].slice(0, 5);
     pickFolder('NEW CODE CHAT · PICK A FOLDER', async folder => {
       let r;
-      try { r = await api.post('/api/code/new', { folder }); } catch (err) { fail(err); return; }
+      try { r = await api.post('/api/code/new', project ? { folder, project } : { folder }); } catch (err) { fail(err); return; }
       replace('code', { id: r.id });
     }, recent);
   }
@@ -225,7 +227,7 @@ if (typeof document !== 'undefined') {
   async function start(restart = false) {
     try { await api.post(url('start'), restart ? { restart: true } : {}); }
     catch (err) {
-      if (err.status === 409 && err.body?.restart) confirmSheet('Restart project', 'Start the project again from the beginning?', () => start(true), 'Restart');
+      if (err.status === 409 && err.body?.restart) confirmSheet('Restart project', err.message, () => start(true), 'Restart');
       else fail(err);
       return;
     }
@@ -278,7 +280,7 @@ if (typeof document !== 'undefined') {
     if (!id) {
       view.querySelector('.vtitle').textContent = 'New code chat';
       view.querySelector('.vsub').textContent = '';
-      newCodeChat();
+      newCodeChat(params?.project);
       return;
     }
     chat.showIn(view, { id });
@@ -296,7 +298,7 @@ if (typeof document !== 'undefined') {
       $('#starthead').addEventListener('click', () => start());
       $('#runbtn').addEventListener('click', () => start());
       $('#runstop').addEventListener('click', () => api.post('/api/stop', { id }).then(() => refresh(), fail));
-      $('#codepick').addEventListener('click', newCodeChat);
+      $('#codepick').addEventListener('click', () => newCodeChat());
       $('#pmdtemplate').addEventListener('click', async () => {
         closeOverlays();
         try { await api.post(url('projectmd/template')); } catch (err) { fail(err); return; }

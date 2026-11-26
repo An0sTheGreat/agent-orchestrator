@@ -412,6 +412,11 @@ if (typeof document !== 'undefined') {
     navigator.clipboard.writeText(text).then(() => toast('Copied'), () => toast('Could not copy'));
   };
 
+  // Bound once at load, not in the Chat screen's mount: the Code screen shares these buttons and may be visited first.
+  document.querySelectorAll('[data-stop]').forEach(b => b.addEventListener('click', () => api.post('/api/stop', { id }).catch(fail)));
+  document.querySelectorAll('.ctxring[data-ctx]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; }));
+  document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
+
   registerScreen('chat', {
     mount() {
       $('#view-chat [data-sheet="sheet-chatmenu"]').addEventListener('click', () => { menu = null; readMenu(); });
@@ -419,10 +424,7 @@ if (typeof document !== 'undefined') {
       $('#chatmove').addEventListener('click', move);
       $('#chatarchive').addEventListener('click', archive);
       $('#chatcopy').addEventListener('click', copyReply);
-      document.querySelectorAll('[data-stop]').forEach(b => b.addEventListener('click', () => api.post('/api/stop', { id }).catch(fail)));
       $('#chatdelete').addEventListener('click', () => id ? askDeleteChat(id, view.querySelector('.vtitle').textContent) : closeOverlays());
-      document.querySelectorAll('.ctxring[data-ctx]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; }));
-      document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
     },
     show: params => { use($('#view-chat')); return show(params); },
   });

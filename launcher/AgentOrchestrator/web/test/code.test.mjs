@@ -21,24 +21,24 @@ test('clocks tick locally only while running, formatted HH:MM:SS', () => {
   assert.equal(fmtClock(3723.9), '01:02:03');
 });
 
-test('todoFromTool: the todo tool call\'s items, string or object args; null for other events', () => {
-  const items = [{ text: 'a', state: 'done' }, { content: 'b', status: 'in_progress' }, 'c'];
-  assert.deepEqual(todoFromTool({ e: 'tool', name: 'todo', args: JSON.stringify({ items }) }),
-    [{ text: 'a', state: 'done' }, { text: 'b', state: 'doing' }, { text: 'c', state: '' }]);
-  assert.deepEqual(todoFromTool({ e: 'tool', name: 'todo', args: { items: [{ text: 'x', status: 'completed' }] } }), [{ text: 'x', state: 'done' }]);
+test('todoFromTool: the engine\'s marked strings ([x] done, [-] [~] [>] doing), string or object args; null for other events', () => {
+  const items = ['[x] plan', '[-] build', '[~] test', '[>] lint', '[ ] ship', 'bare'];
+  const want = [{ text: 'plan', state: 'done' }, { text: 'build', state: 'doing' }, { text: 'test', state: 'doing' }, { text: 'lint', state: 'doing' }, { text: 'ship', state: '' }, { text: 'bare', state: '' }];
+  assert.deepEqual(todoFromTool({ e: 'tool', name: 'todo', args: JSON.stringify({ items }) }), want);
+  assert.deepEqual(todoFromTool({ e: 'tool', name: 'todo', args: { items: ['[X] big'] } }), [{ text: 'big', state: 'done' }]);
   assert.equal(todoFromTool({ e: 'tool', name: 'write_file', args: '{}' }), null);
   assert.equal(todoFromTool({ e: 'tool', name: 'todo', args: 'not json' }), null);
   assert.equal(todoFromTool({ e: 'delta', name: 'todo' }), null);
 });
 
 test('runLine: events become heads, notes, tool lines, verdict badges and records', () => {
-  assert.deepEqual(runLine({ e: 'model', role: 'Lead', name: 'Qwen' }), { kind: 'head', text: 'Lead · Qwen' });
+  assert.deepEqual(runLine({ e: 'model', role: 'Lead', id: 'Qwen' }), { kind: 'head', text: 'Lead · Qwen' });
   assert.deepEqual(runLine({ e: 'tool', name: 'list_files', args: {} }), { kind: 'line', tag: 'TOOL', text: 'list_files {}' });
   assert.deepEqual(runLine({ e: 'verdict', verdict: 'PASS skeleton loads' }), { kind: 'verdict', pass: true, tag: 'PASS', text: 'skeleton loads' });
   assert.equal(runLine({ e: 'verdict', verdict: 'FAIL broken' }).pass, false);
   assert.deepEqual(runLine({ e: 'task', id: '1', outcome: 'passed' }), { kind: 'record', text: 'Item 1 passed' });
   assert.deepEqual(runLine({ e: 'complete', summary: 'All done\nmore' }), { kind: 'complete', text: 'All done' });
-  assert.deepEqual(runLine({ e: 'task_start', id: '2' }), { kind: 'note', text: 'TASK 2' });
+  assert.deepEqual(runLine({ e: 'task_start' }), { kind: 'note', text: 'TASK' });
   assert.equal(runLine({ e: 'message', text: '' }), null);
   assert.equal(runLine({ e: 'delta', text: 'x' }), null);
 });

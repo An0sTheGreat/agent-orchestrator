@@ -70,9 +70,10 @@ if (typeof document !== 'undefined') {
   function poller(el, ms, fn) {
     let timer = 0, seen = false;
     const run = () => { clearTimeout(timer); if (!seen) return; if (!document.hidden) fn(); timer = setTimeout(run, ms); };
-    new IntersectionObserver(es => { seen = es[es.length - 1].isIntersecting; if (seen) run(); else clearTimeout(timer); }).observe(el);
+    const io = new IntersectionObserver(es => { seen = es[es.length - 1].isIntersecting; if (seen) run(); else clearTimeout(timer); });
+    io.observe(el);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && seen) run(); });
-    return { now: run, stop: () => { clearTimeout(timer); seen = false; } };
+    return { now: run, stop: () => { clearTimeout(timer); seen = false; io.unobserve(el); io.observe(el); } }; // observing again reports the element's state: still on screen restarts the poll
   }
 
   /* the terminal card */

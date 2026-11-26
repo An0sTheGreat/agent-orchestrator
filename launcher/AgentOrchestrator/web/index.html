@@ -110,7 +110,7 @@
                 </div>
                 <div class="sendrow">
                   <button class="chip" id="effortchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> <span>Effort: Default</span></button>
-                  <button class="stop hidden" id="stopbtn" aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
+                  <button class="stop hidden" id="stopbtn" data-stop aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
                   <button class="send" id="sendbtn" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
                 </div>
               </div>
@@ -125,16 +125,15 @@
                 <h2 class="vtitle"></h2>
                 <p class="vsub"></p>
               </div>
+              <div class="runstrip">
+                <span>Task <b id="taskline">–</b></span>
+                <span>TASK TIME <b id="taskclock">00:00:00</b></span>
+                <span>TURN <b id="turnline">00:00:00</b></span>
+              </div>
               <button class="ctxring" id="ctxcode" data-ctx aria-label="Context used"><span>0%</span></button>
               <button class="iconbtn" id="starthead" aria-label="Start project"><svg class="ic"><use href="#i-play"/></svg></button>
               <button class="iconbtn" data-sheet="sheet-project" aria-label="Project menu"><svg class="ic"><use href="#i-more"/></svg></button>
             </header>
-
-            <div class="runstrip">
-              <span>Task <b id="taskline">–</b></span>
-              <span>TASK TIME <b id="taskclock">00:00:00</b></span>
-              <span>TURN <b id="turnline">00:00:00</b></span>
-            </div>
 
             <div class="segbar">
               <div class="seg" data-pane-group="code">

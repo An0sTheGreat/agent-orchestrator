@@ -106,9 +106,10 @@ body.landscape .ctxring::before { inset: 3px; }
 body.landscape .ctxring span { font-size: 7.5px; }
 /* the run strip moves into the title bar, just left of the context ring */
 body.landscape #view-code .vhead .runstrip {
-  position: static; flex: none; margin: 0 4px 0 0; padding: 0;
+  position: static; order: 0; flex: none; width: auto; margin: 0 4px 0 0; padding: 0;
   background: none; border: 0; font-size: 9.5px; gap: 10px; overflow: visible;
 }
+body.landscape #view-code .vhead { flex-wrap: nowrap; }
 body.landscape #view-code .vhead .runstrip b { font-size: 9.5px; }
 body.landscape .vbody { padding: 12px 18px; }
 /* the segment bar is half height too */
@@ -451,6 +452,9 @@ body.landscape .drawer { padding-top: 0; }
 .runstrip::-webkit-scrollbar { display: none; }
 .runstrip > span { flex: none; white-space: nowrap; }
 .runstrip b { color: var(--text); font-weight: 600; }
+/* portrait: the strip sits in the header element but takes its own row under the title; landscape (above) puts it in the bar */
+#view-code .vhead { flex-wrap: wrap; }
+#view-code .vhead .runstrip { order: 9; flex: 1 0 100%; margin: 6px -10px -9px; width: calc(100% + 20px); }
 /* context ring in the title bar: blue under 50%, amber 50-89%, red from 90% */
 .ctxring {
   --ctxc: #6EA8FF;
