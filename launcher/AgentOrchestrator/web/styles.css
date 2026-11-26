@@ -198,7 +198,7 @@ body.landscape .drawer { padding-top: 0; }
 .iconbtn:hover { background: var(--card); }
 
 /* scroll body */
-.vbody { flex: 1; min-height: 0; overflow-y: auto; padding: 14px; overscroll-behavior: contain; }
+.vbody { flex: 1; min-height: 0; overflow-x: hidden; overflow-y: auto; padding: 14px; overscroll-behavior: contain; } /* vertical only: wide content scrolls in its own box (tables, code blocks) */
 .vbody.nopad { padding: 0; }
 .vbody::-webkit-scrollbar, .sheet::-webkit-scrollbar, .drawer-body::-webkit-scrollbar, .pane::-webkit-scrollbar, .vbody *::-webkit-scrollbar { width: 0; height: 0; }
 
@@ -334,6 +334,7 @@ body.landscape .drawer { padding-top: 0; }
 .msg.right .stamp { text-align: right; }
 .ghosttiny { color: var(--muted); font-size: 10.5px; text-decoration: underline; text-underline-offset: 2px; }
 
+.md, .msg .bubble { overflow-wrap: anywhere; } /* a long path or URL wraps instead of widening the page */
 .md { font-size: 14px; line-height: 1.62; }
 .md h1, .md h2, .md h3 { font-family: var(--display); font-size: 20px; font-weight: 600; margin: 0 0 10px; letter-spacing: .1px; }
 .md p { margin: 0 0 11px; }
