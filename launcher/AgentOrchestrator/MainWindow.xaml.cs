@@ -4154,6 +4154,8 @@ public partial class MainWindow : Window
             return false;
         if (!await RunLogSmoke(Snap))
             return false;
+        if (!await DictationTraySmoke()) // last: it hides and shows the window
+            return false;
         if (!string.IsNullOrEmpty(snapshots))
         {
             foreach (var theme in new[] { "Gold", "Glass", "Oled", "Graphite", "Parchment", "ParchmentDark", "Beautiful", "Flat" })

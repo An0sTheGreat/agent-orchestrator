@@ -313,21 +313,6 @@ public partial class MainWindow
             if (Dictating || ChatInput.Opacity != 1 || ChatInput.Text != "Hello big world" || _chatQueue.Count != queued)
                 return Fail($"Enter while listening: dictating {Dictating}, \"{ChatInput.Text}\", {_chatQueue.Count - queued} queued");
             _chatBusy = busy;
-            // hiding to the tray releases the microphone (a stand-in tray: test modes have none, and HideToTray closes without one)
-            Mic_Click(ChatMic, new RoutedEventArgs());
-            var activated = ShowActivated;
-            _tray = new System.Windows.Forms.NotifyIcon();
-            try { HideToTray(quiet: true); }
-            finally
-            {
-                _tray.Dispose();
-                _tray = null;
-                ShowActivated = false; // back without taking the foreground
-                Show();
-                ShowActivated = activated;
-            }
-            if (Dictating)
-                return Fail("HideToTray left the microphone open");
             // a phrase still transcribing when another chat opens is dropped, not put in that chat's box
             ChatInput.Clear();
             Mic_Click(ChatMic, new RoutedEventArgs());
@@ -357,6 +342,48 @@ public partial class MainWindow
             ChatInput.Clear();
             CodeInput.Clear();
             ShowView(chat: true);
+        }
+    }
+
+    // --ui-smoke, last of all (it hides and shows the window, which later checks must not inherit): hiding to the tray releases
+    // the microphone (a stand-in tray: test modes have none, and HideToTray closes without one).
+    private Task<bool> DictationTraySmoke()
+    {
+        var (feed, transcribe) = (_dictationFeed, _dictationTranscribe);
+        _dictationFeed = _ => { };
+        _dictationTranscribe = _ => "";
+        ShowView(chat: true);
+        try
+        {
+            Mic_Click(ChatMic, new RoutedEventArgs());
+            if (!Dictating)
+            {
+                Console.Error.WriteLine("ui-smoke: dictation: the mic did not start for the tray check");
+                return Task.FromResult(false);
+            }
+            var activated = ShowActivated;
+            _tray = new System.Windows.Forms.NotifyIcon();
+            try { HideToTray(quiet: true); }
+            finally
+            {
+                _tray.Dispose();
+                _tray = null;
+                ShowActivated = false; // back without taking the foreground
+                Show();
+                ShowActivated = activated;
+            }
+            if (Dictating)
+            {
+                Console.Error.WriteLine("ui-smoke: dictation: HideToTray left the microphone open");
+                return Task.FromResult(false);
+            }
+            return Task.FromResult(true);
+        }
+        finally
+        {
+            StopDictation();
+            (_dictationFeed, _dictationTranscribe) = (feed, transcribe);
+            ChatInput.Clear();
         }
     }
 }
