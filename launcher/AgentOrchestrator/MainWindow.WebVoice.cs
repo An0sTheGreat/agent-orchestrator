@@ -144,6 +144,7 @@ public partial class MainWindow
     private (int, object) WebVoiceState() => (200, new
     {
         ready = _webSynthesize is not null || TtsModels.Ready,
+        model = TtsModels.Active.Key, // the Kokoro build that reads ("full" or "compact"; the chosen one when none is downloaded)
         voices = Tts.Voices.Select(v => new { name = v.Name, language = v.Language, accent = v.Accent, gender = v.Gender, custom = false })
             .Concat(_settings.CustomVoices.Select(c => new { name = c.Name, language = "", accent = "", gender = "", custom = true })),
         settings = new { voice = _settings.Tts.Voice, speed = _settings.Tts.Speed },
@@ -292,6 +293,8 @@ public partial class MainWindow
         try
         {
             if (await Send("/api/voice", null) is not { Status: 200 } got || Json(got.Body) is not { } state || state["ready"]?.GetValue<bool>() != false ||
+                state["model"]?.ToString() != TtsModels.Full.Key || // nothing downloaded: the default, chosen build
+
                 state["voices"]?.AsArray() is not { } voices || voices.Count != Tts.Voices.Count + _settings.CustomVoices.Count ||
                 voices[0]?["name"]?.ToString() != Tts.Voices[0].Name || voices[0]?["custom"]?.GetValue<bool>() != false || voices[0]?["gender"] is null ||
                 state["settings"]?["voice"]?.ToString() != voice || state["settings"]?["autoRead"] is not null || state["settings"]?["speed"] is null)

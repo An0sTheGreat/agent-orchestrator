@@ -6,39 +6,57 @@ using SherpaOnnx;
 
 namespace AgentOrchestrator;
 
-// Kokoro-82M v1.0 (multi-language, int8) for sherpa-onnx in <DataRoot>\speech, downloaded only from Settings > Voice. Checked
-// 2026-11-26: Hugging Face csukuangfj/kokoro-int8-multi-lang-v1_0 at revision 57adb37fc0e8d4bd430cfc1b8f8c2294945b9af2
-// (https://huggingface.co/<repo>/resolve/<revision>/<file>), by HubDownloader into speech\kokoro-int8-multi-lang-v1_0\.
-// Only the files sherpa-onnx 2.0.3 reads: it no longer uses espeak-ng (espeak-ng-data and dict\ are ignored), the language
-// comes from the lexicons, and words missing from them are skipped (SpeechText turns digits into words). The zh rule FSTs
-// are left out: they would rewrite every number and date into Chinese, under English voices too. The fp32 model (326 MB) is
-// not used: int8 is a third of the size.
-internal static class TtsModels
+// Kokoro-82M v1.0 (multi-language) for sherpa-onnx in <DataRoot>\speech, downloaded only from Settings > Voice, in two builds:
+// Full quality (fp32, the default) and Compact (int8, a third of the size; it sounds tinnier, with a high-pitched edge). Each
+// from Hugging Face at a pinned revision (https://huggingface.co/<repo>/resolve/<revision>/<file>), by HubDownloader into
+// speech\<repo name>\. Checked 2026-11-26: csukuangfj/kokoro-multi-lang-v1_0 at f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b and
+// csukuangfj/kokoro-int8-multi-lang-v1_0 at 57adb37fc0e8d4bd430cfc1b8f8c2294945b9af2 (the same voices.bin, tokens and
+// lexicons). Only the files sherpa-onnx 2.0.3 reads: it no longer uses espeak-ng (espeak-ng-data and dict\ are ignored), the
+// language comes from the lexicons, and words missing from them are skipped (SpeechText turns digits into words). The zh rule
+// FSTs are left out: they would rewrite every number and date into Chinese, under English voices too.
+internal sealed class TtsModel(string key, string label, string repo, string revision, string modelName, HubDownloadFile[] files)
 {
-    private const string Repo = "csukuangfj/kokoro-int8-multi-lang-v1_0", Revision = "57adb37fc0e8d4bd430cfc1b8f8c2294945b9af2";
-    private static readonly HubDownloadFile[] Kokoro =
-    [
-        new("model.int8.onnx", 114_202_993), new("voices.bin", 28_200_960), new("tokens.txt", 687),
-        new("lexicon-us-en.txt", 5_956_885), new("lexicon-zh.txt", 2_365_182),
-    ];
-
-    public static string Folder => Path.Combine(SpeechModels.Folder, Repo.Split('/')[1]);
-    public static string ModelFile(string name) => Path.Combine(Folder, name);
+    public string Key => key;     // TtsSettings.Model
+    public string Label => label;
+    public string ModelName => modelName;
+    public string Folder => Path.Combine(SpeechModels.Folder, repo.Split('/')[1]);
+    public string File(string name) => Path.Combine(Folder, name);
 
     // Every file present with its expected size: a half-finished download (.incomplete, or a short file) never counts.
-    public static bool Ready => Kokoro.All(f => new FileInfo(ModelFile(f.Name)) is { Exists: true } info && info.Length == f.Size);
-    public static long DownloadBytes => Kokoro.Sum(f => f.Size);
+    public bool Ready => files.All(f => new FileInfo(File(f.Name)) is { Exists: true } info && info.Length == f.Size);
+    public long DownloadBytes => files.Sum(f => f.Size);
+    internal IEnumerable<HubDownloadFile> Files => files;
 
-    public static async Task DownloadAsync(IProgress<(long done, long total)> progress, CancellationToken ct)
+    public async Task DownloadAsync(IProgress<(long done, long total)> progress, CancellationToken ct)
     {
         using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = Timeout.InfiniteTimeSpan }; // HubDownloader follows the hub's redirects itself
         http.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
         Directory.CreateDirectory(SpeechModels.Folder);
-        await new HubDownloader(http, SpeechModels.Folder, HubLayout.Flat).DownloadAsync(Repo, Revision, Kokoro,
+        await new HubDownloader(http, SpeechModels.Folder, HubLayout.Flat).DownloadAsync(repo, revision, files,
             new Relay<HubProgress>(p => progress.Report((p.DoneBytes, DownloadBytes))), ct);
         if (!Ready)
             throw new InvalidDataException("The voice model files are incomplete after the download");
     }
+}
+
+internal static class TtsModels
+{
+    private static HubDownloadFile[] Common => [new("voices.bin", 28_200_960), new("tokens.txt", 687), new("lexicon-us-en.txt", 5_956_885), new("lexicon-zh.txt", 2_365_182)];
+    public static readonly TtsModel Full = new("full", "Full quality", "csukuangfj/kokoro-multi-lang-v1_0", "f7b96bb6bef5c5da4d3aa4f4e0498fbbf62dc78b",
+        "model.onnx", [new("model.onnx", 325_560_556), .. Common]);
+    public static readonly TtsModel Compact = new("compact", "Compact", "csukuangfj/kokoro-int8-multi-lang-v1_0", "57adb37fc0e8d4bd430cfc1b8f8c2294945b9af2",
+        "model.int8.onnx", [new("model.int8.onnx", 114_202_993), .. Common]);
+    public static readonly TtsModel[] All = [Full, Compact];
+
+    // TtsSettings.Model, set by the window (and --speech-say); an unknown key is Full.
+    public static string Chosen { get; set; } = Full.Key;
+    public static TtsModel Find(string key) => All.FirstOrDefault(m => m.Key == key) ?? Full;
+
+    // The model that reads: the chosen one when downloaded, else another that is (an int8-only install keeps reading on Compact
+    // until Full is downloaded), else the chosen one (not Ready).
+    public static TtsModel Active => Find(Chosen) is { Ready: false } && All.FirstOrDefault(m => m.Ready) is { } other ? other : Find(Chosen);
+    public static bool Ready => Active.Ready;
+    public static string ModelFile(string name) => Active.File(name);
 }
 
 // A built-in Kokoro voice: its name (the key saved in settings, e.g. "af_heart"), sherpa-onnx speaker id, and how it sounds.
@@ -87,6 +105,7 @@ internal static class Tts
 
     private static readonly object Gate = new();
     private static OfflineTts? _builtIn, _blend;
+    private static TtsModel? _loaded; // the model the engines were made from: another one Active frees them first
     private static string _blendKey = "";
     private static volatile bool _shutdown;
 
@@ -117,13 +136,19 @@ internal static class Tts
         try
         {
             ObjectDisposedException.ThrowIf(_shutdown, typeof(Tts));
-            if (!TtsModels.Ready)
+            var model = TtsModels.Active;
+            if (!model.Ready)
                 throw new InvalidOperationException("Download the voice model in Settings > Voice");
+            if (model != _loaded) // switched (Settings > Voice) or deleted: this sentence reads with the new model, never one mid-way
+            {
+                Unload();
+                _loaded = model;
+            }
             OfflineTts engine;
             int sid;
             if (weights.Count == 1)
             {
-                engine = _builtIn ??= Engine(TtsModels.ModelFile("voices.bin"));
+                engine = _builtIn ??= Engine(model, model.File("voices.bin"));
                 sid = Voices.First(v => v.Name == weights.Keys.First()).Id;
             }
             else
@@ -134,8 +159,8 @@ internal static class Tts
                     _blend?.Dispose();
                     _blend = null;
                     var file = Path.Combine(SpeechModels.Folder, "kokoro-blend.bin");
-                    File.WriteAllBytes(file, BlendFile(File.ReadAllBytes(TtsModels.ModelFile("voices.bin")), weights));
-                    _blend = Engine(file);
+                    File.WriteAllBytes(file, BlendFile(File.ReadAllBytes(model.File("voices.bin")), weights));
+                    _blend = Engine(model, file);
                     _blendKey = key;
                 }
                 engine = _blend;
@@ -169,13 +194,13 @@ internal static class Tts
         return output;
     }
 
-    private static OfflineTts Engine(string voices)
+    private static OfflineTts Engine(TtsModel model, string voices)
     {
         var config = new OfflineTtsConfig();
-        config.Model.Kokoro.Model = TtsModels.ModelFile("model.int8.onnx");
+        config.Model.Kokoro.Model = model.File(model.ModelName);
         config.Model.Kokoro.Voices = voices;
-        config.Model.Kokoro.Tokens = TtsModels.ModelFile("tokens.txt");
-        config.Model.Kokoro.Lexicon = TtsModels.ModelFile("lexicon-us-en.txt") + "," + TtsModels.ModelFile("lexicon-zh.txt");
+        config.Model.Kokoro.Tokens = model.File("tokens.txt");
+        config.Model.Kokoro.Lexicon = model.File("lexicon-us-en.txt") + "," + model.File("lexicon-zh.txt");
         config.Model.NumThreads = 2;
         config.Model.Provider = "cpu";
         return new OfflineTts(config);
@@ -186,23 +211,32 @@ internal static class Tts
     public static void Shutdown()
     {
         _shutdown = true;
+        Release();
+    }
+
+    // The engines freed (a model about to be deleted), the same way: within a second, else at the next sentence or the exit.
+    public static void Release()
+    {
         if (!Monitor.TryEnter(Gate, 1000))
             return;
-        try
-        {
-            _builtIn?.Dispose();
-            _blend?.Dispose();
-            (_builtIn, _blend) = (null, null);
-        }
+        try { Unload(); }
         finally { Monitor.Exit(Gate); }
     }
 
-    // --speech-say "<text>" <out.wav> [voice | name:weight,name:weight]: the text through ForSpeech, Sentences and Synthesize
-    // into a 24 kHz float WAV, in a test data folder (AGENT_ORCHESTRATOR_DATA; the model is downloaded there when missing).
-    // Its length and peak on stderr; 0 when it is not silent.
-    public static int SayFile(string text, string wav, string voice)
+    private static void Unload() // under Gate
     {
-        if (!TtsModels.Ready && !Speech.TestDownload("--speech-say", TtsModels.DownloadAsync))
+        _builtIn?.Dispose();
+        _blend?.Dispose();
+        (_builtIn, _blend, _loaded, _blendKey) = (null, null, null, "");
+    }
+
+    // --speech-say "<text>" <out.wav> [voice | name:weight,name:weight] [full | compact]: the text through ForSpeech, Sentences
+    // and Synthesize into a 24 kHz float WAV, in a test data folder (AGENT_ORCHESTRATOR_DATA; that model is downloaded there
+    // when missing). Its length and peak on stderr; 0 when it is not silent.
+    public static int SayFile(string text, string wav, string voice, string model)
+    {
+        var chosen = TtsModels.Find(TtsModels.Chosen = model);
+        if (!chosen.Ready && !Speech.TestDownload("--speech-say", chosen.DownloadAsync))
             return 2;
         var choice = voice.Contains(':')
             ? new VoiceChoice("blend", voice.Split(',').Select(p => p.Split(':')).ToDictionary(p => p[0], p => double.Parse(p[1], System.Globalization.CultureInfo.InvariantCulture)))
@@ -212,7 +246,7 @@ internal static class Tts
         using (var writer = new WaveFileWriter(wav, WaveFormat.CreateIeeeFloatWaveFormat(Rate, 1)))
             writer.WriteSamples(samples, 0, samples.Length);
         var peak = samples.Length == 0 ? 0 : samples.Max(Math.Abs);
-        Console.Error.WriteLine($"{voice}: {samples.Length / (double)Rate:0.00} s, peak {peak:0.000}, made in {(DateTime.UtcNow - started).TotalSeconds:0.0} s");
+        Console.Error.WriteLine($"{voice} ({chosen.Key}): {samples.Length / (double)Rate:0.00} s, peak {peak:0.000}, made in {(DateTime.UtcNow - started).TotalSeconds:0.0} s");
         return peak > 0.05 ? 0 : 1;
     }
 
@@ -287,10 +321,10 @@ internal static class Tts
         try
         {
             Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", area);
-            Check(!TtsModels.Ready && TtsModels.DownloadBytes == 150_726_707, "nothing downloaded");
-            Directory.CreateDirectory(TtsModels.Folder);
-            File.WriteAllBytes(TtsModels.ModelFile("tokens.txt"), new byte[687]);
-            File.WriteAllBytes(TtsModels.ModelFile("model.int8.onnx") + ".incomplete", new byte[10]);
+            Check(!TtsModels.Ready && TtsModels.Compact.DownloadBytes == 150_726_707 && TtsModels.Full.DownloadBytes == 362_084_270, "nothing downloaded");
+            Directory.CreateDirectory(TtsModels.Compact.Folder);
+            File.WriteAllBytes(TtsModels.Compact.File("tokens.txt"), new byte[687]);
+            File.WriteAllBytes(TtsModels.Compact.File("model.int8.onnx") + ".incomplete", new byte[10]);
             Check(!TtsModels.Ready, "a half-finished download counts as ready");
             var threw = false;
             try { Synthesize("hello", new VoiceChoice(Default), 1f); } catch (InvalidOperationException) { threw = true; }

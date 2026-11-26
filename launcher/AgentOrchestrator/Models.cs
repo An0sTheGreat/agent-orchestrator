@@ -193,6 +193,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
 internal sealed class TtsSettings
 {
     public string Voice { get; set; } = AgentOrchestrator.Tts.Default;
+    public string Model { get; set; } = "full"; // the Kokoro build: "full" (fp32) or "compact" (int8), TtsModels
     public double Speed { get; set; } = 1.0;
     public double Volume { get; set; } = 1.0;
     public int SentencePauseMs { get; set; } = 250;

@@ -2113,12 +2113,10 @@
                         </DockPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
                         <TextBlock Text="Voice model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                        <TextBlock Text="Replies are read aloud on this PC's processor with Kokoro, so nothing leaves the PC. It downloads only when you press Download." TextWrapping="Wrap"
+                        <TextBlock Text="Replies are read aloud on this PC's processor with Kokoro, so nothing leaves the PC. Full quality sounds clearer; Compact is a third of the size. Each downloads only when you press Download." TextWrapping="Wrap"
                         Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="TtsDownloadButton" Content="Download" Padding="11,6" VerticalAlignment="Center" Margin="0,0,12,0" Click="TtsDownload_Click" />
-                        <TextBlock x:Name="TtsStatus" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        </DockPanel>
+                        <!-- one row per Kokoro build (TtsModels.All): the choice, its status, Download/Cancel and Delete (MainWindow.Voice.cs BuildTtsModels) -->
+                        <StackPanel x:Name="TtsModelsPanel" Margin="0,4,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Speech output (MainWindow.SpeakOut.cs BuildSpeakOut): built in code, disabled until the voice model is downloaded -->
                         <TextBlock Text="Speech output" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />

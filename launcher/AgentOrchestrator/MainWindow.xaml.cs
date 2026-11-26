@@ -5989,7 +5989,8 @@ public partial class MainWindow : Window
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
         _speechDownload?.Cancel();
-        _ttsDownload?.Cancel();
+        foreach (var download in _ttsDownloads.Values)
+            download?.Cancel();
         StopDictation(); // the microphone released
         StopSpeaking();
         _speechPlayer?.Dispose(); // waits for the reading to end and release the speaker

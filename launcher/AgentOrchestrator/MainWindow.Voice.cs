@@ -1,4 +1,6 @@
+using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 
 namespace AgentOrchestrator;
@@ -7,10 +9,13 @@ namespace AgentOrchestrator;
 // listens to (AppSettings.Microphone, a Windows device name; "" = the Windows default).
 public partial class MainWindow
 {
-    private CancellationTokenSource? _speechDownload, _ttsDownload; // the downloads in progress; Cancel, or the app closing, stops them
+    private CancellationTokenSource? _speechDownload; // the downloads in progress; Cancel, or the app closing, stops them
+    private readonly Dictionary<TtsModel, CancellationTokenSource?> _ttsDownloads = new();
+    private readonly Dictionary<TtsModel, (RadioButton Pick, TextBlock Status, Button Download, Button Delete)> _ttsRows = new();
 
     private void InitVoice()
     {
+        BuildTtsModels();
         RefreshVoiceStatus();
         FillMicrophones();
         BuildSpeakOut();
@@ -22,20 +27,84 @@ public partial class MainWindow
         VoiceStatus.Text = ready ? "Parakeet TDT 0.6B ready" : $"Speech model not downloaded · {SpeechModels.DownloadBytes >> 20} MB";
         VoiceDownloadButton.Content = "Download";
         VoiceDownloadButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
-        ready = TtsModels.Ready;
-        TtsStatus.Text = ready ? "Kokoro 82M ready" : $"Voice model not downloaded · {TtsModels.DownloadBytes >> 20} MB";
-        TtsDownloadButton.Content = "Download";
-        TtsDownloadButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        var (active, chosen) = (TtsModels.Active, TtsModels.Find(_settings.Tts.Model));
+        foreach (var (model, row) in _ttsRows)
+        {
+            if (_ttsDownloads.GetValueOrDefault(model) is not null)
+                continue; // downloading: its row shows the progress and Cancel
+            ready = model.Ready;
+            row.Status.Text = ready ? (model == active ? "Ready · reading" : "Downloaded")
+                : model != chosen || !active.Ready ? "Not downloaded"
+                : model == TtsModels.Full ? "Full quality not downloaded — Download for clearer voices"
+                : $"{model.Label} not downloaded — {active.Label} reads meanwhile";
+            row.Download.Content = "Download";
+            row.Download.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+            row.Delete.Visibility = ready && model != chosen ? Visibility.Visible : Visibility.Collapsed;
+        }
         RefreshSpeakOut();
+    }
+
+    // The Kokoro builds, each a row: the choice (TtsSettings.Model), its status, Download/Cancel, and Delete when downloaded and
+    // not chosen. Built once: a running download keeps writing into its row's status.
+    private void BuildTtsModels()
+    {
+        TtsModels.Chosen = _settings.Tts.Model;
+        foreach (var model in TtsModels.All)
+        {
+            var pick = new RadioButton { Content = $"{model.Label} · {model.DownloadBytes >> 20} MB", GroupName = "TtsModel", MinWidth = 170,
+                IsChecked = model == TtsModels.Find(_settings.Tts.Model), VerticalAlignment = VerticalAlignment.Center };
+            AutomationProperties.SetName(pick, model.Label);
+            var status = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0, 0, 0) };
+            status.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+            var download = new Button { Content = "Download", Padding = new Thickness(11, 6, 11, 6), Margin = new Thickness(8, 0, 0, 0) };
+            AutomationProperties.SetName(download, $"Download {model.Label}");
+            var delete = new Button { Content = "Delete", Padding = new Thickness(11, 6, 11, 6), Margin = new Thickness(8, 0, 0, 0) };
+            AutomationProperties.SetName(delete, $"Delete {model.Label}");
+            pick.Checked += (_, _) => ChooseTtsModel(model);
+            download.Click += (_, _) => ModelDownload($"{model.Label.ToLowerInvariant()} voice model", download, status, model.DownloadAsync, model.Folder,
+                () => _ttsDownloads.GetValueOrDefault(model), c => _ttsDownloads[model] = c);
+            delete.Click += (_, _) => DeleteTtsModel(model);
+            TtsModelsPanel.Children.Add(new DockPanel { Margin = new Thickness(0, 10, 0, 0),
+                Children = { Docked(delete, Dock.Right), Docked(download, Dock.Right), Docked(pick, Dock.Left), status } });
+            _ttsRows[model] = (pick, status, download, delete);
+        }
+    }
+
+    // Reading stops first; the engines reload for the new build on the next sentence (Tts.Synthesize). Nothing is read on its own.
+    private void ChooseTtsModel(TtsModel model)
+    {
+        if (_settings.Tts.Model == model.Key)
+            return;
+        StopSpeaking();
+        _settings.Tts.Model = TtsModels.Chosen = model.Key;
+        _settings.Save();
+        RefreshVoiceStatus();
+    }
+
+    // Frees the disk after asking; the build reading now (Compact, while Full is chosen but not downloaded) says nothing reads after.
+    private void DeleteTtsModel(TtsModel model)
+    {
+        var after = model == TtsModels.Active ? $" Nothing reads aloud until {TtsModels.Find(_settings.Tts.Model).Label} is downloaded." : "";
+        if (Choose("Delete voice model", $"Delete the {model.Label} voice model ({model.DownloadBytes >> 20} MB)?{after}", ("Delete", "delete")) is null)
+            return;
+        StopSpeaking();
+        Tts.Release();
+        try
+        {
+            Directory.Delete(model.Folder, recursive: true);
+            Log($"The {model.Label} voice model deleted from {model.Folder}");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            Log($"Deleting the {model.Label} voice model failed: {exception.Message}");
+            Toast("Could not delete the voice model: " + exception.Message, "#FF667A");
+        }
+        RefreshVoiceStatus();
     }
 
     private void VoiceDownload_Click(object sender, RoutedEventArgs e) =>
         ModelDownload("speech model", VoiceDownloadButton, VoiceStatus, SpeechModels.DownloadAsync, SpeechModels.Folder,
             () => _speechDownload, c => _speechDownload = c);
-
-    private void TtsDownload_Click(object sender, RoutedEventArgs e) =>
-        ModelDownload("voice model", TtsDownloadButton, TtsStatus, TtsModels.DownloadAsync, TtsModels.Folder,
-            () => _ttsDownload, c => _ttsDownload = c);
 
     // Download, or Cancel while downloading. A failure is a log line and a toast; the files already fetched stay (the next
     // Download resumes), and a half-finished one never counts as ready.

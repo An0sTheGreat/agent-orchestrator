@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
@@ -532,7 +533,7 @@ public partial class MainWindow
 // --ui-smoke: a stub engine and a fake output (never real audio). The speak button is on each reply and turns into Stop; a second
 // reply's speak stops the first; Stop (the button, ShowView) stops; Read replies aloud reads a finished reply only when on, with
 // its worker's voice; over MaxChars asks first; a blend saves, renames and deletes and shows in the voice pickers; a built-in's
-// name is refused; the settings persist (AppSettings.Load).
+// name is refused; the settings persist (AppSettings.Load); the voice model choice (Full quality / Compact) is Ready per build and switches.
 public partial class MainWindow
 {
     private async Task<bool> SpeakOutSmoke()
@@ -634,6 +635,45 @@ public partial class MainWindow
             if (Listed("Smoke soft") || _settings.CustomVoices.Any(c => c.Name == "Smoke soft") || _settings.Tts.Voice != Tts.Default
                 || AppSettings.Load().CustomVoices.Any(c => c.Name == "Smoke soft"))
                 return Fail("delete");
+
+            // the voice model (stub files of the exact sizes in the smoke's data folder): Full by default; an int8-only install reads
+            // on Compact and says Full is not downloaded; each build Ready on its own; switching persists, stops a reading and reads
+            // nothing on its own; Delete is offered only for a downloaded build not chosen, and frees it
+            static void Fake(TtsModel m)
+            {
+                Directory.CreateDirectory(m.Folder);
+                foreach (var f in m.Files)
+                    using (var file = File.Create(m.File(f.Name)))
+                        file.SetLength(f.Size);
+            }
+            var (full, compact) = (_ttsRows[TtsModels.Full], _ttsRows[TtsModels.Compact]);
+            static bool Shown(UIElement e) => e.Visibility == Visibility.Visible;
+            if (_settings.Tts.Model != "full" || TtsModels.Ready || TtsModels.Active != TtsModels.Full || full.Pick.IsChecked != true || !Shown(full.Download) || !Shown(compact.Download))
+                return Fail($"the voice model does not start at Full quality, nothing downloaded: {_settings.Tts.Model}, {TtsModels.Active.Key}");
+            Fake(TtsModels.Compact);
+            RefreshVoiceStatus();
+            if (TtsModels.Active != TtsModels.Compact || !TtsModels.Ready || TtsModels.Full.Ready || !full.Status.Text.StartsWith("Full quality not downloaded")
+                || !Shown(full.Download) || Shown(full.Delete) || Shown(compact.Download) || !Shown(compact.Delete) || compact.Status.Text != "Ready · reading")
+                return Fail($"an int8-only install: reads with {TtsModels.Active.Key}, Full says [{full.Status.Text}], Compact [{compact.Status.Text}]");
+            Fake(TtsModels.Full);
+            RefreshVoiceStatus();
+            if (TtsModels.Active != TtsModels.Full || full.Status.Text != "Ready · reading" || Shown(full.Download) || Shown(full.Delete) || !Shown(compact.Delete) || compact.Status.Text != "Downloaded")
+                return Fail($"both downloaded: reads with {TtsModels.Active.Key}, Full [{full.Status.Text}], Compact [{compact.Status.Text}]");
+            _settings.Tts.MaxChars = 100_000;
+            a.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            await Until(() => Count() > 1);
+            compact.Pick.IsChecked = true;
+            var switchedAt = Count();
+            await Task.Delay(300);
+            if (_settings.Tts.Model != "compact" || TtsModels.Chosen != "compact" || TtsModels.Active != TtsModels.Compact || AppSettings.Load().Tts.Model != "compact")
+                return Fail($"switching to Compact: chose {_settings.Tts.Model}, reads with {TtsModels.Active.Key}, saved {AppSettings.Load().Tts.Model}");
+            if (_speechPlayer.Speaking || (string)a.Tag != "speak" || Count() > switchedAt + 1)
+                return Fail($"switching the model did not stop the reading, or read on its own ({Count() - switchedAt} after)");
+            if (!Shown(full.Delete) || Shown(compact.Delete))
+                return Fail("Delete after switching to Compact");
+            DeleteTtsModel(TtsModels.Full);
+            if (TtsModels.Full.Ready || Directory.Exists(TtsModels.Full.Folder) || TtsModels.Active != TtsModels.Compact || !Shown(full.Download) || Shown(full.Delete))
+                return Fail("deleting Full quality");
             return true;
         }
         finally
@@ -644,6 +684,12 @@ public partial class MainWindow
             _settings.Tts = System.Text.Json.JsonSerializer.Deserialize<TtsSettings>(saved)!;
             _settings.CustomVoices = savedVoices;
             _settings.Save();
+            foreach (var model in TtsModels.All)
+                if (Directory.Exists(model.Folder))
+                    Directory.Delete(model.Folder, recursive: true);
+            _ttsRows[TtsModels.Find(_settings.Tts.Model)].Pick.IsChecked = true; // its handler sees the restored setting: nothing saved
+            TtsModels.Chosen = _settings.Tts.Model;
+            RefreshVoiceStatus();
             FillVoicePickers();
             NewChat_Click(this, new RoutedEventArgs());
         }
