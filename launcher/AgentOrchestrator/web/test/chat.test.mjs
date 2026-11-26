@@ -169,7 +169,7 @@ test('hello refetches: a turn saved between the first GET and the subscription i
   assert.equal(cutOf(s, { e: 'hello' }), null); // a plain load: it drops no live parts
 });
 
-test('chat menu: a chat in a project; moves to the other projects of its kind (no kind = chat); Archive', () => {
+test('chat menu: a chat in a project; moves to the other projects of its kind (no kind = either, as the desktop); Archive', () => {
   const c = (id, kind = 'chat') => ({ id, kind, title: id });
   const list = { projects: [{ id: 'p1', name: 'One', kind: 'chat', items: [c('a'), c('k', 'code')] }, { id: 'p2', name: 'Two', kind: 'chat', items: [] },
     { id: 'p3', name: 'Old', items: [] }, { id: 'p4', name: 'Coding', kind: 'code', items: [] }], recents: [c('r'), c('rc', 'code')], archived: [c('x')] };
@@ -177,8 +177,8 @@ test('chat menu: a chat in a project; moves to the other projects of its kind (n
     targets: [{ id: 'p2', name: 'Two' }, { id: 'p3', name: 'Old' }] });
   assert.deepEqual(chatMenu(list, 'r').targets.map(p => p.id), ['p1', 'p2', 'p3']);
   assert.equal(chatMenu(list, 'r').project, null);
-  assert.deepEqual(chatMenu(list, 'rc').targets.map(p => p.id), ['p4']);
-  assert.deepEqual(chatMenu(list, 'k').targets.map(p => p.id), ['p4']);
+  assert.deepEqual(chatMenu(list, 'rc').targets.map(p => p.id), ['p3', 'p4']);
+  assert.deepEqual(chatMenu(list, 'k').targets.map(p => p.id), ['p3', 'p4']);
   const x = chatMenu(list, 'x');
   assert.deepEqual([x.archived, x.archiveLabel], [true, 'Unarchive']);
   assert.equal(chatMenu(list, 'nope'), null);

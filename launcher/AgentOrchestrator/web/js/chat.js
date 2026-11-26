@@ -96,7 +96,7 @@ const PARTS = [['system', 'System prompt', '#C88705'], ['tools', 'Tools', '#DD61
 /* ---------- the chat menu: pure ---------- */
 // What the ⋯ menu needs about chat `id` from GET /api/conversations: its kind, the project it is in (null: none), whether it is
 // archived, the Archive item's label and the projects it may move to (the other projects of its kind; a project without a kind
-// counts as chat). null when the list does not have it.
+// takes either kind, as on the desktop). null when the list does not have it.
 export function chatMenu(list, id) {
   const { projects = [], recents = [], archived = [] } = list || {};
   const home = projects.find(p => p.items.some(c => c.id === id));
@@ -105,7 +105,7 @@ export function chatMenu(list, id) {
   const kind = chat.kind || 'chat', isArchived = archived.some(c => c.id === id);
   return { kind, project: home ? { id: home.id, name: home.name } : null, archived: isArchived,
     archiveLabel: isArchived ? 'Unarchive' : 'Archive',
-    targets: projects.filter(p => p !== home && (p.kind || 'chat') === kind).map(p => ({ id: p.id, name: p.name })) };
+    targets: projects.filter(p => p !== home && (!p.kind || p.kind === kind)).map(p => ({ id: p.id, name: p.name })) };
 }
 // The text of the last reply (not the user's) in a conversation's messages; '' when there is none.
 export const lastReply = messages => [...(messages || [])].reverse().find(m => m.role !== 'user' && m.text)?.text || '';
@@ -373,10 +373,11 @@ if (typeof document !== 'undefined') {
     return menu;
   }
   const act = fn => async () => { if (!id) { closeOverlays(); return; } await fn(); };
-  const rename = act(() => askName('RENAME CHAT', view.querySelector('.vtitle').textContent, async title => {
+  const rename = act(() => { const was = view.querySelector('.vtitle').textContent; askName('RENAME CHAT', was, async title => {
+    if (title === was) return; // unchanged: a derived title stays derived, as on the desktop
     try { await post('rename', { title }); } catch (err) { fail(err); return; }
     load(gen, null, true);
-  }));
+  }); });
   const moveTo = async (project, name) => {
     closeOverlays();
     try { await post('move', { project }); } catch (err) { fail(err); return; }

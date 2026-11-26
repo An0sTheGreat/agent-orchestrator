@@ -23,7 +23,7 @@ function chatRow(tpl, c) {
 
 function projectRows(p) {
   const el = clone('tpl-project'), n = p.items.length, folder = p.items.find(c => c.folder)?.folder;
-  el.dataset.kinds = [p.kind, ...p.items.map(c => c.kind)].filter(Boolean).join(' '); // the filter hides a project of another kind with no chat of the chosen kind
+  el.dataset.kinds = [p.kind || 'chat code', ...p.items.map(c => c.kind)].filter(Boolean).join(' '); // the filter hides a project of another kind with no chat of the chosen kind
   el.querySelector('b').textContent = p.name;
   el.querySelector('small').textContent = [`${n} chat${n === 1 ? '' : 's'}`, folder].filter(Boolean).join(' · ');
   longPress(el, () => projectMenu(p));

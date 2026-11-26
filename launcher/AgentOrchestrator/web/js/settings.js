@@ -157,7 +157,6 @@ if (typeof document !== 'undefined') {
       case 'head': return h('p', { class: 'secthead' }, r.text);
       case 'note': return h('p', { class: 'hintline' }, r.text);
       case 'info': return h('div', { class: 'rowline' }, label(r));
-      case 'button': return h('div', { class: 'pad' }, h('button', { class: 'btn ghost', onclick: resetStats }, r.label));
       case 'nav': return h('button', { class: 'navrow flat', 'data-open': r.open }, h('span', { class: 'item-text' }, h('b', {}, r.label), h('small', {}, r.text)),
         icon('chevron', 'ic sm chev'));
       case 'switch': return h('div', { class: 'rowline' }, label(r), h('button', {
