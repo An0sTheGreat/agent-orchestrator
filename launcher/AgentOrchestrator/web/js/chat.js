@@ -10,7 +10,7 @@ import { ago, longPress } from './util.js';
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
 // The engine's deltas carry no section breaks: a text delta after a tool row (or anything not text) starts a new section.
 // refetch: load the conversation again. reopen: close the stream and open it again (a fresh hello replaces the parts).
-export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0 });
+export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, status: '', parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0 });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 // The PC path of a generated picture's URL (one in an images folder), which a long press may delete; null for the user's photos
@@ -35,10 +35,10 @@ export function applyEvent(s, ev) {
     case 'hello': { // refetch too: a turn saved between the first GET and the subscription is in neither, and no `saved` follows
       const parts = ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [];
       if (ev.picture) parts.push({ ...card(ev.picture), turn: 0 }); // a picture in progress: its card at once
-      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts, turn: 0, epoch: s.epoch + 1 };
+      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.reply?.status || '', parts, turn: 0, epoch: s.epoch + 1 };
     }
     case 'state':
-      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null };
+      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.status || '' };
     case 'delta':
       return ev.kind === 'text' || ev.kind === 'thinking' ? append(ev.kind, ev.text || '') : s; // 'tool': a call's arguments streaming
     case 'picture': {
@@ -296,6 +296,7 @@ if (typeof document !== 'undefined') {
       el.querySelector('.stamp').remove();
       out.push(el);
     }
+    if (live.busy && live.status) out.push(h('p', { class: 'livestatus' }, live.status)); // the desktop's status line under its reply
     if (live.prompt) out.push(approval(live.prompt));
     return out;
   }

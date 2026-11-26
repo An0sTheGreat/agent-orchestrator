@@ -383,6 +383,8 @@ body.landscape .drawer { padding-top: 0; }
 .approval code { font-size: 11.5px; background: rgba(255, 255, 255, .09); padding: 1px 5px; border-radius: 5px; }
 .approval-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .approval.done { border-color: var(--border); background: transparent; }
+.livestatus { font-size: 12.5px; font-style: italic; color: var(--muted); margin: 2px 0 14px; animation: livestatus 1.6s ease-in-out infinite; }
+@keyframes livestatus { 50% { opacity: .55; } }
 .sysline { font-size: 11px; color: #777; text-align: center; margin: 4px 0 16px; padding-top: 10px; border-top: 1px dashed #3a3a3a; }
 /* pictures in a message (user photos, generated pictures); one that fails to load says so */
 .msg .pic { display: block; max-width: 100%; border-radius: var(--r-small); margin-top: 8px; }

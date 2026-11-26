@@ -199,3 +199,9 @@ test('workSummary: a run of steps by kind, as the desktop says it; isWork picks 
   assert.equal(workSummary([]), 'working');
   assert.deepEqual(['text', 'thinking', 'tool', 'stage', 'image', 'picture'].map(t => isWork({ t })), [false, true, true, true, false, false]);
 });
+
+test("state and hello carry the desktop's status line", () => {
+  assert.equal(run({ e: 'state', busy: true, status: 'Writing run_command… 598 characters' }).status, 'Writing run_command… 598 characters');
+  assert.equal(run({ e: 'state', busy: true, status: 'x' }, { e: 'state', busy: true }).status, '');
+  assert.equal(run({ e: 'hello', busy: true, reply: { text: '', status: 'Lead is working…' } }).status, 'Lead is working…');
+});

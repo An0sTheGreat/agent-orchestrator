@@ -50,7 +50,10 @@ public partial class MainWindow
             _webEvents.Publish(conversationId, json);
     }
 
-    private static string WebState(bool busy, int queued, object? prompt) => JsonSerializer.Serialize(new { e = "state", busy, queued, prompt });
+    // status: the reply's status line as the desktop shows it ("Lead is working…", "Writing run_command… 598 characters"); "" when hidden.
+    private static string WebState(bool busy, int queued, object? prompt, string status) => JsonSerializer.Serialize(new { e = "state", busy, queued, prompt, status });
+
+    private string WebStatus(bool busy) => busy && _chatBusy && _reply is { } r && r.Status.Visibility == Visibility.Visible ? r.Status.Text : "";
 
     private void PollWebStates()
     {
@@ -59,7 +62,7 @@ public partial class MainWindow
         foreach (var gone in _webStates.Keys.Except(watched).ToList())
             _webStates.Remove(gone);
         foreach (var id in watched)
-            if (ConversationNow(id) is (_, var busy, _, var queued, var prompt, _) && WebState(busy, queued, prompt) is var state && _webStates.GetValueOrDefault(id) != state)
+            if (ConversationNow(id) is (_, var busy, _, var queued, var prompt, _) && WebState(busy, queued, prompt, WebStatus(busy)) is var state && _webStates.GetValueOrDefault(id) != state)
                 PublishWebEvent(id, _webStates[id] = state);
     }
 
@@ -68,7 +71,7 @@ public partial class MainWindow
     {
         if (ConversationNow(id) is not (_, var busy, _, var queued, var prompt, var reply))
             return (404, new { error = "No such conversation" });
-        _webStates.TryAdd(id, WebState(busy, queued, prompt));
+        _webStates.TryAdd(id, WebState(busy, queued, prompt, WebStatus(busy)));
         var life = new CancellationTokenSource();
         var picture = _webPicture is { } p && p.Id == id ? new { width = p.Width, height = p.Height, text = p.Text, progress = p.Progress, frame = p.Frame } : null;
         return (200, new WebServer.EventStream(JsonSerializer.Serialize(new { e = "hello", busy, queued, prompt, reply, picture }), _webEvents.Subscribe(id, life.Token), life));
