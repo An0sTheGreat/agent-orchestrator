@@ -307,32 +307,42 @@ public partial class MainWindow
         var run = ImageShare.Run(asked, recipe, local);
         if (run.Prompt.Length == 0)
             return ImageShare.Error(400, "The prompt is empty");
+        _shareProgress = null;
+        var fraction = 0.0;
+        _imgStatusTap = (text, progress) => _shareProgress = ImageShare.ProgressJson(fraction = progress ?? fraction, text);
+        List<ImageShare.Picture>? pictures;
+        // the GPU for the picture: the shared chat models leave (the next chat request loads its model again)
+        try { pictures = await GenerateInTempAsync(run, "another PC", UnloadSharedChatModelsAsync, ct); }
+        finally { _imgStatusTap = null; }
+        return pictures is null ? ImageShare.Error(500, _imgStatus.Text) : new(200, ImageShare.PicturesJson(pictures));
+    }
+
+    // One picture job for another PC or an app (forWhom, on the status line) in a temp folder deleted after; ct cancels it, freeGpu runs first.
+    // Null when it failed or was cancelled: RunImageJob showed which on the status line ("Failed: …" or "Cancelled").
+    private async Task<List<ImageShare.Picture>?> GenerateInTempAsync(ImageSettings run, string forWhom, Func<CancellationToken, Task> freeGpu, CancellationToken ct)
+    {
         var folder = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-share-{Guid.NewGuid():N}");
-        ImageShare.Response? reply = null;
+        List<ImageShare.Picture>? reply = null;
         try
         {
             await RunImageJob(async jobCt =>
             {
-                using var stop = ct.Register(CancelImageGen); // sharing turned off meanwhile
-                _shareProgress = null;
-                var fraction = 0.0;
-                _imgStatusTap = (text, progress) => _shareProgress = ImageShare.ProgressJson(fraction = progress ?? fraction, text);
-                ImageStatus("Generating for another PC…", indeterminate: true);
-                await UnloadSharedChatModelsAsync(jobCt); // the GPU for the picture: the next chat request loads its model again
+                using var stop = ct.Register(CancelImageGen);
+                ImageStatus($"Generating for {forWhom}…", indeterminate: true);
+                await freeGpu(jobCt);
                 var pictures = new List<ImageShare.Picture>();
                 foreach (var (written, _, seed) in (await GenerateLocalAsync(run, folder, null, jobCt)).Where(f => File.Exists(f.Written)))
                     pictures.Add(new(Convert.ToBase64String(await File.ReadAllBytesAsync(written, jobCt)), seed));
-                reply = new(200, ImageShare.PicturesJson(pictures));
-                ImageStatus($"Done for another PC · seed {run.Seed}", 1);
+                reply = pictures;
+                ImageStatus($"Done for {forWhom} · seed {run.Seed}", 1);
             });
         }
         finally
         {
-            _imgStatusTap = null;
             try { Directory.Delete(folder, recursive: true); }
             catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
         }
-        return reply ?? ImageShare.Error(500, _imgStatus.Text); // RunImageJob showed the failure: "Failed: …" or "Cancelled"
+        return reply;
     }
 
     private void SaveShare(bool on)

@@ -1111,7 +1111,7 @@ public partial class MainWindow
             StopImageServer();
     }
 
-    private bool ChatModelsInUse => _chatBusy || _process is { HasExited: false };
+    private bool ChatModelsInUse => _chatBusy || _process is { HasExited: false } || Volatile.Read(ref _localApiStreams) > 0; // an app's stream to a local worker (MainWindow.LocalApi.cs)
 
     private void RefreshImageRecipes()
     {

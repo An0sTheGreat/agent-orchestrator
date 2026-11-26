@@ -56,6 +56,19 @@ internal static class LocalApi
         int.TryParse(h, NumberStyles.None, CultureInfo.InvariantCulture, out var height) && width is >= 64 and <= 4096 && height is >= 64 and <= 4096
             ? (width, height) : null;
 
+    // The worker's timeout_seconds in config.json's text (a role with none of its own falls back to the planner's, as the engine's
+    // built-in roles do); 600 when unset or unreadable.
+    internal static int TimeoutSeconds(string configJson, string role)
+    {
+        try
+        {
+            var config = JsonNode.Parse(configJson);
+            var worker = config?["roles"]?[role] ?? config?["custom_workers"]?.AsArray().FirstOrDefault(w => w?["id"]?.GetValue<string>() == role) ?? config?["roles"]?["planner"];
+            return worker?["timeout_seconds"]?.GetValue<int>() is > 0 and var seconds ? seconds : 600;
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) { return 600; }
+    }
+
     // Where a request goes: the engine's `--api-target` line. KeyEnv names the key's variable ("" for none), never its value.
     internal sealed record Target(string BaseUrl, string Model, string KeyEnv, JsonObject Defaults);
 
@@ -164,6 +177,10 @@ internal static class LocalApi
         Check(merged["temperature"]?.GetValue<double>() == 1 && merged["top_p"]?.GetValue<double>() == 0.9 && merged["model"]?.GetValue<string>() == "gguf" &&
             merged["messages"] is JsonArray { Count: 0 }, "merged body: " + merged.ToJsonString());
         Check(Scrub("bad key sk-1 sk-1", "sk-1") == "bad key *** ***" && Scrub("x", "") == "x" && Scrub("x", null) == "x", "scrub");
+        Check(TimeoutSeconds("""{"roles":{"planner":{"timeout_seconds":90},"w":{"timeout_seconds":30}},"custom_workers":[{"id":"c","timeout_seconds":45}]}""", "w") == 30 &&
+            TimeoutSeconds("""{"roles":{"planner":{"timeout_seconds":90}},"custom_workers":[{"id":"c","timeout_seconds":45}]}""", "c") == 45 &&
+            TimeoutSeconds("""{"roles":{"planner":{"timeout_seconds":90}}}""", "reviewer") == 90 && TimeoutSeconds("{}", "w") == 600 &&
+            TimeoutSeconds("not json", "w") == 600 && TimeoutSeconds("""{"roles":{"w":{"timeout_seconds":"x"}}}""", "w") == 600, "worker timeout");
         Check(ParseSize("1024x768") == (1024, 768) && ParseSize("10x10") is null && ParseSize("abc") is null && ParseSize("5000x5000") is null &&
             ParseSize(null) is null, "size");
         Check(ParseTarget("""{"base_url":"http://127.0.0.1:8080/v1","model":"gguf","key_env":"OPENAI_API_KEY","defaults":{"temperature":0.4}}""") is

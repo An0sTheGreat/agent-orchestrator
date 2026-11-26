@@ -405,6 +405,15 @@ internal static class LauncherLogic
         return info;
     }
 
+    // The local API (MainWindow.LocalApi.cs): the engine makes one role's worker ready and prints its target as JSON; onlyLoaded: never load.
+    public static ProcessStartInfo BuildApiTargetStartInfo(string python, string workflowRoot, string folder, string role, bool onlyLoaded)
+    {
+        var info = NewStartInfo(python, workflowRoot);
+        foreach (var arg in new[] { "--project", folder, "--api-target", role }.Concat(onlyLoaded ? ["--only-loaded"] : Array.Empty<string>()))
+            info.ArgumentList.Add(arg);
+        return info;
+    }
+
     // ---- code: like chat, but the worker gets file tools over folders[0] (the project, always write) and the extra folders
 
     public sealed record CodeFolder(string Path, string Access); // Access: "read" | "write"
@@ -2210,6 +2219,10 @@ internal static class LauncherLogic
         var loadArgs = BuildLoadRoleStartInfo("python.exe", root, @"Y:\p", "reviewer").ArgumentList;
         if (loadArgs.IndexOf("--load-role") < 0 || loadArgs[loadArgs.IndexOf("--load-role") + 1] != "reviewer" || loadArgs[loadArgs.IndexOf("--project") + 1] != @"Y:\p")
             throw new InvalidOperationException("Load models must pass the role and the folder holding config.json.");
+        var targetArgs = BuildApiTargetStartInfo("python.exe", root, @"Y:\p", "planner", true).ArgumentList;
+        if (targetArgs.IndexOf("--api-target") < 0 || targetArgs[targetArgs.IndexOf("--api-target") + 1] != "planner" || !targetArgs.Contains("--only-loaded") ||
+            targetArgs[targetArgs.IndexOf("--project") + 1] != @"Y:\p" || BuildApiTargetStartInfo("python.exe", root, @"Y:\p", "planner", false).ArgumentList.Contains("--only-loaded"))
+            throw new InvalidOperationException("The local API's target must pass the role, the folder and --only-loaded only when asked.");
 
         var chatInfo = BuildChatStartInfo("python.exe", root, @"Y:\Example Project", @"Y:\req.json");
         var chatArgs = chatInfo.ArgumentList;
