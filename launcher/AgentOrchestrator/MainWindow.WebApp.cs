@@ -304,7 +304,7 @@ public partial class MainWindow
             ("POST", _) when path.StartsWith(one) && path.EndsWith("/delete") =>
                 await Dispatcher.InvokeAsync(() => WebDeleteChat(path[one.Length..^"/delete".Length])),
             ("POST", "/api/picture/delete") => WebPicturePath(WebField(WebBody(body), "path"), ["images"]) is { } picture && File.Exists(picture)
-                ? await Dispatcher.InvokeAsync(() => { ShredPictures([picture]); return (200, (object)new { ok = true }); }) : WebNotFound,
+                ? await Dispatcher.InvokeAsync(() => { ShredPictures([picture]); return File.Exists(picture) ? (409, (object)new { error = "Couldn't delete it (in use on the PC?)" }) : (200, (object)new { ok = true }); }) : WebNotFound,
             ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
             ("POST", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposerSet(WebBody(body), await WebSharedImageModels())),
             ("GET", "/api/images") => await await Dispatcher.InvokeAsync(async () => WebImages(await WebSharedImageModels())),
@@ -1153,7 +1153,7 @@ public partial class MainWindow
             File.WriteAllText(Path.ChangeExtension(generated, ".json"), "{}");
             var shred = await PostJson("/api/picture/delete", new { path = generated });
             if (shred is not (200, _) || File.Exists(generated) || File.Exists(Path.ChangeExtension(generated, ".json")) || IsVisible)
-                return Fail($"delete a generated picture: still there {File.Exists(generated)}, its settings {File.Exists(Path.ChangeExtension(generated, ".json"))}, visible {IsVisible}");
+                return Fail($"delete a generated picture: {shred.Status} {shred.Body?.ToJsonString()}, still there {File.Exists(generated)}, its settings {File.Exists(Path.ChangeExtension(generated, ".json"))}, visible {IsVisible}");
             foreach (var kept in new[] { photo, Path.Combine(ImageGen.ImagesFolder, "..", "pasted", Path.GetFileName(photo)), @"images\..\pasted\" + Path.GetFileName(photo) })
                 if (await PostJson("/api/picture/delete", new { path = kept }) is not (404, _) || !File.Exists(photo))
                     return Fail($"{kept} was deleted");

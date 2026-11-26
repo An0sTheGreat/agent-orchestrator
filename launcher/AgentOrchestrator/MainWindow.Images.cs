@@ -32,7 +32,7 @@ public partial class MainWindow
             return bitmap;
         }
         catch (Exception e) when (e is IOException or NotSupportedException or UriFormatException or ArgumentException or UnauthorizedAccessException
-                                      or System.Runtime.InteropServices.COMException or InvalidOperationException) { return null; }
+                                      or System.Runtime.InteropServices.COMException or InvalidOperationException or FormatException) { return null; } // FileFormatException: a file that is not a picture
     }
 
     // A rounded square thumbnail that opens the picture full size; null when the file is gone or not a picture.

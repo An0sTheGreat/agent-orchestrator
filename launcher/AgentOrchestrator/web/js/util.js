@@ -34,7 +34,7 @@ export function longPress(el, fn, ms = 500, slop = 10) {
   el.addEventListener('pointermove', e => { if (at && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > slop) cancel(); });
   for (const end of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(end, cancel);
   el.addEventListener('contextmenu', e => { e.preventDefault(); if (!fired) fire(); });
-  el.addEventListener('click', e => { if (fired) { fired = false; e.preventDefault(); e.stopPropagation(); } }, true);
+  el.addEventListener('click', e => { if (fired) { fired = false; e.preventDefault(); e.stopImmediatePropagation(); } }, true);
 }
 
 // The shell's box while the on-screen keyboard is up: the visual viewport's height and its offset into the page (iOS scrolls the page

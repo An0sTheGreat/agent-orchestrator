@@ -30,7 +30,7 @@ export function formToSettings(f, model, maxBatch = 20) {
   const int = v => parseInt(v, 10), seed = /^\s*\d+\s*$/.test(f.seed) ? int(f.seed) : -1;
   return {
     model: f.model, prompt: f.prompt.trim(), negative: fieldsFor(model).negative ? f.negative.trim() : '',
-    steps: int(f.steps) || 0, cfg: parseFloat(f.cfg) || 0, aspect: f.aspect, width: int(f.width) || 0, height: int(f.height) || 0,
+    steps: int(f.steps) || null, cfg: Number.isFinite(parseFloat(f.cfg)) ? parseFloat(f.cfg) : null, /* empty: the model's default */ aspect: f.aspect, width: int(f.width) || 0, height: int(f.height) || 0,
     unlocked: !!f.unlocked, count: Math.min(maxBatch, Math.max(1, int(f.count) || 1)), seed, lowVram: !!f.lowVram };
 }
 
@@ -86,13 +86,15 @@ if (typeof document !== 'undefined') {
     $('#imgempty').hidden = pictures.length > 0;
   }
 
-  async function load(mine) {
+  // all: the form too (on show); a new picture from the poll refreshes only the gallery, so typing in the form is kept.
+  async function load(mine, all = true) {
     let r;
     try { r = await api.get('/api/images'); } catch (err) { if (mine === gen) fail(err); return; }
     if (mine !== gen) return;
     models = r.models || [];
     maxBatch = r.maxBatch || 20;
     pictures = r.pictures || [];
+    if (!all) return drawGallery();
     field('model').replaceChildren(...groupModels(models).map(([label, ms]) =>
       h('optgroup', { label }, ms.map(m => h('option', { value: m.id }, m.name + (m.note ? ` (${m.note})` : ''))))));
     field('aspect').replaceChildren(...(r.aspects || []).map(a => typeof a === 'string' ? h('option', { value: a }, a) : h('option', { value: a.ratio }, a.name || a.ratio))); // {name, ratio} from the server
@@ -134,17 +136,19 @@ if (typeof document !== 'undefined') {
   }
 
   // Polls while the Images screen is shown (a hidden view, a new show or a PC switch ends this loop).
+  let pollSeq = 0; // the newest poll call; an older one in flight stops instead of starting a second loop
   async function poll(mine) {
+    const me = ++pollSeq;
     clearTimeout(timer);
     if (mine !== gen || !view.classList.contains('on')) return;
     let st;
     try { st = await api.get('/api/images/status'); } catch (err) { if (mine === gen) fail(err); return; }
-    if (mine !== gen) return;
+    if (mine !== gen || me !== pollSeq) return;
     if (st.busy) sawBusy = true;
     $('#imgcancel').hidden = !st.busy;
     drawStage(st);
     drawQueue(st.queue || []);
-    if (st.latest && st.latest !== pictures[0]?.path) load(mine); // a new picture: the gallery's newest
+    if (st.latest && st.latest !== pictures[0]?.path) load(mine, false); // a new picture: the gallery's newest
     timer = setTimeout(() => poll(mine), pollDelay(st.busy));
   }
 
