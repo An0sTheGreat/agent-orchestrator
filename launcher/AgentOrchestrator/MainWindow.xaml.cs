@@ -5996,6 +5996,7 @@ public partial class MainWindow : Window
         _speechPlayer?.Dispose(); // waits for the reading to end and release the speaker
         Speech.Shutdown(); // the recognizer, if dictation made one
         Tts.Shutdown(); // the Kokoro engines, if speech made them
+        Chatterbox.Shutdown(); // the Chatterbox engine, if a voice loaded it
         CancelImageGen();
         StopImageServer();
         StopLocalServer();

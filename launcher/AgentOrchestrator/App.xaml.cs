@@ -43,6 +43,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.WebSpeakSelfTest();
             Speech.SelfTest();
             Tts.TtsSelfTest();
+            Chatterbox.ChatterboxSelfTest();
             Shutdown(0);
             return;
         }
@@ -61,6 +62,15 @@ public partial class App : Application
         {
             var code = 1;
             try { code = Tts.SayFile(e.Args[say + 1], e.Args[say + 2], say + 3 < e.Args.Length ? e.Args[say + 3] : Tts.Default, say + 4 < e.Args.Length ? e.Args[say + 4] : TtsModels.Full.Key); }
+            catch (Exception exception) { Console.Error.WriteLine(exception); }
+            Environment.Exit(code);
+        }
+
+        // --chatterbox-say "<text>" <out.wav> [clip.wav]: Chatterbox end to end in a test data folder (Chatterbox.SayFile), no window.
+        if (Array.FindIndex(e.Args, a => a.Equals("--chatterbox-say", StringComparison.OrdinalIgnoreCase)) is var cb and >= 0 && cb + 2 < e.Args.Length)
+        {
+            var code = 1;
+            try { code = Chatterbox.SayFile(e.Args[cb + 1], e.Args[cb + 2], cb + 3 < e.Args.Length ? e.Args[cb + 3] : null); }
             catch (Exception exception) { Console.Error.WriteLine(exception); }
             Environment.Exit(code);
         }

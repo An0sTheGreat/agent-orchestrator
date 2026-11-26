@@ -47,5 +47,7 @@
     <PackageReference Include="org.k2fsa.sherpa.onnx" Version="2.0.3" />
     <!-- microphone capture and device names (Settings > Voice), MIT; 2.2.1 is the last release with a net8 target (3.x is net9+) -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Chatterbox Turbo (Chatterbox.cs), MIT: the managed API only; its DirectML onnxruntime.dll is installed into chatterbox\runtime\ -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.24.4" />
   </ItemGroup>
 </Project>
