@@ -336,6 +336,11 @@ public partial class MainWindow
             ("POST", "/api/settings") => await Dispatcher.InvokeAsync(() => WebSettingsSet(WebBody(body))),
             ("POST", "/api/settings/reset-stats") => await Dispatcher.InvokeAsync(WebResetStats),
             ("GET", "/api/fs/dirs") => WebFsDirs(query.GetValueOrDefault("path")),
+            ("GET", "/api/terminal") => await Dispatcher.InvokeAsync(() => WebTerminal(query.GetValueOrDefault("since"))),
+            ("POST", "/api/terminal/input" or "/api/terminal/new") => await Dispatcher.InvokeAsync(() => WebTerminalPost(path["/api/terminal/".Length..], WebBody(body))),
+            ("GET", "/api/browser") => await Dispatcher.InvokeAsync(WebBrowser),
+            ("GET", "/api/browser/shot") => await await Dispatcher.InvokeAsync(WebBrowserShot),
+            ("POST", _) when path.StartsWith("/api/browser/") => await await Dispatcher.InvokeAsync(() => WebBrowserAct(path["/api/browser/".Length..], WebBody(body))),
             _ when path.StartsWith("/api/code/") => await Dispatcher.InvokeAsync(() => WebCode(method, path["/api/code/".Length..], query, WebBody(body))),
             ("GET", "/api/workers") => await Dispatcher.InvokeAsync(WebWorkers),
             ("POST", "/api/workers/add") => await Dispatcher.InvokeAsync(WebAddWorker),
@@ -705,7 +710,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound) || !await WebToolsSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes

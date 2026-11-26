@@ -32,12 +32,23 @@ public partial class MainWindow
 
     private void TerminalNew_Click(object sender, RoutedEventArgs e)
     {
+        if (_termWeb?.CoreWebView2 is null)
+            StopTerminal();
+        else
+            RestartTerminal();
+    }
+
+    // New (the panel's button, or the phone's restart): another PowerShell, the page and the phone's buffer emptied.
+    private void RestartTerminal()
+    {
         StopTerminal();
-        if (_termWeb?.CoreWebView2 is { } core)
+        lock (_termOut)
         {
-            core.PostWebMessageAsJson("""{"t":"reset"}""");
-            StartTerminal();
+            _termOut.Clear();
+            _termRing.Clear();
         }
+        _termWeb?.CoreWebView2?.PostWebMessageAsJson("""{"t":"reset"}""");
+        StartTerminal();
     }
 
     private async void OpenTerminal()
@@ -140,6 +151,17 @@ public partial class MainWindow
                     (_termCols, _termRows) = ((short)m.GetProperty("cols").GetInt32(), (short)m.GetProperty("rows").GetInt32());
                     if (_pty is null)
                         StartTerminal();
+                    else // started by the phone before the panel opened: the page shows what it has written so far
+                    {
+                        _pty.Resize(_termCols, _termRows);
+                        string text;
+                        lock (_termOut)
+                        {
+                            text = _termRing.ToString();
+                            _termOut.Clear(); // already in the buffer
+                        }
+                        _termWeb?.CoreWebView2?.PostWebMessageAsJson(JsonSerializer.Serialize(new { t = "o", d = text }));
+                    }
                     break;
             }
         }
@@ -156,19 +178,19 @@ public partial class MainWindow
         try
         {
             var pty = _pty = new ConPty("powershell.exe -NoLogo", folder, _termCols, _termRows);
-            pty.Output += text => { lock (_termOut) _termOut.Append(text); };
+            pty.Output += TermAppend;
             pty.Exited += () => Dispatcher.InvokeAsync(() =>
             {
                 if (_pty != pty)
                     return;
                 _pty = null;
-                lock (_termOut) _termOut.Append("\r\n\x1b[90m[PowerShell ended: press New to start another]\x1b[0m\r\n");
+                TermAppend("\r\n\x1b[90m[PowerShell ended: press New to start another]\x1b[0m\r\n");
             });
             pty.Start();
         }
         catch (Exception x) when (x is System.ComponentModel.Win32Exception or IOException)
         {
-            lock (_termOut) _termOut.Append($"\x1b[31mPowerShell could not start: {x.Message}\x1b[0m\r\n");
+            TermAppend($"\x1b[31mPowerShell could not start: {x.Message}\x1b[0m\r\n");
         }
         // output goes to the page at most once a frame, in one message
         _termFlush ??= new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Background, (_, _) =>
