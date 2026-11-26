@@ -152,7 +152,7 @@ public partial class MainWindow
                 mine.Add(path);
         if (text.Trim().Length == 0 && mine.Count == 0)
             return (400, new { error = "Empty message" });
-        if (text.TrimStart().StartsWith('/') && !System.Text.RegularExpressions.Regex.IsMatch(text, @"\A\s*/image(\s|\z)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) // a slash command changes settings (RunLocalCommand): those stay at the PC; /image paints
+        if (text.TrimStart().StartsWith('/') && !System.Text.RegularExpressions.Regex.IsMatch(text, @"\A\s*/(image|compact)(\s|\z)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) // a slash command changes settings (RunLocalCommand): those stay at the PC; /image paints, /compact summarizes this conversation
             return (400, new { error = "Slash commands only work at the PC." });
         if (DesktopDialogOpen())
             return DialogOpen;

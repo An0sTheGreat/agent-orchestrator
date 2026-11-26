@@ -972,7 +972,7 @@ public partial class MainWindow
     // Sending (WebAppSmoke, while on), the window hidden, then minimized, and never shown by a route: a PNG uploaded into
     // pasted\ under a unique safe name and sent with "describe this" to a new chat on a stand-in engine (the reply in the stream,
     // the user message holding the picture); a second send leaves the minimized window minimized; 26 MB is 413 with its message;
-    // a file type Attach refuses is 400 and deleted; an attachment outside pasted\ and an empty message are 400; stop routes;
+    // a file type Attach refuses is 400 and deleted; an attachment outside pasted\ and an empty message are 400; /compact goes and another slash command is 400; stop routes;
     // the composer is read and written (saved, the desktop toggles following); send while a PC dialog is open is 409.
     private async Task<bool> WebSendSmoke(int port)
     {
@@ -1063,6 +1063,11 @@ public partial class MainWindow
                     return Fail($"{bad} was attached");
             if (await PostJson("/api/send", new { id, text = "  " }) is not (400, _) || _store.Get(id)?.Messages.Count != 4)
                 return Fail("an empty message, or a refused one, was sent");
+            // /compact summarizes this conversation and changes no setting: it goes; another slash command stays at the PC
+            if (await PostJson("/api/send", new { id, text = "/compact keep the colours" }) is not (200, _) || !await Until(() => !_chatBusy))
+                return Fail("/compact was not sent");
+            if (await PostJson("/api/send", new { id, text = "/ponytail ultra" }) is not (400, { } slash) || slash["error"]?.ToString() != "Slash commands only work at the PC.")
+                return Fail("/ponytail ultra was not refused");
             if (await PostJson("/api/stop", new { id }) is not (409, { } idle) || idle["error"]?.ToString() != "Nothing is running there.")
                 return Fail("stop while idle");
 

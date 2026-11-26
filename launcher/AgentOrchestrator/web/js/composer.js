@@ -5,15 +5,16 @@ import { api } from './api.js';
 import { h, icon } from './h.js';
 
 /* ---------- pure ---------- */
-// The app's commands the / list offers besides the skills (the PC refuses them from the phone; its message shows).
-export const COMMANDS = [{ name: 'compact', help: 'Summarise this conversation now' }];
+// The app's commands the / list offers besides the skills (the PC takes /compact from the phone).
+export const COMMANDS = [{ name: 'compact', help: 'Summarise this conversation now', insert: '/compact ' }];
 
 // The / pop-up's rows for the box's text: a "/" word alone at the start (a space closes it), prefix-matched; null = closed.
+// A skill is listed as /name but inserts $name (the desktop's other skill syntax): the PC refuses /name from the phone.
 export function slashMatches(text, skills) {
   const m = /^\/([\w.-]*)$/.exec(text);
   if (!m) return null;
   const q = m[1].toLowerCase();
-  return [...skills.map(s => ({ name: s.name, help: s.on ? 'Skill, on for this turn' : 'Skill' })), ...COMMANDS]
+  return [...skills.map(s => ({ name: s.name, help: s.on ? 'Skill, on for this turn' : 'Skill', insert: '$' + s.name + ' ' })), ...COMMANDS]
     .filter(r => r.name.toLowerCase().startsWith(q));
 }
 
@@ -99,7 +100,7 @@ if (typeof document !== 'undefined') {
     const rows = opts && slashMatches(box.value, opts.skills);
     pop.classList.toggle('hidden', !rows?.length);
     pop.replaceChildren(h('p', { class: 'skillpop-head' }, 'Skills'), ...(rows || []).map(r =>
-      h('button', { onclick: () => { box.value = '/' + r.name + ' '; box.focus(); box.dispatchEvent(new Event('input')); } }, h('b', null, '/' + r.name), h('small', null, r.help))));
+      h('button', { onclick: () => { box.value = r.insert; box.focus(); box.dispatchEvent(new Event('input')); } }, h('b', null, '/' + r.name), h('small', null, r.help))));
   }
 
   async function send() {
