@@ -761,6 +761,11 @@ public partial class MainWindow
             if (list.Status != 200 || list.Body?["busy"] is null || list.Body["workers"]?.AsArray() is not [{ } lead, ..] || lead["role"]?.ToString() != "planner" ||
                 lead["shown"]?.GetValue<bool>() != true || lead["source"] is null || lead["model"] is null || lead["problem"] is null)
                 return Fail($"list: {list.Status} {list.Body}");
+            // VOICE, the calls' agent, comes right after COMPACTOR, and its page answers
+            var roles = list.Body["workers"]!.AsArray().Select(x => x?["role"]?.ToString()).ToList();
+            if (roles.IndexOf("compactor") < 0 || roles.IndexOf("voice") != roles.IndexOf("compactor") + 1 ||
+                await Send("/api/worker/voice") is not { Status: 200, Body: { } voiceWorker } || voiceWorker["options"] is not JsonArray)
+                return Fail($"voice in the list: {string.Join(",", roles)}");
 
             var a = await Send("/api/workers/add", "{}");
             custom = a.Body?["role"]?.ToString();
