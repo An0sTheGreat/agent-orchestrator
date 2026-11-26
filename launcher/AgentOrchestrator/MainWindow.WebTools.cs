@@ -27,8 +27,8 @@ public partial class MainWindow
             _termOut.Append(text);
             _termRing.Append(text);
             _termSeq += text.Length;
-            if (_termRing.Length > WebTermRing)
-                _termRing.Remove(0, _termRing.Length - WebTermRing);
+            if (_termRing.Length > WebTermRing) // down to three quarters, so a full buffer is not moved on every chunk
+                _termRing.Remove(0, _termRing.Length - WebTermRing * 3 / 4);
         }
     }
 
@@ -75,18 +75,55 @@ public partial class MainWindow
 
     private bool BrowserShown => BrowserPanel.Visibility == Visibility.Visible; // IsVisible is false while the window is hidden
 
-    // GET /api/browser
-    private (int, object) WebBrowser() => (200, new
+    // The phone's browsing: every /api/browser call stamps it; within the grace after the last one (the phone's Browser pane polls
+    // every 3 s) a page's dialogs are cancelled, not shown on the PC, and file pickers stay intercepted. The PC's own browsing,
+    // with no phone call within the grace, shows its dialogs as before.
+    private const int PhoneBrowserGraceMs = 10_000;
+    private long _phoneBrowserAt = long.MinValue / 2; // Environment.TickCount64 of the last call (UI thread)
+    private bool PhoneBrowsing => Environment.TickCount64 - _phoneBrowserAt < PhoneBrowserGraceMs;
+    private System.Windows.Threading.DispatcherTimer? _pickerWatch;
+
+    // Page.setInterceptFileChooserDialog on a tab the phone gives input to, until the grace ends: a picker never opens on the PC.
+    private async Task WebInterceptPickers(BrowserTab tab, CoreWebView2 core)
     {
-        open = BrowserShown,
-        tabs = _tabs.Select((t, i) => new { index = i, title = TabTitle(t), url = t.Url, shown = t == _tab }).ToList(),
-        follow = _settings.BrowserFollow,
-        input = _settings.BrowserInput,
-    });
+        if (!tab.Intercepting)
+        {
+            await Cdp(core, "Page.enable", new { });
+            await Cdp(core, "Page.setInterceptFileChooserDialog", new { enabled = true });
+            tab.Intercepting = true;
+        }
+        _pickerWatch ??= new System.Windows.Threading.DispatcherTimer(TimeSpan.FromSeconds(1), System.Windows.Threading.DispatcherPriority.Background, (_, _) =>
+        {
+            if (PhoneBrowsing)
+                return;
+            _pickerWatch!.Stop();
+            foreach (var t in _tabs.Where(t => t.Intercepting))
+            {
+                t.Intercepting = false;
+                if (t.Web.CoreWebView2 is { } c)
+                    Forget(Cdp(c, "Page.setInterceptFileChooserDialog", new { enabled = false }));
+            }
+        }, Dispatcher);
+        _pickerWatch.Start();
+    }
+
+    // GET /api/browser
+    private (int, object) WebBrowser()
+    {
+        _phoneBrowserAt = Environment.TickCount64;
+        return (200, new
+        {
+            open = BrowserShown,
+            tabs = _tabs.Select((t, i) => new { index = i, title = TabTitle(t), url = t.Url, shown = t == _tab }).ToList(),
+            follow = _settings.BrowserFollow,
+            input = _settings.BrowserInput,
+        });
+    }
 
     // GET /api/browser/shot: the shown tab as the model's screenshot takes it (recording its size, so taps map), as JPEG bytes.
     private async Task<(int, object)> WebBrowserShot()
     {
+        _phoneBrowserAt = Environment.TickCount64;
         if (_tab is not { } tab || tab.Web.CoreWebView2 is not { } core)
             return (404, new { error = "No tab" });
         try
@@ -101,8 +138,16 @@ public partial class MainWindow
         }
     }
 
-    // POST /api/browser/{action}: the desktop's own handlers; the page's input as CDP events within 15 s.
+    // POST /api/browser/{action}: the desktop's own handlers; the page's input as CDP events within 15 s. Stamps the phone's
+    // browsing as it starts and as it ends, so the grace runs from the end of a slow call.
     private async Task<(int, object)> WebBrowserAct(string action, JsonElement body)
+    {
+        _phoneBrowserAt = Environment.TickCount64;
+        try { return await WebBrowserActNow(action, body); }
+        finally { _phoneBrowserAt = Environment.TickCount64; }
+    }
+
+    private async Task<(int, object)> WebBrowserActNow(string action, JsonElement body)
     {
         if (WebPromptOpen())
             return (409, new { error = "DialogOpen" });
@@ -165,6 +210,8 @@ public partial class MainWindow
         tab.Driving = true;
         try
         {
+            await WebInterceptPickers(tab, core);
+            tab.Picker = false;
             var run = work();
             if (await Task.WhenAny(run, Task.Delay(15000)) != run)
             {
@@ -174,7 +221,7 @@ public partial class MainWindow
             if (await run is { } refused)
                 return refused;
             await Task.Delay(300); // a dialog the input opened arrives now
-            return WebBrowser();
+            return tab.Picker ? (409, new { error = "That is a file picker: choose the file on the PC" }) : WebBrowser();
         }
         catch (Exception e) when (e is InvalidOperationException or System.Runtime.InteropServices.COMException or ObjectDisposedException)
         {
@@ -304,6 +351,39 @@ public partial class MainWindow
                 return Fail($"type or key: {typed.Status} {typed.Body}");
             if ((await Send("/api/browser/key", new { key = "NoSuchKey" })).Status != 400)
                 return Fail("an unknown key is not 400");
+            // a page's alert on load (the phone's reload) and one a second after the phone's tap (its input over): cancelled and noted, never a message box on the PC
+            if (_tabs[index].Web.CoreWebView2 is not { } core)
+                Console.Error.WriteLine("webapp-smoke: tools: no browser engine in this session; the page's dialogs are not checked");
+            else
+            {
+                var tab = _tabs[index];
+                var shown = new List<string>();
+                var messageBox = _messageBox;
+                _messageBox = (text, _, _) => { shown.Add(text); return MessageBoxResult.Cancel; };
+                var script = await core.AddScriptToExecuteOnDocumentCreatedAsync("alert('phone-smoke-load'); addEventListener('click', () => setTimeout(() => alert('phone-smoke-click'), 1000));");
+                try
+                {
+                    tab.Dialog = "";
+                    if ((await Send("/api/browser/reload", new { })).Status != 200)
+                        return Fail("reload");
+                    for (var i = 0; i < 40 && !tab.Dialog.Contains("phone-smoke-load") && shown.Count == 0; i++)
+                        await Task.Delay(250);
+                    if (shot.Status == 200)
+                    {
+                        if ((await Send("/api/browser/tap", new { x = 1, y = 1 })).Status != 200)
+                            return Fail("tap after the reload");
+                        for (var i = 0; i < 20 && !tab.Dialog.Contains("phone-smoke-click") && shown.Count == 0; i++)
+                            await Task.Delay(250);
+                    }
+                    if (shown.Count != 0 || !tab.Dialog.Contains("phone-smoke-load") || shot.Status == 200 && !tab.Dialog.Contains("phone-smoke-click"))
+                        return Fail($"the page's dialogs: shown on the PC [{string.Join(", ", shown)}], noted [{tab.Dialog.Trim()}]");
+                }
+                finally
+                {
+                    core.RemoveScriptToExecuteOnDocumentCreated(script);
+                    _messageBox = messageBox;
+                }
+            }
             if (await Send("/api/browser/options", new { follow = !follow, input = !input }) is not { Status: 200, Body: { } opts } || opts["follow"]?.GetValue<bool>() != !follow ||
                 AppSettings.Load() is var saved && (saved.BrowserFollow == follow || saved.BrowserInput == input) || (await Send("/api/browser/options", new { })).Status != 400)
                 return Fail("options");

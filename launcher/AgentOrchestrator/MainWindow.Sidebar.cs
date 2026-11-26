@@ -535,6 +535,7 @@ public partial class MainWindow
         if (_chatConv?.Id == id)
             ClearChatConversation();
         StoreChange(() => _store.Delete(id));
+        _webTodos.Remove(id);
         if (AppSettings.Unified && wasOpen) // the test build: a fresh chat, not the folder's PROJECT.md prompts
             NewSidebarChat();
     }

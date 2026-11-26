@@ -132,7 +132,8 @@ public partial class MainWindow
             id = conv.Id, title = ConversationStore.TitleOf(conv), folder,
             folders = WebCodeFoldersOf(conv).Select(f => new { path = f.Path, access = f.Access }).ToList(),
             hasProjectMd = hasMd, startLabel = usable ? LauncherLogic.PrimaryLabel(folder) : "Start project",
-            canStart = !_chatBusy && _process is null && _workflowRoot is not null && hasMd && !LauncherLogic.OverlapsWorkflowRoot(folder, _workflowRoot),
+            canStart = !_chatBusy && _process is null && _workflowRoot is not null && hasMd && !LauncherLogic.OverlapsWorkflowRoot(folder, _workflowRoot) &&
+                       !WorkerEditsPending && RuntimeRefusal is null,
             running, busy, taskId = usable ? LauncherLogic.CurrentTaskId(folder) : null,
             status = busy || _codeConv?.Id == conv.Id ? StatusText.Text : "Ready",
             taskTime = Clock(_taskWatch), turnTime = Clock(_turnWatch), once = _settings.Once,
@@ -157,7 +158,8 @@ public partial class MainWindow
         return SameFolder(conv.Folder, folder) ? (200, WebCodeSnapshot(conv)) : WebCodeError("Could not change the folder");
     }
 
-    // StartCodeProject's guards as 409s with its texts; a complete project needs restart: true, then RestartProject runs past its confirm.
+    // StartCodeProject's guards as 409s with its texts; a complete project needs restart: true, then Start_Click's RestartProject runs past
+    // its confirm (after Start_Click's own RuntimeReady, so a missing llama-server recycles nothing).
     private (int, object) WebCodeStart(ConversationStore.Conversation conv, bool restart)
     {
         var folder = conv.Folder;
@@ -182,18 +184,10 @@ public partial class MainWindow
         }
         if (WebOpenCode(conv) is { } refused)
             return refused;
-        if (restart && LauncherLogic.IsProjectComplete(folder))
-        {
-            var confirm = _restartConfirm;
-            _restartConfirm = _ => true; // the phone confirmed on its side
-            try
-            {
-                if (!RestartProject(folder))
-                    return WebCodeError("Restart stopped: see the run log on the PC");
-            }
-            finally { _restartConfirm = confirm; }
-        }
-        StartCodeProject();
+        var confirm = _restartConfirm;
+        _restartConfirm = _ => true; // the phone confirmed on its side; Start_Click reaches RestartProject before its first await
+        try { StartCodeProject(); }
+        finally { _restartConfirm = confirm; }
         return _process is not null ? (200, WebCodeSnapshot(conv)) : WebCodeError("PROJECT.md and the workflow files are ready, but the run was not started");
     }
 
@@ -291,6 +285,8 @@ public partial class MainWindow
 
     private (int, object) WebCodeRemoveFolder(ConversationStore.Conversation conv, string path)
     {
+        if (path.Length == 0)
+            return (400, new { error = "Send the folder's path" });
         if (_chatBusy || _process is not null)
             return WebCodeError(WebBusy);
         if (WebCodeFoldersOf(conv).FirstOrDefault(f => SamePath(f.Path, path)) is not { } folder)
@@ -302,7 +298,8 @@ public partial class MainWindow
     }
 
     // A path the phone may read for this conversation: full, inside its folder or one of its extra folders (the Agent Orchestrator
-    // folder only through an extra folder, as Read only), no `..`, and no reparse point on the way; null otherwise.
+    // folder only through an extra folder, as Read only), no `..`, and no link (symlink, junction) on the way; null otherwise. Other
+    // reparse points pass: OneDrive's files on demand and deduplicated files are ordinary files.
     private string? WebSandboxed(ConversationStore.Conversation conv, string path)
     {
         if (path.Length == 0 || path.Split('\\', '/').Contains(".."))
@@ -323,7 +320,7 @@ public partial class MainWindow
         {
             try
             {
-                if ((File.Exists(step) || Directory.Exists(step)) && File.GetAttributes(step).HasFlag(FileAttributes.ReparsePoint))
+                if ((Directory.Exists(step) ? new DirectoryInfo(step).LinkTarget : File.Exists(step) ? new FileInfo(step).LinkTarget : null) is not null)
                     return null;
             }
             catch (Exception x) when (x is IOException or UnauthorizedAccessException) { return null; }
@@ -465,6 +462,11 @@ public partial class MainWindow
             if (await Send(code + "/files") is not { Status: 200, Body: { } list } || list["entries"]!.AsArray() is var entries && (entries[0]?["name"]?.ToString() != "src" ||
                 entries[0]?["dir"]?.GetValue<bool>() != true || !entries.Any(e => e?["name"]?.ToString() == "a.txt")))
                 return Fail($"files: {(await Send(code + "/files")).Body}");
+            var link = Path.Combine(proj, "link"); // a junction out of the project, as anyone can make one without admin rights
+            using (var mklink = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c mklink /J \"{link}\" \"{outside}\"") { CreateNoWindow = true, UseShellExecute = false })!)
+                mklink.WaitForExit();
+            if (!File.Exists(Path.Combine(link, "o.txt")) || (await Send(code + "/file?path=" + Q(Path.Combine(link, "o.txt")))).Status != 403 || (await Send(code + "/files?dir=" + Q(link))).Status != 403)
+                return Fail("a junction out of the project was not refused");
             if (await Send(code + "/file?path=" + Q(Path.Combine(proj, "a.txt"))) is not { Status: 200 } read || read.Body?["text"]?.ToString() != "alpha\n" || read.Body?["language"]?.ToString() != "txt")
                 return Fail("file");
             var outsideFile = Path.Combine(outside, "o.txt");
@@ -475,6 +477,8 @@ public partial class MainWindow
             if (await Send(code + "/folders/add", new { path = extra, access = "read" }) is not { Status: 200 } add || add.Body?["folders"]?[0]?["access"]?.ToString() != "read" ||
                 (await Send(code + "/file?path=" + extraFile)).Status != 200 || (await Send(code + "/folders/add", new { path = extra, access = "read" })).Status != 409)
                 return Fail("folders/add");
+            if ((await Send(code + "/folders/remove", new { path = "" })).Status != 400)
+                return Fail("folders/remove with no path is not 400");
             if (await Send(code + "/folders/remove", new { path = extra }) is not { Status: 200 } remove || remove.Body?["folders"]!.AsArray().Count != 0 || (await Send(code + "/file?path=" + extraFile)).Status != 403)
                 return Fail("folders/remove");
             if (await Send("/api/fs/dirs?path=" + Q(temp)) is not { Status: 200 } dirs || !dirs.Body!["dirs"]!.AsArray().Any(d => d?["name"]?.ToString() == "proj") ||
@@ -503,6 +507,21 @@ public partial class MainWindow
                 return Fail($"todo: {(await Send(code)).Body?["todo"]}");
             if ((await Send("/api/code/nope")).Status != 404 || (await Send("/api/code/nope/files")).Status != 404)
                 return Fail("an unknown conversation is not 404");
+
+            // a complete project restarted from the phone while llama-server is being updated: Start_Click refuses before anything is recycled
+            File.WriteAllText(Path.Combine(proj, "STATE.md"), "# State\n\n## Project complete\n");
+            var (download, recycle) = (_llamaDownload, _restartRecycle);
+            var recycled = new List<string>();
+            using var updating = _llamaDownload = new CancellationTokenSource();
+            _restartRecycle = recycled.Add;
+            try
+            {
+                if (await Send(code + "/start", new { }) is not { Status: 409 } ask || ask.Body?["restart"]?.GetValue<bool>() != true)
+                    return Fail("start on a complete project does not ask to restart");
+                if ((await Send(code + "/start", new { restart = true })).Status != 409 || recycled.Count != 0 || _process is not null || !File.Exists(Path.Combine(proj, "a.txt")))
+                    return Fail($"restart with llama-server not ready recycled {recycled.Count} items");
+            }
+            finally { (_llamaDownload, _restartRecycle) = (download, recycle); }
             return true;
         }
         finally

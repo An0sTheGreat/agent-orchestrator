@@ -178,7 +178,12 @@ public partial class MainWindow
         try
         {
             var pty = _pty = new ConPty("powershell.exe -NoLogo", folder, _termCols, _termRows);
-            pty.Output += TermAppend;
+            pty.Output += text =>
+            {
+                lock (_termOut) // a late chunk from a PowerShell already replaced (New) must not land in the emptied buffer
+                    if (_pty == pty)
+                        TermAppend(text);
+            };
             pty.Exited += () => Dispatcher.InvokeAsync(() =>
             {
                 if (_pty != pty)

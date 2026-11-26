@@ -28,6 +28,7 @@ public partial class MainWindow
         public int ShotW, ShotH;
         public double ShotViewW, ShotViewH, MouseX, MouseY;
         public bool HasMouse, Driving, Pointer, Capturing; // Pointer: the model's pointer is on this page (until its reply ends)
+        public bool Intercepting, Picker; // the phone's file picker interception is on; a picker was intercepted (MainWindow.WebTools.cs)
         public string Done = "", Dialog = ""; // Dialog: a script dialog or file picker the page opened while the model acted
     }
 
@@ -35,6 +36,7 @@ public partial class MainWindow
     private BrowserTab? _tab; // the shown one
     private WebView2? _web => _tab?.Web;
     private const string BrowserHome = "https://duckduckgo.com/";
+    private Func<string, string, MessageBoxButton, MessageBoxResult> _messageBox = MessageBox.Show; // a page's dialog on the PC; --webapp-smoke records it instead
 
     private void Browser_Click(object sender, RoutedEventArgs e)
     {
@@ -152,15 +154,22 @@ public partial class MainWindow
             web.CoreWebView2.DocumentTitleChanged += (_, _) => RefreshTab(tab);
             web.CoreWebView2.ContextMenuRequested += (_, a) => a.Handled = tab.Driving; // the model's right click acts on the page only
             // The page's alert/confirm/beforeunload: the default dialogs are off (a setting that only applies from the start, and one the
-            // model could never answer), so they come here. The model's own actions cancel them and are told; the user gets a message box.
+            // model could never answer), so they come here. The model's own actions, and the phone's browsing (its calls and the grace
+            // after them), cancel them and are told; the user at the PC gets a message box.
             web.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
             web.CoreWebView2.ScriptDialogOpening += (_, a) =>
             {
-                if (tab.Driving)
+                if (tab.Driving || PhoneBrowsing)
                     tab.Dialog += $"a {a.Kind} dialog said \"{a.Message}\" and was cancelled\n";
                 else if (a.Kind != CoreWebView2ScriptDialogKind.Prompt && // a prompt (text entry) is cancelled
-                         MessageBox.Show(a.Message, tab.Title.Text, a.Kind == CoreWebView2ScriptDialogKind.Alert ? MessageBoxButton.OK : MessageBoxButton.OKCancel) == MessageBoxResult.OK)
+                         _messageBox(a.Message, tab.Title.Text, a.Kind == CoreWebView2ScriptDialogKind.Alert ? MessageBoxButton.OK : MessageBoxButton.OKCancel) == MessageBoxResult.OK)
                     a.Accept();
+            };
+            // a file picker the phone's input opened, intercepted (WebInterceptPickers) so it never shows on the PC
+            web.CoreWebView2.GetDevToolsProtocolEventReceiver("Page.fileChooserOpened").DevToolsProtocolEventReceived += (_, _) =>
+            {
+                tab.Picker = true;
+                tab.Dialog += "a file picker opened and was closed\n";
             };
         };
         web.NavigationCompleted += (_, done) =>

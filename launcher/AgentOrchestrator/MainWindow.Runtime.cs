@@ -26,17 +26,16 @@ public partial class MainWindow
         AppVersionText.Text = LauncherLogic.VersionText();
     }
 
-    // False, with a toast, when llama-server has not been downloaded, or is being updated.
+    // Why a run can't start yet: llama-server has not been downloaded, or is being updated; null when it can.
+    private string? RuntimeRefusal => _llamaDownload is not null ? "llama-server is being updated"
+        : File.Exists(LauncherLogic.LlamaServerPath) ? null : "Download llama-server in Settings first";
+
+    // False, with a toast, when RuntimeRefusal has a reason.
     private bool RuntimeReady()
     {
-        if (_llamaDownload is not null)
-        {
-            Toast("llama-server is being updated", "#F7C873");
-            return false;
-        }
-        if (File.Exists(LauncherLogic.LlamaServerPath))
+        if (RuntimeRefusal is not { } reason)
             return true;
-        Toast("Download llama-server in Settings first", "#F7C873");
+        Toast(reason, "#F7C873");
         return false;
     }
 
