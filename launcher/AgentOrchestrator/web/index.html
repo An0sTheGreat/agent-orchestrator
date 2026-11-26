@@ -393,51 +393,39 @@
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
               <div class="vhead-main"><h2 class="vtitle">Remote API</h2><p class="vsub">Run a worker on a service</p></div>
-              <button class="iconbtn" data-more aria-label="Key help"><svg class="ic"><use href="#i-key"/></svg></button>
             </header>
             <div class="vbody">
               <p class="secthead">SERVICE</p>
-              <div class="chips wrap">
-                <button class="chip on">OpenRouter</button>
-                <button class="chip">OpenAI</button>
-                <button class="chip">Groq</button>
-                <button class="chip">Together</button>
-                <button class="chip">DeepSeek</button>
-                <button class="chip">Custom URL</button>
-              </div>
-              <label class="field"><span>Model id</span><input value="qwen/qwen3.5-4b"></label>
-              <div class="pad"><button class="btn ghost">Load models</button></div>
-
-              <p class="secthead">APPLY TO</p>
-              <div class="chips">
-                <button class="chip on"><svg class="ic sm"><use href="#i-orb"/></svg> Lead</button>
-                <button class="chip">Implementer</button>
-                <button class="chip">Reviewer</button>
+              <div class="chips wrap" id="rasvc"></div>
+              <p class="hintline tight" id="rakey"></p>
+              <label class="field" id="raurlrow" hidden><span>Base URL</span><input id="raurl" placeholder="https://host/v1" spellcheck="false" autocapitalize="off"></label>
+              <label class="field"><span>Model id</span><input id="ramodel" spellcheck="false" autocapitalize="off"></label>
+              <div class="pad"><button class="btn ghost" id="raload">Load models</button></div>
+              <p class="hintline danger" id="ramdlnote" hidden></p>
+              <div id="ramodels" hidden>
+                <label class="field"><span>Search</span><input id="rasearch" type="search" placeholder="Name or id" spellcheck="false" autocapitalize="off"></label>
+                <div id="ramdllist"></div>
               </div>
 
-              <p class="secthead">API KEY</p>
-              <div class="keyrow">
-                <input type="password" value="sk-or-v1-notreal" aria-label="API key">
-                <button class="btn ghost tight">Remove</button>
+              <div id="raprov" hidden>
+                <p class="secthead">PROVIDERS · input / output per 1M</p>
+                <div class="providers" id="raprovlist"></div>
+                <p class="hintline" id="raorder"></p>
               </div>
-              <p class="hintline">Kept encrypted for your Windows account (DPAPI) and never written to config, logs or prompts.</p>
 
-              <p class="secthead">PROVIDERS · input / output per 1M</p>
-              <div class="providers">
-                <div class="prov"><button class="tickbox on" data-tick aria-label="Use provider"></button><span class="prov-name"><i class="shield g"></i> DeepInfra</span><span>$0.02 / $0.06</span><small>0.8s · 92 tok/s · 99.9%</small></div>
-                <div class="prov"><button class="tickbox" data-tick aria-label="Use provider"></button><span class="prov-name"><i class="shield a"></i> Together</span><span>$0.03 / $0.08</span><small>1.1s · 74 tok/s · 99.7%</small></div>
-                <div class="prov"><button class="tickbox" data-tick aria-label="Use provider"></button><span class="prov-name"><i class="shield r"></i> CheapGPT</span><span>$0.01 / $0.02</span><small>2.4s · 40 tok/s · 98.1%</small></div>
+              <div id="raprice" hidden>
+                <p class="secthead">PRICE CONTROLS · OpenRouter only</p>
+                <div class="rowline"><div><b>Cheapest first</b><small>sort: price</small></div><button class="switch" data-switch id="rasort" aria-label="Cheapest first"></button></div>
+                <div class="fields two">
+                  <label>Max in $/M<input id="ramaxin" placeholder="none" inputmode="decimal"></label>
+                  <label>Max out $/M<input id="ramaxout" placeholder="none" inputmode="decimal"></label>
+                </div>
+                <div class="rowline"><div><b>Use :floor</b><small id="rafloornote">Saves the model id with the suffix</small></div><button class="switch" id="rafloor" aria-label="Use floor"></button></div>
+                <p class="hintline">Cheapest first and :floor apply only when no provider is ticked; the max prices always apply.</p>
               </div>
-              <p class="hintline">Green: keeps no prompts and does not train. Amber: may keep prompts. Red: may train on them.</p>
-
-              <p class="secthead">PRICE CONTROLS · OpenRouter only</p>
-              <div class="rowline"><div><b>Cheapest first</b><small>sort: price</small></div><button class="switch" data-switch aria-label="Cheapest first"></button></div>
-              <div class="fields two">
-                <label>Max in $/M<input placeholder="none"></label>
-                <label>Max out $/M<input placeholder="none"></label>
-              </div>
-              <div class="rowline"><div><b>Use :floor</b><small>Saves the model id with the suffix</small></div><button class="switch" data-switch aria-label="Use floor"></button></div>
-              <div class="pad"><button class="btn">Apply to Lead</button></div>
+              <p class="hintline danger" id="raerror" hidden></p>
+              <div class="pad"><button class="btn" id="raapply">Apply</button></div>
+              <p class="hintline">API keys are added, renamed and removed on the PC.</p>
             </div>
           </section>
 

@@ -124,7 +124,7 @@ body.landscape .vram-sub { display: none; }
 body.landscape .vrambar { margin: 4px 0 4px; height: 5px; }
 body.landscape .vramlegend { font-size: 9px; gap: 2px 10px; }
 body.landscape .vrambar .vv, .vramlegend i.vv { background: #3DDC84; }
-.item-text small.danger, small.danger { color: #FF8A9B; }
+.item-text small.danger, small.danger, .hintline.danger { color: #FF8A9B; }
 .fields label small.danger { display: block; margin-top: 3px; }
 .fields .rowline.span { padding: 4px 0; }
 .field select, .fields textarea { width: 100%; margin-top: 4px; background: var(--field); border: 1px solid var(--border); border-radius: var(--r-ctl); padding: 8px 10px; font-size: 12.5px; color: var(--text); outline: none; font-family: inherit; }
@@ -633,6 +633,9 @@ input.url { min-width: 0; color: var(--text); outline: none; }
 .tickbox { width: 17px; height: 17px; border-radius: 5px; border: 1px solid var(--border); background: var(--field); flex: none; }
 .tickbox.on { background: var(--accent); border-color: var(--accent); position: relative; }
 .tickbox.on::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; font-size: 11px; color: var(--on-accent); font-weight: 700; }
+.tickbox.on[data-n]::after { content: attr(data-n); } /* a provider's place in the order */
+.spin { display: inline-block; width: 12px; height: 12px; margin-right: 7px; vertical-align: -1px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .shield { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .shield.g { background: #3DDC84; } .shield.a { background: #D4A017; } .shield.r { background: #FF667A; }
 
