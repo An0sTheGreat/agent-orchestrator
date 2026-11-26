@@ -1895,6 +1895,42 @@ public partial class MainWindow : Window
             }
             NewChat_Click(ChatSend, new RoutedEventArgs());
 
+            // Chatterbox mid-sentence (a stub engine whose sentence takes 5 s): FreeGpuForChat does not wait for it, the read
+            // sees its cancellation and falls to Kokoro (InvalidOperationException), the engine goes; held, it does not load again
+            {
+                var cbSawCancel = false;
+                Exception? cbSpeakError = null;
+                Chatterbox.Stub = (_, ct) => { Thread.Sleep(5000); cbSawCancel = ct.IsCancellationRequested; ct.ThrowIfCancellationRequested(); return new float[Chatterbox.Rate]; };
+                try
+                {
+                    var cbSpeaking = Task.Run(() =>
+                    {
+                        try { Chatterbox.Synthesize("Hello there.", ChatterboxVoice.Default, CancellationToken.None); }
+                        catch (Exception e) { cbSpeakError = e; }
+                    });
+                    var cbLoaded = SpinWait.SpinUntil(() => Chatterbox.Loaded, 2000);
+                    var cbClock = Stopwatch.StartNew();
+                    FreeGpuForChat();
+                    var cbTook = cbClock.ElapsedMilliseconds;
+                    await Task.WhenAny(cbSpeaking, Task.Delay(8000));
+                    var cbUnloaded = SpinWait.SpinUntil(() => !Chatterbox.Loaded, 2000);
+                    Chatterbox.HoldWhile(() => true, TimeSpan.FromMinutes(1));
+                    var cbRefused = false;
+                    try { Chatterbox.Synthesize("Again.", ChatterboxVoice.Default, CancellationToken.None); }
+                    catch (InvalidOperationException) { cbRefused = !Chatterbox.Loaded; }
+                    if (!cbLoaded || cbTook >= 200 || !cbSawCancel || cbSpeakError is not InvalidOperationException || !cbUnloaded || !cbRefused)
+                    {
+                        Console.Error.WriteLine($"ui-smoke: Chatterbox makes way: loaded {cbLoaded}, FreeGpuForChat {cbTook} ms, cancelled {cbSawCancel}, " +
+                            $"read ended with {cbSpeakError?.GetType().Name}: {cbSpeakError?.Message}, unloaded {cbUnloaded}, held {cbRefused}");
+                        return Fail();
+                    }
+                }
+                finally
+                {
+                    Chatterbox.Stub = null;
+                    Chatterbox.HoldWhile(() => false, TimeSpan.Zero);
+                }
+            }
             // Closing mid-reply: the turn's request file and created temp folder are deleted, a real project is not touched.
             var strayFile = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}.json");
             var strayDir = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-chat-{Guid.NewGuid():N}");

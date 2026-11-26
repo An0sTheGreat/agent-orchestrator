@@ -36,6 +36,10 @@ namespace AgentOrchestrator;
 //    graphs on CUDA, the KV cache kept on the GPU: warm RTF 0.41, 11.7 ms a token, 3.2 GB of VRAM. DirectML+CPU is the fallback.
 // Install on disk: ~1.7 GB (models 1,662 MB + runtime 36 MB + the default voice); the download is ~1.9 GB (Kokoro's 150 MB
 // too when it is missing: the default voice is Kokoro af_heart reading a reference paragraph, chatterbox\voices\default.wav).
+// With an NVIDIA GPU (LauncherLogic.HasNvidiaGpu) the CUDA set comes too: +2.4 GB on disk from a +1.6 GB download, so ~4.1 GB
+// on disk from ~3.5 GB; without one it is never downloaded (DirectML+CPU only).
+// Integrity = exact sizes + immutable pinned URLs over TLS: a pinned Hugging Face revision, versioned nuget.org packages and
+// content-addressed PyPI wheel paths, each file checked against its expected size; no hashes beyond what those hosts guarantee.
 // Turbo takes no exaggeration or cfg (the torch Turbo ignores them as well); Temperature is used (top-p 0.95).
 internal sealed class ChatterboxVoice
 {
@@ -103,7 +107,11 @@ internal static class ChatterboxRuntime
         new(OrtCuda, "runtimes/win-x64/native/onnxruntime_providers_cuda.dll", @"cuda\onnxruntime_providers_cuda.dll", 275_606_552),
     ];
     internal static IEnumerable<string> CudaFiles => Natives.Where(n => n.File.StartsWith(@"cuda\")).Select(n => RuntimeFile(n.File));
-    private static long PackageBytes => PackageSize.Values.Sum();
+    // The natives this PC gets: the CUDA set only with an NVIDIA GPU (~1.6 GB of downloads nothing else could use).
+    private static readonly bool Nvidia = LauncherLogic.HasNvidiaGpu();
+    private static IEnumerable<Native> Needed(bool nvidia) => Natives.Where(n => nvidia || !n.File.StartsWith(@"cuda\"));
+    internal static IEnumerable<string> NativeFiles(bool nvidia) => Needed(nvidia).Select(n => n.File);
+    private static long PackageBytes => Needed(Nvidia).Select(n => n.Package).Distinct().Sum(p => PackageSize[p]);
 
     public static string Folder => Path.Combine(AppSettings.DataRoot, "chatterbox");
     public static string ModelFile(string name) => Path.Combine(Folder, Repo.Split('/')[1], name.Replace('/', Path.DirectorySeparatorChar));
@@ -113,9 +121,9 @@ internal static class ChatterboxRuntime
 
     // Every file with its expected size, and the default voice: a half-finished install never counts.
     public static bool Ready =>
-        Models.All(f => Size(ModelFile(f.Name)) == f.Size) && Natives.All(n => Size(RuntimeFile(n.File)) == n.Size)
+        Models.All(f => Size(ModelFile(f.Name)) == f.Size) && Needed(Nvidia).All(n => Size(RuntimeFile(n.File)) == n.Size)
         && Size(Path.Combine(VoicesFolder, DefaultClipName)) > 44;
-    public static long InstallBytes => Models.Sum(f => f.Size) + Natives.Sum(n => n.Size); // on disk
+    public static long InstallBytes => Models.Sum(f => f.Size) + Needed(Nvidia).Sum(n => n.Size); // on disk
     public static long DownloadBytes => Models.Sum(f => f.Size) + PackageBytes + (TtsModels.Ready ? 0 : TtsModels.Find(TtsModels.Chosen).DownloadBytes);
     private static long Size(string path) => new FileInfo(path) is { Exists: true } info ? info.Length : -1;
 
@@ -132,7 +140,7 @@ internal static class ChatterboxRuntime
         using (var nuget = new HttpClient { Timeout = Timeout.InfiniteTimeSpan })
         {
             nuget.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
-            foreach (var group in Natives.GroupBy(n => n.Package))
+            foreach (var group in Needed(Nvidia).GroupBy(n => n.Package))
             {
                 if (group.All(n => Size(RuntimeFile(n.File)) == n.Size))
                 {
@@ -231,6 +239,17 @@ internal static class Chatterbox
     // The load error while it holds (the Settings > Voice row shows it with Retry), else null.
     public static string? Failure => _failure is { } f && DateTime.UtcNow - _failedAt < FailureFor ? f : null;
     public static void Retry() => _failure = null;
+    private static CancellationTokenSource _stop = new(); // Unload cancels it: the synthesis or load in progress ends at its next step
+    internal static Func<string, CancellationToken, float[]>? Stub; // --ui-smoke: an engine that opens nothing and reads with this
+
+    // While a chat model loads, Chatterbox does not load (reads go to the Kokoro stand-in): while loading() holds, at most until Until.
+    private sealed record Hold(Func<bool> Loading, DateTime Until);
+    private static volatile Hold _hold = new(() => false, DateTime.MinValue);
+    public static void HoldWhile(Func<bool> loading, TimeSpan max) => _hold = new(loading, DateTime.UtcNow + max);
+    internal static bool Holds(Func<bool> loading, DateTime until, DateTime now) => now < until && loading();
+    private static bool Held => _hold is var h && Holds(h.Loading, h.Until, DateTime.UtcNow);
+    private const string HeldReason = "Chatterbox waits for the chat model to load";
+
     private static int _tokens; // speech tokens made and the language model's time on them (--chatterbox-say)
     private static double _lmSeconds;
 
@@ -243,6 +262,7 @@ internal static class Chatterbox
     {
         reason = !ChatterboxRuntime.Ready ? "Chatterbox is not installed"
             : Failure is { } failure ? "Chatterbox could not start: " + failure
+            : Held ? HeldReason
             : WontFit(Slot.Loaded ? null : FreeGpuBytes(), Slot.Loaded) ?? "";
         return reason.Length == 0;
     }
@@ -258,8 +278,12 @@ internal static class Chatterbox
     internal static bool ShouldUnloadForChat(bool loaded, bool modelsLoaded, long? freeVram) =>
         loaded && (!modelsLoaded || freeVram < 2L << 30);
 
-    // The first GPU's free memory (nvidia-smi), or null.
-    internal static long? FreeGpuBytes()
+    // The first GPU's free memory (nvidia-smi, read at most every 3 s), or null. The UI thread never waits on nvidia-smi: it
+    // gets the last value (null before the first read) while a background read refreshes it.
+    internal static long? FreeGpuBytes() => FreeGpu.Get(wait: System.Windows.Application.Current?.Dispatcher.CheckAccess() != true);
+    internal static readonly TtlCache<long?> FreeGpu = new(ReadFreeGpuBytes, TimeSpan.FromSeconds(3));
+
+    private static long? ReadFreeGpuBytes()
     {
         try
         {
@@ -274,19 +298,36 @@ internal static class Chatterbox
 
     // The text read in the voice: 24 kHz mono samples. One synthesis at a time; the engine loads on first use (GPU through
     // DirectML, else CPU) and unloads after IdleAfter unused. ct ends it within a model step (OperationCanceledException).
-    // Throws when not installed or the engine fails; the caller falls back to Kokoro.
+    // Throws when not installed, held, unloaded mid-read (Unload) or the engine fails; the caller falls back to Kokoro.
     public static float[] Synthesize(string text, ChatterboxVoice voice, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text))
             return [];
+        var stop = _stop.Token;
+        using var both = CancellationTokenSource.CreateLinkedTokenSource(ct, stop);
+        try { return SynthesizeLocked(text, voice, both.Token); }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("Chatterbox made room for the chat model");
+        }
+    }
+
+    private static float[] SynthesizeLocked(string text, ChatterboxVoice voice, CancellationToken ct)
+    {
         while (!Monitor.TryEnter(Gate, 50))
             ct.ThrowIfCancellationRequested();
         try
         {
             ObjectDisposedException.ThrowIf(_shutdown, typeof(Chatterbox));
+            if (Stub is { } stub)
+            {
+                Load(ct);
+                try { return stub(text, ct); }
+                finally { Slot.Touch(); }
+            }
             if (!ChatterboxRuntime.Ready)
                 throw new InvalidOperationException("Install Chatterbox in Settings > Voice");
-            var engine = Load();
+            var engine = Load(ct);
             var clip = ChatterboxRuntime.ClipPath(voice);
             var key = clip + "|" + File.GetLastWriteTimeUtc(clip).Ticks;
             if (!Conds.TryGetValue(key, out var cond) || cond.Owner != engine)
@@ -305,10 +346,12 @@ internal static class Chatterbox
         finally { Monitor.Exit(Gate); }
     }
 
-    // The engine, loaded when it is not (under Gate); a load error is kept for CanRunNow (no retry until Unload).
-    private static Engine Load()
+    // The engine, loaded when it is not (under Gate; not while held); a load error is kept for CanRunNow (no retry until Unload).
+    private static Engine Load(CancellationToken ct)
     {
-        try { return Slot.Get(() => new Engine()); }
+        if (!Slot.Loaded && Held)
+            throw new InvalidOperationException(HeldReason);
+        try { return Slot.Get(() => new Engine(ct)); }
         catch (Exception e) when (e is not OperationCanceledException)
         {
             (_failure, _failedAt) = (e.Message, DateTime.UtcNow);
@@ -323,15 +366,18 @@ internal static class Chatterbox
     {
         if (!CanRunNow(out _))
             return;
+        var stop = _stop.Token;
         lock (Gate)
             if (!_shutdown)
-                try { Load(); }
+                try { Load(stop); }
                 catch (Exception) { } // kept in _failure
     });
 
-    // Frees the GPU now (before a model load that needs the room, Uninstall); the next Synthesize loads again.
+    // Frees the GPU (before a model load that needs the room, Uninstall); the next Synthesize loads again. The synthesis or load
+    // in progress is cancelled first, so the wait for Gate is one model step or session open; FreeGpuForChat runs it off the UI thread.
     public static void Unload()
     {
+        Interlocked.Exchange(ref _stop, new()).Cancel(); // not disposed: a synthesis may still hold its token
         lock (Gate)
         {
             Slot.Release();
@@ -392,10 +438,16 @@ internal static class Chatterbox
         public readonly string Provider; // for the status line: "CUDA", "decoder on DirectML, the rest on the CPU", "CPU"
         private readonly OrtMemoryInfo _cache; // where the language model's KV cache lives between steps: the GPU on CUDA
 
-        public Engine()
+        // ct (Unload, the read's own) is checked before each session opens, so a cold load stops within one open.
+        public Engine(CancellationToken ct)
         {
           try
           {
+            if (Stub is not null)
+            {
+                (_encoder, _embed, _lm, _decoder, _tokenizer, _cache, Provider) = (null!, null!, null!, null!, null!, null!, "stub");
+                return;
+            }
             UseRuntime();
             _tokenizer = new Gpt2Tokenizer(File.ReadAllText(ChatterboxRuntime.ModelFile("tokenizer.json")));
             SessionOptions Options(bool gpu)
@@ -424,6 +476,7 @@ internal static class Chatterbox
             _cache = OrtMemoryInfo.DefaultInstance;
             InferenceSession Open(string name, bool gpu)
             {
+                ct.ThrowIfCancellationRequested();
                 using var options = Options(gpu);
                 return new InferenceSession(ChatterboxRuntime.ModelFile($"onnx/{name}_fp16.onnx"), options);
             }
@@ -655,7 +708,7 @@ internal static class Chatterbox
             Console.Error.WriteLine($"installed {DirSize(ChatterboxRuntime.Folder) >> 20} MB in {started.Elapsed.TotalSeconds:0} s");
         }
         var voice = clip is null ? ChatterboxVoice.Default : new ChatterboxVoice { Name = "clip", Clip = Path.GetFullPath(clip) };
-        var before = FreeGpuBytes();
+        var before = FreeGpu.Get(wait: true); // this runs on the UI thread, where FreeGpuBytes does not wait
         if (!CanRunNow(out var reason))
         {
             Console.Error.WriteLine("cannot run: " + reason);
@@ -679,7 +732,7 @@ internal static class Chatterbox
         }
         var made = clock.Elapsed.TotalSeconds;
         lm = _lmSeconds;
-        var after = FreeGpuBytes();
+        var after = FreeGpu.Get(wait: true);
         var samples = all.ToArray();
         WriteWav(wav, samples);
         var peak = samples.Length == 0 ? 0 : samples.Max(Math.Abs);
@@ -772,6 +825,26 @@ internal static class Chatterbox
         Check(Chatterbox.ShouldUnloadForChat(true, false, null) && Chatterbox.ShouldUnloadForChat(true, true, 1L << 30)
             && !Chatterbox.ShouldUnloadForChat(true, true, 3L << 30) && !Chatterbox.ShouldUnloadForChat(true, true, null)
             && !Chatterbox.ShouldUnloadForChat(false, false, 0), "unload for chat");
+
+        // the hold while a chat model loads: while loading() holds and only until its time is up
+        var now = DateTime.UtcNow;
+        Check(Holds(() => true, now.AddSeconds(1), now) && !Holds(() => false, now.AddSeconds(1), now)
+            && !Holds(() => true, now, now) && !Holds(() => true, now.AddSeconds(-1), now), "the hold");
+
+        // nvidia-smi's cache: one read within the ttl; stale, a no-wait Get returns the last value at once and refreshes behind
+        var reads = 0;
+        var cache = new TtlCache<int>(() => { Thread.Sleep(300); return ++reads; }, TimeSpan.FromMilliseconds(600));
+        Check(cache.Get(true) == 1 && cache.Get(true) == 1 && cache.Get(false) == 1 && reads == 1, "a fresh value is not read again");
+        Thread.Sleep(700);
+        var quick = Stopwatch.StartNew();
+        Check(cache.Get(false) == 1 && quick.ElapsedMilliseconds < 100, $"a stale no-wait Get waited {quick.ElapsedMilliseconds} ms");
+        Check(SpinWait.SpinUntil(() => cache.Get(false) == 2, 2000) && cache.Get(true) == 2 && reads == 2, "refreshed in the background, once");
+
+        // the CUDA set (~1.6 GB of downloads) only on a PC with an NVIDIA GPU; the DirectML build everywhere
+        var plain = ChatterboxRuntime.NativeFiles(false).ToList();
+        var nvidia = ChatterboxRuntime.NativeFiles(true).ToList();
+        Check(plain is ["onnxruntime.dll", "DirectML.dll"] && nvidia.Contains(@"cuda\cudart64_12.dll") && nvidia.Contains(@"cuda\onnxruntime.dll")
+            && plain.All(nvidia.Contains), $"native files: {string.Join(", ", plain)}");
 
         // the idle unload: made on first Get, the same one while used, freed after the idle time, made again after
         var made = 0;
@@ -883,6 +956,40 @@ internal sealed class IdleSlot<T>(Func<TimeSpan> idleAfter, object _gate) where 
         lock (_gate)
             if (_value is not null && DateTime.UtcNow >= _due) // not used while this waited for the lock
                 Release();
+    }
+}
+
+// The last value read, kept for ttl. A stale one is read again: now (wait), or else in the background with the last value
+// returned meanwhile. The read runs outside the lock, so a no-wait Get never waits on one in progress.
+internal sealed class TtlCache<T>(Func<T> read, TimeSpan ttl)
+{
+    private readonly object _gate = new();
+    private T _value = default!;
+    private DateTime _at = DateTime.MinValue;
+    private Task? _refresh;
+
+    public T Get(bool wait)
+    {
+        lock (_gate)
+        {
+            if (DateTime.UtcNow - _at < ttl)
+                return _value;
+            if (!wait)
+            {
+                if (_refresh is not { IsCompleted: false })
+                    _refresh = Task.Run(Refresh);
+                return _value;
+            }
+        }
+        return Refresh();
+    }
+
+    private T Refresh()
+    {
+        var value = read();
+        lock (_gate)
+            (_value, _at) = (value, DateTime.UtcNow);
+        return value;
     }
 }
 
