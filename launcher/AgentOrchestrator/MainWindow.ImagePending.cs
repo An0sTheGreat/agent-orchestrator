@@ -104,17 +104,17 @@ public partial class MainWindow
         if (_webPicture is not { } web)
             return;
         (web.Text, web.Progress) = (stepText.Text, progress is { } f ? Math.Round(Math.Clamp(f, 0, 1), 2) : null);
-        SendPictureProgress(throttled: true);
+        SendPictureProgress();
     }
 
-    // The card's step to the phone when its text or whole percentage changed: at most one per 250 ms from the progress itself;
-    // the web app's 250 ms state poll sends one held back meanwhile (throttled: false), so the last step is never stuck.
-    private void SendPictureProgress(bool throttled)
+    // The card's step to the phone when its text or whole percentage changed, at most one per 250 ms; the web app's 250 ms state
+    // poll calls it too, so a step held back by the limit goes within about half a second and the last step is never stuck.
+    private void SendPictureProgress()
     {
         if (_webPicture is not { } web)
             return;
         var sent = $"{web.Text}|{(web.Progress is { } q ? Math.Round(q * 100) : -1)}";
-        if (sent == web.Sent || throttled && Environment.TickCount64 - web.SentAt < 250)
+        if (sent == web.Sent || Environment.TickCount64 - web.SentAt < 250)
             return;
         (web.Sent, web.SentAt) = (sent, Environment.TickCount64);
         PublishPicture(new { e = "picture", state = "progress", text = web.Text, progress = web.Progress });

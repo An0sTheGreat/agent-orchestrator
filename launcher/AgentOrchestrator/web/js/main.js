@@ -45,6 +45,9 @@ addEventListener('popstate', e => { router.pop(e.state); render(); });
 export function replace(name, params = {}) { router.reset([...router.stack.slice(0, -1), { name, params }]); render(); }
 function tabTo(name) { router.reset([{ name: name.replace(/^view-/, ''), params: {} }]); render(); }
 
+// iOS Safari ignores user-scalable=no: a pinch is cancelled here, so the app never zooms (touch-action covers double-tap).
+document.addEventListener('gesturestart', e => e.preventDefault());
+
 document.addEventListener('click', e => {
   const el = e.target.closest('[data-open],[data-go],[data-back],[data-drawer],[data-sheet],[data-close],[data-newchat],[data-retry]');
   if (!el) return;

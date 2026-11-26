@@ -37,7 +37,7 @@ export function applyEvent(s, ev) {
     case 'picture': {
       if (ev.state === 'start') return { ...s, parts: [...s.parts, tag(card(ev))] };
       const i = s.parts.findLastIndex(p => p.t === 'picture' && p.open), p = s.parts[i];
-      if (!p) return ev.state === 'done' ? { ...s, parts: [...s.parts, tag({ t: 'image', src: picture(ev.path) })] } : s; // no card to finish: show the picture anyway
+      if (!p) return s; // no open card (a saved load dropped it): the tool result or the saved message shows the picture
       const put = q => ({ ...s, parts: s.parts.map((x, j) => j === i ? q : x) });
       if (ev.state === 'progress') return put({ ...p, text: ev.text || '', progress: pct(ev.progress) });
       if (ev.state === 'preview') return put({ ...p, frame: ev.frame || 0 });
@@ -123,12 +123,13 @@ if (typeof document !== 'undefined') {
   function pictureCard(p, key) {
     let el = cards.get(key);
     if (!el) {
-      el = h('div', { class: 'pcard' }, h('div', { class: 'pcard-dots' }),
+      el = h('div', { class: 'pcard' }, h('div', { class: 'pcard-dots' }, h('i', { class: 'pcard-glow a' }), h('i', { class: 'pcard-glow b' })),
         h('img', { class: 'pcard-img', alt: '', hidden: true, onload: () => el.classList.add('shot') }), // shown: the dots stop under it
-        h('span', { class: 'pcard-status' }, 'Making a picture'), h('span', { class: 'pcard-step' }), h('span', { class: 'pcard-pct', hidden: true }));
-      el.style.setProperty('--ar', p.height / p.width);
+        h('span', { class: 'pcard-status' }, 'Making a picture', h('i', { class: 'pcard-ell' }, '...')), h('span', { class: 'pcard-step' }),
+        h('span', { class: 'pcard-pct', hidden: true }));
       cards.set(key, el);
     }
+    el.style.setProperty('--ar', p.height / p.width); // every time: a node kept for the same key may belong to a new picture
     const [, shot, , step, pill] = el.children, pc = p.progress == null ? '' : Math.round(Math.min(1, Math.max(0, p.progress)) * 100) + '%';
     if (step.textContent !== p.text) step.textContent = p.text;
     if (pill.textContent !== pc) { pill.textContent = pc; pill.hidden = !pc; }
@@ -231,8 +232,11 @@ if (typeof document !== 'undefined') {
     liveEls.forEach(el => el.querySelectorAll('details').forEach(d => { if (open.has(d.dataset.key)) d.open = true; }));
     msgs.append(...liveEls);
     // A kept card still moved into the new reply node, and a moved node restarts its CSS animations: pin them to the page's clock
-    // so the glow and the counting dots run on unbroken. A card no longer drawn is let go.
-    cards.forEach((el, k) => el.isConnected ? el.getAnimations({ subtree: true }).forEach(a => { a.startTime = 0; }) : cards.delete(k));
+    // so the glow and the counting dots run on unbroken (real elements, not pseudo-elements: every engine lists their animations).
+    // A card no longer drawn is let go.
+    cards.forEach((el, k) => el.isConnected
+      ? el.querySelectorAll('.pcard-glow, .pcard-ell').forEach(n => n.getAnimations?.().forEach(a => { a.startTime = 0; }))
+      : cards.delete(k));
   }
 
   function draw(toEnd, all = false) {
