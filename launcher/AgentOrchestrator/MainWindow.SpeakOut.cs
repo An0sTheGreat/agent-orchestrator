@@ -539,6 +539,9 @@ public partial class MainWindow
     private async Task<bool> SpeakOutSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: speak out: {what}"); return false; }
+        if (!_chatterboxStatus.Text.StartsWith("Not installed") || _chatterboxInstallButton.Visibility != Visibility.Visible || (string)_chatterboxInstallButton.Content != "Install"
+            || _chatterboxRemoveButton.Visibility == Visibility.Visible)
+            return Fail($"the Chatterbox row is not 'Not installed' with Install: '{_chatterboxStatus.Text}'");
         var (player, test, choice) = (_speechPlayer, _speechTest, _codeChoice);
         var saved = System.Text.Json.JsonSerializer.Serialize(_settings.Tts);
         var savedVoices = _settings.CustomVoices.ToList();

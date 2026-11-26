@@ -16,6 +16,7 @@ public partial class MainWindow
     private void InitVoice()
     {
         BuildTtsModels();
+        BuildChatterbox();
         RefreshVoiceStatus();
         FillMicrophones();
         BuildSpeakOut();
@@ -41,7 +42,49 @@ public partial class MainWindow
             row.Download.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
             row.Delete.Visibility = ready && model != chosen ? Visibility.Visible : Visibility.Collapsed;
         }
+        RefreshChatterbox();
         RefreshSpeakOut();
+    }
+
+    private CancellationTokenSource? _chatterboxInstall;
+    private TextBlock _chatterboxStatus = null!;
+    private Button _chatterboxInstallButton = null!, _chatterboxRemoveButton = null!;
+
+    // The Chatterbox Turbo row after the Kokoro rows: status, Install/Cancel (never on its own) and Uninstall.
+    private void BuildChatterbox()
+    {
+        _chatterboxStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0, 0, 0) };
+        _chatterboxStatus.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
+        _chatterboxInstallButton = new Button { Content = "Install", Padding = new Thickness(11, 6, 11, 6), Margin = new Thickness(8, 0, 0, 0) };
+        AutomationProperties.SetName(_chatterboxInstallButton, "Install Chatterbox");
+        _chatterboxRemoveButton = new Button { Content = "Uninstall", Padding = new Thickness(11, 6, 11, 6), Margin = new Thickness(8, 0, 0, 0) };
+        AutomationProperties.SetName(_chatterboxRemoveButton, "Uninstall Chatterbox");
+        _chatterboxInstallButton.Click += (_, _) => ModelDownload("Chatterbox voice engine", _chatterboxInstallButton, _chatterboxStatus, ChatterboxRuntime.InstallAsync,
+            ChatterboxRuntime.Folder, () => _chatterboxInstall, c => _chatterboxInstall = c);
+        _chatterboxRemoveButton.Click += async (_, _) =>
+        {
+            if (Choose("Remove Chatterbox", $"Remove Chatterbox ({ChatterboxRuntime.InstallBytes / (double)(1L << 30):0.0} GB)?", ("Remove", "remove")) is null)
+                return;
+            StopSpeaking();
+            await Task.Run(ChatterboxRuntime.Uninstall); // unloads first; deleting gigabytes stays off the UI thread
+            Log("Chatterbox removed");
+            RefreshVoiceStatus();
+        };
+        var label = new TextBlock { Text = "Chatterbox Turbo (lively voices, GPU)", MinWidth = 170, VerticalAlignment = VerticalAlignment.Center };
+        TtsModelsPanel.Children.Add(new DockPanel { Margin = new Thickness(0, 10, 0, 0),
+            Children = { Docked(_chatterboxRemoveButton, Dock.Right), Docked(_chatterboxInstallButton, Dock.Right), Docked(label, Dock.Left), _chatterboxStatus } });
+    }
+
+    private void RefreshChatterbox()
+    {
+        if (_chatterboxInstall is not null)
+            return; // installing: the row shows the progress and Cancel
+        var ready = ChatterboxRuntime.Ready;
+        _chatterboxStatus.Text = ready ? "Installed · " + (Chatterbox.Provider is { } where ? $"runs on {where}" : "loads when a voice reads")
+            : $"Not installed · {ChatterboxRuntime.DownloadBytes / (double)(1L << 30):0.0} GB download";
+        _chatterboxInstallButton.Content = "Install";
+        _chatterboxInstallButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        _chatterboxRemoveButton.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
     }
 
     // The Kokoro builds, each a row: the choice (TtsSettings.Model), its status, Download/Cancel, and Delete when downloaded and

@@ -242,6 +242,11 @@ internal static class Chatterbox
         loaded || freeBytes is null || freeBytes >= NeedBytes ? null
         : $"Only {freeBytes / (double)(1L << 30):0.0} GB of GPU memory is free and Chatterbox needs about {NeedBytes >> 30} GB";
 
+    // Before a chat engine starts: the engine leaves the GPU when no chat model is loaded yet (the load is about to take the
+    // room) or the free memory is under 2 GB (unknown free memory: stays).
+    internal static bool ShouldUnloadForChat(bool loaded, bool modelsLoaded, long? freeVram) =>
+        loaded && (!modelsLoaded || freeVram < 2L << 30);
+
     // The first GPU's free memory (nvidia-smi), or null.
     internal static long? FreeGpuBytes()
     {
@@ -682,6 +687,11 @@ internal static class Chatterbox
         // the VRAM decision: loaded or unknown fits; less than NeedBytes free does not
         Check(WontFit(null, false) is null && WontFit(1L << 30, true) is null && WontFit(NeedBytes, false) is null, "fits");
         Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("3 GB"), "won't fit");
+
+        // the unload before a chat load: only when loaded, and no model yet or under 2 GB free
+        Check(Chatterbox.ShouldUnloadForChat(true, false, null) && Chatterbox.ShouldUnloadForChat(true, true, 1L << 30)
+            && !Chatterbox.ShouldUnloadForChat(true, true, 3L << 30) && !Chatterbox.ShouldUnloadForChat(true, true, null)
+            && !Chatterbox.ShouldUnloadForChat(false, false, 0), "unload for chat");
 
         // the idle unload: made on first Get, the same one while used, freed after the idle time, made again after
         var made = 0;
