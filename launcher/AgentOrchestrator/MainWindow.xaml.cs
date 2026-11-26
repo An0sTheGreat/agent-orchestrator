@@ -4154,7 +4154,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!await DictationSmoke())
+        if (!await DictationSmoke() || !await CallSmoke())
             return false;
         if (!await SpeakOutSmoke() || !await ChatterboxVoicesSmoke())
             return false;
@@ -4935,7 +4935,8 @@ public partial class MainWindow : Window
     // Bottom-right toasts slide and fade in and leave after about three seconds (hovering one holds it).
     // At most four are on screen; a fifth pushes out the oldest. No colour means the theme accent. The same text again
     // replaces the one shown, so repeated clicks show one toast rather than a stack.
-    private void Toast(string text, string? color = null)
+    // click: what clicking the toast does (none: it only shows).
+    private void Toast(string text, string? color = null, Action? click = null)
     {
         foreach (var same in ToastsOf(text))
             ToastStack.Children.Remove(same);
@@ -4958,6 +4959,11 @@ public partial class MainWindow : Window
         toast.SetResourceReference(Border.BackgroundProperty, "Card");
         toast.SetResourceReference(Border.BorderBrushProperty, "EdgeHighlight");
         toast.SetResourceReference(Border.CornerRadiusProperty, "SmallRadius");
+        if (click is not null)
+        {
+            toast.Cursor = System.Windows.Input.Cursors.Hand;
+            toast.MouseLeftButtonUp += (_, _) => click();
+        }
         ToastStack.Children.Add(toast);
         var time = TimeSpan.FromMilliseconds(200);
         toast.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(1, time) { EasingFunction = Decelerate });
@@ -6002,6 +6008,7 @@ public partial class MainWindow : Window
             e.Cancel = true; // the user chose to let the running task finish
             return;
         }
+        EndCall();
         _speechClosing.Cancel(); // a phone's sentence being made stops, so neither the web server nor Tts.Shutdown waits on it
         WaitForWebAppStop(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();

@@ -358,10 +358,11 @@ internal static class LauncherLogic
     // permissions, fullAccess, superAccess: Settings > Command sandbox, as in Code; on, the chat model reaches the PC
     // (orchestrator.chat_pc_access: Full access runs commands as the user, either one opens the file tools on every drive).
     public static string BuildChatRequest(string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
-        string effort = "", string summary = "", int summaryCovers = 0, string permissions = "safe", bool fullAccess = false, bool superAccess = false) =>
+        string effort = "", string summary = "", int summaryCovers = 0, string permissions = "safe", bool fullAccess = false, bool superAccess = false, bool voice = false) =>
         JsonSerializer.Serialize(new
         {
             worker,
+            voice, // a spoken call: plain spoken sentences, no search, tools, skills or delegation
             messages = messages.Skip(summary.Length > 0 ? summaryCovers : 0).Select(m => new { role = m.Role, content = m.Content }),
             search = extras?.Search ?? false,
             tools = extras?.Tools ?? false,

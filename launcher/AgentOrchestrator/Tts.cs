@@ -529,6 +529,8 @@ internal sealed class SpeechPlayer : IDisposable
     private bool _speaking;
 
     public event Action<bool>? SpeakingChanged;
+    // The samples as the output reads them (a call's visualizer), on the output's thread; null: none taken.
+    public Action<float[]>? Played { get; set; }
     // A read's one note that its Chatterbox voice could not read (VoiceReader.Note); the window shows it as a toast.
     public static event Action<string>? FellBack;
     public bool Speaking => _speaking;
@@ -555,7 +557,15 @@ internal sealed class SpeechPlayer : IDisposable
 
     // Completes when the sentences are read, or when Stop, a newer Speak or ct ends it (no exception then). Engine and device
     // errors (the model not downloaded, the speaker missing) fault the task.
-    public Task Speak(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct)
+    public Task Speak(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct) =>
+        Begin(sentences, voice, settings, ct, streamed: false);
+
+    // As Speak, for sentences that come as a reply streams (a call): the enumeration may wait for the next one, and the output
+    // stays open meanwhile; ct (which the enumeration should observe too) or Stop ends it.
+    public Task SpeakStream(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct) =>
+        Begin(sentences, voice, settings, ct, streamed: true);
+
+    private Task Begin(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct, bool streamed)
     {
         Task previous;
         CancellationTokenSource cancel;
@@ -569,7 +579,7 @@ internal sealed class SpeechPlayer : IDisposable
             _running = Task.Run(async () =>
             {
                 try { await previous; } catch (Exception) { } // its own caller saw its error
-                await Run(sentences.ToList(), voice, settings, cancel.Token);
+                await Run(streamed ? sentences : sentences.ToList(), voice, settings, cancel.Token);
             });
             return _running;
         }
@@ -581,14 +591,14 @@ internal sealed class SpeechPlayer : IDisposable
             _current?.Cancel();
     }
 
-    private async Task Run(List<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct)
+    private async Task Run(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct)
     {
-        if (ct.IsCancellationRequested || sentences.Count == 0)
+        if (ct.IsCancellationRequested || sentences is ICollection<string> { Count: 0 })
             return;
         var format = WaveFormat.CreateIeeeFloatWaveFormat(Tts.Rate, 1);
         var buffer = new BufferedWaveProvider(format) { BufferDuration = TimeSpan.FromSeconds(90), ReadFully = true };
         using var output = _output(settings);
-        output.Init(buffer);
+        output.Init(Played is { } played ? new Tapped(buffer, played) : buffer);
         // the device going away mid-read (unplugged) stops the output with an exception: the read ends with it
         Exception? lost = null;
         using var ended = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -651,6 +661,18 @@ internal sealed class SpeechPlayer : IDisposable
                 await Task.Delay(20, ct);
             buffer.AddSamples(bytes, at, n);
             at += n;
+        }
+    }
+
+    // What the output reads, handed to Played as it goes.
+    private sealed class Tapped(IWaveProvider source, Action<float[]> played) : IWaveProvider
+    {
+        public WaveFormat WaveFormat => source.WaveFormat;
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            var read = source.Read(buffer, offset, count);
+            played(MemoryMarshal.Cast<byte, float>(buffer.AsSpan(offset, read)).ToArray());
+            return read;
         }
     }
 

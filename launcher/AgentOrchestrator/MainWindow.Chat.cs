@@ -549,6 +549,7 @@ public partial class MainWindow
             StopImageServer();
         WorkerContextsCleared();
         // the speech models too: reading and dictation stop, then Chatterbox (GPU), Kokoro and the recognizer are freed off the UI thread
+        EndCall();
         StopSpeaking();
         StopDictation();
         _ = Task.Run(() => { Chatterbox.Unload(); Tts.Release(); Speech.Release(); });
@@ -801,7 +802,7 @@ public partial class MainWindow
     private string ChatRequest(string role, string text)
     {
         var (said, images) = ForModel(_chat, text);
-        return LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", said!)), CurrentExtras(message: text) with { Images = images }, title: _chatHistory.Count == 0,
+        return LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", said!)), CurrentExtras(message: text) with { Images = images }, title: _chatHistory.Count == 0 && !InCall, voice: InCall,
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers,
             permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess);
     }
@@ -978,6 +979,7 @@ public partial class MainWindow
         _chatStopRequested = false;
         _activeRole = null;
         SetChatBusy(true);
+        CallTurnStarted(c);
     }
 
     // The user's message bubble and an empty reply (header, content, status, Copy), added to _turn's conversation.
@@ -1107,6 +1109,7 @@ public partial class MainWindow
         var id = RunningId; // null once SetChatBusy(false) ran
         var completed = false;
         var kept = false; // a stopped or failed turn kept in the history: the message and what of the reply arrived
+        string? callAnswer = null; // a call speaks the rest of a completed reply
         FlushMarkdown(); // a stopped or failed turn shows all it received
         if (_reply is { } reply)
         {
@@ -1136,6 +1139,7 @@ public partial class MainWindow
             {
                 if (reply.Final is null)
                     SetChatFinal(answer);
+                callAnswer = answer;
                 if (_pendingUser is { } user) // a turn without a user message stays out of the history: roles must alternate
                 {
                     c.History.AddRange(TurnMessages(user));
@@ -1153,6 +1157,7 @@ public partial class MainWindow
             }
             reply.Footer.Visibility = answer is null ? Visibility.Collapsed : Visibility.Visible;
         }
+        CallTurnFinished(c, callAnswer);
         foreach (var card in _cards)
         {
             card.ClearLive();
@@ -1683,7 +1688,10 @@ public partial class MainWindow
         if (block.View is { } view)
             RenderSoon(view);
         if (block.Expander is null)
+        {
             r.AnswerText.Append(text);
+            CallDelta(r.AnswerText.ToString());
+        }
         else if (block.Preview is not null && block.Text.Length <= 300)
             block.Preview.Text = PreviewFor(block);
         if (!_turn.Follow)

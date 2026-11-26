@@ -62,7 +62,7 @@ public partial class MainWindow
     // Read replies aloud: a reply that finished in the conversation shown (FinishChatTurn), with its worker's voice.
     private void ReadFinished(ChatReply reply)
     {
-        if (_settings.Tts.AutoRead)
+        if (_settings.Tts.AutoRead && !InCall) // a call speaks its replies itself
             Read(reply.Speak, reply.Final ?? reply.AnswerText.ToString(), VoiceFor(reply.Role));
     }
 
