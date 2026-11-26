@@ -290,6 +290,8 @@ internal sealed class AppSettings
     public int WebAppPort { get; set; } = 8790;
     // Ponytail (prompts/ponytail.txt) added after every model's system prompt: "" (off), lite, full or ultra (/ponytail).
     public string Ponytail { get; set; } = "";
+    // Settings > Voice: the microphone dictation listens to, by its Windows name (Speech.DeviceNumber); "" = the Windows default.
+    public string Microphone { get; set; } = "";
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)
     public string CommandPermissions { get; set; } = "safe"; // run_command: "ask", "safe" or "all" (the Code composer's permissions dropup)
     // Window position and size in device-independent pixels; null until the window has been closed once.

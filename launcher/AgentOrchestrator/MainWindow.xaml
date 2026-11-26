@@ -1757,6 +1757,13 @@
                             <TextBlock Text="Agents" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Voice" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Voice">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE720;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Voice" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Plugins" Height="38" Checked="SettingsTab_Checked"
                                  AutomationProperties.Name="Plugins">
                         <StackPanel Orientation="Horizontal">
@@ -2027,6 +2034,25 @@
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                    </StackPanel>
+                    <!-- Voice (MainWindow.Voice.cs): the speech model's download (SpeechModels) and settings.Microphone -->
+                    <StackPanel Tag="Voice" Visibility="Collapsed">
+                        <TextBlock Text="Voice" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <TextBlock Text="Speech model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <TextBlock Text="Dictation turns your speech into text on this PC's processor with Parakeet (English), so nothing you say leaves the PC. It downloads only when you press Download." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="VoiceDownloadButton" Content="Download" Padding="11,6" VerticalAlignment="Center" Margin="0,0,12,0" Click="VoiceDownload_Click" />
+                        <TextBlock x:Name="VoiceStatus" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ComboBox x:Name="MicrophoneBox" DockPanel.Dock="Right" Width="240" SelectionChanged="Microphone_Changed" DropDownOpened="Microphone_DropDownOpened"
+                                      AutomationProperties.Name="Microphone" />
+                            <TextBlock Text="Microphone" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="The microphone dictation listens to. Windows default follows the one chosen in Windows' sound settings."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <!-- Plugins: prompt add-ons and, later, other extensions -->

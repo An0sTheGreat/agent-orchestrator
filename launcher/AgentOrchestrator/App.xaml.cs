@@ -45,6 +45,15 @@ public partial class App : Application
             return;
         }
 
+        // --speech-transcribe <wav>: the speech path end to end in a test data folder (Speech.TranscribeFile), no window.
+        if (Array.FindIndex(e.Args, a => a.Equals("--speech-transcribe", StringComparison.OrdinalIgnoreCase)) is var wav and >= 0 && wav + 1 < e.Args.Length)
+        {
+            var code = 1;
+            try { code = Speech.TranscribeFile(e.Args[wav + 1]); }
+            catch (Exception exception) { Console.Error.WriteLine(exception); }
+            Environment.Exit(code);
+        }
+
         // --ui-smoke: run the real window off-screen through its templates and animations; exit 1 on any exception.
         // --webapp-smoke: the same window, the phone app's checks only (MainWindow.WebApp.cs WebAppSmoke).
         var webAppSmoke = e.Args.Contains("--webapp-smoke", StringComparer.OrdinalIgnoreCase);

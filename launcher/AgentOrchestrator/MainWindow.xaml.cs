@@ -82,6 +82,7 @@ public partial class MainWindow : Window
         ThemeBeautifulRadio.IsChecked = _settings.Theme == "Beautiful";
         ApplyTheme();
         InitRuntime();
+        InitVoice();
         _initializing = false;
         InitChat();
         InitSidebarGlide();
@@ -3760,6 +3761,10 @@ public partial class MainWindow : Window
                         return Fail();
                     Snap($"26-settings-{tab.Tag}", settings);
                 }
+                // Settings > Voice: the model's status line, and the microphones start with Windows default (chosen in a new data folder).
+                if (VoiceStatus.Text.Length == 0 || MicrophoneBox.Items[0] is not ComboBoxItem { Content: "Windows default", Tag: "" }
+                    || MicrophoneBox.SelectedIndex != 0)
+                    return Fail();
             }
             if (way == 1) // Esc
                 settings.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(settings)!, 0, Key.Escape) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
@@ -5974,6 +5979,7 @@ public partial class MainWindow : Window
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
+        _speechDownload?.Cancel();
         Speech.Shutdown(); // the recognizer, if dictation made one
         CancelImageGen();
         StopImageServer();

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using NAudio.Wave;
 using SherpaOnnx;
 
 namespace AgentOrchestrator;
@@ -47,14 +48,15 @@ internal static class SpeechModels
             File.Move(VadFile + ".incomplete", VadFile, overwrite: true);
         }
         progress.Report((VadSize, total));
-        await new HubDownloader(http, Folder, HubLayout.Flat).DownloadAsync(Repo, Revision, Parakeet, new Relay(p => progress.Report((VadSize + p.DoneBytes, total))), ct);
+        await new HubDownloader(http, Folder, HubLayout.Flat).DownloadAsync(Repo, Revision, Parakeet, new Relay<HubProgress>(p => progress.Report((VadSize + p.DoneBytes, total))), ct);
         if (!Ready)
             throw new InvalidDataException("The speech model files are incomplete after the download");
     }
 
-    // Reports on the downloader's thread; the caller's Progress<T> moves it to the UI.
-    private sealed class Relay(Action<HubProgress> report) : IProgress<HubProgress> { public void Report(HubProgress value) => report(value); }
 }
+
+// Reports on the reporting thread (Progress<T> would post to the UI); the caller's own Progress<T> moves it there.
+file sealed class Relay<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }
 
 internal static class Speech
 {
@@ -95,6 +97,56 @@ internal static class Speech
                 return stream.Result.Text.Trim();
             }
         };
+    }
+
+    // The microphones Windows lists (WinMM names, at most 31 characters), in device order; Settings > Voice saves one by name.
+    public static List<string> Microphones() =>
+        Enumerable.Range(0, WaveInEvent.DeviceCount).Select(i => WaveInEvent.GetCapabilities(i).ProductName).ToList();
+
+    // The saved microphone (AppSettings.Microphone) back to its device number for WaveInEvent.DeviceNumber; null = Windows
+    // default ("" saved, or that microphone is not connected now).
+    public static int? DeviceNumber(string name) =>
+        name.Length > 0 && Microphones().IndexOf(name) is var i and >= 0 ? i : null;
+
+    // --speech-transcribe <wav>: a test of the whole path in a test data folder (AGENT_ORCHESTRATOR_DATA must be set; the
+    // models are downloaded there when missing): the WAV through a DictationSession and the recognizer, a phrase per line on
+    // stdout. 0 when something was heard.
+    public static int TranscribeFile(string wav)
+    {
+        if (!SpeechModels.Ready)
+        {
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")))
+            {
+                Console.Error.WriteLine("--speech-transcribe downloads the models only into a test data folder: set AGENT_ORCHESTRATOR_DATA");
+                return 2;
+            }
+            long shown = -1;
+            Task.Run(() => SpeechModels.DownloadAsync(new Relay<(long done, long total)>(p =>
+            {
+                if (p.done - shown < 50 << 20 && p.done < p.total)
+                    return;
+                shown = p.done;
+                Console.Error.WriteLine($"downloaded {p.done >> 20} of {p.total >> 20} MB");
+            }), CancellationToken.None)).GetAwaiter().GetResult(); // off the UI thread: its awaits must not need the dispatcher
+        }
+        using var reader = new AudioFileReader(wav);
+        var all = new List<float>();
+        var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
+        int read;
+        while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+            for (var i = 0; i < read; i += reader.WaveFormat.Channels)
+                all.Add(buffer[i]); // the first channel
+        var samples = Resample(all.ToArray(), reader.WaveFormat.SampleRate, Rate);
+        var texts = new List<string>();
+        using var session = new DictationSession(Recognizer());
+        session.Text += texts.Add;
+        session.Ended += reason => Console.Error.WriteLine($"ended: {reason}");
+        for (var at = 0; at < samples.Length; at += Rate / 10)
+            session.Feed(samples[at..Math.Min(samples.Length, at + Rate / 10)]);
+        session.Stop();
+        foreach (var text in texts)
+            Console.WriteLine(text);
+        return texts.Count > 0 ? 0 : 1;
     }
 
     public static void Shutdown()
@@ -198,6 +250,8 @@ internal static class Speech
         Check(Insert("Hi", 2, ", you") == ("Hi, you", 7), "punctuation needs no space");
         Check(Insert("Hi", 2, "  ") == ("Hi", 2), "an empty phrase changes nothing");
 
+        // the natives load (sherpa-onnx-c-api.dll and the onnxruntime.dll it imports), in a build and in publish.ps1's single file
+        Console.Error.WriteLine($"Speech self-test: sherpa-onnx {VersionInfo.Version}, onnxruntime {VersionInfo.OnnxruntimeVersion}");
         var real = SpeechModels.Ready;
         Console.Error.WriteLine($"Speech self-test: DictationSession with {(real ? "the Silero VAD" : "the energy gate (models not downloaded)")}");
         using var session = new DictationSession(_ => "never");
