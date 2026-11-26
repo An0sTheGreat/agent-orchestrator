@@ -134,6 +134,73 @@ The phone app (see [Phone app](phone-app.md)) talks to the PC's local server, wh
 | GET | `/api/composer` | The composer's choices. |
 | POST | `/api/composer` | Change them. |
 | GET | `/api/file?path=` | A picture (PNG, JPEG, WebP, GIF) from the app's `images`, `pasted` or `screenshots` folders. |
+| POST | `/api/conversation/{id}/rename` | Rename a conversation. |
+| POST | `/api/conversation/{id}/archive` | Archive or restore it. |
+| POST | `/api/conversation/{id}/move` | Move it into a project or back out. |
+| POST | `/api/conversation/{id}/delete` | Delete it. |
+| GET | `/api/conversation/{id}/picture` | A preview of the picture a conversation is making. |
+| POST | `/api/projects` | New project (`name`, `kind`); 400 for an empty name or unknown kind. |
+| POST | `/api/project/{id}/rename` | Rename a project. |
+| POST | `/api/project/{id}/delete` | Delete a project; its conversations go back to recents. |
+| GET | `/api/images` | The Images gallery and its form (settings, models, batch limit). |
+| GET | `/api/images/status` | Whether a generation is running, and the queue. |
+| GET | `/api/images/preview` | The picture being made; 404 when none. |
+| GET | `/api/images/picture?path=` | A picture's own settings; 404 for a path outside the gallery. |
+| POST | `/api/images/generate` | Queue a generation (`settings`); 400 for an empty prompt or unknown model. |
+| POST | `/api/images/cancel` | Stop the running generation and clear the queue. |
+| POST | `/api/images/unqueue` | Drop one queued picture (`index`); 404 for a bad index. |
+| POST | `/api/picture/delete` | Delete a picture from the `images` folder; 409 if it is in use on the PC. |
+| GET | `/api/settings` | Every Settings section as the PC has it. |
+| POST | `/api/settings` | Change one setting (`key`, `value`). |
+| POST | `/api/settings/reset-stats` | Reset the usage statistics. |
+| GET | `/api/skills` | The skills and whether each is on. |
+| GET | `/api/skill?key=` | One skill's text; 404 if unknown. |
+| POST | `/api/skills/set` | Switch a skill on or off (`key`, `on`). |
+| POST | `/api/skills/new` | New skill (`name`, `description`); 400 for a bad name, 409 if it exists. |
+| POST | `/api/skills/save` | Save a skill's text; 403 for a built-in skill, 413 when too long. |
+| GET | `/api/usage` | Usage and tokens. |
+| GET | `/api/workers` | The workers as the desktop lists them, with their model and whether each is Local or Remote. |
+| POST | `/api/workers/add` | Add a custom worker; 409 while models are loading. |
+| GET | `/api/worker/{role}` | A worker's model settings as its worker tab shows them, with its presets. |
+| POST | `/api/worker/{role}/save` | Save its settings (`fields`); 400 for a bad value. |
+| POST | `/api/worker/{role}/model` | Pick a local model for it (`label`). |
+| POST | `/api/worker/{role}/primary` | Use a model from the primary PC. |
+| POST | `/api/worker/{role}/remote` | Switch it to a Remote API service and model; 400 for an unknown service. |
+| POST | `/api/worker/{role}/local` | Switch it back to Local. |
+| POST | `/api/worker/{role}/vram` | The GPU memory estimate for the settings sent. |
+| POST | `/api/worker/{role}/preset/apply` | Apply a preset (`preset/save` and `preset/delete` save and delete one). |
+| POST | `/api/worker/{role}/rename` | Rename a custom worker; 403 for a built-in. |
+| POST | `/api/worker/{role}/shown` | Show or hide it in Chat. |
+| POST | `/api/worker/{role}/remove` | Remove a custom worker; 403 for a built-in. |
+| GET | `/api/models/local` | The local models, with favorites. |
+| GET | `/api/primary/models` | The models on the primary PC. |
+| POST | `/api/favorites` | Star or unstar a model (`kind`, `id`, `on`). |
+| GET | `/api/remote/services` | The Remote API services and which have a key set. |
+| GET | `/api/remote/models?service=&baseUrl=` | The service's models. |
+| GET | `/api/remote/providers?model=` | OpenRouter's providers for a model. |
+| POST | `/api/code/new` | New Code conversation in a folder (`folder`, full path); 400 or 409 for an unusable folder. |
+| GET | `/api/code/{id}` | The Code snapshot: folder, run state, TODO, files, PROJECT.md; 404 for a non-Code conversation. |
+| POST | `/api/code/{id}/folder` | Use another folder for the project. |
+| POST | `/api/code/{id}/start` | Start the run (`restart: true` for a finished one); 409 with the desktop's reason when it can't. |
+| POST | `/api/code/{id}/once` | Turn the run-once switch on or off (`on`). |
+| GET | `/api/code/{id}/runlog` | The tail of the run log. |
+| POST | `/api/code/{id}/projectmd` | Save PROJECT.md. |
+| POST | `/api/code/{id}/projectmd/template` | Start PROJECT.md from the template. |
+| POST | `/api/code/{id}/folders/add` | Add an extra folder (`path`, `access`). |
+| POST | `/api/code/{id}/folders/remove` | Remove one. |
+| GET | `/api/code/{id}/files?dir=` | A folder's listing in the project. |
+| GET | `/api/code/{id}/file?path=` | A file's text. |
+| GET | `/api/code/{id}/changes` | The files the model changed, with lines added and removed. |
+| GET | `/api/code/{id}/diff?path=&msg=` | One file's diff. |
+| GET | `/api/fs/dirs?path=` | The phone's folder browser: subfolder names, the drives when no path. |
+| GET | `/api/terminal?since=` | The terminal's output after `since` (all of it when `since` is stale). |
+| POST | `/api/terminal/input` | Type into it (`data`); 409 when none runs, 413 when too long. |
+| POST | `/api/terminal/new` | Start a terminal (`restart` to replace one). |
+| GET | `/api/browser` | The model's browser: tabs, the follow and input switches. |
+| GET | `/api/browser/shot` | The shown tab as a JPEG; 404 with no tab. |
+| POST | `/api/browser/{action}` | `navigate`, `newtab`, `tab`, `close`, `back`, `forward`, `reload`, `tap`, `type`, `key` or `options` (`follow`, `input`). |
+
+API keys never leave the PC (the API only says whether one is set). Phone actions never open a dialog on the PC and answer 409 `DialogOpen` while one is open; the phone's browser input cancels page dialogs and refuses file pickers.
 
 **Live events.** Each event is a JSON object whose `e` field names it:
 

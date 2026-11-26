@@ -1,6 +1,6 @@
 # Phone app
 
-Use Agent Orchestrator from your phone, over Tailscale. It is a web app that opens in the phone's browser and can sit on the home screen like an app. Every desktop feature is planned for it; the first step covers **Chats** and the **Chat** view. Your chats keep running on the PC.
+Use Agent Orchestrator from your phone, over Tailscale. It is a web app that opens in the phone's browser and can sit on the home screen like an app. Your chats keep running on the PC.
 
 ## What you need
 
@@ -36,10 +36,29 @@ The desktop follows the phone: opening a conversation or sending a message on th
 - The API accepts calls only from the app's own page and from the pages of your own PCs (this is how switching PCs works). A page on any other site is refused.
 - It is not exposed to the internet: the app listens on `127.0.0.1` only, and Tailscale Serve publishes it on your tailnet.
 
-## Limits in step 1
+## What it has
 
-- **Code**, **Models**, **Settings** and **Skills** show "Coming in a later update". Images arrives in a later update; step 1 has no Images view or tab.
-- The first back gesture on a freshly opened page can close the app. This is a browser rule.
+- **Chats**: rename, move, archive, projects, and long-press to delete.
+- **Chat**.
+- **Code**: the run strip, TODO, the live run, files and diffs, PROJECT.md, extra folders, the terminal and the model's browser.
+- **Images**.
+- **Skills**.
+- **Settings**: General, Appearance, Models, Agents (each worker's model settings, presets and the GPU estimate), Remote API, Plugins, Usage & tokens and About.
+
+## Limits
+
+These stay on the PC:
+
+- The Models Hub (downloads and the models folder).
+- Folder and file pickers on the PC. The phone has its own folder browser for Code.
+- Entering, renaming or removing API keys, and setting up a new custom Remote API server.
+- Sandbox setup.
+- Remote access (Cloudflare) and sharing codes.
+- Turning the phone app off.
+- Editing project files by hand. Only PROJECT.md can be edited from the phone.
+- The browser's file pickers and the PC's own dialogs.
+
+The first back gesture on a freshly opened page can close the app. This is a browser rule.
 
 ## For developers
 
