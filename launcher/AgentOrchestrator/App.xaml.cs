@@ -76,6 +76,15 @@ public partial class App : Application
             Environment.Exit(code);
         }
 
+        // --speech-order-check <out.wav> cb|kokoro: Chatterbox, Kokoro and Parakeet in one process (Chatterbox.SpeechOrderCheck).
+        if (Array.FindIndex(e.Args, a => a.Equals("--speech-order-check", StringComparison.OrdinalIgnoreCase)) is var order and >= 0 && order + 2 < e.Args.Length)
+        {
+            var code = 1;
+            try { code = Chatterbox.SpeechOrderCheck(e.Args[order + 1], e.Args[order + 2]); }
+            catch (Exception exception) { Console.Error.WriteLine(exception); }
+            Environment.Exit(code);
+        }
+
         // --ui-smoke: run the real window off-screen through its templates and animations; exit 1 on any exception.
         // --webapp-smoke: the same window, the phone app's checks only (MainWindow.WebApp.cs WebAppSmoke).
         var webAppSmoke = e.Args.Contains("--webapp-smoke", StringComparer.OrdinalIgnoreCase);

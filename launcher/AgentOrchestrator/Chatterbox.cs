@@ -600,6 +600,11 @@ internal static class Chatterbox
     {
         if (_resolver)
             return;
+        // sherpa-onnx-c-api.dll (Kokoro, Parakeet) imports "onnxruntime.dll" by name, and Windows binds a by-name import to any
+        // loaded module of that name: ours, loaded first, would give sherpa ONNX Runtime 1.24.4 where it asks for 1.28's API
+        // (null, then an access violation). Loaded here first, through the same probing as its DllImport, it binds to its own
+        // onnxruntime.dll beside it; ours below comes by full path, a second module, and nothing else imports it by name.
+        NativeLibrary.TryLoad("sherpa-onnx-c-api", typeof(SherpaOnnx.VersionInfo).Assembly, null, out _);
         // the CUDA provider is not preloaded: its DllMain fails (1114) before onnxruntime.dll hosts it; onnxruntime loads it from beside itself
         Cuda = NativeLibrary.TryLoad("nvcuda.dll", out _) && File.Exists(ChatterboxRuntime.RuntimeFile(@"cuda\onnxruntime_providers_cuda.dll"))
             && ChatterboxRuntime.CudaFiles.Where(f => !f.EndsWith("onnxruntime_providers_cuda.dll")).All(f => NativeLibrary.TryLoad(f, out _));
@@ -675,6 +680,33 @@ internal static class Chatterbox
         if (!sane)
             Console.Error.WriteLine("a sentence's audio length is outside 0.03-0.25 s a character");
         return peak > 0.05 && stopped && late < 1 && sane ? 0 : 1;
+    }
+
+    // --speech-order-check <out.wav> cb|kokoro: the two ONNX Runtimes in one process. Installs Chatterbox (with Kokoro) and
+    // Parakeet into a test data folder when missing and exits (the install reads with Kokoro). Installed: cb is Chatterbox one
+    // sentence, Kokoro one sentence into out.wav, Parakeet transcribing it; kokoro is the reverse (Parakeet on the default
+    // voice's clip). 0 when every step ran; the onnxruntime modules loaded on stderr.
+    public static int SpeechOrderCheck(string wav, string first)
+    {
+        if (!ChatterboxRuntime.Ready || !SpeechModels.Ready)
+            return (ChatterboxRuntime.Ready || Speech.TestDownload("--speech-order-check", ChatterboxRuntime.InstallAsync))
+                && (SpeechModels.Ready || Speech.TestDownload("--speech-order-check", SpeechModels.DownloadAsync)) ? 0 : 2;
+        void Cb() => Console.Error.WriteLine($"chatterbox ({Provider}): {Synthesize("Hello there, this is Chatterbox reading.", ChatterboxVoice.Default, CancellationToken.None).Length} samples");
+        void Kokoro()
+        {
+            var samples = Tts.Synthesize("The quick brown fox jumps over the lazy dog.", new VoiceChoice(Tts.Default), 1f);
+            WriteWav(wav, samples);
+            Console.Error.WriteLine($"kokoro: {samples.Length} samples");
+        }
+        var code = 0;
+        void Stt(string file) => code |= Speech.TranscribeFile(file);
+        if (first == "cb") { Cb(); Kokoro(); Stt(wav); }
+        else { Stt(Path.Combine(ChatterboxRuntime.VoicesFolder, ChatterboxRuntime.DefaultClipName)); Kokoro(); Cb(); }
+        foreach (ProcessModule m in Process.GetCurrentProcess().Modules)
+            if (m.ModuleName.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase))
+                Console.Error.WriteLine("loaded: " + m.FileName);
+        Shutdown();
+        return code;
     }
 
     private static long DirSize(string dir) => new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length);
