@@ -59,8 +59,17 @@ public partial class MainWindow
         AutomationProperties.SetName(_chatterboxInstallButton, "Install Chatterbox");
         _chatterboxRemoveButton = new Button { Content = "Uninstall", Padding = new Thickness(11, 6, 11, 6), Margin = new Thickness(8, 0, 0, 0) };
         AutomationProperties.SetName(_chatterboxRemoveButton, "Uninstall Chatterbox");
-        _chatterboxInstallButton.Click += (_, _) => ModelDownload("Chatterbox voice engine", _chatterboxInstallButton, _chatterboxStatus, ChatterboxRuntime.InstallAsync,
+        _chatterboxInstallButton.Click += (_, _) =>
+        {
+            if (ChatterboxRuntime.Ready) // installed: the button is Retry after a load error
+            {
+                Chatterbox.Retry();
+                RefreshVoiceStatus();
+                return;
+            }
+            ModelDownload("Chatterbox voice engine", _chatterboxInstallButton, _chatterboxStatus, ChatterboxRuntime.InstallAsync,
             ChatterboxRuntime.Folder, () => _chatterboxInstall, c => _chatterboxInstall = c);
+        };
         _chatterboxRemoveButton.Click += async (_, _) =>
         {
             if (Choose("Remove Chatterbox", $"Remove Chatterbox ({ChatterboxRuntime.InstallBytes / (double)(1L << 30):0.0} GB)?", ("Remove", "remove")) is null)
@@ -80,10 +89,13 @@ public partial class MainWindow
         if (_chatterboxInstall is not null)
             return; // installing: the row shows the progress and Cancel
         var ready = ChatterboxRuntime.Ready;
-        _chatterboxStatus.Text = ready ? "Installed · " + (Chatterbox.Provider is { } where ? $"runs on {where}" : "loads when a voice reads")
+        var failure = ready ? Chatterbox.Failure : null; // expires on its own after a minute
+        _chatterboxStatus.Text = failure is not null ? $"Couldn't start: {failure.TrimEnd('.')} — Kokoro reads meanwhile"
+            : ready ? "Installed · " + (Chatterbox.Provider is { } where ? $"runs on {where}" : "loads when a voice reads")
             : $"Not installed · {ChatterboxRuntime.DownloadBytes / (double)(1L << 30):0.0} GB download";
-        _chatterboxInstallButton.Content = "Install";
-        _chatterboxInstallButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        _chatterboxInstallButton.Content = failure is not null ? "Retry" : "Install";
+        AutomationProperties.SetName(_chatterboxInstallButton, failure is not null ? "Retry Chatterbox" : "Install Chatterbox");
+        _chatterboxInstallButton.Visibility = ready && failure is null ? Visibility.Collapsed : Visibility.Visible;
         _chatterboxRemoveButton.Visibility = ready ? Visibility.Visible : Visibility.Collapsed;
     }
 

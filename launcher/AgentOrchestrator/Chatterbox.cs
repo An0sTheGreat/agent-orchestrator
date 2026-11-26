@@ -125,6 +125,10 @@ internal static class ChatterboxRuntime
         var total = DownloadBytes;
         long done = 0;
         Directory.CreateDirectory(Path.GetDirectoryName(RuntimeFile("x"))!);
+        var drive = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(Folder))!);
+        if (drive.AvailableFreeSpace < DownloadBytes + InstallBytes) // a package and what it unpacks are on disk at once
+            throw new IOException($"Chatterbox needs about {(DownloadBytes + InstallBytes) / (double)(1L << 30):0.0} GB free on {drive.Name} " +
+                $"while it installs; {drive.AvailableFreeSpace / (double)(1L << 30):0.0} GB is");
         using (var nuget = new HttpClient { Timeout = Timeout.InfiniteTimeSpan })
         {
             nuget.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
@@ -137,6 +141,8 @@ internal static class ChatterboxRuntime
                 }
                 // ponytail: each package is one plain GET without resume (696 MB at most); the models get HubDownloader's
                 var package = RuntimeFile(Path.GetFileName(group.Key) + ".incomplete");
+                try
+                {
                 using (var response = await nuget.GetAsync(group.Key, HttpCompletionOption.ResponseHeadersRead, ct))
                 {
                     response.EnsureSuccessStatusCode();
@@ -149,7 +155,6 @@ internal static class ChatterboxRuntime
                         progress.Report((done += n, total));
                     }
                 }
-                try
                 {
                     using var zip = ZipFile.OpenRead(package);
                     foreach (var (_, entry, file, size) in group)
@@ -162,7 +167,8 @@ internal static class ChatterboxRuntime
                         File.Move(path + ".incomplete", path, overwrite: true);
                     }
                 }
-                finally { File.Delete(package); }
+                }
+                finally { File.Delete(package); } // cancelled or failed too: never a partial package left behind
             }
         }
         done = PackageBytes;
@@ -219,7 +225,12 @@ internal static class Chatterbox
     private static readonly IdleSlot<Engine> Slot = new(() => IdleAfter, Gate);
     private static readonly Dictionary<string, Conditioning> Conds = []; // clip path + write time -> its encoder outputs
     private static volatile bool _shutdown;
-    private static string? _failure; // the last load error: no retry until Unload (Install, Uninstall)
+    private static string? _failure; // the last load error: no retry until it expires, Retry or Unload (Install, Uninstall)
+    private static DateTime _failedAt;
+    internal static TimeSpan FailureFor = TimeSpan.FromSeconds(60);
+    // The load error while it holds (the Settings > Voice row shows it with Retry), else null.
+    public static string? Failure => _failure is { } f && DateTime.UtcNow - _failedAt < FailureFor ? f : null;
+    public static void Retry() => _failure = null;
     private static int _tokens; // speech tokens made and the language model's time on them (--chatterbox-say)
     private static double _lmSeconds;
 
@@ -231,7 +242,7 @@ internal static class Chatterbox
     public static bool CanRunNow(out string reason)
     {
         reason = !ChatterboxRuntime.Ready ? "Chatterbox is not installed"
-            : _failure is { } failure ? "Chatterbox could not start: " + failure
+            : Failure is { } failure ? "Chatterbox could not start: " + failure
             : WontFit(Slot.Loaded ? null : FreeGpuBytes(), Slot.Loaded) ?? "";
         return reason.Length == 0;
     }
@@ -240,7 +251,7 @@ internal static class Chatterbox
     // or at least NeedBytes free.
     internal static string? WontFit(long? freeBytes, bool loaded) =>
         loaded || freeBytes is null || freeBytes >= NeedBytes ? null
-        : $"Only {freeBytes / (double)(1L << 30):0.0} GB of GPU memory is free and Chatterbox needs about {NeedBytes >> 30} GB";
+        : $"Only {freeBytes / (double)(1L << 30):0.0} GB of GPU memory is free and Chatterbox needs about {NeedBytes / (double)(1L << 30):0.#} GB";
 
     // Before a chat engine starts: the engine leaves the GPU when no chat model is loaded yet (the load is about to take the
     // room) or the free memory is under 2 GB (unknown free memory: stays).
@@ -281,6 +292,11 @@ internal static class Chatterbox
             if (!Conds.TryGetValue(key, out var cond) || cond.Owner != engine)
             {
                 cond?.Free(); // made by an engine since unloaded
+                foreach (var old in Conds.Where(kv => kv.Key.StartsWith(clip + "|") && kv.Key != key).ToList()) // the clip rewritten (preview.wav)
+                {
+                    old.Value.Free();
+                    Conds.Remove(old.Key);
+                }
                 Conds[key] = cond = engine.Condition(LoadClip(clip), ct);
             }
             try { return engine.Generate(text, cond, (float)voice.Temperature, ct); }
@@ -295,7 +311,7 @@ internal static class Chatterbox
         try { return Slot.Get(() => new Engine()); }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            _failure = e.Message;
+            (_failure, _failedAt) = (e.Message, DateTime.UtcNow);
             throw;
         }
     }
@@ -378,6 +394,8 @@ internal static class Chatterbox
 
         public Engine()
         {
+          try
+          {
             UseRuntime();
             _tokenizer = new Gpt2Tokenizer(File.ReadAllText(ChatterboxRuntime.ModelFile("tokenizer.json")));
             SessionOptions Options(bool gpu)
@@ -418,6 +436,12 @@ internal static class Chatterbox
             {
                 (_decoder, Gpu, Provider) = (Open("conditional_decoder", false), false, "CPU");
             }
+          }
+          catch
+          {
+            Dispose(); // the sessions already open (a CUDA out of memory on the third): their GPU memory goes now
+            throw;
+          }
         }
 
         public Conditioning Condition(float[] clip, CancellationToken ct)
@@ -454,8 +478,9 @@ internal static class Chatterbox
                     using var position = OrtValue.CreateTensorValueFromMemory(positions, [1, length]);
                     var inputs = new List<(string, OrtValue)> { ("inputs_embeds", embedded), ("attention_mask", mask), ("position_ids", position) };
                     inputs.AddRange(past.Select(kv => (kv.Key, kv.Value)));
-                    var outputs = RunLm(inputs, ct);
-                    embedded.Dispose();
+                    OrtValue[] outputs;
+                    try { outputs = RunLm(inputs, ct); }
+                    finally { embedded.Dispose(); }
                     var names = _lm.OutputNames;
                     for (var i = 1; i < outputs.Length; i++)
                     {
@@ -521,8 +546,8 @@ internal static class Chatterbox
         public void Dispose()
         {
             foreach (var s in new[] { _encoder, _embed, _lm, _decoder })
-                s.Dispose();
-            if (_cache != OrtMemoryInfo.DefaultInstance)
+                s?.Dispose();
+            if (_cache is not null && _cache != OrtMemoryInfo.DefaultInstance)
                 _cache.Dispose();
         }
     }
@@ -530,6 +555,8 @@ internal static class Chatterbox
     // Temperature, repetition penalty 1.2 (the model card's) and top-p 0.95 over the last position's logits.
     internal static long Sample(float[] logits, IEnumerable<long> generated, float temperature, Random random)
     {
+        if (logits.Any(float.IsNaN))
+            throw new InvalidOperationException("The model produced invalid output");
         foreach (var t in generated.Distinct())
             logits[t] = logits[t] < 0 ? logits[t] * 1.2f : logits[t] / 1.2f;
         if (temperature <= 0.01f)
@@ -733,10 +760,13 @@ internal static class Chatterbox
         Check(Sample([1f, 2.2f, 2f], [1], 0f, new Random(1)) == 2, "repetition penalty");
         var random = new Random(7);
         Check(Enumerable.Range(0, 200).All(_ => Sample([10f, 10f, -20f], [], 0.8f, random) != 2), "top-p");
+        var invalid = false;
+        try { Sample([float.NaN, 1f], [], 0.8f, random); } catch (InvalidOperationException e) { invalid = e.Message.Contains("invalid output"); }
+        Check(invalid, "NaN logits are an engine error");
 
         // the VRAM decision: loaded or unknown fits; less than NeedBytes free does not
         Check(WontFit(null, false) is null && WontFit(1L << 30, true) is null && WontFit(NeedBytes, false) is null, "fits");
-        Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("3 GB"), "won't fit");
+        Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("about 3.5 GB"), "won't fit");
 
         // the unload before a chat load: only when loaded, and no model yet or under 2 GB free
         Check(Chatterbox.ShouldUnloadForChat(true, false, null) && Chatterbox.ShouldUnloadForChat(true, true, 1L << 30)

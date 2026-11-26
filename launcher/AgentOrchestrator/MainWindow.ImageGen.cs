@@ -1096,7 +1096,7 @@ public partial class MainWindow
     // loaded leaves the GPU, unless Keep both is on or a picture is being made (the chat's own: generate_image runs inside its turn).
     private void FreeGpuForChat()
     {
-        // Chatterbox (about 3 GB of GPU) leaves first when the chat model would not fit beside it; nvidia-smi only runs while it is loaded
+        // Chatterbox (about 3.5 GB of GPU, Chatterbox.NeedBytes) leaves first when the chat model would not fit beside it; nvidia-smi only runs while it is loaded
         if (Chatterbox.Loaded && Chatterbox.ShouldUnloadForChat(true, ModelsLoaded, ModelsLoaded ? Chatterbox.FreeGpuBytes() : null))
         {
             Chatterbox.Unload();
