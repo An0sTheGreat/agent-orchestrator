@@ -330,6 +330,8 @@ public partial class MainWindow
         {
             SearchBox.Text = text;
             await Task.Delay(300); // the debounce
+            for (var i = 0; i < 50 && _searchDebounce?.IsEnabled == true; i++) // a busy PC can run the debounce's tick late
+                await Task.Delay(100);
             await _searchRun;
         }
         try
