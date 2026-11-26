@@ -31,11 +31,11 @@ export const baseOf = (host, here) => {
 };
 
 // The base the app starts on: the remembered PC's if `probe(base)` (its /api/hello) resolves, else this page's own. A probe
-// that fails with an HTTP answer (.status: the PC refused, 403/404) calls `forget`; one that is off or too slow keeps it.
+// that fails with a 4xx answer (.status: the PC refused, 403/404) calls `forget`; one that is off, too slow or errors (5xx) keeps it.
 export async function startBase(remembered, here, probe, forget) {
   const base = baseOf(remembered, here);
   if (!base) return '';
-  try { await probe(base); return base; } catch (err) { if (err?.status > 0) forget?.(); return ''; }
+  try { await probe(base); return base; } catch (err) { if (err?.status >= 400 && err.status < 500) forget?.(); return ''; }
 }
 
 // Whether the remembered PC is gone: a fresh /api/pcs (`pcs`) whose own PC is on the tailnet (a dnsName) no longer lists it.

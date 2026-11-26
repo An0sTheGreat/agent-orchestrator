@@ -163,6 +163,7 @@ export function fail(err) {
   const action = failAction(err, sessionStorage.getItem(RELOADED) !== null);
   if (action === 'reload') { sessionStorage.setItem(RELOADED, '1'); location.reload(); }
   else if (action === 'lost') lost();
+  else if (err?.status === 409 && err.message === 'DialogOpen') toast('The PC is waiting on a dialog');
   else toast(err?.message === 'SignedOut' ? 'Signed out of Tailscale' : err?.message || String(err));
 }
 

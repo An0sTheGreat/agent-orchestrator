@@ -90,3 +90,14 @@ test('only the latest call settles: a late answer or failure from an earlier cal
   await new Promise(r => setTimeout(r, 10));
   assert.deepEqual(settled, ['second new', 'fourth failed lost']);
 });
+
+test('the remembered PC is kept when its probe answers 5xx, forgotten on 403', async () => {
+  let forgot = 0;
+  const forget = () => { forgot++; };
+  const broken = async () => { throw { status: 500 }; };
+  const refusing = async () => { throw { status: 403 }; };
+  assert.equal(await startBase('laptop.tail0000.ts.net', 'pc.tail0000.ts.net', broken, forget), '');
+  assert.equal(forgot, 0);
+  assert.equal(await startBase('laptop.tail0000.ts.net', 'pc.tail0000.ts.net', refusing, forget), '');
+  assert.equal(forgot, 1);
+});

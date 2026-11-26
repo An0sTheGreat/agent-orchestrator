@@ -89,6 +89,7 @@ if (typeof document !== 'undefined') {
 
   function upload(files) {
     for (const f of files) {
+      if (f.size > 25 * 1024 * 1024) { toast('That file is over 25 MB'); continue; }
       const p = { name: f.name || 'photo', path: null };
       photos.push(p);
       api.upload(f).then(path => { p.path = path; }, err => { photos = photos.filter(x => x !== p); fail(err); }).finally(drawStrip);
@@ -116,9 +117,7 @@ if (typeof document !== 'undefined') {
       photos = [];
       drawStrip();
       if (!body.id && r?.id) chat.follow(r.id);
-    } catch (err) {
-      if (err.status === 409 && err.message === 'DialogOpen') toast('The PC is waiting for an answer'); else fail(err);
-    } finally { sending = sendBtn.disabled = false; }
+    } catch (err) { fail(err); } finally { sending = sendBtn.disabled = false; }
   }
 
   box.addEventListener('input', drawPop);
@@ -142,5 +141,7 @@ if (typeof document !== 'undefined') {
   $('#imglock').addEventListener('click', () => opts && set({ imageGen: { unlocked: !opts.imageGen.unlocked } }));
   $('#photobtn').addEventListener('click', () => { closeOverlays(); picker.click(); });
   picker.addEventListener('change', () => { upload([...picker.files]); picker.value = ''; });
+  // A PC switch (main.js usePc): the options and the uploaded photos belong to the old PC.
+  document.addEventListener('ao:pc', () => { opts = null; photos = []; drawStrip(); });
   refresh();
 }

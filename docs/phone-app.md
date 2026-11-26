@@ -38,7 +38,7 @@ The desktop follows the phone: opening a conversation or sending a message on th
 
 ## Limits in step 1
 
-- **Code**, **Images**, **Models**, **Settings** and **Skills** show "Coming in a later update".
+- **Code**, **Models**, **Settings** and **Skills** show "Coming in a later update". Images arrives in a later update; step 1 has no Images view or tab.
 - The first back gesture on a freshly opened page can close the app. This is a browser rule.
 
 ## For developers
