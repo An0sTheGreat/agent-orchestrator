@@ -3,11 +3,11 @@ using System.Windows.Controls;
 
 namespace AgentOrchestrator;
 
-// Settings > Voice: the speech model's download (SpeechModels, only when Download is pressed) and the microphone dictation
+// Settings > Voice: the speech and voice models' downloads (SpeechModels, TtsModels, only when Download is pressed) and the microphone dictation
 // listens to (AppSettings.Microphone, a Windows device name; "" = the Windows default).
 public partial class MainWindow
 {
-    private CancellationTokenSource? _speechDownload; // the download in progress; Cancel, or the app closing, stops it
+    private CancellationTokenSource? _speechDownload, _ttsDownload; // the downloads in progress; Cancel, or the app closing, stops them
 
     private void InitVoice()
     {
@@ -21,43 +21,57 @@ public partial class MainWindow
         VoiceStatus.Text = ready ? "Parakeet TDT 0.6B ready" : $"Speech model not downloaded · {SpeechModels.DownloadBytes >> 20} MB";
         VoiceDownloadButton.Content = "Download";
         VoiceDownloadButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        ready = TtsModels.Ready;
+        TtsStatus.Text = ready ? "Kokoro 82M ready" : $"Voice model not downloaded · {TtsModels.DownloadBytes >> 20} MB";
+        TtsDownloadButton.Content = "Download";
+        TtsDownloadButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
     }
+
+    private void VoiceDownload_Click(object sender, RoutedEventArgs e) =>
+        ModelDownload("speech model", VoiceDownloadButton, VoiceStatus, SpeechModels.DownloadAsync, SpeechModels.Folder,
+            () => _speechDownload, c => _speechDownload = c);
+
+    private void TtsDownload_Click(object sender, RoutedEventArgs e) =>
+        ModelDownload("voice model", TtsDownloadButton, TtsStatus, TtsModels.DownloadAsync, TtsModels.Folder,
+            () => _ttsDownload, c => _ttsDownload = c);
 
     // Download, or Cancel while downloading. A failure is a log line and a toast; the files already fetched stay (the next
     // Download resumes), and a half-finished one never counts as ready.
-    private async void VoiceDownload_Click(object sender, RoutedEventArgs e)
+    private async void ModelDownload(string what, Button button, TextBlock status, Func<IProgress<(long done, long total)>, CancellationToken, Task> download,
+        string folder, Func<CancellationTokenSource?> running, Action<CancellationTokenSource?> setRunning)
     {
-        if (_speechDownload is { } running)
+        if (running() is { } current)
         {
-            running.Cancel();
+            current.Cancel();
             return;
         }
-        using var cancel = _speechDownload = new CancellationTokenSource();
-        VoiceDownloadButton.Content = "Cancel";
+        using var cancel = new CancellationTokenSource();
+        setRunning(cancel);
+        button.Content = "Cancel";
         var shownMb = -1L;
         var progress = new Progress<(long done, long total)>(p =>
         {
-            if (p.done >> 20 == shownMb || _speechDownload != cancel)
+            if (p.done >> 20 == shownMb || running() != cancel)
                 return;
             shownMb = p.done >> 20;
-            VoiceStatus.Text = $"Downloading the speech model: {shownMb} of {p.total >> 20} MB ({p.done * 100 / p.total}%)";
+            status.Text = $"Downloading the {what}: {shownMb} of {p.total >> 20} MB ({p.done * 100 / p.total}%)";
         });
         try
         {
-            VoiceStatus.Text = "Downloading the speech model…";
-            await SpeechModels.DownloadAsync(progress, cancel.Token);
-            Log($"Speech model downloaded into {SpeechModels.Folder}");
-            Toast("Speech model ready");
+            status.Text = $"Downloading the {what}…";
+            await download(progress, cancel.Token);
+            Log($"The {what} downloaded into {folder}");
+            Toast(char.ToUpper(what[0]) + what[1..] + " ready");
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested) { } // Cancel, or the app is closing
         catch (Exception exception)
         {
-            Log($"Speech model download failed: {exception.Message}");
-            Toast("Speech model download failed", "#FF667A");
+            Log($"The {what} download failed: {exception.Message}");
+            Toast(char.ToUpper(what[0]) + what[1..] + " download failed", "#FF667A");
         }
         finally
         {
-            _speechDownload = null;
+            setRunning(null);
             RefreshVoiceStatus();
         }
     }

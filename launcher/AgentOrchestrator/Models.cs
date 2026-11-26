@@ -189,6 +189,30 @@ internal sealed class RoleCard : INotifyPropertyChanged
     }
 }
 
+// Speech output: Voice is a built-in Kokoro name (Tts.Voices) or a CustomVoices name; WorkerVoices maps a worker role to one.
+internal sealed class TtsSettings
+{
+    public string Voice { get; set; } = AgentOrchestrator.Tts.Default;
+    public double Speed { get; set; } = 1.0;
+    public double Volume { get; set; } = 1.0;
+    public int SentencePauseMs { get; set; } = 250;
+    public string Device { get; set; } = ""; // the speaker by its Windows name (SpeechPlayer); "" = the Windows default
+    public bool SkipCode { get; set; } = true;
+    public bool ReadHeadings { get; set; } = true;
+    public bool TableSummary { get; set; } = true;
+    public bool ReadThinking { get; set; }
+    public int MaxChars { get; set; } = 4000;
+    public bool AutoRead { get; set; }
+    public Dictionary<string, string> WorkerVoices { get; set; } = new();
+}
+
+// A custom voice: built-in voice name -> weight (Tts.Weights normalises them to 1).
+internal sealed class CustomVoice
+{
+    public string Name { get; set; } = "";
+    public Dictionary<string, double> Mix { get; set; } = new();
+}
+
 internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
@@ -292,6 +316,9 @@ internal sealed class AppSettings
     public string Ponytail { get; set; } = "";
     // Settings > Voice: the microphone dictation listens to, by its Windows name (Speech.DeviceNumber); "" = the Windows default.
     public string Microphone { get; set; } = "";
+    // Settings > Voice > Speech output (Tts.cs, SpeechText.cs): the reading voice and rules, and the saved custom blends.
+    public TtsSettings Tts { get; set; } = new();
+    public List<CustomVoice> CustomVoices { get; set; } = new();
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)
     public string CommandPermissions { get; set; } = "safe"; // run_command: "ask", "safe" or "all" (the Code composer's permissions dropup)
     // Window position and size in device-independent pixels; null until the window has been closed once.

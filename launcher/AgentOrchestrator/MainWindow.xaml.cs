@@ -5985,8 +5985,10 @@ public partial class MainWindow : Window
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
         _speechDownload?.Cancel();
+        _ttsDownload?.Cancel();
         StopDictation(); // the microphone released
         Speech.Shutdown(); // the recognizer, if dictation made one
+        Tts.Shutdown(); // the Kokoro engines, if speech made them
         CancelImageGen();
         StopImageServer();
         StopLocalServer();

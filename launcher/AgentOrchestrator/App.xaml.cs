@@ -41,6 +41,7 @@ public partial class App : Application
             WebServer.SelfTest();
             WebEvents.SelfTest();
             Speech.SelfTest();
+            Tts.TtsSelfTest();
             Shutdown(0);
             return;
         }
@@ -50,6 +51,15 @@ public partial class App : Application
         {
             var code = 1;
             try { code = Speech.TranscribeFile(e.Args[wav + 1]); }
+            catch (Exception exception) { Console.Error.WriteLine(exception); }
+            Environment.Exit(code);
+        }
+
+        // --speech-say "<text>" <out.wav> [voice | name:weight,...]: Kokoro end to end in a test data folder (Tts.SayFile), no window.
+        if (Array.FindIndex(e.Args, a => a.Equals("--speech-say", StringComparison.OrdinalIgnoreCase)) is var say and >= 0 && say + 2 < e.Args.Length)
+        {
+            var code = 1;
+            try { code = Tts.SayFile(e.Args[say + 1], e.Args[say + 2], say + 3 < e.Args.Length ? e.Args[say + 3] : Tts.Default); }
             catch (Exception exception) { Console.Error.WriteLine(exception); }
             Environment.Exit(code);
         }

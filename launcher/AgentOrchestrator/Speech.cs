@@ -56,7 +56,7 @@ internal static class SpeechModels
 }
 
 // Reports on the reporting thread (Progress<T> would post to the UI); the caller's own Progress<T> moves it there.
-file sealed class Relay<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }
+internal sealed class Relay<T>(Action<T> report) : IProgress<T> { public void Report(T value) => report(value); }
 
 internal static class Speech
 {
@@ -116,22 +116,8 @@ internal static class Speech
     // stdout. 0 when something was heard.
     public static int TranscribeFile(string wav)
     {
-        if (!SpeechModels.Ready)
-        {
-            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")))
-            {
-                Console.Error.WriteLine("--speech-transcribe downloads the models only into a test data folder: set AGENT_ORCHESTRATOR_DATA");
-                return 2;
-            }
-            long shown = -1;
-            Task.Run(() => SpeechModels.DownloadAsync(new Relay<(long done, long total)>(p =>
-            {
-                if (p.done - shown < 50 << 20 && p.done < p.total)
-                    return;
-                shown = p.done;
-                Console.Error.WriteLine($"downloaded {p.done >> 20} of {p.total >> 20} MB");
-            }), CancellationToken.None)).GetAwaiter().GetResult(); // off the UI thread: its awaits must not need the dispatcher
-        }
+        if (!SpeechModels.Ready && !TestDownload("--speech-transcribe", SpeechModels.DownloadAsync))
+            return 2;
         using var reader = new AudioFileReader(wav);
         var all = new List<float>();
         var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
@@ -150,6 +136,26 @@ internal static class Speech
         foreach (var text in texts)
             Console.WriteLine(text);
         return texts.Count > 0 ? 0 : 1;
+    }
+
+    // A test flag's download, only into a test data folder (AGENT_ORCHESTRATOR_DATA set), its progress on stderr. False when
+    // that variable is not set.
+    internal static bool TestDownload(string flag, Func<IProgress<(long done, long total)>, CancellationToken, Task> download)
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA")))
+        {
+            Console.Error.WriteLine($"{flag} downloads the models only into a test data folder: set AGENT_ORCHESTRATOR_DATA");
+            return false;
+        }
+        long shown = -1;
+        Task.Run(() => download(new Relay<(long done, long total)>(p =>
+        {
+            if (p.done - shown < 50 << 20 && p.done < p.total)
+                return;
+            shown = p.done;
+            Console.Error.WriteLine($"downloaded {p.done >> 20} of {p.total >> 20} MB");
+        }), CancellationToken.None)).GetAwaiter().GetResult(); // off the UI thread: its awaits must not need the dispatcher
+        return true;
     }
 
     public static void Shutdown()
