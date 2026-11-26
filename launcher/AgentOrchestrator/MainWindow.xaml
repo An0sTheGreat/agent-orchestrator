@@ -2120,6 +2120,12 @@
                         <TextBlock x:Name="TtsStatus" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
+                        <!-- Speech output (MainWindow.SpeakOut.cs BuildSpeakOut): built in code, disabled until the voice model is downloaded -->
+                        <TextBlock Text="Speech output" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
+                        <TextBlock x:Name="SpeakOutHint" Text="Download the voice model above to choose voices and hear replies read aloud." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <StackPanel x:Name="SpeakOutPanel" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <ComboBox x:Name="MicrophoneBox" DockPanel.Dock="Right" Width="240" SelectionChanged="Microphone_Changed" DropDownOpened="Microphone_DropDownOpened"
                                       AutomationProperties.Name="Microphone" />

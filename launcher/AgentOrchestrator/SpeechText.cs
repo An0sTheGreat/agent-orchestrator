@@ -104,6 +104,7 @@ internal static partial class SpeechText
         text = text.Replace("**", "").Replace("__", "").Replace("~~", "").Replace("*", "");
         text = Underscored().Replace(text, "$1");
         text = Number().Replace(text, m => NumberWords(m.Value));
+        text = Acronym().Replace(text, m => string.Join(' ', m.Value.ToCharArray())); // the lexicon has no "API": spelled out
         var kept = new StringBuilder(text.Length);
         foreach (var rune in text.EnumerateRunes())
             if (!IsEmoji(rune))
@@ -199,6 +200,7 @@ internal static partial class SpeechText
     [GeneratedRegex(@"</?[a-zA-Z][^>]*>")] private static partial Regex Tag();
     [GeneratedRegex(@"(?<!\w)_(\S(?:[^_]*\S)?)_(?!\w)")] private static partial Regex Underscored();
     [GeneratedRegex(@"(?<![\d.])(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)*%?(?!\w)")] private static partial Regex Number();
+    [GeneratedRegex(@"\b[A-Z]{2,6}\b")] private static partial Regex Acronym();
     [GeneratedRegex(@"\s+")] private static partial Regex Spaces();
     [GeneratedRegex(@" ([,.;:!?])")] private static partial Regex SpaceBeforePunctuation();
 }

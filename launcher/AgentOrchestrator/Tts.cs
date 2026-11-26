@@ -233,6 +233,7 @@ internal static class Tts
         Check(Say("Line one\ncontinues here") == "Line one continues here.", "a wrapped paragraph is one piece");
         Check(Say("") == "" && Say("```\nonly code\n```") == "Code skipped.", "empty and code-only replies");
         Check(Say("use `x` and `" + new string('a', 50) + "`") == "use x and.", "long inline code dropped");
+        Check(Say("The API runs on a GPU, not the PC or I") == "The A P I runs on a G P U, not the P C or I.", $"acronyms gave [{Say("The API runs on a GPU, not the PC or I")}]");
 
         var sentences = SpeechText.Sentences("Use e.g. this one. Pi is 3.5 today! Really? Mr. Smith said \"go.\" End");
         Check(sentences is ["Use e.g. this one.", "Pi is 3.5 today!", "Really?", "Mr. Smith said \"go.\"", "End"],
@@ -309,7 +310,7 @@ internal static class Tts
     }
 
     // An output that plays at 20x speed on its own thread: it reads the player's samples and keeps the loud ones' count and peak.
-    private sealed class FakeOutput : IWavePlayer
+    internal sealed class FakeOutput : IWavePlayer
     {
         private IWaveProvider? _source;
         private volatile bool _playing;

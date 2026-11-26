@@ -2726,7 +2726,7 @@ public partial class MainWindow : Window
                 (TextBlock Stamp, Button Copy)? FooterAt(int index) => ChatPanel.Children[index] switch
                 {
                     StackPanel { Children: [Border, StackPanel { Children: [TextBlock s, Button b] }] } => (s, b), // a user bubble
-                    StackPanel { Children: [.., StackPanel { Children: [TextBlock s, Button b, TextBlock] }] } root when !root.Children.OfType<Button>().Any() => (s, b), // a reply (the tail is its call / turn / task stats)
+                    StackPanel { Children: [.., StackPanel { Children: [TextBlock s, Button b, Button { Tag: "speak" }, TextBlock] }] } root when !root.Children.OfType<Button>().Any() => (s, b), // a reply (then its speak button; the tail is its call / turn / task stats)
                     _ => null,
                 };
                 string? copiedMessage = null;
@@ -4115,6 +4115,8 @@ public partial class MainWindow : Window
         if (!await LlamaPollSmoke())
             return false;
         if (!await DictationSmoke())
+            return false;
+        if (!await SpeakOutSmoke())
             return false;
         if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !ToolCallSmoke() || !AutoScrollSmoke() || !await RunThinkingSmoke(Snap))
             return false;
@@ -5596,6 +5598,7 @@ public partial class MainWindow : Window
     {
         var code = !chat;
         StopDictation(); // switching view or conversation
+        StopSpeaking();
         CloseRemoteApi();
         CloseModelHub();
         CloseModelSettings();
@@ -5987,6 +5990,8 @@ public partial class MainWindow : Window
         _speechDownload?.Cancel();
         _ttsDownload?.Cancel();
         StopDictation(); // the microphone released
+        StopSpeaking();
+        _speechPlayer?.Dispose(); // waits for the reading to end and release the speaker
         Speech.Shutdown(); // the recognizer, if dictation made one
         Tts.Shutdown(); // the Kokoro engines, if speech made them
         CancelImageGen();

@@ -106,6 +106,8 @@ public partial class MainWindow
         public StackPanel Content = null!;
         public TextBlock Status = null!;
         public Button Copy = null!;
+        public Button Speak = null!; // read aloud / stop (MainWindow.SpeakOut.cs)
+        public string Role = "";     // the worker that wrote it: its voice reads it
         public StackPanel Footer = null!; // timestamp and copy icon, shown once the reply is complete
         public TextBlock Stamp = null!;
         public TextBlock Stats = null!; // the footer's call / turn / task tokens
@@ -620,6 +622,7 @@ public partial class MainWindow
     // The stop icon (and Ctrl+Shift+X): stops the project run, else the reply.
     private void StopWork_Click(object sender, RoutedEventArgs e)
     {
+        StopSpeaking();
         if (_process is not null)
             Stop_Click(sender, e);
         else if (_chatBusy && _chatProcess is { } p)
@@ -959,6 +962,7 @@ public partial class MainWindow
                 RefreshAttachments(c);
             }
         }
+        StopSpeaking(); // a new reply
         _reply = AddReply(role);
         _chatError = null;
         _chatStopRequested = false;
@@ -1069,6 +1073,8 @@ public partial class MainWindow
         reply.Status.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0.5, 1, TimeSpan.FromMilliseconds(900))
             { AutoReverse = true, RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever });
         (reply.Footer, reply.Stamp, reply.Copy) = MessageFooter(HorizontalAlignment.Left, () => reply.Final ?? reply.AnswerText.ToString());
+        reply.Role = role;
+        reply.Footer.Children.Add(reply.Speak = SpeakButton(reply));
         reply.Footer.Visibility = Visibility.Collapsed;
         if (Markdown.Roomy) // the stats stand back from the answer
             (reply.Footer.Margin, reply.Footer.Opacity) = (new Thickness(0, 10, 0, 0), 0.8);
@@ -1126,6 +1132,8 @@ public partial class MainWindow
                     c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText!, Now(), TurnShots(), stats, changes));
                 }
                 completed = true;
+                if (_turn != _parked) // Read replies aloud: only the conversation shown, after the turn has wound down
+                    Dispatcher.BeginInvoke(() => ReadFinished(reply));
             }
             if (answer is not null)
             {

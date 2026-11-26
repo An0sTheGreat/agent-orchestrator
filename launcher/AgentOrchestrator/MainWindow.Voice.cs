@@ -13,6 +13,7 @@ public partial class MainWindow
     {
         RefreshVoiceStatus();
         FillMicrophones();
+        BuildSpeakOut();
     }
 
     private void RefreshVoiceStatus()
@@ -25,6 +26,7 @@ public partial class MainWindow
         TtsStatus.Text = ready ? "Kokoro 82M ready" : $"Voice model not downloaded · {TtsModels.DownloadBytes >> 20} MB";
         TtsDownloadButton.Content = "Download";
         TtsDownloadButton.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        RefreshSpeakOut();
     }
 
     private void VoiceDownload_Click(object sender, RoutedEventArgs e) =>
