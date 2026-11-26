@@ -287,6 +287,7 @@ public partial class MainWindow
     private async Task<(int Status, object Body)> WebApi(string method, string path, IReadOnlyDictionary<string, string> query, byte[] body, string contentType, string? fileName)
     {
         const string one = "/api/conversation/";
+        const string project = "/api/project/";
         return (method, path) switch
         {
             ("GET", "/api/hello") => (200, WebHello()),
@@ -303,6 +304,20 @@ public partial class MainWindow
             ("POST", one + "delete") => WebNotFound, // no id, as with events
             ("POST", _) when path.StartsWith(one) && path.EndsWith("/delete") =>
                 await Dispatcher.InvokeAsync(() => WebDeleteChat(path[one.Length..^"/delete".Length])),
+            ("POST", one + "rename" or one + "archive" or one + "move") => WebNotFound, // no id, as with delete
+            ("POST", _) when path.StartsWith(one) && path.EndsWith("/rename") => await Dispatcher.InvokeAsync(() => WebRenameChat(path[one.Length..^"/rename".Length], WebBody(body))),
+            ("POST", _) when path.StartsWith(one) && path.EndsWith("/archive") => await Dispatcher.InvokeAsync(() => WebArchiveChat(path[one.Length..^"/archive".Length], WebBody(body))),
+            ("POST", _) when path.StartsWith(one) && path.EndsWith("/move") => await Dispatcher.InvokeAsync(() => WebMoveChat(path[one.Length..^"/move".Length], WebBody(body))),
+            ("POST", "/api/projects") => await Dispatcher.InvokeAsync(() => WebNewProject(WebBody(body))),
+            ("POST", project + "rename" or project + "delete") => WebNotFound, // no id
+            ("POST", _) when path.StartsWith(project) && path.EndsWith("/rename") => await Dispatcher.InvokeAsync(() => WebRenameProject(path[project.Length..^"/rename".Length], WebBody(body))),
+            ("POST", _) when path.StartsWith(project) && path.EndsWith("/delete") => await Dispatcher.InvokeAsync(() => WebDeleteProject(path[project.Length..^"/delete".Length])),
+            ("GET", "/api/skills") => await Dispatcher.InvokeAsync(WebSkills),
+            ("GET", "/api/skill") => await Dispatcher.InvokeAsync(() => WebSkill(query.GetValueOrDefault("key"))),
+            ("POST", "/api/skills/set") => await Dispatcher.InvokeAsync(() => WebSetSkill(WebBody(body))),
+            ("POST", "/api/skills/new") => await Dispatcher.InvokeAsync(() => WebNewSkill(WebBody(body))),
+            ("POST", "/api/skills/save") => await Dispatcher.InvokeAsync(() => WebSaveSkill(WebBody(body))),
+            ("GET", "/api/usage") => await Dispatcher.InvokeAsync(WebUsage),
             ("POST", "/api/picture/delete") => WebPicturePath(WebField(WebBody(body), "path"), ["images"]) is { } picture && File.Exists(picture)
                 ? await Dispatcher.InvokeAsync(() => { ShredPictures([picture]); return File.Exists(picture) ? (409, (object)new { error = "Couldn't delete it (in use on the PC?)" }) : (200, (object)new { ok = true }); }) : WebNotFound,
             ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
@@ -512,7 +527,7 @@ public partial class MainWindow
         var item = (ConversationStore.Entry e) => new { id = e.Id, title = e.Title, kind = Kind(e.Kind), updated = e.Updated, busy = e.Id == running, folder = e.Folder, worker = WebWorker(_store.Get(e.Id)) };
         return (200, new
         {
-            projects = view.Groups.Select(g => new { id = g.Id, name = g.Name, items = g.Items.Select(item).ToList() }).ToList(),
+            projects = view.Groups.Select(g => new { id = g.Id, name = g.Name, kind = g.Kind, items = g.Items.Select(item).ToList() }).ToList(),
             recents = view.Ungrouped.Select(item).ToList(),
             archived = view.Archived.Select(item).ToList(),
         });
@@ -681,7 +696,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes
