@@ -239,7 +239,7 @@ public partial class MainWindow
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             // Placeholder, as Claude's: in the empty box only, saying what Enter does now.
             c.Hint.Text = runActive ? "" : _chatBusy ? "Enter to queue for later, Shift+Enter for a new line" : "Enter to send, Shift+Enter for a new line";
-            c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 && _dictationBox != c.Input ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
         MultiModelOptions.IsEnabled = !_chatBusy && !runActive; // the engine reads it when it starts
@@ -588,6 +588,8 @@ public partial class MainWindow
 
     private void ChatInput_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (DictationKey((TextBox)sender, e))
+            return;
         if (SkillCompletionKey((TextBox)sender, e.Key))
         {
             e.Handled = true;

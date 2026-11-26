@@ -26,6 +26,7 @@ public partial class MainWindow
     // A view with messages still queued queues the next one too (between a turn's end and SendQueued), so none jumps ahead.
     private void SendOrQueue(Conversation c)
     {
+        StopDictation(); // the phrase in progress still lands in the box, after this message
         if (RunLocalCommand(c))
             return;
         var behind = QueueOf(c).Count > 0;

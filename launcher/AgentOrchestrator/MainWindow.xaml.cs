@@ -4114,6 +4114,8 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
+        if (!await DictationSmoke())
+            return false;
         if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !ToolCallSmoke() || !AutoScrollSmoke() || !await RunThinkingSmoke(Snap))
             return false;
         // Notifications: off sends nothing; on, a fully finished reply (nothing queued) notifies with its preview.
@@ -5591,6 +5593,7 @@ public partial class MainWindow : Window
     private void ShowView(bool chat = false)
     {
         var code = !chat;
+        StopDictation(); // switching view or conversation
         CloseRemoteApi();
         CloseModelHub();
         CloseModelSettings();
@@ -5980,6 +5983,7 @@ public partial class MainWindow : Window
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
         _speechDownload?.Cancel();
+        StopDictation(); // the microphone released
         Speech.Shutdown(); // the recognizer, if dictation made one
         CancelImageGen();
         StopImageServer();
