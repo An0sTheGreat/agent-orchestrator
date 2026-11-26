@@ -154,10 +154,21 @@ public partial class MainWindow
     // A send that is refused (no llama-server, no folder, ...) leaves the app
     // idle: that view's queue then goes back into its input and the other view's is tried. A project run (a Code turn may
     // start one) has no queue: both go back into their inputs.
+    private async Task SendQueuedAfterApiLoad()
+    {
+        await LocalApiLoadDone();
+        SendQueued();
+    }
+
     private void SendQueued()
     {
         if (_sendingQueued || _chatBusy || _workflowRoot is null)
             return;
+        if (_localApiLoading) // an app's model load (MainWindow.LocalApi.cs): the queue goes on once it is done, not back into the input
+        {
+            Forget(SendQueuedAfterApiLoad());
+            return;
+        }
         if (_process is not null)
         {
             Unqueue(_chat);

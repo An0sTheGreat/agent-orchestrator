@@ -74,7 +74,7 @@ public partial class MainWindow
         _localApi?.Dispose();
         _localApi = null;
         _localApiState = "Off";
-        try { _localApiEngine?.Kill(true); } catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+        try { _localApiEngine?.Kill(true); } catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception or AggregateException) { }
     }
 
     private void RefreshLocalApi()
@@ -292,7 +292,7 @@ public partial class MainWindow
             try { await process.WaitForExitAsync(cap.Token); }
             catch (OperationCanceledException)
             {
-                try { process.Kill(true); } catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                try { process.Kill(true); } catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception or AggregateException) { }
                 throw new InvalidOperationException("The engine took over 10 minutes to make the worker ready");
             }
             if (process.ExitCode != 0)
