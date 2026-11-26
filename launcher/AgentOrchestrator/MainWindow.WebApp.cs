@@ -54,6 +54,7 @@ public partial class MainWindow
 
     private void PollWebStates()
     {
+        SendPictureProgress(throttled: false);
         var watched = _webEvents.Conversations();
         foreach (var gone in _webStates.Keys.Except(watched).ToList())
             _webStates.Remove(gone);

@@ -26,7 +26,7 @@ public partial class MainWindow
         public double? Progress;
         public int Frame; // previews so far
         public byte[]? Png; // the latest preview
-        public string? Sent; // the last progress event's text and whole percentage
+        public string? Sent = "|-1"; // the last progress event's text and whole percentage (none yet: nothing to send)
         public long SentAt; // and when (Environment.TickCount64)
     }
     private WebPicture? _webPicture;
@@ -104,9 +104,17 @@ public partial class MainWindow
         if (_webPicture is not { } web)
             return;
         (web.Text, web.Progress) = (stepText.Text, progress is { } f ? Math.Round(Math.Clamp(f, 0, 1), 2) : null);
-        // ponytail: a change within 250 ms of the last event is not sent (the hello has it), so a quick last step can lag until done
+        SendPictureProgress(throttled: true);
+    }
+
+    // The card's step to the phone when its text or whole percentage changed: at most one per 250 ms from the progress itself;
+    // the web app's 250 ms state poll sends one held back meanwhile (throttled: false), so the last step is never stuck.
+    private void SendPictureProgress(bool throttled)
+    {
+        if (_webPicture is not { } web)
+            return;
         var sent = $"{web.Text}|{(web.Progress is { } q ? Math.Round(q * 100) : -1)}";
-        if (sent == web.Sent || Environment.TickCount64 - web.SentAt < 250)
+        if (sent == web.Sent || throttled && Environment.TickCount64 - web.SentAt < 250)
             return;
         (web.Sent, web.SentAt) = (sent, Environment.TickCount64);
         PublishPicture(new { e = "picture", state = "progress", text = web.Text, progress = web.Progress });
