@@ -211,6 +211,34 @@ API keys never leave the PC (the API only says whether one is set). Phone action
 - `ping`: sent every 15 seconds while nothing else is; the phone uses it to notice a dead connection and does not pass it on.
 - The engine's own events as they happen, including `delta` (text, thinking or a tool call's arguments), `tool`, `chat_stage` and `context`.
 
+## Local API
+
+Other apps on this PC can use AO's workers and image models through an OpenAI-compatible API, the way they would use OpenRouter, but nothing leaves the PC. Switch it on under **Settings > Models > Local API for my apps**. The section shows the address, the key (**Copy**), and **New key**, which signs your apps out.
+
+- Base URL: `http://127.0.0.1:8830/v1` (the port is `LocalApiPort` in settings.json). It answers this PC only: another address, or a `Host` other than `127.0.0.1`/`localhost` with that port, gets 403.
+- Key: `Authorization: Bearer <key>`; a missing or wrong key gets 401. The key is stored encrypted for your Windows account and is not put in the environment of the processes AO starts.
+- `model` is a worker: a built-in role (`planner`, `implementer`, `reviewer`) or a custom worker's id, or its title (any case). The worker's own model, API key and sampling are used; the app's request fields win over the worker's sampling. AO adds no system prompt: send your own.
+- Calls do not appear in the conversation list, and pictures are not saved to the Images gallery.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/models` | Your workers (`kind: "chat"`, `name` = the title), then your local image models (`kind: "image"`). |
+| POST | `/v1/chat/completions` | Passed through to the worker's model: a local worker's model is loaded on AO's llama-server first, a remote one is called with the key AO keeps for it. Streaming, tool calls and usage come back as the server sends them (the reply's `model` is the real model id). 400 for an unknown worker (the message lists them). |
+| POST | `/v1/images/generations` | `prompt` (required), `model` (an image model id from `/v1/models`; default the Images page's local model), `n` (1 to the batch limit), `size` (`"WxH"`), `response_format` (`b64_json` only), and AO's extras `negative_prompt`, `steps`, `cfg_scale`, `seed`. Answers `{"created", "data": [{"b64_json", "revised_prompt": null, "seed"}]}`. Waits while another picture is being made. Local image models only. |
+
+**Busy.** While AO is running a Chat or Code turn, a project run or Load models, a call to a local worker runs only if its model is already loaded; otherwise it gets 503 with `Retry-After: 10` and nothing is unloaded. Remote workers always run. A model the API loads stays loaded like any other, so a later AO turn on another model may replace it (a stream in progress then fails). The first call to a local worker can take as long as the model takes to load.
+
+Errors use OpenAI's shape, `{"error": {"message", "type"}}`. Provider keys never appear in replies, errors or logs.
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8830/v1", api_key="<key from Settings>")
+reply = client.chat.completions.create(model="planner", messages=[{"role": "user", "content": "Hello"}], stream=True)
+for chunk in reply:
+    print(chunk.choices[0].delta.content or "", end="")
+picture = client.images.generate(prompt="a lighthouse at dusk", size="1024x1024", response_format="b64_json")
+```
+
 ## Chat mode
 
 Role fallback: only the `planner` role (the base model) is required in `config.json`. An `implementer` or `reviewer` that is missing from `roles`, or set to `{"same_as": "planner"}`, uses the planner's settings (model, sampling, `auto_load`) everywhere, the project run included; the same model is not reloaded.
