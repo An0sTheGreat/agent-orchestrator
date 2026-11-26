@@ -1181,6 +1181,8 @@ public partial class MainWindow
     // ponytail: the newest 200 pictures only; page the gallery if people keep thousands.
     private void RefreshGallery()
     {
+        if (_imgGallery is null) // the Images page is not built yet (the phone deleted a picture): opening it lists the folder
+            return;
         _imgGallery.Children.Clear();
         var pictures = Directory.Exists(ImageGen.ImagesFolder)
             ? new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName).ToList()

@@ -520,15 +520,21 @@ public partial class MainWindow
         }
         if (SidebarAsk("Delete chat", $"Delete \"{entry.Title}\"? This can't be undone.", "Delete") is null)
             return;
-        var wasOpen = _codeConv?.Id == entry.Id && NavCode.IsChecked == true;
-        if (_codeConv?.Id == entry.Id)
+        DeleteChatNow(entry.Id);
+    }
+
+    // The delete itself, once asked (the sidebar's confirm, or the phone's own): the open chat closed first, the store, the sidebar.
+    private void DeleteChatNow(string id)
+    {
+        var wasOpen = _codeConv?.Id == id && NavCode.IsChecked == true;
+        if (_codeConv?.Id == id)
         {
             _codeConv = null; // so closing does not treat it as an empty chat to clean up
             CloseCodeConversation();
         }
-        if (_chatConv?.Id == entry.Id)
+        if (_chatConv?.Id == id)
             ClearChatConversation();
-        StoreChange(() => _store.Delete(entry.Id));
+        StoreChange(() => _store.Delete(id));
         if (AppSettings.Unified && wasOpen) // the test build: a fresh chat, not the folder's PROJECT.md prompts
             NewSidebarChat();
     }

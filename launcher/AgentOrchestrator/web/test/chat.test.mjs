@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture } from '../js/chat.js';
+
+test('deletablePicture: a generated picture in images, not a photo in pasted, a screenshot or another URL', () => {
+  const url = p => '/api/file?path=' + encodeURIComponent(p);
+  assert.equal(deletablePicture(url('C:\\AO\\images\\fox 1.png')), 'C:\\AO\\images\\fox 1.png');
+  assert.equal(deletablePicture(url('C:\\AO\\pasted\\a.png')), null);
+  assert.equal(deletablePicture(url('C:\\AO\\screenshots\\a.png')), null);
+  assert.equal(deletablePicture('/api/conversation/x/picture?frame=1'), null);
+});
 
 const bare = ps => ps.map(({ turn, ...p }) => p);
 const run = (...evs) => evs.reduce(applyEvent, emptyLive());

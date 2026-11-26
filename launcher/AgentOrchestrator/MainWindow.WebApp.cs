@@ -300,6 +300,11 @@ public partial class MainWindow
             ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : RemoteAct(method, path, WebBody(body)))),
             ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : WebSend(WebBody(body)))),
             ("POST", "/api/upload") => WebUpload(fileName, body),
+            ("POST", one + "delete") => WebNotFound, // no id, as with events
+            ("POST", _) when path.StartsWith(one) && path.EndsWith("/delete") =>
+                await Dispatcher.InvokeAsync(() => WebDeleteChat(path[one.Length..^"/delete".Length])),
+            ("POST", "/api/picture/delete") => WebPicturePath(WebField(WebBody(body), "path"), ["images"]) is { } picture && File.Exists(picture)
+                ? await Dispatcher.InvokeAsync(() => { ShredPictures([picture]); return (200, (object)new { ok = true }); }) : WebNotFound,
             ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
             ("POST", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposerSet(WebBody(body), await WebSharedImageModels())),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
@@ -528,25 +533,43 @@ public partial class MainWindow
         });
     }
 
+    // The phone's delete, which asked already: refused for a chat a reply or run is using, else as the sidebar's (DeleteChatNow).
+    private (int, object) WebDeleteChat(string id)
+    {
+        if (_store.Get(id) is null)
+            return (404, new { error = "No such conversation" });
+        if (id == RunningId)
+            return (409, new { error = "Stop its reply or run first" });
+        DeleteChatNow(id);
+        return (200, new { ok = true });
+    }
+
+    private static string? PictureType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".png" => "image/png",
+        ".jpg" or ".jpeg" => "image/jpeg",
+        ".webp" => "image/webp",
+        ".gif" => "image/gif",
+        _ => null,
+    };
+
+    // A full path to a picture inside one of the data folder's `folders`, made full; null for anything else.
+    private static string? WebPicturePath(string? path, string[] folders)
+    {
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path))
+            return null;
+        var full = Path.GetFullPath(path);
+        var inside = folders.Any(folder =>
+            full.StartsWith(Path.GetFullPath(Path.Combine(AppSettings.DataRoot, folder)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+        return inside && PictureType(full) is not null ? full : null;
+    }
+
     // A picture of the app's own (generated, pasted or a screenshot) by its full path; anything else is 404.
     private static (int, object) WebFile(string? path)
     {
-        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path))
+        if (WebPicturePath(path, ["images", "pasted", "screenshots"]) is not { } full)
             return WebNotFound;
-        var full = Path.GetFullPath(path);
-        var type = Path.GetExtension(full).ToLowerInvariant() switch
-        {
-            ".png" => "image/png",
-            ".jpg" or ".jpeg" => "image/jpeg",
-            ".webp" => "image/webp",
-            ".gif" => "image/gif",
-            _ => null,
-        };
-        var inside = new[] { "images", "pasted", "screenshots" }.Any(folder =>
-            full.StartsWith(Path.GetFullPath(Path.Combine(AppSettings.DataRoot, folder)) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
-        if (type is null || !inside)
-            return WebNotFound;
-        try { return (200, new WebServer.Response(200, type, File.ReadAllBytes(full))); }
+        try { return (200, new WebServer.Response(200, PictureType(full)!, File.ReadAllBytes(full))); }
         catch (Exception x) when (x is IOException or UnauthorizedAccessException) { return WebNotFound; }
     }
 
@@ -902,6 +925,9 @@ public partial class MainWindow
             var first = await ReadTo(a, "first delta", n => E(n) == "delta");
             if (a.KeepAlives == 0)
                 return Fail("no keepalive while idle");
+            using (var busyDelete = await http.PostAsync($"http://127.0.0.1:{port}/api/conversation/{id}/delete", null))
+                if ((int)busyDelete.StatusCode != 409 || !(await busyDelete.Content.ReadAsStringAsync()).Contains("Stop its reply or run first") || _store.Get(id) is null)
+                    return Fail($"deleting the running chat: {(int)busyDelete.StatusCode}");
 
             // a PC popup during the turn: mirrored as the state's prompt; send waits for it; the phone's answer resolves it
             var asked = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
@@ -1101,6 +1127,26 @@ public partial class MainWindow
                 return Fail($"the saved turn: {JsonSerializer.Serialize(_store.Get(id)?.Messages)}");
             if (IsVisible)
                 return Fail("a send showed the hidden window");
+
+            // the phone's deletes: a saved chat goes from the store (the window stays hidden), an unknown one is 404; a generated
+            // picture and its settings go, a photo in pasted\ or a path outside the images folder is 404 and stays
+            if (_store.Create("", "chat") is not { } doomed)
+                return Fail("no chat to delete");
+            _store.Save(doomed);
+            if (await PostJson($"/api/conversation/{doomed.Id}/delete", new { }) is not (200, _) || _store.Get(doomed.Id) is not null || IsVisible)
+                return Fail($"delete a saved chat: in the store {_store.Get(doomed.Id) is not null}, visible {IsVisible}");
+            if (await PostJson("/api/conversation/none/delete", new { }) is not (404, { } noChat) || noChat["error"]?.ToString() != "No such conversation")
+                return Fail("deleting an unknown chat was not 404");
+            Directory.CreateDirectory(ImageGen.ImagesFolder);
+            var generated = Path.Combine(ImageGen.ImagesFolder, "smoke delete.png");
+            File.WriteAllBytes(generated, png);
+            File.WriteAllText(Path.ChangeExtension(generated, ".json"), "{}");
+            var shred = await PostJson("/api/picture/delete", new { path = generated });
+            if (shred is not (200, _) || File.Exists(generated) || File.Exists(Path.ChangeExtension(generated, ".json")) || IsVisible)
+                return Fail($"delete a generated picture: still there {File.Exists(generated)}, its settings {File.Exists(Path.ChangeExtension(generated, ".json"))}, visible {IsVisible}");
+            foreach (var kept in new[] { photo, Path.Combine(ImageGen.ImagesFolder, "..", "pasted", Path.GetFileName(photo)), @"images\..\pasted\" + Path.GetFileName(photo) })
+                if (await PostJson("/api/picture/delete", new { path = kept }) is not (404, _) || !File.Exists(photo))
+                    return Fail($"{kept} was deleted");
 
             (ShowActivated, WindowState) = (false, WindowState.Minimized);
             Show();

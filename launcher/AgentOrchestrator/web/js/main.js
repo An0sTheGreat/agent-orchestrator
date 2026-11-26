@@ -83,6 +83,24 @@ export function closeOverlays() {
 }
 $('#scrim').addEventListener('click', closeOverlays);
 
+// The confirm sheet: a title, its text, a red Delete (calls onYes) and Cancel.
+let onConfirm = null;
+export function confirmSheet(title, text, onYes) {
+  $('#sheet-confirm .confirm-title').textContent = title;
+  $('#sheet-confirm .confirm-text').textContent = text;
+  onConfirm = onYes;
+  openSheet('sheet-confirm');
+}
+$('#confirmyes').addEventListener('click', () => { const yes = onConfirm; onConfirm = null; closeOverlays(); yes?.(); });
+
+// Deletes a chat on the PC once confirmed, then shows Chats again (its list reloads); a refusal (409) is the server's toast.
+export function askDeleteChat(id, title) {
+  confirmSheet('Delete chat', `Delete "${title}"? This can't be undone.`, async () => {
+    try { await api.post('/api/conversation/' + encodeURIComponent(id) + '/delete'); } catch (err) { fail(err); return; }
+    tabTo('chats');
+  });
+}
+
 let toastTimer;
 export function toast(msg) {
   const t = $('#toast');

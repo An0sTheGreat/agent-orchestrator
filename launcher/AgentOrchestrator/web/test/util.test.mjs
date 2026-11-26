@@ -1,6 +1,28 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ago, makeRouter } from '../js/util.js';
+import { ago, makeRouter, longPress } from '../js/util.js';
+
+test('longPress: a 500 ms hold fires once and swallows its click; moving, lifting early or another button does not', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const el = new EventTarget();
+  let n = 0;
+  longPress(el, () => n++);
+  const send = (type, props = {}) => {
+    const e = Object.assign(new Event(type, { cancelable: true }), { button: 0, clientX: 0, clientY: 0, ...props });
+    el.dispatchEvent(e);
+    return e;
+  };
+  send('pointerdown'); t.mock.timers.tick(499); assert.equal(n, 0);
+  t.mock.timers.tick(1); assert.equal(n, 1);
+  send('contextmenu'); assert.equal(n, 1, 'the context menu after a long press is not a second one');
+  assert.equal(send('click').defaultPrevented, true, 'the click ending a long press is swallowed');
+  assert.equal(send('click').defaultPrevented, false, 'the next click is not');
+  send('pointerdown'); send('pointermove', { clientX: 8, clientY: 7 }); t.mock.timers.tick(600); assert.equal(n, 1, 'moved over 10 px');
+  send('pointerdown'); send('pointermove', { clientX: 6, clientY: 6 }); t.mock.timers.tick(600); assert.equal(n, 2, 'a small wobble still counts');
+  send('pointerdown'); t.mock.timers.tick(300); send('pointerup'); t.mock.timers.tick(600); assert.equal(n, 2, 'lifted early');
+  send('pointerdown', { button: 2 }); t.mock.timers.tick(600); assert.equal(n, 2, 'not the primary button');
+  assert.equal(send('contextmenu').defaultPrevented, true); assert.equal(n, 3, 'a right-click');
+});
 
 // A tab's history as the browser keeps it (states cloned); back() from its first entry leaves the app.
 function tab() {

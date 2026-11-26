@@ -252,6 +252,8 @@ body.landscape .drawer { padding-top: 0; }
 .item:hover { background: var(--card); }
 .item-main { display: flex; align-items: center; gap: 11px; padding: 9px 8px; flex: 1; min-width: 0; text-align: left; }
 .item.indent { margin-left: 14px; }
+/* a long press deletes a chat (or a generated picture): no iOS callout or text selection in the way */
+#view-chats .item, .msg .pic.del { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
 .item-ic { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--muted); flex: none; }
 .item.indent .item-ic { width: 22px; height: 22px; }
 .item.indent .item-ic .ic { width: 16px; height: 16px; }
@@ -666,6 +668,8 @@ body.landscape .drawer { padding-top: 0; }
 .sheet .secthead { margin: 14px 4px 7px; }
 .sheet .secthead.inline { margin: 4px 4px 8px; }
 .sheet .rowline { padding: 9px 2px; }
+.confirm-title { font-size: 15px; font-weight: 600; margin: 4px 4px 0; }
+.confirm-text { margin: 6px 4px 12px; }
 
 .toast {
   position: absolute; left: 50%; bottom: 96px; transform: translate(-50%, 12px);

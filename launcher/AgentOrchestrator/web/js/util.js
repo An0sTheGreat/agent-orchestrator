@@ -18,6 +18,25 @@ export function makeRouter(history) {
   };
 }
 
+// A long press on `el` (held `ms` with the primary button or a finger, moving under `slop` px) or a right-click calls fn(); the
+// click that ends a long press is swallowed, so the row under it does not also open.
+export function longPress(el, fn, ms = 500, slop = 10) {
+  let timer = 0, at = null, fired = false;
+  const cancel = () => { clearTimeout(timer); at = null; };
+  const fire = () => { cancel(); fired = true; fn(); };
+  el.addEventListener('pointerdown', e => {
+    fired = false;
+    if (e.button !== 0) return;
+    at = [e.clientX, e.clientY];
+    clearTimeout(timer);
+    timer = setTimeout(fire, ms);
+  });
+  el.addEventListener('pointermove', e => { if (at && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > slop) cancel(); });
+  for (const end of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(end, cancel);
+  el.addEventListener('contextmenu', e => { e.preventDefault(); if (!fired) fire(); });
+  el.addEventListener('click', e => { if (fired) { fired = false; e.preventDefault(); e.stopPropagation(); } }, true);
+}
+
 // "3 min ago", "yesterday", "2 days ago", "last week", then the date: the list rows' time, as the concept writes it.
 export function ago(when, now = new Date()) {
   const d = new Date(when), mins = Math.floor((now - d) / 60000);

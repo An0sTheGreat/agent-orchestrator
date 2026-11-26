@@ -4,7 +4,7 @@
 import { api } from './api.js';
 import { h } from './h.js';
 import { renderMarkdown } from './markdown.js';
-import { ago } from './util.js';
+import { ago, longPress } from './util.js';
 
 /* ---------- the live reply: pure ---------- */
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
@@ -13,6 +13,13 @@ import { ago } from './util.js';
 export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0 });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
+// The PC path of a generated picture's URL (one in an images folder), which a long press may delete; null for the user's photos
+// (pasted), screenshots or anything else. The server checks it is in the PC's own images folder.
+export const deletablePicture = src => {
+  if (!src.startsWith('/api/file?path=')) return null;
+  const path = decodeURIComponent(src.slice('/api/file?path='.length));
+  return /[\\/]images[\\/]/i.test(path) && !/[\\/](pasted|screenshots)[\\/]/i.test(path) ? path : null;
+};
 const SAVED = /\bSaved: ([^\r\n]+?)\. Prompt: /g; // generate_image's line (ImageGen.ChatResult) names the saved picture
 const pct = p => typeof p === 'number' ? p : null; // null: no percentage yet (Loading model…)
 // A picture being made (the `picture` events, or hello's `picture`): its card until `done` makes it the picture, or `end` drops it.
@@ -93,7 +100,7 @@ let replaceScreen = () => {};
 export const follow = id => replaceScreen('chat', { id });
 
 if (typeof document !== 'undefined') {
-  const { registerScreen, fail, toast, replace } = await import('./main.js');
+  const { registerScreen, fail, toast, replace, confirmSheet, askDeleteChat, closeOverlays } = await import('./main.js');
   replaceScreen = replace;
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
@@ -101,8 +108,21 @@ if (typeof document !== 'undefined') {
   let id = null, live = emptyLive(), saved = [], liveEls = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
-  const img = src => h('img', { class: 'pic', src: api.base + src, alt: '', loading: 'lazy', // a path on the PC the app talks to
-    onerror: e => e.currentTarget.replaceWith(h('span', { class: 'pic-missing' }, 'Picture not available')) });
+  const deleted = new Set(); // pictures deleted from here: redraws show them deleted
+  const missing = text => h('span', { class: 'pic-missing' }, text);
+  const img = src => {
+    if (deleted.has(src)) return missing('Picture deleted');
+    const path = deletablePicture(src);
+    const el = h('img', { class: path ? 'pic del' : 'pic', src: api.base + src, alt: '', loading: 'lazy', // a path on the PC the app talks to
+      onerror: e => e.currentTarget.replaceWith(missing('Picture not available')) });
+    if (path) longPress(el, () => confirmSheet('Delete picture',
+      `Delete this picture from ${$('[data-pc-name]').textContent} for good? It can't be brought back.`, async () => {
+        try { await api.post('/api/picture/delete', { path }); } catch (err) { fail(err); return; }
+        deleted.add(src);
+        el.replaceWith(missing('Picture deleted'));
+      }));
+    return el;
+  };
   const copyBtn = (el, text) => el.querySelector('[data-copy]').addEventListener('click', () =>
     navigator.clipboard.writeText(text).then(() => toast('Copied'), () => toast('Could not copy')));
 
@@ -318,6 +338,7 @@ if (typeof document !== 'undefined') {
   registerScreen('chat', {
     mount() {
       $('#stopbtn').addEventListener('click', () => api.post('/api/stop', { id }).catch(fail));
+      $('#chatdelete').addEventListener('click', () => id ? askDeleteChat(id, view.querySelector('.vtitle').textContent) : closeOverlays());
       $('#ctxchat').addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; });
       document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
     },

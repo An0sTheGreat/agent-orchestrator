@@ -1,8 +1,8 @@
 // The Chats screen: projects, recents and archived from /api/conversations, the All/Chat/Code filter and the search sheet.
 import { api } from './api.js';
-import { registerScreen, go, fail } from './main.js';
+import { registerScreen, go, fail, askDeleteChat } from './main.js';
 import { h, icon } from './h.js';
-import { ago } from './util.js';
+import { ago, longPress } from './util.js';
 
 const $ = s => document.querySelector(s);
 let data = { projects: [], recents: [], archived: [] }, kind = 'all', loads = 0;
@@ -17,6 +17,7 @@ function chatRow(tpl, c) {
   el.querySelector('small').textContent = [c.worker, ago(c.updated)].filter(Boolean).join(' · ');
   if (c.busy) main.append(h('span', { class: 'dot live', 'aria-label': 'replying' }));
   main.addEventListener('click', () => go('chat', { id: c.id }));
+  longPress(el, () => askDeleteChat(c.id, c.title));
   return el;
 }
 

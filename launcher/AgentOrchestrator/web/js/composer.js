@@ -68,7 +68,6 @@ if (typeof document !== 'undefined') {
     $('#skillchips').replaceChildren(...o.skills.map(s =>
       h('button', { class: s.on ? 'chip on' : 'chip', onclick: () => set({ skills: [{ name: s.name, on: !s.on }] }) }, icon('layers', 'ic sm'), ' ' + s.name)));
     const g = o.imageGen, b = sizeBoxes(g);
-    $('#imgchip span').textContent = g.name || 'Image Gen';
     options($('#imgmodel'), g.models.map(m => [m.id, m.note ? `${m.name} · ${m.note}` : m.name]), g.model, 'Pick a model');
     options($('#imgaspect'), g.aspects.map(a => [a.ratio, a.ratio === 'Custom' ? 'Custom' : `${a.name} ${a.ratio}`]), g.aspect, 'Square 1:1');
     for (const k of ['width', 'height']) {

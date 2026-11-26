@@ -101,7 +101,6 @@
                 <div class="chips" data-chips>
                   <button class="chip square" data-sheet="sheet-tools" aria-label="More options"><svg class="ic"><use href="#i-plus"/></svg></button>
                   <button class="chip" id="visionchip"><svg class="ic sm"><use href="#i-eye"/></svg> Vision</button>
-                  <button class="chip" id="imgchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-image"/></svg> <span>Image Gen</span></button>
                 </div>
                 <div class="sendrow">
                   <button class="chip" id="effortchip" data-sheet="sheet-tools"><svg class="ic sm"><use href="#i-gauge"/></svg> <span>Effort: Default</span></button>
@@ -519,7 +518,15 @@
         <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-folder"/></svg> Move to a project</button>
         <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-archive"/></svg> Archive</button>
         <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-copy"/></svg> Copy reply</button>
-        <button class="drawer-item danger" data-close><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
+        <button class="drawer-item danger" id="chatdelete"><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
+      </div>
+
+      <div class="sheet" id="sheet-confirm" role="dialog" aria-label="Confirm">
+        <div class="grab"></div>
+        <p class="confirm-title"></p>
+        <p class="hintline confirm-text"></p>
+        <button class="drawer-item danger" id="confirmyes"><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
+        <button class="drawer-item" data-close>Cancel</button>
       </div>
 
       <div class="sheet" id="sheet-project" role="dialog" aria-label="Project menu">
