@@ -10,7 +10,7 @@ using System.Text.Json;
 namespace AgentOrchestrator;
 
 // The front door of sharing this PC's models (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md): a
-// minimal HTTP/1.1 server on 127.0.0.1:ModelShare.ImagePort, the Cloudflare tunnel's target. GET /images/models lists the
+// minimal HTTP/1.1 server on this PC's Tailscale IPv4:ModelShare.ImagePort. GET /images/models lists the
 // recipes and the local image models; POST /images/generate runs one (MainWindow.Share.cs); /v1/... is proxied to llama-server
 // on 127.0.0.1:<upstream>. Every request needs the share key as a bearer token; one request per connection, then it closes.
 internal static class ImageShare
@@ -42,7 +42,7 @@ internal static class ImageShare
 
     private sealed record ErrorReply(string Error, [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] int? Status = null);
 
-    // Cloudflare drops a reply that has not started within ~100 s (524): /images/generate sends its 200 head at once and a
+    // A client or proxy may drop a reply that has not started for a while: /images/generate sends its 200 head at once and a
     // space every Heartbeat until the outcome (JSON allows leading whitespace), and an error goes in the body with its status.
     internal static TimeSpan Heartbeat = TimeSpan.FromSeconds(15);
     // While it runs, a {"progress","status"} line goes out each ProgressTick the primary PC's status changed (Server.Progress), so

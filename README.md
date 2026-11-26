@@ -57,7 +57,6 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 - **Computer use** (off by default): in Options > General, approve the applications the model may use (in Chat and Code); it then works in one window of one of them per reply with your real mouse and keyboard. Press Esc at any time to stop it.
 - **Sandboxed commands**: the agents run builds and tests in a sandbox that asks before touching the network or other folders.
 - **Skills, tools and web search**: switch each one on per conversation.
-- **Remote access**: use the app from your phone or another computer through a private, password-protected link.
 - **Phone app**: over Tailscale, use your chats from your phone's home screen, and switch between your PCs. See [Phone app](docs/phone-app.md).
 
 ![Code view](docs/images/code.png)
@@ -109,7 +108,6 @@ This project grows from what its users ask for, so tell us what you'd like to se
 ## Learn more
 
 - [Reference](docs/reference.md): every feature, setting and command-line option in detail
-- [Remote access](docs/remote-access.md): how the phone and browser access works and how it is secured
 - [Phone app](docs/phone-app.md): the app on your phone over Tailscale, what it needs and how it is secured
 
 The app ships with three open fonts, [Inter](https://rsms.me/inter/), [Newsreader](https://github.com/productiontype/Newsreader) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/), under the SIL Open Font License (`launcher/AgentOrchestrator/Fonts`).

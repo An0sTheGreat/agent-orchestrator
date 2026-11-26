@@ -95,7 +95,6 @@ export function rows(page, s) {
       head('Several models at once'), radio('multiModel', m.multiModel, [['never', 'Never', 'One model at a time'],
         ['fit', 'If they fit the GPU', 'Side by side in free GPU memory (NVIDIA)'], ['always', 'Load anyway', 'What does not fit runs slower from RAM']]),
       head('Share models with my other PCs'), sw('share.on', m.share.on, "Share this PC's models", 'For the app on your other PCs'),
-      seg('share.network', m.share.network, 'Network', [['tailscale', 'Tailscale'], ['cloudflare', 'Cloudflare']]),
       note('The model runtime, models folders, connection codes and keys stay on the PC.')];
     case 'agents': return [
       head('Workflow'), radio('workflow', ag.workflow, [['dual', 'Lead + Reviewer', 'The reviewer checks every finished item'],

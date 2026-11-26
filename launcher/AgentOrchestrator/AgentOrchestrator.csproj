@@ -25,7 +25,6 @@
     <!-- model makers' logos on the Remote API page (LobeHub icons, MIT; the notice is beside them) -->
     <Resource Include="Assets\Vendors\*.png" />
     <None Remove="Assets\make_icon.py" />
-    <EmbeddedResource Include="remote.html" LogicalName="remote.html" />
     <!-- the tailnet phone app (WebServer.cs), named by its path under web\ with forward slashes: web/index.html, web/assets/fonts/... -->
     <EmbeddedResource Include="web\**" Exclude="web\test\**" LogicalName="web/$([System.String]::Copy('%(RecursiveDir)').Replace('\', '/'))%(Filename)%(Extension)" />
     <!-- the terminal panel's xterm.js (MIT; the licenses are beside it in Terminal\) -->
@@ -39,7 +38,7 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2849.39" />
-    <!-- the remote access address as a QR code (PngByteQRCode: no System.Drawing) -->
+    <!-- the phone app address as a QR code (PngByteQRCode: no System.Drawing) -->
     <PackageReference Include="QRCoder" Version="1.6.0" />
     <!-- the editor panel's text surface (MainWindow.Editor.cs), MIT -->
     <PackageReference Include="AvalonEdit" Version="6.3.1.120" />

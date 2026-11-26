@@ -9,7 +9,7 @@ namespace AgentOrchestrator;
 // The tailnet phone app's server: http://127.0.0.1:<port>/ only, published on the tailnet by `tailscale serve`, which adds
 // Tailscale-User-Login to every request it proxies. Every path, the page and its files included, needs that header naming
 // the PC's own Tailscale user (`ownerLogin`); anything else gets 403. "/" and the embedded web\ files are the app;
-// /api/* goes to `api` (MainWindow.WebApp.cs), which answers (status, JSON body). Apart from RemoteServer (Cloudflare).
+// /api/* goes to `api` (MainWindow.WebApp.cs), which answers (status, JSON body).
 internal sealed class WebServer
 {
     public record Response(int Status, string Type, byte[] Body);
@@ -110,7 +110,7 @@ internal sealed class WebServer
             }
             // http.sys routes on the Host header, so a LAN device naming 127.0.0.1 could reach the port and forge the
             // header: only this PC's connections (tailscaled's Serve proxy) count.
-            if (!RemoteServer.IsAllowedClient(request.RemoteEndPoint.Address))
+            if (!IPAddress.IsLoopback(request.RemoteEndPoint.Address))
             {
                 response.StatusCode = 403;
                 return;
@@ -328,7 +328,7 @@ internal sealed class WebServer
         Check(ShellHash(files) == ShellHash(files.Reverse()) && ShellHash(files) != ShellHash(edited) &&
             ShellHash([("web/a", [1])]) != ShellHash([("web/a\u0001", [])]) && ShellHash(files).Length == 12 &&
             Shell.Length == 12 && Shell != typeof(WebServer).Assembly.GetName().Version?.ToString(3), "shell hash: " + Shell);
-        Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
+        Check(Asset("/../settings.json") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
             Asset("") is null, "refused assets");
         Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");
 

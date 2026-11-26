@@ -14,11 +14,9 @@ namespace AgentOrchestrator;
 // Settings > Models > Share models with my other PCs (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md).
 // Primary PC: the switch starts llama-server in router mode on 127.0.0.1:ModelShare.ChatPort (the share key from ApiKeys
 // under ModelShare.OwnKeyEnv), with <data>\share\models.ini written from the local chat GGUFs on each start, and the ImageShare
-// server on ModelShare.ImagePort (which proxies /v1/ to llama-server). On the Tailscale network (AppSettings.ShareNetwork,
-// ModelShare.Network) ImageShare binds this PC's Tailscale IPv4 and the code carries that fixed address; on the Cloudflare one
-// it binds 127.0.0.1 behind one Cloudflare quick tunnel (asking to download cloudflared first, as Remote access does).
-// llama-server restarts after a backoff (5 s doubling to 1 min) when it exits while on, the tunnel likewise (RemoteTunnel);
-// all stop by pid when the switch goes off or the app closes. Other PC: Connect checks a connection code against
+// server on ModelShare.ImagePort (which proxies /v1/ to llama-server). ImageShare binds this PC's Tailscale IPv4 and the code
+// carries that fixed address. llama-server restarts after a backoff (ModelShare.Backoff) when it exits while on;
+// both stop when the switch goes off or the app closes. Other PC: Connect checks a connection code against
 // ModelShare.ChatUrl's /models and keeps its host
 // (AppSettings.ShareHost) and key (ApiKeys, ModelShare.KeyEnv); the Remote API page then lists "Primary PC". Connect (and
 // Copy presets) also copies the primary PC's model presets for its shared models (GET /share/presets, ModelShare.PresetsJson).
@@ -28,14 +26,12 @@ public partial class MainWindow
     private ImageShare.Server? _imageShare; // the images half, on ModelShare.ImagePort; it keeps running across llama-server restarts
     private volatile List<ModelShare.SharedModel> _sharedModels = []; // the models.ini of the last launch: /share/presets lists their presets
     private int _shareGeneration, _shareFailures; // a new generation for every launch and stop: stale exits and restarts are ignored
-    private readonly RemoteTunnel _shareTunnel = new(RemoteTunnel.DefaultExe, "cloudflared-share.pid");
     private string _shareState = "Off"; // off: why; on: llama-server's state ("" = running)
-    private IPAddress? _shareIp; // sharing on Tailscale: the address ImageShare binds; null = on the Cloudflare tunnel
+    private IPAddress? _shareIp; // while sharing: the Tailscale address ImageShare binds
     private const string ShareLabel = "Primary PC"; // the name of the key Connect saves under ModelShare.KeyEnv
 
     private void InitShare()
     {
-        _shareTunnel.Changed += () => Dispatcher.InvokeAsync(RefreshShare);
         RemoteCatalog.ShareHost = _settings.ShareHost;
         ShareNote(_settings.ShareHost.Length > 0 ? $"Connected to {_settings.ShareHost}" : "");
         if (_settings.ShareModels)
@@ -45,7 +41,7 @@ public partial class MainWindow
         InitTailnet(); // PCs on the same Tailscale account connect by themselves (MainWindow.Tailnet.cs)
     }
 
-    private async void ShareToggle_Click(object sender, RoutedEventArgs e)
+    private void ShareToggle_Click(object sender, RoutedEventArgs e)
     {
         if (ShareToggle.IsChecked != true)
         {
@@ -54,46 +50,9 @@ public partial class MainWindow
             SaveShare(false);
             return;
         }
-        await TurnOnShare();
-    }
-
-    // The network the next start uses: the user's pick, else Tailscale when this PC has a Tailscale address now.
-    private string ShareNetworkNow() => ModelShare.Network(_settings.ShareNetwork);
-
-    // The Cloudflare network asks to download cloudflared first; Tailscale needs nothing more.
-    private async Task TurnOnShare()
-    {
-        if (ShareNetworkNow() == ModelShare.Cloudflare)
-        {
-            _shareState = "Off: sharing needs cloudflared";
-            if (!File.Exists(_shareTunnel.Exe) && !await DownloadCloudflared(_shareTunnel.Exe,
-                    percent => { (_shareState, ShareToggle.IsEnabled) = (percent is { } p ? $"Downloading cloudflared {p}%" : _shareState, percent is null); RefreshShare(); },
-                    failure => { _shareState = "Failed: " + failure; Log($"Share models: {failure}"); }))
-            {
-                SaveShare(false);
-                return;
-            }
-        }
         StartShare();
     }
 
-    // The user's pick is kept; while sharing, a different network restarts it.
-    private async void ShareNetwork_Click(object sender, RoutedEventArgs e)
-    {
-        var picked = (string)((FrameworkElement)sender).Tag;
-        var running = _shareIp is null ? ModelShare.Cloudflare : ModelShare.Tailscale;
-        _settings.ShareNetwork = picked;
-        _settings.Save();
-        if (!_settings.ShareModels || running == picked)
-        {
-            RefreshShare();
-            return;
-        }
-        StopShare();
-        await TurnOnShare();
-    }
-
-    // At startup a missing cloudflared shows the tunnel Failed instead of asking.
     private void StartShare()
     {
         if (!File.Exists(LauncherLogic.LlamaServerPath))
@@ -102,10 +61,9 @@ public partial class MainWindow
             SaveShare(false);
             return;
         }
-        _shareIp = null;
-        if (ShareNetworkNow() == ModelShare.Tailscale && (_shareIp = ModelShare.TailscaleIp()) is null)
+        if ((_shareIp = ModelShare.TailscaleIp()) is null)
         {
-            _shareState = "Tailscale is not connected: sign in to Tailscale, or choose Cloudflare";
+            _shareState = "Tailscale is not connected: sign in to Tailscale";
             SaveShare(false);
             return;
         }
@@ -165,10 +123,8 @@ public partial class MainWindow
         {
             Directory.CreateDirectory(ModelShare.Folder);
             File.WriteAllText(ModelShare.IniPath, ModelShare.Ini(models));
-            StartImageShare(_shareIp ?? IPAddress.Loopback, ModelShare.ImagePort);
+            StartImageShare(_shareIp!, ModelShare.ImagePort);
             process.Start();
-            if (_shareIp is null)
-                _shareTunnel.Start(ModelShare.ImagePort); // idempotent: it keeps running (and its address) across llama-server restarts
         }
         catch (Exception x) when (x is IOException or UnauthorizedAccessException or Win32Exception or InvalidOperationException or SocketException)
         {
@@ -180,8 +136,7 @@ public partial class MainWindow
         }
         var started = DateTime.Now;
         _shareProcess = process;
-        Log($"Share models: llama-server (pid {process.Id}) on 127.0.0.1:{ModelShare.ChatPort}, {models.Count} models, " +
-            (_shareIp is { } ip ? $"on Tailscale at {ip}:{ModelShare.ImagePort}" : "through a Cloudflare tunnel"));
+        Log($"Share models: llama-server (pid {process.Id}) on 127.0.0.1:{ModelShare.ChatPort}, {models.Count} models, on Tailscale at {_shareIp}:{ModelShare.ImagePort}");
         _shareState = "";
         RefreshShare();
         process.Exited += (_, _) => Dispatcher.InvokeAsync(async () =>
@@ -190,7 +145,7 @@ public partial class MainWindow
                 return;
             var code = process.ExitCode;
             (_shareProcess, _shareFailures) = (null, DateTime.Now - started > TimeSpan.FromMinutes(1) ? 0 : _shareFailures);
-            var wait = RemoteTunnel.Backoff(_shareFailures++);
+            var wait = ModelShare.Backoff(_shareFailures++);
             var next = ++_shareGeneration;
             _shareState = $"llama-server exited with code {code} (restarting in {wait.TotalSeconds:0} s)";
             RefreshShare();
@@ -207,17 +162,16 @@ public partial class MainWindow
         catch (Exception x) when (x is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
 
-    // Idempotent: the tunnel and the server stop by their own pids, and any pending restart is dropped.
+    // Idempotent: the servers stop (llama-server by its own pid), and any pending restart is dropped.
     private void StopShare()
     {
-        _shareTunnel.Stop();
         _imageShare?.Dispose();
         _imageShare = null;
         _shareGeneration++;
         KillShareProcess();
     }
 
-    // llama-server again with a new models.ini (ImageShare and the tunnel stay up): changed load options apply at its next load.
+    // llama-server again with a new models.ini (ImageShare stays up): changed load options apply at its next load.
     private void RestartShareServer()
     {
         if (!_settings.ShareModels)
@@ -390,25 +344,13 @@ public partial class MainWindow
 
     private void RefreshShare()
     {
-        ShareToggle.IsChecked = _settings.ShareModels || !ShareToggle.IsEnabled; // on while cloudflared downloads
-        ShareNetworkPanel.IsEnabled = ShareToggle.IsEnabled;
-        var onTailscale = _settings.ShareModels ? _shareIp is not null : ShareNetworkNow() == ModelShare.Tailscale;
-        (ShareTailscaleRadio.IsChecked, ShareCloudflareRadio.IsChecked) = (onTailscale, !onTailscale);
+        ShareToggle.IsChecked = _settings.ShareModels;
         var tailscale = _settings.ShareModels && _shareIp is { } at && _imageShare is not null ? at.ToString() : null;
-        var tunnel = tailscale is not null
-            ? $"Online on Tailscale at {tailscale}, a fixed address: the connection code stays the same when sharing restarts. " +
-              "The first time, Windows may ask to allow \"Agent Orchestrator\" through the firewall: allow it"
-            : _shareIp is not null ? "" : _shareTunnel.State switch
-        {
-            RemoteTunnel.Status.Starting => "Tunnel starting…",
-            RemoteTunnel.Status.Online => "Online. The address changes each time sharing starts: then paste the new connection code on your other PCs",
-            RemoteTunnel.Status.Failed => "Tunnel failed: " + _shareTunnel.Reason,
-            _ => "",
-        };
-        ShareStateText.Text = _settings.ShareModels ? string.Join(" · ", new[] { tunnel, _shareState }.Where(t => t.Length > 0)) : _shareState;
+        var online = tailscale is null ? "" : $"Online on Tailscale at {tailscale}, a fixed address: the connection code stays the same when sharing restarts. " +
+              "The first time, Windows may ask to allow \"Agent Orchestrator\" through the firewall: allow it";
+        ShareStateText.Text = _settings.ShareModels ? string.Join(" · ", new[] { online, _shareState }.Where(t => t.Length > 0)) : _shareState;
         var key = Environment.GetEnvironmentVariable(ModelShare.OwnKeyEnv);
-        var host = !_settings.ShareModels || key is not { Length: > 0 } ? null
-            : tailscale ?? (_shareIp is null && _shareTunnel is { State: RemoteTunnel.Status.Online, Url: { } url } ? new Uri(url).Host : null);
+        var host = key is { Length: > 0 } ? tailscale : null;
         ShareCodePanel.Visibility = host is null ? Visibility.Collapsed : Visibility.Visible;
         ShareCodeBox.Text = host is null ? "" : ModelShare.Code(host, key!);
     }
@@ -461,9 +403,8 @@ public partial class MainWindow
         catch (Exception x) when (x is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
             ShareNote($"Could not connect to {host}: " + (x is TaskCanceledException
-                ? "no answer in 10 s. Is the primary PC on and sharing its models? " + (ModelShare.IsTailscaleHost(host)
-                    ? "Are both PCs signed in to Tailscale, and is Agent Orchestrator allowed through the primary PC's firewall?"
-                    : "Its address changes each time sharing starts.") : x.Message), error: true);
+                ? "no answer in 10 s. Is the primary PC on and sharing its models? " +
+                "Are both PCs signed in to Tailscale, and is Agent Orchestrator allowed through the primary PC's firewall?" : x.Message), error: true);
         }
         finally
         {
@@ -519,10 +460,8 @@ public partial class MainWindow
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: share models: {what}"); return false; }
         if (SettingsPageOf(ShareToggle) is null)
             return Fail("the Share section is not in Settings > Models");
-        if (SettingsPageOf(ShareTailscaleRadio) is null || SettingsPageOf(ShareCloudflareRadio) is null || ShareTailscaleRadio.IsChecked == ShareCloudflareRadio.IsChecked)
-            return Fail($"the network choice: Tailscale {ShareTailscaleRadio.IsChecked}, Cloudflare {ShareCloudflareRadio.IsChecked}");
         var host = _settings.ShareHost;
-        ShareCodeInput.Text = "ao-share://x.trycloudflare.com.evil.com?key=nope";
+        ShareCodeInput.Text = "ao-share://100.64.0.1.evil.com?key=nope";
         ShareConnectButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
         if (!ShareConnectState.Text.StartsWith("That is not a connection code") || _settings.ShareHost != host || ApiKeys.Has(ModelShare.KeyEnv))
             return Fail($"a bad code: {ShareConnectState.Text}");
@@ -532,7 +471,7 @@ public partial class MainWindow
         if (ImagesView.Children.Count == 0)
             BuildImagesPage();
         var remotePc = SmokeFind<RadioButton>(ImagesView, b => b.Tag as string == "ImagesConnectionRemote");
-        _settings.ShareHost = "smoke.trycloudflare.com";
+        _settings.ShareHost = "100.101.102.103";
         ShowImageSource();
         var connected = remotePc?.IsEnabled;
         _settings.ShareHost = "";

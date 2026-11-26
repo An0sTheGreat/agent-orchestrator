@@ -30,8 +30,6 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.RunLogSelfTest();
             AgentOrchestrator.HubLogic.HubLogicSelfTest();
             AgentOrchestrator.HubDownloader.HubDownloadSelfTest();
-            RemoteServer.SelfTest();
-            RemoteTunnel.SelfTest();
             ApiKeys.SelfTest();
             AgentOrchestrator.MainWindow.NotifySelfTest();
             ImageGen.ImageGenSelfTest();

@@ -357,7 +357,7 @@ public partial class MainWindow
     }
 
     // Send and stop wait for any PC popup, one tied to a conversation too (the sandbox's command approval, which the phone may answer):
-    // either would otherwise run inside its dialog loop. RemoteAct (remote.html) keeps DesktopDialogOpen alone.
+    // either would otherwise run inside its dialog loop.
     private bool WebPromptOpen() => _remotePrompt is not null || DesktopDialogOpen();
 
     // Send and stop while a PC dialog is open: the phone app's own error word, which its page explains.

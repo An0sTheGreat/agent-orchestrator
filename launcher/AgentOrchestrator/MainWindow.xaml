@@ -1778,7 +1778,7 @@
                                           AutomationProperties.Name="Start with Windows" />
                             <TextBlock Text="Start with Windows" VerticalAlignment="Center" />
                         </DockPanel>
-                        <TextBlock Text="Opens in the system tray when you sign in to Windows, so its models, sharing and remote access are ready. Closing the window keeps the app running in the tray: click its icon to open it again, or right-click it to quit."
+                        <TextBlock Text="Opens in the system tray when you sign in to Windows, so its models, sharing and the phone app are ready. Closing the window keeps the app running in the tray: click its icon to open it again, or right-click it to quit."
                                    TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Notifications (MainWindow.Notify.cs) -->
@@ -1836,33 +1836,8 @@
                         <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
-                        <!-- Remote access (MainWindow.Remote.cs, RemoteTunnel.cs): the server and the Cloudflare quick tunnel -->
-                        <TextBlock Text="Remote access" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <DockPanel Margin="0,14,0,0">
-                            <ToggleButton x:Name="RemoteToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="RemoteToggle_Click" VerticalAlignment="Center"
-                                          AutomationProperties.Name="Remote access" />
-                            <TextBlock Text="Use the app from a phone or another computer, in a browser" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        </DockPanel>
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="RemotePasswordButton" DockPanel.Dock="Right" Content="Set password" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="RemotePassword_Click" />
-                        <PasswordBox x:Name="RemotePasswordBox" AutomationProperties.Name="Remote access password" />
-                        </DockPanel>
-                        <TextBlock x:Name="RemotePasswordState" TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <TextBlock x:Name="RemoteStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
-                        <StackPanel x:Name="RemoteOnlinePanel" Visibility="Collapsed" Margin="0,12,0,0">
-                        <DockPanel>
-                        <Button x:Name="RemoteCopyButton" DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="RemoteCopy_Click" />
-                        <TextBox x:Name="RemoteAddressBox" IsReadOnly="True" AutomationProperties.Name="Remote access address" />
-                        </DockPanel>
-                        <!-- dark modules on the PNG's own white quiet zone, so phones read it in dark themes too -->
-                        <Image x:Name="RemoteQrImage" Width="180" Height="180" HorizontalAlignment="Left" Margin="0,12,0,0" RenderOptions.BitmapScalingMode="NearestNeighbor"
-                               AutomationProperties.Name="QR code of the address" />
-                        </StackPanel>
-                        <TextBlock Text="Anyone with the address reaches the sign-in page; the address changes each time remote access starts."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- The phone app over Tailscale (MainWindow.WebApp.cs, WebServer.cs): tailscale serve publishes it on the tailnet -->
+                        <TextBlock Text="Phone app" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="WebAppToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="WebAppToggle_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Phone app over Tailscale" />
@@ -1975,19 +1950,14 @@
                         <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
                         </StackPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
-                        <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on 127.0.0.1 behind the image server, on the Tailscale IP or behind one Cloudflare quick tunnel; Connect on the other PC -->
+                        <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on 127.0.0.1 behind the image server on the Tailscale IP; Connect on the other PC -->
                         <TextBlock Text="Share models with my other PCs" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="ShareToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ShareToggle_Click" VerticalAlignment="Center"
                                           AutomationProperties.Name="Share models with my other PCs" />
-                            <TextBlock Text="Run this PC's models for the app on your other PCs, over Tailscale or a Cloudflare tunnel" VerticalAlignment="Center" TextWrapping="Wrap" />
+                            <TextBlock Text="Run this PC's models for the app on your other PCs, over Tailscale" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
-                        <WrapPanel x:Name="ShareNetworkPanel" Margin="0,14,0,0">
-                        <TextBlock Text="Network:" VerticalAlignment="Center" Margin="0,0,12,0" />
-                        <RadioButton x:Name="ShareTailscaleRadio" GroupName="ShareNetwork" Tag="tailscale" Content="Tailscale (private)" Click="ShareNetwork_Click" Margin="0,0,16,0" />
-                        <RadioButton x:Name="ShareCloudflareRadio" GroupName="ShareNetwork" Tag="cloudflare" Content="Cloudflare tunnel (any network)" Click="ShareNetwork_Click" />
-                        </WrapPanel>
                         <TextBlock x:Name="ShareStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
                         <DockPanel x:Name="ShareCodePanel" Visibility="Collapsed" Margin="0,12,0,0">
                         <Button DockPanel.Dock="Right" Content="New key" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareNewKey_Click" />

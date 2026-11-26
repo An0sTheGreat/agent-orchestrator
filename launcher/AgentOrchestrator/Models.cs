@@ -284,11 +284,6 @@ internal sealed class AppSettings
     public List<string> RemoteFavorites { get; set; } = new(); // the Remote API page's starred models, "<service id>|<model id>", in the order starred
     public Dictionary<string, double> LoadSeconds { get; set; } = new(); // how long Load models last took per role: its bar's pace
     public List<string> LocalFavorites { get; set; } = new(); // local models starred in Model Settings' model list (their labels), in the order starred
-    // Remote access (RemoteServer.cs, docs/remote-access.md): the browser page on 127.0.0.1:RemotePort (the next free port
-    // when taken), signed in with the password whose RemoteAuth.HashPassword string is kept here (never the password).
-    public bool RemoteAccess { get; set; }
-    public int RemotePort { get; set; } = 8765;
-    public string? RemotePasswordHash { get; set; }
     // The phone app over Tailscale (WebServer.cs, MainWindow.WebApp.cs): its server on 127.0.0.1:WebAppPort (the next free port
     // when taken), published on the tailnet by `tailscale serve`. On: the user's choice, kept while Tailscale is not ready.
     public bool WebAppOn { get; set; }
@@ -324,11 +319,9 @@ internal sealed class AppSettings
     public Dictionary<string, ImageFile> ImageQuants { get; set; } = []; // recipe id -> the quant picked for its main model (ImageGen.SetQuant)
     public bool ImageHideMissing { get; set; } // the Images page's model list and the chip's: models not downloaded are left out (the current pick stays)
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
-    // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models through a
-    // Cloudflare quick tunnel. ShareHost: on the other PC, the primary PC's tunnel host while connected ("" = not). Keys: ApiKeys.
-    // ShareNetwork: the user's pick, ModelShare.Tailscale or .Cloudflare ("" = not picked: ModelShare.Network decides on start).
+    // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models on its
+    // Tailscale address. ShareHost: on the other PC, the primary PC's Tailscale IPv4 while connected ("" = not). Keys: ApiKeys.
     public bool ShareModels { get; set; }
-    public string ShareNetwork { get; set; } = "";
     public string ShareHost { get; set; } = "";
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by
@@ -347,12 +340,21 @@ internal sealed class AppSettings
             return new() { RolesMigrated = true }; // a new user: nothing to migrate
         try
         {
-            var settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(FilePath)) ?? new();
-            if (settings.OldAddedRoles is { } old)
-                (settings.WorkflowMode, settings.OldAddedRoles) = (old.Contains("implementer") ? "tri" : "dual", null);
-            return settings;
+            return Parse(File.ReadAllText(FilePath));
         }
         catch (Exception e) when (e is IOException or JsonException or UnauthorizedAccessException) { return new() { LoadFailed = true }; }
+    }
+
+    // settings.json's text, migrated. Members of removed settings (Remote access's, ShareNetwork) are ignored, as any unknown
+    // member is; a primary PC host that is not a Tailscale IP (an old connection code) is dropped.
+    internal static AppSettings Parse(string json)
+    {
+        var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
+        if (settings.OldAddedRoles is { } old)
+            (settings.WorkflowMode, settings.OldAddedRoles) = (old.Contains("implementer") ? "tri" : "dual", null);
+        if (!ModelShare.IsTailscaleHost(settings.ShareHost))
+            settings.ShareHost = "";
+        return settings;
     }
 
     // settings.json exists but could not be read (locked, unreadable, bad JSON): these are defaults, so Save never

@@ -32,7 +32,7 @@ public partial class MainWindow
             accents = AccentColors.Select(a => new { key = a.Key, name = a.Label, color = a.Accent }), centerChat = _settings.CenterChat,
             readingSize = _settings.ReadingSize, emoji = _settings.Emoji, contextPercent = _settings.ContextPercent,
         },
-        models = new { keepLoaded = _settings.ChatKeepLoaded, multiModel = _settings.MultiModel, share = new { on = _settings.ShareModels, network = ShareNetworkNow() } },
+        models = new { keepLoaded = _settings.ChatKeepLoaded, multiModel = _settings.MultiModel, share = new { on = _settings.ShareModels } },
         agents = new
         {
             workflow = _settings.WorkflowMode, codeEngine = _settings.CodeEngine, fullAccess = _settings.FullAccess, superAccess = _settings.SuperAccess,
@@ -42,7 +42,7 @@ public partial class MainWindow
         about = new { version = LauncherLogic.VersionText(), pc = Environment.MachineName },
     };
 
-    // {key, value}: one writable setting (the GET's leaf names; share.on / share.network, or share / network).
+    // {key, value}: one writable setting (the GET's leaf names; share.on, or share).
     private (int, object) WebSettingsSet(JsonElement body)
     {
         var key = WebField(body, "key");
@@ -99,20 +99,9 @@ public partial class MainWindow
             case "keepLoaded": return Press(ChatKeepToggle);
             case "multiModel": return Choose(["never", "fit", "always"], t => Radio(MultiModelOptions, t));
             case "share" or "share.on":
-                if (flag == true && !_settings.ShareModels && ShareNetworkNow() == ModelShare.Cloudflare && !File.Exists(_shareTunnel.Exe))
-                    return (409, new { error = "Set up Share models on the PC first: it needs cloudflared downloaded" });
                 if (Press(ShareToggle) is { Item1: not 200 } stopped)
                     return stopped;
                 return _settings.ShareModels == flag ? Ok() : (409, new { error = _shareState }); // StartShare's reason (llama-server, Tailscale)
-            case "network" or "share.network":
-                if (text is not (ModelShare.Tailscale or ModelShare.Cloudflare))
-                    return Bad();
-                if (text == ModelShare.Cloudflare && _settings.ShareModels && !File.Exists(_shareTunnel.Exe))
-                    return (409, new { error = "Set up Share models on the PC first: it needs cloudflared downloaded" });
-                var network = text == ModelShare.Tailscale ? ShareTailscaleRadio : ShareCloudflareRadio;
-                network.IsChecked = true;
-                network.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
-                return Ok();
             case "workflow" or "codeEngine":
                 var allowed = key == "workflow" ? new[] { "dual", "tri", "solo" } : ["", "pi"];
                 if (text is null || !allowed.Contains(text))

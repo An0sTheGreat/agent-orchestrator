@@ -28,7 +28,7 @@ public partial class MainWindow : Window
     private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor"];
 
     private Process? _process;
-    private string? _workflowRoot; // not readonly: --ui-smoke (RemoteSmoke) points it at a stand-in engine
+    private string? _workflowRoot; // not readonly: --ui-smoke (WebAppSmoke) points it at a stand-in engine
 
     private readonly AppSettings _settings = AppSettings.Load();
     private readonly ObservableCollection<RoleCard> _cards = new();
@@ -88,7 +88,6 @@ public partial class MainWindow : Window
         InitAutoScroll();
         StoreDo(_store.Load);
         RestoreWindowBounds();
-        InitRemote();
         InitWebApp();
         InitShare();
 
@@ -4138,7 +4137,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LocalRuntimeSmoke())
             return false;
-        if (!await RemoteSmoke() || !await RemoteTunnelSmoke() || !ShareSmoke() || !await TraySmoke(Settle))
+        if (!ShareSmoke() || !await TraySmoke(Settle))
             return false;
         if (!await RemoteApiSmoke() || !await WebAppSmoke() || !await ComputerSmoke())
             return false;
@@ -5950,8 +5949,6 @@ public partial class MainWindow : Window
             e.Cancel = true; // the user chose to let the running task finish
             return;
         }
-        _tunnel.Stop();
-        StopRemoteServer();
         WaitForWebAppStop(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time

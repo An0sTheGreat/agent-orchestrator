@@ -41,12 +41,12 @@ public partial class MainWindow
         finally { _tailnetBusy = false; }
     }
 
-    // A saved host from a Cloudflare code is left alone; a Tailscale one is asked for its models with the saved key.
+    // The saved host (a Tailscale IP) is asked for its models with the saved key.
     private async Task<bool> SharedHostAnswersAsync()
     {
         if (_settings.ShareHost is not { Length: > 0 } host)
             return false;
-        if (!ModelShare.IsTailscaleHost(host) || ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
+        if (ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
             return true;
         try
         {

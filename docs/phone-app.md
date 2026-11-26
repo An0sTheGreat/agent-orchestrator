@@ -53,7 +53,7 @@ These stay on the PC:
 - Folder and file pickers on the PC. The phone has its own folder browser for Code.
 - Entering, renaming or removing API keys, and setting up a new custom Remote API server.
 - Sandbox setup.
-- Remote access (Cloudflare) and sharing codes.
+- Sharing codes.
 - Turning the phone app off.
 - Editing project files by hand. Only PROJECT.md can be edited from the phone.
 - The browser's file pickers and the PC's own dialogs.

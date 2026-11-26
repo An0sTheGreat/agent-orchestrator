@@ -6,7 +6,7 @@ namespace AgentOrchestrator;
 
 // The system tray (the app run normally, not a test mode): the window's × and Windows' own Close (Alt+F4, the taskbar)
 // hide it to the tray, where its icon opens it again (click) or quits (its menu). The app keeps running meanwhile: its
-// models, sharing and remote access stay up. A close sent by another program (WM_CLOSE alone, as publish.ps1 sends) still
+// models, sharing and the phone app stay up. A close sent by another program (WM_CLOSE alone, as publish.ps1 sends) still
 // quits, as does Windows signing out. Start with Windows (Settings > General) starts it hidden in the tray (--tray).
 public partial class MainWindow
 {

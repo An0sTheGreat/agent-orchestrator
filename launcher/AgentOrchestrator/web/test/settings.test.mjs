@@ -9,7 +9,7 @@ const GET = {
   appearance: { theme: 'Graphite', themes: [{ key: 'Flat', name: 'Flat' }, { key: 'Graphite', name: 'Graphite' }], accent: 'clay',
     accents: [{ key: 'gray', name: 'Light gray', color: '#C0C0C0' }, { key: 'clay', name: 'Clay', color: '#C15F3C' }],
     centerChat: true, readingSize: 'comfortable', emoji: 'less', contextPercent: true },
-  models: { keepLoaded: true, multiModel: 'fit', share: { on: false, network: 'tailscale' } },
+  models: { keepLoaded: true, multiModel: 'fit', share: { on: false } },
   agents: { workflow: 'dual', codeEngine: '', fullAccess: false, superAccess: true, sandboxNetwork: false },
   plugins: { ponytail: 'full' },
   about: { version: '1.9.4', pc: 'DESKTOP' },
@@ -33,12 +33,11 @@ test('normalize: followTabs 0 or 11+ is Unlimited (11), others kept to 3..10; mi
 test('every writable key of the contract has exactly one row, on the page of its section, holding the GET value', () => {
   const keys = ['general', 'appearance', 'models', 'agents', 'plugins'].flatMap(p => writable(p).map(r => r.key));
   assert.deepEqual(keys.sort(), ['accent', 'centerChat', 'codeEngine', 'computerUse', 'contextPercent', 'emoji', 'followTabs', 'fullAccess',
-    'keepLoaded', 'linkOpen', 'multiModel', 'notifyWhenDone', 'ponytail', 'readingSize', 'sandboxNetwork', 'share.network', 'share.on',
+    'keepLoaded', 'linkOpen', 'multiModel', 'notifyWhenDone', 'ponytail', 'readingSize', 'sandboxNetwork', 'share.on',
     'startWithWindows', 'superAccess', 'theme', 'workflow'].sort());
   assert.equal(byKey('general', 'linkOpen').value, 'app');
   assert.equal(byKey('general', 'followTabs').value, 11);
   assert.equal(byKey('agents', 'superAccess').value, true);
-  assert.equal(byKey('models', 'share.network').value, 'tailscale');
   assert.equal(byKey('plugins', 'ponytail').value, 'full');
   assert.equal(writable('about').length, 0);
 });
@@ -50,7 +49,6 @@ test("choices offer the desktop's stored values", () => {
   assert.deepEqual(values('appearance', 'emoji'), ['none', 'less', 'standard', 'more']);
   assert.deepEqual(values('appearance', 'theme'), ['Flat', 'Graphite']);
   assert.deepEqual(values('models', 'multiModel'), ['never', 'fit', 'always']);
-  assert.deepEqual(values('models', 'share.network'), ['tailscale', 'cloudflare']);
   assert.deepEqual(values('agents', 'workflow'), ['dual', 'tri', 'solo']);
   assert.deepEqual(values('agents', 'codeEngine'), ['', 'pi']);
   assert.deepEqual(values('plugins', 'ponytail'), ['', 'lite', 'full', 'ultra']);
