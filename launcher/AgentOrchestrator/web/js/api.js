@@ -7,7 +7,7 @@ export function parseSse(chunk, state = {}) {
   const out = [];
   for (const f of frames) {
     const data = f.split('\n').filter(l => l.startsWith('data:')).map(l => l.slice(5).replace(/^ /, '')).join('\n');
-    if (!data) continue; // a comment (keepalive)
+    if (!data) continue; // a comment
     try { out.push(JSON.parse(data)); } catch { /* not JSON: skipped */ }
   }
   return out;

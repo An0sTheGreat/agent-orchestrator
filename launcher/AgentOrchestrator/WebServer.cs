@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -31,7 +31,7 @@ internal sealed class WebServer
     private HttpListener? _listener;
     private readonly CancellationTokenSource _stopping = new(); // ends the open event streams
 
-    internal TimeSpan KeepAlive { get; set; } = TimeSpan.FromSeconds(15); // an event stream's comment line, when nothing else was sent
+    internal TimeSpan KeepAlive { get; set; } = TimeSpan.FromSeconds(15); // an event stream's ping event (PingFrame), when nothing else was sent
 
     // --webapp-dev only (dev, never the app's own server): the login a request without Tailscale-User-Login is taken to have;
     // only this PC's connections reach Handle at all.

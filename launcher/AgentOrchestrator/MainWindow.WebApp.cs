@@ -63,15 +63,8 @@ public partial class MainWindow
     }
 
     // On the UI thread, so the hello's reply and the deltas after it never overlap nor leave a gap (DrainLines publishes there too).
-    // The PC's window follows the phone: the conversation opens there as RemoteSend opens it (never shown, restored or activated);
-    // not under a PC popup, and a refusal (a run is using the models) still streams: the phone just watches.
     private (int, object) WebEventsOpen(string id)
     {
-        if (_store.Get(id) is { } saved && !WebPromptOpen())
-            if (saved.Kind == "chat")
-                OpenChatConversation(id);
-            else
-                OpenCodeConversation(id);
         if (ConversationNow(id) is not (_, var busy, _, var queued, var prompt, var reply))
             return (404, new { error = "No such conversation" });
         _webStates.TryAdd(id, WebState(busy, queued, prompt));
@@ -658,8 +651,9 @@ public partial class MainWindow
             if (_store.Create("", "chat") is not { } idle)
                 return Fail("no chat for the open stream");
             _store.Save(idle);
+            var lingering = _webEvents.Count; // a stream an earlier check closed goes only at its next keepalive write (up to 15 s)
             using var open = await SseClient.Open(bound, $"/api/conversation/{idle.Id}/events");
-            if (!open.Head.StartsWith("HTTP/1.1 200") || _webEvents.Count != 1)
+            if (!open.Head.StartsWith("HTTP/1.1 200") || _webEvents.Count != lingering + 1)
                 return Fail($"a stream before the stop: {open.Head.Split('\r')[0]}, {_webEvents.Count} subscribers");
             Click(false);
             _store.Delete(idle.Id);
@@ -1030,7 +1024,7 @@ public partial class MainWindow
         }
         Task<(int Status, JsonNode? Body)> PostJson(string path, object body) => Post(path, new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json"));
         var placeholder = !File.Exists(LauncherLogic.LlamaServerPath); // a turn needs the runtime there; the stand-in engine never runs it
-        string? created = null, watchedId = null;
+        string? created = null;
         try
         {
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (engine, "", null, (_, _) => { }, true);
@@ -1065,14 +1059,6 @@ public partial class MainWindow
                 return Fail($"the saved turn: {JsonSerializer.Serialize(_store.Get(id)?.Messages)}");
             if (IsVisible)
                 return Fail("a send showed the hidden window");
-            // the phone opens another saved chat's stream: the window opens that chat too, and stays hidden
-            if (_store.Create("", "chat") is not { } watched)
-                return Fail("no chat to watch");
-            _store.Save(watched);
-            watchedId = watched.Id;
-            using (var stream = await SseClient.Open(port, $"/api/conversation/{watchedId}/events"))
-                if (!stream.Head.StartsWith("HTTP/1.1 200") || _chatConv?.Id != watchedId || IsVisible)
-                    return Fail($"the phone opened a chat's stream: {stream.Head.Split('\r')[0]}, open chat {_chatConv?.Id} (not {watchedId}), visible {IsVisible}");
 
             (ShowActivated, WindowState) = (false, WindowState.Minimized);
             Show();
@@ -1194,8 +1180,6 @@ public partial class MainWindow
                 File.Delete(LauncherLogic.LlamaServerPath);
             if (created is not null)
                 _store.Delete(created);
-            if (watchedId is not null)
-                _store.Delete(watchedId);
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch) = (root, project, choice, notify, quiet, search);
             (_settings.ShareHost, _imageSharedFetch, _imageShared, _settings.ChatImage) = (shareHost, sharedFetch, null, JsonSerializer.Deserialize<ImageSettings>(chatImage)!);
             _settings.Save();

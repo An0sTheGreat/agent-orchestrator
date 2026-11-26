@@ -140,7 +140,8 @@ The phone app (see [Phone app](phone-app.md)) talks to the PC's local server, wh
 - `hello`: the first event, with the busy flag, queue, pending prompt and the reply so far.
 - `state`: busy, queued or the pending prompt changed.
 - `saved`: the turn was saved; load the conversation again.
-- `resync`: the stream dropped events; load the conversation again.
+- `resync`: the stream dropped events; reconnect (the new `hello` replaces the reply) and load the conversation again.
+- `ping`: sent every 15 seconds while nothing else is; the phone uses it to notice a dead connection and does not pass it on.
 - The engine's own events as they happen, including `delta` (text, thinking or a tool call's arguments), `tool`, `chat_stage` and `context`.
 
 ## Chat mode
