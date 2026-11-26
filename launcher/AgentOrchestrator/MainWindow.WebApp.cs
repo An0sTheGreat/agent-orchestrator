@@ -724,7 +724,8 @@ public partial class MainWindow
             _webStatus = () => Task.FromResult(reads++ == 0 ? null : Tailscale.ParseStatus(tailnet.Replace("%CERTS%", ""","CertDomains":["home.tail0000.ts.net"]""")));
             _settings.WebAppOn = true;
             _ = StartWebAppAsync();
-            await Task.Delay(500);
+            await Until(() => refusals >= 1 && !_webStarting); // under load the retry is late: wait for it, then for a few more intervals to see it does not repeat
+            await Task.Delay(400);
             if (refusals != 1 || _webRetry.IsEnabled || _webStarting || WebAppFixText.Visibility != Visibility.Visible)
                 return Fail($"not ready then refused: {refusals} serve calls, retry timer {_webRetry.IsEnabled}, link {WebAppFixText.Visibility}");
             Click(false);
