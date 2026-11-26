@@ -41,7 +41,9 @@ export function longPress(el, fn, ms = 500, slop = 10) {
 // to show the focused field); null while it is down (the visual viewport within `slack` px of the layout viewport's height) or with
 // no visualViewport.
 export const keyboardBox = (vv, layoutHeight, slack = 80) =>
-  vv && vv.height < layoutHeight - slack ? { height: vv.height, top: vv.offsetTop } : null;
+  vv && vv.height < layoutHeight - slack ? { height: vv.height, top: vv.pageTop ?? vv.offsetTop } : null;
+// top is pageTop: iOS also scrolls the whole page (scrollY), not only the visual viewport inside it (offsetTop), and the shell
+// sits at the page's top, so it moves down by both; that keeps the header on screen and the composer on the keyboard.
 
 // "3 min ago", "yesterday", "2 days ago", "last week", then the date: the list rows' time, as the concept writes it.
 export function ago(when, now = new Date()) {

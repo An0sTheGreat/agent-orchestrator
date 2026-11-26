@@ -184,9 +184,11 @@ if (vv) {
     const box = keyboardBox(vv, document.documentElement.clientHeight), style = $('.shell').style;
     style.height = box ? box.height + 'px' : ''; // '' restores the stylesheet's 100dvh / 100lvh
     style.transform = box ? `translateY(${box.top}px)` : '';
+    if (!box && scrollY) scrollTo(0, 0); // the keyboard closed: iOS can leave the page scrolled up
   };
   vv.addEventListener('resize', fitShell);
   vv.addEventListener('scroll', fitShell);
+  addEventListener('scroll', fitShell, { passive: true }); // iOS scrolls the page too, which moves pageTop without a viewport event
 }
 
 /* ---------- landscape: a phone on its side (short and wide) gets the rail layout ---------- */

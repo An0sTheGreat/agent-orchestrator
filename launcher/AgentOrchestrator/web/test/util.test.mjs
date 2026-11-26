@@ -4,6 +4,8 @@ import { ago, makeRouter, longPress, keyboardBox, flipRatio, isPortrait, aspectO
 
 test('keyboardBox: the visual viewport while the keyboard is up, null while it is down or missing', () => {
   assert.deepEqual(keyboardBox({ height: 420, offsetTop: 250 }, 844), { height: 420, top: 250 });
+  // iOS scrolled the page itself (scrollY 300) as well: the shell moves by the visual viewport's page offset
+  assert.deepEqual(keyboardBox({ height: 420, offsetTop: 0, pageTop: 300 }, 844), { height: 420, top: 300 });
   assert.equal(keyboardBox({ height: 800, offsetTop: 0 }, 844), null, 'within 80 px: the keyboard is down');
   assert.equal(keyboardBox(undefined, 844), null);
 });
