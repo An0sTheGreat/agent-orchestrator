@@ -94,6 +94,7 @@ public partial class MainWindow : Window
         RestoreWindowBounds();
         InitWebApp();
         InitShare();
+        InitLocalApi();
 
         Closing += OnClosing;
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
@@ -6004,6 +6005,7 @@ public partial class MainWindow : Window
         _speechClosing.Cancel(); // a phone's sentence being made stops, so neither the web server nor Tts.Shutdown waits on it
         WaitForWebAppStop(TimeSpan.FromSeconds(5)); // Serve's route would outlive the app (502 on the phone)
         StopShare();
+        StopLocalApi();
         _hubDlCts?.Cancel(); // the Models Hub download keeps its .incomplete file: Resume next time
         var bounds = WindowState == WindowState.Normal ? new Rect(Left, Top, Width, Height) : RestoreBounds;
         if (!bounds.IsEmpty && new[] { bounds.Left, bounds.Top, bounds.Width, bounds.Height }.All(double.IsFinite))

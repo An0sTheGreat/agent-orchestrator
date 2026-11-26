@@ -723,7 +723,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound) || !await WebModelsSmoke2(bound) ||!await WebToolsSmoke(bound) || !await WebVoiceSmoke(bound) || !await WebSpeakSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound) || !await WebModelsSmoke2(bound) ||!await WebToolsSmoke(bound) || !await WebVoiceSmoke(bound) || !await WebSpeakSmoke(bound) || !await LocalApiSmoke())
                 return false;
 
             // the server stops with a stream open: its subscription goes

@@ -355,6 +355,9 @@ internal sealed class AppSettings
     // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models on its
     // Tailscale address. ShareHost: on the other PC, the primary PC's Tailscale IPv4 while connected ("" = not). Keys: ApiKeys.
     public bool ShareModels { get; set; }
+    // Settings > Models > Local API for my apps (MainWindow.LocalApi.cs): 127.0.0.1:LocalApiPort for this PC's own programs; the port is settings.json only.
+    public bool LocalApi { get; set; }
+    public int LocalApiPort { get; set; } = 8830;
     public string ShareHost { get; set; } = "";
 
     // The launcher's data folder (settings, conversations, worker config). AGENT_ORCHESTRATOR_DATA redirects it (used by

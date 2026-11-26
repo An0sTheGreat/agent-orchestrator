@@ -2049,6 +2049,23 @@
                         ToolTip="Copy the primary PC's model presets for its shared models, named &quot;… (Primary PC)&quot;" />
                         <TextBlock Text="Connected, the Remote API page lists the primary PC's models under Primary PC, for any agent."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <!-- Local API (MainWindow.LocalApi.cs, LocalApi.cs): an OpenAI-compatible server on 127.0.0.1 for this PC's own programs -->
+                        <TextBlock Text="Local API for my apps" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="LocalApiToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="LocalApiToggle_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Local API for my apps" />
+                            <TextBlock Text="Let apps on this PC use AO's workers and image models" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <TextBlock x:Name="LocalApiStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <DockPanel Margin="0,12,0,0">
+                        <Button DockPanel.Dock="Right" Content="New key" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="LocalApiNewKey_Click" />
+                        <Button DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="LocalApiCopy_Click" />
+                        <TextBox x:Name="LocalApiKeyBox" IsReadOnly="True" AutomationProperties.Name="API key" />
+                        </DockPanel>
+                        <TextBlock Text="Base URL above, this key as the API key, and a worker name (planner, or a custom worker) as the model. New key signs your apps out."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Agents" Visibility="Collapsed">
                         <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />

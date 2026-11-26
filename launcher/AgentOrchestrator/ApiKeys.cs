@@ -96,7 +96,7 @@ public static class ApiKeys
     public static void ApplyAll()
     {
         foreach (var (name, v) in Load())
-            if (ValidName(name) && ActiveKey(v) is { Length: > 0 } key)
+            if (name != LocalApi.KeyName && ValidName(name) && ActiveKey(v) is { Length: > 0 } key) // the Local API key is read from the store, never exported
                 Environment.SetEnvironmentVariable(name, key);
     }
 
@@ -218,6 +218,12 @@ public static class ApiKeys
             Check(Active(Name) == "Work" && Env() == "sk-work-456", "Removing the active key did not switch to the other.");
             Remove(Name, "Work");
             Check(!Has(Name) && Labels(Name).Count == 0 && Env() is null, "Removing the last key failed.");
+
+            Save(LocalApi.KeyName, "Default", "sk-local-api");
+            Environment.SetEnvironmentVariable(LocalApi.KeyName, null);
+            ApplyAll();
+            Check(Get(LocalApi.KeyName) == "sk-local-api" && Environment.GetEnvironmentVariable(LocalApi.KeyName) is null, "ApplyAll exported the Local API key.");
+            Remove(LocalApi.KeyName, "Default");
 
             File.WriteAllText(FilePath, "{ not json"); // a damaged file is no keys, not a crash
             Check(!Has(Name) && Labels(Name).Count == 0, "A damaged key file failed.");
