@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, afterCut, freshLoad, approvalDone } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, afterCut, freshLoad, approvalDone, landLoad } from '../js/chat.js';
 
 const run = (...evs) => evs.reduce(applyEvent, emptyLive());
 
@@ -74,4 +74,23 @@ test('an answered approval draws done; a new nonce draws clickable again', () =>
   assert.equal(approvalDone('n1', { nonce: 'n1' }), true);
   assert.equal(approvalDone('n1', { nonce: 'n2' }), false);
   assert.equal(approvalDone(null, { nonce: 'n1' }), false);
+});
+
+test('a text delta right after saved starts a new part and survives the load', () => {
+  const s = run({ e: 'delta', kind: 'text', text: 'old' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'Sure,' }, { e: 'delta', kind: 'text', text: ' ok' });
+  assert.deepEqual(afterCut(s, 1).parts, [{ t: 'text', text: 'Sure, ok' }]);
+});
+
+test('two saveds in one load window drop only the first two turns, in either landing order', () => {
+  const s = run({ e: 'delta', kind: 'text', text: 'A' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'B' },
+    { e: 'tool', name: 't', args: '{}', result: '' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'C' });
+  const c1 = 1, c2 = 3, texts = x => x.parts.map(p => p.text);
+  assert.deepEqual(texts(afterCut(afterCut(s, c1), c2)), ['C']);
+  assert.deepEqual(texts(afterCut(afterCut(s, c2), c1)), ['C']);
+});
+
+test('an outrun load writes nothing: no messages, no title', () => {
+  const conv = { title: 'Old', worker: 'W', kind: 'chat', messages: [1] };
+  assert.equal(landLoad(2, 1, conv, null), null);
+  assert.deepEqual(landLoad(1, 2, conv, null), { messages: [1], context: null, title: 'Old', sub: 'Chat \u00b7 to W' });
 });

@@ -9,19 +9,19 @@ import { ago } from './util.js';
 /* ---------- the live reply: pure ---------- */
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
 // The engine's deltas carry no section breaks: a text delta after a tool row (or anything not text) starts a new section.
-export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false });
+export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, sealed: 0, base: 0 });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 const SAVED = /\bSaved: ([^\r\n]+?)\. Prompt: /g; // generate_image's line (ImageGen.ChatResult) names the saved picture
 
 export function applyEvent(s, ev) {
   const last = s.parts[s.parts.length - 1];
-  const append = (t, text) => last?.t === t
+  const append = (t, text) => last?.t === t && s.parts.length > s.sealed // `saved` seals the parts so far: the next turn starts new ones
     ? { ...s, parts: [...s.parts.slice(0, -1), { t, text: last.text + text }] }
     : { ...s, parts: [...s.parts, { t, text }] };
   switch (ev.e) {
     case 'hello':
-      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text }] : [] };
+      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text }] : [], sealed: 0, base: 0 };
     case 'state':
       return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null };
     case 'delta':
@@ -38,6 +38,7 @@ export function applyEvent(s, ev) {
       return { ...s, context: { nCtx, used, fraction: nCtx ? Math.min(1, used / nCtx) : 0, parts: ev.parts || {} } };
     }
     case 'saved':
+      return { ...s, refetch: true, sealed: s.parts.length };
     case 'resync':
       return { ...s, refetch: true };
     default:
@@ -46,9 +47,17 @@ export function applyEvent(s, ev) {
 }
 
 // After `saved` the reply is in the loaded messages: drop the parts that were there when it arrived (the first `cut`), keep what the next turn added since.
-export const afterCut = (s, cut) => ({ ...s, parts: s.parts.slice(cut) });
+// `cut` counts from the first part ever; `base` is how many earlier loads already dropped, so cuts of several saveds in one window add up right.
+export const afterCut = (s, cut) => {
+  const n = Math.max(0, cut - s.base);
+  return { ...s, parts: s.parts.slice(n), sealed: Math.max(0, s.sealed - n), base: s.base + n };
+};
 // Loads can land out of order: only a response newer than the last applied one may replace the messages.
 export const freshLoad = (applied, seq) => seq > applied;
+// What a landed load changes (null: it was outrun, so it writes nothing, title included).
+export const landLoad = (applied, seq, conv, context) => !freshLoad(applied, seq) ? null : {
+  messages: conv.messages, context: conv.context ?? context, title: conv.title || 'Chat',
+  sub: conv.worker ? `${conv.kind === 'code' ? 'Code' : 'Chat'} · to ${conv.worker}` : '' };
 // The approval card the user answered stays done across redraws, until a new prompt (new nonce) arrives.
 export const approvalDone = (answered, prompt) => answered != null && answered === prompt.nonce;
 
@@ -188,12 +197,13 @@ if (typeof document !== 'undefined') {
     try { conv = await api.get('/api/conversation/' + encodeURIComponent(id)); }
     catch (err) { if (mine === gen) { if (err.status === 404) notFound(); else fail(err); } return false; }
     if (mine !== gen) return false;
-    view.querySelector('.vtitle').textContent = conv.title || 'Chat';
-    view.querySelector('.vsub').textContent = conv.worker ? `${conv.kind === 'code' ? 'Code' : 'Chat'} · to ${conv.worker}` : '';
-    if (freshLoad(applied, seq)) {
+    const r = landLoad(applied, seq, conv, context);
+    if (r) {
       applied = seq;
-      saved = conv.messages;
-      context = conv.context ?? context;
+      saved = r.messages;
+      context = r.context;
+      view.querySelector('.vtitle').textContent = r.title;
+      view.querySelector('.vsub').textContent = r.sub;
     }
     if (after === 'saved') live = afterCut(live, cut); // even an outrun load: the newer one's messages hold the reply too
     draw(!after);
