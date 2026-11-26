@@ -755,8 +755,8 @@ html { background-color: #1E1E1E; }
   html { min-height: min(100lvh, calc(100% + env(safe-area-inset-top))); }
   .shell { height: 100lvh; }
   /* iOS 26 still blurs a band just below the status bar in a home-screen app (no switch, and the fixed-edge workarounds did not
-     stop it on the user's iPhone): the content starts 24 px lower, so only the empty dark band is under the blur. */
-  .shell { padding-top: calc(env(safe-area-inset-top) + 24px); }
-  .statusbar-strip { height: calc(env(safe-area-inset-top) + 24px); }
-  .drawer-top { padding-top: max(52px, calc(env(safe-area-inset-top) + 36px)); }
+     stop it on the user's iPhone): the content starts 12 px lower, so only the empty dark band is under the blur. */
+  .shell { padding-top: calc(env(safe-area-inset-top) + 12px); }
+  .statusbar-strip { height: calc(env(safe-area-inset-top) + 12px); }
+  .drawer-top { padding-top: max(52px, calc(env(safe-area-inset-top) + 24px)); }
 }
