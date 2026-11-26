@@ -1337,10 +1337,51 @@ public partial class MainWindow
                 };
                 remove.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
                 remove.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x66, 0x7A));
-                Grid.SetColumn(remove, 1);
-                var header = new Grid { ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto } }, Children = { name, remove } };
+                // left of the ✕: overwrite this preset with the options shown now, after asking; the name box then keeps its
+                // name (an overwrite) or takes a new one (a new preset, this one kept)
+                var overwrite = new Button
+                {
+                    Content = "", FontFamily = new FontFamily("Segoe MDL2 Assets"), Tag = "ModelPresetOverwrite", Padding = new Thickness(6, 0, 6, 0),
+                    Margin = new Thickness(14, 0, 0, 0), FontSize = 12, MinWidth = 0, Background = Brushes.Transparent, BorderThickness = new Thickness(0),
+                    Cursor = System.Windows.Input.Cursors.Hand, VerticalAlignment = VerticalAlignment.Center, ToolTip = $"Overwrite the preset {preset.Name} with these options",
+                    Focusable = false,
+                };
+                overwrite.SetResourceReference(FrameworkElement.StyleProperty, "GhostButton");
+                overwrite.FontFamily = new FontFamily("Segoe MDL2 Assets");
+                remove.Margin = new Thickness(4, 0, 0, 0);
+                Grid.SetColumn(overwrite, 1);
+                Grid.SetColumn(remove, 2);
+                var header = new Grid
+                {
+                    ColumnDefinitions = { new ColumnDefinition(), new ColumnDefinition { Width = GridLength.Auto }, new ColumnDefinition { Width = GridLength.Auto } },
+                    Children = { name, overwrite, remove },
+                };
                 var item = new MenuItem { Header = header, Tag = label, HorizontalContentAlignment = HorizontalAlignment.Stretch };
                 item.Click += (_, _) => apply();
+                overwrite.Click += async (_, e) =>
+                {
+                    e.Handled = true; // not the row's click: the preset is not applied
+                    menu.IsOpen = false;
+                    if (SidebarAsk("Overwrite preset", $"Are you sure? The preset {preset.Name} gets the options shown now.", "Yes") is null)
+                        return;
+                    if (SidebarAsk("Save preset", "Keep the name to overwrite the preset, or type a new name to save a new one.", "Save", preset.Name)?.Trim()
+                        is not { Length: > 0 } newName)
+                        return;
+                    // a preset for any model stays one; a model's preset becomes this model's (the one in the picker)
+                    var model = preset.Model.Length == 0 ? "" : ShownModel();
+                    var keep = newName.Equals(preset.Name, StringComparison.OrdinalIgnoreCase);
+                    if (shared is not null) // the primary PC's: saved there, for both PCs
+                    {
+                        if (await ChangePrimaryPreset("save", newName, model))
+                            Toast($"Preset {newName} saved on the primary PC");
+                        return;
+                    }
+                    var same = keep ? _settings.ModelPresets.IndexOf(preset)
+                        : _settings.ModelPresets.FindIndex(p => p.Name.Equals(newName, StringComparison.OrdinalIgnoreCase) && SameModel(p) && !OtherQuant(p));
+                    if (!keep && same >= 0 && SidebarAsk("Replace preset", $"Replace the preset {newName}?", "Replace") is null)
+                        return;
+                    WritePreset(keep ? preset.Name : newName, same, model);
+                };
                 remove.Click += async (_, e) =>
                 {
                     e.Handled = true; // not the row's click: the preset is not applied
@@ -1937,8 +1978,8 @@ public partial class MainWindow
                 var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
                 SmokeClick(button);
                 var item = button.ContextMenu.Items.OfType<MenuItem>().First(i => (i.Header as string ?? i.Tag as string) == header); // a preset's row: Tag is its label
-                if (sub == "✕") // the row's delete button, not the row
-                    SmokeClick(SmokeFind<Button>((DependencyObject)item.Header, b => b.Tag as string == "ModelPresetDelete")!);
+                if (sub is "✕" or "overwrite") // the row's delete or overwrite button, not the row
+                    SmokeClick(SmokeFind<Button>((DependencyObject)item.Header, b => b.Tag as string == (sub == "✕" ? "ModelPresetDelete" : "ModelPresetOverwrite"))!);
                 else
                     item.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
                 button.ContextMenu.IsOpen = false;
@@ -1988,6 +2029,21 @@ public partial class MainWindow
             Preset("Save to “Smoke options”");
             if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options")?.Options.GetValueOrDefault("temperature") != "0.27")
                 return Fail("save to the active preset");
+            // the row's overwrite button: asks, then the name box keeps the name (an overwrite) or takes a new one (a new preset)
+            SmokeField("temperature").Text = "0.29";
+            answer = "Smoke options";
+            Preset("Smoke options", "overwrite");
+            if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options")?.Options.GetValueOrDefault("temperature") != "0.29" || asked[^1] != "Save preset" ||
+                asked[^2] != "Overwrite preset")
+                return Fail("overwrite a preset with its button");
+            answer = "Smoke copy";
+            SmokeField("temperature").Text = "0.31";
+            Preset("Smoke options", "overwrite");
+            if (_settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke copy")?.Options.GetValueOrDefault("temperature") != "0.31" ||
+                _settings.ModelPresets.SingleOrDefault(p => p.Name == "Smoke options")?.Options.GetValueOrDefault("temperature") != "0.29")
+                return Fail("overwrite under a new name saves a new preset");
+            _settings.ModelPresets.RemoveAll(p => p.Name == "Smoke copy");
+            answer = "";
             // the row's ✕ deletes it (after asking) without applying it
             SmokeField("temperature").Text = "0.21";
             answer = "yes";
