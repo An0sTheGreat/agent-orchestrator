@@ -30,8 +30,10 @@ namespace AgentOrchestrator;
 //    "onnxruntime" at that file by full path, so it never meets sherpa-onnx's own onnxruntime.dll (Kokoro, Parakeet).
 //  - Why not the Python sidecar: chatterbox-tts 0.1.7 pins torch 2.6.0 (no CUDA 12.8 build, so no sm_120 for the 5080)
 //    below Python 3.14 and transformers 5.2 / gradio 6.8 / a git-only resemble-perth on top; FindPython() finds 3.14 here.
-//    Its install would be ~6 GB (torch cu128 ~3 GB) against ~1.7 GB, and it needs a second process to supervise. The CUDA
-//    provider was not taken either: it needs cuDNN 9 + cuBLAS (~1.5 GB more).
+//    Its install would be ~6 GB (torch cu128 ~3 GB), and it needs a second process to supervise.
+//  - CUDA first (G4, 2026-11-26): the CUDA 12 build of the same ONNX Runtime (Gpu.Windows nupkg) with cudart 12.9, cuBLAS 12.9,
+//    cuFFT 11.4 and cuDNN 9.28 from NVIDIA's pip wheels into runtime\cuda\ (+2.5 GB; sm_120 runs through PTX JIT). All four
+//    graphs on CUDA, the KV cache kept on the GPU: warm RTF 0.41, 11.7 ms a token, 3.2 GB of VRAM. DirectML+CPU is the fallback.
 // Install on disk: ~1.7 GB (models 1,662 MB + runtime 36 MB + the default voice); the download is ~1.9 GB (Kokoro's 150 MB
 // too when it is missing: the default voice is Kokoro af_heart reading a reference paragraph, chatterbox\voices\default.wav).
 // Turbo takes no exaggeration or cfg (the torch Turbo ignores them as well); Temperature is used (top-p 0.95).
@@ -60,13 +62,48 @@ internal static class ChatterboxRuntime
         new("onnx/language_model_fp16.onnx", 209_456), new("onnx/language_model_fp16.onnx_data", 634_862_406),
         new("onnx/conditional_decoder_fp16.onnx", 2_104_016), new("onnx/conditional_decoder_fp16.onnx_data", 384_019_328),
     ];
-    // (package, version, entry in the package, file in runtime\, its size)
-    private static readonly (string Package, string Version, string Entry, string File, long Size)[] Natives =
+    // Each native: the package (a nupkg or an NVIDIA pip wheel, both zips), its entry, the file in runtime\, its size. runtime\
+    // holds the DirectML build (the fallback); runtime\cuda\ the CUDA 12 build of the same ONNX Runtime and the CUDA libraries
+    // its CUDA provider imports (cudart, cuBLAS/cuBLASLt, cuFFT, cuDNN 9 with the sub-libraries it loads by name).
+    private sealed record Native(string Package, string Entry, string File, long Size);
+    private static string Nuget(string id, string version) => $"https://api.nuget.org/v3-flatcontainer/{id}/{version}/{id}.{version}.nupkg";
+    private const string Wheels = "https://files.pythonhosted.org/packages/";
+    private static readonly string OrtDml = Nuget("microsoft.ml.onnxruntime.directml", OrtVersion), Dml = Nuget("microsoft.ai.directml", DirectMlVersion),
+        OrtCuda = Nuget("microsoft.ml.onnxruntime.gpu.windows", OrtVersion),
+        Cudart = Wheels + "59/df/e7c3a360be4f7b93cee39271b792669baeb3846c58a4df6dfcf187a7ffab/nvidia_cuda_runtime_cu12-12.9.79-py3-none-win_amd64.whl",
+        Cublas = Wheels + "45/a1/a17fade6567c57452cfc8f967a40d1035bb9301db52f27808167fbb2be2f/nvidia_cublas_cu12-12.9.1.4-py3-none-win_amd64.whl",
+        Cufft = Wheels + "20/ee/29955203338515b940bd4f60ffdbc073428f25ef9bfbce44c9a066aedc5c/nvidia_cufft_cu12-11.4.1.4-py3-none-win_amd64.whl",
+        Cudnn = Wheels + "c7/bd/1d6709d2223e99f04079f16005f8ae6e11a14ee16b5eab6833686cf72fe1/nvidia_cudnn_cu12-9.28.1.4-py3-none-win_amd64.whl";
+    private static readonly Dictionary<string, long> PackageSize = new()
+    {
+        [OrtDml] = 12_458_649, [Dml] = 202_292_617, [OrtCuda] = 172_417_405,
+        [Cudart] = 3_591_604, [Cublas] = 553_153_899, [Cufft] = 200_067_309, [Cudnn] = 696_300_805,
+    };
+    private static readonly Native[] Natives =
     [
-        ("microsoft.ml.onnxruntime.directml", OrtVersion, "runtimes/win-x64/native/onnxruntime.dll", "onnxruntime.dll", 17_328_152),
-        ("microsoft.ai.directml", DirectMlVersion, "bin/x64-win/DirectML.dll", "DirectML.dll", 18_527_776),
+        new(OrtDml, "runtimes/win-x64/native/onnxruntime.dll", "onnxruntime.dll", 17_328_152),
+        new(Dml, "bin/x64-win/DirectML.dll", "DirectML.dll", 18_527_776),
+        // the CUDA build in its load order (Chatterbox.UseRuntime)
+        new(Cudart, "nvidia/cuda_runtime/bin/cudart64_12.dll", @"cuda\cudart64_12.dll", 583_680),
+        new(Cublas, "nvidia/cublas/bin/cublasLt64_12.dll", @"cuda\cublasLt64_12.dll", 668_669_952),
+        new(Cublas, "nvidia/cublas/bin/cublas64_12.dll", @"cuda\cublas64_12.dll", 102_518_272),
+        new(Cufft, "nvidia/cufft/bin/cufft64_11.dll", @"cuda\cufft64_11.dll", 287_136_768),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_graph64_9.dll", @"cuda\cudnn_graph64_9.dll", 99_939_952),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_engines_precompiled64_9.dll", @"cuda\cudnn_engines_precompiled64_9.dll", 522_326_640),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_engines_runtime_compiled64_9.dll", @"cuda\cudnn_engines_runtime_compiled64_9.dll", 43_971_184),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_engines_tensor_ir64_9.dll", @"cuda\cudnn_engines_tensor_ir64_9.dll", 156_784),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_heuristic64_9.dll", @"cuda\cudnn_heuristic64_9.dll", 94_795_376),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_ops64_9.dll", @"cuda\cudnn_ops64_9.dll", 90_087_024),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_cnn64_9.dll", @"cuda\cudnn_cnn64_9.dll", 2_872_944),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_adv64_9.dll", @"cuda\cudnn_adv64_9.dll", 229_649_008),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn_ext64_9.dll", @"cuda\cudnn_ext64_9.dll", 130_160),
+        new(Cudnn, "nvidia/cudnn/bin/cudnn64_9.dll", @"cuda\cudnn64_9.dll", 272_496),
+        new(OrtCuda, "runtimes/win-x64/native/onnxruntime_providers_shared.dll", @"cuda\onnxruntime_providers_shared.dll", 22_040),
+        new(OrtCuda, "runtimes/win-x64/native/onnxruntime.dll", @"cuda\onnxruntime.dll", 14_430_752),
+        new(OrtCuda, "runtimes/win-x64/native/onnxruntime_providers_cuda.dll", @"cuda\onnxruntime_providers_cuda.dll", 275_606_552),
     ];
-    private const long PackageBytes = 12_458_649 + 202_292_617;
+    internal static IEnumerable<string> CudaFiles => Natives.Where(n => n.File.StartsWith(@"cuda\")).Select(n => RuntimeFile(n.File));
+    private static long PackageBytes => PackageSize.Values.Sum();
 
     public static string Folder => Path.Combine(AppSettings.DataRoot, "chatterbox");
     public static string ModelFile(string name) => Path.Combine(Folder, Repo.Split('/')[1], name.Replace('/', Path.DirectorySeparatorChar));
@@ -91,17 +128,20 @@ internal static class ChatterboxRuntime
         using (var nuget = new HttpClient { Timeout = Timeout.InfiniteTimeSpan })
         {
             nuget.DefaultRequestHeaders.UserAgent.ParseAdd("AgentOrchestrator");
-            foreach (var (package, version, entry, file, size) in Natives)
+            foreach (var group in Natives.GroupBy(n => n.Package))
             {
-                if (Size(RuntimeFile(file)) == size)
+                if (group.All(n => Size(RuntimeFile(n.File)) == n.Size))
+                {
+                    progress.Report((done += PackageSize[group.Key], total));
                     continue;
-                // ponytail: the package is one plain GET without resume (202 MB at most); the models get HubDownloader's
-                var nupkg = RuntimeFile(package + ".nupkg.incomplete");
-                using (var response = await nuget.GetAsync($"https://api.nuget.org/v3-flatcontainer/{package}/{version}/{package}.{version}.nupkg", HttpCompletionOption.ResponseHeadersRead, ct))
+                }
+                // ponytail: each package is one plain GET without resume (696 MB at most); the models get HubDownloader's
+                var package = RuntimeFile(Path.GetFileName(group.Key) + ".incomplete");
+                using (var response = await nuget.GetAsync(group.Key, HttpCompletionOption.ResponseHeadersRead, ct))
                 {
                     response.EnsureSuccessStatusCode();
                     await using var body = await response.Content.ReadAsStreamAsync(ct);
-                    await using var output = File.Create(nupkg);
+                    await using var output = File.Create(package);
                     var buffer = new byte[1 << 20];
                     for (int n; (n = await body.ReadAsync(buffer, ct)) > 0;)
                     {
@@ -109,12 +149,20 @@ internal static class ChatterboxRuntime
                         progress.Report((done += n, total));
                     }
                 }
-                using (var zip = ZipFile.OpenRead(nupkg))
-                    (zip.GetEntry(entry) ?? throw new InvalidDataException($"{package} has no {entry}")).ExtractToFile(RuntimeFile(file) + ".incomplete", overwrite: true);
-                File.Delete(nupkg);
-                if (Size(RuntimeFile(file) + ".incomplete") != size)
-                    throw new InvalidDataException($"{file} from {package} {version} is not the expected size");
-                File.Move(RuntimeFile(file) + ".incomplete", RuntimeFile(file), overwrite: true);
+                try
+                {
+                    using var zip = ZipFile.OpenRead(package);
+                    foreach (var (_, entry, file, size) in group)
+                    {
+                        var path = RuntimeFile(file);
+                        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                        (zip.GetEntry(entry) ?? throw new InvalidDataException($"{group.Key} has no {entry}")).ExtractToFile(path + ".incomplete", overwrite: true);
+                        if (Size(path + ".incomplete") != size)
+                            throw new InvalidDataException($"{file} from {group.Key} is not the expected size");
+                        File.Move(path + ".incomplete", path, overwrite: true);
+                    }
+                }
+                finally { File.Delete(package); }
             }
         }
         done = PackageBytes;
@@ -163,8 +211,8 @@ internal static class Chatterbox
     public const int Rate = 24000;
     private const long StartSpeech = 6561, StopSpeech = 6562, Silence = 4299;
     private const int MaxTokens = 1000; // 25 tokens a second: 40 s, past any one sentence
-    // GPU memory the engine takes once loaded (the decoder: 539 MB measured on the 5080 in G4, with margin).
-    internal const long NeedBytes = 1L << 30;
+    // GPU memory the engine takes once loaded (CUDA, all four graphs: 3,178 MB measured on the 5080, with margin).
+    internal const long NeedBytes = 7L << 29;
     internal static TimeSpan IdleAfter = TimeSpan.FromMinutes(10);
 
     private static readonly object Gate = new();
@@ -172,6 +220,12 @@ internal static class Chatterbox
     private static readonly Dictionary<string, Conditioning> Conds = []; // clip path + write time -> its encoder outputs
     private static volatile bool _shutdown;
     private static string? _failure; // the last load error: no retry until Unload (Install, Uninstall)
+    private static int _tokens; // speech tokens made and the language model's time on them (--chatterbox-say)
+    private static double _lmSeconds;
+
+    // Where the loaded engine runs ("CUDA", ...), or null when not loaded: the Settings > Voice status line.
+    public static string? Provider => Slot.Value?.Provider;
+    public static bool Loaded => Slot.Loaded;
 
     // Whether a Chatterbox voice can read now; else the reason (the caller reads with the voice's Kokoro stand-in).
     public static bool CanRunNow(out string reason)
@@ -296,6 +350,8 @@ internal static class Chatterbox
         private readonly InferenceSession _encoder, _embed, _lm, _decoder;
         private readonly Gpt2Tokenizer _tokenizer;
         public readonly bool Gpu;
+        public readonly string Provider; // for the status line: "CUDA", "decoder on DirectML, the rest on the CPU", "CPU"
+        private readonly OrtMemoryInfo _cache; // where the language model's KV cache lives between steps: the GPU on CUDA
 
         public Engine()
         {
@@ -304,10 +360,27 @@ internal static class Chatterbox
             SessionOptions Options(bool gpu)
             {
                 var options = new SessionOptions { EnableMemoryPattern = false, ExecutionMode = ExecutionMode.ORT_SEQUENTIAL, LogSeverityLevel = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR };
-                if (gpu)
+                if (gpu && Cuda)
+                {
+                    // cuDNN's default exhaustive algorithm search reruns for every new sequence length: ~7 GB taken and a cancel
+                    // waiting 37 s on it in G4. The heuristic pick and an arena that grows only as asked.
+                    using var cuda = new OrtCUDAProviderOptions();
+                    cuda.UpdateOptions(new Dictionary<string, string> { ["device_id"] = "0", ["cudnn_conv_algo_search"] = "HEURISTIC", ["arena_extend_strategy"] = "kSameAsRequested" });
+                    options.AppendExecutionProvider_CUDA(cuda);
+                }
+                else if (gpu)
                     options.AppendExecutionProvider_DML(0);
                 return options;
             }
+            if (Cuda)
+            {
+                // all four graphs on CUDA; a CUDA failure here (no device, out of memory) is the load error: Kokoro reads
+                (_encoder, _embed, _lm, _decoder) = (Open("speech_encoder", true), Open("embed_tokens", true), Open("language_model", true), Open("conditional_decoder", true));
+                (Gpu, Provider) = (true, "CUDA");
+                _cache = new OrtMemoryInfo(OrtMemoryInfo.allocatorCUDA, OrtAllocatorType.DeviceAllocator, 0, OrtMemType.Default);
+                return;
+            }
+            _cache = OrtMemoryInfo.DefaultInstance;
             InferenceSession Open(string name, bool gpu)
             {
                 using var options = Options(gpu);
@@ -317,10 +390,10 @@ internal static class Chatterbox
             // embed_tokens' Slice for a lone speech token ("The parameter is incorrect"), and its GroupQueryAttention with a past
             // computes wrong tokens (no stop token, 290 for five words), so the language model runs on the CPU (~42 ms a token).
             (_encoder, _embed, _lm) = (Open("speech_encoder", false), Open("embed_tokens", false), Open("language_model", false));
-            try { (_decoder, Gpu) = (Open("conditional_decoder", true), true); }
+            try { (_decoder, Gpu, Provider) = (Open("conditional_decoder", true), true, "decoder on DirectML, the rest on the CPU"); }
             catch (Exception e) when (e is OnnxRuntimeException or EntryPointNotFoundException) // no DirectML device: the CPU
             {
-                (_decoder, Gpu) = (Open("conditional_decoder", false), false);
+                (_decoder, Gpu, Provider) = (Open("conditional_decoder", false), false, "CPU");
             }
         }
 
@@ -337,6 +410,7 @@ internal static class Chatterbox
             var past = _lm.InputMetadata.Where(kv => kv.Key.StartsWith("past_key_values")).ToDictionary(kv => kv.Key,
                 kv => OrtValue.CreateAllocatedTensorValue(OrtAllocator.DefaultInstance, kv.Value.ElementDataType, [1, 16, 0, 64]));
             var random = new Random();
+            var clock = Stopwatch.StartNew();
             long seq = 0;
             try
             {
@@ -357,7 +431,7 @@ internal static class Chatterbox
                     using var position = OrtValue.CreateTensorValueFromMemory(positions, [1, length]);
                     var inputs = new List<(string, OrtValue)> { ("inputs_embeds", embedded), ("attention_mask", mask), ("position_ids", position) };
                     inputs.AddRange(past.Select(kv => (kv.Key, kv.Value)));
-                    var outputs = Run(_lm, inputs, ct);
+                    var outputs = RunLm(inputs, ct);
                     embedded.Dispose();
                     var names = _lm.OutputNames;
                     for (var i = 1; i < outputs.Length; i++)
@@ -375,6 +449,7 @@ internal static class Chatterbox
                 }
             }
             finally { foreach (var v in past.Values) v.Dispose(); }
+            (_tokens, _lmSeconds) = (_tokens + generated.Count - 1, _lmSeconds + clock.Elapsed.TotalSeconds);
             var prompt = cond.Values[1].GetTensorDataAsSpan<long>().ToArray();
             var speech = prompt.Concat(generated.Skip(1).Where(t => t != StopSpeech)).Concat([Silence, Silence, Silence]).ToArray();
             using var tokens = OrtValue.CreateTensorValueFromMemory(speech, [1, speech.Length]);
@@ -398,10 +473,34 @@ internal static class Chatterbox
             catch (OnnxRuntimeException) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
         }
 
+        // The language model through an IOBinding: the logits come back to host memory, the present KV cache stays in _cache
+        // (on CUDA the GPU), so the next step binds it as its past without a copy.
+        private OrtValue[] RunLm(List<(string Name, OrtValue Value)> inputs, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            using var options = new RunOptions();
+            using var stop = ct.Register(() => options.Terminate = true);
+            using var binding = _lm.CreateIoBinding();
+            foreach (var (name, value) in inputs.Where(i => _lm.InputMetadata.ContainsKey(i.Name)))
+                binding.BindInput(name, value);
+            var names = _lm.OutputNames;
+            binding.BindOutputToDevice(names[0], OrtMemoryInfo.DefaultInstance);
+            foreach (var name in names.Skip(1))
+                binding.BindOutputToDevice(name, _cache);
+            try
+            {
+                _lm.RunWithBinding(options, binding);
+                return binding.GetOutputValues().ToArray(); // not disposed: the caller owns the values
+            }
+            catch (OnnxRuntimeException) when (ct.IsCancellationRequested) { throw new OperationCanceledException(ct); }
+        }
+
         public void Dispose()
         {
             foreach (var s in new[] { _encoder, _embed, _lm, _decoder })
                 s.Dispose();
+            if (_cache != OrtMemoryInfo.DefaultInstance)
+                _cache.Dispose();
         }
     }
 
@@ -470,13 +569,20 @@ internal static class Chatterbox
 
     // "onnxruntime" for Microsoft.ML.OnnxRuntime is chatterbox\runtime\onnxruntime.dll by full path (DirectML.dll beside it
     // loaded first), never sherpa-onnx's own onnxruntime.dll that Kokoro and Parakeet use. Set once per process.
+    // The CUDA build (runtime\cuda\) when the NVIDIA driver and every CUDA file load (each by full path, so the by-name loads
+    // inside find them loaded), else the DirectML build. One build per process: the managed binding binds its natives once.
     private static bool _resolver;
+    internal static bool Cuda { get; private set; }
     private static void UseRuntime()
     {
         if (_resolver)
             return;
-        NativeLibrary.Load(ChatterboxRuntime.RuntimeFile("DirectML.dll"));
-        var ort = NativeLibrary.Load(ChatterboxRuntime.RuntimeFile("onnxruntime.dll"));
+        // the CUDA provider is not preloaded: its DllMain fails (1114) before onnxruntime.dll hosts it; onnxruntime loads it from beside itself
+        Cuda = NativeLibrary.TryLoad("nvcuda.dll", out _) && File.Exists(ChatterboxRuntime.RuntimeFile(@"cuda\onnxruntime_providers_cuda.dll"))
+            && ChatterboxRuntime.CudaFiles.Where(f => !f.EndsWith("onnxruntime_providers_cuda.dll")).All(f => NativeLibrary.TryLoad(f, out _));
+        if (!Cuda)
+            NativeLibrary.Load(ChatterboxRuntime.RuntimeFile("DirectML.dll"));
+        var ort = NativeLibrary.Load(ChatterboxRuntime.RuntimeFile(Cuda ? @"cuda\onnxruntime.dll" : "onnxruntime.dll"));
         NativeLibrary.SetDllImportResolver(typeof(InferenceSession).Assembly, (name, _, _) => name == "onnxruntime" ? ort : IntPtr.Zero);
         _resolver = true;
     }
@@ -502,24 +608,39 @@ internal static class Chatterbox
         }
         var clock = Stopwatch.StartNew();
         var all = new List<float>();
-        double first = 0;
+        double first = 0, lm = 0;
+        var sane = true;
+        (_tokens, _lmSeconds) = (0, 0);
         foreach (var sentence in SpeechText.Sentences(SpeechText.ForSpeech(text, new TtsSettings())))
         {
-            all.AddRange(Synthesize(sentence, voice, CancellationToken.None));
+            var made1 = Synthesize(sentence, voice, CancellationToken.None);
+            all.AddRange(made1);
             if (first == 0)
                 first = clock.Elapsed.TotalSeconds;
+            // a looping language model (no stop token) makes far too much audio: 0.03-0.25 s a character is speech
+            var perChar = made1.Length / (double)Rate / sentence.Length;
+            sane &= perChar is >= 0.03 and <= 0.25;
+            Console.Error.WriteLine($"  {made1.Length / (double)Rate:0.00} s for {sentence.Length} characters ({perChar:0.000} s each): {sentence}");
         }
         var made = clock.Elapsed.TotalSeconds;
+        lm = _lmSeconds;
         var after = FreeGpuBytes();
         var samples = all.ToArray();
         WriteWav(wav, samples);
         var peak = samples.Length == 0 ? 0 : samples.Max(Math.Abs);
         var seconds = samples.Length / (double)Rate;
-        Console.Error.WriteLine($"{voice.Name}: {(Slot.Value?.Gpu == true ? "decoder on the GPU (DirectML)" : "CPU")}, {seconds:0.00} s of audio, first sentence in {first:0.00} s (incl. load), all in {made:0.00} s, " +
-            $"RTF {made / Math.Max(seconds, 0.01):0.00}, peak {peak:0.000}, GPU memory taken {((before ?? 0) - (after ?? 0)) >> 20} MB");
+        Console.Error.WriteLine($"{voice.Name}: {Provider}, {seconds:0.00} s of audio, first sentence in {first:0.00} s (incl. load), all in {made:0.00} s, " +
+            $"RTF {made / Math.Max(seconds, 0.01):0.00}, {_tokens} tokens at {lm * 1000 / Math.Max(_tokens, 1):0.0} ms each, peak {peak:0.000}, GPU memory taken {((before ?? 0) - (after ?? 0)) >> 20} MB");
+        // warm: the same text again, the engine and the voice's conditioning loaded
         clock.Restart();
-        Synthesize("Warm run.", voice, CancellationToken.None);
-        Console.Error.WriteLine($"a short sentence warm: {clock.Elapsed.TotalSeconds:0.00} s");
+        double warmFirst = 0, warmSeconds = 0;
+        foreach (var sentence in SpeechText.Sentences(SpeechText.ForSpeech(text, new TtsSettings())))
+        {
+            warmSeconds += Synthesize(sentence, voice, CancellationToken.None).Length / (double)Rate;
+            if (warmFirst == 0)
+                warmFirst = clock.Elapsed.TotalSeconds;
+        }
+        Console.Error.WriteLine($"warm: first sentence in {warmFirst:0.00} s, RTF {clock.Elapsed.TotalSeconds / Math.Max(warmSeconds, 0.01):0.00}");
         using var cancel = new CancellationTokenSource(1500);
         var stopwatch = Stopwatch.StartNew();
         var stopped = false;
@@ -528,7 +649,9 @@ internal static class Chatterbox
         var late = stopwatch.Elapsed.TotalSeconds - 1.5;
         Console.Error.WriteLine($"cancel: {(stopped ? "stopped" : "did not stop")} {late:0.00} s after the request");
         Shutdown();
-        return peak > 0.05 && stopped && late < 1 ? 0 : 1;
+        if (!sane)
+            Console.Error.WriteLine("a sentence's audio length is outside 0.03-0.25 s a character");
+        return peak > 0.05 && stopped && late < 1 && sane ? 0 : 1;
     }
 
     private static long DirSize(string dir) => new DirectoryInfo(dir).EnumerateFiles("*", SearchOption.AllDirectories).Sum(f => f.Length);
@@ -558,7 +681,7 @@ internal static class Chatterbox
 
         // the VRAM decision: loaded or unknown fits; less than NeedBytes free does not
         Check(WontFit(null, false) is null && WontFit(1L << 30, true) is null && WontFit(NeedBytes, false) is null, "fits");
-        Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("1 GB"), "won't fit");
+        Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("3 GB"), "won't fit");
 
         // the idle unload: made on first Get, the same one while used, freed after the idle time, made again after
         var made = 0;
