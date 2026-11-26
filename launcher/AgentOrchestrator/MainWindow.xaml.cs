@@ -5430,7 +5430,8 @@ public partial class MainWindow : Window
         return menu;
     }
 
-    private void SetChatCard(string role, bool shown)
+    // select: show the agent's tab when it is shown (the desktop's menu; the phone's switch selects nothing).
+    private void SetChatCard(string role, bool shown, bool select = true)
     {
         _settings.ChatCards.Remove(role);
         if (shown)
@@ -5438,11 +5439,12 @@ public partial class MainWindow : Window
         _settings.Save();
         RefreshCardVisibility();
         RefreshChatTarget();
-        if (shown && CardFor(role) is { } card)
+        if (select && shown && CardFor(role) is { } card)
             SelectWorker(card);
     }
 
-    private void AddCustomWorker()
+    // select false: the phone's Add worker, which leaves the desktop's tab as it is.
+    private RoleCard AddCustomWorker(bool select = true)
     {
         var n = 1;
         while (_cards.Any(c => string.Equals(c.Title, $"WORKER {n}", StringComparison.OrdinalIgnoreCase)))
@@ -5453,7 +5455,9 @@ public partial class MainWindow : Window
             _settings.ChatCards.Add(card.Role);
         SaveWorkers();
         RefreshSetupProblems();
-        SelectWorker(card);
+        if (select)
+            SelectWorker(card);
+        return card;
     }
 
     // Settings > Agents > Workflow. Refused while a reply or run is using the models (that turn already chose its workers).

@@ -1445,37 +1445,9 @@ public partial class MainWindow
                 if (primaryLoad is not null && remoteMode()) // the primary PC keeps its load options; the worker keeps its own
                     foreach (var key in primaryKeys)
                         fields[key] = current.GetValueOrDefault(key, "");
-                var probe = new JsonObject();
-                if ((choice?.LoadPath ?? w.ModelPath) is { } modelPath)
-                    probe["auto_load"] = new JsonObject { ["model_path"] = modelPath };
-                var errors = ModelOptions.Apply(probe, fields, includeLoad: !remoteMode());
-                var kind = (string)kinds!.First(r => r.IsChecked == true).Tag;
-                var title = nameBox!.Text.Trim();
-                if (title != card.Title && LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } titleProblem)
-                    errors["Name"] = titleProblem;
-                if (ShowErrors(errors))
+                var edit = new WorkerEdit(nameBox!.Text, (string)kinds!.First(r => r.IsChecked == true).Tag, description!.Text, prompt!.Text);
+                if (ShowErrors(SaveWorkerModel(card, "", null, fields, choice, remoteMode() ? remoteNow : null, remoteNow, Base(), edit, "")))
                     return false;
-                if (remoteNow is not null && !remoteMode()) // Switch to Local: back to its local model, if it had one
-                {
-                    w.Remote = null;
-                    (card.ModelId, card.ModelVariant) = w.LocalModelId is not null ? (w.LocalModelId, w.LocalModelVariant) : (w.ModelExpected, null); // no stash: remote before it was kept
-                    (w.LocalModelId, w.LocalModelVariant) = (null, null);
-                    card.SetModel(card.ModelId is { } local ? LauncherLogic.DescribeModel(local, card.ModelVariant) : new("Not loaded", "—", "—"));
-                }
-                if (choice is not null)
-                    AssignModel(card, choice);
-                w.Kind = kind;
-                w.Description = description!.Text.Trim();
-                w.SystemPrompt = prompt!.Text;
-                var inherits = Base(); // a value equal to what it would inherit is not stored, so the Implementer's changes still reach it
-                w.ModelOptions = fields.Where(p => p.Value.Trim().Length > 0 && p.Value != inherits.GetValueOrDefault(p.Key, "")).ToDictionary();
-                (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) = ("", "", "", "", "", "Auto"); // now in ModelOptions
-                if (title != card.Title)
-                    card.Title = title;
-                SaveWorkers();
-                SyncCustomWorkers();
-                ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
-                Log($"{card.Title}: model settings saved");
                 SavedToast(card.Title);
                 saved();
                 return true;
@@ -1494,36 +1466,10 @@ public partial class MainWindow
                 return true;
             }
             var remote = remoteMode() ? remoteNow : null; // its remote keys stay as the Remote API page wrote them
-            var check = (JsonObject)role!.DeepClone(); // validate everything before any file is touched
-            if (choice is not null && remote is null)
-                SetRoleModel(check, choice);
-            var problems = ModelOptions.Apply(check, fields, includeLoad: remote is null);
-            if (ShowErrors(problems))
-                return false;
-            string? problem;
             try
             {
-                // path first (the window's config), then the worker config when path is a project's
-                problem = WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
-                {
-                    var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
-                    if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
-                        LauncherLogic.GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
-                    if (remote is null && remoteNow is not null &&
-                        LauncherLogic.WriteRemoteRole(root, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
-                        return failed; // nothing written: the one WriteJson below writes every change
-                    var settings = root["roles"]![card.Role]!.AsObject();
-                    if (choice is not null && remote is null)
-                        SetRoleModel(settings, choice);
-                    if (ModelOptions.Apply(settings, fields, includeLoad: remote is null) is { Count: > 0 } refused)
-                        return string.Join(" ", refused.Values);
-                    if (chatPrompt!.Text.Trim().Length > 0)
-                        settings["chat_system_prompt"] = chatPrompt.Text;
-                    else
-                        settings.Remove("chat_system_prompt");
-                    WriteJson(target, root);
-                    return null;
-                });
+                if (ShowErrors(SaveWorkerModel(card, path, role, fields, choice, remote, remoteNow, Base(), null, chatPrompt!.Text)))
+                    return false;
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
             {
@@ -1532,21 +1478,6 @@ public partial class MainWindow
                 close();
                 return false;
             }
-            if (problem is not null)
-            {
-                ShowErrors(new() { [""] = problem });
-                return false;
-            }
-            if (choice is not null && remote is null)
-            {
-                card.ModelId = choice.Display;
-                card.ModelVariant = choice.Variant;
-                card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
-                SaveWorkers();
-            }
-            if (remote is null)
-                ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
-            Log($"{card.Title}: model settings saved{(remote is null ? "" : $" (remote API {remote.BaseUrl.Trim()}, model {remote.Model.Trim()})")}");
             if (remote is not null && Environment.GetEnvironmentVariable(remote.KeyEnv.Trim()) is null)
                 Toast($"{card.Title}: no key for {remote.KeyEnv.Trim()} yet; paste it on the Remote API page", "#F7C873");
             else
@@ -1635,6 +1566,97 @@ public partial class MainWindow
             AskDialog("Settings saved", SavedWhileWorking(title), "OK", cancel: false);
         else
             Toast($"{title}: settings saved");
+    }
+
+    // A custom worker's own fields in a Save: its title (trimmed here), kind, description and system prompt.
+    private sealed record WorkerEdit(string Title, string Kind, string Description, string SystemPrompt);
+
+    // A worker's Save, its data part (ModelSettingsBody's Save and the phone's): every field checked before anything is
+    // written, then a built-in role written to config.json (path, the config it was read from, first, then the worker config;
+    // COMPACTOR on MAIN's model gets its own copy first) and a custom worker to its WorkerSetting and config.json, and the card
+    // updated. role: the built-in role's roles.<role> as read from path; remote: the API the worker stays on (null: local, a
+    // switch to Local when remoteNow is set); inherits: what an empty field means (a custom worker stores only the values
+    // that differ); custom: a custom worker's own fields; chatPrompt: a built-in role's Chat system prompt ("" removes it).
+    // Returns the problems (key -> message, "" for the whole), empty when saved; a config.json that cannot be read or
+    // written throws, as WriteConfigs does for its first target. The toasts and the tab's refresh are the caller's.
+    private Dictionary<string, string> SaveWorkerModel(RoleCard card, string path, JsonObject? role, Dictionary<string, string> fields, ModelChoice? choice,
+        LauncherLogic.RemoteRole? remote, LauncherLogic.RemoteRole? remoteNow, Dictionary<string, string> inherits, WorkerEdit? custom, string chatPrompt)
+    {
+        if (card.IsCustom)
+        {
+            var w = card.Config;
+            var probe = new JsonObject();
+            if ((choice?.LoadPath ?? w.ModelPath) is { } modelPath)
+                probe["auto_load"] = new JsonObject { ["model_path"] = modelPath };
+            var errors = ModelOptions.Apply(probe, fields, includeLoad: remote is null);
+            var title = custom!.Title.Trim();
+            if (title != card.Title && LauncherLogic.TitleProblem(title, card.Role, CurrentWorkers()) is { } titleProblem)
+                errors["Name"] = titleProblem;
+            if (errors.Count > 0)
+                return errors;
+            if (remoteNow is not null && remote is null) // Switch to Local: back to its local model, if it had one
+            {
+                w.Remote = null;
+                (card.ModelId, card.ModelVariant) = w.LocalModelId is not null ? (w.LocalModelId, w.LocalModelVariant) : (w.ModelExpected, null); // no stash: remote before it was kept
+                (w.LocalModelId, w.LocalModelVariant) = (null, null);
+                card.SetModel(card.ModelId is { } local ? LauncherLogic.DescribeModel(local, card.ModelVariant) : new("Not loaded", "—", "—"));
+            }
+            if (choice is not null)
+                AssignModel(card, choice);
+            w.Kind = custom.Kind;
+            w.Description = custom.Description.Trim();
+            w.SystemPrompt = custom.SystemPrompt;
+            // a value equal to what it would inherit is not stored, so the Implementer's changes still reach it
+            w.ModelOptions = fields.Where(p => p.Value.Trim().Length > 0 && p.Value != inherits.GetValueOrDefault(p.Key, "")).ToDictionary();
+            (w.Temperature, w.MaxTokens, w.RepetitionPenalty, w.ReasoningBudget, w.ContextLength, w.Thinking) = ("", "", "", "", "", "Auto"); // now in ModelOptions
+            if (title != card.Title)
+                card.Title = title;
+            SaveWorkers();
+            SyncCustomWorkers();
+            ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
+            Log($"{card.Title}: model settings saved");
+            return errors;
+        }
+
+        var check = (JsonObject)role!.DeepClone(); // validate everything before any file is touched
+        if (choice is not null && remote is null)
+            SetRoleModel(check, choice);
+        if (ModelOptions.Apply(check, fields, includeLoad: remote is null) is { Count: > 0 } problems)
+            return problems;
+        // path first (the window's config), then the worker config when path is a project's
+        var problem = WriteConfigs(WorkerConfigTargets().Where(t => t != path).Prepend(path).ToList(), target =>
+        {
+            var root = JsonNode.Parse(File.ReadAllText(target))!.AsObject();
+            if (card.Role == LauncherLogic.Compactor && !LauncherLogic.CompactorHasOwn(root["roles"] as JsonObject))
+                LauncherLogic.GiveCompactorOwn(root); // first, so Switch to Local restores its copy of MAIN's
+            if (remote is null && remoteNow is not null &&
+                LauncherLogic.WriteRemoteRole(root, card.Role, null, Path.Combine(_workflowRoot ?? "", "config.json")) is { } failed)
+                return failed; // nothing written: the one WriteJson below writes every change
+            var settings = root["roles"]![card.Role]!.AsObject();
+            if (choice is not null && remote is null)
+                SetRoleModel(settings, choice);
+            if (ModelOptions.Apply(settings, fields, includeLoad: remote is null) is { Count: > 0 } refused)
+                return string.Join(" ", refused.Values);
+            if (chatPrompt.Trim().Length > 0)
+                settings["chat_system_prompt"] = chatPrompt;
+            else
+                settings.Remove("chat_system_prompt");
+            WriteJson(target, root);
+            return null;
+        });
+        if (problem is not null)
+            return new() { [""] = problem };
+        if (choice is not null && remote is null)
+        {
+            card.ModelId = choice.Display;
+            card.ModelVariant = choice.Variant;
+            card.SetModel(LauncherLogic.DescribeModel(choice.Display, choice.Variant));
+            SaveWorkers();
+        }
+        if (remote is null)
+            ContextLengthSaved(card.Role, fields.GetValueOrDefault("max_seq_length"));
+        Log($"{card.Title}: model settings saved{(remote is null ? "" : $" (remote API {remote.BaseUrl.Trim()}, model {remote.Model.Trim()})")}");
+        return [];
     }
 
     private static Task<long?>? _gpuMemory; // the first GPU's total memory (nvidia-smi), read once
