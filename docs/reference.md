@@ -116,6 +116,33 @@ Any role can use a remote OpenAI-compatible API (OpenRouter, a cloud provider's 
 
 **The Remote API page.** The **Remote API** item in the left navigation (below *New*) sets a worker up on a remote service without editing JSON. Pick a service (OpenRouter, OpenAI, Groq, Together, Fireworks, DeepInfra, Mistral, DeepSeek, xAI, Cerebras, Google Gemini, NVIDIA NIM, or a Custom URL), then a model from the list the service reports (or type its id), then **Apply to** one of your agents. The API key variable fills in for the service (for example `OPENROUTER_API_KEY`); paste the key into the page's API key box (encrypted for your Windows account, "Remove" forgets it), or set that variable in your environment and restart the app; a key saved in the app wins. The first time you open the page, a popup explains where to create a key for each service (**Key help** reopens it). For OpenRouter a provider table lists every provider for the model with input, output and cache-read price per million tokens, latency, throughput, uptime and image support (latency and speed show once an OpenRouter key is set); a shield after each name shows its data policy as OpenRouter's own page lists it (green: does not train and keeps no prompts; amber: may keep prompts but does not train; red: may train on them; none: unknown, or that page could not be read; hover for the wording); tick the providers you want, in order. The launcher saves them as `sampling.extra_body.provider` = `{"order": [...], "allow_fallbacks": false}`, so OpenRouter uses only those providers, in that order, and fails the request instead of falling back. Leave all unticked to let OpenRouter choose; other services ignore it. Below the table, three price controls (OpenRouter only): **Cheapest** adds `"sort": "price"` (the cheapest provider first), **Max in $/M** and **Max out $/M** add `"max_price": {"prompt": …, "completion": …}` in US dollars per million tokens (empty means no cap; OpenRouter refuses providers above it; the page also hides the models and provider rows listed above a cap, keeping models with no listed price, the chosen model tagged "over cap", and ticked providers marked "(over cap)" in the order), and **Use :floor** saves the model id with the `:floor` suffix (for example `z-ai/glm-5.3-flash:floor`) while the Model id box keeps the base id; an id that already has a variant such as `:free` cannot take it. Each part is written only when set, so the full shape is `{"order": [...], "allow_fallbacks": false, "sort": "price", "max_price": {"prompt": 0.5, "completion": 2}}`. Cheapest and `:floor` matter only when no provider is ticked; the max price always applies. The page shows the cheapest input and output price on offer; the cheapest provider is not always the best one (quantization, speed and reliability differ). A Custom URL sends no request, and no key, until you press Enter or **Load models**. On the Model Settings page a remote agent shows `Remote: model @ providers` (then `· cheapest`, `· max $X/M in`, `· max $Y/M out` when set) with **Edit in Remote API** and **Switch to Local**; a local agent has **Use a Remote API…**.
 
+## Phone app API
+
+The phone app (see [Phone app](phone-app.md)) talks to the PC's local server, which Tailscale Serve publishes on your tailnet. Every request needs your Tailscale login; anything else gets 403. Bodies and answers are JSON unless noted. Errors are `{"error": ...}`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/hello` | This PC's name, tailnet address, signed-in user, app version and web shell version. Other PCs' pages call it too. |
+| GET | `/api/pcs` | This PC first, then your other PCs on the tailnet, each with whether it answers. |
+| GET | `/api/conversations` | The conversation list. |
+| GET | `/api/conversation/{id}` | One conversation: title, kind, messages, whether it is busy, the queue, any pending prompt and the reply in progress. |
+| GET | `/api/conversation/{id}/events` | The live event stream (Server-Sent Events); 404 for an unknown conversation. |
+| POST | `/api/send` | Send a message (`id`, `text`, optional `attachments`); 409 `DialogOpen` while a popup is open on the PC. |
+| POST | `/api/stop` | Stop the running reply; 409 `DialogOpen` as above. |
+| POST | `/api/answer` | Answer a pending request popup. |
+| POST | `/api/upload` | Save a photo or file from the phone (the body is the file, its name is in the `X-File-Name` header, up to 25 MB); answers its path for `/api/send`'s `attachments`. |
+| GET | `/api/composer` | The composer's choices. |
+| POST | `/api/composer` | Change them. |
+| GET | `/api/file?path=` | A picture (PNG, JPEG, WebP, GIF) from the app's `images`, `pasted` or `screenshots` folders. |
+
+**Live events.** Each event is a JSON object whose `e` field names it:
+
+- `hello`: the first event, with the busy flag, queue, pending prompt and the reply so far.
+- `state`: busy, queued or the pending prompt changed.
+- `saved`: the turn was saved; load the conversation again.
+- `resync`: the stream dropped events; load the conversation again.
+- The engine's own events as they happen, including `delta` (text, thinking or a tool call's arguments), `tool`, `chat_stage` and `context`.
+
 ## Chat mode
 
 Role fallback: only the `planner` role (the base model) is required in `config.json`. An `implementer` or `reviewer` that is missing from `roles`, or set to `{"same_as": "planner"}`, uses the planner's settings (model, sampling, `auto_load`) everywhere, the project run included; the same model is not reloaded.
