@@ -22,9 +22,10 @@ internal static class Tailscale
     {
         public bool SignedIn => Backend == "Running" && Self is { UserId.Length: > 0 };
         public IEnumerable<Device> Mine => Peers.Where(p => p.UserId == Self?.UserId); // this account's other PCs
-        // https://<DnsName> of this PC and this account's other PCs (those /api/pcs lists): the phone app's own origins, which
-        // WebServer lets call the API (CORS) and load from (CSP); a shared-in node's or another account's device's never.
-        public IReadOnlyList<string> OwnerOrigins => Mine.Select(p => p.DnsName).Prepend(DnsName).Where(d => d.Length > 0).Select(d => "https://" + d).ToList();
+        public IEnumerable<Device> MyWindowsPcs => Mine.Where(p => p.Os.Equals("windows", StringComparison.OrdinalIgnoreCase));
+        // https://<DnsName> of this PC and this account's other Windows PCs (those /api/pcs lists): the phone app's own origins, which
+        // WebServer lets call the API (CORS) and load from (CSP); a shared-in node's, another account's or the owner's phone or NAS never.
+        public IReadOnlyList<string> OwnerOrigins => MyWindowsPcs.Select(p => p.DnsName).Prepend(DnsName).Where(d => d.Length > 0).Select(d => "https://" + d).ToList();
     }
 
     public const string DownloadPage = "https://tailscale.com/download/windows";
@@ -90,7 +91,9 @@ internal static class Tailscale
         var tailnet = root.TryGetProperty("CurrentTailnet", out var t) ? t : default;
         var certs = root.TryGetProperty("CertDomains", out var c) && c.ValueKind == JsonValueKind.Array
             ? c.EnumerateArray().Select(d => d.GetString() ?? "").Where(d => d.Length > 0).ToList() : [];
-        return new(Text(root, "BackendState"), self, peers, login, Text(s, "DNSName").TrimEnd('.'), Text(tailnet, "MagicDNSSuffix"), certs);
+        return new(Text(root, "BackendState"), self, peers, login, Text(s, "DNSName").TrimEnd('.'),
+            // Tailscale fills the suffix even with MagicDNS off; an absent flag counts as on
+            tailnet.ValueKind == JsonValueKind.Object && tailnet.TryGetProperty("MagicDNSEnabled", out var magic) && magic.ValueKind == JsonValueKind.False ? "" : Text(tailnet, "MagicDNSSuffix"), certs);
     }
 
     // The phone app (MainWindow.WebApp.cs): Serve publishes http://127.0.0.1:<port> at https://<this PC's DnsName>/ on the
@@ -113,9 +116,12 @@ internal static class Tailscale
     public static Task ServeOffAsync(CancellationToken ct) => RunAsync(TimeSpan.FromSeconds(20), ct, "serve", "--https=443", "off");
 
     // Null when the phone app can be published; else what the user has to do first.
-    public static string? WebAppProblem(State? s) => s switch
+    // `installed`: tailscale.exe exists; a null state with it means the service is not answering.
+    public static string? WebAppProblem(State? s, bool installed) => s switch
     {
-        null => "Tailscale is not installed",
+        null => installed ? "Tailscale is not running" : "Tailscale is not installed",
+        { Backend: "Stopped" } => "Tailscale is disconnected; connect it",
+        { Backend: "Starting" } => "Tailscale is starting",
         { SignedIn: false } => "Tailscale is not signed in",
         { MagicDnsSuffix.Length: 0 } or { DnsName.Length: 0 } => "Turn on MagicDNS for your tailnet in the Tailscale admin console (DNS page)",
         { CertDomains.Count: 0 } => "Turn on HTTPS certificates for your tailnet in the Tailscale admin console (DNS page)",
@@ -252,14 +258,24 @@ internal static class Tailscale
              "User":{"111":{"LoginName":"me@example.com"}}%CERTS%}
             """;
         var https = ParseStatus(web.Replace("%CERTS%", ""","CertDomains":["home.tail1234.ts.net"]"""));
-        Check(https is { DnsName: "home.tail1234.ts.net", MagicDnsSuffix: "tail1234.ts.net", CertDomains: ["home.tail1234.ts.net"] } && WebAppProblem(https) is null,
+        Check(https is { DnsName: "home.tail1234.ts.net", MagicDnsSuffix: "tail1234.ts.net", CertDomains: ["home.tail1234.ts.net"] } && WebAppProblem(https, true) is null,
             "the phone app: this PC's name, the tailnet's suffix, its certificate");
-        Check(WebAppProblem(ParseStatus(web.Replace("%CERTS%", ""))) == "Turn on HTTPS certificates for your tailnet in the Tailscale admin console (DNS page)",
+        Check(WebAppProblem(ParseStatus(web.Replace("%CERTS%", "")), true) == "Turn on HTTPS certificates for your tailnet in the Tailscale admin console (DNS page)",
             "the phone app without HTTPS certificates");
-        Check(WebAppProblem(null) == "Tailscale is not installed" &&
-              WebAppProblem(ParseStatus("""{"BackendState":"NeedsLogin","Self":{"UserID":0,"HostName":"home"}}""")) == "Tailscale is not signed in" &&
-              WebAppProblem(ParseStatus("""{"BackendState":"Running","Self":{"UserID":111,"HostName":"home"},"CertDomains":["home.tail1234.ts.net"]}""")) ==
+        Check(WebAppProblem(null, false) == "Tailscale is not installed" && WebAppProblem(null, true) == "Tailscale is not running" &&
+              WebAppProblem(ParseStatus("""{"BackendState":"Stopped","Self":{"UserID":111,"HostName":"home"}}"""), true) == "Tailscale is disconnected; connect it" &&
+              WebAppProblem(ParseStatus("""{"BackendState":"NeedsLogin","Self":{"UserID":0,"HostName":"home"}}"""), true) == "Tailscale is not signed in" &&
+              WebAppProblem(ParseStatus("""{"BackendState":"Running","Self":{"UserID":111,"HostName":"home"},"CertDomains":["home.tail1234.ts.net"]}"""), true) ==
                   "Turn on MagicDNS for your tailnet in the Tailscale admin console (DNS page)",
-            "the phone app without Tailscale, signed out, or without MagicDNS");
+            "the phone app without Tailscale, not running, disconnected, signed out, or without MagicDNS");
+        Check(WebAppProblem(ParseStatus(web.Replace("\"MagicDNSEnabled\":true", "\"MagicDNSEnabled\":false").Replace("%CERTS%", ""","CertDomains":["home.tail1234.ts.net"]""")), true) ==
+                  "Turn on MagicDNS for your tailnet in the Tailscale admin console (DNS page)", "MagicDNS switched off while the suffix is still filled in");
+        var origins = ParseStatus("""
+            {"BackendState":"Running","Self":{"UserID":111,"HostName":"home","DNSName":"home.t.ts.net."},
+             "Peer":{"a":{"UserID":111,"HostName":"pc","OS":"Windows","DNSName":"pc.t.ts.net."},
+                     "b":{"UserID":111,"HostName":"nas","OS":"linux","DNSName":"nas.t.ts.net."},
+                     "c":{"UserID":111,"HostName":"phone","OS":"iOS","DNSName":"phone.t.ts.net."}}}
+            """).OwnerOrigins;
+        Check(origins.SequenceEqual(["https://home.t.ts.net", "https://pc.t.ts.net"]), "trusted origins: this PC and the owner's Windows PCs, not a phone or NAS");
     }
 }

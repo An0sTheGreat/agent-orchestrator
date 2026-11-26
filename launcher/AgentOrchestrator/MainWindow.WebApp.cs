@@ -132,7 +132,7 @@ public partial class MainWindow
         _webTailnet = Tailscale.ParseStatus("""
             {"BackendState":"Running","Self":{"UserID":1,"HostName":"home","DNSName":"home.tail0000.ts.net."},"CertDomains":["home.tail0000.ts.net"],
              "CurrentTailnet":{"MagicDNSSuffix":"tail0000.ts.net"},"User":{"1":{"LoginName":"dev@example.com"}},
-             "Peer":{"k1":{"UserID":1,"HostName":"laptop","DNSName":"laptop.tail0000.ts.net.","Online":true}}}
+             "Peer":{"k1":{"UserID":1,"HostName":"laptop","OS":"windows","DNSName":"laptop.tail0000.ts.net.","Online":true}}}
             """);
         _webProbe = (dns, _) => Task.FromResult(dns == "laptop.tail0000.ts.net" ? JsonNode.Parse("""{"pc":"LAPTOP"}""") : null);
         _webServe = (_, _) => Task.FromResult((true, "")); // a close never turns the real Serve off
@@ -202,7 +202,7 @@ public partial class MainWindow
         try
         {
             var status = await _webStatus();
-            if (Tailscale.WebAppProblem(status) is { } why)
+            if (Tailscale.WebAppProblem(status, Tailscale.Exe is not null) is { } why)
             {
                 _webFailure = why;
                 retry = true; // not ready yet (tailscaled may still be starting); a refusal by tailscale serve is not retried
@@ -260,9 +260,11 @@ public partial class MainWindow
             return;
         _webApp.Stop(); // ends the open event streams, which unsubscribes them
         _webApp = null;
+        _webStarting = true; // keeps the switch disabled until Serve is off, so an on can not overlap it
         RefreshWebApp();
         var serve = _webServe;
-        await Task.Run(() => serve(null, CancellationToken.None));
+        try { await Task.Run(() => serve(null, CancellationToken.None)); }
+        finally { _webStarting = false; RefreshWebApp(); }
     }
 
     // Quit: waits for Stop on the UI thread for at most `cap`, still pumping messages (a start in flight resumes on it).
@@ -478,7 +480,7 @@ public partial class MainWindow
     private async Task<object> WebPcs()
     {
         var (tailnet, probe) = (_webTailnet, _webProbe);
-        var peers = tailnet?.Mine.Where(p => p.DnsName.Length > 0).ToList() ?? [];
+        var peers = tailnet?.MyWindowsPcs.Where(p => p.DnsName.Length > 0).ToList() ?? [];
         var answers = await Task.WhenAll(peers.Select(p => probe(p.DnsName, CancellationToken.None)));
         return peers.Select((p, i) => new { pc = (answers[i] as JsonObject)?["pc"]?.ToString() ?? p.Name, dnsName = p.DnsName, online = answers[i] is JsonObject, self = false })
             .Prepend(new { pc = Environment.MachineName, dnsName = tailnet?.DnsName ?? "", online = true, self = true }).ToList();
@@ -599,8 +601,8 @@ public partial class MainWindow
         const string tailnet = """
             {"BackendState":"Running","Self":{"UserID":1,"HostName":"home","DNSName":"home.tail0000.ts.net."},
              "CurrentTailnet":{"MagicDNSSuffix":"tail0000.ts.net"},"User":{"1":{"LoginName":"smoke@example.com"}}%CERTS%,
-             "Peer":{"k1":{"UserID":1,"HostName":"laptop","DNSName":"laptop.tail0000.ts.net.","Online":true},
-                     "k2":{"UserID":1,"HostName":"desk","DNSName":"desk.tail0000.ts.net.","Online":true},
+             "Peer":{"k1":{"UserID":1,"HostName":"laptop","OS":"windows","DNSName":"laptop.tail0000.ts.net.","Online":true},
+                     "k2":{"UserID":1,"HostName":"desk","OS":"windows","DNSName":"desk.tail0000.ts.net.","Online":true},
                      "k3":{"UserID":2,"HostName":"theirs","DNSName":"theirs.tail0000.ts.net.","Online":true}}}
             """;
         var (status, serve, on, port) = (_webStatus, _webServe, _settings.WebAppOn, _settings.WebAppPort);
@@ -655,7 +657,7 @@ public partial class MainWindow
             _store.Delete(idle.Id);
             if (!await Until(() => _webEvents.Count == 0))
                 return Fail($"the server stopped with {_webEvents.Count} subscribers left");
-            if (!await Until(() => served.Count == 2) || _webApp is not null || !served.SequenceEqual([bound, null]) || _settings.WebAppOn || AppSettings.Load().WebAppOn ||
+            if (!await Until(() => served.Count == 2 && !_webStarting) || _webApp is not null || !served.SequenceEqual([bound, null]) || _settings.WebAppOn || AppSettings.Load().WebAppOn ||
                 WebAppStateText.Text != "Off" || WebAppOnlinePanel.Visibility == Visibility.Visible || WebAppAddress is not null)
                 return Fail($"off: served [{string.Join(",", served)}], on {_settings.WebAppOn}, state {WebAppStateText.Text}");
             try

@@ -52,7 +52,8 @@ public partial class MainWindow
         {
             e.Handled = true;
             // the set is read from the row now: pictures may have joined it since it was built
-            ShowImage(path, (thumb.Parent as WrapPanel)?.Children.OfType<FrameworkElement>().Select(c => c.DataContext as string).OfType<string>().ToList());
+            var row = (thumb.Parent as WrapPanel)?.Children.OfType<FrameworkElement>().Select(c => c.DataContext as string).OfType<string>().ToList();
+            ShowImage(path, row, row?.IndexOf(path) ?? -1);
         };
         return thumb;
     }
@@ -97,7 +98,7 @@ public partial class MainWindow
     private int _viewIndex;
 
     // The picture full size; `set` is the thumbnail row it belongs to, for Left/Right (null or one picture: no arrows).
-    internal void ShowImage(string path, IReadOnlyList<string>? set = null)
+    internal void ShowImage(string path, IReadOnlyList<string>? set = null, int index = -1)
     {
         if (LoadPicture(path) is not { } picture)
         {
@@ -105,7 +106,7 @@ public partial class MainWindow
             return;
         }
         _viewSet = set?.ToList() ?? [];
-        _viewIndex = _viewSet.IndexOf(path);
+        _viewIndex = index >= 0 && index < _viewSet.Count && _viewSet[index] == path ? index : _viewSet.IndexOf(path); // the clicked copy when a file is in the row twice
         if (_viewIndex < 0)
             _viewSet = [];
         ShowViewCount();
