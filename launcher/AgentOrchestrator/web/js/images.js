@@ -3,7 +3,7 @@
 // tests them); the DOM part loads only in a page.
 import { api } from './api.js';
 import { h } from './h.js';
-import { longPress } from './util.js';
+import { longPress, aspectOptions, flipRatio } from './util.js';
 
 /* ---------- pure ---------- */
 export const SOURCES = [['local', 'This PC'], ['shared', 'Primary PC'], ['remote', 'OpenRouter']];
@@ -53,7 +53,7 @@ if (typeof document !== 'undefined') {
   const $ = s => document.querySelector(s);
   const view = $('#view-images'), form = $('#imgform'), card = $('#imgstage'), shot = card.querySelector('.pcard-img');
   const [, , status, step, pill] = card.children;
-  let models = [], maxBatch = 20, pictures = [], gen = 0, timer = 0, sawBusy = false, viewing = -1;
+  let aspects = [], models = [], maxBatch = 20, pictures = [], gen = 0, timer = 0, sawBusy = false, viewing = -1;
   const field = name => form.elements[name];
   const model = () => models.find(m => m.id === field('model').value);
   const lock = $('#imglock'), lowVram = $('#imglowvram');
@@ -63,12 +63,18 @@ if (typeof document !== 'undefined') {
     form.querySelectorAll('[data-neg]').forEach(el => { el.hidden = !f.negative; });
     form.querySelectorAll('[data-local]').forEach(el => { el.hidden = !f.local; });
   }
+  // The presets in the orientation of `current` (portrait shows them flipped, as the desktop's swap).
+  function drawAspects(current) {
+    field('aspect').replaceChildren(...aspectOptions(aspects, current).map(([v, label]) => h('option', { value: v }, label)));
+    field('aspect').value = current;
+  }
   function relock() {
     const height = lock.classList.contains('on') ? null : lockedHeight(field('aspect').value, +field('width').value, model()?.multiple);
     if (height) field('height').value = height;
   }
   function fill(s) {
     const f = settingsToForm(s);
+    drawAspects(f.aspect);
     for (const k of ['model', 'prompt', 'negative', 'steps', 'cfg', 'aspect', 'width', 'height', 'count', 'seed']) field(k).value = f[k];
     lock.classList.toggle('on', f.unlocked); // on: unlocked, any size as typed
     lowVram.classList.toggle('on', f.lowVram);
@@ -97,7 +103,7 @@ if (typeof document !== 'undefined') {
     if (!all) return drawGallery();
     field('model').replaceChildren(...groupModels(models).map(([label, ms]) =>
       h('optgroup', { label }, ms.map(m => h('option', { value: m.id }, m.name + (m.note ? ` (${m.note})` : ''))))));
-    field('aspect').replaceChildren(...(r.aspects || []).map(a => typeof a === 'string' ? h('option', { value: a }, a) : h('option', { value: a.ratio }, a.name || a.ratio))); // {name, ratio} from the server
+    aspects = r.aspects || []; // {name, ratio} from the server
     field('count').replaceChildren(...Array.from({ length: maxBatch }, (_, i) => h('option', { value: i + 1 }, i + 1)));
     fill(r.settings || {});
     drawGallery();
@@ -207,6 +213,11 @@ if (typeof document !== 'undefined') {
         relock();
       });
       field('aspect').addEventListener('change', relock);
+      $('#imgswap').addEventListener('click', () => {
+        drawAspects(flipRatio(field('aspect').value));
+        [field('width').value, field('height').value] = [field('height').value, field('width').value];
+        relock();
+      });
       field('width').addEventListener('input', relock);
       lock.addEventListener('click', () => { lock.classList.toggle('on'); relock(); });
       lowVram.addEventListener('click', () => lowVram.classList.toggle('on'));

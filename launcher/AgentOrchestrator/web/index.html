@@ -259,10 +259,10 @@
                 <label class="field" data-neg>Negative prompt<textarea name="negative" rows="2" placeholder="What to leave out"></textarea></label>
                 <div class="fields">
                   <label class="span">Model<select name="model"></select></label>
-                  <label>Aspect ratio<select name="aspect"></select></label>
+                  <label>Aspect ratio<span class="imgsize"><select name="aspect"></select><button type="button" class="iconbtn sm" id="imgswap" aria-label="Swap portrait and landscape">↑↓</button></span></label>
                   <label>Images<select name="count"></select></label>
-                  <label data-local>Width<input name="width" inputmode="numeric"></label>
-                  <label data-local>Height<span class="imgsize"><input name="height" inputmode="numeric"><button type="button" class="iconbtn sm imglock" id="imglock" aria-label="Unlock the aspect ratio"><svg class="ic sm"><use href="#i-lock"/></svg></button></span></label>
+                  <label data-local>Width<input name="width" inputmode="numeric" list="imgsizes" autocomplete="off"></label>
+                  <label data-local>Height<span class="imgsize"><input name="height" inputmode="numeric" list="imgsizes" autocomplete="off"><button type="button" class="iconbtn sm imglock" id="imglock" aria-label="Unlock the aspect ratio"><svg class="ic sm"><use href="#i-lock"/></svg></button></span></label>
                   <label data-local>Steps<input name="steps" inputmode="numeric"></label>
                   <label data-local>Guidance<input name="cfg" inputmode="decimal"></label>
                   <label class="span" data-local>Seed<input name="seed" inputmode="numeric" placeholder="Empty: random"></label>
@@ -507,12 +507,12 @@
         <p class="secthead">IMAGE GEN</p>
         <div class="fields">
           <label class="span">Model<select id="imgmodel"></select></label>
-          <label>Aspect<select id="imgaspect"></select></label>
+          <label>Aspect<span class="imgsize"><select id="imgaspect"></select><button type="button" class="iconbtn sm" id="cimgswap" aria-label="Swap portrait and landscape">↑↓</button></span></label>
           <label>Steps<input id="imgsteps" type="number" inputmode="numeric" min="0" max="100" placeholder="Model's own"></label>
-          <label>Width<input id="imgwidth" type="number" inputmode="numeric" min="0"></label>
-          <label>Height<input id="imgheight" type="number" inputmode="numeric" min="0"></label>
+          <label>Width<input id="imgwidth" inputmode="numeric" list="imgsizes" autocomplete="off"></label>
+          <label>Height<input id="imgheight" inputmode="numeric" list="imgsizes" autocomplete="off"></label>
         </div>
-        <div class="chips"><button class="chip" id="imglock"><svg class="ic sm"><use href="#i-lock"/></svg> Lock to the ratio</button><small class="muted" id="imgsize"></small></div>
+        <div class="chips"><button class="chip" id="cimglock"><svg class="ic sm"><use href="#i-lock"/></svg> Lock to the ratio</button><small class="muted" id="imgsize"></small></div>
         <p class="secthead">EFFORT</p>
         <div class="seg wide" id="effortseg"></div>
         <p class="secthead">SEND TO</p>
@@ -777,5 +777,6 @@
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4.5 7h15M9 7V5h6v2M6.5 7l1 12h9l1-12"/></symbol>
 </svg>
 
+  <datalist id="imgsizes"><option value="512"><option value="576"><option value="640"><option value="704"><option value="768"><option value="832"><option value="896"><option value="960"><option value="1024"><option value="1152"><option value="1280"><option value="1344"><option value="1536"><option value="1792"><option value="2048"></datalist>
 </body>
 </html>

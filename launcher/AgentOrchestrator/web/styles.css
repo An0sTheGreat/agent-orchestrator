@@ -807,6 +807,7 @@ html { background-color: #1E1E1E; }
 
 /* ============================== phone app: Images ============================== */
 .imgsize { display: flex; align-items: center; gap: 4px; }
+.imgsize > select, .imgsize > input { flex: 1; min-width: 0; }
 .imglock { margin-top: 4px; color: var(--accent-light); }
 .imglock.on { color: var(--muted); opacity: .6; } /* on: unlocked, any size as typed */
 #imgform .sysprompt { background: var(--field); margin: 0 0 10px; }

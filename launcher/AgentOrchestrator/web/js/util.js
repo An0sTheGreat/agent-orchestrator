@@ -56,3 +56,16 @@ export function ago(when, now = new Date()) {
   if (days < 14) return 'last week';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
+
+// Aspect ratios ("3:2"): flipped is "2:3"; portrait when the first number is the smaller. "Custom" and "" stay as they are.
+export const flipRatio = r => /^\d+:\d+$/.test(r || '') ? r.split(':').reverse().join(':') : r;
+export const isPortrait = r => { const m = /^(\d+):(\d+)$/.exec(r || ''); return !!m && +m[1] < +m[2]; };
+// The aspect presets ({name, ratio}) as [value, label] in the orientation of `current`: the desktop's ↑↓ swap shows them
+// flipped for portrait ("2:3 Photo"), which is how portrait sizes are picked.
+export function aspectOptions(aspects, current) {
+  const flip = isPortrait(current);
+  return (aspects || []).map(a => {
+    const r = typeof a === 'string' ? a : a.ratio, ratio = flip ? flipRatio(r) : r, name = typeof a === 'string' ? '' : a.name;
+    return [ratio, ratio === 'Custom' ? 'Custom' : ratio + (name ? ' ' + name : '')]; // the ratio first: a narrow select still shows it
+  });
+}

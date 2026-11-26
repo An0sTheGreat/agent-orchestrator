@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sizeBody, sizeBoxes, slashMatches, sendPayload } from '../js/composer.js';
+import { sizeBody, sizeBoxes, slashMatches, sendPayload, swapBody } from '../js/composer.js';
 
 test('a size edit posts only the field that changed', () => {
   assert.deepEqual(sizeBody('height', '720'), { imageGen: { height: 720 } });
@@ -52,4 +52,9 @@ test('the send payload: a new chat sends id "", the text trimmed, the uploaded p
 test('nothing to send: no payload', () => {
   assert.equal(sendPayload('abc', '   ', []), null);
   assert.deepEqual(sendPayload('abc', '', ['C:\\p\\a.png']), { id: 'abc', text: '', attachments: ['C:\\p\\a.png'] });
+});
+
+test('the swap flips the ratio and swaps the typed boxes (empty stays empty)', () => {
+  assert.deepEqual(swapBody({ aspect: '3:2', width: 1024, height: 0 }), { imageGen: { aspect: '2:3', width: 0, height: 1024 } });
+  assert.deepEqual(swapBody({ aspect: '9:16', width: 576, height: 1024 }), { imageGen: { aspect: '16:9', width: 1024, height: 576 } });
 });

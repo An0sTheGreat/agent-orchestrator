@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ago, makeRouter, longPress, keyboardBox } from '../js/util.js';
+import { ago, makeRouter, longPress, keyboardBox, flipRatio, isPortrait, aspectOptions } from '../js/util.js';
 
 test('keyboardBox: the visual viewport while the keyboard is up, null while it is down or missing', () => {
   assert.deepEqual(keyboardBox({ height: 420, offsetTop: 250 }, 844), { height: 420, top: 250 });
@@ -114,4 +114,12 @@ test('times read like the concept: min ago, yesterday, days ago, last week', () 
   assert.equal(ago(new Date(2026, 10, 23, 8, 0), now), '2 days ago');
   assert.equal(ago(new Date(2026, 10, 16, 8, 0), now), 'last week');
   assert.equal(ago('2026-10-01T08:00:00', now), 'Oct 1');
+});
+
+test('aspect ratios: flip, portrait, and the presets shown in the current orientation', () => {
+  assert.equal(flipRatio('3:2'), '2:3'); assert.equal(flipRatio('Custom'), 'Custom'); assert.equal(flipRatio(''), '');
+  assert.equal(isPortrait('2:3'), true); assert.equal(isPortrait('3:2'), false); assert.equal(isPortrait('1:1'), false); assert.equal(isPortrait('Custom'), false);
+  const presets = [{ name: 'Custom', ratio: 'Custom' }, { name: 'Square', ratio: '1:1' }, { name: '', ratio: '5:4' }, { name: 'Photo', ratio: '3:2' }];
+  assert.deepEqual(aspectOptions(presets, '3:2'), [['Custom', 'Custom'], ['1:1', '1:1 Square'], ['5:4', '5:4'], ['3:2', '3:2 Photo']]);
+  assert.deepEqual(aspectOptions(presets, '2:3'), [['Custom', 'Custom'], ['1:1', '1:1 Square'], ['4:5', '4:5'], ['2:3', '2:3 Photo']]);
 });

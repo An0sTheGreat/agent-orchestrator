@@ -3,6 +3,7 @@
 // sizeBody, sizeBoxes, slashMatches and sendPayload are pure (Node tests them); the DOM part loads only in a page.
 import { api } from './api.js';
 import { h, icon } from './h.js';
+import { aspectOptions, flipRatio } from './util.js';
 
 /* ---------- pure ---------- */
 // The app's commands the / list offers besides the skills (the PC takes /compact from the phone).
@@ -17,6 +18,9 @@ export function slashMatches(text, skills) {
   return [...skills.map(s => ({ name: s.name, help: s.description || (s.on ? 'Skill, on for this turn' : 'Skill'), insert: '$' + s.name + ' ' })), ...COMMANDS]
     .filter(r => r.name.toLowerCase().startsWith(q));
 }
+
+// The ↑↓ swap: the ratio flipped (portrait ⇄ landscape) and the typed boxes swapped.
+export const swapBody = g => ({ imageGen: { aspect: flipRatio(g.aspect), width: g.height > 0 ? g.height : 0, height: g.width > 0 ? g.width : 0 } });
 
 // An edited size box posts that field alone (empty = 0): the server keeps the other box, so a height edit is never lost
 // to an echoed effective width.
@@ -69,14 +73,14 @@ if (typeof document !== 'undefined') {
       h('button', { class: s.on ? 'chip on' : 'chip', onclick: () => set({ skills: [{ name: s.name, on: !s.on }] }) }, icon('layers', 'ic sm'), ' ' + s.name)));
     const g = o.imageGen, b = sizeBoxes(g);
     options($('#imgmodel'), g.models.map(m => [m.id, m.note ? `${m.name} · ${m.note}` : m.name]), g.model, 'Pick a model');
-    options($('#imgaspect'), g.aspects.map(a => [a.ratio, a.ratio === 'Custom' ? 'Custom' : `${a.name} ${a.ratio}`]), g.aspect, 'Square 1:1');
+    options($('#imgaspect'), aspectOptions(g.aspects, g.aspect), g.aspect, 'Square 1:1');
     for (const k of ['width', 'height']) {
       const el = $('#img' + k);
       el.placeholder = k === 'width' ? b.hintWidth : b.hintHeight;
       if (document.activeElement !== el) el.value = b[k];
     }
     if (document.activeElement !== $('#imgsteps')) $('#imgsteps').value = g.steps > 0 ? g.steps : '';
-    $('#imglock').classList.toggle('on', !g.unlocked);
+    $('#cimglock').classList.toggle('on', !g.unlocked);
     $('#imgsize').textContent = g.size ? 'Makes ' + g.size : 'No image model ready';
   }
 
@@ -141,7 +145,8 @@ if (typeof document !== 'undefined') {
   $('#imgwidth').addEventListener('change', e => set(sizeBody('width', e.target.value)));
   $('#imgheight').addEventListener('change', e => set(sizeBody('height', e.target.value)));
   $('#imgsteps').addEventListener('change', e => set({ imageGen: { steps: parseInt(e.target.value, 10) || 0 } }));
-  $('#imglock').addEventListener('click', () => opts && set({ imageGen: { unlocked: !opts.imageGen.unlocked } }));
+  $('#cimglock').addEventListener('click', () => opts && set({ imageGen: { unlocked: !opts.imageGen.unlocked } }));
+  $('#cimgswap').addEventListener('click', () => opts && set(swapBody(opts.imageGen)));
   $('#photobtn').addEventListener('click', () => { closeOverlays(); picker.click(); });
   picker.addEventListener('change', () => { upload([...picker.files]); picker.value = ''; });
   // A PC switch (main.js usePc): the options and the uploaded photos belong to the old PC.
