@@ -114,6 +114,8 @@ test('the stream watchdog reopens a connection with no frame for 45 s; open and 
     made[0].onopen();
     mock.timers.tick(30000);
     made[0].onmessage({ data: '{"e":"state"}' });
+    mock.timers.tick(30000);
+    made[0].onmessage({ data: '{"e":"ping"}' }); // the server's keepalive: feeds the watchdog, never reaches onEvent
     mock.timers.tick(44999);
     assert.equal(made.length, 1);
     assert.equal(made[0].closed, false);

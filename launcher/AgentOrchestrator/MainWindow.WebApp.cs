@@ -815,7 +815,7 @@ public partial class MainWindow
                 var data = new byte[size + 2];
                 await _stream.ReadExactlyAsync(data, deadline);
                 var text = System.Text.Encoding.UTF8.GetString(data, 0, size);
-                if (text == ": keepalive\n\n")
+                if (text == WebServer.PingFrame)
                 {
                     KeepAlives++;
                     continue;

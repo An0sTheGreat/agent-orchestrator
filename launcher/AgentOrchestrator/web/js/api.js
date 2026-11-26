@@ -77,7 +77,7 @@ export const api = {
   // Live events for a conversation; reconnects with a 1 to 15 s backoff (each connection starts with the server's hello). Returns stop().
   // onDrop(n): the n-th failure in a row (EventSource cannot tell a 403/404 from a drop; the caller can ask the API).
   // Watchdog: a connection with no frame for WATCHDOG ms (half-open after a network switch) is dropped and reopened. EventSource
-  // does not surface the server's keepalive comments, so only open and messages count: a quiet chat reconnects every 45 s.
+  // hides SSE comments, so the server's keepalive is a {"e":"ping"} event (every 15 s): it feeds the watchdog and goes no further.
   events(id, onEvent, onDrop) {
     let es, timer, dog, wait = 1000, stopped = false, drops = 0;
     const drop = () => {
@@ -90,7 +90,7 @@ export const api = {
       es = new EventSource(api.base + '/api/conversation/' + encodeURIComponent(id) + '/events');
       fed();
       es.onopen = () => { wait = 1000; drops = 0; fed(); };
-      es.onmessage = m => { fed(); try { onEvent(JSON.parse(m.data)); } catch { /* not JSON: skipped */ } };
+      es.onmessage = m => { fed(); try { const ev = JSON.parse(m.data); if (ev?.e !== 'ping') onEvent(ev); } catch { /* not JSON: skipped */ } };
       es.onerror = drop;
     };
     open();

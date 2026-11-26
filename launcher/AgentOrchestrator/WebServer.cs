@@ -141,7 +141,7 @@ internal sealed class WebServer
     }
 
     // Server-Sent Events: the hello, then each event as it comes, one write and flush per frame (with chunked encoding, one
-    // chunk each), and `: keepalive` after `keepAlive` without one; until the events end, the phone goes away (a write fails)
+    // chunk each), and a ping event after `keepAlive` without one; until the events end, the phone goes away (a write fails)
     // or `ct` is cancelled.
     private static async Task StreamEvents(HttpListenerResponse response, EventStream stream, TimeSpan keepAlive, CancellationToken ct)
     {
@@ -173,7 +173,8 @@ internal sealed class WebServer
         }
     }
 
-    private static readonly byte[] KeepAliveFrame = Encoding.UTF8.GetBytes(": keepalive\n\n");
+    internal const string PingFrame = "data: {\"e\":\"ping\"}\n\n"; // an event, not a comment: EventSource hides comments, and the phone's watchdog counts what it sees
+    private static readonly byte[] KeepAliveFrame = Encoding.UTF8.GetBytes(PingFrame);
 
     // The request's body; null when it is over MaxBody.
     private static async Task<byte[]?> ReadBody(HttpListenerRequest request)

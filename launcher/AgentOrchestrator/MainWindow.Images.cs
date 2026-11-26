@@ -52,8 +52,8 @@ public partial class MainWindow
         {
             e.Handled = true;
             // the set is read from the row now: pictures may have joined it since it was built
-            var row = (thumb.Parent as WrapPanel)?.Children.OfType<FrameworkElement>().Select(c => c.DataContext as string).OfType<string>().ToList();
-            ShowImage(path, row, row?.IndexOf(path) ?? -1);
+            var row = (thumb.Parent as WrapPanel)?.Children.OfType<FrameworkElement>().Where(c => c.DataContext is string).ToList();
+            ShowImage(path, row?.Select(c => (string)c.DataContext).ToList(), row?.IndexOf(thumb) ?? -1); // this copy's place, when a file is in the row twice
         };
         return thumb;
     }
