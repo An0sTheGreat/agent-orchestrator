@@ -88,6 +88,7 @@
                 <h2 class="vtitle">New chat</h2>
                 <p class="vsub"></p>
               </div>
+              <button class="iconbtn thinktoggle" data-thinking aria-label="View thinking" aria-pressed="true"><svg class="ic"><use href="#i-spark"/></svg></button>
               <button class="ctxring" id="ctxchat" data-ctx aria-label="Context used"><span>0%</span></button>
               <button class="iconbtn" data-sheet="sheet-chatmenu" aria-label="Chat menu"><svg class="ic"><use href="#i-more"/></svg></button>
             </header>
@@ -130,6 +131,7 @@
                 <span>TASK TIME <b id="taskclock">00:00:00</b></span>
                 <span>TURN <b id="turnline">00:00:00</b></span>
               </div>
+              <button class="iconbtn thinktoggle" data-thinking aria-label="View thinking" aria-pressed="true"><svg class="ic"><use href="#i-spark"/></svg></button>
               <button class="ctxring" id="ctxcode" data-ctx aria-label="Context used"><span>0%</span></button>
               <button class="iconbtn" id="starthead" aria-label="Start project"><svg class="ic"><use href="#i-play"/></svg></button>
               <button class="iconbtn" data-sheet="sheet-project" aria-label="Project menu"><svg class="ic"><use href="#i-more"/></svg></button>
@@ -712,12 +714,10 @@
               </details>
 </template>
 <template id="tpl-tool">
-              <div class="toolrow">
-                <span class="tool-tag">TOOL</span>
-                <span class="tool-name"></span>
-                <code></code>
-                <span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span>
-              </div>
+              <details class="fold toolrow">
+                <summary><span class="tool-tag">TOOL</span><span class="tool-name"></span><code></code><span class="tool-ok"><svg class="ic sm"><use href="#i-check"/></svg></span></summary>
+                <pre class="fold-body tool-out"></pre>
+              </details>
 </template>
 <template id="tpl-delegate">
               <div class="delegate">

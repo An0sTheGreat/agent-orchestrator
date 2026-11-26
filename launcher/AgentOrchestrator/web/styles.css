@@ -193,6 +193,8 @@ body.landscape .drawer { padding-top: 0; }
 .vsub { margin: 1px 0 0; font-size: 11.5px; color: var(--muted); display: flex; align-items: center; gap: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .iconbtn { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; color: var(--text); flex: none; }
 .iconbtn.sm { width: 28px; height: 28px; }
+.thinktoggle[aria-pressed="true"] { color: var(--accent-light); }
+.thinktoggle[aria-pressed="false"] { color: var(--muted); opacity: .55; }
 .iconbtn:hover { background: var(--card); }
 
 /* scroll body */
@@ -351,20 +353,20 @@ body.landscape .drawer { padding-top: 0; }
 .md th:last-child, .md td:last-child { border-right: 0; }
 
 /* collapsible thinking / tool / response rows */
-.fold { border-top: 1px solid rgba(255, 255, 255, .07); padding: 8px 0; }
-.fold summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; }
+.fold { border-top: 1px solid rgba(255, 255, 255, .07); }
+/* the whole row is the tap target: padding inside the summary, a finger-sized height */
+.fold summary { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 0; cursor: pointer; list-style: none; overflow: hidden; -webkit-tap-highlight-color: transparent; }
 .fold summary::-webkit-details-marker { display: none; }
-.fold summary::before { content: "▸"; color: var(--muted); font-size: 9px; transition: transform .15s; }
-.fold[open] summary::before { transform: rotate(90deg); }
+.fold summary::before { content: "▸"; color: var(--muted); font-size: 9px; transition: transform .15s; flex: none; }
+.fold[open] > summary::before { transform: rotate(90deg); }
 .fold-tag { font-size: 9.5px; letter-spacing: .08em; font-weight: 700; color: var(--muted); text-transform: uppercase; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; flex: none; }
 .fold-text { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fold-body { padding: 8px 0 2px 16px; }
+.fold-body { padding: 4px 0 8px 16px; }
 .fold-body.md p { font-size: 12.5px; color: var(--muted); margin: 0; }
+.fold.worked > .fold-body { padding-top: 0; }
 
-.toolrow {
-  display: flex; align-items: center; gap: 8px; padding: 7px 0;
-  border-top: 1px solid rgba(255, 255, 255, .07); font-size: 12px; overflow: hidden;
-}
+.toolrow summary { font-size: 12px; }
+.tool-out { margin: 0; font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap; word-break: break-word; max-height: 50vh; overflow: auto; }
 .tool-tag { font-size: 9.5px; letter-spacing: .08em; font-weight: 700; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; flex: none; }
 .tool-name { font-family: var(--mono); font-size: 11.5px; color: var(--text); flex: none; }
 .toolrow code { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

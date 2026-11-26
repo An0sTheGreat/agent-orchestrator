@@ -93,6 +93,27 @@ const RING = { blue: '#6EA8FF', amber: '#F7C873', red: '#FF6B6B' };
 const PARTS = [['system', 'System prompt', '#C88705'], ['tools', 'Tools', '#DD6122'], ['skills', 'Skills', '#8E8E8E'],
   ['messages', 'Messages', '#3085E2'], ['tool_results', 'Tool results', '#00A082'], ['reply', 'Reply', '#595959']];
 
+/* ---------- View thinking: pure ---------- */
+// Off (the ✦ toggle in the header, as on the desktop): each run of a reply's working steps folds into one WORKED row.
+export const isWork = p => p.t === 'thinking' || p.t === 'tool' || p.t === 'stage';
+// "2 thoughts · read 3 files · ran 1 command": a run's steps by kind (MainWindow.Thinking.cs WorkSummary).
+const TOOL_KIND = { read: 'read', read_file: 'read', search_files: 'searched', grep: 'searched', find: 'searched', list_files: 'searched',
+  ls: 'searched', edit: 'edited', replace_text: 'edited', write: 'wrote', write_file: 'wrote', run_command: 'ran', run_checks: 'ran',
+  bash: 'ran', browser: 'browser', computer: 'computer', web_search: 'web', fetch_page: 'web' };
+const N = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const SAY = { thought: n => N(n, 'thought', 'thoughts'), read: n => 'read ' + N(n, 'file', 'files'), searched: n => 'searched ' + N(n, 'time', 'times'),
+  edited: n => 'edited ' + N(n, 'file', 'files'), wrote: n => 'wrote ' + N(n, 'file', 'files'), ran: n => 'ran ' + N(n, 'command', 'commands'),
+  browser: n => 'used the browser ' + N(n, 'time', 'times'), computer: n => 'used the computer ' + N(n, 'time', 'times'),
+  web: n => 'searched the web ' + N(n, 'time', 'times'), step: n => N(n, 'other step', 'other steps') };
+export function workSummary(run) {
+  const counts = new Map();
+  for (const p of run) {
+    const k = p.t === 'tool' ? TOOL_KIND[p.name.toLowerCase()] || 'step' : 'thought'; // a stage (a worker's turn) counts as a thought
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  return [...counts].map(([k, n]) => SAY[k](n)).join(' · ') || 'working';
+}
+
 /* ---------- the chat menu: pure ---------- */
 // What the ⋯ menu needs about chat `id` from GET /api/conversations: its kind, the project it is in (null: none), whether it is
 // archived, the Archive item's label and the projects it may move to (the other projects of its kind; a project without a kind
@@ -146,6 +167,28 @@ if (typeof document !== 'undefined') {
       }));
     return el;
   };
+  let viewThinking = true;
+  try { viewThinking = localStorage.getItem('viewThinking') !== '0'; } catch {}
+  const thinkBtns = document.querySelectorAll('[data-thinking]');
+  const syncThinking = () => thinkBtns.forEach(b => b.setAttribute('aria-pressed', viewThinking));
+  syncThinking();
+  thinkBtns.forEach(b => b.addEventListener('click', () => {
+    viewThinking = !viewThinking;
+    try { localStorage.setItem('viewThinking', viewThinking ? '1' : '0'); } catch {}
+    syncThinking();
+    drawLive();
+  }));
+  // A fold's row opens on the tap's release, found again by its key: live redraws replace the reply's nodes every frame, so the
+  // node a tap went down on can be gone by its click (the browser then fires the click on neither). A scroll cancels the pointer.
+  const row = e => e.target.closest?.('.msgs details[data-key] > summary')?.parentElement;
+  let downKey = null;
+  document.addEventListener('pointerdown', e => { downKey = e.button === 0 ? row(e)?.dataset.key ?? null : null; });
+  document.addEventListener('pointerup', e => {
+    const d = row(e);
+    if (d && downKey === d.dataset.key) d.open = !d.open;
+    downKey = null;
+  });
+  document.addEventListener('click', e => { if (e.detail && row(e)) e.preventDefault(); }); // the release did it; a keyboard click (detail 0) toggles as usual
   const copyBtn = (el, text) => el.querySelector('[data-copy]').addEventListener('click', () =>
     navigator.clipboard.writeText(text).then(() => toast('Copied'), () => toast('Could not copy')));
 
@@ -198,8 +241,10 @@ if (typeof document !== 'undefined') {
     }
     if (p.t === 'tool') {
       const el = clone('tpl-tool');
+      el.dataset.key = key;
       el.querySelector('.tool-name').textContent = p.name;
       el.querySelector('code').textContent = p.args;
+      el.querySelector('.tool-out').textContent = [p.args, p.result].filter(Boolean).join('\n\n');
       el.querySelector('.tool-ok').hidden = p.result.startsWith('ERROR');
       return el;
     }
@@ -222,12 +267,32 @@ if (typeof document !== 'undefined') {
     return el;
   }
 
+  // With View thinking off, a run of working steps goes into one WORKED row, keyed by its first step (which a growing run keeps).
+  function worked(run) {
+    const el = clone('tpl-thinking'), body = el.querySelector('.fold-body');
+    el.classList.add('worked');
+    el.dataset.key = run[0][1] + 'w';
+    el.querySelector('.fold-tag').textContent = '✦ Worked';
+    el.querySelector('.fold-text').textContent = workSummary(run.map(([p]) => p));
+    body.classList.remove('md');
+    body.append(...run.map(([p, key]) => part(p, key)));
+    return el;
+  }
+
   function liveNodes() {
     const out = [];
     if (live.parts.length) {
       const el = clone('tpl-msg-reply');
       const n = {}; // a part's key: epoch, turn and place in its turn (landSaved drops whole turns from the front)
-      el.querySelector('.md').replaceWith(...live.parts.map(p => part(p, `${live.epoch}.${p.turn}.${n[p.turn] = (n[p.turn] ?? -1) + 1}`)));
+      const items = live.parts.map(p => [p, `${live.epoch}.${p.turn}.${n[p.turn] = (n[p.turn] ?? -1) + 1}`]), nodes = [];
+      for (let i = 0; i < items.length; i++) {
+        if (viewThinking || !isWork(items[i][0])) { nodes.push(part(...items[i])); continue; }
+        let j = i;
+        while (j < items.length && isWork(items[j][0])) j++;
+        nodes.push(worked(items.slice(i, j)));
+        i = j - 1;
+      }
+      el.querySelector('.md').replaceWith(...nodes);
       el.querySelector('.stamp').remove();
       out.push(el);
     }

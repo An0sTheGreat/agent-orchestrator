@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture, chatMenu, lastReply } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture, chatMenu, lastReply, workSummary, isWork } from '../js/chat.js';
 
 test('deletablePicture: a generated picture in images, not a photo in pasted, a screenshot or another URL', () => {
   const url = p => '/api/file?path=' + encodeURIComponent(p);
@@ -190,4 +190,12 @@ test("copy reply: the last reply's text, skipping the user's messages and empty 
   assert.equal(lastReply([{ role: 'assistant', text: 'a1' }, { role: 'assistant', text: '' }]), 'a1');
   assert.equal(lastReply([{ role: 'user', text: 'q' }]), '');
   assert.equal(lastReply(undefined), '');
+});
+
+test('workSummary: a run of steps by kind, as the desktop says it; isWork picks the steps', () => {
+  const tool = name => ({ t: 'tool', name, args: '', result: '' });
+  assert.equal(workSummary([{ t: 'thinking', text: 'a' }, tool('read_file'), tool('Read'), { t: 'stage', title: 'X' }, tool('bash'), tool('mystery')]),
+    '2 thoughts · read 2 files · ran 1 command · 1 other step');
+  assert.equal(workSummary([]), 'working');
+  assert.deepEqual(['text', 'thinking', 'tool', 'stage', 'image', 'picture'].map(t => isWork({ t })), [false, true, true, true, false, false]);
 });
