@@ -5974,6 +5974,7 @@ public partial class MainWindow : Window
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();
+        Speech.Shutdown(); // the recognizer, if dictation made one
         CancelImageGen();
         StopImageServer();
         StopLocalServer();
