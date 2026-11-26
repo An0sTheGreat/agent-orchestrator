@@ -16,7 +16,7 @@ namespace AgentOrchestrator;
 // Chatterbox Turbo (Resemble AI, 350M, MIT, English) in <DataRoot>\chatterbox, installed only from Settings > Voice.
 //
 // Runtime, decided 2026-11-26 on this PC (RTX 5080 16 GB, driver 617.42): the official ONNX export run in-process with ONNX
-// Runtime's DirectML provider, not a Python sidecar.
+// Runtime's DirectML provider, not a Python sidecar. The first real run (G4) put only the decoder on DirectML (Engine says why).
 //  - ONNX: Hugging Face ResembleAI/chatterbox-turbo-ONNX at revision d21799bd0354adb85e348b8a0442a8405110a2cf, the fp16
 //    graphs (speech_encoder, embed_tokens, language_model, conditional_decoder; each .onnx beside its .onnx_data) and
 //    tokenizer.json (GPT-2 byte-level BPE + 19 paralinguistic tags such as [laugh]), 1,662 MB, by HubDownloader into
@@ -163,8 +163,8 @@ internal static class Chatterbox
     public const int Rate = 24000;
     private const long StartSpeech = 6561, StopSpeech = 6562, Silence = 4299;
     private const int MaxTokens = 1000; // 25 tokens a second: 40 s, past any one sentence
-    // GPU memory the engine takes once loaded (fp16 weights 1.66 GB + DirectML working memory); measured on the 5080 (G4).
-    internal const long NeedBytes = 3L << 30;
+    // GPU memory the engine takes once loaded (the decoder: 539 MB measured on the 5080 in G4, with margin).
+    internal const long NeedBytes = 1L << 30;
     internal static TimeSpan IdleAfter = TimeSpan.FromMinutes(10);
 
     private static readonly object Gate = new();
@@ -313,10 +313,14 @@ internal static class Chatterbox
                 using var options = Options(gpu);
                 return new InferenceSession(ChatterboxRuntime.ModelFile($"onnx/{name}_fp16.onnx"), options);
             }
-            try { (_encoder, _embed, _lm, _decoder, Gpu) = (Open("speech_encoder", true), Open("embed_tokens", true), Open("language_model", true), Open("conditional_decoder", true), true); }
-            catch (Exception e) when (e is OnnxRuntimeException or EntryPointNotFoundException) // no DirectML device: the CPU, slowly
+            // Only the decoder runs on the GPU: DirectML 1.24.4 on the 5080 (G4) rejects the speech encoder's MultiHeadAttention and
+            // embed_tokens' Slice for a lone speech token ("The parameter is incorrect"), and its GroupQueryAttention with a past
+            // computes wrong tokens (no stop token, 290 for five words), so the language model runs on the CPU (~42 ms a token).
+            (_encoder, _embed, _lm) = (Open("speech_encoder", false), Open("embed_tokens", false), Open("language_model", false));
+            try { (_decoder, Gpu) = (Open("conditional_decoder", true), true); }
+            catch (Exception e) when (e is OnnxRuntimeException or EntryPointNotFoundException) // no DirectML device: the CPU
             {
-                (_encoder, _embed, _lm, _decoder, Gpu) = (Open("speech_encoder", false), Open("embed_tokens", false), Open("language_model", false), Open("conditional_decoder", false), false);
+                (_decoder, Gpu) = (Open("conditional_decoder", false), false);
             }
         }
 
@@ -511,7 +515,7 @@ internal static class Chatterbox
         WriteWav(wav, samples);
         var peak = samples.Length == 0 ? 0 : samples.Max(Math.Abs);
         var seconds = samples.Length / (double)Rate;
-        Console.Error.WriteLine($"{voice.Name}: {(Slot.Value?.Gpu == true ? "GPU (DirectML)" : "CPU")}, {seconds:0.00} s of audio, first sentence in {first:0.00} s (incl. load), all in {made:0.00} s, " +
+        Console.Error.WriteLine($"{voice.Name}: {(Slot.Value?.Gpu == true ? "decoder on the GPU (DirectML)" : "CPU")}, {seconds:0.00} s of audio, first sentence in {first:0.00} s (incl. load), all in {made:0.00} s, " +
             $"RTF {made / Math.Max(seconds, 0.01):0.00}, peak {peak:0.000}, GPU memory taken {((before ?? 0) - (after ?? 0)) >> 20} MB");
         clock.Restart();
         Synthesize("Warm run.", voice, CancellationToken.None);
@@ -554,7 +558,7 @@ internal static class Chatterbox
 
         // the VRAM decision: loaded or unknown fits; less than NeedBytes free does not
         Check(WontFit(null, false) is null && WontFit(1L << 30, true) is null && WontFit(NeedBytes, false) is null, "fits");
-        Check(WontFit((2L << 30) + (1L << 29), false) is { } why && why.Contains("2.5 GB") && why.Contains("3 GB"), "won't fit");
+        Check(WontFit(1L << 29, false) is { } why && why.Contains("0.5 GB") && why.Contains("1 GB"), "won't fit");
 
         // the idle unload: made on first Get, the same one while used, freed after the idle time, made again after
         var made = 0;
