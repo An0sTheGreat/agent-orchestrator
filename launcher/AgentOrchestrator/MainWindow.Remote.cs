@@ -27,8 +27,9 @@ public partial class MainWindow
         bool Mirrored = false);
     private RemotePrompt? _remotePrompt;
 
-    // The remote prompt for conversation `id`, while nothing is open on top of it.
-    private RemotePrompt? PromptFor(string id) => _remotePrompt is { } p && p.Conversation == id && !Disabled(p.Dialog) ? p : null;
+    // The remote prompt for conversation `id`, while nothing is open on top of it. A PC popup raised while no turn runs (mirrored
+    // under "", only while the phone app is on) belongs to every conversation, so the phone sees and answers it wherever it is.
+    private RemotePrompt? PromptFor(string id) => _remotePrompt is { } p && (p.Conversation == id || p.Conversation == "") && !Disabled(p.Dialog) ? p : null;
 
     // A popup the remote page cannot answer (or a mirrored one) is open at the PC: a remote action now would run inside its dialog loop.
     private bool DesktopDialogOpen() => _remotePrompt is { Mirrored: false } p ? Disabled(p.Dialog)

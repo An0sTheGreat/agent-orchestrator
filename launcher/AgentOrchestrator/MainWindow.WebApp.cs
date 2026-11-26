@@ -63,8 +63,15 @@ public partial class MainWindow
     }
 
     // On the UI thread, so the hello's reply and the deltas after it never overlap nor leave a gap (DrainLines publishes there too).
+    // The PC's window follows the phone: the conversation opens there as RemoteSend opens it (never shown, restored or activated);
+    // not under a PC popup, and a refusal (a run is using the models) still streams: the phone just watches.
     private (int, object) WebEventsOpen(string id)
     {
+        if (_store.Get(id) is { } saved && !WebPromptOpen())
+            if (saved.Kind == "chat")
+                OpenChatConversation(id);
+            else
+                OpenCodeConversation(id);
         if (ConversationNow(id) is not (_, var busy, _, var queued, var prompt, var reply))
             return (404, new { error = "No such conversation" });
         _webStates.TryAdd(id, WebState(busy, queued, prompt));
@@ -290,6 +297,7 @@ public partial class MainWindow
             ("GET", "/api/hello") => (200, WebHello()),
             ("GET", "/api/pcs") => (200, await WebPcs()),
             ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
+            ("GET", one + "events") => WebNotFound, // no id: the events route below would slice past it
             ("GET", _) when path.StartsWith(one) && path.EndsWith("/events") => await Dispatcher.InvokeAsync(() => WebEventsOpen(path[one.Length..^"/events".Length])),
             ("POST", "/api/answer") => await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body))),
             ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : RemoteAct(method, path, WebBody(body)))),
@@ -774,13 +782,14 @@ public partial class MainWindow
         public int KeepAlives;
         public static readonly TimeSpan Within = TimeSpan.FromSeconds(10); // every read's deadline: keepalives never extend it
 
-        public static async Task<SseClient> Open(int port, string path, string? login = "smoke@example.com", string? site = null)
+        // `post`: a POST instead, whose Content-Length promises more than `post`, all it sends (WebApiSmoke: a body never read).
+        public static async Task<SseClient> Open(int port, string path, string? login = "smoke@example.com", string? site = null, string? post = null)
         {
             var c = new SseClient();
             await c._tcp.ConnectAsync(System.Net.IPAddress.Loopback, port);
             c._stream = c._tcp.GetStream();
-            var request = $"GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n" + (login is null ? "" : $"Tailscale-User-Login: {login}\r\n") +
-                (site is null ? "" : $"Sec-Fetch-Site: {site}\r\n") + "\r\n";
+            var request = $"{(post is null ? "GET" : "POST")} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n" + (login is null ? "" : $"Tailscale-User-Login: {login}\r\n") +
+                (site is null ? "" : $"Sec-Fetch-Site: {site}\r\n") + (post is null ? "" : $"Content-Type: application/json\r\nContent-Length: {post.Length + 1000}\r\n") + "\r\n" + post;
             await c._stream.WriteAsync(System.Text.Encoding.ASCII.GetBytes(request));
             using var deadline = new CancellationTokenSource(Within);
             for (string line; (line = await c.Line(deadline.Token)).Length > 0;)
@@ -953,6 +962,9 @@ public partial class MainWindow
             }
             if ((await http.GetAsync($"http://127.0.0.1:{port}/api/conversation/none/events")).StatusCode != System.Net.HttpStatusCode.NotFound)
                 return Fail("an unknown conversation's events");
+            using (var noId = await http.GetAsync($"http://127.0.0.1:{port}/api/conversation/events"))
+                if (noId.StatusCode != System.Net.HttpStatusCode.NotFound || JsonNode.Parse(await noId.Content.ReadAsStringAsync())?["error"]?.ToString() != "Not found")
+                    return Fail($"events without an id: {(int)noId.StatusCode}");
             foreach (var s in streams)
                 s.Dispose();
             if (!await Until(() => _webEvents.Count == 0))
@@ -1018,7 +1030,7 @@ public partial class MainWindow
         }
         Task<(int Status, JsonNode? Body)> PostJson(string path, object body) => Post(path, new StringContent(JsonSerializer.Serialize(body), System.Text.Encoding.UTF8, "application/json"));
         var placeholder = !File.Exists(LauncherLogic.LlamaServerPath); // a turn needs the runtime there; the stand-in engine never runs it
-        string? created = null;
+        string? created = null, watchedId = null;
         try
         {
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet) = (engine, "", null, (_, _) => { }, true);
@@ -1053,6 +1065,14 @@ public partial class MainWindow
                 return Fail($"the saved turn: {JsonSerializer.Serialize(_store.Get(id)?.Messages)}");
             if (IsVisible)
                 return Fail("a send showed the hidden window");
+            // the phone opens another saved chat's stream: the window opens that chat too, and stays hidden
+            if (_store.Create("", "chat") is not { } watched)
+                return Fail("no chat to watch");
+            _store.Save(watched);
+            watchedId = watched.Id;
+            using (var stream = await SseClient.Open(port, $"/api/conversation/{watchedId}/events"))
+                if (!stream.Head.StartsWith("HTTP/1.1 200") || _chatConv?.Id != watchedId || IsVisible)
+                    return Fail($"the phone opened a chat's stream: {stream.Head.Split('\r')[0]}, open chat {_chatConv?.Id} (not {watchedId}), visible {IsVisible}");
 
             (ShowActivated, WindowState) = (false, WindowState.Minimized);
             Show();
@@ -1138,6 +1158,17 @@ public partial class MainWindow
             if (during is not (409, { } d) || d["error"]?.ToString() != "DialogOpen")
                 return Fail($"send while a dialog was open: {during.Status} {during.Body?.ToJsonString()}");
 
+            // a PC popup while no turn runs: any conversation shows it, and the phone's answer with its nonce resolves it
+            var noTurn = Dispatcher.InvokeAsync(() => Choose("Folder access", "What may the worker do in C:\\elsewhere?", ("Read only", "read"), ("Full edit access", "write")));
+            if (!await Until(() => _remotePrompt is not null))
+                return Fail("the popup outside a turn did not open");
+            var idlePrompt = JsonNode.Parse(await http.GetStringAsync($"http://127.0.0.1:{port}/api/conversation/{id}"))?["prompt"];
+            if (idlePrompt?["title"]?.ToString() != "Folder access" || idlePrompt["nonce"]?.ToString() is not { Length: > 0 } idleNonce)
+                return Fail($"the popup outside a turn is not the conversation's prompt: {idlePrompt?.ToJsonString()}");
+            if (await PostJson("/api/answer", new { id, choice = "write", nonce = idleNonce }) is not (200, _) ||
+                await Task.WhenAny(noTurn.Task, Task.Delay(5000)) != noTurn.Task || noTurn.Result != "write")
+                return Fail("the phone's answer did not resolve the popup outside a turn");
+
             // a popup tied to the conversation (as the sandbox's command approval): send and stop still wait for it
             var bound = Dispatcher.InvokeAsync(() => Choose(remote: id, "Run this command?", "git status", ("Allow", "allow"), ("Deny", "deny")));
             if (!await Until(() => _remotePrompt is not null))
@@ -1163,6 +1194,8 @@ public partial class MainWindow
                 File.Delete(LauncherLogic.LlamaServerPath);
             if (created is not null)
                 _store.Delete(created);
+            if (watchedId is not null)
+                _store.Delete(watchedId);
             (_workflowRoot, _projectPath, _codeChoice, _notifyHook, _dialogsQuiet, _settings.UseSearch) = (root, project, choice, notify, quiet, search);
             (_settings.ShareHost, _imageSharedFetch, _imageShared, _settings.ChatImage) = (shareHost, sharedFetch, null, JsonSerializer.Deserialize<ImageSettings>(chatImage)!);
             _settings.Save();
@@ -1185,9 +1218,9 @@ public partial class MainWindow
         static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: api: {what}"); return false; }
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         async Task<(int Status, System.Net.Http.Headers.HttpResponseHeaders Headers, string Type, byte[] Body)> Fetch(string path, string? login = "smoke@example.com", string? origin = null,
-            HttpMethod? method = null)
+            HttpMethod? method = null, HttpContent? content = null)
         {
-            using var request = new HttpRequestMessage(method ?? HttpMethod.Get, $"http://127.0.0.1:{port}{path}");
+            using var request = new HttpRequestMessage(method ?? HttpMethod.Get, $"http://127.0.0.1:{port}{path}") { Content = content };
             if (login is not null)
                 request.Headers.Add("Tailscale-User-Login", login);
             if (origin is not null)
@@ -1222,6 +1255,18 @@ public partial class MainWindow
             foreach (var route in new[] { "/api/hello", "/api/pcs", "/api/conversations", "/api/conversation/" + chat.Id, File(picture), "/" })
                 if ((await Fetch(route, null)).Status != 403 || (await Fetch(route, "other@example.com")).Status != 403)
                     return Fail($"{route} without the owner's login was not refused");
+            foreach (var login in new[] { null, "other@example.com" })
+                if (await Fetch("/api/send", login, method: HttpMethod.Post, content: new StringContent("""{"id":"","text":"hi"}""", System.Text.Encoding.UTF8, "application/json")) is not { Status: 403 } foreign ||
+                    System.Text.Encoding.UTF8.GetString(foreign.Body) != """{"error":"SignedOut"}""")
+                    return Fail($"{login}'s POST with a body was not refused as signed out");
+            // its body is never read: a request whose body never arrives is still answered (SseClient's head deadline)
+            try
+            {
+                using var unread = await SseClient.Open(port, "/api/send", "other@example.com", post: "{");
+                if (!unread.Head.StartsWith("HTTP/1.1 403"))
+                    return Fail($"a non-owner's unfinished POST: {unread.Head.Split('\r')[0]}");
+            }
+            catch (OperationCanceledException) { return Fail("a non-owner's body was read before the identity check"); }
 
             if (await Json("/api/hello") is not { } hello || $"{hello["pc"]}|{hello["dnsName"]}|{hello["user"]}" != $"{Environment.MachineName}|home.tail0000.ts.net|smoke@example.com" ||
                 hello["version"] is null || $"{hello["shell"]}" != WebServer.Shell || $"{hello["shell"]}" == $"{hello["version"]}")

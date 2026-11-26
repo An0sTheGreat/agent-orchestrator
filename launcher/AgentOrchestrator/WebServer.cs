@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
@@ -116,8 +116,10 @@ internal sealed class WebServer
                 return;
             }
             var query = request.QueryString.AllKeys.OfType<string>().ToDictionary(k => k, k => request.QueryString[k] ?? "");
-            var body = path.StartsWith("/api/") ? await ReadBody(request) : [];
-            var r = await Handle(request.HttpMethod, path, request.Headers["Tailscale-User-Login"] ?? DevLogin, query, body, request.ContentType ?? "",
+            // identity first: a non-owner's body is never read (Handle answers it 403 without one)
+            var login = request.Headers["Tailscale-User-Login"] ?? DevLogin;
+            var body = path.StartsWith("/api/") && IsOwner(login, _owner()) ? await ReadBody(request) : [];
+            var r = await Handle(request.HttpMethod, path, login, query, body, request.ContentType ?? "",
                 request.Headers["Origin"], request.Headers["Sec-Fetch-Site"], request.Headers["Host"], request.Headers["X-File-Name"], request.Headers["Accept"]);
             if (r is EventStream stream)
             {
