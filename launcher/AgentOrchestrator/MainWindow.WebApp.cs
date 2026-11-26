@@ -316,6 +316,9 @@ public partial class MainWindow
             ("POST", "/api/images/unqueue") => await Dispatcher.InvokeAsync(() => WebImagesUnqueue(WebBody(body))),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
             ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
+            ("GET", "/api/settings") => (200, await Dispatcher.InvokeAsync(WebSettings)),
+            ("POST", "/api/settings") => await Dispatcher.InvokeAsync(() => WebSettingsSet(WebBody(body))),
+            ("POST", "/api/settings/reset-stats") => await Dispatcher.InvokeAsync(WebResetStats),
             _ => WebNotFound,
         };
     }
@@ -678,7 +681,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes

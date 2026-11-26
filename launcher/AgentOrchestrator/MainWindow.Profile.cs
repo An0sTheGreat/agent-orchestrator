@@ -302,6 +302,12 @@ public partial class MainWindow
     {
         if (SidebarAsk("Reset usage stats", "Set lifetime tokens, peak tokens, longest task and streaks back to zero? This can't be undone.", "Reset") is null)
             return;
+        ResetStats();
+    }
+
+    // Lifetime tokens, peak tokens, longest task and streaks back to zero (Reset usage stats, and the phone app's).
+    private void ResetStats()
+    {
         _stats.Lifetime = 0;
         _stats.Daily.Clear();
         _stats.LongestTaskSeconds = 0;

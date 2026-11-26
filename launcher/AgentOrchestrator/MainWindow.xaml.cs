@@ -5896,8 +5896,13 @@ public partial class MainWindow : Window
 
     private void AccentItem_Click(object sender, RoutedEventArgs e)
     {
-        if (sender is not MenuItem { Tag: string key })
-            return;
+        if (sender is MenuItem { Tag: string key })
+            SetAccent(key);
+    }
+
+    // The accent for the current theme (the menu, and the phone app's Settings).
+    private void SetAccent(string key)
+    {
         _settings.ThemeAccents[_settings.Theme] = key;
         ApplyTheme(); // the surfaces carry a tint of the accent too
         _settings.Save();
