@@ -122,17 +122,21 @@ public partial class MainWindow
         {
             foreach (var samples in queue.GetConsumingEnumerable())
             {
-                if (_callNow != CallState.Listening) // read off the UI thread: a stale read costs one 50 ms buffer
+                // read off the UI thread: a stale read costs one 50 ms buffer. Interrupt by talking listens over the speech too.
+                var over = _callNow == CallState.Speaking && _settings.Tts.CallBargeIn;
+                if (_callNow != CallState.Listening && !over)
                 {
                     Drop();
                     continue;
                 }
-                CallLevelsOf(samples, Speech.Rate, speaking: false);
+                if (!over) // the voice's own levels show while it speaks
+                    CallLevelsOf(samples, Speech.Rate, speaking: false);
                 if (session is null)
                 {
                     var made = session = _dictationTranscribe is null ? new DictationSession(transcribe) : new DictationSession(transcribe, vad: false);
                     made.Text += phrase => Dispatcher.BeginInvoke(() => CallPhrase(phrase));
                     made.Ended += _ => { if (session == made) session = null; }; // on this thread, inside Feed
+                    made.Heard += () => Dispatcher.BeginInvoke(() => { if (_callNow == CallState.Speaking && _settings.Tts.CallBargeIn) InterruptCall(); });
                 }
                 session.Feed(samples);
             }

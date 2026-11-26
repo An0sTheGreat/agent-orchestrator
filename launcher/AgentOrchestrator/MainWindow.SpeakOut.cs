@@ -189,6 +189,8 @@ public partial class MainWindow
             }
         };
         p.Children.Add(Row("Speaker", device));
+        p.Children.Add(Row("Interrupt by talking (use headphones)", Toggle(t.CallBargeIn, on => { t.CallBargeIn = on; Save(); })));
+        p.Children.Add(Note("In a call the microphone stays on while the reply is spoken, and your voice stops it. Off: Space, Esc or a click on the call's circle interrupts."));
 
         p.Children.Add(Heading("What gets read"));
         p.Children.Add(Row("Skip code blocks", Toggle(t.SkipCode, on => { t.SkipCode = on; Save(); })));

@@ -205,6 +205,7 @@ internal sealed class TtsSettings
     public int MaxChars { get => _maxChars; set => _maxChars = Math.Clamp(value, 100, 100_000); } // a hand-edited file too
     private int _maxChars = 4000;
     public bool AutoRead { get; set; }
+    public bool CallBargeIn { get; set; } // a call keeps listening while the model speaks, and the user's voice stops it (headphones)
     public Dictionary<string, string> WorkerVoices { get; set; } = new();
 }
 

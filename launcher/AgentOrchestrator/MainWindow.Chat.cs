@@ -652,6 +652,7 @@ public partial class MainWindow
 
     private void NewChat_Click(object sender, RoutedEventArgs e)
     {
+        EndCall(); // another conversation: the call's chat is left as saved
         if (ChatTurnShown)
             ParkChatTurn();
         ShowView(chat: true);
@@ -717,6 +718,8 @@ public partial class MainWindow
     private void OpenChatConversation(string id)
     {
         _newReplies.Remove(id); // its new reply is seen
+        if (_chatConv?.Id != id)
+            EndCall(); // another conversation: the call's chat is left as saved
         if (_parked is not null && _parkedConv?.Id == id)
         {
             Unqueue(_chat); // queued for the chat being left: back to the input, not sent into this one

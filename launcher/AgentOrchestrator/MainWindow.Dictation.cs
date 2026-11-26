@@ -214,6 +214,17 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
+    // The microphone failed while open: dictation stops, a call ends.
+    private void MicrophoneStopped(WaveInEvent mic, Exception exception)
+    {
+        Log($"Dictation: the microphone stopped: {exception.Message}");
+        Toast("The microphone stopped", "#FF667A");
+        if (_dictationMic == mic)
+            StopDictation();
+        if (_callMic == mic)
+            EndCall();
+    }
+
     // 16 kHz mono 16-bit (the Windows default device converts any rate itself); a picked device that refuses it records at 48 or
     // 44.1 kHz, resampled. Buffers of 50 ms: the meter moves about 20 times a second. Throws MmException when nothing opens.
     private WaveInEvent OpenMicrophone(Action<float[]> feed)
@@ -233,13 +244,7 @@ public partial class MainWindow
             mic.RecordingStopped += (_, a) =>
             {
                 if (a.Exception is { } exception) // unplugged, or access withdrawn while listening
-                    Dispatcher.BeginInvoke(() =>
-                    {
-                        Log($"Dictation: the microphone stopped: {exception.Message}");
-                        Toast("The microphone stopped", "#FF667A");
-                        if (_dictationMic == mic)
-                            StopDictation();
-                    });
+                    Dispatcher.BeginInvoke(() => MicrophoneStopped(mic, exception));
             };
             try
             {

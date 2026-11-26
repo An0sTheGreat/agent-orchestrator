@@ -616,6 +616,44 @@
                 </Setter.Value>
             </Setter>
         </Style>
+        <!-- The sidebar's call button (MainWindow.CallUi.cs): the theme's control radius, a soft accent wash and an accent phone; Tag "on" =
+             in a call: a red fill and a white hang-up glyph. -->
+        <Style x:Key="CallButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="52" /><Setter Property="Height" Value="34" /><Setter Property="Padding" Value="0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Foreground" Value="{DynamicResource AccentLight}" />
+            <Setter Property="Tag" Value="" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Grid x:Name="Root" Background="Transparent">
+                            <Border x:Name="Wash" Background="{DynamicResource Accent}" Opacity="0.16" CornerRadius="{DynamicResource ControlRadius}" />
+                            <Border x:Name="Edge" BorderBrush="{DynamicResource Accent}" BorderThickness="1" Opacity="0.45" CornerRadius="{DynamicResource ControlRadius}" />
+                            <Border x:Name="Red" Background="#E5484D" Opacity="0" CornerRadius="{DynamicResource ControlRadius}" />
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Wash" Property="Opacity" Value="0.26" />
+                                <Setter TargetName="Edge" Property="Opacity" Value="0.7" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True"><Setter TargetName="Wash" Property="Opacity" Value="0.36" /></Trigger>
+                            <Trigger Property="Tag" Value="on">
+                                <Setter TargetName="Red" Property="Opacity" Value="1" />
+                                <Setter TargetName="Edge" Property="Opacity" Value="0" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                            <MultiTrigger>
+                                <MultiTrigger.Conditions><Condition Property="Tag" Value="on" /><Condition Property="IsMouseOver" Value="True" /></MultiTrigger.Conditions>
+                                <Setter TargetName="Red" Property="Opacity" Value="0.85" />
+                            </MultiTrigger>
+                            <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Root" Property="Opacity" Value="0.4" /></Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <!-- The composer's mic (MainWindow.Dictation.cs): a muted glyph; Tag "on" = listening (accent disc, pulsing), "busy" = the
              last phrase transcribing (the glyph turns). -->
         <Style x:Key="MicCircle" TargetType="Button">
@@ -1199,6 +1237,26 @@
                     </ScrollViewer>
                     <!-- Profile (MainWindow.Profile.cs): below an accent rule, the picture and name open the profile card; the gear opens Settings. -->
                     <StackPanel Grid.Row="2">
+                        <!-- Call mode (MainWindow.CallUi.cs): the visualizer and its state grow in above the call button during a call. -->
+                        <Grid x:Name="CallPanel" Height="0" Opacity="0" Visibility="Collapsed" ClipToBounds="False" RenderTransformOrigin="0.5,1">
+                            <Grid.RenderTransform><ScaleTransform x:Name="CallPanelScale" ScaleX="0.85" ScaleY="0.85" /></Grid.RenderTransform>
+                            <StackPanel VerticalAlignment="Bottom" Margin="0,0,0,6">
+                                <local:CallVisualizer x:Name="CallVisual" Width="185" Height="185" HorizontalAlignment="Center" Cursor="Hand"
+                                                      MouseLeftButtonUp="CallVisual_MouseUp" ToolTip="Click to interrupt (Space)" AutomationProperties.Name="Call visualizer" />
+                                <TextBlock x:Name="CallStateText" HorizontalAlignment="Center" Margin="0,2,0,0" FontSize="11.5" Foreground="{DynamicResource Muted}" Text="Listening…" />
+                            </StackPanel>
+                        </Grid>
+                        <Grid Margin="8,0,8,8">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Button x:Name="CallButton" Grid.Column="1" Style="{StaticResource CallButtonStyle}" Click="CallButton_Click" ToolTipService.ShowOnDisabled="True"
+                                    ToolTip="Start a call" AutomationProperties.Name="Start a call">
+                                <TextBlock x:Name="CallGlyph" Text="&#xE717;" Style="{StaticResource RailGlyph}" FontSize="16" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            </Button>
+                            <Button x:Name="CallMuteButton" Grid.Column="2" Style="{StaticResource GhostButton}" Width="32" Height="32" Padding="0" Margin="8,0,0,0" HorizontalAlignment="Left"
+                                    Visibility="Collapsed" Click="CallMute_Click" ToolTip="Mute the microphone" AutomationProperties.Name="Mute the microphone">
+                                <TextBlock x:Name="CallMuteGlyph" Text="&#xE720;" Style="{StaticResource RailGlyph}" FontSize="14" />
+                            </Button>
+                        </Grid>
                         <Border Height="1" Margin="14,0" Background="{DynamicResource Accent}" Opacity="0.55">
                             <Border.OpacityMask>
                                 <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">

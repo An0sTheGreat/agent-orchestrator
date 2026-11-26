@@ -45,6 +45,7 @@ public partial class App : Application
             Speech.SelfTest();
             Tts.TtsSelfTest();
             AgentOrchestrator.MainWindow.CallSelfTest();
+            AgentOrchestrator.CallVisualizer.SelfTest();
             Chatterbox.ChatterboxSelfTest();
             ClipTools.SelfTest();
             Shutdown(0);

@@ -336,10 +336,11 @@ internal sealed class DictationSession : IDisposable
     private readonly List<float> _pending = [];  // samples not yet a whole window
     private readonly List<float> _phrase = [];   // the energy gate's phrase in progress
     private long _total, _silence;
-    private bool _heard, _done;
+    private bool _heard, _done, _speech;
 
     public event Action<string>? Text;
     public event Action<string>? Ended;
+    public event Action? Heard; // a voice starts (each time, after a pause): a call's Interrupt by talking
 
     public DictationSession(Func<float[], string> transcribe) : this(transcribe, SpeechModels.Ready) { }
 
@@ -385,6 +386,9 @@ internal sealed class DictationSession : IDisposable
                         Emit();
                 }
                 _total += Window;
+                if (speech && !_speech)
+                    Heard?.Invoke();
+                _speech = speech;
                 _heard |= speech;
                 _silence = speech ? 0 : _silence + Window;
                 if (_heard && _silence >= EndSilence)

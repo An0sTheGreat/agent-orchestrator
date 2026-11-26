@@ -97,6 +97,7 @@ public partial class MainWindow : Window
         InitLocalApi();
 
         Closing += OnClosing;
+        InitCallUi();
         Activated += (_, _) => RefreshCodeFolder(); // PROJECT.md may have been added or removed in Explorer meanwhile
         SourceInitialized += (_, _) => HwndSource.FromHwnd(new WindowInteropHelper(this).Handle)?.AddHook(LimitMaximizeToWorkArea);
         StateChanged += (_, _) => MaximizeButton.Content = WindowState == WindowState.Maximized ? "❐" : "□";
@@ -4154,7 +4155,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!await DictationSmoke() || !await CallSmoke())
+        if (!await DictationSmoke() || !await CallSmoke() || !await CallUiSmoke())
             return false;
         if (!await SpeakOutSmoke() || !await ChatterboxVoicesSmoke())
             return false;
@@ -4986,6 +4987,11 @@ public partial class MainWindow : Window
     protected override void OnPreviewKeyDown(KeyEventArgs e)
     {
         base.OnPreviewKeyDown(e);
+        if (!e.Handled && CallKey(e))
+        {
+            e.Handled = true;
+            return;
+        }
         if (e.Handled || (Keyboard.Modifiers & ModifierKeys.Control) == 0 || (Keyboard.Modifiers & ModifierKeys.Alt) != 0 ||
             Keyboard.FocusedElement is Visual focused && WorkerSettingsHost.IsAncestorOf(focused)) // typing in the worker tab
             return;
