@@ -164,7 +164,7 @@ public partial class MainWindow
         Seed("", "chat", new("user", "Theme tokens for Graphite", now.AddDays(-2)), new("assistant", "`#1E1E1E` window, `#303030` cards.", now.AddDays(-2)));
         _store.Archive(Seed("", "chat", new("user", "Docs: remote access page", now.AddDays(-8)), new("assistant", "Drafted.", now.AddDays(-8))), true);
 
-        var server = new WebServer(() => _webTailnet?.Login, () => _webTailnet?.MagicDnsSuffix, WebApi) { DevLogin = _webTailnet?.Login };
+        var server = new WebServer(() => _webTailnet?.Login, () => _webTailnet?.OwnerOrigins, WebApi) { DevLogin = _webTailnet?.Login };
         if (!server.Start(port) || server.Port != port)
         {
             server.Stop();
@@ -209,7 +209,7 @@ public partial class MainWindow
                 return false;
             }
             _webTailnet = status;
-            var server = new WebServer(() => _webTailnet?.Login, () => _webTailnet?.MagicDnsSuffix, WebApi);
+            var server = new WebServer(() => _webTailnet?.Login, () => _webTailnet?.OwnerOrigins, WebApi);
             if (!server.Start(_settings.WebAppPort))
             {
                 _webFailure = $"no free port from {_settings.WebAppPort}";
@@ -1182,9 +1182,10 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: api: {what}"); return false; }
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        async Task<(int Status, System.Net.Http.Headers.HttpResponseHeaders Headers, string Type, byte[] Body)> Fetch(string path, string? login = "smoke@example.com", string? origin = null)
+        async Task<(int Status, System.Net.Http.Headers.HttpResponseHeaders Headers, string Type, byte[] Body)> Fetch(string path, string? login = "smoke@example.com", string? origin = null,
+            HttpMethod? method = null)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}{path}");
+            using var request = new HttpRequestMessage(method ?? HttpMethod.Get, $"http://127.0.0.1:{port}{path}");
             if (login is not null)
                 request.Headers.Add("Tailscale-User-Login", login);
             if (origin is not null)
@@ -1261,7 +1262,7 @@ public partial class MainWindow
                 if ((await Fetch(File(path))).Status != 404)
                     return Fail($"{path} was served");
 
-            // over the wire: the security headers everywhere, no-store on /api only, CORS for https://<one label>.<tailnet> only
+            // over the wire: the security headers everywhere, no-store on /api only, CORS for the owner's PCs only
             foreach (var route in new[] { "/", "/api/hello" })
                 if (await Fetch(route) is not { Status: 200 } r || !r.Headers.TryGetValues("Content-Security-Policy", out var csp) || !csp.Single().Contains("default-src 'self'") ||
                     !r.Headers.TryGetValues("X-Frame-Options", out var frame) || frame.Single() != "DENY" ||
@@ -1271,9 +1272,38 @@ public partial class MainWindow
             if (!cors.Headers.TryGetValues("Access-Control-Allow-Origin", out var allowed) ||
                 allowed.Single() != "https://laptop.tail0000.ts.net" || !cors.Headers.Vary.Contains("Origin"))
                 return Fail("a tailnet PC's origin was not allowed");
-            foreach (var origin in new[] { "https://evil.example", "https://a.b.tail0000.ts.net", "http://laptop.tail0000.ts.net", "https://laptop.tail0000.ts.net.evil.example" })
-                if ((await Fetch("/api/hello", origin: origin)).Headers.Contains("Access-Control-Allow-Origin"))
+            // the owner's laptop: its preflight is answered with its origin allowed and its POST reaches the API (an unknown route's 404)
+            if (await Fetch("/api/hello", origin: "https://laptop.tail0000.ts.net", method: HttpMethod.Options) is not { Status: 204 } preflight ||
+                !preflight.Headers.TryGetValues("Access-Control-Allow-Origin", out var preAllowed) || preAllowed.Single() != "https://laptop.tail0000.ts.net" ||
+                (await Fetch("/api/none", origin: "https://laptop.tail0000.ts.net", method: HttpMethod.Post)).Status != 404)
+                return Fail("the owner's laptop: its preflight or its POST");
+            // another account's device on the same tailnet (theirs) is refused like any other site: no allow header, its POST 403
+            foreach (var origin in new[] { "https://theirs.tail0000.ts.net", "https://evil.example", "https://a.b.tail0000.ts.net", "http://laptop.tail0000.ts.net",
+                "https://laptop.tail0000.ts.net.evil.example" })
+                if ((await Fetch("/api/hello", origin: origin)).Headers.Contains("Access-Control-Allow-Origin") ||
+                    (await Fetch("/api/hello", origin: origin, method: HttpMethod.Options)).Headers.Contains("Access-Control-Allow-Origin") ||
+                    (await Fetch("/api/none", origin: origin, method: HttpMethod.Post)).Status != 403)
                     return Fail($"{origin} was allowed");
+
+            // the home-screen app: the manifest (its type and fields) and each of its icons, the page's links to them; sw.js revalidated
+            // on every load (no-cache, so an update reaches the phone; 404 until the service worker exists)
+            var manifest = await Fetch("/manifest.webmanifest");
+            var app = manifest is { Status: 200, Type: "application/manifest+json" } ? JsonNode.Parse(manifest.Body) : null;
+            var icons = app?["icons"]?.AsArray().Select(i => $"{i?["src"]}|{i?["sizes"]}|{i?["type"]}|{i?["purpose"]}").ToList() ?? [];
+            if ($"{app?["name"]}|{app?["short_name"]}|{app?["start_url"]}|{app?["scope"]}|{app?["display"]}|{app?["background_color"]}|{app?["theme_color"]}" !=
+                "Agent Orchestrator|Orchestrator|/|/|standalone|#1E1E1E|#1E1E1E" ||
+                string.Join(",", icons) != "/icons/icon-192.png|192x192|image/png|any,/icons/icon-512.png|512x512|image/png|any,/icons/icon-maskable-512.png|512x512|image/png|maskable")
+                return Fail($"the manifest: {manifest.Status} {manifest.Type} {System.Text.Encoding.UTF8.GetString(manifest.Body)}");
+            foreach (var (icon, size) in new[] { ("/icons/icon-192.png", 192), ("/icons/icon-512.png", 512), ("/icons/icon-maskable-512.png", 512), ("/icons/apple-touch-icon.png", 180) })
+                if (await Fetch(icon) is not { Status: 200, Type: "image/png" } iconFile || iconFile.Body.Length < 24 || !iconFile.Body.Take(8).SequenceEqual(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A }) ||
+                    System.Buffers.Binary.BinaryPrimitives.ReadInt32BigEndian(iconFile.Body.AsSpan(16)) != size) // IHDR's width
+                    return Fail($"{icon} is not a {size} px PNG");
+            var page = System.Text.Encoding.UTF8.GetString((await Fetch("/")).Body);
+            if (!page.Contains("""<link rel="manifest" href="manifest.webmanifest">""") || !page.Contains("""<meta name="theme-color" content="#1E1E1E">""") ||
+                !page.Contains("""<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">"""))
+                return Fail("the page's manifest, theme colour or apple-touch-icon");
+            if ((await Fetch("/sw.js")).Headers.CacheControl?.NoCache != true)
+                return Fail("sw.js is not no-cache");
             return true;
         }
         finally

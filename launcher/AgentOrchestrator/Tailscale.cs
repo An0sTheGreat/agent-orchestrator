@@ -22,6 +22,9 @@ internal static class Tailscale
     {
         public bool SignedIn => Backend == "Running" && Self is { UserId.Length: > 0 };
         public IEnumerable<Device> Mine => Peers.Where(p => p.UserId == Self?.UserId); // this account's other PCs
+        // https://<DnsName> of this PC and this account's other PCs (those /api/pcs lists): the phone app's own origins, which
+        // WebServer lets call the API (CORS) and load from (CSP); a shared-in node's or another account's device's never.
+        public IReadOnlyList<string> OwnerOrigins => Mine.Select(p => p.DnsName).Prepend(DnsName).Where(d => d.Length > 0).Select(d => "https://" + d).ToList();
     }
 
     public const string DownloadPage = "https://tailscale.com/download/windows";

@@ -25,7 +25,7 @@ internal sealed class WebServer
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly Func<string?> _owner;
-    private readonly Func<string?> _suffix;
+    private readonly Func<IReadOnlyList<string>?> _origins;
     private readonly WebApi _api;
     private HttpListener? _listener;
     private readonly CancellationTokenSource _stopping = new(); // ends the open event streams
@@ -36,10 +36,11 @@ internal sealed class WebServer
     // only this PC's connections reach Handle at all.
     internal string? DevLogin { get; init; }
 
-    // `ownerLogin`: the PC's Tailscale login; `tailnetSuffix`: its MagicDNS suffix (tail1234.ts.net), whose https origins
-    // (the user's other PCs) may call the API. Both are asked on every request: null while Tailscale is not known.
-    public WebServer(Func<string?> ownerLogin, Func<string?> tailnetSuffix, WebApi api) =>
-        (_owner, _suffix, _api) = (ownerLogin, tailnetSuffix, api);
+    // `ownerLogin`: the PC's Tailscale login; `ownerOrigins`: https://<DnsName> of this PC and the owner's other PCs
+    // (Tailscale.State.OwnerOrigins), which may call the API and whose pictures the page may show. Both are asked on every
+    // request: null while Tailscale is not known.
+    public WebServer(Func<string?> ownerLogin, Func<IReadOnlyList<string>?> ownerOrigins, WebApi api) =>
+        (_owner, _origins, _api) = (ownerLogin, ownerOrigins, api);
 
     public int? Port { get; private set; }
 
@@ -87,13 +88,15 @@ internal sealed class WebServer
         try
         {
             var path = request.Url?.AbsolutePath ?? "/";
-            var suffix = _suffix();
-            response.Headers["Content-Security-Policy"] = Csp(suffix);
+            var origins = _origins() ?? [];
+            response.Headers["Content-Security-Policy"] = Csp(origins);
             response.Headers["X-Frame-Options"] = "DENY";
             response.Headers["X-Content-Type-Options"] = "nosniff";
             if (path.StartsWith("/api/"))
                 response.Headers["Cache-Control"] = "no-store";
-            if (AllowedOrigin(request.Headers["Origin"], suffix) is { } origin)
+            else if (path == "/sw.js")
+                response.Headers["Cache-Control"] = "no-cache"; // the browser revalidates the service worker on every load, so updates reach phones
+            if (AllowedOrigin(request.Headers["Origin"], origins) is { } origin)
             {
                 response.Headers["Access-Control-Allow-Origin"] = origin;
                 response.Headers["Vary"] = "Origin";
@@ -204,7 +207,7 @@ internal sealed class WebServer
             // Serve adds the owner's login to whatever the owner's device sends, so a page on another site could call the
             // API as the owner (CSRF): only this page and the user's other PCs may; tools that send no Origin still can.
             // --webapp-dev's page is plain http on 127.0.0.1, so there (only) its own http origin is this page too.
-            var known = origin is not null && (string.Equals(origin, "https://" + host, StringComparison.OrdinalIgnoreCase) || AllowedOrigin(origin, _suffix()) is not null ||
+            var known = origin is not null && (string.Equals(origin, "https://" + host, StringComparison.OrdinalIgnoreCase) || AllowedOrigin(origin, _origins() ?? []) is not null ||
                 DevLogin is not null && string.Equals(origin, "http://" + host, StringComparison.OrdinalIgnoreCase));
             if (!known && (fetchSite == "cross-site" || origin is not null && method is not ("GET" or "HEAD")))
                 return Json(403, new { error = "Cross-site request refused" });
@@ -237,18 +240,17 @@ internal sealed class WebServer
     public static bool IsOwner(string? headerLogin, string? owner) =>
         !string.IsNullOrEmpty(headerLogin) && !string.IsNullOrEmpty(owner) && string.Equals(headerLogin, owner, StringComparison.OrdinalIgnoreCase);
 
-    // `origin` when it is one of the tailnet's machines over HTTPS (https://<name>.<suffix>, the default port), else null.
-    public static string? AllowedOrigin(string? origin, string? suffix)
-    {
-        if (string.IsNullOrEmpty(suffix) || origin is null || !origin.StartsWith("https://", StringComparison.Ordinal) ||
-            !origin.EndsWith("." + suffix, StringComparison.OrdinalIgnoreCase))
-            return null;
-        var name = origin["https://".Length..^(suffix.Length + 1)];
-        return name.Length > 0 && name.All(c => char.IsAsciiLetterOrDigit(c) || c == '-') ? origin : null;
-    }
+    // `origin` when it is one of the owner's PCs (`origins`: https://<DnsName>, the default port), else null: another
+    // account's device or a shared-in node on the same tailnet is a foreign site like any other.
+    public static string? AllowedOrigin(string? origin, IReadOnlyList<string> origins) =>
+        origin is not null && origins.Contains(origin, StringComparer.OrdinalIgnoreCase) ? origin : null;
 
-    internal static string Csp(string? suffix) =>
-        "default-src 'self'; style-src-attr 'unsafe-inline'" + (string.IsNullOrEmpty(suffix) ? "" : $"; connect-src 'self' https://*.{suffix}");
+    // The page may call (connect-src) and show pictures from (img-src: another PC's /api/file) the owner's PCs, no other site.
+    internal static string Csp(IReadOnlyList<string> origins)
+    {
+        var sources = "'self' " + string.Join(' ', origins);
+        return "default-src 'self'; style-src-attr 'unsafe-inline'" + (origins.Count == 0 ? "" : $"; connect-src {sources}; img-src {sources}");
+    }
 
     // The embedded file for a request path ("/" is index.html) and its content type; null for anything not embedded.
     public static (string Resource, string Type)? Asset(string path)
@@ -256,20 +258,23 @@ internal sealed class WebServer
         if (!path.StartsWith('/') || path.Contains("..") || path.Contains('\\'))
             return null;
         var resource = "web" + (path == "/" ? "/index.html" : path);
-        if (typeof(WebServer).Assembly.GetManifestResourceInfo(resource) is null)
-            return null;
-        return (resource, Path.GetExtension(resource).ToLowerInvariant() switch
-        {
-            ".html" => "text/html; charset=utf-8",
-            ".css" => "text/css; charset=utf-8",
-            ".js" => "text/javascript; charset=utf-8",
-            ".ttf" => "font/ttf",
-            _ => "application/octet-stream",
-        });
+        return typeof(WebServer).Assembly.GetManifestResourceInfo(resource) is null ? null : (resource, ContentType(resource));
     }
 
+    internal static string ContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".html" => "text/html; charset=utf-8",
+        ".css" => "text/css; charset=utf-8",
+        ".js" => "text/javascript; charset=utf-8",
+        ".ttf" => "font/ttf",
+        ".webmanifest" => "application/manifest+json",
+        ".png" => "image/png",
+        ".json" => "application/json",
+        _ => "application/octet-stream",
+    };
+
     public static byte[] SseFrame(string json) => Encoding.UTF8.GetBytes($"data: {json}\n\n");
-    // --self-test: the identity gate, the tailnet origins, asset lookup, routing and the SSE frame.
+    // --self-test: the identity gate, the owner's PCs' origins, the CSP, asset lookup, routing and the SSE frame.
     internal static void SelfTest()
     {
         static void Check(bool ok, string what)
@@ -279,35 +284,39 @@ internal sealed class WebServer
         }
         Check(IsOwner("me@x.com", "ME@x.com") && !IsOwner(null, "me@x.com") && !IsOwner("me@x.com", null) && !IsOwner("a@x.com", "b@x.com") &&
             !IsOwner("", ""), "owner check");
-        const string suffix = "tail1234.ts.net";
-        Check(AllowedOrigin("https://laptop.tail1234.ts.net", suffix) == "https://laptop.tail1234.ts.net" &&
-            AllowedOrigin("http://laptop.tail1234.ts.net", suffix) is null && AllowedOrigin("https://evil.com", suffix) is null &&
-            AllowedOrigin("https://x.tail1234.ts.net.evil.com", suffix) is null && AllowedOrigin("https://a.b.tail1234.ts.net", suffix) is null &&
-            AllowedOrigin("https://laptop.tail1234.ts.net:8443", suffix) is null && AllowedOrigin("https://laptop.tail1234.ts.net", null) is null &&
-            AllowedOrigin(null, suffix) is null, "tailnet origins");
-        Check(Csp(suffix).Contains("default-src 'self'") && Csp(suffix).Contains("connect-src 'self' https://*.tail1234.ts.net") &&
-            Csp(suffix).Contains("style-src-attr 'unsafe-inline'") && Csp(null).Contains("style-src-attr 'unsafe-inline'") &&
-            !Csp(null).Contains("connect-src"), "content security policy: " + Csp(suffix));
+        string[] mine = ["https://pc.tail1234.ts.net", "https://laptop.tail1234.ts.net"]; // this PC and the owner's laptop
+        Check(AllowedOrigin("https://laptop.tail1234.ts.net", mine) == "https://laptop.tail1234.ts.net" &&
+            AllowedOrigin("https://theirs.tail1234.ts.net", mine) is null && // another account's device (or a shared-in node) on the tailnet
+            AllowedOrigin("http://laptop.tail1234.ts.net", mine) is null && AllowedOrigin("https://evil.com", mine) is null &&
+            AllowedOrigin("https://laptop.tail1234.ts.net.evil.com", mine) is null && AllowedOrigin("https://a.laptop.tail1234.ts.net", mine) is null &&
+            AllowedOrigin("https://laptop.tail1234.ts.net:8443", mine) is null && AllowedOrigin("https://laptop.tail1234.ts.net", []) is null &&
+            AllowedOrigin(null, mine) is null, "the owner's PCs' origins only");
+        const string sources = "'self' https://pc.tail1234.ts.net https://laptop.tail1234.ts.net";
+        Check(Csp(mine).Contains("default-src 'self'") && Csp(mine).Contains("; connect-src " + sources + ";") && Csp(mine).EndsWith("; img-src " + sources) &&
+            !Csp(mine).Contains('*') && Csp(mine).Contains("style-src-attr 'unsafe-inline'") && Csp([]).Contains("style-src-attr 'unsafe-inline'") &&
+            !Csp([]).Contains("connect-src") && !Csp([]).Contains("img-src"), "content security policy: " + Csp(mine));
         Check(Asset("/") is ("web/index.html", var html) && html.StartsWith("text/html") && Asset("/styles.css") is (_, var css) && css.StartsWith("text/css") &&
-            Asset("/assets/fonts/Inter-Regular.ttf") is (_, "font/ttf"), "assets");
+            Asset("/assets/fonts/Inter-Regular.ttf") is (_, "font/ttf") && Asset("/manifest.webmanifest") is (_, "application/manifest+json") &&
+            Asset("/icons/icon-192.png") is (_, "image/png") && ContentType("x.json") == "application/json", "assets");
         Check(Asset("/../remote.html") is null && Asset("/web/index.html") is null && Asset("/x\\y") is null && Asset("/missing.js") is null &&
             Asset("") is null, "refused assets");
         Check(SseFrame("{\"e\":\"delta\"}").SequenceEqual(Encoding.UTF8.GetBytes("data: {\"e\":\"delta\"}\n\n")), "SSE frame");
 
-        var server = new WebServer(() => "me@x.com", () => suffix, (method, path, query, body, type, _) =>
+        var server = new WebServer(() => "me@x.com", () => mine, (method, path, query, body, type, _) =>
             Task.FromResult((200, (object)new { method, path, q = query.GetValueOrDefault("q"), length = body.Length, type })));
         Response Call(string method, string path, string? login = "Me@x.com", byte[]? body = null, string? origin = null, string? site = null) =>
             server.Handle(method, path, login, new Dictionary<string, string> { ["q"] = "1" }, body ?? [], "application/json", origin, site, "pc.tail1234.ts.net")
                 .GetAwaiter().GetResult();
         Check(Call("POST", "/api/send", origin: "https://evil.com", site: "cross-site").Status == 403 && Call("POST", "/api/send", origin: "https://evil.com").Status == 403 &&
             Call("DELETE", "/api/x", origin: "https://evil.com").Status == 403 && Call("GET", "/api/x", origin: "https://evil.com", site: "cross-site").Status == 403 &&
-            Call("GET", "/api/x", site: "cross-site").Status == 403, "cross-site API calls: 403");
+            Call("GET", "/api/x", site: "cross-site").Status == 403 && Call("POST", "/api/send", origin: "https://theirs.tail1234.ts.net", site: "same-site").Status == 403,
+            "cross-site API calls (another account's device on the tailnet too): 403");
         Check(Call("POST", "/api/send", origin: "https://pc.tail1234.ts.net", site: "same-origin").Status == 200 &&
             Call("POST", "/api/send", origin: "https://laptop.tail1234.ts.net", site: "same-site").Status == 200 && Call("POST", "/api/send").Status == 200,
             "same origin, another tailnet PC and no Origin reach the API");
         var noSuffix = new WebServer(() => "me@x.com", () => null, (_, _, _, _, _, _) => Task.FromResult((200, (object)new { })));
         Check(noSuffix.Handle("POST", "/api/x", "me@x.com", new Dictionary<string, string>(), [], "", "https://PC.tail1234.ts.net", "same-origin", "pc.tail1234.ts.net")
-            .GetAwaiter().GetResult().Status == 200, "same origin by the Host header, suffix unknown");
+            .GetAwaiter().GetResult().Status == 200, "same origin by the Host header, the owner's PCs unknown");
         Check(Call("GET", "/", null).Status == 403 && Call("GET", "/", "other@x.com").Status == 403 && Call("GET", "/api/conversations", null).Status == 403 &&
             Call("OPTIONS", "/api/hello", null).Status == 403 && Call("GET", "/missing.js", null).Status == 403, "no owner header: 403 everywhere");
         const string browser = "text/html,application/xhtml+xml,*/*;q=0.8";
