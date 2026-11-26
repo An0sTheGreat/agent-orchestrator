@@ -45,6 +45,13 @@ export function applyEvent(s, ev) {
   }
 }
 
+// After `saved` the reply is in the loaded messages: drop the parts that were there when it arrived (the first `cut`), keep what the next turn added since.
+export const afterCut = (s, cut) => ({ ...s, parts: s.parts.slice(cut) });
+// Loads can land out of order: only a response newer than the last applied one may replace the messages.
+export const freshLoad = (applied, seq) => seq > applied;
+// The approval card the user answered stays done across redraws, until a new prompt (new nonce) arrives.
+export const approvalDone = (answered, prompt) => answered != null && answered === prompt.nonce;
+
 // The ring's colour: blue under 50%, amber from 50%, red from 90%.
 export const ringColor = f => f >= 0.9 ? 'red' : f >= 0.5 ? 'amber' : 'blue';
 const RING = { blue: '#6EA8FF', amber: '#F7C873', red: '#FF6B6B' };
@@ -64,7 +71,7 @@ if (typeof document !== 'undefined') {
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
   const view = $('#view-chat'), msgs = $('#view-chat .msgs'), pop = $('#ctxpop');
-  let id = null, live = emptyLive(), saved = [], context = null, stopEvents = () => {}, gen = 0, frame = 0;
+  let id = null, live = emptyLive(), saved = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
   const img = src => h('img', { class: 'pic', src, alt: '', loading: 'lazy',
@@ -106,12 +113,14 @@ if (typeof document !== 'undefined') {
 
   function approval(p) {
     const el = clone('tpl-approval');
+    el.classList.toggle('done', approvalDone(answered, p));
     el.querySelector('.approval-title').textContent = p.title;
     el.querySelector('p').textContent = p.message;
     el.querySelector('.approval-actions').replaceChildren(...p.choices.map((c, i) =>
       h('button', { class: i === p.choices.length - 1 ? 'btn' : 'btn ghost', onclick: async () => {
         el.classList.add('done');
-        try { await api.post('/api/answer', { id, nonce: p.nonce, choice: c.value }); } catch (err) { el.classList.remove('done'); fail(err); }
+        answered = p.nonce;
+        try { await api.post('/api/answer', { id, nonce: p.nonce, choice: c.value }); } catch (err) { answered = null; el.classList.remove('done'); fail(err); }
       } }, c.label)));
     return el;
   }
@@ -173,16 +182,20 @@ if (typeof document !== 'undefined') {
   const notFound = () => { stopEvents(); msgs.replaceChildren(h('div', { class: 'card empty' }, 'This chat is not on this PC any more.')); };
 
   // The conversation's messages, title and context; after `saved` the live reply is in the messages, so it goes.
-  async function load(mine, after) {
+  async function load(mine, after, cut = 0) {
+    const seq = ++loadSeq;
     let conv;
     try { conv = await api.get('/api/conversation/' + encodeURIComponent(id)); }
     catch (err) { if (mine === gen) { if (err.status === 404) notFound(); else fail(err); } return false; }
     if (mine !== gen) return false;
     view.querySelector('.vtitle').textContent = conv.title || 'Chat';
     view.querySelector('.vsub').textContent = conv.worker ? `${conv.kind === 'code' ? 'Code' : 'Chat'} · to ${conv.worker}` : '';
-    saved = conv.messages;
-    context = conv.context ?? context;
-    if (after === 'saved') live = { ...live, parts: [] };
+    if (freshLoad(applied, seq)) {
+      applied = seq;
+      saved = conv.messages;
+      context = conv.context ?? context;
+    }
+    if (after === 'saved') live = afterCut(live, cut); // even an outrun load: the newer one's messages hold the reply too
     draw(!after);
     return true;
   }
@@ -202,7 +215,7 @@ if (typeof document !== 'undefined') {
     if (mine !== gen) return;
     live = applyEvent(live, ev);
     if (ev.e === 'context') context = live.context;
-    if (live.refetch) { live = { ...live, refetch: false }; load(mine, ev.e); }
+    if (live.refetch) { live = { ...live, refetch: false }; load(mine, ev.e, live.parts.length); }
     drawSoon();
   }
 
@@ -212,6 +225,7 @@ if (typeof document !== 'undefined') {
     stopEvents = () => {};
     chatId = id = params?.id ?? null;
     live = emptyLive();
+    answered = null;
     saved = [];
     context = null;
     pop.hidden = true;

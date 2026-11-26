@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, afterCut, freshLoad, approvalDone } from '../js/chat.js';
 
 const run = (...evs) => evs.reduce(applyEvent, emptyLive());
 
@@ -53,4 +53,25 @@ test('a context event updates the ring', () => {
 
 test('the ring is blue under 50%, amber from 50%, red from 90%', () => {
   assert.deepEqual([0, 0.49, 0.5, 0.89, 0.9, 1].map(ringColor), ['blue', 'blue', 'amber', 'amber', 'red', 'red']);
+});
+
+test('after saved, the next turn parts that arrived during the load survive; the ones before it go', () => {
+  const s = run({ e: 'delta', kind: 'text', text: 'old reply' }, { e: 'saved' });
+  const cut = s.parts.length;
+  const next = applyEvent(applyEvent(s, { e: 'delta', kind: 'thinking', text: 'new' }), { e: 'chat_stage', stage: 'delegate', title: 'Coder' });
+  assert.deepEqual(afterCut(next, cut).parts, [{ t: 'thinking', text: 'new' }, { t: 'stage', title: 'Coder' }]);
+  assert.deepEqual(afterCut(s, cut).parts, []);
+});
+
+test('an older load response is ignored', () => {
+  assert.equal(freshLoad(0, 1), true);
+  assert.equal(freshLoad(2, 1), false);
+  assert.equal(freshLoad(2, 2), false);
+  assert.equal(freshLoad(2, 3), true);
+});
+
+test('an answered approval draws done; a new nonce draws clickable again', () => {
+  assert.equal(approvalDone('n1', { nonce: 'n1' }), true);
+  assert.equal(approvalDone('n1', { nonce: 'n2' }), false);
+  assert.equal(approvalDone(null, { nonce: 'n1' }), false);
 });
