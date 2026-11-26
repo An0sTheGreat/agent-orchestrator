@@ -307,6 +307,13 @@ public partial class MainWindow
                 ? await Dispatcher.InvokeAsync(() => { ShredPictures([picture]); return (200, (object)new { ok = true }); }) : WebNotFound,
             ("GET", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposer(await WebSharedImageModels())),
             ("POST", "/api/composer") => await await Dispatcher.InvokeAsync(async () => WebComposerSet(WebBody(body), await WebSharedImageModels())),
+            ("GET", "/api/images") => await await Dispatcher.InvokeAsync(async () => WebImages(await WebSharedImageModels())),
+            ("GET", "/api/images/status") => await Dispatcher.InvokeAsync(WebImagesStatus),
+            ("GET", "/api/images/preview") => await Dispatcher.InvokeAsync(WebImagesPreview),
+            ("GET", "/api/images/picture") => WebImagesPicture(query.GetValueOrDefault("path")),
+            ("POST", "/api/images/generate") => await await Dispatcher.InvokeAsync(async () => WebImagesGenerate(WebBody(body), await WebSharedImageModels())),
+            ("POST", "/api/images/cancel") => await Dispatcher.InvokeAsync(WebImagesCancel),
+            ("POST", "/api/images/unqueue") => await Dispatcher.InvokeAsync(() => WebImagesUnqueue(WebBody(body))),
             ("GET", _) when path.StartsWith(one) => await Dispatcher.InvokeAsync(() => WebConversation(path[one.Length..])),
             ("GET", "/api/file") => WebFile(query.GetValueOrDefault("path")),
             _ => WebNotFound,
@@ -671,7 +678,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes

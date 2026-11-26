@@ -272,9 +272,10 @@ public partial class MainWindow
     internal sealed record ChatImageChoice(string Key, string Id, string Name, string Note, string Tip, bool? Downloaded, bool Primary);
 
     // The chat's pick as a ChatImageChoice key: the primary PC's, OpenRouter's (never offered), a models folder file, else the recipe ("" = none).
-    private string ChatImageKey()
+    private string ChatImageKey() => ImageKey(_settings.ChatImage);
+
+    private static string ImageKey(ImageSettings c)
     {
-        var c = _settings.ChatImage;
         return c.SharedModel.Length > 0 ? "primary:" + c.SharedModel : c.RemoteModel.Length > 0 ? "openrouter:" + c.RemoteModel
             : c.LocalModel.Length > 0 ? "local:" + Path.GetFileName(c.LocalModel) : c.RecipeId;
     }

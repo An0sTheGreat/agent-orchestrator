@@ -1184,9 +1184,7 @@ public partial class MainWindow
         if (_imgGallery is null) // the Images page is not built yet (the phone deleted a picture): opening it lists the folder
             return;
         _imgGallery.Children.Clear();
-        var pictures = Directory.Exists(ImageGen.ImagesFolder)
-            ? new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName).ToList()
-            : [];
+        var pictures = GalleryPictures();
         _imgGalleryHead.Text = pictures.Count == 0 ? "Nothing yet" : $"{pictures.Count}{(pictures.Count == 200 ? "+" : "")}";
         if (_imgResultPath is not null && !File.Exists(_imgResultPath))
             ShowOnStage(null);
@@ -1238,6 +1236,11 @@ public partial class MainWindow
         }
     }
 
+    // The gallery's pictures, newest first (the page's and the phone's).
+    private static List<string> GalleryPictures() => Directory.Exists(ImageGen.ImagesFolder)
+        ? new DirectoryInfo(ImageGen.ImagesFolder).GetFiles("*.png").OrderByDescending(f => f.LastWriteTimeUtc).Take(200).Select(f => f.FullName).ToList()
+        : [];
+
     // Overwrites and deletes pictures and their settings files (ImageGen.Shred); the stage lets go of a deleted one first.
     private void ShredPictures(IEnumerable<string> pictures)
     {
@@ -1282,6 +1285,7 @@ public partial class MainWindow
         if (PendingPicturePreview(frame, png))
             return;
         _imgStagePreview = true;
+        (_imgPreviewPng, _imgPreviewFrame) = (png, _imgPreviewFrame + 1); // the phone's Images stage (GET /api/images/preview)
         _imgResult.Source = frame;
         _imgPlaceholder.Visibility = Visibility.Collapsed;
     }
@@ -1465,6 +1469,12 @@ public partial class MainWindow
         }
         _settings.ImageGen = s;
         _settings.Save();
+        return PicturesFor(s);
+    }
+
+    // The settings as pictures to make: the seed resolved, one picture each (OpenRouter: one request for the batch).
+    private static List<QueuedPicture> PicturesFor(ImageSettings s)
+    {
         static ImageSettings Copy(ImageSettings s) => JsonSerializer.Deserialize<ImageSettings>(JsonSerializer.Serialize(s))!;
         var run = Copy(s);
         if (run.Seed < 0)
