@@ -120,6 +120,7 @@ public partial class MainWindow
     private void StopSpeaking()
     {
         _speechPlayer?.Stop();
+        _cbPlayer?.Stop(); // a Chatterbox voice's preview
         if (_speakingButton is { } button)
             ShowSpeaking(button, false);
         _speakingButton = null;
@@ -133,6 +134,7 @@ public partial class MainWindow
         SpeakOutPanel.IsEnabled = ready;
         SpeakOutPanel.Opacity = ready ? 1 : 0.5;
         SpeakOutHint.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
+        RefreshChatterboxVoices();
     }
 
     private void BuildSpeakOut()
@@ -245,6 +247,8 @@ public partial class MainWindow
         _savedVoices = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
         p.Children.Add(_savedVoices);
 
+        BuildChatterboxVoices(p);
+
         p.Children.Add(Heading("Voice library"));
         var search = new TextBox { Margin = new Thickness(0, 10, 0, 0), MinHeight = 30, VerticalContentAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(search, "Search voices");
@@ -313,11 +317,14 @@ public partial class MainWindow
                 box.Items.Add(new ComboBoxItem { Content = "Same as the main voice", Tag = "" });
             foreach (var c in _settings.CustomVoices)
                 box.Items.Add(new ComboBoxItem { Content = c.Name + " (custom)", Tag = c.Name });
+            foreach (var name in ChatterboxNames())
+                box.Items.Add(new ComboBoxItem { Content = name + " (Chatterbox)", Tag = "cb:" + name });
             foreach (var v in Tts.Voices)
                 box.Items.Add(new ComboBoxItem { Content = $"{VoiceLabel(v.Name)} · {v.Language}", Tag = v.Name });
             box.SelectedItem = box.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == chosen) ?? box.Items[0];
         }
         FillSavedVoices();
+        FillChatterboxVoices();
     }
 
     private void FillSavedVoices()
@@ -427,6 +434,7 @@ public partial class MainWindow
         string? problem = name.Length == 0 ? "Name the custom voice"
             : Tts.Voices.Any(v => v.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) ? $"\"{name}\" is a built-in voice's name: choose another"
             : _settings.CustomVoices.Any(c => c.Name.Equals(name, StringComparison.OrdinalIgnoreCase) && c.Name != replacing) ? $"A custom voice is already called \"{name}\""
+            : ChatterboxNames().Any(c => c.Equals(name, StringComparison.OrdinalIgnoreCase)) ? $"A Chatterbox voice is already called \"{name}\""
             : mix.Count(kv => kv.Value > 0) is < 2 or > 4 ? "Blend two to four voices, each with some weight"
             : null;
         if (problem is not null)

@@ -4116,7 +4116,7 @@ public partial class MainWindow : Window
             return false;
         if (!await DictationSmoke())
             return false;
-        if (!await SpeakOutSmoke())
+        if (!await SpeakOutSmoke() || !await ChatterboxVoicesSmoke())
             return false;
         if (!AttachSmoke() || !ImagesSmoke() || !ReadingSmoke() || !ThinkingSmoke() || !ToolCallSmoke() || !AutoScrollSmoke() || !await RunThinkingSmoke(Snap))
             return false;

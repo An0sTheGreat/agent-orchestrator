@@ -192,7 +192,7 @@ internal static class ChatterboxRuntime
     }
 
     // About ten seconds of af_heart: the default voice's reference.
-    private const string DefaultReference = "Hello there! I'm really glad you stopped by today. Let me walk you through what I found, " +
+    internal const string DefaultReference = "Hello there! I'm really glad you stopped by today. Let me walk you through what I found, " +
         "and then we can decide together what to do next. Honestly, I think you're going to like it.";
 
     // Unloads the engine and deletes the folder. The runtime's dlls stay loaded until the app exits once used this run, so

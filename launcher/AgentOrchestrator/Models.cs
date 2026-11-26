@@ -321,6 +321,8 @@ internal sealed class AppSettings
     // Settings > Voice > Speech output (Tts.cs, SpeechText.cs): the reading voice and rules, and the saved custom blends.
     public TtsSettings Tts { get; set; } = new();
     public List<CustomVoice> CustomVoices { get; set; } = new();
+    // Settings > Voice > Chatterbox voices (MainWindow.ChatterboxVoices.cs); chosen anywhere a voice name is stored as "cb:" + Name.
+    public List<ChatterboxVoice> ChatterboxVoices { get; set; } = [];
     public bool NotifyWhenDone { get; set; } // a desktop notification when a reply or project run finishes (MainWindow.Notify.cs)
     public string CommandPermissions { get; set; } = "safe"; // run_command: "ask", "safe" or "all" (the Code composer's permissions dropup)
     // Window position and size in device-independent pixels; null until the window has been closed once.
