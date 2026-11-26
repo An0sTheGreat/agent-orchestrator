@@ -141,7 +141,7 @@ public partial class MainWindow
                 @default = bases.GetValueOrDefault(x.Option.Key, ""), min = x.Option.Min == double.MinValue ? (double?)null : x.Option.Min,
                 max = x.Option.Max >= int.MaxValue ? (double?)null : x.Option.Max, choices = x.Option.Values,
                 help = ModelOptions.Descriptions.GetValueOrDefault(x.Option.Key, x.Option.Help), advanced = AdvancedGroups.Contains(x.Group),
-                apiOnly = ModelOptions.ApiOnly.Contains(x.Option.Key),
+                apiOnly = ModelOptions.ApiOnly.Contains(x.Option.Key), load = x.Option.Target == "auto_load", // hidden for a Remote API worker, as on the desktop
             }).ToList(),
             custom = card.IsCustom ? new { kind = card.Config.Kind, description = card.Config.Description, systemPrompt = card.Config.SystemPrompt } : null,
             presets = WebPresetsBody(s, shown, shared),
@@ -218,7 +218,9 @@ public partial class MainWindow
         : f.ValueKind != JsonValueKind.Object ? null
         : f.EnumerateObject().ToDictionary(p => p.Name, p => p.Value.ValueKind switch { JsonValueKind.String => p.Value.GetString()!, JsonValueKind.Null => "", _ => p.Value.GetRawText() });
 
-    // The worker tab shows the phone's change, unless the desktop has unsaved edits there (RefreshWorkerTab without force).
+    // The worker tab shows the phone's change, unless the desktop has unsaved edits there (RefreshWorkerTab without force): then
+    // the last write wins, by design. The phone's save is on disk, the tab keeps its edits, and the desktop's Save overwrites the
+    // phone's values with them. Only the routes that force the tab's rebuild (primary, remote) refuse while it is dirty.
     private void WebRefreshTab(RoleCard card) => HoldWorkerTab(() =>
     {
         PrefillCards();
@@ -249,6 +251,9 @@ public partial class MainWindow
         var fields = new Dictionary<string, string>(shown);
         foreach (var (key, value) in phone)
             fields[key] = value;
+        if (s.Remote is not null) // a remote worker's load options keep their values (unchecked and unshown there; the desktop's Save keeps them too)
+            foreach (var o in ModelOptions.All.Where(o => o.Target == "auto_load"))
+                fields[o.Key] = s.Current.GetValueOrDefault(o.Key, "");
         WorkerEdit? edit = null;
         if (card.IsCustom)
         {
@@ -393,7 +398,7 @@ public partial class MainWindow
 
     private async Task<(int, object)> WebPrimaryModels()
     {
-        if (_settings.ShareHost is not { Length: > 0 } host)
+        if (await Dispatcher.InvokeAsync(() => _settings.ShareHost) is not { Length: > 0 } host)
             return (404, new { error = "No primary PC is set" });
         try
         {
@@ -412,10 +417,15 @@ public partial class MainWindow
             return (404, new { error = "No primary PC is set" });
         if (CodeBusy)
             return (409, new { error = WebBusyText });
+        if (WebWorkerEditsRefusal() is { } dirty)
+            return dirty;
         if (model.Length == 0)
             return (400, new { error = "Send the model's id" });
         return ApplyRemoteRole(card, new(ModelShare.ChatUrl(host), model, ModelShare.KeyEnv, ""), "in Settings › Models") is { } problem ? (400, new { error = problem }) : (200, "");
     }
+
+    // ApplyRemoteRole rebuilds the worker tab, discarding its edits: the desktop asks first (DiscardWorkerEdits), the phone refuses.
+    private (int, object)? WebWorkerEditsRefusal() => WorkerEditsPending ? (409, new { error = "Save or discard the worker settings on the PC first" }) : null;
 
     private (int, object) WebRemoteServices() => (200, new
     {
@@ -427,6 +437,7 @@ public partial class MainWindow
     });
 
     // A service's model list with its stored key (a custom URL's: none); vision is per provider on OpenRouter, so null here.
+    // ponytail: a custom baseUrl may be any address the PC reaches, a LAN one too; the route is the owner's only and sends no key.
     private async Task<(int, object)> WebRemoteModels(string id, string baseUrl)
     {
         if (RemoteCatalog.Services.FirstOrDefault(s => s.Id == id) is not { } service)
@@ -469,17 +480,35 @@ public partial class MainWindow
         catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = "Could not load OpenRouter's providers: " + e.Message }); }
     }
 
-    // {service, baseUrl (custom only), model, provider, sortPrice, maxInput, maxOutput, keyEnv (custom only)} -> ApplyRemoteRole.
+    // {service, baseUrl (custom only), model, provider, sortPrice, maxInput, maxOutput (services with providers only)} -> ApplyRemoteRole.
+    // The key variable never comes from the phone: a catalog service's own; a custom server's the worker's current one while the
+    // address stays the same, else none, which is refused (a new custom server is set up on the PC, where its key is chosen).
     private (int, object) WebApplyRemote(string role, JsonElement body)
     {
         if (CardFor(role) is not { } card)
             return WebNotFound;
         if (RemoteCatalog.Services.FirstOrDefault(s => s.Id == WebField(body, "service")) is not { } service)
             return (400, new { error = "Unknown service" });
+        if (CodeBusy) // as the Remote API page's Apply
+            return (409, new { error = WebBusyText });
+        if (WebWorkerEditsRefusal() is { } dirty)
+            return dirty;
         string Text(string name) => body.ValueKind == JsonValueKind.Object && body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetRawText() : WebField(body, name).Trim();
         var custom = service.BaseUrl.Length == 0;
-        var remote = new LauncherLogic.RemoteRole(custom ? Text("baseUrl") : service.BaseUrl, Text("model"), custom ? Text("keyEnv") : service.KeyEnv, "",
-            Text("provider"), WebFlag(body, "sortPrice") == true, Text("maxInput"), Text("maxOutput"));
+        var url = custom ? Text("baseUrl").TrimEnd('/') : service.BaseUrl;
+        var keyEnv = service.KeyEnv;
+        if (custom)
+        {
+            LauncherLogic.RemoteRole? now;
+            try { now = WebState(card).Remote; }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException) { now = null; }
+            keyEnv = now is not null && now.BaseUrl.Trim().TrimEnd('/') == url ? now.KeyEnv : "";
+            if (keyEnv.Trim().Length == 0)
+                return (400, new { error = "A new custom server is set up on the PC's Remote API page, where its key variable is chosen" });
+        }
+        var remote = service.HasProviders // the price settings are OpenRouter's
+            ? new LauncherLogic.RemoteRole(url, Text("model"), keyEnv, "", Text("provider"), WebFlag(body, "sortPrice") == true, Text("maxInput"), Text("maxOutput"))
+            : new LauncherLogic.RemoteRole(url, Text("model"), keyEnv, "");
         return ApplyRemoteRole(card, remote, "on the PC's Remote API page") is { } problem ? (400, new { error = problem }) : (200, "");
     }
 
@@ -518,7 +547,7 @@ public partial class MainWindow
     private static ModelPreset? WebFindPreset(IReadOnlyList<ModelPreset> presets, string model, string quant, bool mineOnly, string name) =>
         ModelPresetGroups(presets, model, quant, mineOnly).SelectMany(g => g.Items).FirstOrDefault(p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
-    // apply {name} -> {fields}; save {name, fields} / delete {name} -> {ok, presets}. On the primary PC: its presets, changed there.
+    // apply {name} -> {fields, systemPrompt ("": none, keep the current), model (the preset's model when another's, else null)}; save {name, fields} / delete {name} -> {ok, presets}. On the primary PC: its presets, changed there.
     private async Task<(int, object)> WebPreset(string role, string action, JsonElement body)
     {
         var name = WebField(body, "name").Trim();
@@ -527,13 +556,14 @@ public partial class MainWindow
         List<ModelPreset>? shared;
         try { shared = await WebPrimaryPresets(role); }
         catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = "Could not read the primary PC's presets: " + e.Message }); }
-        var done = await WebWithWorker(role, (s, bases, _) => WebPresetAct(s, bases, action, name, body, shared));
+        var host = "";
+        var done = await WebWithWorker(role, (s, bases, _) => { host = _settings.ShareHost; return WebPresetAct(s, bases, action, name, body, shared); });
         if (done.Item2 is not string change) // done here, or refused
             return done;
         try
         {
             using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            shared = ModelShare.ParsePresets(await ImageShare.ChangePresetAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), WebKey(ModelShare.KeyEnv) ?? "", change, CancellationToken.None));
+            shared = ModelShare.ParsePresets(await ImageShare.ChangePresetAsync(http, ModelShare.ImagesUrl(host), WebKey(ModelShare.KeyEnv) ?? "", change, CancellationToken.None));
         }
         catch (Exception e) when (WebNetFailure(e)) { return (502, new { error = $"The preset was not {(action == "save" ? "saved" : "deleted")} on the primary PC: {e.Message}" }); }
         return await WebWithWorker(role, (s, bases, _) => (200, new { ok = true, presets = WebPresetsBody(s, ModelOptions.Prefill(s.Current, bases), shared) }));
@@ -580,12 +610,13 @@ public partial class MainWindow
             .ToDictionary(p => p.Key, p => p.Value);
         if (shared is null) // the primary PC's is not a local preset Save to could overwrite
             SetActiveModelPreset(card.Role, preset.Name);
-        return (200, new { fields });
+        return (200, new { fields, systemPrompt = preset.SystemPrompt.Trim().Length > 0 ? preset.SystemPrompt : "",
+            model = preset.Model.Length > 0 && !PresetSameModel(preset, model) ? preset.Model : null });
     }
 
     // The routes above (WebAppSmoke, while on), on the smoke's data folder with a fake catalog (RemoteApiFakeHandler: no network):
-    // services and key status, a service needing a key with none 409, models and providers, a custom worker put on a stub service and
-    // back to local, primary models with no primary PC 404, and a preset saved, listed, applied and deleted. The primary PC's presets
+    // services and key status, a service needing a key with none 409, models and providers, a custom worker put on a stub service (the
+    // key variable the worker's, never the phone's; refused while busy or with unsaved desktop edits) and back to local, primary models with no primary PC 404, and a preset saved, listed, applied and deleted. The primary PC's presets
     // (ImageShare to ModelShare.ImagesUrl, a fixed https host or port 8782) are not stubbed.
     private async Task<bool> WebModelsSmoke2(int port)
     {
@@ -630,10 +661,35 @@ public partial class MainWindow
 
             custom = (await Send("/api/workers/add", "{}")).Body?["role"]?.ToString();
             var w = "/api/worker/" + custom;
-            var ap = await Send(w + "/remote", """{"service":"custom","baseUrl":"http://127.0.0.1:9/v1","model":"stub-model","keyEnv":"SMOKE_NO_SUCH_KEY"}""");
+            // the key variable is never the phone's: a new custom address is refused, the same one keeps the worker's
+            var fresh = await Send(w + "/remote", """{"service":"custom","baseUrl":"http://127.0.0.1:9/v1","model":"stub-model","keyEnv":"SMOKE_PHONE_KEY"}""");
+            if (fresh.Status != 400 || CardFor(custom)!.Config.Remote is not null)
+                return Fail($"a new custom server from the phone: {fresh.Status} {fresh.Body}");
+            CardFor(custom)!.Config.Remote = new("http://127.0.0.1:9/v1", "old-model", "SMOKE_KEEP_KEY", "");
+            var ap = await Send(w + "/remote", """{"service":"custom","baseUrl":"http://127.0.0.1:9/v1/","model":"stub-model","keyEnv":"SMOKE_PHONE_KEY","provider":"x","maxInput":"1"}""");
             if (ap.Status != 200 || ap.Body?["worker"]?["source"]?.ToString() != "api" || ap.Body["worker"]?["remote"]?["model"]?.ToString() != "stub-model" ||
-                (await Send(w)).Body?["model"]?["name"] is null)
-                return Fail($"apply remote: {ap.Status} {ap.Body}");
+                CardFor(custom)!.Config.Remote is not { KeyEnv: "SMOKE_KEEP_KEY", Provider: "", MaxInput: "" } || (await Send(w)).Body?["model"]?["name"] is null)
+                return Fail($"apply remote (keyEnv {CardFor(custom)!.Config.Remote?.KeyEnv}): {ap.Status} {ap.Body}");
+            var moved = await Send(w + "/remote", """{"service":"custom","baseUrl":"https://phone.example.invalid/v1","model":"stub-model","keyEnv":"SMOKE_PHONE_KEY"}""");
+            if (moved.Status != 400 || CardFor(custom)!.Config.Remote is not { KeyEnv: "SMOKE_KEEP_KEY", BaseUrl: "http://127.0.0.1:9/v1" })
+                return Fail($"another custom address from the phone: {moved.Status} {moved.Body}");
+            _chatBusy = true;
+            try
+            {
+                var busy = await Send(w + "/remote", """{"service":"openrouter","model":"openai/gpt-4o-mini"}""");
+                if (busy.Status != 409 || busy.Body?["error"]?.ToString() != WebBusyText || CardFor(custom)!.Config.Remote?.Model != "stub-model")
+                    return Fail($"remote while busy: {busy.Status} {busy.Body}");
+            }
+            finally { _chatBusy = false; }
+            var (shownWas, dirtyWas) = (_shownWorker, _workerDirty);
+            try
+            {
+                (_shownWorker, _workerDirty) = (_shownWorker ?? CardFor("planner"), () => true); // the desktop's worker tab with unsaved edits
+                var dirty = await Send(w + "/remote", """{"service":"openrouter","model":"openai/gpt-4o-mini"}""");
+                if (dirty.Status != 409 || dirty.Body?["error"]?.ToString() != "Save or discard the worker settings on the PC first" || CardFor(custom)!.Config.Remote?.Model != "stub-model")
+                    return Fail($"remote with unsaved desktop edits: {dirty.Status} {dirty.Body}");
+            }
+            finally { (_shownWorker, _workerDirty) = (shownWas, dirtyWas); }
             if ((await Send(w + "/remote", """{"service":"nope","model":"x"}""")).Status != 400 || (await Send("/api/worker/nope/remote", """{"service":"openrouter","model":"x"}""")).Status != 404)
                 return Fail("a bad service or role was not refused");
 
@@ -644,7 +700,8 @@ public partial class MainWindow
                 (await Send(w)).Body?["presets"]?["groups"]?.AsArray().Count is not > 0)
                 return Fail($"preset save: {ps.Status} {ps.Body}");
             var pa = await Send(w + "/preset/apply", """{"name":"smoke preset"}""");
-            if (pa.Status != 200 || pa.Body?["fields"]?["temperature"]?.ToString() != "0.55" || ((JsonObject)pa.Body["fields"]!).ContainsKey("max_seq_length"))
+            if (pa.Status != 200 || pa.Body?["fields"]?["temperature"]?.ToString() != "0.55" || ((JsonObject)pa.Body["fields"]!).ContainsKey("max_seq_length") ||
+                pa.Body["systemPrompt"]?.ToString() != "" || pa.Body is not JsonObject applied || !applied.ContainsKey("model") || applied["model"] is not null)
                 return Fail($"preset apply: {pa.Status} {pa.Body}");
             var pd = await Send(w + "/preset/delete", """{"name":"Smoke preset"}""");
             if (pd.Status != 200 || _settings.ModelPresets.Any(p => p.Name == "Smoke preset") || pd.Body?["presets"]?["groups"]?.AsArray().Count != 0 ||
@@ -721,7 +778,8 @@ public partial class MainWindow
                     return Fail($"shown {on}");
 
             var lw = await Send("/api/worker/planner");
-            if (lw.Status != 200 || Option(lw.Body, "temperature") is not { } temperature || Option(lw.Body, "max_seq_length") is null ||
+            if (lw.Status != 200 || Option(lw.Body, "temperature") is not { } temperature || Option(lw.Body, "max_seq_length")?["load"]?.GetValue<bool>() != true ||
+                temperature["load"]?.GetValue<bool>() != false ||
                 temperature["group"]?.ToString() != "Sampling" || lw.Body!["custom"] is not null || lw.Body["presets"]?["active"]?.ToString() != "")
                 return Fail($"worker: {lw.Status} {lw.Body}");
 
