@@ -9,19 +9,20 @@ import { ago } from './util.js';
 /* ---------- the live reply: pure ---------- */
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
 // The engine's deltas carry no section breaks: a text delta after a tool row (or anything not text) starts a new section.
-export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, sealed: 0, base: 0 });
+export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, turn: 0, epoch: 0 });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 const SAVED = /\bSaved: ([^\r\n]+?)\. Prompt: /g; // generate_image's line (ImageGen.ChatResult) names the saved picture
 
 export function applyEvent(s, ev) {
   const last = s.parts[s.parts.length - 1];
-  const append = (t, text) => last?.t === t && s.parts.length > s.sealed // `saved` seals the parts so far: the next turn starts new ones
-    ? { ...s, parts: [...s.parts.slice(0, -1), { t, text: last.text + text }] }
-    : { ...s, parts: [...s.parts, { t, text }] };
+  const tag = p => ({ ...p, turn: s.turn }); // every part belongs to a turn; `saved` closes the turn, so a closed turn's part never grows
+  const append = (t, text) => last?.t === t && last.turn === s.turn
+    ? { ...s, parts: [...s.parts.slice(0, -1), tag({ t, text: last.text + text })] }
+    : { ...s, parts: [...s.parts, tag({ t, text })] };
   switch (ev.e) {
     case 'hello':
-      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text }] : [], sealed: 0, base: 0 };
+      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [], turn: 0, epoch: s.epoch + 1 };
     case 'state':
       return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null };
     case 'delta':
@@ -29,16 +30,16 @@ export function applyEvent(s, ev) {
     case 'tool': {
       const pics = [...String(ev.result || '').matchAll(SAVED)].map(m => ({ t: 'image', src: picture(m[1]) }));
       const args = typeof ev.args === 'string' ? ev.args : JSON.stringify(ev.args ?? '');
-      return { ...s, parts: [...s.parts, { t: 'tool', name: ev.name || '', args, result: ev.result || '' }, ...pics] };
+      return { ...s, parts: [...s.parts, tag({ t: 'tool', name: ev.name || '', args, result: ev.result || '' }), ...pics.map(tag)] };
     }
     case 'chat_stage':
-      return ev.stage === 'delegate' ? { ...s, parts: [...s.parts, { t: 'stage', title: ev.title || ev.role || '' }] } : s;
+      return ev.stage === 'delegate' ? { ...s, parts: [...s.parts, tag({ t: 'stage', title: ev.title || ev.role || '' })] } : s;
     case 'context': {
       const nCtx = ev.n_ctx > 0 ? ev.n_ctx : null, used = (ev.prompt_tokens || 0) + (ev.completion_tokens || 0);
       return { ...s, context: { nCtx, used, fraction: nCtx ? Math.min(1, used / nCtx) : 0, parts: ev.parts || {} } };
     }
     case 'saved':
-      return { ...s, refetch: true, sealed: s.parts.length };
+      return { ...s, refetch: true, turn: s.turn + 1 };
     case 'resync':
       return { ...s, refetch: true };
     default:
@@ -46,12 +47,10 @@ export function applyEvent(s, ev) {
   }
 }
 
-// After `saved` the reply is in the loaded messages: drop the parts that were there when it arrived (the first `cut`), keep what the next turn added since.
-// `cut` counts from the first part ever; `base` is how many earlier loads already dropped, so cuts of several saveds in one window add up right.
-export const afterCut = (s, cut) => {
-  const n = Math.max(0, cut - s.base);
-  return { ...s, parts: s.parts.slice(n), sealed: Math.max(0, s.sealed - n), base: s.base + n };
-};
+// A `saved` event makes a cut: the turn it closed, in the connection (epoch) it happened in. The load it triggers lands it with landSaved.
+export const cutOf = (s, ev) => ev.e === 'saved' ? { turn: s.turn - 1, epoch: s.epoch } : null;
+// The loaded messages hold every closed turn's reply: drop those parts. A cut from before a reconnect (hello) drops nothing.
+export const landSaved = (s, cut) => cut.epoch !== s.epoch ? s : { ...s, parts: s.parts.filter(p => p.turn > cut.turn) };
 // Loads can land out of order: only a response newer than the last applied one may replace the messages.
 export const freshLoad = (applied, seq) => seq > applied;
 // What a landed load changes (null: it was outrun, so it writes nothing, title included).
@@ -191,7 +190,7 @@ if (typeof document !== 'undefined') {
   const notFound = () => { stopEvents(); msgs.replaceChildren(h('div', { class: 'card empty' }, 'This chat is not on this PC any more.')); };
 
   // The conversation's messages, title and context; after `saved` the live reply is in the messages, so it goes.
-  async function load(mine, after, cut = 0) {
+  async function load(mine, cut = null, refetch = false) {
     const seq = ++loadSeq;
     let conv;
     try { conv = await api.get('/api/conversation/' + encodeURIComponent(id)); }
@@ -205,8 +204,8 @@ if (typeof document !== 'undefined') {
       view.querySelector('.vtitle').textContent = r.title;
       view.querySelector('.vsub').textContent = r.sub;
     }
-    if (after === 'saved') live = afterCut(live, cut); // even an outrun load: the newer one's messages hold the reply too
-    draw(!after);
+    if (cut) live = landSaved(live, cut); // even an outrun load: the newer one's messages hold the reply too
+    draw(!refetch); // a refetch keeps the scroll where it is
     return true;
   }
 
@@ -225,7 +224,7 @@ if (typeof document !== 'undefined') {
     if (mine !== gen) return;
     live = applyEvent(live, ev);
     if (ev.e === 'context') context = live.context;
-    if (live.refetch) { live = { ...live, refetch: false }; load(mine, ev.e, live.parts.length); }
+    if (live.refetch) { live = { ...live, refetch: false }; load(mine, cutOf(live, ev), true); }
     drawSoon();
   }
 

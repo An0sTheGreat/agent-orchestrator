@@ -1,17 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, afterCut, freshLoad, approvalDone, landLoad } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad } from '../js/chat.js';
 
+const bare = ps => ps.map(({ turn, ...p }) => p);
 const run = (...evs) => evs.reduce(applyEvent, emptyLive());
 
 test('text deltas append to the reply in order', () => {
   const s = run({ e: 'delta', kind: 'text', text: 'Hel' }, { e: 'delta', kind: 'text', text: 'lo' });
-  assert.deepEqual(s.parts, [{ t: 'text', text: 'Hello' }]);
+  assert.deepEqual(bare(s.parts), [{ t: 'text', text: 'Hello' }]);
 });
 
 test('thinking deltas go to the thinking section, not the reply', () => {
   const s = run({ e: 'delta', kind: 'thinking', text: 'hm' }, { e: 'delta', kind: 'thinking', text: 'm' }, { e: 'delta', kind: 'text', text: 'A' });
-  assert.deepEqual(s.parts, [{ t: 'thinking', text: 'hmm' }, { t: 'text', text: 'A' }]);
+  assert.deepEqual(bare(s.parts), [{ t: 'thinking', text: 'hmm' }, { t: 'text', text: 'A' }]);
 });
 
 test('a tool adds a row and the text after it starts a new section', () => {
@@ -24,7 +25,7 @@ test('a tool adds a row and the text after it starts a new section', () => {
 
 test("a generate_image tool's Saved: line shows the picture", () => {
   const s = run({ e: 'tool', name: 'generate_image', args: '{}', result: 'Image generated and shown to the user. Model: m. Size: 1x1. Saved: C:\\d\\images\\a b.png. Prompt: x' });
-  assert.deepEqual(s.parts[1], { t: 'image', src: '/api/file?path=' + encodeURIComponent('C:\\d\\images\\a b.png') });
+  assert.deepEqual(bare(s.parts)[1], { t: 'image', src: '/api/file?path=' + encodeURIComponent('C:\\d\\images\\a b.png') });
 });
 
 test('saved and resync set refetch', () => {
@@ -38,12 +39,12 @@ test('state updates busy, queued and the prompt; hello also sets the reply so fa
   const s = run({ e: 'state', busy: true, queued: 2, prompt });
   assert.deepEqual([s.busy, s.queued, s.prompt], [true, 2, prompt]);
   const h = run({ e: 'delta', kind: 'text', text: 'stale' }, { e: 'hello', busy: true, queued: 0, prompt: null, reply: { text: 'so far' } });
-  assert.deepEqual([h.busy, h.queued, h.prompt, h.parts], [true, 0, null, [{ t: 'text', text: 'so far' }]]);
+  assert.deepEqual([h.busy, h.queued, h.prompt, bare(h.parts)], [true, 0, null, [{ t: 'text', text: 'so far' }]]);
 });
 
 test('a delegation shows a card for the worker', () => {
   const s = run({ e: 'chat_stage', role: 'coder', stage: 'delegate', title: 'Coder' }, { e: 'delta', kind: 'text', text: 'x' });
-  assert.deepEqual(s.parts, [{ t: 'stage', title: 'Coder' }, { t: 'text', text: 'x' }]);
+  assert.deepEqual(bare(s.parts), [{ t: 'stage', title: 'Coder' }, { t: 'text', text: 'x' }]);
 });
 
 test('a context event updates the ring', () => {
@@ -53,14 +54,6 @@ test('a context event updates the ring', () => {
 
 test('the ring is blue under 50%, amber from 50%, red from 90%', () => {
   assert.deepEqual([0, 0.49, 0.5, 0.89, 0.9, 1].map(ringColor), ['blue', 'blue', 'amber', 'amber', 'red', 'red']);
-});
-
-test('after saved, the next turn parts that arrived during the load survive; the ones before it go', () => {
-  const s = run({ e: 'delta', kind: 'text', text: 'old reply' }, { e: 'saved' });
-  const cut = s.parts.length;
-  const next = applyEvent(applyEvent(s, { e: 'delta', kind: 'thinking', text: 'new' }), { e: 'chat_stage', stage: 'delegate', title: 'Coder' });
-  assert.deepEqual(afterCut(next, cut).parts, [{ t: 'thinking', text: 'new' }, { t: 'stage', title: 'Coder' }]);
-  assert.deepEqual(afterCut(s, cut).parts, []);
 });
 
 test('an older load response is ignored', () => {
@@ -76,21 +69,49 @@ test('an answered approval draws done; a new nonce draws clickable again', () =>
   assert.equal(approvalDone(null, { nonce: 'n1' }), false);
 });
 
-test('a text delta right after saved starts a new part and survives the load', () => {
-  const s = run({ e: 'delta', kind: 'text', text: 'old' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'Sure,' }, { e: 'delta', kind: 'text', text: ' ok' });
-  assert.deepEqual(afterCut(s, 1).parts, [{ t: 'text', text: 'Sure, ok' }]);
-});
-
-test('two saveds in one load window drop only the first two turns, in either landing order', () => {
-  const s = run({ e: 'delta', kind: 'text', text: 'A' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'B' },
-    { e: 'tool', name: 't', args: '{}', result: '' }, { e: 'saved' }, { e: 'delta', kind: 'text', text: 'C' });
-  const c1 = 1, c2 = 3, texts = x => x.parts.map(p => p.text);
-  assert.deepEqual(texts(afterCut(afterCut(s, c1), c2)), ['C']);
-  assert.deepEqual(texts(afterCut(afterCut(s, c2), c1)), ['C']);
-});
-
 test('an outrun load writes nothing: no messages, no title', () => {
   const conv = { title: 'Old', worker: 'W', kind: 'chat', messages: [1] };
   assert.equal(landLoad(2, 1, conv, null), null);
   assert.deepEqual(landLoad(1, 2, conv, null), { messages: [1], context: null, title: 'Old', sub: 'Chat \u00b7 to W' });
+});
+
+// The wiring's own path: feed events like onEvent does, collect the cut it makes, land it later with landSaved.
+const wire = () => {
+  const w = { live: emptyLive(), cuts: [] };
+  w.ev = (...evs) => evs.forEach(e => { w.live = applyEvent(w.live, e); const c = cutOf(w.live, e); if (c) w.cuts.push(c); });
+  w.land = i => { w.live = landSaved(w.live, w.cuts[i]); };
+  w.texts = () => w.live.parts.map(p => p.text ?? p.name ?? p.t);
+  return w;
+};
+const text = t => ({ e: 'delta', kind: 'text', text: t }), tool = { e: 'tool', name: 'tool', args: '{}', result: '' };
+
+test('turn after turn with tools: each landed saved leaves no stale parts', () => {
+  const w = wire();
+  w.ev(text('A'), { e: 'saved' }); w.land(0);
+  assert.deepEqual(w.texts(), []);
+  w.ev(text('B'), tool, { e: 'saved' }); w.land(1);
+  assert.deepEqual(w.texts(), []);
+  w.ev(tool, text('C'), { e: 'saved' }); w.land(2);
+  assert.deepEqual(w.texts(), []);
+});
+
+test('text, saved, text: the new text survives the load whole', () => {
+  const w = wire();
+  w.ev(text('old'), { e: 'saved' }, text('Sure,'), text(' ok')); w.land(0);
+  assert.deepEqual(w.texts(), ['Sure, ok']);
+});
+
+test('two saveds before either load lands: only the third turn remains, in either landing order', () => {
+  for (const order of [[0, 1], [1, 0]]) {
+    const w = wire();
+    w.ev(text('A'), { e: 'saved' }, text('B'), tool, { e: 'saved' }, text('C'));
+    order.forEach(w.land);
+    assert.deepEqual(w.texts(), ['C']);
+  }
+});
+
+test('a saved load issued before a reconnect drops nothing from what hello restored', () => {
+  const w = wire();
+  w.ev(text('A'), { e: 'saved' }, { e: 'hello', busy: true, reply: { text: 'restored' } }); w.land(0);
+  assert.deepEqual(w.texts(), ['restored']);
 });
