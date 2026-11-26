@@ -149,7 +149,7 @@ public partial class MainWindow
         return null;
     }
 
-    private static readonly HttpClient LocalApiHttp = new() { Timeout = Timeout.InfiniteTimeSpan }; // a stream has no overall cap
+    private static readonly HttpClient LocalApiHttp = new(new SocketsHttpHandler { MaxResponseDrainSize = 0 }) { Timeout = Timeout.InfiniteTimeSpan }; // a stream has no overall cap; a hang-up closes the upstream at once (no drain)
     private readonly SemaphoreSlim _localApiTargets = new(1, 1); // one engine target at a time: two app calls never load at once
 
     // POST /v1/chat/completions: the worker the model names, made ready by the engine, then the request passed through unchanged
