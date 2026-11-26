@@ -2685,6 +2685,18 @@ class ChatTests(unittest.TestCase):
         self.assertNotIn("generate_image", [t["function"]["name"] for t in log[0]["tools"]])
         self.assertNotIn("IMAGE GENERATION", log[0]["system"])
 
+    def test_voice_turn_speaks_plainly_without_search_tools_skills_or_delegation(self):
+        request = {"worker": "planner", "messages": self.MSGS, "search": True, "tools": True, "skills": [str(orchestrator.INIT_PROJECT_SKILL)]}
+        code, log, events, *_ = self.chat({**request, "voice": True}, {"planner": ["Sure. What colour?"]})
+        self.assertEqual(code, 0)
+        self.assertEqual((len(log), log[0]["tools"]), (1, None))  # one plain completion: no tool loop, so nothing to delegate
+        self.assertIn("SPOKEN CALL\n", log[0]["system"])
+        self.assertNotIn("WEB SEARCH", log[0]["system"])
+        self.assertEqual(events[-1], ("chat_reply", {"role": "planner", "text": "Sure. What colour?"}))
+        _, log, *_ = self.chat(request)  # without the flag: the switches as before
+        self.assertIn("delegate", [t["function"]["name"] for t in log[0]["tools"]])
+        self.assertIn("WEB SEARCH", log[0]["system"])
+
     def test_images_join_only_the_turns_message_in_the_request_body(self):
         with tempfile.TemporaryDirectory() as folder:
             image = Path(folder) / "p.png"

@@ -4024,6 +4024,10 @@ def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]]
     return line[:60].rstrip(" .:;,")
 
 
+VOICE_NOTE = ("\n\nSPOKEN CALL\nYou are in a spoken call: your reply is read aloud. Answer in a few natural spoken sentences, with no "
+              "markdown, lists, code or links; ask a short question back when it helps.")
+
+
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
     """One chat turn on one worker (default: the planner) that may delegate deeper work. No workflow files; other tools
     only as the request switches them on (search, utilities, skills). A legacy "mode" field is ignored."""
@@ -4050,6 +4054,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     image_tools, image_handlers, image_note = image_gen_extras(request, not vision_off(turn, role))  # the answering model's only
     extras = ([*extras[0], *image_tools], {**extras[1], **image_handlers}, extras[2] + image_note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
+    if request.get("voice"):  # a spoken call (the launcher's call mode): conversation only, no search, tools, skills or delegation
+        extras, system = ([], {}, ""), system + VOICE_NOTE
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0
