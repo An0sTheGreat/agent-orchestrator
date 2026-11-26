@@ -2112,7 +2112,7 @@ public partial class MainWindow
             await Task.Delay(400);
             var top = (Grid)CodeStop.Parent;
             if (CodeBusyText.Parent != top || CodeBusyText.Visibility != Visibility.Visible || !CodeBusyText.Text.StartsWith("Replying…") || CodeStop.Visibility != Visibility.Visible ||
-                Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeStop) - 1 || Grid.GetRow(CodeBusyText) != 0 ||
+                Grid.GetColumn(CodeBusyText) != Grid.GetColumn(CodeMic) - 1 || Grid.GetColumn(CodeMic) != Grid.GetColumn(CodeStop) - 1 || // the busy text, the mic, then Stop Grid.GetRow(CodeBusyText) != 0 ||
                 CodeBusyText.TranslatePoint(new Point(CodeBusyText.ActualWidth, 0), top).X > CodeStop.TranslatePoint(new Point(0, 0), top).X ||
                 (CodeInput.Text.Length == 0) != (CodeHint.Visibility == Visibility.Visible) || !CodeHint.Text.StartsWith("Enter to queue") ||
                 ChatBusyText.Text.Contains("Replying")) // the other conversation is only locked
