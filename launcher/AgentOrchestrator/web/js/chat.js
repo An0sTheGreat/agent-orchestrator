@@ -5,6 +5,7 @@ import { api } from './api.js';
 import { h, icon } from './h.js';
 import { renderMarkdown } from './markdown.js';
 import { ago, longPress } from './util.js';
+import { speakButton, stopSpeech, autoSpeak } from './speak.js';
 
 /* ---------- the live reply: pure ---------- */
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
@@ -203,6 +204,7 @@ if (typeof document !== 'undefined') {
     if (!user) { const who = el.querySelector('.who'); who.textContent = (m.worker || '').toUpperCase(); who.hidden = !m.worker; }
     el.querySelector('.when').textContent = [m.time && ago(m.time), m.stats].filter(Boolean).join(' · ');
     copyBtn(el, m.text || '');
+    if (!user) { const read = speakButton(m); if (read) el.querySelector('.stamp').append(' ', read); } // speak.js
     return el;
   }
 
@@ -383,6 +385,7 @@ if (typeof document !== 'undefined') {
     }
     if (cut) live = landSaved(live, cut); // even an outrun load: the newer one's messages hold the reply too
     draw(!refetch, changed); // a refetch keeps the scroll where it is
+    if (cut && r) autoSpeak(saved.at(-1), msgs); // a finished reply: Read replies aloud (speak.js)
     return true;
   }
 
@@ -411,6 +414,7 @@ if (typeof document !== 'undefined') {
 
   async function show(params) {
     const mine = ++gen;
+    stopSpeech(); // another conversation (or the same one again)
     stopEvents();
     stopEvents = () => {};
     chatId = id = params?.id ?? null;
@@ -428,6 +432,7 @@ if (typeof document !== 'undefined') {
   }
 
   outgoing = (to, text, paths) => {
+    stopSpeech(); // a new send
     if (!to || to !== id) return; // a new chat: the follow to it loads the message
     outbox = { message: { role: 'user', text, time: new Date().toISOString(), images: paths.map(picture) }, after: saved.length };
     draw(true);

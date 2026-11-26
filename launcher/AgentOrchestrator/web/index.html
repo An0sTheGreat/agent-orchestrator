@@ -23,6 +23,7 @@
 <script type="module" src="js/skills.js"></script>
 <script type="module" src="js/agents.js"></script>
 <script type="module" src="js/dictate.js"></script>
+<script type="module" src="js/speak.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -323,6 +324,7 @@
                 <button class="navrow" data-open="view-models"><span class="item-ic"><svg class="ic"><use href="#i-orb"/></svg></span><span class="item-text"><b>Models</b><small>Loading · sharing with your other PCs</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
                 <button class="navrow" data-open="view-agents"><span class="item-ic"><svg class="ic"><use href="#i-user"/></svg></span><span class="item-text"><b>Agents</b><small>Workflow · code engine · command sandbox</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
                 <button class="navrow" data-open="view-plugins"><span class="item-ic"><svg class="ic"><use href="#i-spark"/></svg></span><span class="item-text"><b>Plugins</b><small>Ponytail</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
+                <button class="navrow" data-open="view-voice"><span class="item-ic"><svg class="ic"><use href="#i-mic"/></svg></span><span class="item-text"><b>Voice</b><small>Replies read aloud · voice · speed</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
                 <button class="navrow" data-open="view-about"><span class="item-ic"><svg class="ic"><use href="#i-phone"/></svg></span><span class="item-text"><b>About</b><small id="setabout">Version · this PC</small></span><svg class="ic sm chev"><use href="#i-chevron"/></svg></button>
               </div>
               <p class="hintline">Downloads, folders, sandbox setup and sharing codes stay on the desktop app.</p>
@@ -446,6 +448,15 @@
           </section>
 
           <!-- ============================= ABOUT ============================= -->
+          <section class="view spage" id="view-voice">
+            <header class="vhead">
+              <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle">Voice</h2></div>
+            </header>
+            <div class="vbody">
+            </div>
+          </section>
+
           <section class="view spage" id="view-about">
             <header class="vhead">
               <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
