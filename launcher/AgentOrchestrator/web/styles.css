@@ -739,3 +739,12 @@ body.landscape .drawer { padding-top: 0; }
 .tabbar { height: calc(54px + env(safe-area-inset-bottom)); padding-bottom: calc(2px + env(safe-area-inset-bottom)); }
 .composer { padding-bottom: calc(12px + env(safe-area-inset-bottom)); }
 .sheet { padding-bottom: calc(18px + env(safe-area-inset-bottom)); }
+/* iOS 26 gives a home-screen app drawing under the status bar a viewport short by the status bar's height (WebKit bug 301108),
+   so 100dvh stops above the bottom edge and the strip below shows white: in standalone mode the document is made screen-tall
+   and the shell takes the large viewport (lvh == dvh where there is no address bar elsewhere). The root's own dark colour is
+   what shows behind the status bar and in any gap. */
+html { background-color: #1E1E1E; }
+@media (display-mode: standalone) {
+  html { min-height: min(100lvh, calc(100% + env(safe-area-inset-top))); }
+  .shell { height: 100lvh; }
+}
