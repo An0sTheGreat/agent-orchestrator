@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ago, makeRouter, longPress } from '../js/util.js';
+import { ago, makeRouter, longPress, keyboardBox } from '../js/util.js';
+
+test('keyboardBox: the visual viewport while the keyboard is up, null while it is down or missing', () => {
+  assert.deepEqual(keyboardBox({ height: 420, offsetTop: 250 }, 844), { height: 420, top: 250 });
+  assert.equal(keyboardBox({ height: 800, offsetTop: 0 }, 844), null, 'within 80 px: the keyboard is down');
+  assert.equal(keyboardBox(undefined, 844), null);
+});
 
 test('longPress: a 500 ms hold fires once and swallows its click; moving, lifting early or another button does not', t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });

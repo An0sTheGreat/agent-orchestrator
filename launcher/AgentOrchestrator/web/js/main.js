@@ -2,7 +2,7 @@
 // Screen modules load as their own <script type="module"> after this one and call registerScreen at their top level;
 // start() runs on DOMContentLoaded, after every module script has run.
 import { api, nextWait, tailnetOf, failAction, baseOf, startBase, gone, latestOnly } from './api.js';
-import { makeRouter } from './util.js';
+import { makeRouter, keyboardBox } from './util.js';
 import { h } from './h.js';
 
 const $ = (s, r = document) => r.querySelector(s);
@@ -165,6 +165,18 @@ $$('.composer').forEach(footer => {
     box.style.height = Math.min(96, box.scrollHeight) + 'px';
   });
 });
+
+/* ---------- iOS keyboard: the shell fits the visible part above it, so the header stays and no gap opens over the keyboard ---------- */
+const vv = window.visualViewport;
+if (vv) {
+  const fitShell = () => {
+    const box = keyboardBox(vv, document.documentElement.clientHeight), style = $('.shell').style;
+    style.height = box ? box.height + 'px' : ''; // '' restores the stylesheet's 100dvh / 100lvh
+    style.transform = box ? `translateY(${box.top}px)` : '';
+  };
+  vv.addEventListener('resize', fitShell);
+  vv.addEventListener('scroll', fitShell);
+}
 
 /* ---------- landscape: a phone on its side (short and wide) gets the rail layout ---------- */
 const landscape = matchMedia('(orientation: landscape) and (max-height: 560px)');

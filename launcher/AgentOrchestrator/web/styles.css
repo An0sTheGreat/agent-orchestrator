@@ -764,3 +764,20 @@ html { background-color: #1E1E1E; }
   .statusbar-strip { height: calc(env(safe-area-inset-top) + 12px); }
   .drawer-top { padding-top: max(52px, calc(env(safe-area-inset-top) + 24px)); }
 }
+
+/* ============================== phone app: Images ============================== */
+.imgsize { display: flex; align-items: center; gap: 4px; }
+.imglock { margin-top: 4px; color: var(--accent-light); }
+.imglock.on { color: var(--muted); opacity: .6; } /* on: unlocked, any size as typed */
+#imgform .sysprompt { background: var(--field); margin: 0 0 10px; }
+.imggo { width: 100%; }
+.imgqrow { display: flex; gap: 8px; margin-top: 8px; }
+.imgqrow:not(:has(:not([hidden]))) { display: none; }
+.pcard.imgstage { width: 100%; height: auto; max-height: 420px; aspect-ratio: 1 / var(--ar, 1); margin: 0 0 10px; }
+.imggrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.imgthumb { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: var(--card); display: block;
+  -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.imgviewer { position: absolute; inset: 0; z-index: 25; background: #000; display: flex; flex-direction: column; touch-action: pan-y; }
+.imgviewer img { flex: 1; min-height: 0; width: 100%; object-fit: contain; -webkit-user-drag: none; user-select: none; }
+.imgviewer-bar { display: flex; gap: 8px; justify-content: center; padding: 10px 10px calc(10px + env(safe-area-inset-bottom)); }
+.imgviewer-bar .btn { margin-top: 0; }

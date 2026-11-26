@@ -37,6 +37,12 @@ export function longPress(el, fn, ms = 500, slop = 10) {
   el.addEventListener('click', e => { if (fired) { fired = false; e.preventDefault(); e.stopPropagation(); } }, true);
 }
 
+// The shell's box while the on-screen keyboard is up: the visual viewport's height and its offset into the page (iOS scrolls the page
+// to show the focused field); null while it is down (the visual viewport within `slack` px of the layout viewport's height) or with
+// no visualViewport.
+export const keyboardBox = (vv, layoutHeight, slack = 80) =>
+  vv && vv.height < layoutHeight - slack ? { height: vv.height, top: vv.offsetTop } : null;
+
 // "3 min ago", "yesterday", "2 days ago", "last week", then the date: the list rows' time, as the concept writes it.
 export function ago(when, now = new Date()) {
   const d = new Date(when), mins = Math.floor((now - d) / 60000);

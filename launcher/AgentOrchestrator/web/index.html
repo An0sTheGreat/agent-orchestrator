@@ -17,6 +17,7 @@
 <script type="module" src="js/chat.js"></script>
 <script type="module" src="js/pcs.js"></script>
 <script type="module" src="js/composer.js"></script>
+<script type="module" src="js/images.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -121,6 +122,49 @@
               <div class="card empty">
                 <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
                 <p class="muted">Code conversations and project runs from the phone arrive in a later update. They keep running on the PC.</p>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================= IMAGES ============================= -->
+          <section class="view spage" id="view-images">
+            <header class="vhead">
+              <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
+              <div class="vhead-main"><h2 class="vtitle">Images</h2><p class="vsub" data-pc-subtitle></p></div>
+            </header>
+            <div class="vbody">
+              <form id="imgform" class="card" autocomplete="off">
+                <label class="field">Prompt<textarea name="prompt" rows="3" placeholder="What to draw"></textarea></label>
+                <label class="field" data-neg>Negative prompt<textarea name="negative" rows="2" placeholder="What to leave out"></textarea></label>
+                <div class="fields">
+                  <label class="span">Model<select name="model"></select></label>
+                  <label>Aspect ratio<select name="aspect"></select></label>
+                  <label>Images<select name="count"></select></label>
+                  <label data-local>Width<input name="width" inputmode="numeric"></label>
+                  <label data-local>Height<span class="imgsize"><input name="height" inputmode="numeric"><button type="button" class="iconbtn sm imglock" id="imglock" aria-label="Unlock the aspect ratio"><svg class="ic sm"><use href="#i-lock"/></svg></button></span></label>
+                  <label data-local>Steps<input name="steps" inputmode="numeric"></label>
+                  <label data-local>Guidance<input name="cfg" inputmode="decimal"></label>
+                  <label class="span" data-local>Seed<input name="seed" inputmode="numeric" placeholder="Empty: random"></label>
+                </div>
+                <details class="sysprompt">
+                  <summary><span class="secthead inline">Advanced</span></summary>
+                  <div class="rowline"><div><b>Low VRAM</b><small>One model on the GPU at a time. Slower to load; needed when the models together are bigger than the GPU.</small></div><button type="button" class="switch" id="imglowvram" aria-label="Low VRAM"></button></div>
+                </details>
+                <button class="btn imggo" type="submit"><svg class="ic sm"><use href="#i-image"/></svg> Generate</button>
+                <div class="imgqrow"><button type="button" class="chip" id="imgqueued" hidden></button><button type="button" class="chip" id="imgcancel" hidden>Cancel</button></div>
+                <div id="imgqueue" hidden><div class="imgqlist"></div></div>
+              </form>
+              <div class="pcard imgstage" id="imgstage" hidden><div class="pcard-dots"><i class="pcard-glow a"></i><i class="pcard-glow b"></i></div><img class="pcard-img" alt="" hidden><span class="pcard-status">Making a picture<i class="pcard-ell">...</i></span><span class="pcard-step"></span><span class="pcard-pct" hidden></span></div>
+              <p class="secthead">Gallery</p>
+              <p class="muted" id="imgempty" hidden>No pictures yet.</p>
+              <div class="imggrid" id="imggallery"></div>
+            </div>
+            <div class="imgviewer" id="imgviewer" hidden>
+              <img alt="">
+              <div class="imgviewer-bar">
+                <button class="btn ghost tight" data-viewer-close>Close</button>
+                <button class="btn ghost tight" data-viewer-use>Use these settings</button>
+                <button class="btn ghost tight" data-viewer-delete><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
               </div>
             </div>
           </section>
@@ -461,6 +505,7 @@
         <nav class="tabbar" id="tabbar">
           <button class="tab on" data-open="view-chats"><svg class="ic"><use href="#i-chat"/></svg><span>Chats</span></button>
           <button class="tab" data-open="view-code"><svg class="ic"><use href="#i-code"/></svg><span>Code</span></button>
+          <button class="tab" data-open="view-images"><svg class="ic"><use href="#i-image"/></svg><span>Images</span></button>
           <button class="tab" data-open="view-skills"><svg class="ic"><use href="#i-spark"/></svg><span>Skills</span></button>
           <button class="tab" data-open="view-settings"><svg class="ic"><use href="#i-gear"/></svg><span>Settings</span></button>
         </nav>
