@@ -177,7 +177,10 @@ public partial class MainWindow
     private async Task<(int, object)> WebSpeak(JsonElement body)
     {
         var text = WebField(body, "text");
-        var (settings, customs) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.CustomVoices.ToList()));
+        // worker: a role id, or the name a reply carries ("Lead", a custom worker's title), mapped to its role on the UI thread
+        var askedWorker = WebField(body, "worker");
+        var (settings, customs, role) = await Dispatcher.InvokeAsync(() => (_settings.Tts, _settings.CustomVoices.ToList(),
+            _cards.FirstOrDefault(c => c.Role == askedWorker || ChatName(c, c.Role).Equals(askedWorker, StringComparison.OrdinalIgnoreCase))?.Role ?? askedWorker));
         if (string.IsNullOrWhiteSpace(text))
             return (400, new { error = "Nothing to read" });
         if (text.Length > settings.MaxChars * 2)
@@ -186,7 +189,7 @@ public partial class MainWindow
         if (stand is null && !TtsModels.Ready)
             return (409, new { error = WebSpeakNotReady });
         var name = WebField(body, "voice") is { Length: > 0 } asked ? asked
-            : settings.WorkerVoices.GetValueOrDefault(WebField(body, "worker")) is { Length: > 0 } worker ? worker
+            : settings.WorkerVoices.GetValueOrDefault(role) is { Length: > 0 } worker ? worker
             : settings.Voice;
         var choice = VoiceChoice.Find(name, customs);
         var speak = stand ?? ((t, c, s) => Tts.Synthesize(t, c, s));

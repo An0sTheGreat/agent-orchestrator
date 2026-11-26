@@ -40,6 +40,7 @@ public partial class App : Application
             ImageShare.SelfTest();
             WebServer.SelfTest();
             WebEvents.SelfTest();
+            AgentOrchestrator.MainWindow.WebSpeakSelfTest();
             Speech.SelfTest();
             Tts.TtsSelfTest();
             Shutdown(0);
