@@ -1,6 +1,6 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseSse, nextWait, tailnetOf, failAction, baseOf, startBase, gone, latestOnly } from '../js/api.js';
+import { parseSse, nextWait, tailnetOf, failAction, baseOf, startBase, gone, latestOnly, api, WATCHDOG } from '../js/api.js';
 
 test('two events in one chunk', () => {
   assert.deepEqual(parseSse('data: {"e":"a"}\n\ndata: {"e":"b"}\n\n'), [{ e: 'a' }, { e: 'b' }]);
@@ -100,4 +100,33 @@ test('the remembered PC is kept when its probe answers 5xx, forgotten on 403', a
   assert.equal(forgot, 0);
   assert.equal(await startBase('laptop.tail0000.ts.net', 'pc.tail0000.ts.net', refusing, forget), '');
   assert.equal(forgot, 1);
+});
+
+test('the stream watchdog reopens a connection with no frame for 45 s; open and messages feed it', () => {
+  const made = [];
+  globalThis.EventSource = class { constructor(url) { this.url = url; this.closed = false; made.push(this); } close() { this.closed = true; } };
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const got = [];
+    const stop = api.events('c1', ev => got.push(ev));
+    assert.equal(WATCHDOG, 45000);
+    mock.timers.tick(30000);
+    made[0].onopen();
+    mock.timers.tick(30000);
+    made[0].onmessage({ data: '{"e":"state"}' });
+    mock.timers.tick(44999);
+    assert.equal(made.length, 1);
+    assert.equal(made[0].closed, false);
+    mock.timers.tick(1);
+    assert.equal(made[0].closed, true); // silent for 45 s: dropped
+    mock.timers.tick(1000);
+    assert.equal(made.length, 2); // and reopened after the 1 s backoff
+    assert.deepEqual(got, [{ e: 'state' }]);
+    stop();
+    mock.timers.tick(100000);
+    assert.equal(made.length, 2); // stopped: no watchdog left behind
+  } finally {
+    mock.timers.reset();
+    delete globalThis.EventSource;
+  }
 });

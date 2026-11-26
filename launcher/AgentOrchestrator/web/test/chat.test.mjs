@@ -115,3 +115,16 @@ test('a saved load issued before a reconnect drops nothing from what hello resto
   w.ev(text('A'), { e: 'saved' }, { e: 'hello', busy: true, reply: { text: 'restored' } }); w.land(0);
   assert.deepEqual(w.texts(), ['restored']);
 });
+
+test('a server resync reopens the stream, and the new hello replaces a reply with a hole', () => {
+  const s = run(text('Hel'), text('o'), { e: 'resync' }); // the server dropped the 'l' between the two
+  assert.equal(s.reopen, true);
+  const h = applyEvent({ ...s, reopen: false }, { e: 'hello', busy: true, reply: { text: 'Hello' } });
+  assert.deepEqual(bare(h.parts), [{ t: 'text', text: 'Hello' }]);
+});
+
+test('hello refetches: a turn saved between the first GET and the subscription is loaded', () => {
+  const s = run({ e: 'hello', busy: false, queued: 0, prompt: null, reply: { text: '' } });
+  assert.equal(s.refetch, true);
+  assert.equal(cutOf(s, { e: 'hello' }), null); // a plain load: it drops no live parts
+});

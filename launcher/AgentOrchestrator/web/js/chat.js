@@ -9,7 +9,8 @@ import { ago } from './util.js';
 /* ---------- the live reply: pure ---------- */
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
 // The engine's deltas carry no section breaks: a text delta after a tool row (or anything not text) starts a new section.
-export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, turn: 0, epoch: 0 });
+// refetch: load the conversation again. reopen: close the stream and open it again (a fresh hello replaces the parts).
+export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0 });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 const SAVED = /\bSaved: ([^\r\n]+?)\. Prompt: /g; // generate_image's line (ImageGen.ChatResult) names the saved picture
@@ -21,8 +22,8 @@ export function applyEvent(s, ev) {
     ? { ...s, parts: [...s.parts.slice(0, -1), tag({ t, text: last.text + text })] }
     : { ...s, parts: [...s.parts, tag({ t, text })] };
   switch (ev.e) {
-    case 'hello':
-      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [], turn: 0, epoch: s.epoch + 1 };
+    case 'hello': // refetch too: a turn saved between the first GET and the subscription is in neither, and no `saved` follows
+      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, parts: ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [], turn: 0, epoch: s.epoch + 1 };
     case 'state':
       return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null };
     case 'delta':
@@ -40,8 +41,8 @@ export function applyEvent(s, ev) {
     }
     case 'saved':
       return { ...s, refetch: true, turn: s.turn + 1 };
-    case 'resync':
-      return { ...s, refetch: true };
+    case 'resync': // the server dropped events (the reply has a hole): reopen, so the new connection's hello replaces the parts
+      return { ...s, refetch: true, reopen: true };
     default:
       return s;
   }
@@ -79,7 +80,7 @@ if (typeof document !== 'undefined') {
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
   const view = $('#view-chat'), msgs = $('#view-chat .msgs'), pop = $('#ctxpop');
-  let id = null, live = emptyLive(), saved = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
+  let id = null, live = emptyLive(), saved = [], liveEls = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
   const img = src => h('img', { class: 'pic', src: api.base + src, alt: '', loading: 'lazy', // a path on the PC the app talks to
@@ -98,11 +99,12 @@ if (typeof document !== 'undefined') {
     return el;
   }
 
-  function part(p) {
+  function part(p, key) {
     if (p.t === 'text') return h('div', { class: 'md' }, renderMarkdown(p.text));
     if (p.t === 'image') return img(p.src);
     if (p.t === 'thinking') {
       const el = clone('tpl-thinking');
+      el.dataset.key = key; // which part this fold is, so an opened fold stays open across live redraws
       el.querySelector('.fold-text').textContent = p.text.trim().split('\n')[0];
       el.querySelector('.fold-body').append(renderMarkdown(p.text));
       return el;
@@ -137,7 +139,8 @@ if (typeof document !== 'undefined') {
     const out = [];
     if (live.parts.length) {
       const el = clone('tpl-msg-reply');
-      el.querySelector('.md').replaceWith(...live.parts.map(part));
+      const n = {}; // a part's key: epoch, turn and place in its turn (landSaved drops whole turns from the front)
+      el.querySelector('.md').replaceWith(...live.parts.map(p => part(p, `${live.epoch}.${p.turn}.${n[p.turn] = (n[p.turn] ?? -1) + 1}`)));
       el.querySelector('.stamp').remove();
       out.push(el);
     }
@@ -177,10 +180,20 @@ if (typeof document !== 'undefined') {
     $('#queue').replaceChildren(h('span', { class: 'dot live' }), ` ${n} message${n === 1 ? '' : 's'} queued`);
   }
 
-  function draw(toEnd) {
+  // Per frame only the live reply's nodes are replaced; the saved messages' nodes are built when a load lands (`all`).
+  function drawLive() {
+    const open = new Set(liveEls.flatMap(el => [...el.querySelectorAll('details[open]')].map(d => d.dataset.key)));
+    liveEls.forEach(el => el.remove());
+    liveEls = liveNodes();
+    liveEls.forEach(el => el.querySelectorAll('details').forEach(d => { if (open.has(d.dataset.key)) d.open = true; }));
+    msgs.append(...liveEls);
+  }
+
+  function draw(toEnd, all = false) {
     cancelAnimationFrame(frame);
     const stick = toEnd || msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 80;
-    msgs.replaceChildren(...saved.map(message), ...liveNodes());
+    if (all) { msgs.replaceChildren(...saved.map(message)); liveEls = []; }
+    drawLive();
     drawState();
     drawContext();
     if (stick) msgs.scrollTop = msgs.scrollHeight;
@@ -197,6 +210,7 @@ if (typeof document !== 'undefined') {
     catch (err) { if (mine === gen) { if (err.status === 404) notFound(); else fail(err); } return false; }
     if (mine !== gen) return false;
     const r = landLoad(applied, seq, conv, context);
+    const changed = !!r && JSON.stringify(r.messages) !== JSON.stringify(saved); // hello refetches on every connection
     if (r) {
       applied = seq;
       saved = r.messages;
@@ -205,7 +219,7 @@ if (typeof document !== 'undefined') {
       view.querySelector('.vsub').textContent = r.sub;
     }
     if (cut) live = landSaved(live, cut); // even an outrun load: the newer one's messages hold the reply too
-    draw(!refetch); // a refetch keeps the scroll where it is
+    draw(!refetch, changed); // a refetch keeps the scroll where it is
     return true;
   }
 
@@ -225,8 +239,11 @@ if (typeof document !== 'undefined') {
     live = applyEvent(live, ev);
     if (ev.e === 'context') context = live.context;
     if (live.refetch) { live = { ...live, refetch: false }; load(mine, cutOf(live, ev), true); }
+    if (live.reopen) { live = { ...live, reopen: false }; listen(mine); }
     drawSoon();
   }
+
+  const listen = mine => { stopEvents(); stopEvents = api.events(id, ev => onEvent(mine, ev), n => dropped(mine, n)); };
 
   async function show(params) {
     const mine = ++gen;
@@ -240,9 +257,9 @@ if (typeof document !== 'undefined') {
     pop.hidden = true;
     view.querySelector('.vtitle').textContent = id ? '' : 'New chat';
     view.querySelector('.vsub').textContent = '';
-    draw(true);
+    draw(true, true);
     if (!id || !await load(mine)) return; // a new chat stays empty until the composer sends
-    stopEvents = api.events(id, ev => onEvent(mine, ev), n => dropped(mine, n));
+    listen(mine);
   }
 
   // Another PC (main.js usePc): this chat's stream and any load on its way are the old PC's.
