@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.IO;
 using System.Windows;
 using NAudio;
 using NAudio.Dsp;
@@ -26,6 +27,16 @@ public partial class MainWindow
     private long _callLevelsAt;
     // --ui-smoke: replaces RunTurn for a phrase (no llama-server); it runs the turn through StartChatTurn and FinishChatTurn.
     private Action<string>? _callTurnStub;
+    // A call in a Chatterbox voice makes its chat model and the voice ready together (PrepareCallAsync): the first phrase waits
+    // for the model, then for the warm-up at most CallWarmWait. _callKeepsVoice: the voice fits beside the model, so the call's
+    // turns keep the engine (FreeGpuForChat); _callStandIn: it does not, so the call reads with the Kokoro stand-in throughout.
+    private Task _callModelReady = Task.CompletedTask, _callVoiceReady = Task.CompletedTask;
+    private bool _callKeepsVoice, _callStandIn, _callPreparing;
+    internal static TimeSpan CallWarmWait = TimeSpan.FromSeconds(40);
+    // --ui-smoke: the model load, the warm-up, the free GPU memory and the model's estimate (bytes, name, context) the call sees
+    private Func<Task>? _callLoadStub, _callWarmStub;
+    private Func<long?>? _callFreeStub;
+    private Func<(long Bytes, string Model, long Context)?>? _callSizeStub;
 
     internal event Action<CallState>? CallStateChanged;
     internal event Action<float[], bool>? CallLevels; // 24 band energies 0..1; true: the model's voice, false: the microphone
@@ -101,6 +112,70 @@ public partial class MainWindow
         Player.Played = samples => CallLevelsOf(samples, Tts.Rate, speaking: true);
         _ = Task.Run(() => CallFeeding(queue));
         CallFire(CallEvent.Start);
+        if (CallVoice() is { Chatterbox: not null } voice)
+        {
+            var model = new TaskCompletionSource();
+            (_callModelReady, _callPreparing) = (model.Task, true);
+            var ready = _callVoiceReady = PrepareCallAsync(voice, model);
+            ShowCallState(_callNow);
+            _ = ready.ContinueWith(_ => Dispatcher.BeginInvoke(() =>
+            {
+                if (_callVoiceReady != ready)
+                    return;
+                _callPreparing = false;
+                ShowCallState(_callNow);
+            }));
+        }
+    }
+
+    private VoiceChoice CallVoice() => VoiceChoice.Find(_settings.Tts.Voice, _settings.CustomVoices);
+
+    private long? CallFreeGpu() => _callFreeStub is { } stub ? stub() : Chatterbox.FreeGpuBytes();
+
+    // The fit check (a toast once when the voice does not fit beside the model), the call's model loaded when none is (Load
+    // models' path), then the voice warmed up.
+    private async Task PrepareCallAsync(VoiceChoice voice, TaskCompletionSource modelReady)
+    {
+        var cb = voice.Chatterbox!;
+        try
+        {
+            var card = ChatTarget();
+            var size = card is null ? null : await CallModelSize(card);
+            var free = _callFreeStub is { } stub ? stub() : await Task.Run(() => Chatterbox.FreeGpu.Get(wait: true));
+            _callKeepsVoice = true;
+            if (size is { Remote: false } sized && Chatterbox.CallRoom(free, Chatterbox.Loaded, ModelsLoaded, sized.Bytes) is { } room && room < Chatterbox.NeedBytes)
+            {
+                (_callKeepsVoice, _callStandIn) = (false, true);
+                var text = Chatterbox.CallWontFitText(cb.Name, cb.Fallback, sized.Model, sized.Context, room);
+                Log("Call: " + text);
+                Toast(text, "#F7C873");
+            }
+            if (InCall && !ModelsLoaded && card is not null && size is not { Remote: true })
+                await (_callLoadStub?.Invoke() ?? LoadRoleAsync(card.Role, card.Title));
+        }
+        finally { modelReady.TrySetResult(); }
+        if (InCall && _callKeepsVoice)
+            await (_callWarmStub?.Invoke() ?? Chatterbox.WarmUpAsync());
+    }
+
+    // The worker's GPU estimate as its settings show it (VramEstimate), its model's name and context; null: unknown.
+    private async Task<(bool Remote, long Bytes, string Model, long Context)?> CallModelSize(RoleCard card)
+    {
+        if (_callSizeStub is { } stub)
+            return stub() is { } s ? (false, s.Bytes, s.Model, s.Context) : null;
+        WebWorkerState state;
+        try { state = WebState(card); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NullReferenceException or InvalidOperationException) { return null; }
+        if (state.Remote is not null)
+            return (true, 0, "", 0);
+        var gguf = LauncherLogic.ResolveGguf(state.Load, state.Folder, state.Hub);
+        var (meta, files, head) = await Task.Run(() => VramEstimate.Read(gguf));
+        var options = ModelOptions.Prefill(state.Current, ModelOptions.Defaults(meta, state.Load?["model_path"] is not null, state.Inherited))
+            .ToDictionary(p => p.Key, p => p.Value.Trim());
+        if (VramEstimate.Estimate(meta, files.Model, files.Vision, options, head) is not { } estimate)
+            return null;
+        var context = long.TryParse(options.GetValueOrDefault("max_seq_length", ""), out var c) && c > 0 ? c : Math.Min(ModelOptions.ModelContext(meta) ?? 4096, ModelOptions.ContextCap);
+        return (false, estimate.Total, Path.GetFileNameWithoutExtension(gguf) ?? card.Title, context);
     }
 
     // The feeding thread: one DictationSession per listening spell (a new one when one ends on its own after silence); samples
@@ -180,10 +255,21 @@ public partial class MainWindow
             return;
         }
         CallFire(CallEvent.Sent);
+        Forget(CallWhenReady(phrase));
+    }
+
+    // A phrase waits for the call's model, then for its voice's warm-up at most CallWarmWait (then a sentence the voice cannot
+    // read yet falls back with its note); ended or interrupted meanwhile, it is not sent.
+    private async Task CallWhenReady(string phrase)
+    {
+        await _callModelReady;
+        await Task.WhenAny(_callVoiceReady, Task.Delay(CallWarmWait));
+        if (_callNow != CallState.Thinking)
+            return;
         if (_callTurnStub is { } stub)
             stub(phrase);
         else
-            Forget(CallTurn(phrase));
+            await CallTurn(phrase);
     }
 
     private async Task CallTurn(string phrase)
@@ -208,10 +294,14 @@ public partial class MainWindow
 
     private async Task CallSpeak(BlockingCollection<string> sentences, CancellationTokenSource cancel)
     {
+        var chosen = CallVoice();
+        var voice = _callStandIn ? chosen.Kokoro : chosen; // a voice that does not fit: the stand-in, without a try each sentence
+        string? fell = null;
+        void OnFell(string note) => fell = note;
+        SpeechPlayer.FellBack += OnFell;
         try
         {
-            await Player.SpeakStream(sentences.GetConsumingEnumerable(cancel.Token), VoiceChoice.Find(_settings.Tts.Voice, _settings.CustomVoices),
-                _settings.Tts, cancel.Token);
+            await Player.SpeakStream(sentences.GetConsumingEnumerable(cancel.Token), voice, _settings.Tts, cancel.Token);
         }
         catch (OperationCanceledException) { }
         catch (Exception exception)
@@ -219,6 +309,10 @@ public partial class MainWindow
             Log($"Call: speaking failed: {exception.Message}");
             Toast(exception is InvalidOperationException ? exception.Message : "Speaking failed: " + exception.Message, "#FF667A");
         }
+        finally { SpeechPlayer.FellBack -= OnFell; }
+        // which engine and voice read it (each reply tries Chatterbox again: a fallback lasts one reply)
+        Log(voice.Chatterbox is { } cb && fell is null ? $"Call: the reply was read by Chatterbox in {cb.Name}"
+            : $"Call: the reply was read by Kokoro in {voice.Kokoro.Name}{(_callStandIn ? $" (the stand-in for {chosen.Chatterbox?.Name})" : "")}{(fell is null ? "" : " — " + fell)}");
         if (_callSentences == sentences) // not interrupted, ended or replaced by a newer turn meanwhile
         {
             _callSentences = null;
@@ -288,7 +382,8 @@ public partial class MainWindow
         StopCallSpeech();
         if (_speechPlayer is { } player)
             player.Played = null;
-        _callMuted = false;
+        (_callMuted, _callKeepsVoice, _callStandIn, _callPreparing) = (false, false, false, false);
+        (_callModelReady, _callVoiceReady) = (Task.CompletedTask, Task.CompletedTask);
         CallFire(CallEvent.End);
         if (_chatConv is { } saved && saved.Title == _callTitle)
             Toast($"Call saved to {_callTitle}", click: () => OpenChatConversation(saved.Id));

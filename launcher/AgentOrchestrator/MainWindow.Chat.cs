@@ -575,7 +575,8 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
-    private bool ModelsLoaded => File.Exists(_llamaStateFile);
+    private bool ModelsLoaded => _modelsLoadedStub?.Invoke() ?? File.Exists(_llamaStateFile);
+    private Func<bool>? _modelsLoadedStub; // --ui-smoke (CallSmoke): whether a chat model is loaded
 
     // Off: stop the local server right now (the toggle is locked while a reply streams).
     private void ChatKeep_Click(object sender, RoutedEventArgs e)

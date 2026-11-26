@@ -1098,11 +1098,13 @@ public partial class MainWindow
     {
         // Chatterbox (about 3.5 GB of GPU, Chatterbox.NeedBytes) leaves first when the chat model would not fit beside it: in the
         // background (its read is cancelled, then the engine freed), never waited on here; FreeGpuBytes is the cached value.
-        // While the chat model loads it does not load again (reads go to Kokoro), at most 5 minutes.
+        // While the chat model loads it does not load again (reads go to Kokoro), at most 5 minutes. A call whose voice fits beside
+        // its model keeps it for its own turns (Chatterbox.KeepForCall).
         var modelsLoaded = ModelsLoaded;
-        if (!modelsLoaded)
+        var keep = Chatterbox.KeepForCall(InCall, _callKeepsVoice, modelsLoaded, modelsLoaded ? CallFreeGpu() : null);
+        if (!modelsLoaded && !keep)
             Chatterbox.HoldWhile(() => !ModelsLoaded && (_loadingRole is not null || _localApiLoading || _chatBusy || _process is not null), TimeSpan.FromMinutes(5));
-        if (Chatterbox.Loaded && Chatterbox.ShouldUnloadForChat(true, modelsLoaded, modelsLoaded ? Chatterbox.FreeGpuBytes() : null))
+        if (Chatterbox.Loaded && !keep && Chatterbox.ShouldUnloadForChat(true, modelsLoaded, modelsLoaded ? CallFreeGpu() : null))
         {
             _ = Task.Run(Chatterbox.Unload);
             Log("Chatterbox unloaded to make room for the chat model");

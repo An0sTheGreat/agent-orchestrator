@@ -62,6 +62,7 @@ public partial class MainWindow
             CallState.Thinking => "Thinking…",
             CallState.Speaking => "Speaking",
             CallState.Paused => "Paused",
+            CallState.Listening when _callPreparing => "Getting ready…", // the call's model and voice (PrepareCallAsync); speaking is already heard
             _ => "Listening…",
         };
         CallButton.Tag = state == CallState.Idle ? "" : "on";

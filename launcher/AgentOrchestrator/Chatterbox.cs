@@ -278,6 +278,23 @@ internal static class Chatterbox
     internal static bool ShouldUnloadForChat(bool loaded, bool modelsLoaded, long? freeVram) =>
         loaded && (!modelsLoaded || freeVram < 2L << 30);
 
+    // A call in a Chatterbox voice that fits beside its chat model (CallRoom at its start) keeps the engine for its own turns:
+    // no hold and no unload while no model is loaded (the load fits beside it), and with the model loaded only when the free
+    // memory falls under CallHeadroom (unknown: stays).
+    internal const long CallHeadroom = 1L << 29;
+    internal static bool KeepForCall(bool inCall, bool fits, bool modelsLoaded, long? freeVram) =>
+        inCall && fits && (!modelsLoaded || !(freeVram < CallHeadroom));
+
+    // The GPU memory Chatterbox would have once the chat model is loaded too (null: unknown, it tries): the free memory now,
+    // less the model's estimate when it is not loaded yet, plus the engine's own when it is loaded.
+    internal static long? CallRoom(long? freeVram, bool loaded, bool modelsLoaded, long modelBytes) =>
+        freeVram - (modelsLoaded ? 0 : modelBytes) + (loaded ? NeedBytes : 0);
+
+    // The toast at the start of a call whose Chatterbox voice does not fit beside its chat model.
+    internal static string CallWontFitText(string voice, string standIn, string model, long context, long room) =>
+        $"{voice} needs ~{NeedBytes / (double)(1L << 30):0.#} GB of GPU memory; with {model} at {context.ToString("N0", CultureInfo.InvariantCulture)} tokens only " +
+        $"{Math.Max(0, room) / (double)(1L << 30):0.0} GB is free — the call uses its stand-in voice {standIn}. Lower the context length or pick a Kokoro voice for calls.";
+
     // The first GPU's free memory (nvidia-smi, read at most every 3 s), or null. The UI thread never waits on nvidia-smi: it
     // gets the last value (null before the first read) while a background read refreshes it.
     internal static long? FreeGpuBytes() => FreeGpu.Get(wait: System.Windows.Application.Current?.Dispatcher.CheckAccess() != true);
@@ -825,6 +842,13 @@ internal static class Chatterbox
         Check(Chatterbox.ShouldUnloadForChat(true, false, null) && Chatterbox.ShouldUnloadForChat(true, true, 1L << 30)
             && !Chatterbox.ShouldUnloadForChat(true, true, 3L << 30) && !Chatterbox.ShouldUnloadForChat(true, true, null)
             && !Chatterbox.ShouldUnloadForChat(false, false, 0), "unload for chat");
+        // a call that fits keeps the engine: no model yet, or loaded with at least CallHeadroom free (unknown: kept)
+        Check(KeepForCall(true, true, false, null) && KeepForCall(true, true, true, 1L << 30) && KeepForCall(true, true, true, null)
+            && !KeepForCall(true, true, true, 1L << 28) && !KeepForCall(true, false, true, 8L << 30) && !KeepForCall(false, true, true, 8L << 30), "keep for a call");
+        Check(CallRoom(null, false, false, 8L << 30) is null && CallRoom(14L << 30, false, false, 12L << 30) == 2L << 30
+            && CallRoom(1L << 30, true, true, 12L << 30) == (1L << 30) + NeedBytes && CallRoom(5L << 30, false, true, 12L << 30) == 5L << 30, "the room beside the model");
+        Check(CallWontFitText("GPT_Ember", "af_heart", "Model-9B-Q5_K_M", 120000, 2L << 30) == "GPT_Ember needs ~3.5 GB of GPU memory; with Model-9B-Q5_K_M at 120,000 tokens "
+            + "only 2.0 GB is free — the call uses its stand-in voice af_heart. Lower the context length or pick a Kokoro voice for calls.", "the fit message");
 
         // the hold while a chat model loads: while loading() holds and only until its time is up
         var now = DateTime.UtcNow;
