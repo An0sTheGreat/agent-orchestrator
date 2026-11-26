@@ -288,6 +288,7 @@ public partial class MainWindow
     {
         const string one = "/api/conversation/";
         const string project = "/api/project/";
+        const string worker = "/api/worker/";
         return (method, path) switch
         {
             ("GET", "/api/hello") => (200, WebHello()),
@@ -336,6 +337,12 @@ public partial class MainWindow
             ("POST", "/api/settings/reset-stats") => await Dispatcher.InvokeAsync(WebResetStats),
             ("GET", "/api/fs/dirs") => WebFsDirs(query.GetValueOrDefault("path")),
             _ when path.StartsWith("/api/code/") => await Dispatcher.InvokeAsync(() => WebCode(method, path["/api/code/".Length..], query, WebBody(body))),
+            ("GET", "/api/workers") => await Dispatcher.InvokeAsync(WebWorkers),
+            ("POST", "/api/workers/add") => await Dispatcher.InvokeAsync(WebAddWorker),
+            ("GET", _) when path.StartsWith(worker) => await WebWorker(path[worker.Length..]),
+            ("POST", _) when path.StartsWith(worker) => await WebWorkerPost(path[worker.Length..], WebBody(body)),
+            ("GET", "/api/models/local") => await WebLocalModels(),
+            ("POST", "/api/favorites") => await Dispatcher.InvokeAsync(() => WebFavorite(WebBody(body))),
             _ => WebNotFound,
         };
     }
@@ -698,7 +705,7 @@ public partial class MainWindow
                 await Get("/api/none", "smoke@example.com", "POST", "https://home.tail0000.ts.net") != 404 ||
                 await Get("/api/none", "smoke@example.com", "POST", "https://evil.example") != 403)
                 return Fail("the owner, others, and the tailnet's origins");
-            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound))
+            if (!await WebApiSmoke(bound) || !await WebEventsSmoke(bound) || !await WebSendSmoke(bound) || !await WebImagesSmoke(bound) || !await WebSettingsSmoke(bound) || !await WebManageSmoke(bound) || !await WebCodeSmoke(bound) || !await WebModelsSmoke(bound))
                 return false;
 
             // the server stops with a stream open: its subscription goes
