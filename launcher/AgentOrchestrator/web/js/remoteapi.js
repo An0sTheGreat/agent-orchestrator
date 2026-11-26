@@ -16,8 +16,11 @@ export function modelList(models = [], favorites = [], serviceId = '', search = 
   return [...hits.filter(m => m.favorite), ...hits.filter(m => !m.favorite)];
 }
 
-// A provider tapped: added at the end of the order, or taken out (the rest move up). `provider` is the order joined as the desktop.
-export const toggleOrder = (order, name) => order.includes(name) ? order.filter(n => n !== name) : [...order, name];
+// A provider tapped: its TAG added at the end of the order, or taken out (the rest move up). The tag is what the worker's provider
+// list holds, joined as the desktop (the name is only the label).
+export const toggleOrder = (order, tag) => order.includes(tag) ? order.filter(n => n !== tag) : [...order, tag];
+// The 1-based place of each provider in the order (0 = not used), by tag.
+export const placeOf = (order, p) => order.indexOf(p.tag) + 1;
 export const providerList = order => order.join(', ');
 export const parseOrder = text => (text || '').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -55,7 +58,7 @@ export async function openRemoteApi(role) {
 }
 
 if (typeof document !== 'undefined') {
-  const { registerScreen, back, fail, toast } = await import('./main.js');
+  const { registerScreen, back, fail, toast, resetScroll } = await import('./main.js');
   const $ = s => document.querySelector(s);
   const at = role => '/api/worker/' + encodeURIComponent(role);
   // The signed-out 403 and an unreachable PC go to the app's handler; the rest is shown in `el`.
@@ -164,16 +167,16 @@ if (typeof document !== 'undefined') {
   function drawProviders() {
     const figure = (v, unit, digits) => v == null ? null : (+v).toFixed(digits) + unit;
     $('#raprovlist').replaceChildren(...(providers.length ? providers.map(p => {
-      const n = order.indexOf(p.name) + 1;
+      const n = placeOf(order, p);
       return h('div', { class: 'prov' },
         h('button', { class: 'tickbox' + (n ? ' on' : ''), dataset: n ? { n } : {}, 'aria-label': n ? `Provider ${n}: tap to remove` : 'Use provider',
-          onclick: () => { order = toggleOrder(order, p.name); drawProviders(); } }),
+          onclick: () => { order = toggleOrder(order, p.tag); drawProviders(); } }),
         h('span', { class: 'prov-name' }, p.name, p.vision && h('span', { class: 'badge ok' }, 'Vision')),
         h('span', {}, `${price(p.priceIn)} / ${price(p.priceOut)}`),
         h('small', {}, [figure(p.latency, 's', 1), figure(p.tps, ' tok/s', 0), figure(p.uptime, '%', 1), p.quant && p.quant !== 'unknown' && p.quant]
           .filter(Boolean).join(' · ')));
     }) : [h('p', { class: 'hintline' }, 'No providers listed for this model.')]));
-    Object.assign($('#raorder'), { hidden: false, textContent: order.length ? 'Only, in this order: ' + providerList(order)
+    Object.assign($('#raorder'), { hidden: false, textContent: order.length ? 'Only, in this order: ' + order.map(t => providers.find(p => p.tag === t)?.name || t).join(', ')
       : 'Nothing ticked: OpenRouter picks any provider. Tap providers to use only those, in the order tapped.' });
   }
 
@@ -198,6 +201,7 @@ if (typeof document !== 'undefined') {
     },
     show(params) {
       if (params.role) role = params.role;
+      resetScroll(document.querySelector('#view-remoteapi'));
       load();
     },
   });

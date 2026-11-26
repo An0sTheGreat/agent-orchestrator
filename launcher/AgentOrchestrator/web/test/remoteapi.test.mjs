@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { modelList, toggleOrder, providerList, parseOrder, withFloor, hasFloor, baseId, floorable, applyBody, serviceFor } from '../js/remoteapi.js';
+import { modelList, placeOf, toggleOrder, providerList, parseOrder, withFloor, hasFloor, baseId, floorable, applyBody, serviceFor } from '../js/remoteapi.js';
 
 const MODELS = [
   { id: 'qwen/qwen3.5-4b', name: 'Qwen 3.5 4B' },
@@ -22,16 +22,21 @@ test('modelList: search matches the id or the name, any case, trimmed', () => {
   assert.deepEqual(modelList(MODELS, [], 'openrouter', 'nothing'), []);
 });
 
-test('provider order: a tap adds at the end or takes out (the rest move up); the comma list as the desktop', () => {
+// Replaces the name-keyed order test: the order holds the providers' TAGS (the server's key), the name is only the label.
+test('provider order by tag: a tap adds the tag at the end or takes it out (the rest move up); the comma list as the desktop', () => {
+  const PROVIDERS = [{ name: 'DeepInfra', tag: 'deepinfra/fp8' }, { name: 'Together', tag: 'together' }, { name: 'Groq', tag: 'groq' }];
   let order = [];
-  for (const p of ['DeepInfra', 'Together', 'Groq']) order = toggleOrder(order, p);
-  assert.deepEqual(order, ['DeepInfra', 'Together', 'Groq']);
-  order = toggleOrder(order, 'DeepInfra');
-  assert.deepEqual(order, ['Together', 'Groq']);
-  assert.deepEqual(toggleOrder(order, 'DeepInfra'), ['Together', 'Groq', 'DeepInfra']);
-  assert.equal(providerList(['Together', 'Groq']), 'Together, Groq');
+  for (const p of PROVIDERS) order = toggleOrder(order, p.tag);
+  assert.deepEqual(order, ['deepinfra/fp8', 'together', 'groq']);
+  assert.equal(PROVIDERS.map(p => placeOf(order, p)).join(), '1,2,3');
+  assert.equal(placeOf(['DeepInfra'], PROVIDERS[0]), 0); // the name is not the key
+  assert.equal(order.indexOf('DeepInfra'), -1); // a name matches nothing
+  order = toggleOrder(order, 'deepinfra/fp8');
+  assert.deepEqual(order, ['together', 'groq']);
+  assert.deepEqual(toggleOrder(order, 'deepinfra/fp8'), ['together', 'groq', 'deepinfra/fp8']);
+  assert.equal(providerList(['together', 'groq']), 'together, groq');
   assert.equal(providerList([]), '');
-  assert.deepEqual(parseOrder(' Together, Groq ,,'), ['Together', 'Groq']);
+  assert.deepEqual(parseOrder(' together, groq ,,'), ['together', 'groq']);
   assert.deepEqual(parseOrder(''), []);
 });
 
@@ -58,6 +63,12 @@ test('applyBody: OpenRouter sends the floor id, the order and the price settings
   assert.deepEqual(applyBody(OPENROUTER, { model: ' qwen/qwen3.5-4b ', floor: true, order: ['Together', 'Groq'], sortPrice: true, maxInput: ' 0.3 ', maxOutput: '' }), {
     service: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'qwen/qwen3.5-4b:floor', provider: 'Together, Groq',
     sortPrice: true, maxInput: '0.3', maxOutput: '' });
+});
+
+test('applyBody: sends the tags as the provider list and never a keyEnv (the server keeps the key variable)', () => {
+  const b = applyBody(OPENROUTER, { model: 'a/b', order: ['deepinfra/fp8', 'groq'] });
+  assert.equal(b.provider, 'deepinfra/fp8, groq');
+  for (const s of [OPENROUTER, GROQ, CUSTOM]) assert.equal('keyEnv' in applyBody(s, { model: 'x', keyEnv: 'K', baseUrl: 'http://h/v1' }), false);
 });
 
 test("applyBody: other services send the bare id and none of OpenRouter's settings; Custom URL its own address", () => {

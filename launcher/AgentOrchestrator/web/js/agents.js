@@ -18,12 +18,14 @@ export const initialValues = (options = []) =>
   Object.fromEntries(options.map(o => [o.key, o.kind === 'Bool' ? boolValue(o.value) : text(o.value)]));
 
 // The options as the form draws them: max_seq_length apart (the Context card), the rest in groups in the server's order, a group
-// advanced when all its options are; apiOnly options only for an API worker.
+// advanced when all its options are; apiOnly options only for an API worker, load options (auto_load targets) never for one;
+// gguf_variant is the model's quant (shown read-only), not a field.
 export function formModel(options = [], isApi = false) {
   const groups = [];
   let context = null;
   for (const o of options) {
     if (o.apiOnly && !isApi) continue;
+    if (o.key === 'gguf_variant' || (isApi && o.load)) continue;
     if (o.key === 'max_seq_length') { context = o; continue; }
     let g = groups.find(x => x.name === o.group);
     if (!g) groups.push(g = { name: o.group, options: [] });
@@ -40,6 +42,14 @@ export const changedFields = (options = [], values = {}) => Object.fromEntries(O
 export const filledFields = (values = {}) =>
   Object.fromEntries(Object.entries(values).map(([k, v]) => [k, text(v).trim()]).filter(([, v]) => v !== ''));
 
+// A preset saved from the form: the non-empty fields, and "" for one the worker had a value for and the form cleared.
+export const presetFields = (options = [], values = {}) => ({ ...Object.fromEntries(Object.entries(initialValues(options))
+  .filter(([k, v]) => v.trim() && k in values && !text(values[k]).trim()).map(([k]) => [k, ''])), ...filledFields(values) });
+// The GPU estimate's fields: the non-empty ones, and the option's default for a cleared one.
+export const estimateFields = (options = [], values = {}) => ({ ...Object.fromEntries(Object.entries(initialValues(options))
+  .filter(([k, v]) => v.trim() && k in values && !text(values[k]).trim()).map(([k]) => [k, text(options.find(o => o.key === k)?.default)])
+  .filter(([, v]) => v)), ...filledFields(values) });
+
 export const gb = bytes => (bytes / 2 ** 30).toFixed(1) + ' GB';
 
 // POST .../vram's answer as the bar: each known part's width in percent of the GPU (or of the total when it is bigger or the GPU
@@ -49,7 +59,9 @@ export function vramView(r) {
   const parts = [['weights', 'vw', 'Weights'], ['kv', 'vk', 'KV cache'], ['compute', 'vc', 'Compute'], ['vision', 'vv', 'Vision']]
     .filter(([k]) => g[k] > 0).map(([k, cls, label]) => ({ cls, label, bytes: g[k], pct: Math.round(g[k] / scale * 1000) / 10 }));
   const fits = cap && total ? Math.max(total, r.whole || 0) <= cap : null;
-  return { parts, total, gpuTotal: cap || null, fits, text: fits == null ? '' : fits ? 'fits' : 'spills to RAM' };
+  const text = fits == null ? '' : fits ? 'fits' : 'spills to RAM';
+  return { parts, total, gpuTotal: cap || null, fits, text,
+    sub: !total ? (cap ? 'No estimate for this model' : 'GPU size unknown') : cap ? `of ${gb(cap)} · ${text}` : 'GPU size unknown' };
 }
 
 // The presets sheet's groups (empty ones left out), each item marked active when it is the worker's current preset.
@@ -59,10 +71,12 @@ export const presetExists = (presets, name) => (presets?.groups || []).some(g =>
 
 /* ---------- the screens ---------- */
 if (typeof document !== 'undefined') {
-  const { registerScreen, go, back, fail, toast, openSheet, closeOverlays, confirmSheet, askName } = await import('./main.js');
+  const { registerScreen, go, back, fail, toast, openSheet, closeOverlays, confirmSheet, askName, resetScroll } = await import('./main.js');
   const { longPress } = await import('./util.js');
   const $ = s => document.querySelector(s);
   const at = role => '/api/worker/' + encodeURIComponent(role);
+  // A refusal the PC explains (a busy PC, unsaved desktop edits, a bad value) is shown as it is; the rest goes to the app's handler.
+  const report = err => [400, 409].includes(err?.status) && err.message ? toast(err.message) : fail(err);
   const sizeText = s => typeof s === 'number' ? gb(s) : s || '';
 
   /* ----- Settings > Agents: the workers ----- */
@@ -73,7 +87,7 @@ if (typeof document !== 'undefined') {
       h('div', { class: 'list' }, (r.workers || []).map(w => h('div', { class: 'rowline skillrow' },
         h('button', { class: 'item-text', onclick: () => go('agent', { role: w.role }) }, h('b', {}, w.title),
           h('small', {}, [w.model || 'No model', SOURCES[w.source]].filter(Boolean).join(' · ')), w.problem && h('small', { class: 'danger' }, w.problem)),
-        h('button', { class: 'switch' + (w.shown ? ' on' : ''), 'aria-label': 'Show ' + w.title + ' in Chat', onclick: async e => {
+        h('button', { class: 'switch' + (w.shown ? ' on' : ''), disabled: w.role === 'planner', title: w.role === 'planner' ? 'Always shown in Chat' : null, 'aria-label': 'Show ' + w.title + ' in Chat', onclick: async e => {
           const el = e.currentTarget, shown = !el.classList.contains('on');
           el.classList.toggle('on', shown);
           try { await api.post(at(w.role) + '/shown', { shown }); } catch (err) { el.classList.toggle('on', !shown); fail(err); }
@@ -89,12 +103,15 @@ if (typeof document !== 'undefined') {
   document.addEventListener('ao:agents', loadWorkers); // settings.js shows the Agents page
 
   /* ----- a worker's page ----- */
-  let role = null, w = null, values = {}, advanced = false, primary = null, models = null, errorEls = {};
+  let role = null, w = null, values = {}, advanced = false, primary = null, models = null, errorEls = {}, custom = null; // primary: true, 'offline' or false
+  // The custom worker card's values: set when the worker loads or is saved, never on a redraw (typed text survives it).
+  const setCustom = () => { custom = w.custom ? { title: w.title, kind: w.custom.kind || 'specialist', description: w.custom.description || '', systemPrompt: w.custom.systemPrompt || '' } : null; };
   const isApi = () => w?.source === 'api';
 
   async function loadWorker() {
     try { w = await api.get(at(role)); } catch (err) { fail(err); return; }
     values = initialValues(w.options);
+    setCustom();
     draw();
   }
 
@@ -108,7 +125,7 @@ if (typeof document !== 'undefined') {
     view.querySelector('.vbody').replaceChildren(modelCard(), context ? contextCard(context) : null, vramCard(),
       ...groups.map(g => h('div', { class: 'optgroup' + (g.advanced ? ' adv' : ''), hidden: g.advanced && !advanced },
         h('p', { class: 'secthead' }, g.name), h('div', { class: 'fields' }, g.options.map(field)))),
-      w.custom && customCard(),
+      custom && customCard(),
       h('div', { class: 'pad two' }, h('button', { class: 'btn ghost', 'data-sheet': 'sheet-mdlpresets', onclick: drawPresets }, 'Presets'),
         h('button', { class: 'btn ghost', onclick: () => { loadWorker(); toast('Reverted'); } }, 'Revert'),
         h('button', { class: 'btn', onclick: save }, 'Save')));
@@ -123,7 +140,8 @@ if (typeof document !== 'undefined') {
     return h('div', { class: 'card' }, h('p', { class: 'secthead inline' }, 'MODEL'),
       h('button', { class: 'selectrow', onclick: () => src === 'api' ? remoteApi() : src === 'primary' ? openPrimary() : openModels() },
         h('span', {}, name || 'Choose a model'), icon('down', 'ic sm')),
-      src === 'local' && h('p', { class: 'muted' }, 'Quantization ', h('b', {}, w.model?.quant || '—'), ' · installed models only'),
+      src === 'local' && h('p', { class: 'muted' }, 'Quantization ', h('b', {}, w.options.find(o => o.key === 'gguf_variant')?.value || w.model?.quant || '—'), ' · comes with the model'),
+      src === 'primary' && primary === 'offline' && h('p', { class: 'muted' }, 'The primary PC is offline'),
       src === 'api' && h('p', { class: 'muted' }, [w.remote?.service, w.remote?.hasKey === false && 'no key set on the PC'].filter(Boolean).join(' · ')),
       h('p', { class: 'secthead inline' }, 'MODEL SOURCE'), seg,
       h('p', { class: 'muted' }, src === 'api' ? "Remote API sends this worker's requests to an OpenAI-compatible endpoint."
@@ -136,14 +154,14 @@ if (typeof document !== 'undefined') {
     if (to === 'api') return remoteApi();
     if (to === 'primary') return openPrimary();
     if (to === 'local' && w.source !== 'local') {
-      try { await api.post(at(role) + '/local'); } catch (err) { fail(err); return; }
+      try { await api.post(at(role) + '/local'); } catch (err) { report(err); return; }
       loadWorker();
     }
   }
   const remoteApi = async () => (await import('./remoteapi.js')).openRemoteApi(role);
 
   function contextCard(o) {
-    const v = () => +values[o.key] || +o.default || 0, max = Math.max(131072, v());
+    const v = () => text(values[o.key]).trim() !== '' ? +values[o.key] || 0 : +o.default || 0, max = Math.max(131072, v());
     const fmt = n => n ? n.toLocaleString('en-US') : 'Auto';
     const pill = h('span', { class: 'pill' }, fmt(v()));
     const slider = h('input', { class: 'slider', type: 'range', min: 4096, max, step: 2048, value: v(), 'aria-label': 'Context length' });
@@ -186,9 +204,7 @@ if (typeof document !== 'undefined') {
     return h('label', { class: wide ? 'span field' : null, title: tip }, o.label, input, errorEl(o.key));
   }
 
-  let custom = null; // the custom worker card's values
   function customCard() {
-    custom = { title: w.title, kind: w.custom.kind || 'specialist', description: w.custom.description || '', systemPrompt: w.custom.systemPrompt || '' };
     const desc = h('input', { value: custom.description, oninput: e => { custom.description = e.target.value; } });
     const prompt = h('textarea', { rows: 8, spellcheck: 'false', oninput: e => { custom.systemPrompt = e.target.value; } }, custom.systemPrompt);
     return h('div', { class: 'card' }, h('p', { class: 'secthead inline' }, 'CUSTOM WORKER'),
@@ -207,11 +223,18 @@ if (typeof document !== 'undefined') {
       const errors = err.status === 400 && err.body?.errors;
       if (!errors) { fail(err); return; }
       for (const [k, msg] of Object.entries(errors)) if (errorEls[k]) Object.assign(errorEls[k], { hidden: false, textContent: msg });
+      const first = Object.values(errorEls).find(el => !el.hidden);
+      if (first?.closest('.optgroup')?.hidden) { // an error in the Advanced group while it is hidden: show it
+        advanced = true;
+        document.querySelectorAll('#view-agent .optgroup.adv').forEach(g => { g.hidden = false; });
+        document.querySelector('#view-agent .switch[aria-label="Advanced settings"]')?.classList.add('on');
+      }
+      first?.scrollIntoView({ block: 'center' });
       toast(errors[''] || 'Check the highlighted fields');
       return;
     }
     toast(r.note || 'Saved');
-    if (r.worker) { w = r.worker; values = initialValues(w.options); draw(); } else loadWorker();
+    if (r.worker) { w = r.worker; values = initialValues(w.options); setCustom(); draw(); } else loadWorker();
   }
 
   /* ----- the GPU estimate, re-asked 400 ms after the last edit ----- */
@@ -228,11 +251,11 @@ if (typeof document !== 'undefined') {
     const card = $('#view-agent .vramcard');
     if (!card || card.hidden) return;
     let r;
-    try { r = await vram(filledFields(values)); } catch { card.querySelector('.vram-sub').textContent = 'No estimate for this model'; return; }
+    try { r = await vram(estimateFields(w.options, values)); } catch { card.querySelector('.vram-sub').textContent = 'No estimate for this model'; return; }
     const v = vramView(r);
     card.querySelector('.vram-total').textContent = v.total ? gb(v.total) : '—';
     card.querySelector('.vram-total').classList.toggle('over', v.fits === false);
-    card.querySelector('.vram-sub').textContent = v.gpuTotal ? `of ${gb(v.gpuTotal)} · ${v.text}` : 'GPU size unknown';
+    card.querySelector('.vram-sub').textContent = v.sub;
     card.querySelector('.vrambar').replaceChildren(...v.parts.map(p => { const i = h('i', { class: p.cls }); i.style.width = p.pct + '%'; return i; }));
     card.querySelector('.vramlegend').replaceChildren(...v.parts.map(p => h('span', {}, h('i', { class: p.cls }), p.label, ' ', h('b', {}, gb(p.bytes)))));
   }
@@ -281,7 +304,7 @@ if (typeof document !== 'undefined') {
     $('#sheet-primary .secthead').textContent = 'MODELS ON ' + (r.host || 'THE PRIMARY PC').toUpperCase();
     $('#primList').replaceChildren(...(r.models || []).map(m => h('div', { class: 'mdlrow' + (w.source === 'primary' && m.id === w.remote?.model ? ' on' : '') },
       h('button', { class: 'mdlmain', onclick: async () => {
-        try { await api.post(at(role) + '/primary', { model: m.id }); } catch (err) { fail(err); return; }
+        try { await api.post(at(role) + '/primary', { model: m.id }); } catch (err) { report(err); return; }
         closeOverlays();
         loadWorker();
       } }, h('b', {}, m.id)))));
@@ -302,10 +325,11 @@ if (typeof document !== 'undefined') {
     let r;
     try { r = await api.post(at(role) + '/preset/apply', { name }); } catch (err) { fail(err); return; }
     closeOverlays();
-    Object.assign(values, Object.fromEntries(Object.entries(r.fields || {}).map(([k, v]) => [k, w.options.find(o => o.key === k)?.kind === 'Bool' ? boolValue(v) : text(v)])));
+    Object.assign(values, Object.fromEntries(Object.entries(r.fields || {}).filter(([k]) => k !== 'gguf_variant').map(([k, v]) => [k, w.options.find(o => o.key === k)?.kind === 'Bool' ? boolValue(v) : text(v)])));
     w.presets = { ...w.presets, active: name };
+    if (r.systemPrompt && custom) custom.systemPrompt = r.systemPrompt;
     draw();
-    toast(`"${name}" applied · Save to keep it`);
+    toast(r.model ? `This preset is for ${r.model} · Save to keep it` : `"${name}" applied · Save to keep it`);
   }
   async function presetCall(what, body, done) {
     let r;
@@ -316,7 +340,7 @@ if (typeof document !== 'undefined') {
   function savePreset() {
     askName('SAVE PRESET AS', w.presets?.active || '', name => {
       if (!name) return;
-      const store = () => presetCall('save', { name, fields: filledFields(values) }, 'Preset saved');
+      const store = () => presetCall('save', { name, fields: presetFields(w.options, values) }, 'Preset saved');
       if (presetExists(w.presets, name)) confirmSheet('Replace preset', `Replace "${name}" with these settings?`, store, 'Replace');
       else store();
     });
@@ -340,7 +364,10 @@ if (typeof document !== 'undefined') {
     show(params) {
       if (params.role) role = params.role;
       models = null;
-      api.get('/api/primary/models').then(() => true, () => false).then(ok => { if (primary !== ok) { primary = ok; if (w) draw(); } });
+      resetScroll($('#view-agent'));
+      // Only a 404 means no primary PC; a 502 (it is offline) keeps the option with a note; anything else changes nothing.
+      api.get('/api/primary/models').then(() => true, e => e?.status === 404 ? false : e?.status === 502 ? 'offline' : primary)
+        .then(ok => { if (primary !== ok) { primary = ok; if (w) draw(); } });
       loadWorker();
     },
   });

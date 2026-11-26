@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { formModel, initialValues, changedFields, filledFields, boolValue, BOOL, vramView, presetGroups, presetExists } from '../js/agents.js';
+import { formModel, initialValues, changedFields, filledFields, presetFields, estimateFields, boolValue, BOOL, vramView, presetGroups, presetExists } from '../js/agents.js';
 
 // GET /api/worker/{role}'s options, as the plan's contract.
 const OPTIONS = [
@@ -29,6 +29,25 @@ test('formModel: apiOnly options only for an API worker', () => {
   assert.deepEqual(groups.find(g => g.name === 'Sampling').options.map(o => o.key), ['temperature', 'enable_thinking', 'reasoning_max_tokens']);
   assert.deepEqual(groups.find(g => g.name === 'Request').options.map(o => o.key), ['timeout_seconds', 'send_extra_body']);
   assert.equal(groups.find(g => g.name === 'Request').advanced, false);
+});
+
+test('formModel: gguf_variant is never a field; an api worker gets no load options, so no Context card', () => {
+  const opts = [...OPTIONS, { key: 'gguf_variant', label: 'Quant', group: 'Load', kind: 'Choice', value: 'Q4_K_M', load: true },
+    { key: 'gpu_layers2', label: 'Load only', group: 'Memory', kind: 'Int', value: '', load: true }];
+  const local = formModel(opts, false);
+  assert.equal(local.context.key, 'max_seq_length');
+  assert.equal(local.groups.flatMap(g => g.options).some(o => o.key === 'gguf_variant'), false);
+  assert.equal(local.groups.flatMap(g => g.options).some(o => o.key === 'gpu_layers2'), true);
+  const apiW = formModel(opts.map(o => o.key === 'max_seq_length' ? { ...o, load: true } : o), true);
+  assert.equal(apiW.context, null);
+  assert.equal(apiW.groups.flatMap(g => g.options).some(o => o.key === 'gpu_layers2' || o.key === 'gguf_variant'), false);
+  assert.equal(apiW.groups.flatMap(g => g.options).some(o => o.key === 'temperature'), true);
+});
+
+test('presetFields / estimateFields: a cleared field is "" in a preset and its default in the estimate', () => {
+  const v = { ...initialValues(OPTIONS), cache_type_kv: '', temperature: '0.7' };
+  assert.deepEqual(presetFields(OPTIONS, v), { cache_type_kv: '', temperature: '0.7', enable_thinking: 'on', timeout_seconds: '600' });
+  assert.deepEqual(estimateFields(OPTIONS, v), { cache_type_kv: 'f16', temperature: '0.7', enable_thinking: 'on', timeout_seconds: '600' });
 });
 
 test('Bool: the seg is Default / On / Off for "" / "on" / "off"; any stored form reads as one of them', () => {
@@ -78,6 +97,16 @@ test('vramView: an unknown GPU or estimate has no fit', () => {
   assert.equal(v.text, '');
   assert.equal(v.parts[0].pct, 100);
   assert.deepEqual(vramView({ gpu: { weights: null, kv: null, compute: null, vision: null, total: null }, gpuTotal: 8 * G }).parts, []);
+});
+
+test('vramView: no GPU estimate (gpu null) says so when the GPU size is known, else the size is unknown', () => {
+  const v = vramView({ gpu: null, whole: null, gpuTotal: 8 * G });
+  assert.deepEqual(v.parts, []);
+  assert.equal(v.total, 0);
+  assert.equal(v.fits, null);
+  assert.equal(v.sub, 'No estimate for this model');
+  assert.equal(vramView({ gpu: null, whole: null, gpuTotal: null }).sub, 'GPU size unknown');
+  assert.equal(vramView({ gpu: { weights: 4 * G, total: 4 * G }, gpuTotal: 8 * G, whole: 4 * G }).sub, 'of 8.0 GB · fits');
 });
 
 test('presetGroups: empty groups dropped, the active preset marked; presetExists finds a name in any group', () => {

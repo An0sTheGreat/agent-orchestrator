@@ -7,7 +7,7 @@ import { h } from './h.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const IMMERSIVE = ['chat', 'code']; // no tab bar in portrait
+const IMMERSIVE = ['chat', 'code', 'agent', 'remoteapi']; // no tab bar in portrait
 const screens = new Map(); // name -> {mount, show, mounted}
 // Every go is a browser history entry, so the phone's back gesture goes back one screen (popstate) and the Back button goes
 // through history too, keeping the two in step; at Chats a back gesture stays in the app (util.js makeRouter).
@@ -38,6 +38,8 @@ function showScreen(name, params, view) {
   s.show?.(params, view);
 }
 
+// A page opened scrolled down (its list, or an ancestor a focus scrolled) starts at the top.
+export function resetScroll(view) { for (let e = view; e; e = e.parentElement) e.scrollTop = 0; }
 export function go(name, params = {}) { router.go({ name: name.replace(/^view-/, ''), params }); render(); }
 export function back() { if (router.stack.length > 1) history.back(); else render(); }
 addEventListener('popstate', e => { router.pop(e.state); render(); });
