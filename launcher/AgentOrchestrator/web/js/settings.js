@@ -170,8 +170,8 @@ if (typeof document !== 'undefined') {
   function draw() {
     if (!state) return;
     const { version, pc } = state.about;
-    $('#setabout').textContent = [version && 'Version ' + version, pc].filter(Boolean).join(' · ') || 'Version · this PC';
-    $('#aboutver').textContent = version ? 'Version ' + version : '';
+    $('#setabout').textContent = [version && (/^version /i.test(version) ? version : 'Version ' + version), pc].filter(Boolean).join(' · ') || 'Version · this PC';
+    $('#aboutver').textContent = version ? (/^version /i.test(version) ? version : 'Version ' + version) : '';
     if (!PAGES.includes(page)) return;
     const view = $('#view-' + page);
     (view.querySelector('[data-rows]') || view.querySelector('.vbody')).replaceChildren(...rows(page, state).map(row).flat().filter(Boolean));
