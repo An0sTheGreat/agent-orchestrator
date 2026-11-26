@@ -5,7 +5,7 @@
 // import route(), page() and the cache names.
 
 export const SHELL = ['/', '/index.html', '/styles.css', '/manifest.webmanifest',
-  ...['agents', 'api', 'chat', 'chats', 'code', 'composer', 'h', 'images', 'main', 'markdown', 'pcs', 'remoteapi', 'settings', 'skills', 'util'].map(n => `/js/${n}.js`),
+  ...['agents', 'api', 'chat', 'chats', 'code', 'composer', 'h', 'images', 'main', 'markdown', 'pcs', 'remoteapi', 'settings', 'skills', 'tools', 'util'].map(n => `/js/${n}.js`),
   ...['Inter-Medium', 'Inter-Regular', 'Inter-SemiBold', 'JetBrainsMono-Regular', 'Newsreader16pt-Italic', 'Newsreader16pt-Regular']
     .map(n => `/assets/fonts/${n}.ttf`),
   ...['apple-touch-icon', 'icon-192', 'icon-512', 'icon-maskable-512'].map(n => `/icons/${n}.png`)];

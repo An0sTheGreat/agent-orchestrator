@@ -297,6 +297,10 @@ body.landscape .drawer { padding-top: 0; }
 .term p { margin: 0; font-size: 11.5px; }
 .term .cwd { color: var(--c-keyword); }
 .term-out { color: var(--muted); }
+.term pre { margin: 0; max-height: 42vh; overflow: auto; white-space: pre-wrap; word-break: break-all; font: inherit; }
+.termin { display: flex; align-items: center; gap: 6px; }
+.termin input { flex: 1; min-width: 0; background: none; border: 0; outline: none; padding: 0; font-family: var(--mono); font-size: 11.5px; }
+.keys { margin-top: 8px; }
 .folder-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .folder-card b { font-size: 13.5px; font-weight: 600; display: block; }
 .folder-card small { color: var(--muted); font-size: 11.5px; }
@@ -500,6 +504,17 @@ button.filerow { width: 100%; text-align: left; }
 .page-cond { font-size: 11.5px; color: var(--muted); margin: 4px 0 0; }
 .chart { width: 100%; height: 84px; margin-top: 10px; display: block; }
 .clickring { position: absolute; right: 84px; top: 158px; width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--accent); opacity: .8; }
+.btab { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.btab button:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.btabx { opacity: .6; font-size: 10px; }
+.browsertabs { overflow-x: auto; scrollbar-width: none; }
+.fwd svg { transform: scaleX(-1); }
+input.url { min-width: 0; color: var(--text); outline: none; }
+.page.live { padding: 0; min-height: 120px; }
+.page.live img { display: block; width: 100%; height: auto; }
+.page.live > .muted { padding: 18px 16px; margin: 0; }
+.page.live .clickring { right: auto; transform: translate(-50%, -50%); pointer-events: none; }
+#pane-browser .pad { padding: 0 14px 14px; }
 .pad > .rowline { border-bottom: 0; }
 
 /* ============================== settings bits ============================== */

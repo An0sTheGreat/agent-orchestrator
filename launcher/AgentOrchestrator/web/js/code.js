@@ -1,6 +1,6 @@
 // The Code screen: a Code conversation's header (Start, the project menu), the run strip, and its panes: Chat (chat.js draws the
 // conversation and the composer sends it; the TODO card above), Run (Start/Stop, the live run stream), Files (folders, the file
-// browser, workflow records, the viewer, changes with diffs, the run log). Terminal and Browser are the next part's.
+// browser, workflow records, the viewer, changes with diffs, the run log, the terminal card) and Browser (tools.js draws those two).
 // The pure helpers below are Node-tested; the DOM part loads only in a page.
 import { api } from './api.js';
 import { h, icon } from './h.js';
@@ -73,6 +73,7 @@ if (typeof document !== 'undefined') {
   const { registerScreen, fail, toast, confirmSheet, openSheet, closeOverlays, replace } = await import('./main.js');
   const chat = await import('./chat.js');
   const { renderMarkdown } = await import('./markdown.js');
+  await import('./tools.js'); // the terminal card and the Browser pane: each polls while it is on screen
   const $ = s => document.querySelector(s);
   const view = $('#view-code');
   let id = null, snap = null, at = 0, gen = 0, poll = 0, timer = 0, dir = '', browse = null;
@@ -291,7 +292,7 @@ if (typeof document !== 'undefined') {
 
   registerScreen('code', {
     mount() {
-      view.querySelector('.seg[data-pane-group]').addEventListener('change', e => showPane(e.currentTarget.dataset.value));
+      view.querySelector('.seg[data-pane-group]').addEventListener('change', e => showPane(e.currentTarget.querySelector('button.on').dataset.paneOn));
       $('#starthead').addEventListener('click', () => start());
       $('#runbtn').addEventListener('click', () => start());
       $('#runstop').addEventListener('click', () => api.post('/api/stop', { id }).then(() => refresh(), fail));

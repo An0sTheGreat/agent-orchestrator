@@ -197,13 +197,15 @@
                   <div class="list" id="coderecords"></div>
                   <p class="secthead">CHANGES</p>
                   <div class="list" id="codechanges"></div>
-                  <div class="card">
-                    <p class="secthead inline">TERMINAL · PowerShell in weather-dashboard</p>
+                  <div class="card" id="termcard">
+                    <p class="secthead inline" id="termhead">TERMINAL · PowerShell</p>
                     <div class="term">
-                      <p><span class="cwd">C:\dev\weather-dashboard&gt;</span> npm test</p>
-                      <p class="term-out">4 checks passed · 0 errors · 1.8s</p>
+                      <pre id="termtext"></pre>
+                      <p class="termin"><span class="cwd" id="termcwd"></span><input id="terminput" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="send" aria-label="Terminal input"></p>
                     </div>
-                    <p class="muted">Coming next: the PC's terminal from the phone.</p>
+                    <div class="chips wrap keys" id="termkeys"></div>
+                    <p class="muted" id="termnote">No terminal is running on the PC.</p>
+                    <div class="pad"><button class="btn ghost tight" id="termnew">Start</button></div>
                   </div>
 
                   <div class="card">
@@ -216,34 +218,30 @@
 
               <div class="pane" id="pane-browser">
                 <div class="vbody nopad">
-                  <div class="browsertabs">
-                    <span class="btab on">localhost:5173</span>
-                    <span class="btab">docs</span>
-                    <button class="iconbtn sm" aria-label="New tab"><svg class="ic sm"><use href="#i-plus"/></svg></button>
-                  </div>
+                  <div class="browsertabs" id="btabs"></div>
                   <div class="browserbar">
-                    <button class="iconbtn sm" aria-label="Back"><svg class="ic sm"><use href="#i-back"/></svg></button>
-                    <span class="url">localhost:5173</span>
-                    <button class="iconbtn sm" aria-label="Reload"><svg class="ic sm"><use href="#i-globe"/></svg></button>
+                    <button class="iconbtn sm" id="bback" aria-label="Back"><svg class="ic sm"><use href="#i-back"/></svg></button>
+                    <button class="iconbtn sm fwd" id="bfwd" aria-label="Forward"><svg class="ic sm"><use href="#i-back"/></svg></button>
+                    <input class="url" id="burl" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="go" inputmode="url" aria-label="Address">
+                    <button class="iconbtn sm" id="breload" aria-label="Reload"><svg class="ic sm"><use href="#i-globe"/></svg></button>
                   </div>
-                  <div class="page">
-                    <div class="page-card">
-                      <p class="page-city">London</p>
-                      <p class="page-temp">14°</p>
-                      <p class="page-cond">Partly cloudy · cached 2 min ago</p>
-                    </div>
-                    <svg class="chart" viewBox="0 0 300 90" aria-hidden="true">
-                      <polyline points="10,60 58,42 106,50 154,28 202,36 250,18 290,26" fill="none" stroke="var(--accent-light)" stroke-width="2"/>
-                      <circle cx="290" cy="26" r="3.5" fill="var(--accent)"/>
-                    </svg>
-                    <span class="clickring" aria-hidden="true"></span>
+                  <div class="page live" id="bpage">
+                    <img id="bshot" alt="The shown tab" hidden>
+                    <p class="muted" id="bnone">No page to show yet.</p>
+                    <span class="clickring" hidden aria-hidden="true"></span>
                   </div>
                   <div class="pad">
+                    <div class="keyrow"><input id="btype" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type into the page" aria-label="Type into the page"><button class="btn ghost tight" id="btypesend">Type</button></div>
+                    <div class="chips wrap keys" id="bkeys"></div>
+                    <div class="rowline">
+                      <div><b>Follow the model</b><small>Each search and page the model reads opens here as it reads it.</small></div>
+                      <button class="switch" id="bfollow" data-switch aria-label="Follow the model"></button>
+                    </div>
                     <div class="rowline">
                       <div><b>Let the model use mouse and keyboard</b><small>Its own pointer and keys; yours stay free.</small></div>
-                      <button class="switch on" data-switch aria-label="Let the model use mouse and keyboard"></button>
+                      <button class="switch" id="binput" data-switch aria-label="Let the model use mouse and keyboard"></button>
                     </div>
-                    <p class="hintline">Coming next: the PC's browser pane from the phone.</p>
+                    <p class="hintline">Taps, typing and keys go to the PC's browser as your own input.</p>
                   </div>
                 </div>
               </div>
