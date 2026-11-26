@@ -14,7 +14,7 @@ export function slashMatches(text, skills) {
   const m = /^\/([\w.-]*)$/.exec(text);
   if (!m) return null;
   const q = m[1].toLowerCase();
-  return [...skills.map(s => ({ name: s.name, help: s.on ? 'Skill, on for this turn' : 'Skill', insert: '$' + s.name + ' ' })), ...COMMANDS]
+  return [...skills.map(s => ({ name: s.name, help: s.description || (s.on ? 'Skill, on for this turn' : 'Skill'), insert: '$' + s.name + ' ' })), ...COMMANDS]
     .filter(r => r.name.toLowerCase().startsWith(q));
 }
 
@@ -64,7 +64,7 @@ if (typeof document !== 'undefined') {
     $('#effortseg').replaceChildren(...['', ...o.efforts].map(v =>
       h('button', { class: v === o.effort ? 'on' : null, dataset: { segOn: v } }, EFFORT[v] || 'Default')));
     $('#workerchips').replaceChildren(...o.workers.map(w =>
-      h('button', { class: w.role === o.worker ? 'chip on' : 'chip', onclick: () => set({ worker: w.role }) }, w.name)));
+      h('button', { class: w.role === o.worker ? 'chip on' : 'chip', onclick: () => set({ worker: w.role }) }, ...(w.role === o.worker ? [icon('orb', 'ic sm'), ' '] : []), w.name)));
     $('#skillchips').replaceChildren(...o.skills.map(s =>
       h('button', { class: s.on ? 'chip on' : 'chip', onclick: () => set({ skills: [{ name: s.name, on: !s.on }] }) }, icon('layers', 'ic sm'), ' ' + s.name)));
     const g = o.imageGen, b = sizeBoxes(g);

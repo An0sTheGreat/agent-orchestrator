@@ -83,9 +83,9 @@ export function renderMarkdown(src) {
     else if (b.type === 'quote') frag.append(h('blockquote', null, h('p', null, runsTo(b.runs))));
     else if (b.type === 'list') frag.append(h(b.ordered ? 'ol' : 'ul', null, b.items.map(it => h('li', null, runsTo(it)))));
     else if (b.type === 'code') frag.append(h('pre', { 'data-lang': b.lang || null }, h('code', null, b.text)));
-    else if (b.type === 'table') frag.append(h('table', null,
+    else if (b.type === 'table') frag.append(h('div', { class: 'tablewrap' }, h('table', null,
       h('thead', null, h('tr', null, b.head.map(c => h('th', null, runsTo(c))))),
-      h('tbody', null, b.rows.map(r => h('tr', null, r.map(c => h('td', null, runsTo(c))))))));
+      h('tbody', null, b.rows.map(r => h('tr', null, r.map(c => h('td', null, runsTo(c)))))))));
   }
   return frag;
 }

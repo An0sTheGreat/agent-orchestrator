@@ -27,6 +27,11 @@ test('a skill picked from the / list inserts $name; /compact inserts itself', ()
   assert.deepEqual(slashMatches('/', skills).map(r => r.insert), ['$review ', '$debug ', '$Ponytail ', '/compact ']);
 });
 
+test('a skill row shows its description when it has one', () => {
+  assert.deepEqual(slashMatches('/b', [{ name: 'blender', on: true, description: 'Drive Blender' }, { name: 'bare', on: false, description: '' }]).map(r => r.help),
+    ['Drive Blender', 'Skill']);
+});
+
 test('the / list filters by prefix, ignoring case', () => {
   assert.deepEqual(slashMatches('/p', skills).map(r => r.name), ['Ponytail']);
   assert.deepEqual(slashMatches('/co', skills).map(r => r.name), ['compact']);

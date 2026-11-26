@@ -319,7 +319,7 @@ body.landscape .drawer { padding-top: 0; }
 .ghosttiny { color: var(--muted); font-size: 10.5px; text-decoration: underline; text-underline-offset: 2px; }
 
 .md { font-size: 14px; line-height: 1.62; }
-.md h3 { font-family: var(--display); font-size: 20px; font-weight: 600; margin: 0 0 10px; letter-spacing: .1px; }
+.md h1, .md h2, .md h3 { font-family: var(--display); font-size: 20px; font-weight: 600; margin: 0 0 10px; letter-spacing: .1px; }
 .md p { margin: 0 0 11px; }
 .md ol, .md ul { margin: 0 0 12px; padding-left: 20px; }
 .md li { margin-bottom: 4px; }
@@ -427,7 +427,7 @@ body.landscape .drawer { padding-top: 0; }
 .skillpop button { display: block; width: 100%; text-align: left; padding: 7px 9px; border-radius: 8px; }
 .skillpop button:hover { background: var(--field); }
 .skillpop b { font-family: var(--mono); font-size: 12px; font-weight: 500; display: block; }
-.skillpop small { color: var(--muted); font-size: 11px; }
+.skillpop small { color: var(--muted); font-size: 11px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ============================== code ============================== */
 .runstrip {

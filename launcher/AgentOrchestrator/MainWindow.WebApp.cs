@@ -359,7 +359,7 @@ public partial class MainWindow
             search = _settings.UseSearch, tools = _settings.UseTools, vision = _settings.UseVision,
             effort = EffortFor(target), efforts = EffortLevels(target), worker = target?.Role ?? "",
             workers = ListedWorkers(_chat).Select(k => new { role = k.Role, name = ChatName(k, k.Role) }).ToList(),
-            skills = AllSkills().Select(s => new { name = Path.GetFileName(s.Folder), on = HasSkill(s) }).ToList(),
+            skills = AllSkills().Select(s => new { name = Path.GetFileName(s.Folder), on = HasSkill(s), description = s.Description }).ToList(),
             imageGen = new
             {
                 model = ChatImageKey(), name = ImageGen.ChatModel(c) is var (_, model) ? model : "",
