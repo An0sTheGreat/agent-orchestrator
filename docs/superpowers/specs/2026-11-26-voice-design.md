@@ -56,7 +56,7 @@ searches the web, and hands real work to the app's workers on the PC — "everyt
 
 Models download into the app's data folder from Settings, the way llama-server does (a Download button, the version shown).
 
-## Phase 1 — Dictation (next)
+## Phase 1 — Dictation (shipped 2026-11-26)
 
 - **Desktop first.** A mic button beside Send in the Chat and Code composers. Click: it listens (the button pulses, a level
   meter shows it hears you). Click again, press Esc, or pause ~2 s: it stops. The text is inserted at the cursor; nothing is
@@ -70,11 +70,33 @@ Models download into the app's data folder from Settings, the way llama-server d
 - Done when: dictating a paragraph on the desktop puts accurate, punctuated text in the box within a second of stopping, with
   the working LLM's speed unchanged.
 
-## Phase 2 — Speech out
+## Phase 2 — Speech out, with full voice settings
 
-- A speaker button on each reply (desktop and phone): Kokoro reads it aloud, skipping code blocks and tool rows; click again
-  to stop. A setting "Read replies aloud" reads each finished reply automatically. Voice and speed in Settings.
-- On the phone the PC makes the audio and the phone plays it (`GET /api/speak?…` streaming audio).
+Approved 2026-11-26: "add an in-depth settings system directly in the app to fully customize the voices".
+
+**2a — Kokoro (next).** Kokoro-82M v1.0 (multi-language, ~54 voices) through sherpa-onnx on the CPU, downloaded from
+Settings > Voice like the speech-to-text model.
+- **Speak a reply:** a speaker button on each assistant reply (desktop and phone) reads it aloud — markdown read as prose,
+  code blocks, tool rows and links' URLs skipped — and turns into a stop button while speaking. Speech starts after the first
+  sentence is made (sentence by sentence), not after the whole reply.
+- **Read replies aloud** (off by default): each finished reply is read automatically; a new reply or Stop ends the old one.
+- **Settings > Voice > Speech output** (the in-depth part):
+  - The voice library: every built-in voice, grouped by language and accent, with gender, searchable, each with ▶ preview.
+  - **Custom voices by blending:** pick 2–4 voices, set each one's weight with a slider, hear it live, name and save it; saved
+    custom voices are listed with play, rename, edit and delete, and can be picked like any voice.
+  - Per voice: speed (0.5–2.0), volume, and the pause between sentences; a test box ("Type something to hear it") with Play.
+  - Output device (default or a chosen speaker/headset).
+  - What gets read: skip code blocks (on), read headings (on), read tables as "a table with N rows" (on), read the thinking
+    (off), maximum length before it asks (e.g. 4,000 characters).
+  - A different voice per worker (optional): Lead, Implementer, Reviewer and custom workers can each have their own voice.
+- On the phone the PC makes the audio and the phone plays it; the phone's Settings get the same voice picker, speed, preview
+  and Read replies aloud switch (blending is edited on the PC, its saved voices are pickable on the phone).
+
+**2b — Custom voice engine: Chatterbox (after 2a).** For a real cloned voice: Resemble AI's Chatterbox (~0.5B, MIT licence),
+optional, on the GPU (~2–3 GB), downloaded only when chosen. Settings: record a 10–30 s sample with the dictation microphone
+or pick a WAV, name it; emotion/exaggeration and pacing sliders; preview. Chosen per voice like Kokoro's; when the GPU is busy
+with a working LLM the app falls back to the Kokoro voice picked as that voice's stand-in. The exact runtime (ONNX export vs a
+Python sidecar) is decided when 2b starts.
 
 ## Phase 3 — Voice tab (voice to voice)
 
@@ -105,6 +127,6 @@ Models download into the app's data folder from Settings, the way llama-server d
 
 ## Open questions (for later phases)
 
-- Phase 2: read replies automatically by default, or only on request? Which voice?
+- Phase 2: (answered) Read replies aloud is off by default; the voice is the user's pick in Settings > Voice.
 - Phase 3: a dedicated voice model loaded all the time, or loaded when the Voice tab opens? How chatty should progress updates
   be during a long run?
