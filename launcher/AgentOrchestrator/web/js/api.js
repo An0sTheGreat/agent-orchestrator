@@ -61,7 +61,7 @@ async function call(path, init) {
   try { res = await fetch(api.base + path, { credentials: 'omit', ...init }); }
   catch { throw Object.assign(new Error('The PC could not be reached'), { status: 0 }); }
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw Object.assign(new Error(body?.error || `HTTP ${res.status}`), { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(body?.error || `HTTP ${res.status}`), { status: res.status, body });
   return body;
 }
 

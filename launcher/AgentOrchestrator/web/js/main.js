@@ -7,7 +7,7 @@ import { h } from './h.js';
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const IMMERSIVE = ['chat']; // no tab bar in portrait
+const IMMERSIVE = ['chat', 'code']; // no tab bar in portrait
 const screens = new Map(); // name -> {mount, show, mounted}
 // Every go is a browser history entry, so the phone's back gesture goes back one screen (popstate) and the Back button goes
 // through history too, keeping the two in step; at Chats a back gesture stays in the app (util.js makeRouter).

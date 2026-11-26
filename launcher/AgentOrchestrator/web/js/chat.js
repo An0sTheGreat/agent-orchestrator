@@ -115,13 +115,19 @@ export let chatId = null; // the open chat (null: a new one), for the composer
 let replaceScreen = () => {};
 // A new chat's first send made it: the Chat screen's history entry becomes that chat, shown.
 export const follow = id => replaceScreen('chat', { id });
+// The Code screen (code.js) draws its conversation with this screen's code: showIn(its view, {id}) draws there instead, and
+// tapEvents(fn) hands it every event of the open conversation's stream.
+let tap = null;
+export const tapEvents = fn => { tap = fn; };
+export let showIn = () => {};
 
 if (typeof document !== 'undefined') {
   const { registerScreen, fail, toast, replace, confirmSheet, askDeleteChat, closeOverlays, askName, openSheet } = await import('./main.js');
   replaceScreen = replace;
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
-  const view = $('#view-chat'), msgs = $('#view-chat .msgs'), pop = $('#ctxpop');
+  let view = $('#view-chat'), msgs = view.querySelector('.msgs');
+  const pop = $('#ctxpop'), use = v => { view = v; msgs = v.querySelector('.msgs'); };
   let id = null, live = emptyLive(), saved = [], liveEls = [], context = null, stopEvents = () => {}, gen = 0, frame = 0, loadSeq = 0, applied = 0, answered = null;
 
   const fmt = n => n.toLocaleString('en-US');
@@ -238,7 +244,7 @@ if (typeof document !== 'undefined') {
 
   function drawContext() {
     const c = context, f = c?.fraction || 0;
-    ring($('#ctxchat'), f);
+    ring(view.querySelector('.ctxring'), f);
     ring($('#ctxpopring'), f);
     $('#ctxpopused').textContent = c ? (c.nCtx ? `${fmt(c.used)} / ${fmt(c.nCtx)}` : `${fmt(c.used)} tokens (context size unknown)`) : 'Nothing measured yet';
     $('#ctxpoppct2').textContent = c?.nCtx ? `${Math.round(f * 100)}% used` : '';
@@ -255,10 +261,10 @@ if (typeof document !== 'undefined') {
   }
 
   function drawState() {
-    $('#stopbtn').classList.toggle('hidden', !live.busy);
-    const n = live.queued;
-    $('#queue').classList.toggle('hidden', !n);
-    $('#queue').replaceChildren(h('span', { class: 'dot live' }), ` ${n} message${n === 1 ? '' : 's'} queued`);
+    view.querySelector('[data-stop]').classList.toggle('hidden', !live.busy);
+    const n = live.queued, queue = view.querySelector('.queue');
+    queue.classList.toggle('hidden', !n);
+    queue.replaceChildren(h('span', { class: 'dot live' }), ` ${n} message${n === 1 ? '' : 's'} queued`);
   }
 
   // Per frame only the live reply's nodes are replaced; the saved messages' nodes are built when a load lands (`all`).
@@ -303,7 +309,7 @@ if (typeof document !== 'undefined') {
       saved = r.messages;
       context = r.context;
       view.querySelector('.vtitle').textContent = r.title;
-      view.querySelector('.vsub').textContent = r.sub;
+      if (view.id === 'view-chat') view.querySelector('.vsub').textContent = r.sub; // the Code screen's shows the folder
     }
     if (cut) live = landSaved(live, cut); // even an outrun load: the newer one's messages hold the reply too
     draw(!refetch, changed); // a refetch keeps the scroll where it is
@@ -324,6 +330,7 @@ if (typeof document !== 'undefined') {
   function onEvent(mine, ev) {
     if (mine !== gen) return;
     live = applyEvent(live, ev);
+    tap?.(ev);
     if (ev.e === 'context') context = live.context;
     if (live.refetch) { live = { ...live, refetch: false }; load(mine, cutOf(live, ev), true); }
     if (live.reopen) { live = { ...live, reopen: false }; listen(mine); }
@@ -412,11 +419,12 @@ if (typeof document !== 'undefined') {
       $('#chatmove').addEventListener('click', move);
       $('#chatarchive').addEventListener('click', archive);
       $('#chatcopy').addEventListener('click', copyReply);
-      $('#stopbtn').addEventListener('click', () => api.post('/api/stop', { id }).catch(fail));
+      document.querySelectorAll('[data-stop]').forEach(b => b.addEventListener('click', () => api.post('/api/stop', { id }).catch(fail)));
       $('#chatdelete').addEventListener('click', () => id ? askDeleteChat(id, view.querySelector('.vtitle').textContent) : closeOverlays());
-      $('#ctxchat').addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; });
+      document.querySelectorAll('.ctxring[data-ctx]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; }));
       document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
     },
-    show,
+    show: params => { use($('#view-chat')); return show(params); },
   });
+  showIn = (v, params) => { use(v); return show(params); };
 }

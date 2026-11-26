@@ -475,6 +475,13 @@ body.landscape .drawer { padding-top: 0; }
 .record.complete { color: var(--accent-light); font-weight: 600; border-top: 1px solid var(--border); padding-top: 9px; margin-top: 12px; }
 .runbar { display: flex; gap: 8px; margin-bottom: 12px; }
 
+/* diff lines (Files > Changes) and the file browser's buttons */
+.diff code { display: block; white-space: pre; }
+.diff code.add { background: rgba(61, 220, 132, .12); color: #6FE39F; }
+.diff code.del { background: rgba(255, 107, 107, .12); color: #FF8A8A; }
+button.filerow { width: 100%; text-align: left; }
+.crumbs { font-size: 11.5px; color: var(--muted); margin: 0 0 6px; }
+
 /* browser pane */
 .browsertabs { display: flex; align-items: center; gap: 6px; padding: 8px 12px 0; background: var(--bg); }
 .btab { font-size: 11.5px; padding: 6px 10px; border-radius: 8px 8px 0 0; background: var(--field); border: 1px solid var(--border); border-bottom: 0; color: var(--muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

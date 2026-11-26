@@ -16,7 +16,7 @@ function chatRow(tpl, c) {
   el.querySelector('b').textContent = c.title;
   el.querySelector('small').textContent = [c.worker, ago(c.updated)].filter(Boolean).join(' · ');
   if (c.busy) main.append(h('span', { class: 'dot live', 'aria-label': 'replying' }));
-  main.addEventListener('click', () => go('chat', { id: c.id }));
+  main.addEventListener('click', () => go(c.kind === 'code' ? 'code' : 'chat', { id: c.id }));
   longPress(el, () => askDeleteChat(c.id, c.title));
   return el;
 }
@@ -27,6 +27,7 @@ function projectRows(p) {
   el.querySelector('b').textContent = p.name;
   el.querySelector('small').textContent = [`${n} chat${n === 1 ? '' : 's'}`, folder].filter(Boolean).join(' · ');
   longPress(el, () => projectMenu(p));
+  if (p.kind === 'code') el.querySelector('[data-newchat]').dataset.newcode = '';
   return [el, ...p.items.map(c => chatRow('tpl-project-chat', c))];
 }
 
@@ -89,7 +90,7 @@ function search() {
     : all.sort((a, b) => new Date(b.updated) - new Date(a.updated)).slice(0, 3);
   $('#searchResults').replaceChildren(
     h('p', { class: 'secthead' }, q ? (hits.length ? 'RESULTS' : 'NO MATCHES') : 'SUGGESTED'),
-    ...hits.map(c => h('button', { class: 'drawer-item', onclick: () => go('chat', { id: c.id }) },
+    ...hits.map(c => h('button', { class: 'drawer-item', onclick: () => go(c.kind === 'code' ? 'code' : 'chat', { id: c.id }) },
       icon(c.kind === 'code' ? 'code' : 'chat', 'ic sm'), ' ' + c.title)));
 }
 
@@ -109,6 +110,11 @@ registerScreen('chats', {
     $('#newproject').addEventListener('click', newProject);
     $('#projrename').addEventListener('click', renameProject);
     $('#projdelete').addEventListener('click', deleteProject);
+    // New under the Code filter, or in a Code project: a new Code conversation (code.js picks its folder) instead of a chat.
+    document.addEventListener('click', e => {
+      const b = e.target.closest('#view-chats [data-newchat]');
+      if (b && (kind === 'code' || b.hasAttribute('data-newcode'))) { e.stopImmediatePropagation(); go('code', {}); }
+    }, true);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && $('#view-chats').classList.contains('on')) load(); });
   },
   show: load,

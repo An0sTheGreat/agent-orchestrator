@@ -14,6 +14,7 @@
 <link rel="stylesheet" href="styles.css">
 <script type="module" src="js/main.js"></script>
 <script type="module" src="js/chats.js"></script>
+<script type="module" src="js/code.js"></script>
 <script type="module" src="js/chat.js"></script>
 <script type="module" src="js/pcs.js"></script>
 <script type="module" src="js/composer.js"></script>
@@ -71,7 +72,7 @@
 
               <div class="pad">
                 <button class="wide-btn" id="newproject"><svg class="ic"><use href="#i-plus"/></svg> New project</button>
-                <button class="wide-btn" data-open="view-code"><svg class="ic"><use href="#i-folder"/></svg> Work in a folder</button>
+                <button class="wide-btn" data-open="view-code"><svg class="ic"><use href="#i-code"/></svg> New code chat</button>
               </div>
               </div><!-- /col -->
               </div><!-- /cols -->
@@ -116,15 +117,134 @@
           </section>
 
           <!-- ============================= CODE ============================= -->
-          <section class="view spage" id="view-code">
+          <section class="view immersive" id="view-code">
             <header class="vhead">
-              <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
-              <div class="vhead-main"><h2 class="vtitle">Code</h2><p class="vsub" data-pc-subtitle></p></div>
+              <button class="iconbtn" data-back aria-label="Back"><svg class="ic"><use href="#i-back"/></svg></button>
+              <div class="vhead-main">
+                <h2 class="vtitle"></h2>
+                <p class="vsub"></p>
+              </div>
+              <button class="ctxring" id="ctxcode" data-ctx aria-label="Context used"><span>0%</span></button>
+              <button class="iconbtn" id="starthead" aria-label="Start project"><svg class="ic"><use href="#i-play"/></svg></button>
+              <button class="iconbtn" data-sheet="sheet-project" aria-label="Project menu"><svg class="ic"><use href="#i-more"/></svg></button>
             </header>
-            <div class="vbody">
-              <div class="card empty">
-                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
-                <p class="muted">Code conversations and project runs from the phone arrive in a later update. They keep running on the PC.</p>
+
+            <div class="runstrip">
+              <span>Task <b id="taskline">–</b></span>
+              <span>TASK TIME <b id="taskclock">00:00:00</b></span>
+              <span>TURN <b id="turnline">00:00:00</b></span>
+            </div>
+
+            <div class="segbar">
+              <div class="seg" data-pane-group="code">
+                <button class="on" data-pane-on="pane-chat">Chat</button>
+                <button data-pane-on="pane-run">Run</button>
+                <button data-pane-on="pane-files">Files</button>
+                <button data-pane-on="pane-browser">Browser</button>
+              </div>
+            </div>
+
+            <div class="vbody" id="codeempty" hidden><div class="card empty"><p class="cardline"><svg class="ic sm"><use href="#i-folder"/></svg> <b>Pick a folder</b></p><p class="muted">A code chat works in a folder on the PC.</p><div class="pad"><button class="btn" id="codepick">Pick a folder</button></div></div></div>
+            <div class="panes">
+              <div class="pane on" id="pane-chat">
+                <div class="todo" id="codetodo" hidden style="margin:10px 14px 0"><p class="secthead inline">TODO</p><ol class="todolist"></ol></div>
+                <div class="vbody msgs">
+                </div>
+
+                <footer class="composer">
+                  <div class="queue hidden"></div>
+                  <div class="inputwrap">
+                    <textarea id="codebox" rows="1" placeholder="Enter to send, Shift+Enter for a new line"></textarea>
+                    <div class="chips">
+                      <button class="chip square" data-sheet="sheet-tools" aria-label="More options"><svg class="ic"><use href="#i-plus"/></svg></button>
+                    </div>
+                    <div class="sendrow">
+                      
+                      <button class="stop hidden" data-stop aria-label="Stop"><svg class="ic"><use href="#i-stop"/></svg></button>
+                      <button class="send" id="codesend" aria-label="Send"><svg class="ic"><use href="#i-send"/></svg></button>
+                    </div>
+                  </div>
+                </footer>
+              </div>
+
+              <div class="pane" id="pane-run">
+                <div class="vbody">
+                  <div class="runbar">
+                    <button class="btn" id="runbtn"><svg class="ic sm"><use href="#i-play"/></svg> <span>Start project</span></button>
+                    <button class="btn ghost" id="runstop" disabled><svg class="ic sm"><use href="#i-stop"/></svg> Stop</button>
+                  </div>
+                  <div class="runlog tall" id="runstream">
+                    </div>
+                  <p class="hintline">Each finished item is recorded only after a PASS. Progress lives in STATE.md, so a stopped run resumes where it left off.</p>
+                </div>
+              </div>
+
+              <div class="pane" id="pane-files">
+                <div class="vbody">
+                  <div class="card folder-card" id="codefoldercard">
+                    <div>
+                      <b></b>
+                      <small></small>
+                    </div>
+                    <button class="iconbtn sm" aria-label="Add a folder"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+                  </div>
+                  <div class="list" id="codeextra"></div>
+                  <p class="secthead">FILES</p>
+                  <p class="crumbs" id="codecrumbs"></p>
+                  <div class="list" id="codefiles"></div>
+                  <p class="secthead">WORKFLOW RECORDS · read-only to the model</p>
+                  <div class="list" id="coderecords"></div>
+                  <p class="secthead">CHANGES</p>
+                  <div class="list" id="codechanges"></div>
+                  <div class="card">
+                    <p class="secthead inline">TERMINAL · PowerShell in weather-dashboard</p>
+                    <div class="term">
+                      <p><span class="cwd">C:\dev\weather-dashboard&gt;</span> npm test</p>
+                      <p class="term-out">4 checks passed · 0 errors · 1.8s</p>
+                    </div>
+                    <p class="muted">Coming next: the PC's terminal from the phone.</p>
+                  </div>
+
+                  <div class="card">
+                    <p class="cardline"><svg class="ic sm"><use href="#i-terminal"/></svg> <b>Run logs</b></p>
+                    <p class="muted">The last run's transcript, kept on the PC.</p>
+                    <div class="pad"><button class="btn ghost tight" id="coderunlog">Show the run log</button></div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="pane" id="pane-browser">
+                <div class="vbody nopad">
+                  <div class="browsertabs">
+                    <span class="btab on">localhost:5173</span>
+                    <span class="btab">docs</span>
+                    <button class="iconbtn sm" aria-label="New tab"><svg class="ic sm"><use href="#i-plus"/></svg></button>
+                  </div>
+                  <div class="browserbar">
+                    <button class="iconbtn sm" aria-label="Back"><svg class="ic sm"><use href="#i-back"/></svg></button>
+                    <span class="url">localhost:5173</span>
+                    <button class="iconbtn sm" aria-label="Reload"><svg class="ic sm"><use href="#i-globe"/></svg></button>
+                  </div>
+                  <div class="page">
+                    <div class="page-card">
+                      <p class="page-city">London</p>
+                      <p class="page-temp">14°</p>
+                      <p class="page-cond">Partly cloudy · cached 2 min ago</p>
+                    </div>
+                    <svg class="chart" viewBox="0 0 300 90" aria-hidden="true">
+                      <polyline points="10,60 58,42 106,50 154,28 202,36 250,18 290,26" fill="none" stroke="var(--accent-light)" stroke-width="2"/>
+                      <circle cx="290" cy="26" r="3.5" fill="var(--accent)"/>
+                    </svg>
+                    <span class="clickring" aria-hidden="true"></span>
+                  </div>
+                  <div class="pad">
+                    <div class="rowline">
+                      <div><b>Let the model use mouse and keyboard</b><small>Its own pointer and keys; yours stay free.</small></div>
+                      <button class="switch on" data-switch aria-label="Let the model use mouse and keyboard"></button>
+                    </div>
+                    <p class="hintline">Coming next: the PC's browser pane from the phone.</p>
+                  </div>
+                </div>
               </div>
             </div>
           </section>
@@ -500,13 +620,49 @@
 
       <div class="sheet" id="sheet-project" role="dialog" aria-label="Project menu">
         <div class="grab"></div>
-        <p class="secthead inline">WEATHER-DASHBOARD</p>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-file"/></svg> Use a PROJECT.md…</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-pencil"/></svg> Edit PROJECT.md</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-folder"/></svg> Folders…</button>
-        <div class="rowline"><div><b>Stop after the first finished item</b><small>--once</small></div><button class="switch" data-switch aria-label="Stop after the first finished item"></button></div>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-terminal"/></svg> Open run logs</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-copy"/></svg> Copy run log</button>
+        <p class="secthead inline"></p>
+        <button class="drawer-item" id="pmdtemplate"><svg class="ic sm"><use href="#i-file"/></svg> PROJECT.md from the template</button>
+        <button class="drawer-item" id="pmdedit"><svg class="ic sm"><use href="#i-pencil"/></svg> Edit PROJECT.md</button>
+        <button class="drawer-item" id="pfolders"><svg class="ic sm"><use href="#i-folder"/></svg> Folders…</button>
+        <div class="rowline"><div><b>Stop after the first finished item</b><small>--once</small></div><button class="switch" id="onceswitch" data-switch aria-label="Stop after the first finished item"></button></div>
+      </div>
+
+      <div class="sheet" id="sheet-projectmd" role="dialog" aria-label="Edit PROJECT.md">
+        <div class="grab"></div>
+        <p class="secthead inline">PROJECT.MD</p>
+        <label class="field"><span>PROJECT.md</span><textarea id="pmdtext" rows="14" spellcheck="false"></textarea></label>
+        <button class="btn" id="pmdsave">Save</button>
+      </div>
+
+      <div class="sheet" id="sheet-codefolders" role="dialog" aria-label="Folders">
+        <div class="grab"></div>
+        <p class="secthead inline">EXTRA FOLDERS</p>
+        <div id="extralist"></div>
+        <button class="drawer-item" id="extraadd"><svg class="ic sm"><use href="#i-plus"/></svg> Add a folder</button>
+      </div>
+
+      <div class="sheet" id="sheet-access" role="dialog" aria-label="Folder access">
+        <div class="grab"></div>
+        <p class="secthead inline">FOLDER ACCESS</p>
+        <p class="hintline"></p>
+        <button class="drawer-item" id="accessread"><svg class="ic sm"><use href="#i-eye"/></svg> Read only</button>
+        <button class="drawer-item" id="accesswrite"><svg class="ic sm"><use href="#i-pencil"/></svg> Full edit access</button>
+      </div>
+
+      <div class="sheet" id="sheet-dirs" role="dialog" aria-label="Pick a folder">
+        <div class="grab"></div>
+        <p class="secthead inline"></p>
+        <p class="secthead">RECENT FOLDERS</p>
+        <div class="list" id="dirrecent"></div>
+        <p class="secthead" id="dirpath">This PC</p>
+        <div class="list" id="dirlist"></div>
+        <button class="btn" id="dirpick" hidden>Use this folder</button>
+      </div>
+
+      <div class="sheet" id="sheet-codeview" role="dialog" aria-label="File">
+        <div class="grab"></div>
+        <p class="secthead inline"></p>
+        <div id="codeviewbody"></div>
       </div>
 
       <div class="sheet" id="sheet-models" role="dialog" aria-label="Installed models">

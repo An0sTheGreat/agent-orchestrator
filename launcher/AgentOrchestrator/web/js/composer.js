@@ -103,18 +103,19 @@ if (typeof document !== 'undefined') {
       h('button', { onclick: () => { box.value = r.insert; box.focus(); box.dispatchEvent(new Event('input')); } }, h('b', null, '/' + r.name), h('small', null, r.help))));
   }
 
-  async function send() {
+  // The Chat screen's box (with its photos), or the Code screen's (code.js: chat.chatId is its conversation then).
+  async function send(box = $('#chatbox'), sendBtn = $('#sendbtn')) {
     if (sending) return;
-    if (photos.some(p => !p.path)) { toast('The photos are still uploading'); return; }
-    const body = sendPayload(chat.chatId, box.value, photos.map(p => p.path));
+    const own = box.id === 'chatbox';
+    if (own && photos.some(p => !p.path)) { toast('The photos are still uploading'); return; }
+    const body = sendPayload(chat.chatId, box.value, own ? photos.map(p => p.path) : []);
     if (!body) return;
     sending = sendBtn.disabled = true;
     try {
       const r = await api.post('/api/send', body);
       box.value = '';
       box.dispatchEvent(new Event('input'));
-      photos = [];
-      drawStrip();
+      if (own) { photos = []; drawStrip(); }
       if (!body.id && r?.id) chat.follow(r.id);
     } catch (err) { fail(err); } finally { sending = sendBtn.disabled = false; }
   }
@@ -127,7 +128,10 @@ if (typeof document !== 'undefined') {
     const first = pop.classList.contains('hidden') ? null : pop.querySelector('button');
     if (first) first.click(); else send();
   });
-  sendBtn.addEventListener('click', send);
+  sendBtn.addEventListener('click', () => send());
+  const codeBox = $('#codebox'), codeSend = $('#codesend');
+  codeSend.addEventListener('click', () => send(codeBox, codeSend));
+  codeBox.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(codeBox, codeSend); } });
   document.addEventListener('click', e => { if (e.target.closest('[data-sheet="sheet-tools"]')) refresh(); });
   document.querySelectorAll('[data-opt]').forEach(sw => sw.addEventListener('click', () => opts && set({ [sw.dataset.opt]: !opts[sw.dataset.opt] })));
   $('#visionchip').addEventListener('click', () => opts && set({ vision: !opts.vision }));
