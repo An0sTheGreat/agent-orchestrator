@@ -454,6 +454,10 @@ body.landscape .drawer { padding-top: 0; }
 .skillpop-head { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin: 4px 6px 6px; }
 .skillpop button { display: block; width: 100%; text-align: left; padding: 7px 9px; border-radius: 8px; }
 .skillpop button:hover { background: var(--field); }
+#workerpop { right: auto; min-width: 200px; }
+#workerpop button { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+#workerpop b { font-family: inherit; font-size: 13.5px; }
+#workerpop .ic { color: var(--accent-light); }
 .skillpop b { font-family: var(--mono); font-size: 12px; font-weight: 500; display: block; }
 .skillpop small { color: var(--muted); font-size: 11px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

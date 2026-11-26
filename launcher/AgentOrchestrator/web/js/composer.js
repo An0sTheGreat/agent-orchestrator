@@ -64,6 +64,8 @@ if (typeof document !== 'undefined') {
     opts = o;
     document.querySelectorAll('[data-opt]').forEach(sw => sw.classList.toggle('on', !!o[sw.dataset.opt]));
     $('#visionchip').classList.toggle('on', o.vision);
+    $('#workerchip span').textContent = o.workers.find(w => w.role === o.worker)?.name || o.worker || 'Lead';
+    if (!workerPop.classList.contains('hidden')) drawWorkers();
     $('#effortchip span').textContent = 'Effort: ' + (EFFORT[o.effort] || 'Default');
     $('#effortseg').replaceChildren(...['', ...o.efforts].map(v =>
       h('button', { class: v === o.effort ? 'on' : null, dataset: { segOn: v } }, EFFORT[v] || 'Default')));
@@ -83,6 +85,23 @@ if (typeof document !== 'undefined') {
     $('#cimglock').classList.toggle('on', !g.unlocked);
     $('#imgsize').textContent = g.size ? 'Makes ' + g.size : 'No image model ready';
   }
+
+  // The agent chip's menu: the composer's workers, the current one ticked; a pick sets it for the next send.
+  const workerPop = $('#workerpop');
+  function drawWorkers() {
+    workerPop.replaceChildren(h('p', { class: 'skillpop-head' }, 'Send to'), ...opts.workers.map(w =>
+      h('button', { class: w.role === opts.worker ? 'on' : null, role: 'menuitem', onclick: () => { workerPop.classList.add('hidden'); if (w.role !== opts.worker) set({ worker: w.role }); } },
+        h('b', null, w.name), ...(w.role === opts.worker ? [icon('check', 'ic sm')] : []))));
+  }
+  $('#workerchip').addEventListener('click', async e => {
+    e.stopPropagation();
+    if (!workerPop.classList.contains('hidden')) { workerPop.classList.add('hidden'); return; }
+    await refresh(); // the desktop may have changed the target meanwhile
+    if (!opts) return;
+    drawWorkers();
+    workerPop.classList.remove('hidden');
+  });
+  document.addEventListener('click', e => { if (!workerPop.contains(e.target)) workerPop.classList.add('hidden'); });
 
   function drawStrip() {
     strip.classList.toggle('hidden', !photos.length);
