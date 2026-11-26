@@ -824,6 +824,20 @@ internal static class LauncherLogic
         }
     }
 
+    // Whether a server in the engine's state file runs this GGUF (its "model_file"); false when unreadable or gguf is null.
+    public static bool ServesModel(string stateFile, string? gguf)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(File.ReadAllText(stateFile));
+            var root = doc.RootElement;
+            var servers = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("servers", out var list) ? list.EnumerateArray().ToList() : [root];
+            return gguf is not null && servers.Any(s => s.TryGetProperty("model_file", out var f) && f.GetString() is { } file &&
+                string.Equals(Path.GetFullPath(file), Path.GetFullPath(gguf), StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException or InvalidOperationException or ArgumentException or NotSupportedException) { return false; }
+    }
+
     // The pids in the engine's state file (the server list or the older single server); empty when the file is missing or unreadable.
     public static List<int> ReadLlamaPids(string stateFile)
     {
@@ -2186,6 +2200,14 @@ internal static class LauncherLogic
         ModelOptions.SelfTest();
         ContextSnapshot.SelfTest();
         RemoteCatalog.SelfTest();
+        var state = Path.GetTempFileName();
+        try
+        {
+            File.WriteAllText(state, """{"servers": [{"pid": 1, "port": 8899, "model_file": "C:\\m\\Lead-27B.gguf"}]}""");
+            if (!ServesModel(state, @"c:\m\lead-27b.gguf") || ServesModel(state, @"C:\m\Voice-4B.gguf") || ServesModel(state, null) || ServesModel(state + ".none", @"C:\m\Lead-27B.gguf"))
+                throw new InvalidOperationException("ServesModel: the state file's model_file decides whether a model is loaded");
+        }
+        finally { File.Delete(state); }
         var work = new System.Windows.Rect(0, 0, 1920, 1040);
         var restored = new System.Windows.Rect(300, 200, 1000, 600);
         var fallbackSize = new System.Windows.Size(1400, 860);

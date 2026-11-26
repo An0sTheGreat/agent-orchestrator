@@ -1150,7 +1150,7 @@ public partial class MainWindow : Window
             string? RunMode() => (string?)JsonNode.Parse(RunRequest(@"Y:\smoke"))!["workflow"];
             if (_settings.WorkflowMode != "dual" || WorkflowDualRadio.IsChecked != true || !implementer.Hidden || reviewer.Hidden || main.Hidden || TabShown(implementer) ||
                 Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
-                Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
+                Order() != "LEAD,COMPACTOR,VOICE,REVIEWER" || RunMode() != "dual")
                 return Fail();
             // The groups: the Target agent track's line before the first helper shown (REVIEWER), none before LEAD or COMPACTOR
             if (main.GroupStart || CardFor("compactor")!.GroupStart || !reviewer.GroupStart)
@@ -1163,7 +1163,7 @@ public partial class MainWindow : Window
             var chatPlus = Plus();
             _settings.ChatCards = chatCards;
             ShowView();
-            if (chatDefault != "LEAD,COMPACTOR,REVIEWER" || chatPlus is not ["Custom worker…"] || Order() != "LEAD,COMPACTOR,REVIEWER")
+            if (chatDefault != "LEAD,COMPACTOR,VOICE,REVIEWER" || chatPlus is not ["Custom worker…"] || Order() != "LEAD,COMPACTOR,VOICE,REVIEWER")
                 return Fail();
             foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
                 _lines.Enqueue(LauncherLogic.EventPrefix + json);
@@ -1177,23 +1177,23 @@ public partial class MainWindow : Window
             await Settle();
             if (_settings.WorkflowMode != "tri" || AppSettings.Load().WorkflowMode != "tri" || implementer.Hidden || !Shown(implementer) || main.HasCovers ||
                 RoleConfig("implementer")?["same_as"] is not null || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,COMPACTOR,IMPLEMENTER,REVIEWER" || RunMode() != "tri")
+                Order() != "LEAD,COMPACTOR,VOICE,IMPLEMENTER,REVIEWER" || RunMode() != "tri")
                 return Fail();
             SelectWorker(implementer);
             WorkflowDualRadio.IsChecked = true;
             await Settle();
             if (_settings.WorkflowMode != "dual" || !implementer.Hidden || TabShown(implementer) || ListedWorkers(_chat).Contains(implementer) || _shownWorker != main ||
                 (string?)RoleConfig("implementer")?["same_as"] != "planner" || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,COMPACTOR,REVIEWER" || RunMode() != "dual")
+                Order() != "LEAD,COMPACTOR,VOICE,REVIEWER" || RunMode() != "dual")
                 return Fail();
             WorkflowSoloRadio.IsChecked = true; // Lead only: no Implementer or Reviewer, the run asks for "solo"
             await Settle();
-            if (_settings.WorkflowMode != "solo" || AppSettings.Load().WorkflowMode != "solo" || !implementer.Hidden || !reviewer.Hidden || Order() != "LEAD,COMPACTOR" ||
+            if (_settings.WorkflowMode != "solo" || AppSettings.Load().WorkflowMode != "solo" || !implementer.Hidden || !reviewer.Hidden || Order() != "LEAD,COMPACTOR,VOICE" ||
                 RunMode() != "solo" || (string?)RoleConfig("reviewer")?["same_as"] != "planner")
                 return Fail();
             WorkflowDualRadio.IsChecked = true;
             await Settle();
-            if (_settings.WorkflowMode != "dual" || reviewer.Hidden || RunMode() != "dual" || Order() != "LEAD,COMPACTOR,REVIEWER")
+            if (_settings.WorkflowMode != "dual" || reviewer.Hidden || RunMode() != "dual" || Order() != "LEAD,COMPACTOR,VOICE,REVIEWER")
                 return Fail();
             Snap("0-dual");
             // The checks below use all three built-ins. Saved workers with a custom one before COMPACTOR load in the fixed order.
@@ -1205,7 +1205,7 @@ public partial class MainWindow : Window
             var ordered = Order();
             Reload(savedWorkers);
             await Settle();
-            if (ordered != "LEAD,COMPACTOR,IMPLEMENTER,REVIEWER,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
+            if (ordered != "LEAD,COMPACTOR,VOICE,IMPLEMENTER,REVIEWER,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
                 !TabShown(CardFor("reviewer")!) || CardFor("planner")!.HasCovers || _shownWorker != CardFor("planner"))
                 return Fail();
         }

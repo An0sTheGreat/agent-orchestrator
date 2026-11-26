@@ -37,6 +37,8 @@ public partial class MainWindow
     private Func<Task>? _callLoadStub, _callWarmStub;
     private Func<long?>? _callFreeStub;
     private Func<(long Bytes, string Model, long Context)?>? _callSizeStub;
+    private Func<bool>? _callServesStub; // whether a loaded server runs VOICE's own GGUF
+
 
     internal event Action<CallState>? CallStateChanged;
     internal event Action<float[], bool>? CallLevels; // 24 band energies 0..1; true: the model's voice, false: the microphone
@@ -135,8 +137,10 @@ public partial class MainWindow
 
     private long? CallFreeGpu() => _callFreeStub is { } stub ? stub() : Chatterbox.FreeGpuBytes();
 
-    // The fit check (a toast once when the voice does not fit beside the model), the call's model loaded when none is (Load
-    // models' path), then the voice warmed up.
+    // The fit check (a toast once when the voice does not fit beside the model), the call's model loaded when it is not (Load
+    // models' path), then the voice warmed up. VOICE on LEAD's model: any loaded model is LEAD's. VOICE with its own: it is
+    // loaded unless a server runs its GGUF; with Several models "never" that load replaces the loaded model, whose memory the
+    // check cannot count before, so the check waits for the load and measures the room then.
     private async Task PrepareCallAsync(VoiceChoice voice, TaskCompletionSource modelReady)
     {
         var cb = voice.Chatterbox!;
@@ -144,21 +148,37 @@ public partial class MainWindow
         {
             var card = CallCard();
             var size = card is null ? null : await CallModelSize(card);
-            var free = _callFreeStub is { } stub ? stub() : await Task.Run(() => Chatterbox.FreeGpu.Get(wait: true));
-            _callKeepsVoice = true;
-            if (size is { Remote: false } sized && Chatterbox.CallRoom(free, Chatterbox.Loaded, ModelsLoaded, sized.Bytes) is { } room && room < Chatterbox.NeedBytes)
+            var loaded = ModelsLoaded && (card is not { Role: LauncherLogic.Voice, FollowsMain: false } || (_callServesStub?.Invoke() ?? LauncherLogic.ServesModel(_llamaStateFile, CallGguf(card))));
+            var replaces = ModelsLoaded && !loaded && _settings.MultiModel == "never";
+            async Task Fit(bool modelLoaded)
             {
-                (_callKeepsVoice, _callStandIn) = (false, true);
-                var text = Chatterbox.CallWontFitText(cb.Name, cb.Fallback, sized.Model, sized.Context, room);
-                Log("Call: " + text);
-                Toast(text, "#F7C873");
+                var free = _callFreeStub is { } stub ? stub() : await Task.Run(() => Chatterbox.FreeGpu.Get(wait: true));
+                _callKeepsVoice = true;
+                if (size is { Remote: false } sized && Chatterbox.CallRoom(free, Chatterbox.Loaded, modelLoaded, sized.Bytes) is { } room && room < Chatterbox.NeedBytes)
+                {
+                    (_callKeepsVoice, _callStandIn) = (false, true);
+                    var text = Chatterbox.CallWontFitText(cb.Name, cb.Fallback, sized.Model, sized.Context, room);
+                    Log("Call: " + text);
+                    Toast(text, "#F7C873");
+                }
             }
-            if (InCall && !ModelsLoaded && card is not null && size is not { Remote: true })
+            if (!replaces)
+                await Fit(loaded);
+            if (InCall && !loaded && card is not null && size is not { Remote: true })
                 await (_callLoadStub?.Invoke() ?? LoadRoleAsync(card.Role, card.Title));
+            if (replaces && InCall)
+                await Fit(true);
         }
         finally { modelReady.TrySetResult(); }
         if (InCall && _callKeepsVoice)
             await (_callWarmStub?.Invoke() ?? Chatterbox.WarmUpAsync());
+    }
+
+    // The worker's resolved GGUF, or null (remote, unreadable settings).
+    private string? CallGguf(RoleCard card)
+    {
+        try { return WebState(card) is { Remote: null } state ? LauncherLogic.ResolveGguf(state.Load, state.Folder, state.Hub) : null; }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Text.Json.JsonException or NullReferenceException or InvalidOperationException) { return null; }
     }
 
     // The worker's GPU estimate as its settings show it (VramEstimate), its model's name and context; null: unknown.
@@ -477,6 +497,9 @@ public partial class MainWindow
         }
         Action<float[]>? feed = null;
         var reply = "";
+        var (modelLoaded, free, order, savedVoice) = (false, (long?)(12L << 30), new List<string>(), _settings.Tts.Voice);
+        string? cbWhy = null;
+        bool? follows = null;
         string Ev(string json) => LauncherLogic.EventPrefix + json;
         void Phrase() // off the UI thread, as the microphone: a loud second, then quiet that ends the phrase
         {
@@ -489,13 +512,14 @@ public partial class MainWindow
         _dictationTranscribe = _ => "Hello there";
         _speechPlayer = new SpeechPlayer(Stub, () => new Tts.FakeOutput());
         _speechTest = true;
-        _callTurnStub = text =>
+        _callTurnStub = text => // as CallTurn: RunTurn on the call's worker (VOICE), which frees the GPU for the chat model first
         {
-            StartChatTurn(text);
+            StartTurn(_chat, text, CallCard()!.Role);
+            FreeGpuForChat();
             foreach (var word in reply.Split(' '))
-                _lines.Enqueue(Ev($$"""{"e":"delta","role":"planner","kind":"text","text":"{{word}} "}"""));
+                _lines.Enqueue(Ev($$"""{"e":"delta","role":"voice","kind":"text","text":"{{word}} "}"""));
             DrainLines();
-            _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"planner","text":"{{reply}}"}"""));
+            _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"voice","text":"{{reply}}"}"""));
             DrainLines();
             FinishChatTurn(0, false, null);
         };
@@ -538,11 +562,89 @@ public partial class MainWindow
             if (InCall || CallNow != CallState.Idle || _callQueue is not null || _callMic is not null || _speechPlayer.Played is not null
                 || kept?.Messages.Count != 4 || kept.Messages.Count(m => m.Role == "user") != 2 || ToastsOf($"Call saved to {kept.Title}").Count == 0)
                 return Fail($"end: {CallNow}, {kept?.Messages.Count} saved messages, toast {ToastsOf($"Call saved to {kept?.Title}").Count}");
+            if (CallCard()?.Role != LauncherLogic.Voice)
+                return Fail($"the call's worker is {CallCard()?.Role}, not VOICE");
+
+            // A Chatterbox voice, no model loaded: StartCall loads the call's model, then warms Chatterbox; Chatterbox reads the reply
+            _settings.Tts.Voice = VoiceChoice.ChatterboxDefault;
+            _speechPlayer = new SpeechPlayer(Stub, () => new Tts.FakeOutput(), new ChatterboxSeam(() => cbWhy, (text, _, _) =>
+            {
+                lock (spoken)
+                    spoken.Add("cb:" + text);
+                return new float[Tts.Rate / 2];
+            }, () => { }));
+            _modelsLoadedStub = () => modelLoaded;
+            _callLoadStub = async () => { lock (order) order.Add("load"); await Task.Delay(50); modelLoaded = true; };
+            _callWarmStub = () => { lock (order) order.Add("warm"); return Task.CompletedTask; };
+            _callFreeStub = () => free;
+            _callSizeStub = () => (4L << 30, "Voice-4B", 8192);
+            string Order() { lock (order) return string.Join(",", order); }
+            async Task<string?> Reply(string text, string heard)
+            {
+                reply = text;
+                await Task.Run(Phrase);
+                return await Until(() => Spoken().Contains(heard) && CallNow == CallState.Listening) ? null : $"\"{text}\" not read as {heard}: {CallNow}, spoken [{string.Join("|", Spoken())}]";
+            }
+            StartCall();
+            if (!await Until(() => !_callPreparing) || Order() != "load,warm" || _callStandIn)
+                return Fail($"Chatterbox voice, no model loaded: prepared {!_callPreparing}, order {Order()}, stand-in {_callStandIn}");
+            if (await Reply("Chatterbox reads this.", "cb:Chatterbox reads this.") is var notRead && notRead is not null || Spoken().Contains("Chatterbox reads this."))
+                return Fail("the first reply was not read by Chatterbox: " + notRead);
+            // a later turn with the model loaded and 1.5 GB free keeps the engine (the rule outside calls unloads under 2 GB)
+            free = 3L << 29;
+            var unloaded = false;
+            _freeGpuChatterbox = (() => true, () => unloaded = true); // the engine loaded (the smoke's process has shut the real one down)
+            if (await Reply("Still here.", "cb:Still here.") is { } keptWhy)
+                return Fail("the later turn: " + keptWhy);
+            if (SpinWait.SpinUntil(() => unloaded, 600))
+                return Fail("a later turn with the model loaded and 1.5 GB free unloaded Chatterbox");
+            // a fallback in one reply does not stick to the next
+            cbWhy = "busy";
+            if (await Reply("Fallback here.", "Fallback here.") is { } fellWhy)
+                return Fail("the fallback reply: " + fellWhy);
+            cbWhy = null;
+            if (await Reply("Back again.", "cb:Back again.") is { } backWhy)
+                return Fail("the fallback stuck to the next reply: " + backWhy);
+            EndCall();
+            _freeGpuChatterbox = null;
+
+            // doesn't fit beside the model: the toast, the stand-in for every reply, no warm-up
+            (modelLoaded, free) = (false, 2L << 30);
+            lock (order) order.Clear();
+            StartCall();
+            var cb = CallVoice().Chatterbox!;
+            var wontFit = Chatterbox.CallWontFitText(cb.Name, cb.Fallback, "Voice-4B", 8192, Chatterbox.CallRoom(2L << 30, false, false, 4L << 30)!.Value);
+            if (!await Until(() => !_callPreparing) || !_callStandIn || ToastsOf(wontFit).Count == 0 || Order() != "load")
+                return Fail($"doesn't fit: stand-in {_callStandIn}, toast {ToastsOf(wontFit).Count}, order {Order()}");
+            if (await Reply("Stand in.", "Stand in.") is var standWhy && standWhy is not null || Spoken().Contains("cb:Stand in."))
+                return Fail("the stand-in did not read the reply: " + standWhy);
+            EndCall();
+
+            // VOICE with its own model while another (LEAD's) is loaded: VOICE's own model is loaded for the call, unless a
+            // server already runs it
+            var voiceCard = CardFor(LauncherLogic.Voice)!;
+            follows = voiceCard.FollowsMain;
+            voiceCard.FollowsMain = false;
+            (modelLoaded, free) = (true, 12L << 30);
+            foreach (var (served, want) in new[] { (true, "warm"), (false, "load,warm") })
+            {
+                lock (order) order.Clear();
+                _callServesStub = () => served;
+                StartCall();
+                if (!await Until(() => !_callPreparing) || Order() != want || _callStandIn)
+                    return Fail($"VOICE's own model is loaded for the call (served {served}): order {Order()}, not {want}; stand-in {_callStandIn}");
+                EndCall();
+            }
             return true;
         }
         finally
         {
             EndCall();
+            _freeGpuChatterbox = null;
+            _settings.Tts.Voice = savedVoice;
+            if (follows is { } f)
+                CardFor(LauncherLogic.Voice)!.FollowsMain = f;
+            (_modelsLoadedStub, _callLoadStub, _callWarmStub, _callFreeStub, _callSizeStub, _callServesStub) = (null, null, null, null, null, null);
             CallStateChanged -= OnState;
             CallLevels -= OnLevels;
             (_dictationFeed, _dictationTranscribe, _callTurnStub, _speechPlayer, _speechTest) = (null, null, null, player, test);

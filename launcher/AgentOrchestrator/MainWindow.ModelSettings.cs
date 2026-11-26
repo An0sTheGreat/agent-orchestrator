@@ -1811,7 +1811,7 @@ public partial class MainWindow
             // Options… opens the target's tab. Code: Options… and the lead (with its model), opening the lead's (the Planner's) tab.
             _settings.ChatWorker = "reviewer";
             RefreshChatTarget();
-            if (Dropdown(ChatTargetChip) is not ["Options…", "Lead", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && k.Role != LauncherLogic.Compactor) ||
+            if (Dropdown(ChatTargetChip) is not ["Options…", "Lead", "Implementer", "Reviewer*", ..] chatDrop || chatDrop.Count != 1 + _cards.Count(k => !k.Hidden && !LauncherLogic.FollowerRoles.Contains(k.Role)) ||
                 ChatTargetChip.ToolTip as string != chipTip)
                 return Fail("Single chat dropdown");
             if (await Open(ChatTargetChip) != reviewer || !reviewer.IsSelected)
@@ -2170,16 +2170,16 @@ public partial class MainWindow
             if (compactor is null || compactor.Hidden || !compactor.FollowsMain || compactor.ModelName != planner.ModelName || compactor.Title != "COMPACTOR")
                 return Fail("the card");
             _settings.ChatWorker = LauncherLogic.Compactor;
-            if (ListedWorkers(_chat).Contains(compactor) || ChatTarget() != planner ||
+            if (ListedWorkers(_chat).Contains(compactor) || ListedWorkers(_chat).Contains(CardFor(LauncherLogic.Voice)!) || CardFor(LauncherLogic.Voice) is not { Hidden: false, FollowsMain: true, GroupStart: false } || ChatTarget() != planner ||
                 BuildAddWorkerMenu(PresetsButton).Items.OfType<MenuItem>().Any(i => i.Tag as string == LauncherLogic.Compactor))
                 return Fail("COMPACTOR is listed to chat with or to add");
             _settings.ChatWorker = chatWorker;
 
             OpenModelSettings();
-            ModelSettingsPage.Width = 820; // Model on top, the prompts under it, the options below the line
+            ModelSettingsPage.Width = 900; // Model on top, the prompts under it, the options below the line
             SmokeClickTab(compactor);
             await Idle();
-            if (WorkerTabsScroll.ScrollableWidth > 1) // all four fit
+            if (WorkerTabsScroll.ScrollableWidth > 1) // all five fit (LEAD, COMPACTOR, VOICE and the two helpers)
                 return Fail($"the Target agent segments scroll: {WorkerTabsScroll.ScrollableWidth}");
             TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.EndsWith(text) && t.IsVisible);
             if (Header("MODEL") is not { } model || Header("SYSTEM PROMPT (WORKFLOW)") is not { } prompts || Header("SAMPLING") is not { } sampling)

@@ -1094,6 +1094,7 @@ public partial class MainWindow
 
     // The reverse, before the engine loads a chat model (a reply, Load models, a project run): an image model the Images page left
     // loaded leaves the GPU, unless Keep both is on or a picture is being made (the chat's own: generate_image runs inside its turn).
+    private (Func<bool> Loaded, Action Unload)? _freeGpuChatterbox; // --ui-smoke (CallSmoke): the engine as FreeGpuForChat sees it
     private void FreeGpuForChat()
     {
         // Chatterbox (about 3.5 GB of GPU, Chatterbox.NeedBytes) leaves first when the chat model would not fit beside it: in the
@@ -1104,9 +1105,9 @@ public partial class MainWindow
         var keep = Chatterbox.KeepForCall(InCall, _callKeepsVoice, modelsLoaded, modelsLoaded ? CallFreeGpu() : null);
         if (!modelsLoaded && !keep)
             Chatterbox.HoldWhile(() => !ModelsLoaded && (_loadingRole is not null || _localApiLoading || _chatBusy || _process is not null), TimeSpan.FromMinutes(5));
-        if (Chatterbox.Loaded && !keep && Chatterbox.ShouldUnloadForChat(true, modelsLoaded, modelsLoaded ? CallFreeGpu() : null))
+        if ((_freeGpuChatterbox?.Loaded() ?? Chatterbox.Loaded) && !keep && Chatterbox.ShouldUnloadForChat(true, modelsLoaded, modelsLoaded ? CallFreeGpu() : null))
         {
-            _ = Task.Run(Chatterbox.Unload);
+            _ = Task.Run(_freeGpuChatterbox?.Unload ?? Chatterbox.Unload);
             Log("Chatterbox unloaded to make room for the chat model");
         }
         if (!_settings.ImageKeepBoth && !ImageBusy)
