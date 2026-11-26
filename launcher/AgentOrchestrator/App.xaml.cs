@@ -39,6 +39,7 @@ public partial class App : Application
             AgentOrchestrator.MainWindow.TerminalSelfTest();
             ImageShare.SelfTest();
             WebServer.SelfTest();
+            LocalApi.SelfTest();
             WebEvents.SelfTest();
             AgentOrchestrator.MainWindow.WebSpeakSelfTest();
             Speech.SelfTest();
