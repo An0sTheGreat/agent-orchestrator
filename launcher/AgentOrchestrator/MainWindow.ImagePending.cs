@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -14,6 +15,23 @@ namespace AgentOrchestrator;
 public partial class MainWindow
 {
     private (FrameworkElement Root, TextBlock Percent, TextBlock Status, TextBlock Step, DispatcherTimer Timer)? _pendingPicture;
+
+    // The card as the phone app sees it (the `picture` events on its conversation's stream, the hello's `picture`, GET .../picture):
+    // set when the card opens in a turn, cleared when it closes.
+    private sealed class WebPicture(string id, int width, int height)
+    {
+        public readonly string Id = id;
+        public readonly int Width = width, Height = height;
+        public string Text = "";
+        public double? Progress;
+        public int Frame; // previews so far
+        public byte[]? Png; // the latest preview
+        public string? Sent; // the last progress event's text and whole percentage
+        public long SentAt; // and when (Environment.TickCount64)
+    }
+    private WebPicture? _webPicture;
+
+    private void PublishPicture(object e) => PublishWebEvent(_webPicture?.Id, JsonSerializer.Serialize(e));
 
     private void ShowPendingPicture(int width, int height)
     {
@@ -66,6 +84,10 @@ public partial class MainWindow
         _reply.Content.Children.Add(root);
         _reply.Status.Visibility = Visibility.Collapsed; // the card says the step
         _pendingPicture = (root, percent, status, stepText, timer);
+        if (RunningId is not { } id)
+            return;
+        _webPicture = new WebPicture(id, width, height);
+        PublishPicture(new { e = "picture", state = "start", width, height });
     }
 
     // The generation's progress (ImageStatus): its step text, and the percentage once there is one.
@@ -79,10 +101,20 @@ public partial class MainWindow
             percent.Text = $"{Math.Clamp(p, 0, 1) * 100:0}%";
             pill.Visibility = Visibility.Visible;
         }
+        if (_webPicture is not { } web)
+            return;
+        (web.Text, web.Progress) = (stepText.Text, progress is { } f ? Math.Round(Math.Clamp(f, 0, 1), 2) : null);
+        // ponytail: a change within 250 ms of the last event is not sent (the hello has it), so a quick last step can lag until done
+        var sent = $"{web.Text}|{(web.Progress is { } q ? Math.Round(q * 100) : -1)}";
+        if (sent == web.Sent || Environment.TickCount64 - web.SentAt < 250)
+            return;
+        (web.Sent, web.SentAt) = (sent, Environment.TickCount64);
+        PublishPicture(new { e = "picture", state = "progress", text = web.Text, progress = web.Progress });
     }
 
     // A step preview on the card: it takes the dots' place (the text stays over it). False when no picture is being made here.
-    private bool PendingPicturePreview(BitmapSource frame)
+    // `png`: the frame's bytes, which the phone gets by GET /api/conversation/{id}/picture.
+    private bool PendingPicturePreview(BitmapSource frame, byte[] png)
     {
         if (_pendingPicture is not var (root, _, _, _, _) || root is not Panel { Children: [Border { Child: Grid grid }, ..] })
             return false;
@@ -93,11 +125,32 @@ public partial class MainWindow
             grid.Children[0].Visibility = Visibility.Collapsed;
         }
         shown.Source = frame;
+        if (_webPicture is { } web)
+        {
+            (web.Png, web.Frame) = (png, web.Frame + 1);
+            PublishPicture(new { e = "picture", state = "preview", frame = web.Frame });
+        }
         return true;
     }
 
+    // The picture was saved: the phone shows it from /api/file before the tool result arrives.
+    private void PendingPictureDone(string path)
+    {
+        if (_webPicture is not null)
+            PublishPicture(new { e = "picture", state = "done", path });
+    }
+
+    // GET /api/conversation/{id}/picture: the card's latest preview.
+    private (int, object) WebPicturePreview(string id) =>
+        _webPicture is { Png: { } png } web && web.Id == id ? (200, new WebServer.Response(200, "image/png", png)) : WebNotFound;
+
     private void RemovePendingPicture()
     {
+        if (_webPicture is not null)
+        {
+            PublishPicture(new { e = "picture", state = "end" });
+            _webPicture = null;
+        }
         if (_pendingPicture is not var (root, _, _, _, timer))
             return;
         _pendingPicture = null;

@@ -69,7 +69,8 @@ public partial class MainWindow
             return (404, new { error = "No such conversation" });
         _webStates.TryAdd(id, WebState(busy, queued, prompt));
         var life = new CancellationTokenSource();
-        return (200, new WebServer.EventStream(JsonSerializer.Serialize(new { e = "hello", busy, queued, prompt, reply }), _webEvents.Subscribe(id, life.Token), life));
+        var picture = _webPicture is { } p && p.Id == id ? new { width = p.Width, height = p.Height, text = p.Text, progress = p.Progress, frame = p.Frame } : null;
+        return (200, new WebServer.EventStream(JsonSerializer.Serialize(new { e = "hello", busy, queued, prompt, reply, picture }), _webEvents.Subscribe(id, life.Token), life));
     }
 
     private static JsonElement WebBody(byte[] body)
@@ -292,6 +293,8 @@ public partial class MainWindow
             ("GET", "/api/conversations") => await Dispatcher.InvokeAsync(WebConversations),
             ("GET", one + "events") => WebNotFound, // no id: the events route below would slice past it
             ("GET", _) when path.StartsWith(one) && path.EndsWith("/events") => await Dispatcher.InvokeAsync(() => WebEventsOpen(path[one.Length..^"/events".Length])),
+            ("GET", one + "picture") => WebNotFound, // no id, as with events
+            ("GET", _) when path.StartsWith(one) && path.EndsWith("/picture") => await Dispatcher.InvokeAsync(() => WebPicturePreview(path[one.Length..^"/picture".Length])),
             ("POST", "/api/answer") => await Dispatcher.InvokeAsync(() => RemoteAct(method, path, WebBody(body))),
             ("POST", "/api/stop") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : RemoteAct(method, path, WebBody(body)))),
             ("POST", "/api/send") => WebDialog(await Dispatcher.InvokeAsync(() => WebPromptOpen() ? DialogOpen : WebSend(WebBody(body)))),
@@ -915,6 +918,44 @@ public partial class MainWindow
                 await Task.WhenAny(asked.Task, Task.Delay(5000)) != asked.Task || asked.Result != "write")
                 return Fail("the phone's answer did not resolve the popup");
             await ReadTo(a, "state without the prompt", n => E(n) == "state" && n["prompt"] is null);
+
+            // the picture card during the turn: start, progress, preview, done and end on the stream; its latest preview by GET while
+            // it is open, 404 after; a stream opened meanwhile gets it in its hello
+            byte[] dot = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==");
+            async Task<(int Status, string? Type, byte[] Body)> Picture()
+            {
+                using var got = await http.GetAsync($"http://127.0.0.1:{port}/api/conversation/{id}/picture?frame=1");
+                return ((int)got.StatusCode, got.Content.Headers.ContentType?.MediaType, await got.Content.ReadAsByteArrayAsync());
+            }
+            ShowPendingPicture(1024, 1536);
+            PendingPictureProgress("Step 2/8…", 0.25);
+            ShowImagePreview(dot);
+            var preview = await Picture();
+            if (preview.Status != 200 || preview.Type != "image/png" || !preview.Body.SequenceEqual(dot))
+                return Fail($"the picture's preview while open: {preview.Status} {preview.Type}, {preview.Body.Length} bytes");
+            var midway = await Open(id);
+            var withPicture = (await One(midway, "hello with the picture"))["picture"];
+            midway.Dispose();
+            if (withPicture?["width"]?.GetValue<int>() != 1024 || withPicture["height"]?.GetValue<int>() != 1536 || withPicture["frame"]?.GetValue<int>() != 1)
+                return Fail($"the hello's picture: {withPicture?.ToJsonString() ?? "null"}");
+            var saved = Path.Combine(ImageGen.ImagesFolder, "smoke-picture.png");
+            PendingPictureDone(saved);
+            RemovePendingPicture();
+            var pictures = (await ReadTo(a, "the picture's end", n => E(n) == "picture" && n["state"]?.ToString() == "end")).Where(n => E(n) == "picture").ToList();
+            string Said(JsonNode n) => n["state"]?.ToString() switch
+            {
+                "start" => $"start {n["width"]}x{n["height"]}",
+                "progress" => $"progress {n["text"]} {n["progress"]}",
+                "preview" => $"preview {n["frame"]}",
+                "done" => $"done {(n["path"]?.ToString() == saved ? "path" : n["path"])}",
+                var state => state ?? "",
+            };
+            if (string.Join(", ", pictures.Select(Said)) != "start 1024x1536, progress Step 2/8 0.25, preview 1, done path, end")
+                return Fail($"the picture's events: {string.Join(" ", pictures.Select(n => n.ToJsonString()))}");
+            if (await Picture() is { Status: not 404 } after)
+                return Fail($"the picture's preview after the end: {after.Status}");
+            if (!await Until(() => _webEvents.Count == 1))
+                return Fail($"the stream opened for the picture's hello is still subscribed ({_webEvents.Count})");
 
             // one that leaves mid-turn is unsubscribed; one that reconnects gets the reply so far, then the rest, once
             var b = await Open(id);

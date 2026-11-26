@@ -1277,7 +1277,7 @@ public partial class MainWindow
             frame.Freeze();
         }
         catch (Exception x) when (x is NotSupportedException or IOException or InvalidOperationException) { return; } // a frame it could not read: the next one
-        if (PendingPicturePreview(frame))
+        if (PendingPicturePreview(frame, png))
             return;
         _imgStagePreview = true;
         _imgResult.Source = frame;
@@ -1637,6 +1637,7 @@ public partial class MainWindow
             }
             catch (Exception x) when (x is InvalidOperationException or HttpRequestException or OperationCanceledException) { Log($"Image Gen: the primary PC did not unload: {x.Message}"); }
             finally { _imgUnloadCts = null; }
+        PendingPictureDone(file);
         NoteTurnPicture(file);
         if (_reply is { } shownIn) // shown now, not when the tool call ends: a count of several shows each one as it is done
             ShowPendingShot(shownIn);
