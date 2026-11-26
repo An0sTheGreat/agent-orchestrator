@@ -262,7 +262,9 @@ internal static class Tts
         Release();
     }
 
-    // The engines freed (a model about to be deleted), the same way: within a second, else at the next sentence or the exit.
+    public static bool Loaded => _builtIn is not null || _blend is not null;
+
+    // The engines freed (a model about to be deleted, or Unload all models), the same way: within a second, else at the next sentence or the exit.
     public static void Release()
     {
         if (!Monitor.TryEnter(Gate, 1000))

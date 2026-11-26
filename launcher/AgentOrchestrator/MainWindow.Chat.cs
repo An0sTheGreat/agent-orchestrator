@@ -452,7 +452,8 @@ public partial class MainWindow
             menu.Items.Add(item);
         }
         menu.Items.Add(new Separator());
-        var unload = new MenuItem { Header = "Unload all models", IsEnabled = ModelsLoaded || _settings.ShareHost.Length > 0 }; // the primary PC's state is not known here
+        var unload = new MenuItem { Header = "Unload all models", IsEnabled = ModelsLoaded || _settings.ShareHost.Length > 0
+            || Chatterbox.Loaded || Tts.Loaded || Speech.Loaded }; // the primary PC's state is not known here
         unload.Click += UnloadModels_Click;
         menu.Items.Add(unload);
         menu.IsOpen = true;
@@ -547,6 +548,10 @@ public partial class MainWindow
         if (!ImageBusy) // a generation may be using sd-server
             StopImageServer();
         WorkerContextsCleared();
+        // the speech models too: reading and dictation stop, then Chatterbox (GPU), Kokoro and the recognizer are freed off the UI thread
+        StopSpeaking();
+        StopDictation();
+        _ = Task.Run(() => { Chatterbox.Unload(); Tts.Release(); Speech.Release(); });
         var remote = "";
         if (_settings.ShareHost.Length > 0)
         {

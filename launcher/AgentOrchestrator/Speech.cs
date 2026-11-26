@@ -158,6 +158,16 @@ internal static class Speech
         return true;
     }
 
+    // Unload all models: the recognizer freed (made again on the next dictation), unless a dictation holds the lock.
+    public static bool Loaded => _recognizer is not null;
+    public static void Release()
+    {
+        if (!Monitor.TryEnter(Gate, 1000))
+            return;
+        try { _recognizer?.Dispose(); _recognizer = null; }
+        finally { Monitor.Exit(Gate); }
+    }
+
     public static void Shutdown()
     {
         lock (Gate)
