@@ -1,9 +1,12 @@
-// Replies read aloud: a "read" button beside copy on each saved assistant reply (POST /api/speak: the PC makes a WAV with Kokoro,
-// the phone plays it), "stop" while it plays; one at a time. iOS lets audio play only from a tap, so the first tap of any read
+// Replies read aloud: a "read" button beside copy on each saved assistant reply, "stop" while it plays; one at a time. The PC
+// splits the reply into sentences (POST /api/speak/plan, its reading rules and length limit) and makes one WAV per sentence with
+// Kokoro (POST /api/speak); the phone plays sentence n while asking for n+1, so reading starts after the first sentence, and Stop
+// asks for nothing more. iOS lets audio play only from a tap, so the first tap of any read
 // or ▶ button plays a silent sound on the one audio element, which unlocks it; after that Read replies aloud plays each finished
 // reply. Stops on leaving the screen, a new send, another conversation, another PC, or the app going to the background.
-// Settings > Voice (GET/POST /api/voice): the PC's voice with ▶ preview, speed, Read replies aloud.
-// speechOf, playState and voiceGroups are pure (Node tests them); the DOM part loads only in a page.
+// Settings > Voice (GET/POST /api/voice): the PC's voice with ▶ preview, speed; Read replies aloud is the phone's own (localStorage,
+// per PC). speechOf, playState, voiceGroups, readSentences and the autoRead helpers are pure (Node tests them); the DOM part loads
+// only in a page.
 
 /* ---------- pure ---------- */
 // What a message reads: an assistant reply's text and worker (the PC picks the worker's voice); null for the user's own messages
@@ -45,6 +48,31 @@ export function voiceGroups(voices = []) {
 
 // The picker's label for a voice: "heart · Female" for af_heart, a blend by its name.
 export const voiceLabel = v => v.custom ? v.name : `${v.name.replace(/^[a-z]{2}_/, '')} · ${v.gender}`;
+
+// Reads `sentences` in order: fetchOne(sentence, signal) -> a clip, playOne(clip, signal) -> settles when it has played. Sentence
+// n plays while n+1 is fetched (one request at a time: the PC drops a sentence still being made when the next is asked for). After
+// `signal` aborts nothing more is fetched or played, and a failure (the abort itself, the PC's 503 for the dropped sentence) is not
+// an error; a failure before an abort rejects. A prefetch that fails while a clip plays is never an unhandled rejection.
+export async function readSentences(sentences, fetchOne, playOne, signal) {
+  let next = sentences.length ? fetchOne(sentences[0], signal) : null;
+  for (let i = 0; i < sentences.length; i++) {
+    let clip;
+    try { clip = await next; } catch (err) { if (signal?.aborted) return; throw err; }
+    if (signal?.aborted) return;
+    next = i + 1 < sentences.length ? fetchOne(sentences[i + 1], signal) : null;
+    next?.catch(() => {}); // awaited on the next turn; if playOne throws first, nobody would
+    await playOne(clip, signal);
+  }
+}
+
+// Read replies aloud, the phone's own per PC: localStorage `autoRead:` + the PC's API base, or this page's host for its own PC.
+export const autoReadKey = (base, host) => 'autoRead:' + (base || host);
+export function readAutoRead(storage, base, host) {
+  try { return storage.getItem(autoReadKey(base, host)) === '1'; } catch { return false; }
+}
+export function writeAutoRead(storage, base, host, on) {
+  try { storage.setItem(autoReadKey(base, host), on ? '1' : '0'); } catch { /* private mode: not remembered */ }
+}
 
 /* ---------- the player ---------- */
 export let speakButton = () => null, stopSpeech = () => {}, autoSpeak = () => {};
@@ -91,9 +119,41 @@ if (typeof document !== 'undefined') {
     watch = owner = null;
   }
   stopSpeech = () => { release(); set({ t: 'stop' }); };
-  const ended = () => { if (url && audio.src === url) { const key = state.key; release(); set({ t: 'end', key }); } };
-  audio.addEventListener('ended', ended);
-  audio.addEventListener('error', ended);
+
+  // One sentence's WAV from the PC.
+  async function speakOne(body, signal) {
+    let res;
+    try {
+      res = await fetch(api.base + '/api/speak', { method: 'POST', credentials: 'omit', signal,
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    } catch (err) { if (err?.name === 'AbortError') throw err; throw Object.assign(new Error('The PC could not be reached'), { status: 0 }); }
+    if (!res.ok) {
+      const answer = await res.json().catch(() => null);
+      throw Object.assign(new Error(answer?.error || `HTTP ${res.status}`), { status: res.status, body: answer });
+    }
+    return res.blob();
+  }
+
+  // Plays one clip: resolves when it ends or `signal` aborts, rejects when it fails; `started` once it plays.
+  function playClip(blob, signal, started) {
+    return new Promise((resolve, reject) => {
+      if (signal.aborted) return resolve();
+      if (url) URL.revokeObjectURL(url);
+      url = URL.createObjectURL(blob);
+      const done = (settle, value) => {
+        audio.removeEventListener('ended', onEnd);
+        audio.removeEventListener('error', onError);
+        signal.removeEventListener('abort', onEnd);
+        settle(value);
+      };
+      const onEnd = () => done(resolve), onError = () => done(reject, new Error('The phone could not play the speech'));
+      audio.addEventListener('ended', onEnd);
+      audio.addEventListener('error', onError);
+      signal.addEventListener('abort', onEnd);
+      audio.src = url;
+      audio.play().then(started, err => done(reject, err));
+    });
+  }
 
   // Reads `body` ({text, worker?, voice?}) as `key`; `from`: the button's view, whose hiding stops it. `auto`: no toast when refused.
   async function play(key, body, from, auto = false) {
@@ -106,26 +166,16 @@ if (typeof document !== 'undefined') {
       watch.observe(owner, { attributes: true, attributeFilter: ['class'] });
     }
     try {
-      let res;
-      try {
-        res = await fetch(api.base + '/api/speak', { method: 'POST', credentials: 'omit', signal: mine.signal,
-          headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      } catch (err) { if (err?.name === 'AbortError') return; throw Object.assign(new Error('The PC could not be reached'), { status: 0 }); }
-      if (!res.ok) {
-        const answer = await res.json().catch(() => null);
-        throw Object.assign(new Error(answer?.error || `HTTP ${res.status}`), { status: res.status, body: answer });
-      }
-      const blob = await res.blob();
-      if (abort !== mine) return; // stopped, or another started, while the PC was making it
-      url = URL.createObjectURL(blob);
-      audio.src = url;
-      await audio.play();
-      set({ t: 'playing', key });
+      const { sentences } = await api.post('/api/speak/plan', { text: body.text, worker: body.worker });
+      if (mine.signal.aborted) return; // stopped, or another started, while the PC planned it
+      await readSentences(sentences || [], (text, signal) => speakOne({ ...body, text }, signal),
+        (blob, signal) => playClip(blob, signal, () => set({ t: 'playing', key })), mine.signal);
+      if (!mine.signal.aborted) { release(); set({ t: 'end', key }); }
     } catch (err) {
-      if (abort !== mine && err?.name === 'AbortError') return;
+      if (mine.signal.aborted) return; // every stop aborts it: a late failure is not an error
       if (state.key === key) { release(); set({ t: 'end', key }); }
       if (err?.name === 'NotAllowedError') { if (!auto) toast('Tap read again to play'); unlocked = false; }
-      else if (err?.name !== 'AbortError' && !auto) fail(err);
+      else if (!auto) fail(err);
     }
   }
 
@@ -147,7 +197,7 @@ if (typeof document !== 'undefined') {
   // A finished reply (chat.js, after a `saved` load): read it when Read replies aloud is on and a tap has unlocked audio.
   autoSpeak = (m, from) => {
     const said = speechOf(m), key = m && keyOf(m);
-    if (!said || !voice?.settings?.autoRead || !unlocked || key === lastAuto.key) return;
+    if (!said || !voice || !readAutoRead(localStorage, api.base, location.host) || !unlocked || key === lastAuto.key) return;
     lastAuto.key = key;
     play(key, said, from, true);
   };
@@ -167,7 +217,7 @@ if (typeof document !== 'undefined') {
   function drawVoice() {
     const view = document.getElementById('view-voice');
     if (!voice || !view) return;
-    const s = voice.settings, speed = Number(s.speed) || 1;
+    const s = voice.settings, speed = Number(s.speed) || 1, autoRead = readAutoRead(localStorage, api.base, location.host);
     const select = h('select', { 'aria-label': 'Voice', onchange: e => write({ voice: e.target.value }) },
       voiceGroups(voice.voices).map(([label, list]) => h('optgroup', { label },
         list.map(v => h('option', { value: v.name, selected: v.name === s.voice }, voiceLabel(v))))));
@@ -183,8 +233,8 @@ if (typeof document !== 'undefined') {
       h('div', { class: 'rowline' }, h('div', {}, h('b', {}, 'Speed')), pill), slider,
       h('p', { class: 'secthead' }, 'Replies'),
       h('div', { class: 'rowline' }, h('div', {}, h('b', {}, 'Read replies aloud'), h('small', {}, 'Each finished reply, after you have tapped read or ▶ once.')),
-        h('button', { class: 'switch' + (s.autoRead ? ' on' : ''), 'aria-label': 'Read replies aloud', 'aria-pressed': String(!!s.autoRead),
-          onclick: () => write({ autoRead: !s.autoRead }) })),
+        h('button', { class: 'switch' + (autoRead ? ' on' : ''), 'aria-label': 'Read replies aloud', 'aria-pressed': String(autoRead),
+          onclick: () => { writeAutoRead(localStorage, api.base, location.host, !autoRead); drawVoice(); } })),
       h('p', { class: 'hintline' }, 'The voice model download and custom voices (blends) are made on the PC.'));
     sync();
   }
