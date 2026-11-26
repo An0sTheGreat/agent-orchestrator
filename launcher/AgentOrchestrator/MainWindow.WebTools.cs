@@ -286,6 +286,7 @@ public partial class MainWindow
         var hadTerminal = _pty is not null;
         var (follow, input, open, url) = (_settings.BrowserFollow, _settings.BrowserInput, _settings.BrowserOpen, _settings.BrowserUrl);
         var tabsBefore = _tabs.ToList();
+        var panelBefore = BrowserPanel.IsVisible; // the browser panel takes the rail's column: put it back as it was
         try
         {
             // the terminal
@@ -400,6 +401,8 @@ public partial class MainWindow
                     StopTerminal();
                 foreach (var t in _tabs.Except(tabsBefore).ToList())
                     CloseTab(t);
+                if (!panelBefore && BrowserPanel.IsVisible)
+                    ShowWorkerRail(); // hides the browser panel, as its close button
                 (_settings.BrowserFollow, _settings.BrowserInput, _settings.BrowserOpen, _settings.BrowserUrl) = (follow, input, open, url);
                 (BrowserFollowToggle.IsChecked, BrowserInputToggle.IsChecked) = (follow, input);
                 _settings.Save();
