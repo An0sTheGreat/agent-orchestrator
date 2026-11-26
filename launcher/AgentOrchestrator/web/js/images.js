@@ -95,7 +95,7 @@ if (typeof document !== 'undefined') {
     pictures = r.pictures || [];
     field('model').replaceChildren(...groupModels(models).map(([label, ms]) =>
       h('optgroup', { label }, ms.map(m => h('option', { value: m.id }, m.name + (m.note ? ` (${m.note})` : ''))))));
-    field('aspect').replaceChildren(...(r.aspects || []).map(a => h('option', { value: a }, a)));
+    field('aspect').replaceChildren(...(r.aspects || []).map(a => typeof a === 'string' ? h('option', { value: a }, a) : h('option', { value: a.ratio }, a.name || a.ratio))); // {name, ratio} from the server
     field('count').replaceChildren(...Array.from({ length: maxBatch }, (_, i) => h('option', { value: i + 1 }, i + 1)));
     fill(r.settings || {});
     drawGallery();
