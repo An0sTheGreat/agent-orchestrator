@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture, chatMenu, lastReply } from '../js/chat.js';
 
 test('deletablePicture: a generated picture in images, not a photo in pasted, a screenshot or another URL', () => {
   const url = p => '/api/file?path=' + encodeURIComponent(p);
@@ -167,4 +167,27 @@ test('hello refetches: a turn saved between the first GET and the subscription i
   const s = run({ e: 'hello', busy: false, queued: 0, prompt: null, reply: { text: '' } });
   assert.equal(s.refetch, true);
   assert.equal(cutOf(s, { e: 'hello' }), null); // a plain load: it drops no live parts
+});
+
+test('chat menu: a chat in a project; moves to the other projects of its kind (no kind = chat); Archive', () => {
+  const c = (id, kind = 'chat') => ({ id, kind, title: id });
+  const list = { projects: [{ id: 'p1', name: 'One', kind: 'chat', items: [c('a'), c('k', 'code')] }, { id: 'p2', name: 'Two', kind: 'chat', items: [] },
+    { id: 'p3', name: 'Old', items: [] }, { id: 'p4', name: 'Coding', kind: 'code', items: [] }], recents: [c('r'), c('rc', 'code')], archived: [c('x')] };
+  assert.deepEqual(chatMenu(list, 'a'), { kind: 'chat', project: { id: 'p1', name: 'One' }, archived: false, archiveLabel: 'Archive',
+    targets: [{ id: 'p2', name: 'Two' }, { id: 'p3', name: 'Old' }] });
+  assert.deepEqual(chatMenu(list, 'r').targets.map(p => p.id), ['p1', 'p2', 'p3']);
+  assert.equal(chatMenu(list, 'r').project, null);
+  assert.deepEqual(chatMenu(list, 'rc').targets.map(p => p.id), ['p4']);
+  assert.deepEqual(chatMenu(list, 'k').targets.map(p => p.id), ['p4']);
+  const x = chatMenu(list, 'x');
+  assert.deepEqual([x.archived, x.archiveLabel], [true, 'Unarchive']);
+  assert.equal(chatMenu(list, 'nope'), null);
+  assert.equal(chatMenu(undefined, 'a'), null);
+});
+
+test("copy reply: the last reply's text, skipping the user's messages and empty replies", () => {
+  assert.equal(lastReply([{ role: 'user', text: 'q1' }, { role: 'assistant', text: 'a1' }, { role: 'user', text: 'q2' }]), 'a1');
+  assert.equal(lastReply([{ role: 'assistant', text: 'a1' }, { role: 'assistant', text: '' }]), 'a1');
+  assert.equal(lastReply([{ role: 'user', text: 'q' }]), '');
+  assert.equal(lastReply(undefined), '');
 });

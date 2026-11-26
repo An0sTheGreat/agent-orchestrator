@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalize, rows, accentTokens, confirmFor, tabsText, appName, currentAccent } from '../js/settings.js';
+import { normalize, rows, accentTokens, confirmFor, tabsText, appName, currentAccent, usageBars, duration } from '../js/settings.js';
 
 // GET /api/settings, as the plan's contract.
 const GET = {
@@ -57,16 +57,38 @@ test("choices offer the desktop's stored values", () => {
   assert.deepEqual(byKey('appearance', 'accent').options, GET.appearance.accents);
 });
 
-test('read-only rows: approved applications by name, usage, the phone app (only off at the PC), version and PC; the accent heading names it', () => {
+test('read-only rows: approved applications by name, the phone app (only off at the PC), version and PC; the accent heading names it', () => {
   const text = page => rows(page, s).filter(r => r.type === 'info').map(r => [r.label, r.text]);
-  assert.deepEqual(text('general'), [['Approved applications', 'mspaint.exe'], ['Your usage', '1,284,930 lifetime tokens'],
-    ['Phone app over Tailscale', 'On · https://pc.tail0000.ts.net']]);
+  assert.deepEqual(text('general'), [['Approved applications', 'mspaint.exe'], ['Phone app over Tailscale', 'On · https://pc.tail0000.ts.net']]);
   assert.match(rows('general', s).find(r => r.label === 'Phone app over Tailscale').hint, /only be turned off at the PC/);
   assert.equal(rows('general', normalize({})).find(r => r.label === 'Approved applications').text, 'None approved.');
   assert.equal(rows('general', normalize({})).find(r => r.label === 'Phone app over Tailscale').text, 'Off');
   assert.deepEqual(text('about'), [['Version', '1.9.4'], ['PC', 'DESKTOP']]);
   assert.ok(rows('appearance', s).some(r => r.type === 'head' && r.text === 'Accent · Clay'));
-  assert.ok(rows('general', s).some(r => r.type === 'button' && r.action === 'resetStats'));
+});
+
+test('usage: a row on General opens the Usage page, showing the stats line', () => {
+  const nav = rows('general', s).filter(r => r.type === 'nav');
+  assert.deepEqual(nav, [{ type: 'nav', open: 'view-usage', label: 'Usage & tokens', text: '1,284,930 lifetime tokens' }]);
+  assert.equal(rows('general', normalize({})).find(r => r.type === 'nav').text, '—');
+});
+
+test('usage bars: height relative to the busiest day, weekday letters in order; all zero is all flat', () => {
+  const days = ['2026-11-20', '2026-11-21', '2026-11-22', '2026-11-23', '2026-11-24', '2026-11-25', '2026-11-26'] // Fri..Thu
+    .map((day, i) => ({ day, tokens: [0, 500, 1000, 250, 0, 750, 1000][i] }));
+  const bars = usageBars(days);
+  assert.deepEqual(bars.map(b => b.h), [0, 50, 100, 25, 0, 75, 100]);
+  assert.equal(bars.map(b => b.letter).join(''), 'FSSMTWT');
+  assert.equal(bars[1].tokens, 500);
+  assert.deepEqual(usageBars(days.map(d => ({ ...d, tokens: 0 }))).map(b => b.h), [0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(usageBars(), []);
+});
+
+test('duration: hours and minutes, minutes and seconds, or seconds', () => {
+  assert.equal(duration(3900), '1 h 05 min');
+  assert.equal(duration(750), '12 min 30 s');
+  assert.equal(duration(45), '45 s');
+  assert.equal(duration(undefined), '0 s');
 });
 
 test('helpers: tabs text, an app name from its path, the current accent', () => {

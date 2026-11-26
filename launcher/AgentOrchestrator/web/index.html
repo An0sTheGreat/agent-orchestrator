@@ -19,6 +19,7 @@
 <script type="module" src="js/composer.js"></script>
 <script type="module" src="js/images.js"></script>
 <script type="module" src="js/settings.js"></script>
+<script type="module" src="js/skills.js"></script>
 </head>
 <body>
 <div class="statusbar-strip" aria-hidden="true"></div>
@@ -69,6 +70,7 @@
               </div>
 
               <div class="pad">
+                <button class="wide-btn" id="newproject"><svg class="ic"><use href="#i-plus"/></svg> New project</button>
                 <button class="wide-btn" data-open="view-code"><svg class="ic"><use href="#i-folder"/></svg> Work in a folder</button>
               </div>
               </div><!-- /col -->
@@ -175,12 +177,11 @@
             <header class="vhead">
               <button class="iconbtn" data-drawer aria-label="Conversations"><svg class="ic"><use href="#i-menu"/></svg></button>
               <div class="vhead-main"><h2 class="vtitle">Skills</h2><p class="vsub" data-pc-subtitle></p></div>
+              <button class="iconbtn" data-sheet="sheet-newskill" aria-label="New skill"><svg class="ic"><use href="#i-plus"/></svg></button>
             </header>
             <div class="vbody">
-              <div class="card empty">
-                <p class="cardline"><svg class="ic sm"><use href="#i-spark"/></svg> <b>Coming in a later update</b></p>
-                <p class="muted">Turning skills on and off from the phone arrives in a later update. Use the desktop app for now.</p>
-              </div>
+              <div id="skillgroups"></div>
+              <p class="hintline">A skill that is on goes with every message; /name in a message sends one that is off.</p>
             </div>
           </section>
 
@@ -358,22 +359,6 @@
               <div class="vhead-main"><h2 class="vtitle">Usage &amp; tokens</h2></div>
             </header>
             <div class="vbody">
-              <div class="card stat">
-                <p class="secthead inline">LIFETIME</p>
-                <p class="bignum">1,284,930</p>
-                <p class="muted">tokens across 214 turns · all local</p>
-              </div>
-              <p class="secthead">LAST 7 DAYS</p>
-              <div class="bars">
-                <span style="--h:38%"></span><span style="--h:62%"></span><span style="--h:44%"></span><span style="--h:81%"></span><span style="--h:55%"></span><span style="--h:96%"></span><span style="--h:70%"></span>
-              </div>
-              <p class="secthead">BY WORKER</p>
-              <div class="list">
-                <div class="rowline"><div><b>Lead</b><small>Qwen3.5-4B</small></div><span class="pill">812,400</span></div>
-                <div class="rowline"><div><b>Reviewer</b><small>Qwen3.5-4B Q4_K_M</small></div><span class="pill">301,120</span></div>
-                <div class="rowline"><div><b>Implementer</b><small>Qwen2.5-Coder-3B</small></div><span class="pill">171,410</span></div>
-              </div>
-              <div class="pad"><button class="btn ghost">Reset stats</button></div>
             </div>
           </section>
 
@@ -462,12 +447,48 @@
 
       <div class="sheet" id="sheet-chatmenu" role="dialog" aria-label="Chat menu">
         <div class="grab"></div>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-pencil"/></svg> Rename</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-folder"/></svg> Move to a project</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-archive"/></svg> Archive</button>
-        <button class="drawer-item" data-close><svg class="ic sm"><use href="#i-copy"/></svg> Copy reply</button>
+        <button class="drawer-item" id="chatrename"><svg class="ic sm"><use href="#i-pencil"/></svg> Rename</button>
+        <button class="drawer-item" id="chatmove"><svg class="ic sm"><use href="#i-folder"/></svg> Move to a project</button>
+        <button class="drawer-item" id="chatarchive"><svg class="ic sm"><use href="#i-archive"/></svg> <span>Archive</span></button>
+        <button class="drawer-item" id="chatcopy"><svg class="ic sm"><use href="#i-copy"/></svg> Copy reply</button>
         <button class="drawer-item danger" id="chatdelete"><svg class="ic sm"><use href="#i-trash"/></svg> Delete</button>
       </div>
+
+      <form class="sheet" id="sheet-name" role="dialog" aria-label="Name" autocomplete="off">
+        <div class="grab"></div>
+        <p class="secthead inline"></p>
+        <label class="field"><span>Name</span><input maxlength="200"></label>
+        <button class="btn" type="submit">Save</button>
+      </form>
+
+      <div class="sheet" id="sheet-move" role="dialog" aria-label="Move to a project">
+        <div class="grab"></div>
+        <p class="secthead inline">MOVE TO A PROJECT</p>
+        <div id="moveList"></div>
+      </div>
+
+      <div class="sheet" id="sheet-projmenu" role="dialog" aria-label="Project">
+        <div class="grab"></div>
+        <p class="secthead inline"></p>
+        <button class="drawer-item" id="projrename"><svg class="ic sm"><use href="#i-pencil"/></svg> Rename</button>
+        <button class="drawer-item danger" id="projdelete"><svg class="ic sm"><use href="#i-trash"/></svg> Delete project</button>
+      </div>
+
+      <div class="sheet" id="sheet-skill" role="dialog" aria-label="Skill">
+        <div class="grab"></div>
+        <p class="secthead inline"></p>
+        <p class="hintline" id="skillnote"></p>
+        <label class="field"><span>SKILL.md</span><textarea id="skilltext" rows="14" spellcheck="false"></textarea></label>
+        <button class="btn" id="skillsave">Save</button>
+      </div>
+
+      <form class="sheet" id="sheet-newskill" role="dialog" aria-label="New skill" autocomplete="off">
+        <div class="grab"></div>
+        <p class="secthead inline">NEW SKILL</p>
+        <label class="field"><span>Name</span><input name="name" placeholder="my-skill"></label>
+        <label class="field"><span>Description</span><input name="description" placeholder="When the model should use it"></label>
+        <button class="btn" type="submit">Create</button>
+      </form>
 
       <div class="sheet" id="sheet-confirm" role="dialog" aria-label="Confirm">
         <div class="grab"></div>

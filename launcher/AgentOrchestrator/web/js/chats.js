@@ -1,6 +1,6 @@
 // The Chats screen: projects, recents and archived from /api/conversations, the All/Chat/Code filter and the search sheet.
 import { api } from './api.js';
-import { registerScreen, go, fail, askDeleteChat } from './main.js';
+import { registerScreen, go, fail, toast, askDeleteChat, askName, confirmSheet, openSheet, closeOverlays } from './main.js';
 import { h, icon } from './h.js';
 import { ago, longPress } from './util.js';
 
@@ -23,10 +23,43 @@ function chatRow(tpl, c) {
 
 function projectRows(p) {
   const el = clone('tpl-project'), n = p.items.length, folder = p.items.find(c => c.folder)?.folder;
-  el.dataset.kinds = p.items.map(c => c.kind).join(' '); // the filter hides a project with no chat of the chosen kind
+  el.dataset.kinds = [p.kind, ...p.items.map(c => c.kind)].filter(Boolean).join(' '); // the filter hides a project of another kind with no chat of the chosen kind
   el.querySelector('b').textContent = p.name;
   el.querySelector('small').textContent = [`${n} chat${n === 1 ? '' : 's'}`, folder].filter(Boolean).join(' · ');
+  longPress(el, () => projectMenu(p));
   return [el, ...p.items.map(c => chatRow('tpl-project-chat', c))];
+}
+
+// A project's menu (long press on its heading): Rename, Delete project (its chats move to Recents). The list reloads after each.
+let project = null;
+function projectMenu(p) {
+  project = p;
+  $('#sheet-projmenu .secthead').textContent = p.name.toUpperCase();
+  openSheet('sheet-projmenu');
+}
+const projectPost = (verb, body) => api.post('/api/project/' + encodeURIComponent(project.id) + '/' + verb, body);
+function renameProject() {
+  askName('RENAME PROJECT', project.name, async name => {
+    if (!name) return;
+    try { await projectPost('rename', { name }); } catch (err) { fail(err); return; }
+    load();
+  });
+}
+function deleteProject() {
+  closeOverlays();
+  confirmSheet('Delete project', `Delete "${project.name}"? Its chats move to Recents.`, async () => {
+    try { await projectPost('delete'); } catch (err) { fail(err); return; }
+    load();
+  });
+}
+// A new project of the kind the filter shows (chat under All).
+function newProject() {
+  askName('NEW PROJECT', '', async name => {
+    if (!name) return;
+    try { await api.post('/api/projects', { name, kind: kind === 'code' ? 'code' : 'chat' }); } catch (err) { fail(err); return; }
+    toast('Project made');
+    load();
+  }, 'Create');
 }
 
 function filter() {
@@ -73,6 +106,9 @@ registerScreen('chats', {
   mount() {
     $('.seg[data-seg=kind]').addEventListener('change', e => { kind = e.currentTarget.dataset.value; filter(); });
     $('#sheet-search input').addEventListener('input', search);
+    $('#newproject').addEventListener('click', newProject);
+    $('#projrename').addEventListener('click', renameProject);
+    $('#projdelete').addEventListener('click', deleteProject);
     document.addEventListener('visibilitychange', () => { if (!document.hidden && $('#view-chats').classList.contains('on')) load(); });
   },
   show: load,

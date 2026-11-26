@@ -2,7 +2,7 @@
 // writes POST /api/settings {key, value} at once and draws the settings the PC answers with (a refusal redraws the last ones). The
 // GET shape -> rows, the normalising and the accent -> tokens mapping are pure (Node tests them); the DOM part loads only in a page.
 import { api } from './api.js';
-import { h } from './h.js';
+import { h, icon } from './h.js';
 
 /* ---------- pure ---------- */
 // The GET shape with every section and list present; followTabs 3..11 (0, missing or 11+ is Unlimited = 11, as the desktop's slider).
@@ -37,6 +37,21 @@ export function accentTokens(color) {
     '--on-accent': lum > 0.3 ? '#141414' : '#FFFFFF' };
 }
 
+// The Usage page's bars from GET /api/usage's `days` ([{day: "yyyy-MM-dd", tokens}], oldest first): each one's height in percent of
+// the busiest day (0 when every day is 0), its weekday letter and its tokens.
+export function usageBars(days = []) {
+  const max = Math.max(0, ...days.map(d => d.tokens || 0));
+  return days.map(({ day, tokens = 0 }) => {
+    const [y, m, d] = String(day).split('-').map(Number);
+    return { letter: 'SMTWTFS'[new Date(y, m - 1, d).getDay()] || '', h: max ? Math.round(tokens / max * 100) : 0, tokens };
+  });
+}
+// A task's length in seconds as "1 h 05 min", "12 min 30 s" or "45 s".
+export function duration(sec) {
+  const t = Math.max(0, Math.round(sec || 0)), hh = Math.floor(t / 3600), mm = Math.floor(t % 3600 / 60), ss = t % 60;
+  return hh ? `${hh} h ${String(mm).padStart(2, '0')} min` : mm ? `${mm} min ${ss} s` : `${ss} s`;
+}
+
 // The phone asks before these go on (the desktop's own switches do not ask; the phone is a step further from the PC).
 const CONFIRMS = {
   fullAccess: { title: 'Turn on Full access', yes: 'Turn on', text: "This turns off the command sandbox's isolation: commands run " +
@@ -64,7 +79,7 @@ export function rows(page, s) {
       { type: 'slider', key: 'followTabs', value: g.followTabs, min: 3, max: 11, label: 'Tabs the model may open' },
       head('Computer use'), sw('computerUse', g.computerUse, 'Let the model use applications', 'One window per reply, your real mouse; Esc stops it.'),
       info('Approved applications', g.computerApps.length ? g.computerApps.map(appName).join(', ') : 'None approved.', 'Add or remove them on the PC.'),
-      head('Usage stats'), info('Your usage', g.stats || '—'), { type: 'button', action: 'resetStats', label: 'Reset usage stats' },
+      head('Usage stats'), { type: 'nav', open: 'view-usage', label: 'Usage & tokens', text: g.stats || '—' },
       head('Phone app'), info('Phone app over Tailscale', g.phoneApp.on ? 'On' + (g.phoneApp.address ? ' · ' + g.phoneApp.address : '') : 'Off',
         'It can only be turned off at the PC.')];
     case 'appearance': return [
@@ -132,6 +147,7 @@ if (typeof document !== 'undefined') {
       try { await api.post('/api/settings/reset-stats'); } catch (err) { fail(err); return; }
       toast('Usage stats reset');
       load();
+      if (page === 'usage') loadUsage();
     }, ask.yes);
   }
 
@@ -142,6 +158,8 @@ if (typeof document !== 'undefined') {
       case 'note': return h('p', { class: 'hintline' }, r.text);
       case 'info': return h('div', { class: 'rowline' }, label(r));
       case 'button': return h('div', { class: 'pad' }, h('button', { class: 'btn ghost', onclick: resetStats }, r.label));
+      case 'nav': return h('button', { class: 'navrow flat', 'data-open': r.open }, h('span', { class: 'item-text' }, h('b', {}, r.label), h('small', {}, r.text)),
+        icon('chevron', 'ic sm chev'));
       case 'switch': return h('div', { class: 'rowline' }, label(r), h('button', {
         class: 'switch' + (r.value ? ' on' : ''), 'aria-label': r.label, 'aria-pressed': String(r.value),
         onclick: e => { if (!confirmFor(r.key, !r.value)) e.currentTarget.classList.toggle('on'); change(r.key, !r.value); } }));
@@ -176,6 +194,24 @@ if (typeof document !== 'undefined') {
     const view = $('#view-' + page);
     (view.querySelector('[data-rows]') || view.querySelector('.vbody')).replaceChildren(...rows(page, state).map(row).flat().filter(Boolean));
   }
+
+  // The Usage page (GET /api/usage): lifetime (all PCs, this one's beneath), the last 7 days, the longest task, per PC, Reset.
+  const fmt = n => (n || 0).toLocaleString('en-US');
+  function drawUsage(u) {
+    const bars = usageBars(u.days);
+    $('#view-usage .vbody').replaceChildren(
+      h('div', { class: 'card stat' }, h('p', { class: 'secthead inline' }, 'LIFETIME'), h('p', { class: 'bignum' }, fmt(u.combined ?? u.lifetime)),
+        h('p', { class: 'muted' }, `tokens on all your PCs · ${fmt(u.lifetime)} on this one`)),
+      h('p', { class: 'secthead' }, 'LAST 7 DAYS'),
+      h('div', { class: 'bars' }, bars.map(b => { const el = h('span', { title: `${fmt(b.tokens)} tokens` }); el.style.setProperty('--h', b.h + '%'); return el; })),
+      h('div', { class: 'barlabels' }, bars.map(b => h('span', {}, b.letter))),
+      h('div', { class: 'list' }, h('div', { class: 'rowline' }, h('div', {}, h('b', {}, 'Longest task')), h('span', { class: 'pill' }, duration(u.longestTask)))),
+      (u.pcs || []).length > 0 && h('p', { class: 'secthead' }, 'BY PC'),
+      h('div', { class: 'list' }, (u.pcs || []).map(pc => h('div', { class: 'rowline' }, h('div', {}, h('b', {}, pc.name)), h('span', { class: 'pill' }, fmt(pc.lifetime))))),
+      h('div', { class: 'pad' }, h('button', { class: 'btn ghost', onclick: resetStats }, 'Reset usage stats')));
+  }
+  const loadUsage = () => api.get('/api/usage').then(drawUsage, fail);
+  registerScreen('usage', { show() { page = 'usage'; loadUsage(); } });
 
   for (const name of ['settings', ...PAGES])
     registerScreen(name, { show() { page = name; draw(); load(); } });

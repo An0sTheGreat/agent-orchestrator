@@ -2,7 +2,7 @@
 // chip, the approval card and the context ring with its popover. The composer (send, the + sheet) is Part 7b's.
 // applyEvent, emptyLive and ringColor are pure (Node tests them); the DOM part loads only in a page.
 import { api } from './api.js';
-import { h } from './h.js';
+import { h, icon } from './h.js';
 import { renderMarkdown } from './markdown.js';
 import { ago, longPress } from './util.js';
 
@@ -93,6 +93,23 @@ const RING = { blue: '#6EA8FF', amber: '#F7C873', red: '#FF6B6B' };
 const PARTS = [['system', 'System prompt', '#C88705'], ['tools', 'Tools', '#DD6122'], ['skills', 'Skills', '#8E8E8E'],
   ['messages', 'Messages', '#3085E2'], ['tool_results', 'Tool results', '#00A082'], ['reply', 'Reply', '#595959']];
 
+/* ---------- the chat menu: pure ---------- */
+// What the ⋯ menu needs about chat `id` from GET /api/conversations: its kind, the project it is in (null: none), whether it is
+// archived, the Archive item's label and the projects it may move to (the other projects of its kind; a project without a kind
+// counts as chat). null when the list does not have it.
+export function chatMenu(list, id) {
+  const { projects = [], recents = [], archived = [] } = list || {};
+  const home = projects.find(p => p.items.some(c => c.id === id));
+  const chat = home?.items.find(c => c.id === id) || recents.find(c => c.id === id) || archived.find(c => c.id === id);
+  if (!chat) return null;
+  const kind = chat.kind || 'chat', isArchived = archived.some(c => c.id === id);
+  return { kind, project: home ? { id: home.id, name: home.name } : null, archived: isArchived,
+    archiveLabel: isArchived ? 'Unarchive' : 'Archive',
+    targets: projects.filter(p => p !== home && (p.kind || 'chat') === kind).map(p => ({ id: p.id, name: p.name })) };
+}
+// The text of the last reply (not the user's) in a conversation's messages; '' when there is none.
+export const lastReply = messages => [...(messages || [])].reverse().find(m => m.role !== 'user' && m.text)?.text || '';
+
 /* ---------- the screen ---------- */
 export let chatId = null; // the open chat (null: a new one), for the composer
 let replaceScreen = () => {};
@@ -100,7 +117,7 @@ let replaceScreen = () => {};
 export const follow = id => replaceScreen('chat', { id });
 
 if (typeof document !== 'undefined') {
-  const { registerScreen, fail, toast, replace, confirmSheet, askDeleteChat, closeOverlays } = await import('./main.js');
+  const { registerScreen, fail, toast, replace, confirmSheet, askDeleteChat, closeOverlays, askName, openSheet } = await import('./main.js');
   replaceScreen = replace;
   const $ = s => document.querySelector(s);
   const clone = id => document.getElementById(id).content.firstElementChild.cloneNode(true);
@@ -335,8 +352,66 @@ if (typeof document !== 'undefined') {
   // Another PC (main.js usePc): this chat's stream and any load on its way are the old PC's.
   document.addEventListener('ao:pc', () => { gen++; stopEvents(); stopEvents = () => {}; });
 
+  // The ⋯ menu: its state from the conversations list, fetched as it opens (the Archive label follows it).
+  let menu = null;
+  const post = (verb, body) => api.post('/api/conversation/' + encodeURIComponent(id) + '/' + verb, body);
+  async function readMenu() {
+    if (!id) return null;
+    const mine = gen;
+    let list;
+    try { list = await api.get('/api/conversations'); } catch (err) { fail(err); return null; }
+    if (mine !== gen) return null;
+    menu = chatMenu(list, id);
+    $('#chatarchive span').textContent = menu?.archiveLabel || 'Archive';
+    return menu;
+  }
+  const act = fn => async () => { if (!id) { closeOverlays(); return; } await fn(); };
+  const rename = act(() => askName('RENAME CHAT', view.querySelector('.vtitle').textContent, async title => {
+    try { await post('rename', { title }); } catch (err) { fail(err); return; }
+    load(gen, null, true);
+  }));
+  const moveTo = async (project, name) => {
+    closeOverlays();
+    try { await post('move', { project }); } catch (err) { fail(err); return; }
+    toast(project ? 'Moved to ' + name : 'Removed from the project');
+  };
+  const move = act(async () => {
+    const m = menu || await readMenu();
+    if (!m) return;
+    if (m.archived) { closeOverlays(); toast('Unarchive it first'); return; }
+    const row = (text, ic, onclick) => h('button', { class: 'drawer-item', onclick }, icon(ic, 'ic sm'), ' ' + text);
+    $('#moveList').replaceChildren(...m.targets.map(p => row(p.name, 'folder', () => moveTo(p.id, p.name))),
+      row('New project…', 'plus', () => askName('NEW PROJECT', '', async name => {
+        if (!name) return;
+        let made;
+        try { made = await api.post('/api/projects', { name, kind: m.kind }); } catch (err) { fail(err); return; }
+        moveTo(made.id, name);
+      }, 'Create and move')),
+      m.project && row('Remove from ' + m.project.name, 'back', () => moveTo(null)));
+    openSheet('sheet-move');
+  });
+  const archive = act(async () => {
+    const m = menu || await readMenu();
+    closeOverlays();
+    if (!m) return;
+    try { await post('archive', { archived: !m.archived }); } catch (err) { fail(err); return; }
+    menu = null;
+    toast(m.archived ? 'Unarchived' : 'Archived');
+  });
+  const copyReply = () => {
+    closeOverlays();
+    const text = lastReply(saved);
+    if (!text) { toast('No reply to copy'); return; }
+    navigator.clipboard.writeText(text).then(() => toast('Copied'), () => toast('Could not copy'));
+  };
+
   registerScreen('chat', {
     mount() {
+      $('#view-chat [data-sheet="sheet-chatmenu"]').addEventListener('click', () => { menu = null; readMenu(); });
+      $('#chatrename').addEventListener('click', rename);
+      $('#chatmove').addEventListener('click', move);
+      $('#chatarchive').addEventListener('click', archive);
+      $('#chatcopy').addEventListener('click', copyReply);
       $('#stopbtn').addEventListener('click', () => api.post('/api/stop', { id }).catch(fail));
       $('#chatdelete').addEventListener('click', () => id ? askDeleteChat(id, view.querySelector('.vtitle').textContent) : closeOverlays());
       $('#ctxchat').addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; });

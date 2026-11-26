@@ -103,6 +103,24 @@ export function askDeleteChat(id, title) {
   });
 }
 
+// The name sheet: a title, a text field holding `value` and a button (`yes`); onSave(the trimmed text) runs once it is pressed
+// (or Enter). Used for renaming chats and projects and naming a new project.
+let onName = null;
+export function askName(title, value, onSave, yes = 'Save') {
+  $('#sheet-name .secthead').textContent = title;
+  $('#sheet-name input').value = value || '';
+  $('#sheet-name button').textContent = yes;
+  onName = onSave;
+  openSheet('sheet-name');
+}
+$('#sheet-name').addEventListener('submit', e => {
+  e.preventDefault();
+  const save = onName, text = $('#sheet-name input').value.trim();
+  onName = null;
+  closeOverlays();
+  save?.(text);
+});
+
 let toastTimer;
 export function toast(msg) {
   const t = $('#toast');
@@ -112,7 +130,7 @@ export function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('on'), 2000);
 }
 
-/* ---------- switches, segments, radios, chips, accents, disclosure (visuals only) ---------- */
+/* ---------- switches, segments, radios, chips, disclosure (visuals only) ---------- */
 // A segment bar records its choice in data-value and fires a bubbling 'change' event for the screen that owns it.
 document.addEventListener('click', e => {
   const sw = e.target.closest('[data-switch]');
@@ -135,19 +153,6 @@ document.addEventListener('click', e => {
 
   const chip = e.target.closest('.chip[data-toggle]');
   if (chip) { chip.classList.toggle('on'); return; }
-
-  const acc = e.target.closest('[data-accent]');
-  if (acc) {
-    const [a, light, on, name] = acc.dataset.accent.split('|');
-    const root = document.documentElement;
-    root.style.setProperty('--accent', a);
-    root.style.setProperty('--accent-light', light);
-    root.style.setProperty('--on-accent', on);
-    $$('.acc').forEach(x => x.classList.toggle('on', x === acc));
-    const label = $('#accentname');
-    if (label) label.textContent = name;
-    return;
-  }
 
   const unfold = e.target.closest('[data-disclose]');
   if (unfold) { unfold.classList.toggle('open'); $('#' + unfold.dataset.disclose).classList.toggle('hidden'); }

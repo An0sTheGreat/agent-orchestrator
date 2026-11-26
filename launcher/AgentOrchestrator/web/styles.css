@@ -611,6 +611,11 @@ body.landscape .drawer { padding-top: 0; }
 .stat { text-align: left; }
 .bignum { font-family: var(--display); font-size: 38px; line-height: 1.1; margin: 2px 0 0; }
 .bars { display: flex; align-items: flex-end; gap: 7px; height: 86px; padding: 0 4px; }
+.barlabels { display: flex; gap: 7px; padding: 4px 4px 0; }
+.barlabels span { flex: 1; text-align: center; font-size: 10.5px; color: var(--muted); }
+#skilltext { min-height: 42vh; font-family: var(--mono); font-size: 12px; line-height: 1.5; resize: vertical; }
+#skilltext[readonly] { color: var(--muted); }
+.skillrow .item-text { flex: 1; min-width: 0; text-align: left; }
 .bars span { flex: 1; height: var(--h); background: linear-gradient(180deg, var(--accent), rgba(192, 192, 192, .18)); background: linear-gradient(180deg, var(--accent), color-mix(in srgb, var(--accent) 18%, transparent)); border-radius: 5px 5px 2px 2px; }
 .about-head { display: flex; align-items: center; gap: 11px; }
 .about-head b { font-size: 14px; display: block; }
