@@ -1101,7 +1101,7 @@ public partial class MainWindow
         // While the chat model loads it does not load again (reads go to Kokoro), at most 5 minutes.
         var modelsLoaded = ModelsLoaded;
         if (!modelsLoaded)
-            Chatterbox.HoldWhile(() => !ModelsLoaded && (_loadingRole is not null || _chatBusy || _process is not null), TimeSpan.FromMinutes(5));
+            Chatterbox.HoldWhile(() => !ModelsLoaded && (_loadingRole is not null || _localApiLoading || _chatBusy || _process is not null), TimeSpan.FromMinutes(5));
         if (Chatterbox.Loaded && Chatterbox.ShouldUnloadForChat(true, modelsLoaded, modelsLoaded ? Chatterbox.FreeGpuBytes() : null))
         {
             _ = Task.Run(Chatterbox.Unload);

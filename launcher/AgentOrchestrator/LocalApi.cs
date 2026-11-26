@@ -69,6 +69,17 @@ internal static class LocalApi
         catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) { return 600; }
     }
 
+    // Whether the worker's model is AO's own (auto_load in its config.json entry: roles, then custom_workers); false when unreadable.
+    internal static bool AutoLoads(string configJson, string role)
+    {
+        try
+        {
+            var config = JsonNode.Parse(configJson);
+            return (config?["roles"]?[role] ?? config?["custom_workers"]?.AsArray().FirstOrDefault(w => w?["id"]?.GetValue<string>() == role))?["auto_load"] is JsonObject;
+        }
+        catch (Exception e) when (e is JsonException or InvalidOperationException or FormatException) { return false; }
+    }
+
     // Where a request goes: the engine's `--api-target` line. KeyEnv names the key's variable ("" for none), never its value.
     internal sealed record Target(string BaseUrl, string Model, string KeyEnv, JsonObject Defaults);
 
@@ -119,7 +130,7 @@ internal static class LocalApi
                 HttpListenerContext context;
                 try { context = await listener.GetContextAsync(); }
                 catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException) { return; }
-                _ = Serve(context);
+                _ = Task.Run(() => Serve(context));
             }
         }
 
@@ -181,6 +192,9 @@ internal static class LocalApi
             TimeoutSeconds("""{"roles":{"planner":{"timeout_seconds":90}},"custom_workers":[{"id":"c","timeout_seconds":45}]}""", "c") == 45 &&
             TimeoutSeconds("""{"roles":{"planner":{"timeout_seconds":90}}}""", "reviewer") == 90 && TimeoutSeconds("{}", "w") == 600 &&
             TimeoutSeconds("not json", "w") == 600 && TimeoutSeconds("""{"roles":{"w":{"timeout_seconds":"x"}}}""", "w") == 600, "worker timeout");
+        Check(AutoLoads("""{"roles":{"w":{"auto_load":{"model_path":"m.gguf"}},"r":{"base_url":"x"}},"custom_workers":[{"id":"c","auto_load":{}}]}""", "w") &&
+            AutoLoads("""{"custom_workers":[{"id":"c","auto_load":{}}]}""", "c") && !AutoLoads("""{"roles":{"r":{"base_url":"x"}}}""", "r") &&
+            !AutoLoads("{}", "w") && !AutoLoads("not json", "w"), "auto_load");
         Check(ParseSize("1024x768") == (1024, 768) && ParseSize("10x10") is null && ParseSize("abc") is null && ParseSize("5000x5000") is null &&
             ParseSize(null) is null, "size");
         Check(ParseTarget("""{"base_url":"http://127.0.0.1:8080/v1","model":"gguf","key_env":"OPENAI_API_KEY","defaults":{"temperature":0.4}}""") is

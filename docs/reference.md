@@ -219,6 +219,9 @@ Other apps on this PC can use AO's workers and image models through an OpenAI-co
 - Key: `Authorization: Bearer <key>`; a missing or wrong key gets 401. The key is stored encrypted for your Windows account and is not put in the environment of the processes AO starts.
 - `model` is a worker: a built-in role (`planner`, `implementer`, `reviewer`) or a custom worker's id, or its title (any case). The worker's own model, API key and sampling are used; the app's request fields win over the worker's sampling. AO adds no system prompt: send your own.
 - Calls do not appear in the conversation list, and pictures are not saved to the Images gallery.
+- A remote worker whose key is written straight into config.json (`api_key`, no variable) gets 401 through the API: AO sends only keys it keeps in a variable. Save the key under Settings (or `api_key_env`) instead.
+- A body over 25 MB gets 413; an unknown route gets 404.
+- Hanging up stops a chat call only once its stream has started: AO notices a closed connection when a write to it fails, so a call still waiting for its first chunk (the model loading or thinking) runs on until then.
 
 | Method | Path | Purpose |
 |---|---|---|

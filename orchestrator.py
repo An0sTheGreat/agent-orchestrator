@@ -1551,8 +1551,9 @@ def llama_compatible(running: list[str], wanted: list[str]) -> tuple[bool, bool]
     return True, want[2] and not have[2]
 
 
-def llama_serving(client: ApiClient, role: str) -> int | None:
-    """The port of a running, healthy llama-server whose args can serve this role (llama_compatible), else None."""
+def llama_serving(client: ApiClient, role: str, touch: bool = True) -> int | None:
+    """The port of a running, healthy llama-server whose args can serve this role (llama_compatible), else None.
+    touch False (--api-target --only-loaded, beside AO's own engine): read-only, the state file's last_used is not written."""
     name = client.title or role
     path, model_file = str(client.auto_load["model_path"]), gguf_file(client.auto_load)
     servers = llama_servers(live=False)
@@ -1565,8 +1566,9 @@ def llama_serving(client: ApiClient, role: str) -> int | None:
             if server.get("signature") != signature:
                 print(f"[{name}] keeping the loaded {path}: its load settings also serve this role")
             client.thinking_off = client.thinking_off or no_thinking
-            server["last_used"] = time.time()
-            llama_save(servers)
+            if touch:
+                server["last_used"] = time.time()
+                llama_save(servers)
             return port
     return None
 
@@ -6475,7 +6477,7 @@ def api_target(config: dict[str, Any], role: str, only_loaded: bool) -> dict[str
     custom_workers(config, warn=True)
     client, sampling = role_settings(config, role)
     if client.llama_port and only_loaded:
-        port = llama_serving(client, role)
+        port = llama_serving(client, role, touch=False)
         if port is None:
             raise WorkflowError(f"busy: {client.title or role} is not loaded and loading it would swap out another model")
         client.llama_port, client.base_url = port, f"http://127.0.0.1:{port}/v1"

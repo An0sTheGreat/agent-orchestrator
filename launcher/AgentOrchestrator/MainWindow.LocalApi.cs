@@ -17,6 +17,9 @@ public partial class MainWindow
     private string _localApiState = "Off";
 
     internal string? LocalApiKey() => ApiKeys.Get(LocalApi.KeyName);
+    private volatile string? _localApiKey; // what the server checks: read from the store on start, replaced by New key
+    private volatile System.Diagnostics.Process? _localApiEngine; // the --api-target run now: StopLocalApi kills it (a load would orphan llama-server)
+    private bool _localApiLoading; // UI thread: an app's call is making its worker ready (LocalApiTargetAsync); turns and Load models wait
 
     // Test seams (--webapp-smoke): in place of the engine's --api-target run, and of the picture job.
     internal Func<string, bool, CancellationToken, Task<LocalApi.Target>>? _localApiTargetTest;
@@ -48,10 +51,11 @@ public partial class MainWindow
     private void StartLocalApi()
     {
         StopLocalApi();
-        if (LocalApiKey() is not { Length: > 0 })
+        _localApiKey = LocalApiKey();
+        if (_localApiKey is not { Length: > 0 })
             NewLocalApiKey();
         var port = _settings.LocalApiPort is > 0 and < 65536 ? _settings.LocalApiPort : LocalApi.DefaultPort;
-        var server = new LocalApi.Server(port, LocalApiKey, LocalApiRoute);
+        var server = new LocalApi.Server(port, () => _localApiKey, LocalApiRoute);
         if (server.Start())
         {
             _localApi = server;
@@ -70,25 +74,28 @@ public partial class MainWindow
         _localApi?.Dispose();
         _localApi = null;
         _localApiState = "Off";
+        try { _localApiEngine?.Kill(true); } catch (Exception x) when (x is InvalidOperationException or System.ComponentModel.Win32Exception) { }
     }
 
     private void RefreshLocalApi()
     {
         LocalApiToggle.IsChecked = _settings.LocalApi;
         LocalApiStateText.Text = _localApiState;
-        LocalApiKeyBox.Text = _localApi is not null ? LocalApiKey() ?? "" : "";
+        LocalApiKeyBox.Text = _localApi is not null ? _localApiKey ?? "" : "";
     }
 
     // ApiKeys.Save also sets the variable; this key stays out of the environment (the workers' processes inherit it).
-    private static void NewLocalApiKey()
+    private void NewLocalApiKey()
     {
-        ApiKeys.Save(LocalApi.KeyName, "Default", ModelShare.NewKey());
+        var key = ModelShare.NewKey();
+        ApiKeys.Save(LocalApi.KeyName, "Default", key);
         Environment.SetEnvironmentVariable(LocalApi.KeyName, null);
+        _localApiKey = key;
     }
 
     private void LocalApiCopy_Click(object sender, RoutedEventArgs e) => CopyToClipboard(LocalApiKeyBox.Text, "API key copied", "No API key yet");
 
-    // The key is read on every request: the old one stops working at once.
+    // The server checks _localApiKey: the old key stops working at once.
     private void LocalApiNewKey_Click(object sender, RoutedEventArgs e)
     {
         NewLocalApiKey();
@@ -152,14 +159,14 @@ public partial class MainWindow
         if (await LocalApiBody(ctx) is not { } body)
             return;
         var model = body["model"] is JsonValue m && m.TryGetValue<string>(out var name) ? name : null;
-        var (role, roles, timeout) = await Dispatcher.InvokeAsync(() =>
+        var (role, roles, timeout, autoLoad) = await Dispatcher.InvokeAsync(() =>
         {
             var role = LocalApi.ResolveWorker(model, _cards.Select(c => (c.Role, c.Title)));
             var config = role is null ? "" : ActiveConfigPath();
             string text;
             try { text = config.Length > 0 ? File.ReadAllText(config) : ""; }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException) { text = ""; }
-            return (role, string.Join(", ", _cards.Select(c => c.Role)), role is null ? 0 : LocalApi.TimeoutSeconds(text, role));
+            return (role, string.Join(", ", _cards.Select(c => c.Role)), role is null ? 0 : LocalApi.TimeoutSeconds(text, role), role is not null && LocalApi.AutoLoads(text, role));
         });
         if (role is null)
         {
@@ -167,7 +174,7 @@ public partial class MainWindow
             return;
         }
         LocalApi.Target target;
-        try { target = await LocalApiTargetAsync(role); }
+        try { target = await LocalApiTargetAsync(role, autoLoad); }
         catch (Exception e) when (e is InvalidOperationException or IOException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
         {
             if (e.Message.StartsWith("busy:", StringComparison.Ordinal))
@@ -205,7 +212,8 @@ public partial class MainWindow
                 await LocalApiReply(ctx, 502, LocalApi.Error($"The worker's API failed: {why}", "server_error"));
                 return;
             }
-            // disposing the upstream reply (on return, or the app hanging up) closes its connection: the worker stops
+            // disposing the upstream reply (on return, or the app hanging up) closes its connection: the worker stops. HttpListener reports
+            // a hang-up only when a write fails, so one before the first chunk (the worker still loading or thinking) is seen only then
             using (upstream)
             {
                 var response = ctx.Response;
@@ -245,17 +253,20 @@ public partial class MainWindow
     }
 
     // The worker's target from the engine (--api-target, at most 10 minutes), one at a time. While the models work (a turn, a run,
-    // Load models) it may only reuse a loaded server ("busy:" otherwise); else the GPU is freed for the chat model as Load models does.
-    private async Task<LocalApi.Target> LocalApiTargetAsync(string role)
+    // Load models) it may only reuse a loaded server ("busy:" otherwise); else _localApiLoading holds a turn or Load models back
+    // until it is done, and the GPU is freed for a local (auto_load) worker's model as Load models does.
+    private async Task<LocalApi.Target> LocalApiTargetAsync(string role, bool autoLoad)
     {
         await _localApiTargets.WaitAsync();
         string? temp = null;
+        var loading = false;
         try
         {
             using var cap = new CancellationTokenSource(TimeSpan.FromMinutes(10));
             var (busy, info) = await Dispatcher.InvokeAsync(() =>
             {
                 var busy = ModelsWorking || _loadingRole is not null;
+                _localApiLoading = loading = !busy;
                 if (_localApiTargetTest is not null)
                     return (busy, null);
                 if (_workflowRoot is null)
@@ -263,7 +274,7 @@ public partial class MainWindow
                 var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out _);
                 temp = prepared.IsTemp ? prepared.Path : null;
                 var info = LauncherLogic.BuildApiTargetStartInfo(LauncherLogic.FindPython(), _workflowRoot, prepared.Path, role, busy);
-                if (!busy)
+                if (!busy && autoLoad)
                     FreeGpuForChat();
                 ApplyRuntime(info);
                 return (busy, (System.Diagnostics.ProcessStartInfo?)info);
@@ -275,6 +286,7 @@ public partial class MainWindow
             process.OutputDataReceived += (_, a) => { if (a.Data is { Length: > 0 } line) last = line; };
             process.ErrorDataReceived += (_, a) => { if (a.Data is { } line && line.StartsWith("ERROR:", StringComparison.Ordinal)) error = line[6..].Trim(); };
             process.Start();
+            _localApiEngine = process;
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             try { await process.WaitForExitAsync(cap.Token); }
@@ -289,6 +301,9 @@ public partial class MainWindow
         }
         finally
         {
+            _localApiEngine = null;
+            if (loading)
+                _ = Dispatcher.BeginInvoke(() => _localApiLoading = false);
             _localApiTargets.Release();
             if (temp is not null)
                 try { Directory.Delete(temp, true); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
@@ -349,6 +364,16 @@ public partial class MainWindow
             }
             await Task.Delay(500);
         }
+    }
+
+    // Before a desktop turn or Load models: an app's call making its worker ready finishes first (it may stop the model in use).
+    // Completes at once, without yielding, when none is.
+    private async Task LocalApiLoadDone()
+    {
+        if (_localApiLoading)
+            Toast("Waiting for an app's model to load", "#F7C873");
+        while (_localApiLoading)
+            await Task.Delay(200);
     }
 
     private static async Task LocalApiReply(HttpListenerContext ctx, int status, byte[] body)
@@ -445,7 +470,7 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"webapp-smoke: local api: {what}"); return false; }
         string[] lines = ["data: {\"n\":1}\n\n", "data: {\"n\":2}\n\n", "data: [DONE]\n\n"];
-        var (fakeAuth, fakeBody, fakeStatus, lastWritten) = ("", "", 200, false);
+        var (fakeAuth, fakeBody, fakeStatus, lastWritten, slow) = ("", "", 200, false, false);
         var probe = new TcpListener(IPAddress.Loopback, 0);
         probe.Start();
         var fakePort = ((IPEndPoint)probe.LocalEndpoint).Port;
@@ -473,12 +498,14 @@ public partial class MainWindow
                     lastWritten = false;
                     c.Response.ContentType = "text/event-stream";
                     c.Response.SendChunked = true;
-                    for (var i = 0; i < lines.Length; i++)
+                    // slow: a 10 s stream of the first line every 100 ms (a long reply), to see the API stop reading when the app hangs up
+                    var chunks = slow ? Enumerable.Repeat(lines[0], 100).ToArray() : lines;
+                    for (var i = 0; i < chunks.Length; i++)
                     {
                         if (i > 0)
-                            await Task.Delay(200);
-                        lastWritten = i == lines.Length - 1;
-                        await c.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(lines[i]));
+                            await Task.Delay(slow ? 100 : 200);
+                        lastWritten = i == chunks.Length - 1;
+                        await c.Response.OutputStream.WriteAsync(Encoding.UTF8.GetBytes(chunks[i]));
                         await c.Response.OutputStream.FlushAsync();
                     }
                 }
@@ -488,11 +515,13 @@ public partial class MainWindow
         });
         var target = new LocalApi.Target($"http://127.0.0.1:{fakePort}/v1", "real-id", "AO_SMOKE_KEY", JsonNode.Parse("""{"temperature":0.4}""")!.AsObject());
         var asked = new List<(string Role, bool OnlyLoaded)>();
+        var loadingSeen = new List<bool>(); // _localApiLoading while the engine's target is asked for
         ImageSettings? generated = null;
         var settingsBefore = JsonSerializer.Serialize(_settings.ImageGen);
         _localApiTargetTest = (role, onlyLoaded, _) =>
         {
             asked.Add((role, onlyLoaded));
+            loadingSeen.Add(_localApiLoading);
             return onlyLoaded ? throw new InvalidOperationException($"busy: {role} is not loaded and loading it would swap out another model") : Task.FromResult(target);
         };
         _localApiGenerateTest = (run, _) =>
@@ -501,7 +530,7 @@ public partial class MainWindow
             return Task.FromResult(new List<ImageShare.Picture> { new("cGljdHVyZQ==", 7) });
         };
         Environment.SetEnvironmentVariable("AO_SMOKE_KEY", "sk-smoke");
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
+        using var http = new HttpClient(new SocketsHttpHandler { MaxResponseDrainSize = 0 }) { Timeout = TimeSpan.FromSeconds(20) }; // a disposed reply hangs up at once, not drained
         Task<HttpResponseMessage> Post(string path, string json)
         {
             var request = new HttpRequestMessage(HttpMethod.Post, $"http://127.0.0.1:{port}{path}") { Content = new StringContent(json, Encoding.UTF8, "application/json") };
@@ -528,8 +557,20 @@ public partial class MainWindow
                     return Fail($"chat: the stream changed: {Encoding.UTF8.GetString(all.ToArray())}");
             }
             var sent = JsonNode.Parse(fakeBody)!;
-            if (fakeAuth != "Bearer sk-smoke" || sent["model"]?.GetValue<string>() != "real-id" || sent["temperature"]?.GetValue<double>() != 1 || asked.Count != 1 || asked[0] != (planner, false))
-                return Fail($"chat upstream: {fakeAuth} {fakeBody} {string.Join(",", asked)}");
+            if (fakeAuth != "Bearer sk-smoke" || sent["model"]?.GetValue<string>() != "real-id" || sent["temperature"]?.GetValue<double>() != 1 || asked.Count != 1 || asked[0] != (planner, false) ||
+                loadingSeen[0] != true || _localApiLoading)
+                return Fail($"chat upstream: {fakeAuth} {fakeBody} {string.Join(",", asked)}, loading {string.Join(",", loadingSeen)} then {_localApiLoading}");
+
+            // a desktop turn and Load models wait while an app's call loads its worker (each then returns at once: busy)
+            (_localApiLoading, _chatBusy) = (true, true);
+            var turn = RunTurn(_chat, "hi", planner, _ => "{}", LauncherLogic.BuildChatStartInfo, "Chat");
+            var load = LoadRoleAsync(planner, "Planner");
+            await Task.Delay(400);
+            var waited = !turn.IsCompleted && !load.IsCompleted;
+            _localApiLoading = false;
+            if (!waited || await turn || await Task.WhenAny(load, Task.Delay(2000)) != load)
+                return Fail($"a turn while an app's model loads: waited {waited}");
+            _chatBusy = false;
 
             using (var response = await Post("/v1/chat/completions", chat.Replace(planner, "nope")))
             {
@@ -549,18 +590,25 @@ public partial class MainWindow
 
             _chatBusy = true;
             using (var response = await Post("/v1/chat/completions", chat))
-                if ((int)response.StatusCode != 503 || response.Headers.RetryAfter?.Delta != TimeSpan.FromSeconds(10) || asked[^1] != (planner, true))
-                    return Fail($"busy: {(int)response.StatusCode} {response.Headers.RetryAfter} {asked[^1]}");
+                if ((int)response.StatusCode != 503 || response.Headers.RetryAfter?.Delta != TimeSpan.FromSeconds(10) || asked[^1] != (planner, true) || loadingSeen[^1])
+                    return Fail($"busy: {(int)response.StatusCode} {response.Headers.RetryAfter} {asked[^1]} loading {loadingSeen[^1]}");
             _chatBusy = false;
 
             target = target with { KeyEnv = "" }; // AO's own llama-server: a local stream
+            slow = true;
             using (var response = await Post("/v1/chat/completions", chat))
             {
                 using var stream = await response.Content.ReadAsStreamAsync();
                 if ((int)response.StatusCode != 200 || await stream.ReadAsync(new byte[4096]) == 0 || Volatile.Read(ref _localApiStreams) != 1 || !ChatModelsInUse ||
                     fakeAuth != "Bearer no-key")
                     return Fail($"local stream: {(int)response.StatusCode}, streams {_localApiStreams}, {fakeAuth}");
-            } // the app hangs up after the first chunk
+            } // the app hangs up after the first chunk: within ~1 s (of the 10 s stream) the API's write fails and it stops
+            var hungUp = DateTime.UtcNow;
+            while (DateTime.UtcNow - hungUp < TimeSpan.FromSeconds(1.5) && Volatile.Read(ref _localApiStreams) != 0)
+                await Task.Delay(50);
+            if (Volatile.Read(ref _localApiStreams) != 0)
+                return Fail($"a hang-up: still streaming {(DateTime.UtcNow - hungUp).TotalMilliseconds:0} ms later");
+            slow = false;
             using (var response = await Post("/v1/chat/completions", chat))
                 if ((int)response.StatusCode != 200 || await response.Content.ReadAsStringAsync() != string.Concat(lines))
                     return Fail($"after a hang-up: {(int)response.StatusCode}");

@@ -464,6 +464,7 @@ public partial class MainWindow
     // One engine process loads the role's model with the chat's config.json (as a message would) and leaves it loaded.
     private async Task LoadRoleAsync(string role, string title)
     {
+        await LocalApiLoadDone();
         if (_chatBusy || _process is not null || _loadingRole is not null || _workflowRoot is null || !SaveWorkerEditsFirst() || !RuntimeReady())
             return;
         if (!SyncCustomWorkers(new List<string>()))
@@ -821,6 +822,7 @@ public partial class MainWindow
     private async Task<bool> RunTurn(Conversation c, string? text, string role, Func<string, string> buildRequest,
         Func<string, string, string, string, ProcessStartInfo> buildStartInfo, string label, bool queued = false)
     {
+        await LocalApiLoadDone();
         if (_loadingRole is not null)
         {
             Toast("Wait for the model to finish loading", "#F7C873");
