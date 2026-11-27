@@ -1005,7 +1005,7 @@ public partial class MainWindow
             Child = box, Padding = new Thickness(14, 10, 14, 10), MaxWidth = 640,
             HorizontalAlignment = HorizontalAlignment.Right, // no outline: a quiet fill, as Claude's
         };
-        bubble.SetResourceReference(Border.BackgroundProperty, "Hover");
+        bubble.SetResourceReference(Border.BackgroundProperty, "UserBubble"); // Hover; in Graphite with a lean of the accent
         bubble.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
         var (row, stamp, _) = MessageFooter(HorizontalAlignment.Right, () => TypedText(text)); // Copy: what the user wrote, not the attached files
         SetStamp(stamp, time);

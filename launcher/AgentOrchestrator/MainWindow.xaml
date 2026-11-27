@@ -619,7 +619,7 @@
         <!-- The sidebar's call button (MainWindow.CallUi.cs): the theme's control radius, a soft accent wash and an accent phone; Tag "on" =
              in a call: a red fill and a white hang-up glyph. -->
         <Style x:Key="CallButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="52" /><Setter Property="Height" Value="34" /><Setter Property="Padding" Value="0" />
+            <Setter Property="Width" Value="156" /><Setter Property="Height" Value="27" /><Setter Property="Padding" Value="0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="{DynamicResource AccentLight}" />

@@ -4166,7 +4166,7 @@ public partial class MainWindow : Window
             return false;
         if (!await LlamaPollSmoke())
             return false;
-        if (!await DictationSmoke() || !await CallSmoke() || !await CallUiSmoke())
+        if (!await DictationSmoke() || !await CallSmoke() || !await CallUiSmoke() || !AccentSmoke())
             return false;
         if (!await SpeakOutSmoke() || !await ChatterboxVoicesSmoke())
             return false;
@@ -5800,7 +5800,8 @@ public partial class MainWindow : Window
         var bui = _settings.Theme == "Beautiful"; // beautifului.dev's dark tokens (its foundation.css, converted from OKLCH), untinted by the accent
         var flat = _settings.Theme == "Flat" || oled || graphite || parchment || clay || bui; // these have the Flat shapes
         // Surfaces lean slightly toward the accent (more on raised ones), so each accent colours the whole window a little.
-        // OLED's black background stays pure black.
+        // OLED's black background stays pure black. The bases are neutral grays (Glass's blue glass and the fixed Beautiful
+        // and Parchment palettes aside), so each accent looks like its name: Light gray stays gray, not bluish.
         var tint = (Color)ColorConverter.ConvertFromString(AccentColors.First(x => x.Key == AccentKey).Accent)!;
         void Surface(string key, string color, double amount)
         {
@@ -5811,7 +5812,7 @@ public partial class MainWindow : Window
         // Graphite: Claude's dark palette (its stylesheet: bg-200 for the window, bg-100 for the sidebar, bg-000 for cards,
         // inputs and popups, text-100, text-400, border-100 at 15%), made neutral gray at the same brightness, untinted.
         // Parchment: warm off-white paper (its background stays exactly #F4F3EE), white cards, near-black text.
-        Surface("AppBackground", clay ? "#1E1C1B" : parchment ? "#F4F3EE" : graphite ? "#1E1E1E" : oled ? "#000000" : flat ? "#101116" : glass ? "#E6101522" : "#0A0A0C", oled || parchment || graphite ? 0 : 0.035);
+        Surface("AppBackground", clay ? "#1E1C1B" : parchment ? "#F4F3EE" : graphite ? "#1E1E1E" : oled ? "#000000" : flat ? "#121212" : glass ? "#E6101522" : "#0B0B0B", oled || parchment || graphite ? 0 : 0.035);
         // Popup windows sit a shade off the window: lighter on the dark themes, darker on Parchment (Glass keeps its translucency).
         var back = ((SolidColorBrush)Resources["AppBackground"]).Color;
         var (toward, share) = parchment ? ((byte)0, 0.035) : ((byte)255, 0.07);
@@ -5819,16 +5820,16 @@ public partial class MainWindow : Window
         Resources["DialogBackground"] = graphite ? new SolidColorBrush(Color.FromRgb(0x30, 0x30, 0x30)) : new SolidColorBrush(Color.FromArgb(back.A, Shade(back.R), Shade(back.G), Shade(back.B)));
         // Inputs on a popup: set apart from its shade, darker than it on the dark themes (the window colour), white on Parchment.
         Resources["DialogInput"] = parchment ? new SolidColorBrush(Colors.White) : new SolidColorBrush(Color.FromArgb(255, back.R, back.G, back.B));
-        SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#F9F9F9" : oled ? "#EEEEF5" : flat ? "#ECEEF5" : glass ? "#F4F7FF" : "#E8E8F0");
-        Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#1E1E1E" : oled ? "#000000" : flat ? "#101116" : glass ? "#DD111827" : "#0D0D10", oled || graphite ? 0 : 0.035);
-        Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#1E1E1E" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", graphite ? 0 : 0.045);
+        SetThemeBrush("TextPrimary", clay ? "#EFEBE8" : parchment ? "#1F1E1D" : graphite ? "#F9F9F9" : oled ? "#F0F0F0" : flat ? "#EEEEEE" : glass ? "#F4F7FF" : "#EBEBEB");
+        Surface("TitleBackground", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#1E1E1E" : oled ? "#000000" : flat ? "#121212" : glass ? "#DD111827" : "#0E0E0E", oled || graphite ? 0 : 0.035);
+        Surface("Panel", clay ? "#181716" : parchment ? "#EDEBE4" : graphite ? "#1E1E1E" : oled ? "#080808" : flat ? "#181818" : glass ? "#CC182131" : "#131313", graphite ? 0 : 0.045);
         // The left sidebar: the Panel shade, except Graphite's, which is lighter than its chat area.
-        Surface("NavBackground", clay ? "#232120" : parchment ? "#EDEBE4" : graphite ? "#262626" : oled ? "#08080A" : flat ? "#16171D" : glass ? "#CC182131" : "#111116", graphite ? 0 : 0.045);
-        Surface("Card", clay ? "#2A2726" : parchment ? "#FFFFFF" : graphite ? "#303030" : oled ? "#131217" : flat ? "#1E2028" : glass ? "#B8233043" : "#16161C", graphite ? 0 : clay ? 0.015 : 0.06); // Dark Parchment: near-neutral greys, as Claude's
-        Surface("Hover", clay ? "#33302E" : parchment ? "#E6E3DA" : graphite ? "#303030" : oled ? "#221E2E" : flat ? "#292C36" : glass ? "#B53A4B66" : "#1E1E26", graphite ? 0 : clay ? 0.02 : 0.09);
-        Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#3B3B3B" : oled ? "#26232F" : flat ? "#242630" : glass ? "#7795A8C8" : "#2A2A35", graphite ? 0 : clay ? 0.02 : 0.08);
-        Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2A2A35", clay ? 0.02 : 0.08);
-        SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9A9A9A" : oled ? "#8A8798" : flat ? "#8E93A6" : glass ? "#BAC7DA" : "#8888A0");
+        Surface("NavBackground", clay ? "#232120" : parchment ? "#EDEBE4" : graphite ? "#262626" : oled ? "#080808" : flat ? "#181818" : glass ? "#CC182131" : "#131313", graphite ? 0 : 0.045);
+        Surface("Card", clay ? "#2A2726" : parchment ? "#FFFFFF" : graphite ? "#303030" : oled ? "#141414" : flat ? "#212121" : glass ? "#B8233043" : "#181818", graphite ? 0 : clay ? 0.015 : 0.06); // Dark Parchment: near-neutral greys, as Claude's
+        Surface("Hover", clay ? "#33302E" : parchment ? "#E6E3DA" : graphite ? "#303030" : oled ? "#232323" : flat ? "#2D2D2D" : glass ? "#B53A4B66" : "#202020", graphite ? 0 : clay ? 0.02 : 0.09);
+        Surface("Border", clay ? "#3A3634" : parchment ? "#DCD8CC" : graphite ? "#3B3B3B" : oled ? "#292929" : flat ? "#272727" : glass ? "#7795A8C8" : "#2E2E2E", graphite ? 0 : clay ? 0.02 : 0.08);
+        Surface("ControlBorder", flat ? "#00000000" : glass ? "#7795A8C8" : "#2E2E2E", clay ? 0.02 : 0.08);
+        SetThemeBrush("Muted", clay ? "#A39C97" : parchment ? "#6F6D66" : graphite ? "#9A9A9A" : oled ? "#8D8D8D" : flat ? "#959595" : glass ? "#BAC7DA" : "#8E8E8E");
         if (bui)
         {
             foreach (var (key, hex) in new[] { ("AppBackground", "#17181A"), ("TitleBackground", "#17181A"), ("Panel", "#1C1D1F"), ("NavBackground", "#1C1D1F"), ("Card", "#232427"),
@@ -5849,6 +5850,17 @@ public partial class MainWindow : Window
             Resources["HoverStrong"] = Resources["Hover"];
             Resources["BorderStrong"] = Resources["Border"];
         }
+        // Graphite's user bubble and inline-code chips keep their grays but lean toward the accent's hue: its offset from its own
+        // gray, so Light gray leaves them as they were and no accent brightens them.
+        Color Lean(Color c, double share)
+        {
+            var mean = (tint.R + tint.G + tint.B) / 3.0;
+            var v = new[] { c.R + share * (tint.R - mean), c.G + share * (tint.G - mean), c.B + share * (tint.B - mean) };
+            var over = Math.Max(0, v.Max() - 255); // white (the inline-code overlay) can only lean down
+            byte At(int i) => (byte)Math.Clamp(Math.Round(v[i] - over), 0, 255);
+            return Color.FromArgb(c.A, At(0), At(1), At(2));
+        }
+        Resources["UserBubble"] = graphite ? new SolidColorBrush(Lean(((SolidColorBrush)Resources["Hover"]).Color, 0.12)) : Resources["Hover"];
         // A card under the mouse (the Context cards): the card a step toward the text colour, brighter on dark themes
         {
             var (card, text) = (((SolidColorBrush)Resources["Card"]).Color, ((SolidColorBrush)Resources["TextPrimary"]).Color);
@@ -5862,6 +5874,8 @@ public partial class MainWindow : Window
                      ("CodeKeyword", "#569CD6", "#0000FF"), ("CodeControl", "#C586C0", "#AF00DB"), ("CodeCall", "#DCDCAA", "#795E26"), ("CodeType", "#4EC9B0", "#267F99"),
                      ("InlineCode", "#33FFFFFF", "#14000000") })
             SetThemeBrush(key, parchment ? light : dark);
+        if (graphite)
+            Resources["InlineCode"] = new SolidColorBrush(Lean(Color.FromArgb(0x33, 255, 255, 255), 0.5));
         if (bui) // the site's code colours: strings and numbers orange, keywords its light blue, calls in the ink colour
             foreach (var (key, hex) in new[] { ("CodeString", "#F68F3C"), ("CodeNumber", "#F68F3C"), ("CodeKeyword", "#7EC0FF"), ("CodeControl", "#7EC0FF"),
                          ("CodeCall", "#F2F3F4"), ("CodeComment", "#6C6F75"), ("CodeType", "#A5A8AD") })
@@ -5988,6 +6002,55 @@ public partial class MainWindow : Window
         _settings.ThemeAccents[_settings.Theme] = key;
         ApplyTheme(); // the surfaces carry a tint of the accent too
         _settings.Save();
+    }
+
+    // --ui-smoke: the call button's size (156 x 27); OLED, Flat and Track Gold surfaces and text are neutral with Light gray and
+    // lean green with Green; Graphite's user bubble and inline code lean toward the accent but stay dark (Light gray: as Hover);
+    // the call visualizer's brush follows the accent.
+    private bool AccentSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: accents: {what}"); return false; }
+        Color Of(string key) => ((SolidColorBrush)Resources[key]).Color;
+        static int Spread(Color c) => Math.Max(c.R, Math.Max(c.G, c.B)) - Math.Min(c.R, Math.Min(c.G, c.B));
+        var (theme, accents) = (_settings.Theme, new Dictionary<string, string>(_settings.ThemeAccents));
+        void Look(string t, string a) { _settings.Theme = t; _settings.ThemeAccents[t] = a; ApplyTheme(); }
+        try
+        {
+            UpdateLayout();
+            if (Math.Abs(CallButton.ActualWidth - 156) > 1 || Math.Abs(CallButton.ActualHeight - 34 / 1.25) > 1)
+                return Fail($"call button {CallButton.ActualWidth:0.#} x {CallButton.ActualHeight:0.#}");
+            var keys = new[] { "Card", "Hover", "Border", "Panel", "TextPrimary", "Muted", "AccentLight" }; // Hover: a checked chip's fill, AccentLight its text
+            foreach (var t in new[] { "Oled", "Flat", "Gold" })
+            {
+                Look(t, "Silver");
+                if (keys.FirstOrDefault(k => Spread(Of(k)) > 6) is { } tinted)
+                    return Fail($"{t} with Light gray: {tinted} is {Of(tinted)}");
+                Look(t, "Green");
+                if (new[] { "Hover", "AccentLight" }.FirstOrDefault(k => Of(k) is var c && (c.G <= c.R + 4 || c.G <= c.B + 4)) is { } grey)
+                    return Fail($"{t} with Green: {grey} is {Of(grey)}");
+            }
+            Look("Graphite", "Silver");
+            var (bubble, code) = (Of("UserBubble"), Of("InlineCode"));
+            if (bubble != Of("Hover") || code != Color.FromArgb(0x33, 255, 255, 255))
+                return Fail($"Graphite with Light gray: bubble {bubble}, inline code {code}");
+            Look("Graphite", "Green");
+            static double Lin(byte c) => c / 255.0 <= 0.04045 ? c / 255.0 / 12.92 : Math.Pow((c / 255.0 + 0.055) / 1.055, 2.4);
+            var lum = 0.2126 * Lin(Of("UserBubble").R) + 0.7152 * Lin(Of("UserBubble").G) + 0.0722 * Lin(Of("UserBubble").B); // relative luminance
+            if (Of("UserBubble") == bubble || Of("InlineCode") == code || lum >= 0.2 || Of("Hover") != bubble)
+                return Fail($"Graphite with Green: bubble {Of("UserBubble")} (luminance {lum:0.00}), inline code {Of("InlineCode")}");
+            foreach (var a in new[] { "Pink", "Aqua" })
+            {
+                Look("Oled", a);
+                if (CallVisual.Accent is not SolidColorBrush { Color: var v } || v != Of("Accent"))
+                    return Fail($"the call visualizer is {CallVisual.Accent}, the accent ({a}) {Of("Accent")}");
+            }
+            return true;
+        }
+        finally
+        {
+            (_settings.Theme, _settings.ThemeAccents) = (theme, accents);
+            ApplyTheme();
+        }
     }
 
     private void SetThemeBrush(string key, string color) =>
