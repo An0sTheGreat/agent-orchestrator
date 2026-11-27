@@ -190,7 +190,7 @@ public partial class MainWindow
         void Save() => _settings.Save();
 
         p.Children.Add(Row("Read replies aloud", Toggle(t.AutoRead, on => { t.AutoRead = on; Save(); })));
-        p.Children.Add(Note("Each finished reply is read with its worker's voice. A new reply, Stop, or switching conversation ends it."));
+        p.Children.Add(Hint("Each finished reply is read with its worker's voice. A new reply, Stop, or switching conversation ends it."));
         var main = VoicePicker(false);
         main.SelectionChanged += (_, _) =>
         {
@@ -234,7 +234,7 @@ public partial class MainWindow
         };
         p.Children.Add(Row("Speaker", device));
         p.Children.Add(Row("Interrupt by talking (use headphones)", Toggle(t.CallBargeIn, on => { t.CallBargeIn = on; Save(); })));
-        p.Children.Add(Note("In a call the microphone stays on while the reply is spoken, and your voice stops it. Off: Space, Esc or a click on the call's circle interrupts."));
+        p.Children.Add(Hint("In a call the microphone stays on while the reply is spoken, and your voice stops it. Off: Space, Esc or a click on the call's circle interrupts."));
 
         p.Children.Add(Heading("What gets read"));
         p.Children.Add(Row("Skip code blocks", Toggle(t.SkipCode, on => { t.SkipCode = on; Save(); })));
@@ -253,7 +253,7 @@ public partial class MainWindow
         p.Children.Add(Row("Ask before reading more than (characters)", max));
 
         p.Children.Add(Heading("Voice per worker"));
-        p.Children.Add(Note("A worker can read with its own voice; the others use the voice above."));
+        p.Children.Add(Hint("A worker can read with its own voice; the others use the voice above."));
         foreach (var card in _cards.Where(k => !k.Hidden))
         {
             var role = card.Role;
@@ -273,7 +273,7 @@ public partial class MainWindow
 
         p = KokoroVoicesPanel; // Kokoro settings: the blends and the library
         p.Children.Add(Heading("Custom voices"));
-        p.Children.Add(Note("Blend two to four voices: each slider sets how much of that voice is in the mix. Hear it, name it and save it."));
+        p.Children.Add(Hint("Blend two to four voices: each slider sets how much of that voice is in the mix. Hear it, name it and save it."));
         _blendRows = new StackPanel();
         _blendName = new TextBox { Width = 200, Margin = new Thickness(0, 0, 8, 0), VerticalContentAlignment = VerticalAlignment.Center, MinHeight = 30 };
         AutomationProperties.SetName(_blendName, "Custom voice name");
@@ -554,6 +554,14 @@ public partial class MainWindow
         var note = new TextBlock { Text = text, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
         note.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
         return note;
+    }
+
+    // A setting's description: Style SettingHint, so the Settings window's Hide descriptions collapses it.
+    private static TextBlock Hint(string text)
+    {
+        var hint = Note(text);
+        hint.SetResourceReference(StyleProperty, "SettingHint");
+        return hint;
     }
 
     private TextBlock Heading(string text)

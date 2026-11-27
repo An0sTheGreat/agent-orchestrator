@@ -24,6 +24,23 @@ public partial class MainWindow
         ShowWorkflowMode();
         InitSandbox();
         AppVersionText.Text = LauncherLogic.VersionText();
+        ShowSettingHints();
+    }
+
+    // The button above the version: every setting's description (Style SettingHint) hidden or shown, saved.
+    private void SettingHints_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.HideSettingHints = !_settings.HideSettingHints;
+        _settings.Save();
+        ShowSettingHints();
+    }
+
+    private void ShowSettingHints()
+    {
+        var hide = _settings.HideSettingHints;
+        SettingsContent.Resources["SettingHintVisibility"] = hide ? Visibility.Collapsed : Visibility.Visible;
+        SettingHintsGlyph.Text = hide ? "" : ""; // an eye; the eye struck through
+        SettingHintsLabel.Text = hide ? "Show descriptions" : "Hide descriptions";
     }
 
     // Why a run can't start yet: llama-server has not been downloaded, or is being updated; null when it can.
@@ -51,7 +68,7 @@ public partial class MainWindow
         info.Environment["AGENT_ORCHESTRATOR_MULTI_MODEL"] = _settings.MultiModel;
     }
 
-    // Settings > Models > Several models at once shows the saved choice; a click saves it (the engine reads it at its start).
+    // Settings > Models & Agents > Several models at once shows the saved choice; a click saves it (the engine reads it at its start).
     private void RefreshMultiModel()
     {
         foreach (var radio in MultiModelOptions.Children.OfType<RadioButton>())

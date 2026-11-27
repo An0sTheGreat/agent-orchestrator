@@ -28,7 +28,7 @@ Write or generate a `PROJECT.md`, press **Start project**, and come back to veri
 
 Setting up several agents usually means config files, ports and scripts. Here it's a row of cards. Each worker (Lead, Implementer, Reviewer, Compactor and any you add) gets its own model, picked from a list of the models you have installed, with context length and sampling settings right beside it. Save a setup as a preset and switch between setups in one click.
 
-Pick the workflow that fits your hardware under **Settings > Agents**:
+Pick the workflow that fits your hardware under **Settings > Models & Agents**:
 
 - **Lead + Reviewer** (the default): the Lead does the work, and the Reviewer has to approve every finished item before it counts as done.
 - **Lead + Implementer + Reviewer**: the Lead plans and directs, the Implementer writes every change, and the Reviewer checks each item.
@@ -83,7 +83,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
    ```
 
 2. Open `agent-orchestrator\dist\Agent Orchestrator.exe`. No installer, nothing else to set up.
-3. Open **Settings** (the gear at the bottom left) **> Models** and press **Download llama-server**. GGUF models already in your Hugging Face cache, or in a models folder you pick there, are found automatically.
+3. Open **Settings** (the gear at the bottom left) **> System** and press **Download llama-server**. GGUF models already in your Hugging Face cache, or in a models folder you pick there, are found automatically.
 4. Pick a model for each worker on the **Model Settings** page (the left navigation, or the settings button at the top of the right-hand worker rail), or start with the defaults.
 5. Press **New** for a chat, or **+** beside CODE to file a conversation under Code. A Code conversation starts with no folder and works like a chat until you press **Add a folder…**; then press **Start project** to run a `PROJECT.md`.
 

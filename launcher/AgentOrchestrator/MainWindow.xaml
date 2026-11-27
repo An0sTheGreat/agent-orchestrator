@@ -204,6 +204,12 @@
         <Style x:Key="SettingsDivider" TargetType="Border">
             <Setter Property="Height" Value="1" /><Setter Property="Margin" Value="0,14,0,0" /><Setter Property="Background" Value="{DynamicResource Border}" />
         </Style>
+        <!-- Settings: a setting's description under it; collapses while the Settings window hides descriptions (SettingHintVisibility,
+             on SettingsContent, MainWindow.Runtime.cs ShowSettingHints) -->
+        <Style x:Key="SettingHint" TargetType="TextBlock">
+            <Setter Property="TextWrapping" Value="Wrap" /><Setter Property="Foreground" Value="{DynamicResource Muted}" />
+            <Setter Property="Margin" Value="0,8,0,0" /><Setter Property="Visibility" Value="{DynamicResource SettingHintVisibility}" />
+        </Style>
         <!-- Large figures on the worker cards: tabular digits so streaming numbers do not jitter. -->
         <Style x:Key="CardValue" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="{StaticResource DisplayFont}" /><Setter Property="FontSize" Value="22" />
@@ -1846,11 +1852,20 @@
             <Border x:Name="SettingsHolder" Grid.Column="1" Visibility="Collapsed">
             <!-- Settings: a tab list on the left (SettingsTab_Checked shows its page) and the page on the right. -->
             <Grid x:Name="SettingsContent">
+                <Grid.Resources><x:Static x:Key="SettingHintVisibility" Member="Visibility.Visible" /></Grid.Resources>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="200" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                 <DockPanel Margin="0,0,16,0">
                     <TextBlock DockPanel.Dock="Top" Text="SETTINGS" Style="{StaticResource SectionHeader}" Margin="14,0,0,12" />
                     <!-- The build's version and commit (App.VersionText), bottom left -->
                     <TextBlock x:Name="AppVersionText" HorizontalAlignment="Left" DockPanel.Dock="Bottom" Margin="14,12,0,0" FontSize="11" Foreground="{DynamicResource Muted}" />
+                    <!-- Hide or show every setting's description (SettingHint), saved (MainWindow.Runtime.cs SettingHints_Click) -->
+                    <Button x:Name="SettingHintsButton" DockPanel.Dock="Bottom" Style="{StaticResource GhostButton}" HorizontalAlignment="Left" Margin="8,0,0,0" Padding="6,4"
+                            Click="SettingHints_Click" AutomationProperties.Name="Hide or show setting descriptions">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock x:Name="SettingHintsGlyph" Text="&#xED1A;" Style="{StaticResource RailGlyph}" FontSize="13" Width="20" Margin="0,0,6,0" VerticalAlignment="Center" />
+                            <TextBlock x:Name="SettingHintsLabel" Text="Hide descriptions" FontSize="12" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <StackPanel x:Name="SettingsTabs">
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="General" Height="38" Checked="SettingsTab_Checked" IsChecked="True"
                                  AutomationProperties.Name="General">
@@ -1874,17 +1889,10 @@
                         </StackPanel>
                     </RadioButton>
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Models" Height="38" Checked="SettingsTab_Checked"
-                                 AutomationProperties.Name="Models">
+                                 AutomationProperties.Name="Models &amp; Agents">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE81E;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
-                            <TextBlock Text="Models" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </RadioButton>
-                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Agents" Height="38" Checked="SettingsTab_Checked"
-                                 AutomationProperties.Name="Agents">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
-                            <TextBlock Text="Agents" VerticalAlignment="Center" />
+                            <TextBlock Text="Models &amp; Agents" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Connections" Height="38" Checked="SettingsTab_Checked"
@@ -1923,7 +1931,7 @@
                             <TextBlock Text="Start with Windows" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="Opens in the system tray when you sign in to Windows, so its models, sharing and the phone app are ready. Closing the window keeps the app running in the tray: click its icon to open it again, or right-click it to quit."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Notifications (MainWindow.Notify.cs) -->
                         <TextBlock Text="Notifications" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -1933,7 +1941,7 @@
                             <TextBlock Text="Notify when done" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="A desktop notification when a reply or project run finishes, only while Agent Orchestrator is not the window in front. Click it to come back."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Links (MainWindow.Browser.cs OpenLink): where a link in a reply opens; asked on the first click -->
                         <TextBlock Text="Links" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -1944,7 +1952,7 @@
                             <TextBlock Text="Open links in" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="Where a link in a reply opens: the browser beside the conversation, or your own default browser."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- The model's tabs (MainWindow.Browser.cs FollowTo): 3 to 10, the last stop (11) unlimited -->
                         <DockPanel Margin="0,14,0,0">
@@ -1954,7 +1962,7 @@
                             <TextBlock Text="Tabs the model may open" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="The most browser tabs the model opens on its own when it follows its searches and pages; past that it reuses its oldest. You can always open more yourself."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Computer use (MainWindow.Computer.cs): the lead drives one window of an approved application -->
                         <TextBlock Text="Computer use" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -1964,7 +1972,7 @@
                             <TextBlock Text="Let the model use applications" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="In Chat and Code, the model may use one window of an approved application per reply with your real mouse and keyboard: it clicks, types and presses keys as you would, so leave the computer alone while it works. Press Esc at any time to stop it. Admin windows cannot be used."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <Button x:Name="ComputerAddButton" DockPanel.Dock="Right" Content="Add application  ▾" Padding="11,6" VerticalAlignment="Center" Click="ComputerAdd_Click" />
@@ -1978,14 +1986,14 @@
                         <TextBlock x:Name="StatsSummary" VerticalAlignment="Center" Margin="12,0,0,0" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource Muted}" />
                         </DockPanel>
                         <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <!-- System: the model runtime, the Code engine and the command sandbox -->
                     <StackPanel Tag="System" Visibility="Collapsed">
                         <TextBlock Text="System" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
                         <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
                         <TextBlock Text="Local models run on llama.cpp's llama-server, which the app starts and stops itself." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
                         <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
@@ -1995,7 +2003,7 @@
                         <StackPanel x:Name="ModelsFoldersList" Tag="ModelsFoldersList" />
                         <Button Content="Add models folder…" Tag="ModelsFolderAdd" HorizontalAlignment="Left" Padding="11,6" Margin="0,4,0,0" Click="ModelsFolder_Click" />
                         <TextBlock Text="GGUF files are found in the Hugging Face cache (where Hugging Face downloads go) and in these folders, with their subfolders." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
                         <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -2006,7 +2014,7 @@
                         <TextBlock x:Name="PiStatus" Text="Pi not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
                         <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
@@ -2015,7 +2023,7 @@
                             <TextBlock Text="Full access: commands run outside the sandbox" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="Off the sandbox: commands run as you, with your rights, anywhere on this PC and with the network, and the model's file tools read and write files on every drive except Windows\System32, in Code and in normal chats. api_key.txt, .git folders and Agent Orchestrator's own folder stay off limits, and folders you added as read-only stay read-only. The permissions button in the Code composer still decides when they ask: Always Ask asks before every command, Allow Safe and Allow All run them without asking. The Reviewer's read-only commands stay in the sandbox."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
@@ -2028,7 +2036,7 @@
                         <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
                         <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Appearance" Visibility="Collapsed">
                         <TextBlock Text="Appearance" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
@@ -2051,15 +2059,15 @@
                         <Button.ContextMenu><ContextMenu x:Name="AccentMenu" Opened="AccentMenu_Opened" /></Button.ContextMenu>
                         </Button>
                         </StackPanel>
-                        <TextBlock Text="Each theme remembers its own accent colour." Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Each theme remembers its own accent colour." Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <TextBlock Text="Conversation" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="CenterChatToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="CenterChat_Click" VerticalAlignment="Center"
                         AutomationProperties.Name="Center the conversation" />
                         <TextBlock Text="Center the conversation" VerticalAlignment="Center" />
                         </DockPanel>
-                        <TextBlock Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock x:Name="CenterChatHint" Text="On: messages and the message box keep a readable width in the middle of the column. Off: they fill the column."
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ComboBox x:Name="ReadingSizeBox" DockPanel.Dock="Right" Width="150" SelectionChanged="ReadingSize_Changed" AutomationProperties.Name="Reading size">
@@ -2068,7 +2076,7 @@
                         <TextBlock Text="Reading size" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="How replies and your messages read: Comfortable and Large give the text more room, as ChatGPT does. Compact is the denser layout."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ComboBox x:Name="EmojiBox" DockPanel.Dock="Right" Width="150" SelectionChanged="Emoji_Changed" AutomationProperties.Name="Emoji in replies">
@@ -2077,7 +2085,7 @@
                         <TextBlock Text="Emoji in replies" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="How many emoji the models use when they answer you, in Chat and Code. Summaries, reviews and code never get them."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ContextPercentToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="ContextPercent_Click" VerticalAlignment="Center"
@@ -2085,10 +2093,10 @@
                         <TextBlock Text="Show the context percentage" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="The Context card shows how full the context is as a number (e.g. 34%) beside its ring."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Models" Visibility="Collapsed">
-                        <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <TextBlock Text="Models &amp; Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
                         <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center"
@@ -2096,30 +2104,28 @@
                         <TextBlock Text="Keep models loaded" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="On: models stay loaded between chat messages, so replies start faster (they are unloaded when the app closes). Off: each reply unloads the models it loaded, freeing GPU memory."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Several models at once (MainWindow.Runtime.cs): settings.MultiModel, the engine's AGENT_ORCHESTRATOR_MULTI_MODEL -->
                         <TextBlock Text="Several models at once" Margin="0,14,0,0" />
                         <StackPanel x:Name="MultiModelOptions">
                         <RadioButton GroupName="MultiModel" Tag="never" Content="Never" Margin="0,10,0,0" Checked="MultiModel_Checked" />
-                        <TextBlock Text="One model at a time: loading another unloads the previous one." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton GroupName="MultiModel" Tag="fit" Content="If they fit the GPU" Checked="MultiModel_Checked" />
+                        <TextBlock Text="One model at a time: loading another unloads the previous one." TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
+                        <RadioButton GroupName="MultiModel" Tag="fit" Content="If they fit the GPU" Margin="0,8,0,0" Checked="MultiModel_Checked" />
                         <TextBlock Text="Models stay loaded side by side while they fit in free GPU memory; otherwise the oldest loaded model is unloaded first. Needs an NVIDIA GPU (without one it behaves like Never)."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Checked="MultiModel_Checked" />
-                        <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
+                        <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Margin="0,8,0,0" Checked="MultiModel_Checked" />
+                        <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
                         </StackPanel>
-                    </StackPanel>
-                    <StackPanel Tag="Agents" Visibility="Collapsed">
-                        <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Workflow (MainWindow.Workflow_Checked): settings.WorkflowMode, which built-in workers take part -->
-                        <TextBlock Text="Workflow" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <TextBlock Text="Workflow" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
                         <RadioButton x:Name="WorkflowDualRadio" GroupName="Workflow" Content="Lead + Reviewer" Margin="0,14,0,0" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead does the work and the reviewer checks every finished item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton x:Name="WorkflowTriRadio" GroupName="Workflow" Content="Lead + Implementer + Reviewer" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton x:Name="WorkflowSoloRadio" GroupName="Workflow" Content="Lead only" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead does everything alone: no implementer, no reviewer. Fastest; best with a strong model." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
+                        <TextBlock Text="The lead does the work and the reviewer checks every finished item." TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
+                        <RadioButton x:Name="WorkflowTriRadio" GroupName="Workflow" Content="Lead + Implementer + Reviewer" Margin="0,8,0,0" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
+                        <RadioButton x:Name="WorkflowSoloRadio" GroupName="Workflow" Content="Lead only" Margin="0,8,0,0" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead does everything alone: no implementer, no reviewer. Fastest; best with a strong model." TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="22,4,0,0" />
                     </StackPanel>
                     <!-- Connections: the phone app, sharing models with other PCs and the local API -->
                     <StackPanel Tag="Connections" Visibility="Collapsed">
@@ -2142,7 +2148,7 @@
                                AutomationProperties.Name="QR code of the phone app address" />
                         </StackPanel>
                         <TextBlock Text="Only your own devices signed in to your Tailscale account can open it; no password needed."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on 127.0.0.1 behind the image server on the Tailscale IP; Connect on the other PC -->
                         <TextBlock Text="Share models with my other PCs" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -2159,7 +2165,7 @@
                         <TextBox x:Name="ShareCodeBox" IsReadOnly="True" AutomationProperties.Name="Connection code" />
                         </DockPanel>
                         <TextBlock Text="Paste the connection code on your other PC, below. It holds the key: anyone with it can use these models. New key signs the other PCs out."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <TextBlock Text="Connect to another PC" Margin="0,22,0,0" />
                         <DockPanel Margin="0,10,0,0">
                         <Button DockPanel.Dock="Right" Content="Disconnect" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="ShareDisconnect_Click" />
@@ -2170,7 +2176,7 @@
                         <Button Content="Copy presets from the primary PC" HorizontalAlignment="Left" Padding="11,6" Margin="0,8,0,0" Click="ShareCopyPresets_Click"
                         ToolTip="Copy the primary PC's model presets for its shared models, named &quot;… (Primary PC)&quot;" />
                         <TextBlock Text="Connected, the Remote API page lists the primary PC's models under Primary PC, for any agent."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Local API (MainWindow.LocalApi.cs, LocalApi.cs): an OpenAI-compatible server on 127.0.0.1 for this PC's own programs -->
                         <TextBlock Text="Local API for my apps" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -2187,14 +2193,14 @@
                         <TextBox x:Name="LocalApiKeyBox" IsReadOnly="True" AutomationProperties.Name="API key" />
                         </DockPanel>
                         <TextBlock Text="Base URL above, this key as the API key, and a worker name (planner, or a custom worker) as the model. New key signs your apps out."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <!-- Voice (MainWindow.Voice.cs): the speech and voice models' downloads (SpeechModels, TtsModels) and settings.Microphone -->
                     <StackPanel Tag="Voice" Visibility="Collapsed">
                         <TextBlock Text="Voice" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
                         <TextBlock Text="Speech model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
                         <TextBlock Text="Dictation turns your speech into text on this PC's processor with Parakeet (English), so nothing you say leaves the PC. It downloads only when you press Download." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <Button x:Name="VoiceDownloadButton" Content="Download" Padding="11,6" VerticalAlignment="Center" Margin="0,0,12,0" Click="VoiceDownload_Click" />
                         <TextBlock x:Name="VoiceStatus" VerticalAlignment="Center" TextWrapping="Wrap" />
@@ -2215,7 +2221,7 @@
                             <TextBlock Text="Voice engine" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="Reads replies and calls. Kokoro is light and runs on the processor; Chatterbox sounds livelier but needs its install and a GPU, and each of its voices has a Kokoro stand-in that reads when it can't."
-                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                                   TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                         <TextBlock x:Name="SpeakOutHint" Text="Download a Kokoro voice model under Kokoro settings below to choose voices and hear replies read aloud." TextWrapping="Wrap"
                         Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <StackPanel x:Name="SpeakOutPanel" />
@@ -2232,7 +2238,7 @@
                         <StackPanel x:Name="KokoroSettings">
                             <TextBlock Text="Kokoro voice model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,22,0,0" />
                             <TextBlock Text="Kokoro reads on this PC's processor, so nothing leaves the PC. Full quality sounds clearer; Compact is a third of the size. Each downloads only when you press Download." TextWrapping="Wrap"
-                            Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                            Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                             <!-- one row per Kokoro build (TtsModels.All): the choice, its status, Download/Cancel and Delete (MainWindow.Voice.cs BuildTtsModels) -->
                             <StackPanel x:Name="TtsModelsPanel" Margin="0,4,0,0" />
                             <!-- custom blends and the voice library (MainWindow.SpeakOut.cs BuildSpeakOut) -->
@@ -2252,7 +2258,7 @@
                             <TextBlock Text="Microphone" VerticalAlignment="Center" />
                         </DockPanel>
                         <TextBlock Text="The microphone dictation listens to. Windows default follows the one chosen in Windows' sound settings."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <!-- Plugins: prompt add-ons and, later, other extensions -->
                     <StackPanel Tag="Plugins" Visibility="Collapsed">
@@ -2266,7 +2272,7 @@
                         <RadioButton GroupName="Ponytail" Tag="ultra" Content="Ultra" Checked="Ponytail_Checked" />
                         </WrapPanel>
                         <TextBlock Text="Adds the Ponytail prompt after every model's system prompt, in all chats: the smallest change that fully works, no code nobody asked for. Lite names the smaller option, Ultra also pushes back on the request. Also /ponytail off, lite, full or ultra. About 1,000 tokens a message."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                 </Grid>
                 </ScrollViewer>

@@ -227,7 +227,7 @@ internal sealed class AppSettings
 {
     // Worker cards in display order. Built-in workers keep their fixed title; their models live in the project's config.json.
     public List<WorkerSetting> Workers { get; set; } = new();
-    // Settings > Agents: "dual" (Lead + Reviewer: the lead does the work), "solo" (Lead only) or "tri" (Lead + Implementer + Reviewer). Settings
+    // Settings > Models & Agents: "dual" (Lead + Reviewer: the lead does the work), "solo" (Lead only) or "tri" (Lead + Implementer + Reviewer). Settings
     // from before it: tri when the Implementer had been added through "+", else dual (Load).
     public string WorkflowMode { get; set; } = "dual";
     // The built-in roles the workflow shows; a role not in it runs as the planner ("same_as": "planner").
@@ -287,6 +287,7 @@ internal sealed class AppSettings
     // The most browser tabs the model opens on its own (Follow the model): 3 to 10; 0 = unlimited. The user's own are extra.
     public int FollowTabs { get; set; } = 5;
     public bool ShowFooterPath { get; set; } = true; // the status bar's folder path (the eye beside it hides it)
+    public bool HideSettingHints { get; set; } // the Settings window shows only each setting's title and control, not its description
     // Centered conversations: the context ring keeps its card open beside the conversation until clicked again.
     public bool ContextPinned { get; set; }
     public bool ContextPercent { get; set; } // the Context card shows the used share as a number beside its ring

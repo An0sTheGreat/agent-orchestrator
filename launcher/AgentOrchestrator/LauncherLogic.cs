@@ -591,7 +591,7 @@ internal static class LauncherLogic
     public const string LlamaReleaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=20";
     public static string LlamaFolder => Path.Combine(AppSettings.DataRoot, "llama.cpp");
     public static string LlamaServerPath => Path.Combine(LlamaFolder, "llama-server.exe");
-    // The engine records its llama-servers here (one per loaded model, Settings > Models > Several models at once):
+    // The engine records its llama-servers here (one per loaded model, Settings > Models & Agents > Several models at once):
     // {"servers": [{"pid", "port", "signature", "args", "model_file", "log", "last_used"}, ...]}. Older engines wrote one
     // server as the whole file: {"pid", "port", ...}.
     public static string LlamaStateFile => Path.Combine(Path.GetTempPath(), "agent-orchestrator-llama.json");

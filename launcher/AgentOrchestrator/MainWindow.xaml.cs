@@ -219,7 +219,7 @@ public partial class MainWindow : Window
     }
 
     // The run's request: a Code turn's tools (the conversation's extra folders, search, utilities, skills, sandbox and
-    // effort) and the workflow mode ("workflow": "dual", "tri" or "solo", Settings > Agents).
+    // effort) and the workflow mode ("workflow": "dual", "tri" or "solo", Settings > Models & Agents).
     private string RunRequest(string project)
     {
         var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras() with { ImageGen = null }, // Image Gen: Chat and Code chat turns only
@@ -1130,7 +1130,7 @@ public partial class MainWindow : Window
         if (Math.Abs(SidePane.ActualWidth - SidebarWidth) > 2 || !SidebarFull.IsVisible || SidebarRail.IsVisible)
             return Fail();
         // Dual by default (Lead + Reviewer): IMPLEMENTER is hidden and runs as LEAD (its activity lights LEAD), "+" adds only
-        // custom workers; tri (Settings > Agents) shows it with its own config entry. The run's request carries the mode, and the
+        // custom workers; tri (Settings > Models & Agents) shows it with its own config entry. The run's request carries the mode, and the
         // cards go ALWAYS ON (LEAD, COMPACTOR), then HELPERS (IMPLEMENTER, REVIEWER), then the custom workers in the order added.
         // Chat shows the same cards (one set for every conversation, checked below).
         OpenModelSettings(); // the worker tabs are made when the page is first laid out
@@ -3796,7 +3796,7 @@ public partial class MainWindow : Window
                 // The tabs' order, and the phone app, the sandbox and the model runtime on their own tabs (Connections, System).
                 var tabOrder = string.Join(",", SettingsTabs.Children.OfType<RadioButton>().Select(t => t.Tag));
                 string? PageOf(Visual control) => SettingsPages.Children.OfType<FrameworkElement>().FirstOrDefault(p => control.IsDescendantOf(p))?.Tag as string;
-                if (tabOrder != "General,System,Appearance,Models,Agents,Connections,Voice,Plugins"
+                if (tabOrder != "General,System,Appearance,Models,Connections,Voice,Plugins"
                     || PageOf(WebAppToggle) != "Connections" || PageOf(FullAccessToggle) != "System" || PageOf(LlamaDownloadButton) != "System")
                 {
                     Console.Error.WriteLine($"ui-smoke: settings tabs {tabOrder}; phone app on {PageOf(WebAppToggle)}, Full access on {PageOf(FullAccessToggle)}, llama-server on {PageOf(LlamaDownloadButton)}");
@@ -3812,6 +3812,38 @@ public partial class MainWindow : Window
                         || SettingsTabs.Children.OfType<RadioButton>().Count(t => t.IsChecked == true) != 1)
                         return Fail();
                     Snap($"26-settings-{tab.Tag}", settings);
+                }
+                // One Models & Agents tab: its Models sections (Loading) above its Agents ones (Workflow).
+                if (SettingsTabs.Children.OfType<RadioButton>().SingleOrDefault(t => t.Tag as string == "Models") is not { } modelsTab
+                    || System.Windows.Automation.AutomationProperties.GetName(modelsTab) != "Models & Agents" || PageOf(ChatKeepToggle) != "Models" || PageOf(WorkflowDualRadio) != "Models")
+                    return Fail();
+                modelsTab.IsChecked = true;
+                await Settle();
+                if (ChatKeepToggle.TranslatePoint(new Point(), SettingsPages).Y >= WorkflowDualRadio.TranslatePoint(new Point(), SettingsPages).Y)
+                    return Fail();
+                // Hide descriptions (above the version): every description collapses, XAML and code-built (Voice's), the controls stay;
+                // saved, and pressed again they come back.
+                var hintStyle = (Style)FindResource("SettingHint");
+                IEnumerable<TextBlock> Hints(DependencyObject root) => LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>()
+                    .SelectMany(c => (c is TextBlock t && t.Style == hintStyle ? new[] { t } : []).Concat(Hints(c)));
+                var codeHint = new Panel[] { SpeakOutPanel, KokoroVoicesPanel, ChatterboxVoicesPanel }.SelectMany(Hints).FirstOrDefault();
+                ShowSettingsTab("Appearance");
+                await Settle();
+                if (codeHint is null || !CenterChatHint.IsVisible || _settings.HideSettingHints)
+                    return Fail();
+                for (var hide = 1; hide >= 0; hide--)
+                {
+                    SettingHintsButton.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+                    await Settle();
+                    var shown = hide == 0 ? Visibility.Visible : Visibility.Collapsed;
+                    if (CenterChatHint.IsVisible != (hide == 0) || codeHint.Visibility != shown || !CenterChatToggle.IsVisible
+                        || AppSettings.Load().HideSettingHints != (hide == 1) || SettingHintsLabel.Text != (hide == 1 ? "Show descriptions" : "Hide descriptions"))
+                    {
+                        Console.Error.WriteLine($"ui-smoke: hide descriptions {hide}: hint {CenterChatHint.IsVisible}, code hint {codeHint.Visibility}, toggle {CenterChatToggle.IsVisible}");
+                        return Fail();
+                    }
+                    if (hide == 1)
+                        Snap("26-settings-hidden-descriptions", settings);
                 }
                 // Settings > Voice: the model's status line, and the microphones start with Windows default (chosen in a new data folder).
                 if (VoiceStatus.Text.Length == 0 || MicrophoneBox.Items[0] is not ComboBoxItem { Content: "Windows default", Tag: "" }
@@ -5134,7 +5166,7 @@ public partial class MainWindow : Window
                 foreach (var role in LauncherLogic.WriteRoleFallbacks(path, _settings.AddedRoles, keepOwn))
                     if (_ownModelNotices.Add($"{path}|{role}"))
                     {
-                        var notice = $"{Path.GetFileName(Path.GetDirectoryName(path))}: its {RoleName(role)} has its own model; choose Lead + Implementer + Reviewer in Settings > Agents to use it";
+                        var notice = $"{Path.GetFileName(Path.GetDirectoryName(path))}: its {RoleName(role)} has its own model; choose Lead + Implementer + Reviewer in Settings > Models & Agents to use it";
                         Log(notice);
                         Toast(notice, "#F7C873");
                     }
@@ -5483,7 +5515,7 @@ public partial class MainWindow : Window
         Toast($"Preset deleted: {preset.Name}");
     }
 
-    // "+": a custom worker (the built-in Implementer and Reviewer follow the workflow mode, Settings > Agents).
+    // "+": a custom worker (the built-in Implementer and Reviewer follow the workflow mode, Settings > Models & Agents).
     private void AddWorker_Click(object sender, RoutedEventArgs e) => BuildAddWorkerMenu((FrameworkElement)sender).IsOpen = true;
 
     private ContextMenu BuildAddWorkerMenu(FrameworkElement target)
@@ -5536,7 +5568,7 @@ public partial class MainWindow : Window
         return card;
     }
 
-    // Settings > Agents > Workflow. Refused while a reply or run is using the models (that turn already chose its workers).
+    // Settings > Models & Agents > Workflow. Refused while a reply or run is using the models (that turn already chose its workers).
     private void Workflow_Checked(object sender, RoutedEventArgs e)
     {
         if (_initializing)

@@ -188,8 +188,8 @@ public partial class MainWindow
         p.Children.Add(_cbHint = Note("Install Chatterbox above to make lively voices from a short recording. Until then a Chatterbox voice reads with its Kokoro stand-in."));
         var s = _cbSection = new StackPanel();
         p.Children.Add(s);
-        s.Children.Add(Note("A voice from 5 to 20 seconds of someone speaking clearly. Chatterbox reads with it; its Kokoro stand-in reads when Chatterbox can't."));
-        s.Children.Add(Note("Use voices you have the right to copy (your own, with permission, public domain)"));
+        s.Children.Add(Hint("A voice from 5 to 20 seconds of someone speaking clearly. Chatterbox reads with it; its Kokoro stand-in reads when Chatterbox can't."));
+        s.Children.Add(Hint("Use voices you have the right to copy (your own, with permission, public domain)"));
         s.Children.Add(_cbList = new StackPanel { Margin = new Thickness(0, 8, 0, 0) });
 
         s.Children.Add(new TextBlock { Text = "Add a voice", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 14, 0, 0) });
