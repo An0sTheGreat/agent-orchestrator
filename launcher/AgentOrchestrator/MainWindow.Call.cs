@@ -11,7 +11,7 @@ internal enum CallState { Idle, Listening, Thinking, Speaking, Paused }
 internal enum CallEvent { Start, End, Sent, Speak, Done, Interrupt, Mute, Unmute }
 
 // Call mode (conversation only): listen (the dictation capture + VAD, the mic open for the whole call) → each phrase is sent as a
-// message in the call's own chat ("Call · <date, time>", a fresh one made at the start) through the normal send path with
+// message in the call's chat (the Chat conversation shown, when it has messages; otherwise a fresh "Call · <date, time>") through the normal send path with
 // "voice": true → the reply's sentences are spoken with the main voice as they stream → listening again. The chat holds the
 // transcript as it goes; EndCall leaves it, with a toast that opens it. The mic is not listened to while the model speaks.
 public partial class MainWindow
@@ -40,6 +40,12 @@ public partial class MainWindow
     private Func<long?>? _callFreeStub;
     private Func<(long Bytes, string Model, long Context)?>? _callSizeStub;
     private Func<bool>? _callServesStub; // whether a loaded server runs VOICE's own GGUF
+    // A call continuing a chat: the chat's own worker summarizes it first (CallCatchUp); the first phrase and VOICE's model load
+    // wait for it. --ui-smoke: _callSummaryStub (worker, request) → the engine's output lines, in place of the process.
+    private Task _callSummaryReady = Task.CompletedTask;
+    private bool _callCatchingUp;
+    private Func<string, string, Task<List<string>>>? _callSummaryStub;
+    private const int CallSummaryMin = 6; // fewer messages since the last summary: VOICE gets them as they are
 
 
     internal event Action<CallState>? CallStateChanged;
@@ -110,12 +116,15 @@ public partial class MainWindow
         else
             _dictationFeed(Feed);
         _callQueue = queue;
-        NewChat_Click(this, new RoutedEventArgs());
-        _callTitle = $"Call · {Now():d MMM, HH:mm}";
+        var continued = NavChat.IsChecked == true && _chatHistory.Count > 0 && !ChatTurnShown; // the chat shown goes on as the call
+        if (!continued)
+            NewChat_Click(this, new RoutedEventArgs());
+        _callTitle = continued ? "" : $"Call · {Now():d MMM, HH:mm}"; // "": the continued chat keeps its title
         _callMuted = false;
         Player.Played = samples => CallLevelsOf(samples, Tts.Rate, speaking: true);
         _ = Task.Run(() => CallFeeding(queue));
         CallFire(CallEvent.Start);
+        _callSummaryReady = continued && _chatHistory.Count - (_chat.Summary is null ? 0 : _chat.SummaryCovers) >= CallSummaryMin ? CallCatchUp() : Task.CompletedTask;
         if (CallVoice() is { Chatterbox: not null } voice)
         {
             var model = new TaskCompletionSource();
@@ -134,6 +143,68 @@ public partial class MainWindow
 
     // The call's worker: VOICE (on LEAD's model until it has its own).
     private RoleCard? CallCard() => CardFor(LauncherLogic.Voice) ?? CardFor("planner");
+
+    // The chat's worker (its model still loaded) summarizes the chat as /compact does, in a quiet engine process of its own; the
+    // summary is stored as the chat's, so the call's turns send it and their own messages. A failure leaves the history as it is.
+    private async Task CallCatchUp()
+    {
+        var (c, role) = (_chat, ChatTarget()?.Role ?? "planner");
+        var opened = c.Opened;
+        var request = LauncherLogic.BuildChatRequest(role, c.History.Append(new LauncherLogic.ChatMessage("user", "/compact")), summary: c.Summary ?? "", summaryCovers: c.SummaryCovers);
+        _callCatchingUp = true;
+        ShowCallState(_callNow);
+        try
+        {
+            var output = await (_callSummaryStub?.Invoke(role, request) ?? CallSummaryRun(request));
+            if (output.Select(LauncherLogic.TryParseEvent).LastOrDefault(e => e is { } x && Str(x, "e") == "history_compacted") is { } done
+                && Str(done, "summary") is { Length: > 0 } summary && c.Opened == opened)
+                (c.Summary, c.SummaryCovers) = (summary, (int)Num(done, "covers"));
+            else
+                Log("Call: the chat could not be summarized; the call sends its history as it is");
+        }
+        catch (Exception x) when (x is IOException or InvalidOperationException or System.ComponentModel.Win32Exception or UnauthorizedAccessException)
+        {
+            Log($"Call: the chat could not be summarized ({x.Message}); the call sends its history as it is");
+        }
+        finally
+        {
+            _callCatchingUp = false;
+            ShowCallState(_callNow);
+        }
+    }
+
+    // One engine process for the summary (as LoadRoleAsync's): its output lines, logged but for the events.
+    private async Task<List<string>> CallSummaryRun(string request)
+    {
+        if (_workflowRoot is null || !RuntimeReady())
+            return [];
+        var file = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-summary-{Guid.NewGuid():N}.json");
+        var prepared = LauncherLogic.PrepareChatFolder(SelectedProjectPath(), _workflowRoot, CurrentWorkers(), out _);
+        try
+        {
+            File.WriteAllText(file, request);
+            var info = LauncherLogic.BuildChatStartInfo(LauncherLogic.FindPython(), _workflowRoot, prepared.Path, file);
+            ApplyRuntime(info);
+            using var process = new System.Diagnostics.Process { StartInfo = info };
+            var output = new ConcurrentQueue<string>();
+            process.OutputDataReceived += (_, a) => { if (a.Data is not null) output.Enqueue(a.Data); };
+            process.ErrorDataReceived += (_, a) => { if (a.Data is not null) output.Enqueue(a.Data); };
+            Log($"Call: summarizing the chat in {prepared.Path}");
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync();
+            foreach (var line in output.Where(l => !l.StartsWith(LauncherLogic.EventPrefix, StringComparison.Ordinal)))
+                Log(line);
+            return output.ToList();
+        }
+        finally
+        {
+            try { File.Delete(file); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
+            if (prepared.IsTemp)
+                try { Directory.Delete(prepared.Path, true); } catch (Exception x) when (x is IOException or UnauthorizedAccessException) { }
+        }
+    }
 
     private VoiceChoice CallVoice() => VoiceChoice.Find(_settings.Tts.Voice, _settings.CustomVoices);
 
@@ -167,7 +238,11 @@ public partial class MainWindow
             if (!replaces)
                 await Fit(loaded);
             if (InCall && !loaded && card is not null && size is not { Remote: true })
-                await (_callLoadStub?.Invoke() ?? LoadRoleAsync(card.Role, card.Title));
+            {
+                await _callSummaryReady; // the chat's model summarizes first: VOICE's load may replace it
+                if (InCall)
+                    await (_callLoadStub?.Invoke() ?? LoadRoleAsync(card.Role, card.Title));
+            }
             if (replaces && InCall)
                 await Fit(true);
         }
@@ -288,6 +363,7 @@ public partial class MainWindow
     // GPU. Ended or interrupted meanwhile, it is not sent.
     private async Task CallWhenReady(string phrase)
     {
+        await _callSummaryReady;
         await _callModelReady;
         await _callVoiceReady;
         if (_callNow == CallState.Thinking && _callKeepsVoice && CallVoice().Chatterbox is not null)
@@ -425,7 +501,7 @@ public partial class MainWindow
         if (_speechPlayer is { } player)
             player.Played = null;
         (_callMuted, _callKeepsVoice, _callStandIn, _callPreparing) = (false, false, false, false);
-        (_callModelReady, _callVoiceReady) = (Task.CompletedTask, Task.CompletedTask);
+        (_callModelReady, _callVoiceReady, _callSummaryReady) = (Task.CompletedTask, Task.CompletedTask, Task.CompletedTask);
         CallFire(CallEvent.End);
         if (!_settings.ChatKeepLoaded && !ChatModelsInUse) // kept loaded through the call; a turn still running stops it when it finishes
             StopLocalServer();
@@ -491,7 +567,8 @@ public partial class MainWindow
 
     // --ui-smoke: stub capture, recognizer, LLM and voice (never the real mic, GPU, network or a model): start → a phrase → a user
     // message in the new "Call · …" chat → the reply's sentences spoken → listening again; Interrupt during speech → listening;
-    // muted → no phrase taken; End → the chat kept with both sides, the toast, the mic released.
+    // muted → no phrase taken; End → the chat kept with both sides, the toast, the mic released. A call in a chat with messages
+    // goes on in it: a short one as it is, a longer one summarized by its own worker before VOICE's model loads.
     private async Task<bool> CallSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: call: {what}"); return false; }
@@ -527,7 +604,7 @@ public partial class MainWindow
         Action<float[]>? feed = null;
         var reply = "";
         var (modelLoaded, free, order, savedVoice) = (false, (long?)(12L << 30), new List<string>(), _settings.Tts.Voice);
-        string? cbWhy = null;
+        string? cbWhy = null, lastRequest = null;
         bool? follows = null;
         string Ev(string json) => LauncherLogic.EventPrefix + json;
         void Phrase() // off the UI thread, as the microphone: a loud second, then quiet that ends the phrase
@@ -544,6 +621,7 @@ public partial class MainWindow
         _callTurnStub = text => // as CallTurn: RunTurn on the call's worker (VOICE), which frees the GPU for the chat model first
         {
             generating = true;
+            lastRequest = ChatRequest(CallCard()!.Role, text);
             StartTurn(_chat, text, CallCard()!.Role);
             FreeGpuForChat();
             foreach (var word in reply.Split(' '))
@@ -628,6 +706,7 @@ public partial class MainWindow
                 await Task.Run(Phrase);
                 return await Until(() => Spoken().Contains(heard) && CallNow == CallState.Listening) ? null : $"\"{text}\" not read as {heard}: {CallNow}, spoken [{string.Join("|", Spoken())}]";
             }
+            NewChat_Click(this, new RoutedEventArgs()); // a fresh call chat (the one shown, with messages, would go on as the call)
             StartCall();
             if (!await Until(() => !_callPreparing) || Order() != "load,warm" || _callStandIn)
                 return Fail($"Chatterbox voice, no model loaded: prepared {!_callPreparing}, order {Order()}, stand-in {_callStandIn}");
@@ -656,6 +735,7 @@ public partial class MainWindow
             // doesn't fit beside the model: the toast, the stand-in for every reply, no warm-up
             (modelLoaded, free) = (false, 2L << 30);
             lock (order) order.Clear();
+            NewChat_Click(this, new RoutedEventArgs());
             StartCall();
             var cb = CallVoice().Chatterbox!;
             var wontFit = Chatterbox.CallWontFitText(cb.Name, cb.Fallback, "Voice-4B", 8192, Chatterbox.CallRoom(2L << 30, false, false, 4L << 30)!.Value);
@@ -675,11 +755,58 @@ public partial class MainWindow
             {
                 lock (order) order.Clear();
                 _callServesStub = () => served;
+                NewChat_Click(this, new RoutedEventArgs());
                 StartCall();
                 if (!await Until(() => !_callPreparing) || Order() != want || _callStandIn)
                     return Fail($"VOICE's own model is loaded for the call (served {served}): order {Order()}, not {want}; stand-in {_callStandIn}");
                 EndCall();
             }
+
+            // A call in a chat with messages goes on in it: no new chat, its title kept, "Call ended". Short (4 messages): VOICE
+            // gets them as they are. Longer: the chat's worker summarizes it ("Catching up on the chat…") before VOICE's model
+            // loads, and the call's first request sends the summary and the call's own message.
+            (_callServesStub, modelLoaded) = (null, false);
+            string? summaryRequest = null, summarizedBy = null;
+            _callSummaryStub = async (role, request) =>
+            {
+                (summaryRequest, summarizedBy) = (request, role);
+                await Task.Delay(150);
+                lock (order) order.Add("summary");
+                return [Ev("""{"e":"history_compacted","role":"x","summary":"Earlier: birds.","covers":6,"before":90,"after":9}""")];
+            };
+            OpenChatConversation(id);
+            var (title, worker) = (_chatConv?.Title, ChatTarget()?.Role);
+            void ClearEnded() { foreach (var t in ToastsOf("Call ended").Concat(ToastsOf($"Call saved to {title}"))) ToastStack.Children.Remove(t); } // a toast replaces its twin
+            bool Ended() => ToastsOf("Call ended").Count == 1 && ToastsOf($"Call saved to {title}").Count == 0;
+            ClearEnded();
+            lock (order) order.Clear();
+            StartCall();
+            if (!await Until(() => !_callPreparing) || Order() != "load,warm" || _chatConv?.Id != id || _chatHistory.Count != 4)
+                return Fail($"a call in a short chat: order {Order()}, chat {_chatConv?.Id} (not {id}), {_chatHistory.Count} messages");
+            if (await Reply("Short one.", "cb:Short one.") is { } shortWhy)
+                return Fail("a call in a short chat: " + shortWhy);
+            EndCall();
+            if (_store.Get(id) is not { Messages.Count: 6 } shortChat || shortChat.Title != title || !Ended() || summaryRequest is not null
+                || System.Text.Json.Nodes.JsonNode.Parse(lastRequest!)?["summary"]?.GetValue<string>() != "")
+                return Fail($"a call in a short chat: {_store.Get(id)?.Messages.Count} saved messages, title {_store.Get(id)?.Title} (not {title}), "
+                    + $"\"Call ended\" {Ended()}, summarized {summaryRequest is not null}");
+            modelLoaded = false;
+            ClearEnded();
+            lock (order) order.Clear();
+            StartCall();
+            if (CallStateText.Text != "Catching up on the chat…")
+                return Fail($"summarizing the chat shows \"{CallStateText.Text}\"");
+            if (!await Until(() => !_callPreparing) || Order() != "summary,load,warm" || summarizedBy != worker || worker == LauncherLogic.Voice)
+                return Fail($"a call in a longer chat: order {Order()}, summarized by {summarizedBy} (the chat's worker is {worker})");
+            if (await Reply("Long one.", "cb:Long one.") is { } longWhy)
+                return Fail("a call in a longer chat: " + longWhy);
+            var (asked, sent) = (System.Text.Json.Nodes.JsonNode.Parse(summaryRequest!)!, System.Text.Json.Nodes.JsonNode.Parse(lastRequest!)!);
+            if (asked["messages"]!.AsArray() is not { Count: 7 } askedMessages || askedMessages[^1]!["content"]!.GetValue<string>() != "/compact" || asked["worker"]!.GetValue<string>() != worker
+                || sent["summary"]!.GetValue<string>() != "Earlier: birds." || sent["summary_covers"]!.GetValue<int>() != 6 || sent["messages"]!.AsArray().Count != 1 || sent["worker"]!.GetValue<string>() != LauncherLogic.Voice)
+                return Fail($"a call in a longer chat: the summary asked {asked.ToJsonString()}; the first call request {sent.ToJsonString()}");
+            EndCall();
+            if (_store.Get(id) is not { Messages.Count: 8, Summary: "Earlier: birds.", SummaryCovers: 6 } longChat || longChat.Title != title || !Ended())
+                return Fail($"a call in a longer chat: {_store.Get(id)?.Messages.Count} saved messages, summary {_store.Get(id)?.Summary}, title {_store.Get(id)?.Title}");
             return true;
         }
         finally
@@ -690,7 +817,7 @@ public partial class MainWindow
             _settings.Tts.Voice = savedVoice;
             if (follows is { } f)
                 CardFor(LauncherLogic.Voice)!.FollowsMain = f;
-            (_modelsLoadedStub, _callLoadStub, _callWarmStub, _callFreeStub, _callSizeStub, _callServesStub) = (null, null, null, null, null, null);
+            (_modelsLoadedStub, _callLoadStub, _callWarmStub, _callFreeStub, _callSizeStub, _callServesStub, _callSummaryStub) = (null, null, null, null, null, null, null);
             CallStateChanged -= OnState;
             CallLevels -= OnLevels;
             (_dictationFeed, _dictationTranscribe, _callTurnStub, _speechPlayer, _speechTest) = (null, null, null, player, test);

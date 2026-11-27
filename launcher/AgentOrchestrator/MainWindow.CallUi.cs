@@ -59,6 +59,7 @@ public partial class MainWindow
         CallVisual.State = state;
         CallStateText.Text = state switch
         {
+            CallState.Listening or CallState.Thinking when _callCatchingUp => "Catching up on the chat…", // the chat's worker summarizes it (CallCatchUp)
             CallState.Thinking when _callPreparing => "Getting the voice ready…", // the phrase waits for the warm-up (CallWhenReady)
             CallState.Thinking => "Thinking…",
             CallState.Speaking => "Speaking",
@@ -209,6 +210,7 @@ public partial class MainWindow
                 return Fail("hidden, the visualizer still draws");
             // opening another chat ends the call (its toast as usual)
             var other = _store.Create("", "chat");
+            NewChat_Click(this, new RoutedEventArgs()); // a fresh call chat (the one shown, with messages, would go on as the call)
             StartCall();
             if (!InCall || other is null)
                 return Fail("the second call did not start");
