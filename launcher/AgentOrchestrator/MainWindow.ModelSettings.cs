@@ -330,8 +330,10 @@ public partial class MainWindow
         cardBorder.SetResourceReference(Border.BorderBrushProperty, "Border");
         cardBorder.SetResourceReference(Border.CornerRadiusProperty, "CardRadius");
         var scroll = new ScrollViewer { Content = cardBorder, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        // 65% of the whole main panel (right of the nav), not of the page column; never wider than the scroller.
-        scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Max(680, ModelSettingsView.ActualWidth * 0.65)));
+        // 65% of the whole main panel (right of the nav), not of the page column, and at least threeColumnCard (the Model and
+        // option grids' three columns fit, as on a portrait screen); never wider than the scroller.
+        const double threeColumnCard = 800;
+        scroll.SizeChanged += (_, e) => cardBorder.Width = Math.Max(0, Math.Min(e.NewSize.Width - 14, Math.Max(threeColumnCard, ModelSettingsView.ActualWidth * 0.65)));
         var blocks = new Dictionary<string, FrameworkElement>();
         // A group's header in small capitals; its note shows below it, or (showHelp false: an option group's) on hover.
         StackPanel Section(string name, string help, bool showHelp = true)
@@ -977,8 +979,8 @@ public partial class MainWindow
         favHint.Margin = new Thickness(0, 4, 0, 0);
         var favBlock = new StackPanel { Tag = "LocalFavoritesBlock", Children = { favLabel, favBox, favHint } };
         // The concept's grid, row by row: Model | Favorite models | Model source; Run on the primary PC | API Model | the primary
-        // PC's note; the source buttons (and COMPACTOR's) under the switch. One column, in the same order, on a page narrower
-        // than 1200. Then the memory estimate, the context length and the Advanced switch, full width.
+        // PC's note; the source buttons (and COMPACTOR's) under the switch. One column, in the same order, in a card narrower
+        // than threeColumnCard. Then the memory estimate, the context length and the Advanced switch, full width.
         var cells = new (FrameworkElement Cell, int Row, int Column)[]
         {
             (new StackPanel { Children = { Label("Model"), modelBox, modelStatus, modelFields } }, 0, 0), (favBlock, 0, 1), (source, 0, 2),
@@ -1012,8 +1014,10 @@ public partial class MainWindow
         foreach (var (cell, _, _) in cells)
             modelGrid.Children.Add(cell);
         LayOutModel(false);
-        scroll.SizeChanged += (_, e) => LayOutModel(e.NewSize.Width >= 1200);
-        scroll.SizeChanged += (_, e) => sections.Columns = e.NewSize.Width >= 1200 ? 3 : e.NewSize.Width >= 768 ? 2 : 1;
+        // Three columns once the card is threeColumnCard wide (its width is set first, on the same event); else the option
+        // grid two on a page 768 wide, one narrower.
+        scroll.SizeChanged += (_, e) => LayOutModel(cardBorder.Width >= threeColumnCard);
+        scroll.SizeChanged += (_, e) => sections.Columns = cardBorder.Width >= threeColumnCard ? 3 : e.NewSize.Width >= 768 ? 2 : 1;
         foreach (var part in new UIElement[] { modelGrid, vramBlock, rows["max_seq_length"] })
             top.Children.Add(part);
         // The worker's own sections under Model, a line above each (one above both prompt sections: one shows at a time); the
@@ -2147,7 +2151,30 @@ public partial class MainWindow
         WorkerTabs.UpdateLayout();
         return WorkerTabs.ItemContainerGenerator.ContainerFromItem(card) as FrameworkElement;
     }
-    private void SmokeClickTab(RoleCard card) => SmokeClick(SmokeVisuals(SmokeTab(card)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab"));
+    // The settings card's three-column layout (page: its ScrollViewer): the option grid three across and the Model grid's
+    // three columns, every shown box at least 120 wide in the option grid and no two boxes overlapping; landscape, the card
+    // 65% of the page as before. Null when right, else what is wrong.
+    private string? ThreeColumnProblem(ScrollViewer page, bool landscape)
+    {
+        var card = (Border)page.Content;
+        var options = SmokeFind<SettingsGrid>(card, _ => true)!;
+        var model = (Grid)SmokeFind<StackPanel>(card, p => p.Tag as string == "LocalFavoritesBlock")!.Parent;
+        if (options.Columns != 3 || model.ColumnDefinitions.Count != 5)
+            return $"{options.Columns} option columns, {model.ColumnDefinitions.Count} Model grid columns, the card {card.ActualWidth:0} wide";
+        if (landscape && Math.Abs(card.Width - Math.Min(page.ActualWidth - 14, Math.Max(680, ModelSettingsView.ActualWidth * 0.65))) > 0.5)
+            return $"the card {card.Width:0} wide, not 65% of the page";
+        var boxes = SmokeVisuals(card).OfType<Control>().Where(c => c is TextBox or ComboBox && c.IsVisible && c.TemplatedParent is null)
+            .Select(c => (Box: c, Bounds: c.TransformToAncestor(card).TransformBounds(new Rect(c.RenderSize)))).ToList();
+        if (boxes.FirstOrDefault(b => options.IsAncestorOf(b.Box) && b.Bounds.Width < 120) is { Box: { } thin } narrow)
+            return $"{thin.Tag} is {narrow.Bounds.Width:0} wide";
+        for (var i = 0; i < boxes.Count; i++)
+            for (var j = i + 1; j < boxes.Count; j++)
+                if (Rect.Intersect(boxes[i].Bounds, boxes[j].Bounds) is { IsEmpty: false, Width: > 0.5, Height: > 0.5 })
+                    return $"{boxes[i].Box.Tag} overlaps {boxes[j].Box.Tag}";
+        return null;
+    }
+
+    private void SmokeClickTab(RoleCard card) =>SmokeClick(SmokeVisuals(SmokeTab(card)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab"));
 
     // --ui-smoke: the rail card's gear opens the Model Settings page on its worker's tab; one tab per shown worker, three fit
     // the page, a narrower one scrolls the strip (the wheel too); a tab shows title, model, tok/s and task · turn tokens. The
@@ -2473,8 +2500,8 @@ public partial class MainWindow
                 Model().Items.Count != 1 || Model().Items.OfType<ComboBoxItem>().Any(i => i.Tag is not null))
                 return Fail("the Planner's tab");
             // Pictures of the whole settings card, a local worker, Advanced on (to look at the layout): the window 1600 wide
-            // (%TEMP%\ao-model-settings.png, the grid's three columns) and narrowed until the page's ScrollViewer is 1000 wide
-            // (ao-model-settings-narrow.png, two).
+            // (%TEMP%\ao-model-settings.png, the grid's three columns) and narrowed until the page is 1000 wide, a portrait
+            // screen's (ao-model-settings-narrow.png, still three: the card widens to fit them).
             var (oldWidth, oldHeight, oldAdvanced) = (Width, Height, _settings.ModelAdvanced);
             void Advanced(bool on)
             {
@@ -2497,8 +2524,10 @@ public partial class MainWindow
                 }
                 if (file.Contains("narrow"))
                 {
-                    Width -= page.ActualWidth - 1000;
+                    Width -= ModelSettingsView.ActualWidth - 1000;
                     await Idle();
+                    if (ThreeColumnProblem(page, landscape: false) is { } narrow)
+                        return Fail($"portrait, the page {ModelSettingsView.ActualWidth:0} wide: {narrow}");
                 }
                 var whole = (FrameworkElement)page.Content;
                 var dpi = VisualTreeHelper.GetDpi(whole);
@@ -2509,6 +2538,11 @@ public partial class MainWindow
                 bitmap.Render(visual);
                 SavePicture(bitmap, Path.Combine(Path.GetTempPath(), file));
             }
+            // Landscape, the page 1400 wide: as before, the card 65% of the page and three columns.
+            Width += 1400 - ModelSettingsView.ActualWidth;
+            await Idle();
+            if (ThreeColumnProblem(SmokeFind<ScrollViewer>(WorkerSettingsHost, s => s.Content is Border)!, landscape: true) is { } wide)
+                return Fail($"landscape, the page {ModelSettingsView.ActualWidth:0} wide: {wide}");
             Advanced(oldAdvanced);
             (Width, Height) = (oldWidth, oldHeight);
             await Idle();
