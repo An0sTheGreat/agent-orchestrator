@@ -2687,17 +2687,26 @@ class ChatTests(unittest.TestCase):
         self.assertNotIn("generate_image", [t["function"]["name"] for t in log[0]["tools"]])
         self.assertNotIn("IMAGE GENERATION", log[0]["system"])
 
-    def test_voice_turn_speaks_plainly_without_search_tools_skills_or_delegation(self):
-        request = {"worker": "planner", "messages": self.MSGS, "search": True, "tools": True, "skills": [str(orchestrator.INIT_PROJECT_SKILL)]}
+    def test_voice_turn_speaks_plainly_and_keeps_its_tools(self):
+        request = {"worker": "planner", "messages": self.MSGS, "search": True, "sandbox": {"super_access": True}}
         code, log, events, *_ = self.chat({**request, "voice": True}, {"planner": ["Sure. What colour?"]})
         self.assertEqual(code, 0)
-        self.assertEqual((len(log), log[0]["tools"]), (1, None))  # one plain completion: no tool loop, so nothing to delegate
         self.assertIn("SPOKEN CALL\n", log[0]["system"])
-        self.assertNotIn("WEB SEARCH", log[0]["system"])
-        self.assertEqual(events[-1], ("chat_reply", {"role": "planner", "text": "Sure. What colour?"}))
-        _, log, *_ = self.chat(request)  # without the flag: the switches as before
-        self.assertIn("delegate", [t["function"]["name"] for t in log[0]["tools"]])
+        self.assertIn("do it with your tools", log[0]["system"])
         self.assertIn("WEB SEARCH", log[0]["system"])
+        names = [t["function"]["name"] for t in log[0]["tools"]]
+        self.assertTrue({"write_file", "delegate"} <= set(names), names)  # Super access: it can make the file it was asked for
+        self.assertEqual(events[-1], ("chat_reply", {"role": "planner", "text": "Sure. What colour?"}))
+        _, log, *_ = self.chat(request)  # without the flag: no spoken-call note
+        self.assertNotIn("SPOKEN CALL", log[0]["system"])
+
+    def test_chat_delegate_reaches_the_pc_files_only_with_super_or_full_access(self):
+        for sandbox, writes in (({"super_access": True}, True), ({"full_access": True}, True), ({}, False)):
+            _, log, *_ = self.chat({"worker": "planner", "messages": self.MSGS, "sandbox": sandbox},
+                                   {"planner": [tool_call("delegate", worker="implementer", brief="make x.py in Downloads"), "ok"],
+                                    "implementer": ["done"]})
+            (sub,) = [e for e in log if e["model"] == "implementer-model"]
+            self.assertEqual("write_file" in [t["function"]["name"] for t in sub["tools"] or []], writes, sandbox)
 
     def test_images_join_only_the_turns_message_in_the_request_body(self):
         with tempfile.TemporaryDirectory() as folder:

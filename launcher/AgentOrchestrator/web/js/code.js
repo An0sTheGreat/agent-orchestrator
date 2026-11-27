@@ -255,16 +255,11 @@ if (typeof document !== 'undefined') {
       } }, 'Remove'))));
     if (!snap.folders?.length) $('#extralist').replaceChildren(h('p', { class: 'muted' }, 'Only the project folder.'));
   }
-  const addFolder = () => pickFolder('ADD A FOLDER', path => {
-    $('#sheet-access .hintline').textContent = path;
-    const add = access => async () => {
-      closeOverlays();
-      try { await api.post(url('folders/add'), { path, access }); } catch (err) { fail(err); return; }
-      await refresh(); drawFolders(); toast('Folder added');
-    };
-    $('#accessread').onclick = add('read');
-    $('#accesswrite').onclick = add('write');
-    openSheet('sheet-access');
+  // an added folder is one the worker may edit (the PC decides: the Agent Orchestrator folder stays read only)
+  const addFolder = () => pickFolder('ADD A FOLDER', async path => {
+    closeOverlays();
+    try { await api.post(url('folders/add'), { path }); } catch (err) { fail(err); return; }
+    await refresh(); drawFolders(); toast('Folder added');
   });
 
   function showPane(name) {

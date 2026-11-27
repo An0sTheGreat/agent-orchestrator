@@ -37,31 +37,19 @@ public partial class MainWindow
         menu.Placement = PlacementMode.Top;
         var files = PresetItem("Add files or photos", () => AddFiles(c));
         files.ToolTip = $"Or paste (Ctrl+V) or drop them on the message box; up to {MaxImages} photos per message";
-        // the test build's chat: one Add folder that asks how the folder is used (attached once, or worked in from now on)
-        var chooses = AppSettings.Unified && !c.IsCode;
-        var folder = PresetItem(chooses ? "Add folder…" : "Add folder", () => { if (chooses) AddChatFolder(c); else AddFolder(c); });
-        folder.ToolTip = c.IsCode ? "A folder the lead may read or edit, besides the project folder"
-            : chooses ? "Attach its files to your message, or work in it: the lead reads and edits it and the chat moves to Code" : "Its text files go with your message";
+        // the chat: Add folder works in it (the chat moves to Code there); a Code chat: the folder joins the ones the lead may edit
+        var works = AppSettings.Unified && !c.IsCode;
+        var folder = PresetItem("Add folder", () => { if (works) AddChatFolder(c); else AddFolder(c); });
+        folder.ToolTip = c.IsCode ? "A folder the lead may read and edit, besides the project folder"
+            : works ? "Work in a folder: the lead reads and edits it and the chat moves to Code" : "Its text files go with your message";
         menu.Items.Add(files);
         menu.Items.Add(folder);
         return menu;
     }
 
-    // The test build's chat: how a folder joins it. Work in it: the chat becomes a Code conversation there (WorkInFolder).
-    // Attach: its text files go with the next message, as before.
-    private void AddChatFolder(Conversation c)
-    {
-        switch (Choose("Add folder", "How should the lead use the folder?",
-                    ("Work in it", "work"), ("Attach its files to this message", "attach")))
-        {
-            case "work":
-                WorkInFolder();
-                break;
-            case "attach":
-                AddFolder(c);
-                break;
-        }
-    }
+    // The chat's Add folder: the chat becomes a Code conversation there (WorkInFolder), without asking how the folder is used.
+    // (A folder's files can still be attached by dropping or pasting it on the message box.)
+    private void AddChatFolder(Conversation c) => WorkInFolder();
 
     // Ctrl+V in a message box: copied files, or a copied picture (saved as a PNG in <data>\pasted), are attached; plain
     // text pastes as usual. Files dropped on the message box are attached too.

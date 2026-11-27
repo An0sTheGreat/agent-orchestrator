@@ -4036,7 +4036,9 @@ def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]]
 
 
 VOICE_NOTE = ("\n\nSPOKEN CALL\nYou are in a spoken call: your reply is read aloud. Answer in a few natural spoken sentences, with no "
-              "markdown, lists, code or links; ask a short question back when it helps.")
+              "markdown, lists, code or links; ask a short question back when it helps. When the user asks you to do something "
+              "(make or change a file, run something, look something up), do it with your tools, then say in a sentence what you "
+              "did and where; never read code or a file's contents aloud.")
 
 
 def run_chat(config: dict[str, Any], request_path: Path) -> int:
@@ -4056,7 +4058,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     worker = chat_worker(config, role)
     title = display_name(config, role)
     lead_extras, research = with_research(handlers)
-    handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), None, CHAT_DELEGATIONS, (role, "answer", title), research)}
+    # with Full or Super access a delegated worker reaches the same files (the implementer writes them), not just the answering model
+    handlers = {**lead_extras, "delegate": delegator(turn, (tools, handlers, note), chat_pc_folders(request) or None, CHAT_DELEGATIONS, (role, "answer", title), research)}
     extras = ([*tools, DELEGATE_TOOL, BROWSER_TOOL], {**handlers, "browser": browser_handler(chat_pc_folders(request), request, not vision_off(turn, role))}, note)  # the answering model's only; local files only with Full or Super access
     if apps := computer_apps(request):  # the answering model's only, as in Code
         extras = ([*extras[0], computer_tool(apps)], {**extras[1], "computer": computer_handler(not vision_off(turn, role), computer_asked(request))}, note)
@@ -4065,8 +4068,8 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     image_tools, image_handlers, image_note = image_gen_extras(request, not vision_off(turn, role))  # the answering model's only
     extras = ([*extras[0], *image_tools], {**extras[1], **image_handlers}, extras[2] + image_note)
     system = chat +(role_block(config, role, worker) or f"\n\nYou are the {role.capitalize()} worker.\n")
-    if request.get("voice"):  # a spoken call (the launcher's call mode): conversation only, no search, tools, skills or delegation
-        extras, system = ([], {}, ""), system + VOICE_NOTE
+    if request.get("voice"):  # a spoken call (the launcher's call mode): spoken replies; the turn's tools stay, so it can act
+        system += VOICE_NOTE
     if (focus := compact_command(messages)) is not None:  # /compact: summarize now, no model turn
         emit("chat_reply", role=role, text=compact_now(turn, role, messages, request, focus))
         return 0

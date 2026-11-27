@@ -252,14 +252,17 @@ public partial class MainWindow
         return WebCodeFile(conv, target);
     }
 
-    // AddCodeFolder_Click past its picker and access choice (the phone sends both), with its refusals.
+    // AddCodeFolder_Click past its picker (the phone sends the path), with its refusals. No access sent: Full edit, as on the
+    // PC, but the Agent Orchestrator folder Read only; an explicit access is still honoured.
     private (int, object) WebCodeAddFolder(ConversationStore.Conversation conv, string path, string access)
     {
-        if (access is not ("read" or "write"))
+        if (access is not ("" or "read" or "write"))
             return (400, new { error = "Send access: read or write" });
         var (full, refusal) = WebFolderArg(path);
         if (full is null)
             return refusal;
+        if (access == "")
+            access = LauncherLogic.OverlapsWorkflowRoot(full, _workflowRoot) ? "read" : "write";
         var project = conv.Folder;
         if (!LauncherLogic.FolderUsable(project))
             return WebCodeError("Choose a folder first");
@@ -481,6 +484,10 @@ public partial class MainWindow
                 return Fail("folders/remove with no path is not 400");
             if (await Send(code + "/folders/remove", new { path = extra }) is not { Status: 200 } remove || remove.Body?["folders"]!.AsArray().Count != 0 || (await Send(code + "/file?path=" + extraFile)).Status != 403)
                 return Fail("folders/remove");
+            // no access sent (the phone no longer asks): Full edit, as on the PC
+            if (await Send(code + "/folders/add", new { path = extra }) is not { Status: 200 } plain || plain.Body?["folders"]?[0]?["access"]?.ToString() != "write" ||
+                (await Send(code + "/folders/remove", new { path = extra })).Status != 200)
+                return Fail("folders/add without access is not Full edit");
             if (await Send("/api/fs/dirs?path=" + Q(temp)) is not { Status: 200 } dirs || !dirs.Body!["dirs"]!.AsArray().Any(d => d?["name"]?.ToString() == "proj") ||
                 dirs.Body["parent"]?.ToString() != Path.GetDirectoryName(temp) || (await Send("/api/fs/dirs")).Status != 200)
                 return Fail("fs/dirs");

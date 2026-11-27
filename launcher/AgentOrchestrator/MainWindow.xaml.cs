@@ -3831,7 +3831,7 @@ public partial class MainWindow : Window
                 Attach(_chat, Path.Combine(area, path));
             var composed = ComposeMessage(_chat, "Look");
             var request = JsonNode.Parse(LauncherLogic.BuildChatRequest("planner", [new("user", composed)], CurrentExtras() with { Images = _turnImages }))!;
-            if (plusItems is not ["Add files or photos", "Add folder…"] || // the chat's asks: Work in it or Attach its files ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
+            if (plusItems is not ["Add files or photos", "Add folder"] || // the chat's Add folder works in the folder, without asking ChatAttachList.Children.Count != 3 || !ChatSend.IsEnabled && _workflowRoot is not null ||
                 !composed.StartsWith("Look" + AttachMarker) || !composed.Contains("remember the milk") || !composed.Contains("<file name=\"src/app.cs\">") ||
                 composed.Contains("junk") || composed.Contains("blob") || request["images"]!.AsArray().Count != 1 ||
                 BubbleText(composed) != "Look\n\n📎 notes.txt, photo.png, src/" || TypedText(composed) != "Look" || TypedText("Plain") != "Plain")

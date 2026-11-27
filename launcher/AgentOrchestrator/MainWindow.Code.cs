@@ -765,13 +765,10 @@ public partial class MainWindow
             Toast("That folder is already added", "#F7C873");
             return;
         }
-        if (Choose("Folder access", $"What may the worker do in {path}?", ("Read only", "read"), ("Full edit access", "write")) is not { } access)
-            return;
-        if (access == "write" && LauncherLogic.OverlapsWorkflowRoot(path, _workflowRoot))
-        {
-            Toast("The Agent Orchestrator folder can only be added Read only", "#F7C873");
-            return;
-        }
+        // an added folder is one the worker may edit, without asking; the Agent Orchestrator folder only ever Read only
+        var access = LauncherLogic.OverlapsWorkflowRoot(path, _workflowRoot) ? "read" : "write";
+        if (access == "read")
+            Toast("The Agent Orchestrator folder is added Read only", "#F7C873");
         if (!EnsureCodeConversation(project))
             return;
         CodeExtraFolders.Add(new LauncherLogic.CodeFolder(path, access));
