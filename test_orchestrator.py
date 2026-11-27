@@ -6090,6 +6090,15 @@ class RemoteRoleTests(unittest.TestCase):
                 orchestrator.ask_once(self.CONFIG, "planner", "sys", "user", False)
         self.assertEqual(seen, [30])  # the role's 30 s timeout here; 120 s by default (stall_seconds overrides)
 
+    def test_our_own_llama_server_gets_the_whole_timeout_before_it_counts_as_stalled(self):
+        # a big local model reads a long prompt silently for minutes: 120 s would cut it off; a remote model keeps 120 s
+        local = orchestrator.ApiClient({"base_url": "http://127.0.0.1:8080/v1", "api_key": "x", "timeout_seconds": 600,
+                                        "auto_load": {"model_path": "m"}})
+        remote = orchestrator.ApiClient({"base_url": "https://api.example/v1", "api_key": "x", "timeout_seconds": 600, "model": "m"})
+        self.assertEqual((local.stall, remote.stall), (600, 120))
+        self.assertEqual(orchestrator.ApiClient({"base_url": "http://127.0.0.1:8080/v1", "api_key": "x", "stall_seconds": 45,
+                                                 "auto_load": {"model_path": "m"}}).stall, 45)
+
     def test_remote_body_omits_local_only_fields_unless_send_extra_body(self):
         sent = []
 

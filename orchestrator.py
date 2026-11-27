@@ -332,9 +332,10 @@ class ApiClient:
         self.timeout = int(settings.get("timeout_seconds", 600))
         # A streamed reply that does not start, or carries no text, thinking or tool call, for this long is a stalled one (a
         # queued free model is held before its headers, or keeps the stream open with keep-alive comments): config
-        # "stall_seconds" overrides.
-        self.stall = int(settings.get("stall_seconds", min(self.timeout, 120)))
+        # "stall_seconds" overrides. Our own llama-server (auto_load) is never queued, but sends nothing while it reads a long
+        # prompt (a big model partly read from disk can take minutes): it gets the whole timeout.
         self.auto_load = settings.get("auto_load")
+        self.stall = int(settings.get("stall_seconds", self.timeout if self.auto_load else min(self.timeout, 120)))
         # A remote API role (as the launcher writes it): a model id and no auto_load (local roles run on llama-server).
         self.remote = bool(self.model) and not self.auto_load
         self.send_extra_body = settings.get("send_extra_body") is True  # remote roles: keep LOCAL_ONLY_FIELDS
