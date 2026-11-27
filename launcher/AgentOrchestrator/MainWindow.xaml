@@ -2200,17 +2200,51 @@
                         <TextBlock x:Name="VoiceStatus" VerticalAlignment="Center" TextWrapping="Wrap" />
                         </DockPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
-                        <TextBlock Text="Voice model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                        <TextBlock Text="Replies are read aloud on this PC's processor with Kokoro, so nothing leaves the PC. Full quality sounds clearer; Compact is a third of the size. Each downloads only when you press Download." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <!-- one row per Kokoro build (TtsModels.All): the choice, its status, Download/Cancel and Delete (MainWindow.Voice.cs BuildTtsModels) -->
-                        <StackPanel x:Name="TtsModelsPanel" Margin="0,4,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <!-- Speech output (MainWindow.SpeakOut.cs BuildSpeakOut): built in code, disabled until the voice model is downloaded -->
+                        <!-- Speech output (MainWindow.SpeakOut.cs): the engine that reads (TtsSettings.Engine), then the settings both engines share
+                             (BuildSpeakOut), disabled until a Kokoro model is downloaded -->
                         <TextBlock Text="Speech output" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,14,0,0" />
-                        <TextBlock x:Name="SpeakOutHint" Text="Download the voice model above to choose voices and hear replies read aloud." TextWrapping="Wrap"
+                        <DockPanel Margin="0,14,0,0">
+                            <Border DockPanel.Dock="Right" BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}" Padding="2" VerticalAlignment="Center">
+                                <StackPanel Orientation="Horizontal">
+                                    <RadioButton x:Name="EngineKokoro" Tag="kokoro" GroupName="TtsEngine" Style="{StaticResource HeaderSeg}" Content="Kokoro" FontSize="13" Click="TtsEngine_Click"
+                                                 AutomationProperties.Name="Read with Kokoro" />
+                                    <RadioButton x:Name="EngineChatterbox" Tag="chatterbox" GroupName="TtsEngine" Style="{StaticResource HeaderSeg}" Content="Chatterbox" FontSize="13" Click="TtsEngine_Click"
+                                                 AutomationProperties.Name="Read with Chatterbox" />
+                                </StackPanel>
+                            </Border>
+                            <TextBlock Text="Voice engine" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="Reads replies and calls. Kokoro is light and runs on the processor; Chatterbox sounds livelier but needs its install and a GPU, and each of its voices has a Kokoro stand-in that reads when it can't."
+                                   TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock x:Name="SpeakOutHint" Text="Download a Kokoro voice model under Kokoro settings below to choose voices and hear replies read aloud." TextWrapping="Wrap"
                         Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <StackPanel x:Name="SpeakOutPanel" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <!-- One engine's own settings at a time (MainWindow.SpeakOut.cs ShowVoiceView); starts on the engine in use -->
+                        <Border BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}" Padding="2" HorizontalAlignment="Left" Margin="0,14,0,0">
+                            <StackPanel Orientation="Horizontal">
+                                <RadioButton x:Name="VoiceViewKokoro" Tag="kokoro" GroupName="VoiceView" Style="{StaticResource HeaderSeg}" Content="Kokoro settings" FontSize="13" Click="VoiceView_Click"
+                                             AutomationProperties.Name="Kokoro settings" />
+                                <RadioButton x:Name="VoiceViewChatterbox" Tag="chatterbox" GroupName="VoiceView" Style="{StaticResource HeaderSeg}" Content="Chatterbox settings" FontSize="13" Click="VoiceView_Click"
+                                             AutomationProperties.Name="Chatterbox settings" />
+                            </StackPanel>
+                        </Border>
+                        <StackPanel x:Name="KokoroSettings">
+                            <TextBlock Text="Kokoro voice model" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,22,0,0" />
+                            <TextBlock Text="Kokoro reads on this PC's processor, so nothing leaves the PC. Full quality sounds clearer; Compact is a third of the size. Each downloads only when you press Download." TextWrapping="Wrap"
+                            Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                            <!-- one row per Kokoro build (TtsModels.All): the choice, its status, Download/Cancel and Delete (MainWindow.Voice.cs BuildTtsModels) -->
+                            <StackPanel x:Name="TtsModelsPanel" Margin="0,4,0,0" />
+                            <!-- custom blends and the voice library (MainWindow.SpeakOut.cs BuildSpeakOut) -->
+                            <StackPanel x:Name="KokoroVoicesPanel" />
+                        </StackPanel>
+                        <StackPanel x:Name="ChatterboxSettings" Visibility="Collapsed">
+                            <TextBlock Text="Chatterbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,22,0,0" />
+                            <!-- the runtime's Install/Uninstall row (MainWindow.Voice.cs BuildChatterbox) -->
+                            <StackPanel x:Name="ChatterboxRuntimePanel" />
+                            <!-- its voices, and making one from a clip (MainWindow.ChatterboxVoices.cs BuildChatterboxVoices) -->
+                            <StackPanel x:Name="ChatterboxVoicesPanel" />
+                        </StackPanel>
                         <Border Style="{StaticResource SettingsDivider}" />
                         <DockPanel Margin="0,14,0,0">
                             <ComboBox x:Name="MicrophoneBox" DockPanel.Dock="Right" Width="240" SelectionChanged="Microphone_Changed" DropDownOpened="Microphone_DropDownOpened"

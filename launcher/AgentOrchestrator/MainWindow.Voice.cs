@@ -50,7 +50,7 @@ public partial class MainWindow
     private TextBlock _chatterboxStatus = null!;
     private Button _chatterboxInstallButton = null!, _chatterboxRemoveButton = null!;
 
-    // The Chatterbox Turbo row after the Kokoro rows: status, Install/Cancel (never on its own) and Uninstall.
+    // The Chatterbox Turbo row at the top of Chatterbox settings: status, Install/Cancel (never on its own) and Uninstall.
     private void BuildChatterbox()
     {
         _chatterboxStatus = new TextBlock { VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0, 0, 0) };
@@ -80,7 +80,7 @@ public partial class MainWindow
             RefreshVoiceStatus();
         };
         var label = new TextBlock { Text = "Chatterbox Turbo (lively voices, GPU)", MinWidth = 170, VerticalAlignment = VerticalAlignment.Center };
-        TtsModelsPanel.Children.Add(new DockPanel { Margin = new Thickness(0, 10, 0, 0),
+        ChatterboxRuntimePanel.Children.Add(new DockPanel { Margin = new Thickness(0, 10, 0, 0),
             Children = { Docked(_chatterboxRemoveButton, Dock.Right), Docked(_chatterboxInstallButton, Dock.Right), Docked(label, Dock.Left), _chatterboxStatus } });
     }
 

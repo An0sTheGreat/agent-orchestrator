@@ -67,8 +67,12 @@ public partial class MainWindow
     }
 
     // The worker's own voice when set, else the main one.
-    private VoiceChoice VoiceFor(string role) =>
-        VoiceChoice.Find(_settings.Tts.WorkerVoices.TryGetValue(role, out var v) && v.Length > 0 ? v : _settings.Tts.Voice, _settings.CustomVoices);
+    // With Kokoro as the engine, a worker's Chatterbox voice reads with its Kokoro stand-in.
+    private VoiceChoice VoiceFor(string role)
+    {
+        var voice = VoiceChoice.Find(_settings.Tts.WorkerVoices.TryGetValue(role, out var v) && v.Length > 0 ? v : _settings.Tts.Voice, _settings.CustomVoices);
+        return _settings.Tts.Engine == "kokoro" ? voice.Kokoro : voice;
+    }
 
     // Reads markdown aloud (the reading rules, then sentence by sentence); button, when a reply's, shows Stop meanwhile. Longer than
     // MaxChars asks first. A missing model, a missing speaker or an engine error is a toast and back to idle.
@@ -133,16 +137,54 @@ public partial class MainWindow
     private void RefreshSpeakOut()
     {
         var ready = TtsModels.Ready || _speechTest;
-        SpeakOutPanel.IsEnabled = ready;
-        SpeakOutPanel.Opacity = ready ? 1 : 0.5;
+        foreach (var panel in new[] { SpeakOutPanel, KokoroVoicesPanel, ChatterboxVoicesPanel })
+            (panel.IsEnabled, panel.Opacity) = (ready, ready ? 1 : 0.5);
         SpeakOutHint.Visibility = ready ? Visibility.Collapsed : Visibility.Visible;
         RefreshChatterboxVoices();
+    }
+
+    // ---- the engine (TtsSettings.Engine) and which engine's settings show
+
+    private void ShowEngine() => (EngineKokoro.IsChecked, EngineChatterbox.IsChecked) = (_settings.Tts.Engine == "kokoro", _settings.Tts.Engine == "chatterbox");
+
+    private void ShowVoiceView(string engine)
+    {
+        (VoiceViewKokoro.IsChecked, VoiceViewChatterbox.IsChecked) = (engine == "kokoro", engine == "chatterbox");
+        KokoroSettings.Visibility = engine == "kokoro" ? Visibility.Visible : Visibility.Collapsed;
+        ChatterboxSettings.Visibility = engine == "chatterbox" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void TtsEngine_Click(object sender, RoutedEventArgs e) => SetEngine((string)((FrameworkElement)sender).Tag);
+    private void VoiceView_Click(object sender, RoutedEventArgs e) => ShowVoiceView((string)((FrameworkElement)sender).Tag);
+
+    // The main voice becomes the engine's: the one it had before (OtherVoice) while it still exists, else for Chatterbox the
+    // voice whose stand-in is the Kokoro voice in use (or Default), for Kokoro the Chatterbox voice's stand-in. The view follows.
+    private void SetEngine(string engine)
+    {
+        var t = _settings.Tts;
+        if (t.Engine != engine)
+        {
+            var kokoroNames = _settings.CustomVoices.Select(c => c.Name).Concat(Tts.Voices.Select(v => v.Name));
+            var names = engine == "chatterbox" ? ChatterboxNames().Select(n => VoiceChoice.ChatterboxPrefix + n) : kokoroNames;
+            var voice = names.FirstOrDefault(n => n == t.OtherVoice)
+                ?? (engine == "chatterbox"
+                    ? VoiceChoice.ChatterboxPrefix + (_settings.ChatterboxVoices.FirstOrDefault(c => c.Fallback == t.Voice)?.Name ?? "Default")
+                    : VoiceChoice.Find(t.Voice, _settings.CustomVoices).Chatterbox?.Fallback ?? Tts.Default);
+            StopSpeaking();
+            (t.OtherVoice, t.Voice, t.Engine) = (t.Voice, voice, engine);
+            _settings.Save();
+            FillVoicePickers();
+        }
+        ShowEngine();
+        ShowVoiceView(engine);
     }
 
     private void BuildSpeakOut()
     {
         var p = SpeakOutPanel;
         p.Children.Clear();
+        KokoroVoicesPanel.Children.Clear();
+        ChatterboxVoicesPanel.Children.Clear();
         _voicePickers.Clear();
         var t = _settings.Tts;
         void Save() => _settings.Save();
@@ -229,6 +271,7 @@ public partial class MainWindow
             p.Children.Add(Row(ChatName(card, role), picker));
         }
 
+        p = KokoroVoicesPanel; // Kokoro settings: the blends and the library
         p.Children.Add(Heading("Custom voices"));
         p.Children.Add(Note("Blend two to four voices: each slider sets how much of that voice is in the mix. Hear it, name it and save it."));
         _blendRows = new StackPanel();
@@ -251,8 +294,6 @@ public partial class MainWindow
         _savedVoices = new StackPanel { Margin = new Thickness(0, 12, 0, 0) };
         p.Children.Add(_savedVoices);
 
-        BuildChatterboxVoices(p);
-
         p.Children.Add(Heading("Voice library"));
         var search = new TextBox { Margin = new Thickness(0, 10, 0, 0), MinHeight = 30, VerticalContentAlignment = VerticalAlignment.Center };
         AutomationProperties.SetName(search, "Search voices");
@@ -261,8 +302,11 @@ public partial class MainWindow
         p.Children.Add(search);
         p.Children.Add(_voiceLibrary);
         FillLibrary("");
+        BuildChatterboxVoices(ChatterboxVoicesPanel);
         FillVoicePickers();
         RefreshSpeakOut();
+        ShowEngine();
+        ShowVoiceView(t.Engine);
     }
 
 
@@ -281,7 +325,7 @@ public partial class MainWindow
                 preview.Click += (_, _) => Read(null, $"Hello, I'm {VoiceLabel(voice.Name)}. This is how I sound.", new VoiceChoice(voice.Name));
                 var use = new Button { Content = "Use", Padding = new Thickness(9, 2, 9, 2), Margin = new Thickness(6, 0, 0, 0) };
                 use.SetResourceReference(StyleProperty, "GhostButton");
-                use.Click += (_, _) => { _settings.Tts.Voice = voice.Name; _settings.Save(); FillVoicePickers(); };
+                use.Click += (_, _) => { _settings.Tts.Voice = voice.Name; _settings.Save(); FillVoicePickers(); ShowEngine(); }; // the engine becomes Kokoro
                 var gender = new TextBlock { Text = voice.Gender, Width = 70, VerticalAlignment = VerticalAlignment.Center };
                 gender.SetResourceReference(TextBlock.ForegroundProperty, "Muted");
                 _voiceLibrary.Children.Add(new DockPanel
@@ -319,11 +363,12 @@ public partial class MainWindow
             box.Items.Clear();
             if (role is not null)
                 box.Items.Add(new ComboBoxItem { Content = "Same as the main voice", Tag = "" });
-            foreach (var c in _settings.CustomVoices)
+            var (kokoro, chatterbox) = (role is not null || t.Engine == "kokoro", role is not null || t.Engine == "chatterbox"); // the main one: the engine's only
+            foreach (var c in _settings.CustomVoices.Where(_ => kokoro))
                 box.Items.Add(new ComboBoxItem { Content = c.Name + " (custom)", Tag = c.Name });
-            foreach (var name in ChatterboxNames())
+            foreach (var name in ChatterboxNames().Where(_ => chatterbox))
                 box.Items.Add(new ComboBoxItem { Content = name + " (Chatterbox)", Tag = "cb:" + name });
-            foreach (var v in Tts.Voices)
+            foreach (var v in Tts.Voices.Where(_ => kokoro))
                 box.Items.Add(new ComboBoxItem { Content = $"{VoiceLabel(v.Name)} · {v.Language}", Tag = v.Name });
             box.SelectedItem = box.Items.OfType<ComboBoxItem>().FirstOrDefault(i => (string)i.Tag == chosen) ?? box.Items[0];
         }
@@ -478,12 +523,12 @@ public partial class MainWindow
         FillVoicePickers();
     }
 
-    // A renamed voice stays chosen where it was; a deleted one goes back to the default (main) or to the main voice (a worker).
+    // A renamed voice stays chosen where it was; a deleted one goes back to its engine's default (main) or to the main voice (a worker).
     private void Repoint(string from, string? to)
     {
         var t = _settings.Tts;
         if (t.Voice == from)
-            t.Voice = to ?? Tts.Default;
+            t.Voice = to ?? (TtsSettings.EngineOf(from) == "chatterbox" ? VoiceChoice.ChatterboxDefault : Tts.Default);
         foreach (var role in t.WorkerVoices.Where(kv => kv.Value == from).Select(kv => kv.Key).ToList())
             if (to is null)
                 t.WorkerVoices.Remove(role);

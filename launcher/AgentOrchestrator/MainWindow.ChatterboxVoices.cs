@@ -185,7 +185,7 @@ public partial class MainWindow
     private void BuildChatterboxVoices(StackPanel p)
     {
         p.Children.Add(Heading("Chatterbox voices"));
-        p.Children.Add(_cbHint = Note("Install Chatterbox in the voice model list above to make lively voices from a short recording."));
+        p.Children.Add(_cbHint = Note("Install Chatterbox above to make lively voices from a short recording. Until then a Chatterbox voice reads with its Kokoro stand-in."));
         var s = _cbSection = new StackPanel();
         p.Children.Add(s);
         s.Children.Add(Note("A voice from 5 to 20 seconds of someone speaking clearly. Chatterbox reads with it; its Kokoro stand-in reads when Chatterbox can't."));
@@ -691,6 +691,25 @@ public partial class MainWindow
                     return Fail($"the clip is {reader.WaveFormat} for {reader.TotalTime.TotalSeconds:0.0} s");
             bool Listed(string tag) => _voicePickers.Count > 1 && _voicePickers.All(b => b.Items.OfType<ComboBoxItem>().Any(i => (string)i.Tag == tag && ((string)i.Content).EndsWith("(Chatterbox)")));
             bool InList(string name) => _cbList!.Children.OfType<FrameworkElement>().Any(r => r.Tag as string == name);
+            // the engine toggle and the view switch: Chatterbox lists only "cb:" voices in the main picker and shows only its group; Kokoro the reverse
+            var mainPicker = _voicePickers[0];
+            bool OnlyCb(bool cb) => mainPicker.Items.Count > 0 && mainPicker.Items.OfType<ComboBoxItem>().All(i => ((string)i.Tag).StartsWith("cb:") == cb);
+            if ((string)EngineKokoro.Content != "Kokoro" || (string)EngineChatterbox.Content != "Chatterbox")
+                return Fail("the engine toggle is not Kokoro | Chatterbox");
+            EngineChatterbox.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (_settings.Tts.Engine != "chatterbox" || !_settings.Tts.Voice.StartsWith("cb:") || !OnlyCb(true) || ChatterboxSettings.Visibility != Visibility.Visible
+                || KokoroSettings.Visibility == Visibility.Visible || AppSettings.Load().Tts.Engine != "chatterbox")
+                return Fail($"picking Chatterbox: engine {_settings.Tts.Engine}, voice {_settings.Tts.Voice}");
+            VoiceViewKokoro.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (KokoroSettings.Visibility != Visibility.Visible || ChatterboxSettings.Visibility == Visibility.Visible || _settings.Tts.Engine != "chatterbox")
+                return Fail("the view switch did not show only the Kokoro group");
+            EngineKokoro.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+            if (_settings.Tts.Engine != "kokoro" || !OnlyCb(false))
+                return Fail("picking Kokoro still lists Chatterbox voices");
+            if (System.Text.Json.JsonSerializer.Deserialize<TtsSettings>("{\"Voice\":\"cb:Narrator\"}")!.Engine != "chatterbox"
+                || System.Text.Json.JsonSerializer.Deserialize<TtsSettings>("{\"Voice\":\"bm_george\"}")!.Engine != "kokoro")
+                return Fail("a saved voice without Engine does not give its engine");
+            SetEngine("chatterbox"); // the main picker lists the Chatterbox voices below
             if (!Listed("cb:Smoke voice") || !Listed("cb:Default") || !InList("Smoke voice") || !InList("Default") || AppSettings.Load().ChatterboxVoices.All(c => c.Name != "Smoke voice"))
                 return Fail("the voice is not listed, in every picker, or saved in the settings");
             if (SaveBlend("smoke VOICE", new Dictionary<string, double> { ["af_bella"] = 0.5, ["af_sky"] = 0.5 }, null) is null)
@@ -720,7 +739,7 @@ public partial class MainWindow
             var clip = ChatterboxRuntime.ClipPath(voice);
             _codeChoice = _ => "delete";
             DeleteChatterboxVoice("Smoke renamed");
-            if (Listed("cb:Smoke renamed") || InList("Smoke renamed") || File.Exists(clip) || _settings.Tts.Voice != Tts.Default || _settings.Tts.WorkerVoices.ContainsKey("planner")
+            if (Listed("cb:Smoke renamed") || InList("Smoke renamed") || File.Exists(clip) || _settings.Tts.Voice != VoiceChoice.ChatterboxDefault || _settings.Tts.WorkerVoices.ContainsKey("planner")
                 || AppSettings.Load().ChatterboxVoices.Any(c => c.Name == "Smoke renamed"))
                 return Fail("delete");
             return true;

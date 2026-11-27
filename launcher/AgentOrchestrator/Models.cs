@@ -192,7 +192,14 @@ internal sealed class RoleCard : INotifyPropertyChanged
 // Speech output: Voice is a built-in Kokoro name (Tts.Voices) or a CustomVoices name; WorkerVoices maps a worker role to one.
 internal sealed class TtsSettings
 {
-    public string Voice { get; set; } = AgentOrchestrator.Tts.Default;
+    // The main voice; setting it sets Engine to the voice's ("cb:" = Chatterbox), so Engine follows wherever a voice is chosen.
+    public string Voice { get => _voice; set { _voice = value; _engine = EngineOf(value); } }
+    private string _voice = AgentOrchestrator.Tts.Default;
+    // Which engine reads replies and calls (Settings > Voice): "kokoro" or "chatterbox"; a file without it takes the saved voice's.
+    public string Engine { get => _engine ?? EngineOf(_voice); set => _engine = value; }
+    private string? _engine;
+    public string OtherVoice { get; set; } = ""; // the other engine's main voice, back when the engine is switched back
+    public static string EngineOf(string voice) => voice.StartsWith(VoiceChoice.ChatterboxPrefix, StringComparison.OrdinalIgnoreCase) ? "chatterbox" : "kokoro";
     public string Model { get; set; } = "full"; // the Kokoro build: "full" (fp32) or "compact" (int8), TtsModels
     public double Speed { get; set; } = 1.0;
     public double Volume { get; set; } = 1.0;
