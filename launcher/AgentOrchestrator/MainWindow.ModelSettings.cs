@@ -172,7 +172,10 @@ public partial class MainWindow
     // name or a remote worker's model id, quant the picked quantization ("" for none or a remote model). A preset for this model in
     // another quantization is listed apart (OTHER QUANTIZATIONS); one saved without a quant matches any. mineOnly: a remote worker
     // or the primary PC's presets, where only ANY MODEL and THIS MODEL apply.
-    private static bool PresetSameModel(ModelPreset p, string model) => p.Model.Equals(model, StringComparison.OrdinalIgnoreCase);
+    // The same model however either side names it (LauncherLogic.PresetModelName): the picker's label, the card's name, an older one.
+    private static bool PresetSameModel(ModelPreset p, string model) => SameModelName(p.Model, model);
+    private static bool SameModelName(string a, string b) =>
+        LauncherLogic.PresetModelName(a).Equals(LauncherLogic.PresetModelName(b), StringComparison.OrdinalIgnoreCase);
     private static bool PresetOtherQuant(ModelPreset p, string model, string quant) =>
         PresetSameModel(p, model) && p.Quant.Length > 0 && quant.Length > 0 && !p.Quant.Equals(quant, StringComparison.OrdinalIgnoreCase);
     private static bool PresetMine(ModelPreset p, string model, string quant) => p.Model.Length == 0 || PresetSameModel(p, model) && !PresetOtherQuant(p, model, quant);
@@ -1051,12 +1054,12 @@ public partial class MainWindow
             modelBox.SelectedItem = item;
             modelBox.Items.Remove(old);
         }
-        // The installed model a favorite or a preset names: by its label, else by the name the worker card shows.
+        // The installed model a favorite or a preset names: by its label, else by the name the worker card shows (in any of its forms).
         async Task<ModelChoice?> ChoiceNamed(string model)
         {
             var choices = await FetchModelChoicesAsync();
             return choices.FirstOrDefault(c => c.Label.Equals(model, StringComparison.OrdinalIgnoreCase))
-                ?? choices.FirstOrDefault(c => LauncherLogic.DescribeModel(c.Display, c.Variant).Name.Equals(model, StringComparison.OrdinalIgnoreCase));
+                ?? choices.FirstOrDefault(c => SameModelName(LauncherLogic.DescribeModel(c.Display, c.Variant).Name, model));
         }
         // A primary PC model applies at once, as the Remote API page's Apply does (ModelShare.ChatUrl and its key: onPrimary).
         void UsePrimaryModel(string id)
@@ -1253,14 +1256,13 @@ public partial class MainWindow
         {
             var preset = new ModelPreset
             {
-                Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model) ? ShownQuant() : "", Options = ShownOptions(),
+                Name = name, Model = model, Quant = model.Length > 0 && SameModelName(model, ShownModel()) ? ShownQuant() : "", Options = ShownOptions(),
                 SystemPrompt = ShownPrompt(),
             };
             PutModelPreset(card.Role, preset, same);
             SyncSaveTo();
             Toast($"Preset {name} saved");
         }
-        bool SameModelName(string model) => model.Equals(ShownModel(), StringComparison.OrdinalIgnoreCase);
         void SaveToActive()
         {
             if (Active() is { } active)
@@ -2421,8 +2423,10 @@ public partial class MainWindow
 
         var models = Path.Combine(AppSettings.DataRoot, "smoke-models-window");
         var fake = Path.Combine(models, "Fake-Model-Q4_K_M.gguf");
+        var heretic = Path.Combine(models, "X-9B-heretic.Q5_K_M.gguf"); // the quant after a '.', as many published files name it
         Directory.CreateDirectory(models);
         File.WriteAllText(fake, "");
+        File.WriteAllText(heretic, "");
         var ask = _codeChoice;
         _settings.ModelsFolder = models;
         var asked = 0;
@@ -2547,7 +2551,7 @@ public partial class MainWindow
             (Width, Height) = (oldWidth, oldHeight);
             await Idle();
             // A click on the box opens the picker (not the box's own list), which lists the models once loaded.
-            async Task<PickerEntry?> FakeItem()
+            async Task<PickerEntry?> FakeItem(string? file = null)
             {
                 var box = Model();
                 box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonDownEvent });
@@ -2555,7 +2559,7 @@ public partial class MainWindow
                     return null; // the press opens nothing: its release would close what it opened
                 box.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = PreviewMouseLeftButtonUpEvent });
                 await Until(() => _modelPickerTest is { IsOpen: true } p && p.Rows.Any(r => r.Tag is PickerEntry));
-                var entry = _modelPickerTest?.Rows.Select(r => r.Tag as PickerEntry).FirstOrDefault(e => e?.Choice.File == fake);
+                var entry = _modelPickerTest?.Rows.Select(r => r.Tag as PickerEntry).FirstOrDefault(e => e?.Choice.File == (file ?? fake));
                 _modelPickerTest?.Close();
                 return entry;
             }
@@ -2666,6 +2670,38 @@ public partial class MainWindow
             await Idle();
             if (Role().AsObject().ContainsKey("chat_system_prompt") || SmokeField("ChatSystemPrompt").Text != "")
                 return Fail("a blank chat system prompt");
+
+            // A preset for a file however it was named (the card's name, as another worker on the file saves it; the picker's
+            // label; an older version's name with a dangling '.') is this model's with the file picked or saved, and one applied
+            // from OTHER MODELS puts its file in the box with no "not on this computer".
+            string[] forms = ["X-9B-heretic", "X-9B-heretic.Q5_K_M", "X-9B-heretic."];
+            _settings.ModelPresets.AddRange(forms.Select((m, i) => new ModelPreset { Name = $"Heretic {i}", Model = m, Quant = "Q5_K_M", Options = { ["temperature"] = $"0.1{i}" } }));
+            List<MenuItem> Rows()
+            {
+                var button = SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == "ModelPresets")!;
+                SmokeClick(button);
+                button.ContextMenu.IsOpen = false;
+                return button.ContextMenu.Items.OfType<MenuItem>().ToList();
+            }
+            string? NotMine() => forms.Select((_, i) => $"Heretic {i}").FirstOrDefault(n => Rows().All(r => r.Tag as string != n)); // this model's rows: Tag is the name
+            await Task.Delay(450); // past JustClosed
+            if (await FakeItem(heretic) is not { } hereticItem)
+                return Fail("the second model file");
+            _modelPickerTest!.Choose(hereticItem);
+            await Idle();
+            if (NotMine() is { } unlisted)
+                return Fail($"preset {unlisted} is not this model's with its file picked");
+            _modelPickerTest.Choose(null); // the worker's own model: the presets are another model's
+            await Idle();
+            Rows().First(r => r.Tag as string == "Heretic 2  ·  X-9B-heretic.").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            if (!await Until(() => Model().SelectedItem is ComboBoxItem { Tag: ModelChoice { File: var f } } && f == heretic && SmokeField("temperature").Text == "0.12") ||
+                ToastsOf("X-9B-heretic. is not on this computer").Count > 0)
+                return Fail("apply another model's preset whose file is here");
+            SmokeClick(SmokeButton("Save"));
+            await Idle();
+            if (planner.ModelName != "X-9B-heretic" || NotMine() is { } saved)
+                return Fail($"the saved model's presets: {planner.ModelName}, {NotMine()}");
+            _settings.ModelPresets.RemoveAll(p => p.Name.StartsWith("Heretic "));
             return asked == 0 || Fail("asked");
         }
         finally

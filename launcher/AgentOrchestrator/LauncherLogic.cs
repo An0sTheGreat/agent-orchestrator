@@ -1028,6 +1028,12 @@ internal static class LauncherLogic
         return new ModelInfo(name.Trim(), weights, quant.Length == 0 ? "—" : quant);
     }
 
+    // The name model presets compare a model by, whichever form names it: the worker card's (DescribeModel), the picker's label
+    // ("X.Q5_K_M", "repo-GGUF  ·  Q4_K_M") or a card name from before DescribeModel trimmed a dangling "." or "-" ("X.").
+    // A remote model id ('/' or ':', which no local name has) is kept whole: its vendor and tag tell models apart.
+    public static string PresetModelName(string model) => model.IndexOfAny(['/', ':']) >= 0 ? model.Trim()
+        : DescribeModel(model.Split("  ·  ")[0]).Name.TrimEnd(' ', '-', '_', '.', '|', '｜');
+
     // "Task X": the active task in TASK.md, else the most recently passed task in STATE.md.
     public static string? CurrentTaskId(string projectRoot)
     {
@@ -2586,6 +2592,11 @@ internal static class LauncherLogic
         var suffixed = DescribeModel(@"Y:\.llm_models\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf", QuantOf("Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"));
         if (suffixed.Name != "Qwen3.8-27B-GSQ-RCO" || suffixed.Quant != "IQ3_S" || DescribeModel(@"Y:\m\Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf").Name != "Qwen3.8-27B-GSQ-RCO")
             throw new InvalidOperationException($"A -mtp model's description: {suffixed}");
+        // one name for presets from the card's name, the picker's labels and an older card name; a remote id kept whole
+        string[] sameModel = ["X-9B-heretic", "X-9B-heretic.Q5_K_M", "X-9B-heretic.", DescribeModel("X-9B-heretic.Q5_K_M", "Q5_K_M").Name, "X-9B-heretic-GGUF  ·  Q5_K_M"];
+        if (sameModel.Any(m => PresetModelName(m) != "X-9B-heretic") || PresetModelName("Qwen3.5 9B｜Q8_0") != DescribeModel("Qwen3.5 9B｜Q8_0").Name ||
+            PresetModelName("vendor/model-x") != "vendor/model-x" || PresetModelName("llama3:8b") == PresetModelName("llama3:70b"))
+            throw new InvalidOperationException("Preset model names: " + string.Join(", ", sameModel.Select(PresetModelName)));
         if (TryParseEvent("@@AO {\"e\":\"usage\",\"role\":\"planner\"}")?.GetProperty("role").GetString() != "planner" ||
             TryParseEvent("plain log line") is not null)
             throw new InvalidOperationException("Event parsing failed.");
