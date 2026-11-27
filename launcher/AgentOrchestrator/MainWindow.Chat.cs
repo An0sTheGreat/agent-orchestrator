@@ -968,6 +968,7 @@ public partial class MainWindow
         _codeStartRequested = false;
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
         _pendingUserTime = Now();
+        _turnBegan = DateTime.UtcNow; // the wall clock (Now() can be a test's): files made after it are the turn's (CreatedNote)
         _turnUserImages = text is null ? [] : _turnImages.ToList();
         (_turnShots, _pendingShot) = ([], null);
         if (text is not null)
@@ -1153,6 +1154,9 @@ public partial class MainWindow
                     c.History.Add(new LauncherLogic.ChatMessage("assistant", shownText!, Now(), TurnShots(), stats, changes));
                 }
                 completed = true;
+                // a Markdown or text file the turn created opens for review; not in a call (spoken), nor over unsaved edits
+                if (c != _parked && !InCall && !EditorChanged && CreatedNote(changes, _turnBegan) is { } note)
+                    OpenEditor(note);
                 if (_turn != _parked) // Read replies aloud: only the conversation shown, after the turn has wound down
                     Dispatcher.BeginInvoke(() => ReadFinished(reply));
             }
@@ -1196,6 +1200,7 @@ public partial class MainWindow
         return stopped;
     }
 
+    private DateTime _turnBegan; // when the turn started (UTC)
     private long _pendingSaved; // when SavePendingTurn last wrote the turn in progress (Environment.TickCount64)
 
     // Closing mid-reply: the message and the reply so far stay saved, with the interrupted note.

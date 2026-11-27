@@ -51,6 +51,80 @@ public partial class MainWindow
             ShowEditorFile(path, edits);
     }
 
+    // The file a finished turn opens for review: the last .md or .txt it created, i.e. its first change wrote the whole file
+    // (no old text) and the file was made after the turn began. Null: none.
+    // ponytail: "made after" is the file's creation time, 1 s early for the file system's coarse clock; a file the user made
+    // in the second before sending counts too. A per-call existence check before each write if that ever matters.
+    internal static string? CreatedNote(LauncherLogic.ChatChanges? changes, DateTime beganUtc) =>
+        changes?.Files.Where(f => Path.GetExtension(f.Path).ToLowerInvariant() is ".md" or ".txt" && f.Edits is [{ Old: "" }, ..])
+            .Select(f => ChipPath(f.Path, changes.Folders))
+            .LastOrDefault(p => File.Exists(p) && File.GetCreationTimeUtc(p) >= beganUtc.AddSeconds(-1));
+
+    // --ui-smoke: stub turns that write files. A new notes.md opens in the editor when the turn ends; edits to an existing .md
+    // and a rewritten existing .txt do not, nor a new .py, nor a new .md in a stopped turn or in a turn that ends during a call.
+    private async Task<bool> CreatedNoteSmoke()
+    {
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: created note: {what}"); return false; }
+        var dir = Path.Combine(Path.GetTempPath(), $"AgentOrchestrator-smoke-notes-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        string At(string name) => Path.Combine(dir, name);
+        // a turn: each (tool, path, args) runs as the tool would (the file written), then its event arrives; then the reply
+        // stopped: the user stopped it; call: it ends during a call (its start was not one: no call speech to stub)
+        async Task Turn(bool stopped, bool call, params (string Tool, string Name, object Args)[] calls)
+        {
+            StartChatTurn("Write it");
+            foreach (var (tool, name, args) in calls)
+            {
+                if (tool == "write_file")
+                    File.WriteAllText(At(name), "# Notes\n");
+                _lines.Enqueue(LauncherLogic.EventPrefix + System.Text.Json.JsonSerializer.Serialize(new { e = "tool", role = "reviewer", name = tool, args, result = "OK" }));
+            }
+            if (!stopped)
+                _lines.Enqueue(LauncherLogic.EventPrefix + """{"e":"chat_reply","role":"reviewer","text":"Done"}""");
+            DrainLines();
+            await Task.Delay(100);
+            var callWas = _callNow;
+            if (call)
+                _callNow = CallState.Listening;
+            try { FinishChatTurn(stopped ? -1 : 0, stopped, null); }
+            finally { _callNow = callWas; }
+        }
+        object Write(string name) => new { path = At(name), content = "# Notes\n" };
+        bool Opened(string? name) => name is null ? !EditorPanel.IsVisible : EditorPanel.IsVisible && string.Equals(_editorFile, At(name), StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            ShowWorkerRail();
+            foreach (var old in new[] { "old.md", "old.txt" })
+            {
+                File.WriteAllText(At(old), "# Old\n");
+                File.SetCreationTimeUtc(At(old), DateTime.UtcNow.AddHours(-1)); // made before the turn
+            }
+            await Turn(false, false, ("replace_text", "old.md", new { path = At("old.md"), old = "Old", @new = "Older" }), ("write_file", "old.txt", Write("old.txt")));
+            if (!Opened(null))
+                return Fail($"a turn that only changed existing files opened {_editorFile}");
+            await Turn(false, false, ("write_file", "script.py", Write("script.py")));
+            if (!Opened(null))
+                return Fail($"a new .py opened {_editorFile}");
+            await Turn(true, false, ("write_file", "stopped.md", Write("stopped.md")));
+            if (!Opened(null))
+                return Fail($"a stopped turn opened {_editorFile}");
+            await Turn(false, true, ("write_file", "call.md", Write("call.md")));
+            if (!Opened(null))
+                return Fail($"a turn during a call opened {_editorFile}");
+            await Turn(false, false, ("write_file", "first.txt", Write("first.txt")), ("write_file", "notes.md", Write("notes.md")), ("write_file", "b.py", Write("b.py")));
+            await Task.Delay(300);
+            if (!Opened("notes.md") || EditorTitle.Text != "notes.md")
+                return Fail($"the new notes.md did not open: editor shown {EditorPanel.IsVisible}, file {_editorFile}");
+            return true;
+        }
+        finally
+        {
+            ShowWorkerRail();
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+            try { Directory.Delete(dir, true); } catch (IOException) { }
+        }
+    }
+
     private void EditorMode_Click(object sender, RoutedEventArgs e)
     {
         if (KeepEditorChanges())

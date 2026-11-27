@@ -1792,6 +1792,8 @@ public partial class MainWindow : Window
                 _store.Get(_chatConv!.Id)?.Messages.Count != 6) // saved, not only shown
                 return Fail();
             NewChat_Click(ChatSend, new RoutedEventArgs());
+            if (!await CreatedNoteSmoke())
+                return Fail();
 
             // Smooth streaming, on a stepped clock: each frame reveals part of what arrived (the answer and the thinking), what
             // shows is always the render of a prefix of it (never half a surrogate pair), a finished block keeps its object while
