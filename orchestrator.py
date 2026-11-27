@@ -4037,8 +4037,10 @@ def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]]
 
 VOICE_NOTE = ("\n\nSPOKEN CALL\nYou are in a spoken call: your reply is read aloud. Answer in a few natural spoken sentences, with no "
               "markdown, lists, code or links; ask a short question back when it helps. When the user asks you to do something "
-              "(make or change a file, run something, look something up), do it with your tools, then say in a sentence what you "
-              "did and where; never read code or a file's contents aloud.")
+              "(make or change a file, run something, look something up, hand work to a worker), you MUST first write one short "
+              "spoken sentence as plain text, before any tool call: confirm what you will do, or ask the question you need "
+              "answered (then stop and wait for the answer). Only after that sentence make the tool calls; when they are done, "
+              "say in a sentence what you did and where. Never read code or a file's contents aloud.")
 
 
 def run_chat(config: dict[str, Any], request_path: Path) -> int:

@@ -2692,7 +2692,7 @@ class ChatTests(unittest.TestCase):
         code, log, events, *_ = self.chat({**request, "voice": True}, {"planner": ["Sure. What colour?"]})
         self.assertEqual(code, 0)
         self.assertIn("SPOKEN CALL\n", log[0]["system"])
-        self.assertIn("do it with your tools", log[0]["system"])
+        self.assertIn("first write one short spoken sentence as plain text, before any tool call", log[0]["system"])
         self.assertIn("WEB SEARCH", log[0]["system"])
         names = [t["function"]["name"] for t in log[0]["tools"]]
         self.assertTrue({"write_file", "delegate"} <= set(names), names)  # Super access: it can make the file it was asked for

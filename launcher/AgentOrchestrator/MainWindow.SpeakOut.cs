@@ -117,9 +117,11 @@ public partial class MainWindow
     }
 
     // Idempotent: the player stops (the device is released when its Speak ends) and the button goes back to speak.
+    // A call's reply is not stopped here (switching views, a new reply...): only the call's own interrupt or end stops it.
     private void StopSpeaking()
     {
-        _speechPlayer?.Stop();
+        if (_callSentences is null)
+            _speechPlayer?.Stop();
         _cbPlayer?.Stop(); // a Chatterbox voice's preview
         if (_speakingButton is { } button)
             ShowSpeaking(button, false);

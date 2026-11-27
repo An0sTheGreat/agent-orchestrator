@@ -469,6 +469,7 @@ public partial class MainWindow
     {
         if (_callNow is not (CallState.Speaking or CallState.Thinking))
             return;
+        Log($"Call: interrupted while {_callNow}");
         StopCallSpeech();
         CallFire(CallEvent.Interrupt);
     }

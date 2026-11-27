@@ -635,6 +635,7 @@ public partial class MainWindow
     // The stop icon (and Ctrl+Shift+X): stops the project run, else the reply.
     private void StopWork_Click(object sender, RoutedEventArgs e)
     {
+        InterruptCall(); // in a call, the stop icon stops its speech too
         StopSpeaking();
         if (_process is not null)
             Stop_Click(sender, e);
@@ -1672,6 +1673,12 @@ public partial class MainWindow
         QueueRegroup();
         if (kind == "tool")
         {
+            if (_toolArgs.Length == 0 && _callSentences is not null && r.AnswerText.Length > 0) // a call's text before its tool call
+            {   // (its spoken "I'll do that") is read now, not after the work; what it says after starts a new sentence
+                CallHandOver(r.AnswerText.ToString(), final: true);
+                if (!char.IsWhiteSpace(r.AnswerText[^1]))
+                    r.AnswerText.Append("\n\n");
+            }
             _toolArgs.Append(text);
             var path = ToolPath.Match(_toolArgs.ToString()) is { Success: true } m ? " " + System.IO.Path.GetFileName(m.Groups[1].Value.Replace("\\\\", "\\")) : "";
             SetChatStatus($"Writing {(name.Length > 0 ? name + path : path.Length > 0 ? path.TrimStart() : "a tool call")}… {_toolArgs.Length:N0} characters");
