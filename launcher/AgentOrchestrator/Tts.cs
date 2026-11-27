@@ -345,7 +345,9 @@ internal static class Tts
         var sentences = SpeechText.Sentences("Use e.g. this one. Pi is 3.5 today! Really? Mr. Smith said \"go.\" End");
         Check(sentences is ["Use e.g. this one.", "Pi is 3.5 today!", "Really?", "Mr. Smith said \"go.\"", "End"],
             $"sentences gave [{string.Join(" | ", sentences)}]");
-        Check(SpeechText.Sentences("a.\nb") is ["a.", "b"] && SpeechText.Sentences("  \n ").Count == 0, "line ends split");
+        var bracketed = SpeechText.Sentences("What details (e.g., price, specs)? Pick one (e.g. this one). I can help.");
+        Check(bracketed is ["What details (e.g., price, specs)?", "Pick one (e.g. this one).", "I can help."], $"bracketed e.g. gave [{string.Join(" | ", bracketed)}]");
+        Check(SpeechText.Sentences("a.\nb") is ["a.", "b"] &&SpeechText.Sentences("  \n ").Count == 0, "line ends split");
 
         Check(Voices.Count == 54 && Voices[3] is { Name: Default, Language: "English", Accent: "American", Gender: "Female" }
             && Voices[53] is { Name: "em_santa", Language: "Spanish", Gender: "Male" }, "the voice catalog");
@@ -561,15 +563,17 @@ internal sealed class SpeechPlayer : IDisposable
         Begin(sentences, voice, settings, ct, streamed: false);
 
     // As Speak, for sentences that come as a reply streams (a call): the enumeration may wait for the next one, and the output
-    // stays open meanwhile; ct (which the enumeration should observe too) or Stop ends it.
-    public Task SpeakStream(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct) =>
-        Begin(sentences, voice, settings, ct, streamed: true);
+    // stays open meanwhile; ct (which the enumeration should observe too) or Stop ends it. No warm-up: the call warms its voice
+    // before the turn (CallWhenReady), never while its model generates. audible: once, when the output reads the first sound;
+    // log: a line per sentence and the read's totals.
+    public Task SpeakStream(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct, Action? audible = null, Action<string>? log = null) =>
+        Begin(sentences, voice, settings, ct, streamed: true, audible, log);
 
-    private Task Begin(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct, bool streamed)
+    private Task Begin(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct, bool streamed, Action? audible = null, Action<string>? log = null)
     {
         Task previous;
         CancellationTokenSource cancel;
-        if (voice.Chatterbox is not null)
+        if (voice.Chatterbox is not null && !streamed)
             _chatterbox.WarmUp(); // the engine starts loading now, not at the first sentence
         lock (_gate)
         {
@@ -579,7 +583,7 @@ internal sealed class SpeechPlayer : IDisposable
             _running = Task.Run(async () =>
             {
                 try { await previous; } catch (Exception) { } // its own caller saw its error
-                await Run(streamed ? sentences : sentences.ToList(), voice, settings, cancel.Token);
+                await Run(streamed ? sentences : sentences.ToList(), voice, settings, cancel.Token, audible, log);
             });
             return _running;
         }
@@ -591,14 +595,14 @@ internal sealed class SpeechPlayer : IDisposable
             _current?.Cancel();
     }
 
-    private async Task Run(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct)
+    private async Task Run(IEnumerable<string> sentences, VoiceChoice voice, TtsSettings settings, CancellationToken ct, Action? audible, Action<string>? log)
     {
         if (ct.IsCancellationRequested || sentences is ICollection<string> { Count: 0 })
             return;
         var format = WaveFormat.CreateIeeeFloatWaveFormat(Tts.Rate, 1);
         var buffer = new BufferedWaveProvider(format) { BufferDuration = TimeSpan.FromSeconds(90), ReadFully = true };
         using var output = _output(settings);
-        output.Init(Played is { } played ? new Tapped(buffer, played) : buffer);
+        output.Init(Played is not null || audible is not null ? new Tapped(buffer, Played, audible) : buffer);
         // the device going away mid-read (unplugged) stops the output with an exception: the read ends with it
         Exception? lost = null;
         using var ended = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -619,10 +623,20 @@ internal sealed class SpeechPlayer : IDisposable
             var volume = (float)settings.Volume;
             var previous = TimeSpan.Zero; // the audio of the sentence added last
             var reader = new VoiceReader(voice, _synthesize, _chatterbox);
-            foreach (var sentence in sentences)
+            var (count, synthesis, audio) = (0, 0.0, 0.0);
+            using var next = sentences.GetEnumerator();
+            for (var waited = System.Diagnostics.Stopwatch.StartNew(); next.MoveNext(); waited.Restart())
             {
+                var sentence = next.Current;
+                var (queued, playing, made) = (waited.ElapsedMilliseconds, buffer.BufferedDuration.TotalSeconds, System.Diagnostics.Stopwatch.StartNew());
                 var noted = reader.Note is not null;
+                AgentOrchestrator.Chatterbox.LastRead = null;
                 var samples = reader.Read(sentence, (float)settings.Speed, ended.Token);
+                var (took, seconds) = (made.Elapsed.TotalSeconds, samples.Length / (double)Tts.Rate);
+                (count, synthesis, audio) = (count + 1, synthesis + took, audio + seconds);
+                // a gap: this sentence took longer to make than what was still playing when it started
+                log?.Invoke($"sentence {count}: {sentence.Length} chars, {(AgentOrchestrator.Chatterbox.LastRead is { } r ? $"{r.Tokens} speech tokens{(r.Capped ? " (capped)" : "")}, " : "")}"
+                    + $"synthesis {took * 1000:0} ms, {seconds:0.0} s of audio, waited {queued} ms for it{(count > 1 ? $", gap {Math.Max(0, took - playing):0.0} s" : "")}");
                 if (!noted && reader.Note is { } note)
                     FellBack?.Invoke(note);
                 for (var i = 0; i < samples.Length; i++)
@@ -635,6 +649,8 @@ internal sealed class SpeechPlayer : IDisposable
                 while (buffer.BufferedDuration > previous)
                     await Task.Delay(20, ended.Token);
             }
+            if (count > 0)
+                log?.Invoke($"synthesis {synthesis:0.0} s for {audio:0.0} s of audio (real-time factor {synthesis / Math.Max(audio, 0.01):0.00})");
             // silence past the device's latency (200 ms), so the last word has left the device when the buffer runs empty
             await Feed(buffer, new float[Tts.Rate * 3 / 10], ended.Token);
             while (buffer.BufferedBytes > 0)
@@ -664,14 +680,20 @@ internal sealed class SpeechPlayer : IDisposable
         }
     }
 
-    // What the output reads, handed to Played as it goes.
-    private sealed class Tapped(IWaveProvider source, Action<float[]> played) : IWaveProvider
+    // What the output reads, handed to Played as it goes; audible once, at the first sound it reads.
+    private sealed class Tapped(IWaveProvider source, Action<float[]>? played, Action? audible) : IWaveProvider
     {
         public WaveFormat WaveFormat => source.WaveFormat;
         public int Read(byte[] buffer, int offset, int count)
         {
             var read = source.Read(buffer, offset, count);
-            played(MemoryMarshal.Cast<byte, float>(buffer.AsSpan(offset, read)).ToArray());
+            var samples = MemoryMarshal.Cast<byte, float>(buffer.AsSpan(offset, read));
+            if (audible is not null && samples.IndexOfAnyExcept(0f) >= 0)
+            {
+                audible();
+                audible = null;
+            }
+            played?.Invoke(samples.ToArray());
             return read;
         }
     }

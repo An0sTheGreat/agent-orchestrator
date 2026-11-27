@@ -1173,7 +1173,7 @@ public partial class MainWindow
         _activeRole = null;
         _chatClosed.Clear();
         _callLive.Clear();
-        if (!_settings.ChatKeepLoaded)
+        if (!_settings.ChatKeepLoaded && !InCall) // a call keeps its model between turns (EndCall stops it)
             StopLocalServer();
         SetChatBusy(false);
         if (c.Input.IsVisible)

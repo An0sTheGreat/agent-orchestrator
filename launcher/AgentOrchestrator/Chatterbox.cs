@@ -250,6 +250,12 @@ internal static class Chatterbox
     private static bool Held => _hold is var h && Holds(h.Loading, h.Until, DateTime.UtcNow);
     private const string HeldReason = "Chatterbox waits for the chat model to load";
 
+    // A sentence's speech-token budget: ~25 tokens a second of audio at ~15 characters a second, three times over, at least 100.
+    // A sentence that misses its stop token ends there (its tail trimmed), not 40 s later.
+    internal static int SpeechTokenCap(string text) => Math.Clamp(text.Length * 25 * 3 / 15, 100, MaxTokens);
+    // The last read on this thread: speech tokens made and whether the cap ended it (SpeechPlayer's per-sentence log).
+    [ThreadStatic] internal static (int Tokens, bool Capped)? LastRead;
+
     private static int _tokens; // speech tokens made and the language model's time on them (--chatterbox-say)
     private static double _lmSeconds;
 
@@ -531,7 +537,8 @@ internal static class Chatterbox
             long seq = 0;
             try
             {
-                for (var step = 0; step < MaxTokens; step++)
+                var cap = SpeechTokenCap(text);
+                for (var step = 0; step < cap; step++)
                 {
                     using var idsValue = OrtValue.CreateTensorValueFromMemory(ids, [1, ids.Length]);
                     var embedded = Run(_embed, [("input_ids", idsValue)], ct)[0];
@@ -568,6 +575,7 @@ internal static class Chatterbox
             }
             finally { foreach (var v in past.Values) v.Dispose(); }
             (_tokens, _lmSeconds) = (_tokens + generated.Count - 1, _lmSeconds + clock.Elapsed.TotalSeconds);
+            LastRead = (generated.Count - 1, generated[^1] != StopSpeech);
             var prompt = cond.Values[1].GetTensorDataAsSpan<long>().ToArray();
             var speech = prompt.Concat(generated.Skip(1).Where(t => t != StopSpeech)).Concat([Silence, Silence, Silence]).ToArray();
             using var tokens = OrtValue.CreateTensorValueFromMemory(speech, [1, speech.Length]);
@@ -816,6 +824,9 @@ internal static class Chatterbox
             if (!ok)
                 throw new InvalidOperationException("Chatterbox self-test failed: " + what);
         }
+        // the speech-token cap: at least 100, ~5 tokens a character (77 characters: 385), never past MaxTokens
+        Check(SpeechTokenCap("Hi.") == 100 && SpeechTokenCap(new string('a', 77)) == 385 && SpeechTokenCap(new string('a', 5000)) == MaxTokens,
+            $"the speech-token cap: {SpeechTokenCap("Hi.")}, {SpeechTokenCap(new string('a', 77))}, {SpeechTokenCap(new string('a', 5000))}");
         // a tiny GPT-2 tokenizer: byte-level (space = Ġ), merges by rank, tags whole, two end tokens appended
         var tokenizer = new Gpt2Tokenizer("""
             {"added_tokens":[{"id":9,"content":"<|endoftext|>"},{"id":10,"content":"[laugh]"}],

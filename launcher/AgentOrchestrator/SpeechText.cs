@@ -221,7 +221,7 @@ internal static partial class SpeechText
                 while (end + 1 < line.Length && line[end + 1] is '.' or '!' or '?' or '…' or '"' or '\'' or ')' or '”' or '’')
                     end++;
                 var spaceAfter = end + 1 == line.Length || char.IsWhiteSpace(line[end + 1]);
-                var word = line[(line.LastIndexOf(' ', i) + 1)..i];
+                var word = line[(line.LastIndexOf(' ', i) + 1)..i].TrimStart('(', '[', '"', '\'', '“', '‘'); // "(e.g. this" is not a sentence end
                 if (spaceAfter && !(line[i] == '.' && (Abbreviations.Contains(word) || word is [var c] && char.IsLetter(c))))
                 {
                     Add(line[start..(end + 1)]);

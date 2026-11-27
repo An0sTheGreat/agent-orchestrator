@@ -28,11 +28,13 @@ public partial class MainWindow
     // --ui-smoke: replaces RunTurn for a phrase (no llama-server); it runs the turn through StartChatTurn and FinishChatTurn.
     private Action<string>? _callTurnStub;
     // A call in a Chatterbox voice makes its chat model and the voice ready together (PrepareCallAsync): the first phrase waits
-    // for the model, then for the warm-up at most CallWarmWait. _callKeepsVoice: the voice fits beside the model, so the call's
-    // turns keep the engine (FreeGpuForChat); _callStandIn: it does not, so the call reads with the Kokoro stand-in throughout.
+    // for the model, then for the warm-up (the two never share the GPU at once). _callKeepsVoice: the voice fits beside the model,
+    // so the call's turns keep the engine (FreeGpuForChat); _callStandIn: it does not, so the call reads with the Kokoro stand-in.
+    // The call's model stays loaded between its turns whatever Keep models loaded says (EndCall stops it when that is off).
     private Task _callModelReady = Task.CompletedTask, _callVoiceReady = Task.CompletedTask;
     private bool _callKeepsVoice, _callStandIn, _callPreparing;
-    internal static TimeSpan CallWarmWait = TimeSpan.FromSeconds(40);
+    private System.Diagnostics.Stopwatch _callTurnClock = new();
+    private TimeSpan? _callFirstToken;
     // --ui-smoke: the model load, the warm-up, the free GPU memory and the model's estimate (bytes, name, context) the call sees
     private Func<Task>? _callLoadStub, _callWarmStub;
     private Func<long?>? _callFreeStub;
@@ -281,12 +283,15 @@ public partial class MainWindow
         Forget(CallWhenReady(phrase));
     }
 
-    // A phrase waits for the call's model, then for its voice's warm-up at most CallWarmWait (then a sentence the voice cannot
-    // read yet falls back with its note); ended or interrupted meanwhile, it is not sent.
+    // A phrase waits for the call's model, then for its voice's warm-up ("Getting the voice ready…"), and a voice that left the
+    // GPU since (idle, room) is warmed again first: Chatterbox never loads while the model generates, as they contend on the
+    // GPU. Ended or interrupted meanwhile, it is not sent.
     private async Task CallWhenReady(string phrase)
     {
         await _callModelReady;
-        await Task.WhenAny(_callVoiceReady, Task.Delay(CallWarmWait));
+        await _callVoiceReady;
+        if (_callNow == CallState.Thinking && _callKeepsVoice && CallVoice().Chatterbox is not null)
+            await (_callWarmStub?.Invoke() ?? Chatterbox.WarmUpAsync()); // nothing when it is loaded
         if (_callNow != CallState.Thinking)
             return;
         if (_callTurnStub is { } stub)
@@ -312,6 +317,7 @@ public partial class MainWindow
         var sentences = _callSentences = new BlockingCollection<string>();
         var cancel = _callSpeech = new CancellationTokenSource();
         _callQueued = 0;
+        (_callTurnClock, _callFirstToken) = (System.Diagnostics.Stopwatch.StartNew(), null);
         Forget(CallSpeak(sentences, cancel));
     }
 
@@ -320,11 +326,19 @@ public partial class MainWindow
         var chosen = CallVoice();
         var voice = _callStandIn ? chosen.Kokoro : chosen; // a voice that does not fit: the stand-in, without a try each sentence
         string? fell = null;
+        TimeSpan? firstAudio = null;
         void OnFell(string note) => fell = note;
+        // Speaking once the output reads the first sound, not when a sentence is handed over (the voice may still be making it)
+        void Audible() => Dispatcher.BeginInvoke(() =>
+        {
+            firstAudio = _callTurnClock.Elapsed;
+            if (_callSentences == sentences)
+                CallFire(CallEvent.Speak);
+        });
         SpeechPlayer.FellBack += OnFell;
         try
         {
-            await Player.SpeakStream(sentences.GetConsumingEnumerable(cancel.Token), voice, _settings.Tts, cancel.Token);
+            await Player.SpeakStream(sentences.GetConsumingEnumerable(cancel.Token), voice, _settings.Tts, cancel.Token, Audible, line => Log("Call: " + line));
         }
         catch (OperationCanceledException) { }
         catch (Exception exception)
@@ -334,8 +348,9 @@ public partial class MainWindow
         }
         finally { SpeechPlayer.FellBack -= OnFell; }
         // which engine and voice read it (each reply tries Chatterbox again: a fallback lasts one reply)
-        Log(voice.Chatterbox is { } cb && fell is null ? $"Call: the reply was read by Chatterbox in {cb.Name}"
-            : $"Call: the reply was read by Kokoro in {voice.Kokoro.Name}{(_callStandIn ? $" (the stand-in for {chosen.Chatterbox?.Name})" : "")}{(fell is null ? "" : " — " + fell)}");
+        Log((voice.Chatterbox is { } cb && fell is null ? $"Call: the reply was read by Chatterbox in {cb.Name}"
+            : $"Call: the reply was read by Kokoro in {voice.Kokoro.Name}{(_callStandIn ? $" (the stand-in for {chosen.Chatterbox?.Name})" : "")}{(fell is null ? "" : " — " + fell)}")
+            + (firstAudio is { } heard ? $"; first audio {heard.TotalSeconds:0.0} s after the turn started" : "; no audio"));
         if (_callSentences == sentences) // not interrupted, ended or replaced by a newer turn meanwhile
         {
             _callSentences = null;
@@ -344,13 +359,20 @@ public partial class MainWindow
     }
 
     // The reply so far (AppendChatDelta): each sentence goes to the player once the next one has started.
-    private void CallDelta(string answer) => CallHandOver(answer, final: false);
+    private void CallDelta(string answer)
+    {
+        if (_turn == _chat && _callSentences is not null)
+            _callFirstToken ??= _callTurnClock.Elapsed;
+        CallHandOver(answer, final: false);
+    }
 
     // FinishChatTurn: the rest of the reply (null: none, failed or stopped) and the end of the sentences.
     private void CallTurnFinished(Conversation c, string? answer)
     {
         if (c != _chat || _callSentences is not { } sentences)
             return;
+        Log($"Call: the reply's text took {_callTurnClock.Elapsed.TotalSeconds:0.0} s, first token after {(_callFirstToken is { } first ? $"{first.TotalSeconds:0.0} s" : "none")}"
+            + (_reply is { } r && (r.Pending ?? r.Last) is { } stats ? $" ({stats})" : ""));
         if (answer is not null)
             CallHandOver(answer, final: true);
         sentences.CompleteAdding();
@@ -363,10 +385,7 @@ public partial class MainWindow
             return;
         var all = SpeechText.Sentences(SpeechText.ForSpeech(answer, _settings.Tts));
         for (var ready = final ? all.Count : all.Count - 1; _callQueued < ready; _callQueued++)
-        {
             sentences.Add(all[_callQueued]);
-            CallFire(CallEvent.Speak);
-        }
     }
 
     // Speech stops (and a reply still streaming is not spoken) and listening starts.
@@ -408,6 +427,8 @@ public partial class MainWindow
         (_callMuted, _callKeepsVoice, _callStandIn, _callPreparing) = (false, false, false, false);
         (_callModelReady, _callVoiceReady) = (Task.CompletedTask, Task.CompletedTask);
         CallFire(CallEvent.End);
+        if (!_settings.ChatKeepLoaded && !ChatModelsInUse) // kept loaded through the call; a turn still running stops it when it finishes
+            StopLocalServer();
         if (_chatConv is { } saved && saved.Title == _callTitle)
             Toast($"Call saved to {_callTitle}", click: () => OpenChatConversation(saved.Id));
         else
@@ -480,13 +501,21 @@ public partial class MainWindow
         var levels = new HashSet<bool>();
         void OnState(CallState s) => states.Add(s);
         void OnLevels(float[] b, bool speaking) { if (b.Length == 24) levels.Add(speaking); }
+        var (loud, playedAtTwo, stateAtOne, generating, overlap, stops) = (0, -1, CallState.Idle, false, false, 0);
         float[] Stub(string text, VoiceChoice voice, float speed, CancellationToken ct)
         {
             lock (spoken)
                 spoken.Add(text);
+            if (text == "One fine day.")
+            {
+                Thread.Sleep(200); // the voice still making the first sentence: no sound yet, so not Speaking
+                stateAtOne = _callNow;
+            }
+            if (text == "Two birds sang.") // made while the first sentence plays (2 s of it, ~100 ms at the fake output's pace)
+                playedAtTwo = Volatile.Read(ref loud);
             if (text.StartsWith("Slow"))
                 ct.WaitHandle.WaitOne(10_000); // speaking until interrupted
-            return Enumerable.Repeat(0.3f, Tts.Rate / 2).ToArray();
+            return Enumerable.Repeat(0.3f, text == "One fine day." ? Tts.Rate * 2 : Tts.Rate / 2).ToArray();
         }
         string[] Spoken() { lock (spoken) return spoken.ToArray(); }
         async Task<bool> Until(Func<bool> done)
@@ -514,6 +543,7 @@ public partial class MainWindow
         _speechTest = true;
         _callTurnStub = text => // as CallTurn: RunTurn on the call's worker (VOICE), which frees the GPU for the chat model first
         {
+            generating = true;
             StartTurn(_chat, text, CallCard()!.Role);
             FreeGpuForChat();
             foreach (var word in reply.Split(' '))
@@ -521,8 +551,12 @@ public partial class MainWindow
             DrainLines();
             _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"voice","text":"{{reply}}"}"""));
             DrainLines();
+            generating = false;
             FinishChatTurn(0, false, null);
         };
+        var keepLoaded = _settings.ChatKeepLoaded;
+        _settings.ChatKeepLoaded = false; // a call keeps its model between turns all the same, and stops it at its end
+        _stopServerStub = () => stops++;
         CallStateChanged += OnState;
         CallLevels += OnLevels;
         try
@@ -532,6 +566,8 @@ public partial class MainWindow
             StartCall();
             if (!InCall || CallNow != CallState.Listening || feed is null || _chatHistory.Count != 0)
                 return Fail($"start: {CallNow}, feed {feed is not null}, {_chatHistory.Count} messages");
+            var levelsTap = _speechPlayer.Played;
+            _speechPlayer.Played = s => { Interlocked.Add(ref loud, s.Count(f => f != 0)); levelsTap?.Invoke(s); };
             reply = "One fine day. Two birds sang. Three?";
             await Task.Run(Phrase);
             if (!await Until(() => Spoken().Length >= 3 && CallNow == CallState.Listening))
@@ -539,8 +575,11 @@ public partial class MainWindow
             if (Spoken() is not ["One fine day.", "Two birds sang.", "Three?"] || _chatHistory is not [{ Role: "user", Content: "Hello there" }, { Role: "assistant" }]
                 || _chatConv?.Title?.StartsWith("Call · ") != true || !states.Contains(CallState.Thinking) || !states.Contains(CallState.Speaking) || !levels.SetEquals([true, false]))
                 return Fail($"spoken [{string.Join("|", Spoken())}], {_chatHistory.Count} messages, title {_chatConv?.Title}, states {string.Join(",", states)}, levels {string.Join(",", levels)}");
+            if (stateAtOne != CallState.Thinking || playedAtTwo is < 0 or >= Tts.Rate * 2 || stops != 0)
+                return Fail($"while the first sentence was made the state was {stateAtOne}, not Thinking; or the second was made after the first had played "
+                    + $"({playedAtTwo} of {Tts.Rate * 2} samples); or the model was stopped between call turns ({stops} stops)");
             // Interrupt while speaking: the rest is not spoken, listening at once
-            reply = "Slow sentence here. Never said.";
+            reply = "Quick one. Slow sentence here. Never said.";
             await Task.Run(Phrase);
             if (!await Until(() => CallNow == CallState.Speaking && Spoken().Contains("Slow sentence here.")))
                 return Fail($"the second reply did not start speaking: {CallNow}");
@@ -557,7 +596,11 @@ public partial class MainWindow
                 return Fail($"muted: {CallNow}, {_chatHistory.Count - count} messages taken");
             ToggleCallMute();
             var id = _chatConv!.Id;
+            if (stops != 0)
+                return Fail($"the model was stopped during the call ({stops} stops)");
             EndCall();
+            if (stops != 1)
+                return Fail($"Keep models loaded off: the call's end stopped the model {stops} times, not once");
             var kept = _store.Get(id);
             if (InCall || CallNow != CallState.Idle || _callQueue is not null || _callMic is not null || _speechPlayer.Played is not null
                 || kept?.Messages.Count != 4 || kept.Messages.Count(m => m.Role == "user") != 2 || ToastsOf($"Call saved to {kept.Title}").Count == 0)
@@ -572,10 +615,10 @@ public partial class MainWindow
                 lock (spoken)
                     spoken.Add("cb:" + text);
                 return new float[Tts.Rate / 2];
-            }, () => { }));
+            }, () => overlap |= generating)); // a warm-up while the model generates: they would contend on the GPU
             _modelsLoadedStub = () => modelLoaded;
             _callLoadStub = async () => { lock (order) order.Add("load"); await Task.Delay(50); modelLoaded = true; };
-            _callWarmStub = () => { lock (order) order.Add("warm"); return Task.CompletedTask; };
+            _callWarmStub = () => { lock (order) order.Add("warm"); overlap |= generating; return Task.CompletedTask; };
             _callFreeStub = () => free;
             _callSizeStub = () => (4L << 30, "Voice-4B", 8192);
             string Order() { lock (order) return string.Join(",", order); }
@@ -605,6 +648,8 @@ public partial class MainWindow
             cbWhy = null;
             if (await Reply("Back again.", "cb:Back again.") is { } backWhy)
                 return Fail("the fallback stuck to the next reply: " + backWhy);
+            if (overlap)
+                return Fail("Chatterbox was warmed while the call's model generated");
             EndCall();
             _freeGpuChatterbox = null;
 
@@ -640,6 +685,7 @@ public partial class MainWindow
         finally
         {
             EndCall();
+            (_settings.ChatKeepLoaded, _stopServerStub) = (keepLoaded, null);
             _freeGpuChatterbox = null;
             _settings.Tts.Voice = savedVoice;
             if (follows is { } f)

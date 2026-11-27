@@ -67,8 +67,14 @@ public partial class MainWindow
     }
 
     // Kills every server the engine recorded (only pids that are still a llama-server).
+    private Action? _stopServerStub; // --ui-smoke (CallSmoke): counts the stops instead
     private void StopLocalServer()
     {
+        if (_stopServerStub is { } stub)
+        {
+            stub();
+            return;
+        }
         _llamaPorts.Clear();
         if (LauncherLogic.StopLlamaServer(_llamaStateFile))
             Log("Stopped the local llama-server.");

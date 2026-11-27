@@ -59,6 +59,7 @@ public partial class MainWindow
         CallVisual.State = state;
         CallStateText.Text = state switch
         {
+            CallState.Thinking when _callPreparing => "Getting the voice ready…", // the phrase waits for the warm-up (CallWhenReady)
             CallState.Thinking => "Thinking…",
             CallState.Speaking => "Speaking",
             CallState.Paused => "Paused",
@@ -170,7 +171,7 @@ public partial class MainWindow
                 return Fail($"in a call: panel {CallPanel.Visibility} {CallPanel.ActualHeight:0}/{CallPanel.Opacity:0.00}, visualizer {CallVisual.ActualWidth:0} px, "
                     + $"{CallVisual.RenderCount - frames} frames, state \"{CallStateText.Text}\", tag {CallButton.Tag}");
             // a reply: Thinking, then Speaking; Space interrupts it
-            reply = "Slow sentence here. Never said.";
+            reply = "Quick one. Slow sentence here. Never said.";
             await Task.Run(Phrase);
             if (!await Until(() => CallNow == CallState.Speaking && CallStateText.Text == "Speaking" && CallVisual.State == CallState.Speaking))
                 return Fail($"speaking: {CallNow}, \"{CallStateText.Text}\"");
