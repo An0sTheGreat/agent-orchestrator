@@ -2241,10 +2241,10 @@ public partial class MainWindow : Window
                 CodeEmptyTemplate.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
                 if (File.ReadAllText(mdTarget) != File.ReadAllText(Path.Combine(_workflowRoot!, "PROJECT.md")) || opened != mdTarget || EmptyState() != withMd)
                     return Fail();
-                // The Agent Orchestrator folder: only Read only as an extra folder, and never a Code project (no process starts).
+                // The Agent Orchestrator folder: added without asking, but only Read only, and never a Code project (no process starts).
                 (pick, answer) = (_workflowRoot!, "write");
                 AddFolder();
-                if (CodeExtraFolders.Count != 1)
+                if (CodeExtraFolders.Count != 2 || CodeExtraFolders[1].Access != "read")
                     return Fail();
                 ProjectPath = _workflowRoot!;
                 CodeInput.Text = "Edit the templates";
