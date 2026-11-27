@@ -70,7 +70,7 @@ If you've used Claude, you'll feel at home: conversations in a sidebar, a clean 
 - Windows 10 or 11
 - [Git](https://git-scm.com/download/win) with [Git LFS](https://git-lfs.com) (the app's `.exe` is stored with LFS)
 - [Python 3.11 or newer](https://www.python.org/downloads/) on your `PATH` (the workflow engine is a Python script)
-- llama.cpp to run the models, which the app downloads for you under **Settings > Models** (CUDA, Vulkan or CPU, picked for your hardware)
+- llama.cpp to run the models, which the app downloads for you under **Settings > System** (CUDA, Vulkan or CPU, picked for your hardware)
 - A GPU helps a lot. The default setup uses small 3B-4B models that fit in a few GB of video memory.
 
 ### Steps

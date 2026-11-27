@@ -213,7 +213,7 @@ API keys never leave the PC (the API only says whether one is set). Phone action
 
 ## Local API
 
-Other apps on this PC can use AO's workers and image models through an OpenAI-compatible API, the way they would use OpenRouter, but nothing leaves the PC. Switch it on under **Settings > Models > Local API for my apps**. The section shows the address, the key (**Copy**), and **New key**, which signs your apps out.
+Other apps on this PC can use AO's workers and image models through an OpenAI-compatible API, the way they would use OpenRouter, but nothing leaves the PC. Switch it on under **Settings > Connections > Local API for my apps**. The section shows the address, the key (**Copy**), and **New key**, which signs your apps out.
 
 - Base URL: `http://127.0.0.1:8830/v1` (the port is `LocalApiPort` in settings.json). It answers this PC only: another address, or a `Host` other than `127.0.0.1`/`localhost` with that port, gets 403.
 - Key: `Authorization: Bearer <key>`; a missing or wrong key gets 401. The key is stored encrypted for your Windows account and is not put in the environment of the processes AO starts.
