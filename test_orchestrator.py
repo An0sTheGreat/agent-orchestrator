@@ -6507,8 +6507,11 @@ class LlamaCppTests(unittest.TestCase):
 
     def test_speculative_decoding_choice_reaches_the_server(self):
         mtp, plain = self.tmp / "mtp.gguf", self.tmp / "plain.gguf"
-        MultiModelTests.gguf(mtp, {"general.architecture": "qwen35", "qwen35.nextn_predict_layers": 1})
+        MultiModelTests.gguf(mtp, {"general.architecture": "qwen35", "qwen35.nextn_predict_layers": 1}, tensors=["blk.32.nextn.eh_proj.weight"])
         MultiModelTests.gguf(plain, {"general.architecture": "qwen35"})
+        # the header says MTP but the weights were dropped (a modified model): llama-server would abort loading it
+        stripped = self.tmp / "stripped.gguf"
+        MultiModelTests.gguf(stripped, {"general.architecture": "qwen35", "qwen35.nextn_predict_layers": 1}, tensors=["blk.0.attn_q.weight"])
 
         def spec(model, **auto):
             args = orchestrator.llama_args(model, {"model_path": self.PATH, **auto}, 8899)
@@ -6516,6 +6519,8 @@ class LlamaCppTests(unittest.TestCase):
 
         self.assertEqual(spec(mtp)[0], ["--spec-type", "draft-mtp"])  # auto: the model's own MTP layers
         self.assertIsNone(spec(plain)[0])
+        self.assertIsNone(spec(stripped)[0])  # auto: no MTP for a header without the weights
+        self.assertIsNone(spec(stripped, speculative_type="mtp")[0])
         self.assertEqual(spec(mtp, speculative_type="off")[0], ["--spec-type", "none"])
         self.assertEqual(spec(mtp, speculative_type="mtp+ngram")[0], ["--spec-type", "draft-mtp,ngram-simple"])
         # MTP asked of a model without MTP layers: llama-server would exit while loading, so it is left out
@@ -6557,7 +6562,7 @@ class LlamaCppTests(unittest.TestCase):
         folder = self.tmp / "qwen"
         folder.mkdir()
         model = folder / "Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
-        MultiModelTests.gguf(model, {"general.architecture": "qwen35", "general.type": "model", "qwen35.nextn_predict_layers": 1})
+        MultiModelTests.gguf(model, {"general.architecture": "qwen35", "general.type": "model", "qwen35.nextn_predict_layers": 1}, tensors=["blk.64.nextn.eh_proj.weight"])
         head = folder / "mtp-gemma-4-E4B-it-F16.gguf"
         MultiModelTests.gguf(head, {"general.architecture": "gemma4-assistant"})
         (folder / "mtp-unreadable.gguf").write_bytes(b"")
@@ -7007,7 +7012,7 @@ class MultiModelTests(unittest.TestCase):
             self.assertTrue(run.call_args.kwargs["creationflags"] & subprocess.CREATE_NO_WINDOW)
 
     @staticmethod
-    def gguf(path, meta, pad=0):
+    def gguf(path, meta, pad=0, tensors=()):
         def string(text):
             return struct.pack("<Q", len(text)) + text.encode()
         body = b""
@@ -7021,7 +7026,8 @@ class MultiModelTests(unittest.TestCase):
                 body += struct.pack("<I", 8) + string(value)
             else:
                 body += struct.pack("<II", 4, value)  # uint32
-        path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, 0, len(meta)) + body + b"\0" * pad)
+        infos = b"".join(string(n) + struct.pack("<IQIQ", 1, 1, 0, 0) for n in tensors)  # name, 1 dim of 1, f32, offset 0
+        path.write_bytes(b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(meta)) + body + infos + b"\0" * pad)
         return path.stat().st_size
 
     @staticmethod

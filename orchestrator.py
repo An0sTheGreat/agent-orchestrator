@@ -1232,8 +1232,9 @@ def gpu_free_mib() -> int | None:
 GGUF_SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 
 
-def gguf_metadata(path: Path) -> dict[str, Any]:
-    """The key/value header of a GGUF (v2+) file; raises ValueError, KeyError or struct.error on anything else."""
+def gguf_metadata(path: Path, tensors: list[str] | None = None) -> dict[str, Any]:
+    """The key/value header of a GGUF (v2+) file; raises ValueError, KeyError or struct.error on anything else. With a list
+    for `tensors`, the tensor names that follow the header are read into it too."""
     with open(path, "rb") as f:
         def read(fmt: str) -> Any:
             return struct.unpack("<" + fmt, f.read(struct.calcsize(fmt)))[0]
@@ -1248,11 +1249,15 @@ def gguf_metadata(path: Path) -> dict[str, Any]:
 
         if f.read(4) != b"GGUF" or read("I") < 2:
             raise ValueError(f"{path.name} is not a GGUF v2+ file")
-        read("Q")  # tensor count
+        count = read("Q")  # tensor count
         meta = {}
         for _ in range(read("Q")):
             key = value(8)
             meta[key] = value(read("I"))
+        if tensors is not None:
+            for _ in range(count):  # name, n_dims, dims, type, offset
+                tensors.append(value(8))
+                f.read(8 * read("I") + 4 + 8)
         return meta
 
 
@@ -1406,10 +1411,14 @@ SPEC_TYPES = {"mtp": "draft-mtp", "dspark": "draft-dspark", "dflash": "draft-dfl
 
 
 def builtin_mtp(model_file: Path) -> bool | None:
-    """Whether the GGUF carries its own MTP layers (<arch>.nextn_predict_layers > 0); None when its header cannot be read."""
+    """Whether the GGUF carries its own MTP layers: <arch>.nextn_predict_layers > 0 AND their weights are in the file (a
+    modified model can keep the header's count but drop the MTP tensors; llama-server then aborts while loading with
+    "MTP block missing nextn.eh_proj"). None when the file cannot be read."""
     try:
-        meta = gguf_metadata(model_file)
-        return int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0
+        names: list[str] = []
+        meta = gguf_metadata(model_file, names)
+        return (int(meta.get(f"{meta['general.architecture']}.nextn_predict_layers") or 0) > 0
+                and any(".nextn.eh_proj" in n for n in names))
     except (OSError, ValueError, KeyError, TypeError, struct.error):
         return None
 
