@@ -9,7 +9,7 @@ using System.Windows;
 
 namespace AgentOrchestrator;
 
-// Settings > Models > Local API for my apps (LocalApi.cs): an OpenAI-compatible server on 127.0.0.1:AppSettings.LocalApiPort for
+// Settings > Connections > Local API for my apps (LocalApi.cs): an OpenAI-compatible server on 127.0.0.1:AppSettings.LocalApiPort for
 // this PC's own programs, behind a bearer key (ApiKeys under LocalApi.KeyName: read from the store, never left in the environment).
 public partial class MainWindow
 {

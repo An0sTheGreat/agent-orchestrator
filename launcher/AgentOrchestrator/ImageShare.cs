@@ -190,7 +190,7 @@ internal static class ImageShare
     public static string ErrorText(int status, string body)
     {
         if (status == 401)
-            return "The primary PC refused this PC's key: connect again with a new connection code (Settings > Models)";
+            return "The primary PC refused this PC's key: connect again with a new connection code (Settings > Connections)";
         if (status == 409)
             return "The primary PC is busy generating another picture: try again when it is done";
         string? message = null;
@@ -201,7 +201,7 @@ internal static class ImageShare
 
     // The other PC's calls to baseUrl (ModelShare.ImagesUrl). A refusal throws InvalidOperationException(ErrorText), a connection
     // or DNS failure InvalidOperationException(CannotReach).
-    public const string CannotReach = "Cannot reach the primary PC: is sharing on there? Its address changes each time sharing starts; paste the new code under Settings > Models.";
+    public const string CannotReach = "Cannot reach the primary PC: is sharing on there? Its address changes each time sharing starts; paste the new code under Settings > Connections.";
 
     // The primary PC unloads its shared chat model (the other PC's Unload models button).
     public static async Task UnloadAsync(HttpClient http, string baseUrl, string key, CancellationToken ct) =>

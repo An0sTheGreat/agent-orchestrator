@@ -1859,6 +1859,13 @@
                             <TextBlock Text="General" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="System" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="System">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE770;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="System" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Appearance" Height="38" Checked="SettingsTab_Checked"
                                  AutomationProperties.Name="Appearance">
                         <StackPanel Orientation="Horizontal">
@@ -1878,6 +1885,13 @@
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="&#xE943;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
                             <TextBlock Text="Agents" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </RadioButton>
+                    <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Connections" Height="38" Checked="SettingsTab_Checked"
+                                 AutomationProperties.Name="Connections">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="&#xE71B;" Style="{StaticResource RailGlyph}" FontSize="15" Width="20" Margin="0,0,10,0" />
+                            <TextBlock Text="Connections" VerticalAlignment="Center" />
                         </StackPanel>
                     </RadioButton>
                     <RadioButton Style="{StaticResource NavToggle}" GroupName="SettingsTab" Tag="Voice" Height="38" Checked="SettingsTab_Checked"
@@ -1965,25 +1979,55 @@
                         </DockPanel>
                         <TextBlock Text="Your profile's lifetime tokens, peak day, longest task and streaks. They are kept when chats are deleted, until you reset them here."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <!-- The phone app over Tailscale (MainWindow.WebApp.cs, WebServer.cs): tailscale serve publishes it on the tailnet -->
-                        <TextBlock Text="Phone app" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                    </StackPanel>
+                    <!-- System: the model runtime, the Code engine and the command sandbox -->
+                    <StackPanel Tag="System" Visibility="Collapsed">
+                        <TextBlock Text="System" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <TextBlock Text="Local models run on llama.cpp's llama-server, which the app starts and stops itself." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <DockPanel Margin="0,14,0,0">
-                            <ToggleButton x:Name="WebAppToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="WebAppToggle_Click" VerticalAlignment="Center"
-                                          AutomationProperties.Name="Phone app over Tailscale" />
-                            <TextBlock Text="Phone app over Tailscale" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
+                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
-                        <TextBlock x:Name="WebAppStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
-                        <TextBlock x:Name="WebAppFixText" Visibility="Collapsed" Margin="0,4,0,0"><Hyperlink x:Name="WebAppFixLink" Click="WebAppFixLink_Click">Enable Serve for your tailnet</Hyperlink></TextBlock>
-                        <StackPanel x:Name="WebAppOnlinePanel" Visibility="Collapsed" Margin="0,12,0,0">
-                        <DockPanel>
-                        <Button x:Name="WebAppCopyButton" DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="WebAppCopy_Click" />
-                        <TextBox x:Name="WebAppAddressBox" IsReadOnly="True" AutomationProperties.Name="Phone app address" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <TextBlock Text="Models folders" FontWeight="SemiBold" Margin="0,14,0,6" />
+                        <StackPanel x:Name="ModelsFoldersList" Tag="ModelsFoldersList" />
+                        <Button Content="Add models folder…" Tag="ModelsFolderAdd" HorizontalAlignment="Left" Padding="11,6" Margin="0,4,0,0" Click="ModelsFolder_Click" />
+                        <TextBlock Text="GGUF files are found in the Hugging Face cache (where Hugging Face downloads go) and in these folders, with their subfolders." TextWrapping="Wrap"
+                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
+                        <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <RadioButton x:Name="EngineBuiltinRadio" GroupName="CodeEngine" Content="Built-in" Margin="0,14,0,8" Checked="CodeEngine_Checked" />
+                        <RadioButton x:Name="EnginePiRadio" GroupName="CodeEngine" Content="Pi (pi.dev agent harness)" Checked="CodeEngine_Checked" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="PiInstallButton" Content="Install Pi" Padding="11,6" VerticalAlignment="Center" Click="PiInstall_Click" />
+                        <TextBlock x:Name="PiStatus" Text="Pi not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
                         </DockPanel>
-                        <Image x:Name="WebAppQrImage" Width="180" Height="180" HorizontalAlignment="Left" Margin="0,12,0,0" RenderOptions.BitmapScalingMode="NearestNeighbor"
-                               AutomationProperties.Name="QR code of the phone app address" />
-                        </StackPanel>
-                        <TextBlock Text="Only your own devices signed in to your Tailscale account can open it; no password needed."
+                        <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
+                        <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="FullAccessToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="FullAccess_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Full access: commands run outside the sandbox" />
+                            <TextBlock Text="Full access: commands run outside the sandbox" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="Off the sandbox: commands run as you, with your rights, anywhere on this PC and with the network, and the model's file tools read and write files on every drive except Windows\System32, in Code and in normal chats. api_key.txt, .git folders and Agent Orchestrator's own folder stay off limits, and folders you added as read-only stay read-only. The permissions button in the Code composer still decides when they ask: Always Ask asks before every command, Allow Safe and Allow All run them without asking. The Reviewer's read-only commands stay in the sandbox."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Commands may use the network without asking" />
+                            <TextBlock Text="Commands may use the network without asking" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
+                        <Button x:Name="SandboxSetupButton" Content="Set up sandbox access…" Padding="11,6" VerticalAlignment="Top" Click="SandboxSetup_Click" />
+                        <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Appearance" Visibility="Collapsed">
@@ -2045,21 +2089,7 @@
                     </StackPanel>
                     <StackPanel Tag="Models" Visibility="Collapsed">
                         <TextBlock Text="Models" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
-                        <TextBlock Text="Model runtime" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
-                        <TextBlock Text="Local models run on llama.cpp's llama-server, which the app starts and stops itself." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="LlamaDownloadButton" Content="Download llama-server" Padding="11,6" VerticalAlignment="Center" Click="LlamaDownload_Click" />
-                        <TextBlock x:Name="LlamaStatus" Text="llama-server not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                        </DockPanel>
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <TextBlock Text="Models folders" FontWeight="SemiBold" Margin="0,14,0,6" />
-                        <StackPanel x:Name="ModelsFoldersList" Tag="ModelsFoldersList" />
-                        <Button Content="Add models folder…" Tag="ModelsFolderAdd" HorizontalAlignment="Left" Padding="11,6" Margin="0,4,0,0" Click="ModelsFolder_Click" />
-                        <TextBlock Text="GGUF files are found in the Hugging Face cache (where Hugging Face downloads go) and in these folders, with their subfolders." TextWrapping="Wrap"
-                        Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
+                        <TextBlock Text="Loading" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
                         <DockPanel Margin="0,14,0,0">
                         <ToggleButton x:Name="ChatKeepToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" IsChecked="True" Click="ChatKeep_Click" VerticalAlignment="Center"
                         AutomationProperties.Name="Keep models loaded" />
@@ -2079,6 +2109,40 @@
                         <RadioButton GroupName="MultiModel" Tag="always" Content="Load anyway" Checked="MultiModel_Checked" />
                         <TextBlock Text="Every model stays loaded whatever the memory; what doesn't fit spills into system RAM and runs slower." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
                         </StackPanel>
+                    </StackPanel>
+                    <StackPanel Tag="Agents" Visibility="Collapsed">
+                        <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- Workflow (MainWindow.Workflow_Checked): settings.WorkflowMode, which built-in workers take part -->
+                        <TextBlock Text="Workflow" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <RadioButton x:Name="WorkflowDualRadio" GroupName="Workflow" Content="Lead + Reviewer" Margin="0,14,0,0" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead does the work and the reviewer checks every finished item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
+                        <RadioButton x:Name="WorkflowTriRadio" GroupName="Workflow" Content="Lead + Implementer + Reviewer" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
+                        <RadioButton x:Name="WorkflowSoloRadio" GroupName="Workflow" Content="Lead only" Checked="Workflow_Checked" />
+                        <TextBlock Text="The lead does everything alone: no implementer, no reviewer. Fastest; best with a strong model." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
+                    </StackPanel>
+                    <!-- Connections: the phone app, sharing models with other PCs and the local API -->
+                    <StackPanel Tag="Connections" Visibility="Collapsed">
+                        <TextBlock Text="Connections" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
+                        <!-- The phone app over Tailscale (MainWindow.WebApp.cs, WebServer.cs): tailscale serve publishes it on the tailnet -->
+                        <TextBlock Text="Phone app" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
+                        <DockPanel Margin="0,14,0,0">
+                            <ToggleButton x:Name="WebAppToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="WebAppToggle_Click" VerticalAlignment="Center"
+                                          AutomationProperties.Name="Phone app over Tailscale" />
+                            <TextBlock Text="Phone app over Tailscale" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </DockPanel>
+                        <TextBlock x:Name="WebAppStateText" TextWrapping="Wrap" Margin="0,12,0,0" />
+                        <TextBlock x:Name="WebAppFixText" Visibility="Collapsed" Margin="0,4,0,0"><Hyperlink x:Name="WebAppFixLink" Click="WebAppFixLink_Click">Enable Serve for your tailnet</Hyperlink></TextBlock>
+                        <StackPanel x:Name="WebAppOnlinePanel" Visibility="Collapsed" Margin="0,12,0,0">
+                        <DockPanel>
+                        <Button x:Name="WebAppCopyButton" DockPanel.Dock="Right" Content="Copy" Padding="11,6" Margin="10,0,0,0" VerticalAlignment="Center" Click="WebAppCopy_Click" />
+                        <TextBox x:Name="WebAppAddressBox" IsReadOnly="True" AutomationProperties.Name="Phone app address" />
+                        </DockPanel>
+                        <Image x:Name="WebAppQrImage" Width="180" Height="180" HorizontalAlignment="Left" Margin="0,12,0,0" RenderOptions.BitmapScalingMode="NearestNeighbor"
+                               AutomationProperties.Name="QR code of the phone app address" />
+                        </StackPanel>
+                        <TextBlock Text="Only your own devices signed in to your Tailscale account can open it; no password needed."
+                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                         <Border Style="{StaticResource SettingsDivider}" />
                         <!-- Share models (MainWindow.Share.cs, ModelShare.cs): llama-server on 127.0.0.1 behind the image server on the Tailscale IP; Connect on the other PC -->
                         <TextBlock Text="Share models with my other PCs" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
@@ -2123,57 +2187,6 @@
                         <TextBox x:Name="LocalApiKeyBox" IsReadOnly="True" AutomationProperties.Name="API key" />
                         </DockPanel>
                         <TextBlock Text="Base URL above, this key as the API key, and a worker name (planner, or a custom worker) as the model. New key signs your apps out."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                    </StackPanel>
-                    <StackPanel Tag="Agents" Visibility="Collapsed">
-                        <TextBlock Text="Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
-                        <!-- Workflow (MainWindow.Workflow_Checked): settings.WorkflowMode, which built-in workers take part -->
-                        <TextBlock Text="Workflow" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,0" />
-                        <RadioButton x:Name="WorkflowDualRadio" GroupName="Workflow" Content="Lead + Reviewer" Margin="0,14,0,0" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead does the work and the reviewer checks every finished item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton x:Name="WorkflowTriRadio" GroupName="Workflow" Content="Lead + Implementer + Reviewer" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead plans, the implementer writes every change, and the reviewer checks each item." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,8" />
-                        <RadioButton x:Name="WorkflowSoloRadio" GroupName="Workflow" Content="Lead only" Checked="Workflow_Checked" />
-                        <TextBlock Text="The lead does everything alone: no implementer, no reviewer. Fastest; best with a strong model." TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="22,4,0,0" />
-                        <!-- Code engine (MainWindow.Pi.cs): who runs a Code turn's agent loop -->
-                        <TextBlock Text="Code engine" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <RadioButton x:Name="EngineBuiltinRadio" GroupName="CodeEngine" Content="Built-in" Margin="0,14,0,8" Checked="CodeEngine_Checked" />
-                        <RadioButton x:Name="EnginePiRadio" GroupName="CodeEngine" Content="Pi (pi.dev agent harness)" Checked="CodeEngine_Checked" />
-                        <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="PiInstallButton" Content="Install Pi" Padding="11,6" VerticalAlignment="Center" Click="PiInstall_Click" />
-                        <TextBlock x:Name="PiStatus" Text="Pi not installed" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                        </DockPanel>
-                        <TextBlock Text="Pi runs the Code lead's agent loop on the same model, with its own edit tool, sessions and compaction; the folder grants, your workers, skills and Start project stay the same. Needs Node.js 22.19 or newer."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <!-- Command sandbox (MainWindow.Sandbox.cs): run_command's Windows AppContainer -->
-                        <TextBlock Text="Command sandbox" FontFamily="{StaticResource DisplayFont}" FontSize="20" FontWeight="SemiBold" Margin="0,32,0,0" />
-                        <DockPanel Margin="0,14,0,0">
-                            <ToggleButton x:Name="FullAccessToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="FullAccess_Click" VerticalAlignment="Center"
-                                          AutomationProperties.Name="Full access: commands run outside the sandbox" />
-                            <TextBlock Text="Full access: commands run outside the sandbox" VerticalAlignment="Center" />
-                        </DockPanel>
-                        <TextBlock Text="Off the sandbox: commands run as you, with your rights, anywhere on this PC and with the network, in Code and in normal chats (where the model also gets file tools on every drive except System32). The permissions button in the Code composer still decides when they ask: Always Ask asks before every command, Allow Safe and Allow All run them without asking. The Reviewer's read-only commands stay in the sandbox."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <DockPanel Margin="0,14,0,0">
-                            <ToggleButton x:Name="SuperAccessToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SuperAccess_Click" VerticalAlignment="Center"
-                                          AutomationProperties.Name="Super access: the model's file tools reach every folder except System32" />
-                            <TextBlock Text="Super access: the model's file tools reach every folder except System32" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        </DockPanel>
-                        <TextBlock Text="The model can read and write files on every drive of this PC, not only the conversation's folders. Windows\System32, api_key.txt, .git folders and Agent Orchestrator's own folder stay off limits, and folders you added as read-only stay read-only. Works on its own or with Full access: commands stay in the sandbox unless Full access is on too. Normal chats get these file tools as well."
-                        TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <DockPanel Margin="0,14,0,0">
-                            <ToggleButton x:Name="SandboxNetworkToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SandboxNetwork_Click" VerticalAlignment="Center"
-                                          AutomationProperties.Name="Commands may use the network without asking" />
-                            <TextBlock Text="Commands may use the network without asking" VerticalAlignment="Center" />
-                        </DockPanel>
-                        <Border Style="{StaticResource SettingsDivider}" />
-                        <DockPanel Margin="0,14,0,0">
-                        <Button x:Name="SandboxSetupButton" Content="Set up sandbox access…" Padding="11,6" VerticalAlignment="Top" Click="SandboxSetup_Click" />
-                        <TextBlock x:Name="SandboxSetupStatus" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" />
-                        </DockPanel>
-                        <TextBlock Text="Model commands run in a Windows AppContainer: they can write only the project and the folders you grant it, cannot read the rest of your files, and have no network unless allowed. Asking for more shows you a dialog."
                         TextWrapping="Wrap" Foreground="{DynamicResource Muted}" Margin="0,8,0,0" />
                     </StackPanel>
                     <!-- Voice (MainWindow.Voice.cs): the speech and voice models' downloads (SpeechModels, TtsModels) and settings.Microphone -->

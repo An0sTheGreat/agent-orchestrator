@@ -850,7 +850,7 @@ public partial class MainWindow
         primaryLabel.VerticalAlignment = VerticalAlignment.Center;
         var primaryRow = new StackPanel { Children ={ new DockPanel { Children = { primarySwitch, primaryLabel } } } };
         if (!connected)
-            primaryRow.Children.Add(Muted("Connect to a primary PC in Settings › Models"));
+            primaryRow.Children.Add(Muted("Connect to a primary PC in Settings › Connections"));
         // Top: the picker, quantization, source, memory, context length with its slider, then the Advanced switch.
         var top = Section("Model", "The model this worker runs, its quantization and where it runs.");
         var modelFields = Fields("Model");
@@ -1059,7 +1059,7 @@ public partial class MainWindow
         {
             if (CodeBusy)
                 Toast("Wait for the reply or run to finish", "#F7C873");
-            else if (DiscardWorkerEdits() && ApplyRemoteRole(card, new(ModelShare.ChatUrl(_settings.ShareHost), id, ModelShare.KeyEnv, ""), "in Settings › Models") is { } problem)
+            else if (DiscardWorkerEdits() && ApplyRemoteRole(card, new(ModelShare.ChatUrl(_settings.ShareHost), id, ModelShare.KeyEnv, ""), "in Settings › Connections") is { } problem)
                 Toast($"{card.Title}: {problem}", "#FF667A");
         }
         var picker = _modelPickerTest = new ModelPicker(modelBox, card.ModelName, c =>
@@ -1593,7 +1593,7 @@ public partial class MainWindow
             try
             {
                 if (ApiKeys.Get(ModelShare.KeyEnv) is not { Length: > 0 } key)
-                    throw new InvalidOperationException("Not connected: paste the primary PC's connection code under Settings > Models.");
+                    throw new InvalidOperationException("Not connected: paste the primary PC's connection code under Settings > Connections.");
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                 var got = await ImageShare.FetchLoadAsync(http, ModelShare.ImagesUrl(_settings.ShareHost), key, remoteNow!.Model.Trim(), CancellationToken.None);
                 foreach (var k in primaryKeys)
@@ -2209,7 +2209,7 @@ public partial class MainWindow
             // Run on the primary PC: above the picker; not connected, off and greyed with the way to connect under it.
             var connectedNow = !string.IsNullOrEmpty(_settings.ShareHost);
             if (SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "RunOnPrimary") is not { IsVisible: true } runOnPrimary || runOnPrimary.IsEnabled != connectedNow ||
-                !connectedNow && (runOnPrimary.IsChecked == true || SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == "Connect to a primary PC in Settings › Models" && t.IsVisible) is null))
+                !connectedNow && (runOnPrimary.IsChecked == true || SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text == "Connect to a primary PC in Settings › Connections" && t.IsVisible) is null))
                 return Fail("the Run on the primary PC switch");
 
             // Vision: the switch goes in the request; a model that cannot see (Disable vision, or no mmproj beside its GGUF)
@@ -2429,7 +2429,7 @@ public partial class MainWindow
             var runOnPrimary = SmokeFind<ToggleButton>(WorkerSettingsHost, b => b.Tag as string == "RunOnPrimary");
             if (!ConnectionLocal.IsVisible || !ConnectionRemote.IsVisible || ConnectionRemote.IsEnabled != connectedNow || runOnPrimary is null ||
                 (ConnectionRemote.IsChecked == true) != (runOnPrimary.IsChecked == true) || (ConnectionLocal.IsChecked == true) == (runOnPrimary.IsChecked == true) ||
-                !connectedNow && ConnectionRemote.ToolTip as string != "Connect to a primary PC in Settings › Models")
+                !connectedNow && ConnectionRemote.ToolTip as string != "Connect to a primary PC in Settings › Connections")
                 return Fail("the Connection toggle");
             // Clicking Remote PC / Local acts as the switch itself (its Click swaps the picker's list), not just its look.
             var savedHost = _settings.ShareHost;

@@ -9,7 +9,7 @@ using System.Windows.Threading;
 namespace AgentOrchestrator;
 
 // The phone app over Tailscale: WebServer on 127.0.0.1, published at https://<this PC's MagicDNS name>/ by `tailscale serve`.
-// Settings > General's switch keeps WebAppOn, the user's choice: it stays on while Tailscale is not ready (the state line says
+// Settings > Connections' switch keeps WebAppOn, the user's choice: it stays on while Tailscale is not ready (the state line says
 // why) and the app starts once it is, at the next launch or toggle. It starts at launch when on; Quit (OnClosing) stops it and
 // turns Serve off. The owner's login and the tailnet's suffix come from `tailscale status`, read at start and every 5 minutes.
 public partial class MainWindow

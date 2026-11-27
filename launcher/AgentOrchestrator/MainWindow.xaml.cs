@@ -223,7 +223,7 @@ public partial class MainWindow : Window
     private string RunRequest(string project)
     {
         var request = JsonNode.Parse(LauncherLogic.BuildCodeRequest("chat", "planner", [], project, CodeExtraFolders, CurrentExtras() with { ImageGen = null }, // Image Gen: Chat and Code chat turns only
-            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess))!;
+            effort: EffortFor(CardFor("planner")), session: _codeConv?.Id ?? "", sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.FullAccess))!;
         request["workflow"] = _settings.WorkflowMode is "tri" or "solo" ? _settings.WorkflowMode : "dual";
         return request.ToJsonString(new JsonSerializerOptions { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
     }
@@ -3791,6 +3791,15 @@ public partial class MainWindow : Window
                 await Settle();
                 if (((SolidColorBrush)settings.Frame.Background).Color != background)
                     return Fail();
+                // The tabs' order, and the phone app, the sandbox and the model runtime on their own tabs (Connections, System).
+                var tabOrder = string.Join(",", SettingsTabs.Children.OfType<RadioButton>().Select(t => t.Tag));
+                string? PageOf(Visual control) => SettingsPages.Children.OfType<FrameworkElement>().FirstOrDefault(p => control.IsDescendantOf(p))?.Tag as string;
+                if (tabOrder != "General,System,Appearance,Models,Agents,Connections,Voice,Plugins"
+                    || PageOf(WebAppToggle) != "Connections" || PageOf(FullAccessToggle) != "System" || PageOf(LlamaDownloadButton) != "System")
+                {
+                    Console.Error.WriteLine($"ui-smoke: settings tabs {tabOrder}; phone app on {PageOf(WebAppToggle)}, Full access on {PageOf(FullAccessToggle)}, llama-server on {PageOf(LlamaDownloadButton)}");
+                    return Fail();
+                }
                 // Each tab shows its own page only.
                 foreach (var tab in SettingsTabs.Children.OfType<RadioButton>().Reverse())
                 {

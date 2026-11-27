@@ -299,7 +299,7 @@ internal sealed class AppSettings
     public bool SandboxNetwork { get; set; }
     // Full access: model commands (run_command) run as the user with no sandbox; CommandPermissions still decides when they ask.
     public bool FullAccess { get; set; }
-    // Super access: the model's file tools may open any path on this PC except System32 (orchestrator.with_super_access); independent of FullAccess.
+    // Unused: Full access now also gives Super access (the file tools on every drive except System32); kept so old settings files still load.
     public bool SuperAccess { get; set; }
     public bool RemoteHelpShown { get; set; } // the Remote API page's "Create an API key" popup showed once (MainWindow.RemoteApi.cs)
     public string HubSort { get; set; } = "trending"; // the Models Hub's sort (HubLogic.Sorts id)
@@ -353,10 +353,10 @@ internal sealed class AppSettings
     public Dictionary<string, ImageFile> ImageQuants { get; set; } = []; // recipe id -> the quant picked for its main model (ImageGen.SetQuant)
     public bool ImageHideMissing { get; set; } // the Images page's model list and the chip's: models not downloaded are left out (the current pick stays)
     public string ImageModelsFolder { get; set; } = ""; // the Images page's folder of image models already on this PC; "" = the Hugging Face cache
-    // Settings > Models > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models on its
+    // Settings > Connections > Share models (MainWindow.Share.cs, ModelShare.cs). ShareModels: this PC serves its models on its
     // Tailscale address. ShareHost: on the other PC, the primary PC's Tailscale IPv4 while connected ("" = not). Keys: ApiKeys.
     public bool ShareModels { get; set; }
-    // Settings > Models > Local API for my apps (MainWindow.LocalApi.cs): 127.0.0.1:LocalApiPort for this PC's own programs; the port is settings.json only.
+    // Settings > Connections > Local API for my apps (MainWindow.LocalApi.cs): 127.0.0.1:LocalApiPort for this PC's own programs; the port is settings.json only.
     public bool LocalApi { get; set; }
     public int LocalApiPort { get; set; } = 8830;
     public string ShareHost { get; set; } = "";

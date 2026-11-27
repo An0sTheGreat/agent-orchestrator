@@ -134,7 +134,7 @@ public partial class MainWindow
         return LauncherLogic.BuildCodeRequest(action, role, said is null ? _code.History : _code.History.Append(new LauncherLogic.ChatMessage("user", said)),
             project, CodeExtraFolders, CurrentExtras(initProject: (_code.History.FirstOrDefault()?.Content ?? text) == InitProjectMessage, message: text) with { Images = images }, title: action == "chat" && _code.History.Count == 0, effort: EffortFor(CardFor(role)),
             summary: action == "chat" ? _code.Summary ?? "" : "", summaryCovers: action == "chat" ? _code.SummaryCovers : 0, // write_project reads it all
-            engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess,
+            engine: _settings.CodeEngine, session: _codeConv?.Id ?? "", piHome: LauncherLogic.PiHome, sandboxNetwork: _settings.SandboxNetwork, permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.FullAccess,
             review: _settings.ReviewEveryTurn);
     }
 

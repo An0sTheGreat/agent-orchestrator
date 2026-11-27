@@ -80,11 +80,11 @@ internal static class RemoteCatalog
             (privacy.TryGetValue(r.Tag.Split('/')[0], out var p) ? r with { Privacy = p } : r) is var row && images?.TryGetValue(r.Tag, out var v) == true ? row with { Vision = v } : row)];
 
     // ModelsNeedKey: what an unauthenticated GET {BaseUrl}/models answered on 2026-11-05 (200 => false; 401/403, or Gemini's 404 => true).
-    // The primary PC (Settings > Models > Connect to another PC) while connected: its llama-server router at its
+    // The primary PC (Settings > Connections > Connect to another PC) while connected: its llama-server router at its
     // Tailscale address, keyed by ModelShare.KeyEnv. Listed before Custom URL, which stays last.
     public static IReadOnlyList<Service> Services => ShareHost.Length == 0 ? Fixed :
         [.. Fixed.SkipLast(1), new("primary-pc", "Primary PC", ModelShare.ChatUrl(ShareHost), ModelShare.KeyEnv, "",
-            "Paste the primary PC's connection code in Settings > Models > Connect to another PC.", true, false), Fixed[^1]];
+            "Paste the primary PC's connection code in Settings > Connections > Connect to another PC.", true, false), Fixed[^1]];
 
     // AppSettings.ShareHost, set by the window when it loads and when it connects or disconnects ("" = not connected).
     public static string ShareHost { get; set; } = "";

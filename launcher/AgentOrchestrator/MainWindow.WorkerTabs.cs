@@ -83,7 +83,7 @@ public partial class MainWindow
         var primary = PrimarySwitch();
         ConnectionLocal.IsEnabled = primary is not null;
         ConnectionRemote.IsEnabled = primary is { IsEnabled: true };
-        ConnectionRemote.ToolTip = string.IsNullOrEmpty(_settings.ShareHost) ? "Connect to a primary PC in Settings › Models" : "Run this worker on the primary PC";
+        ConnectionRemote.ToolTip = string.IsNullOrEmpty(_settings.ShareHost) ? "Connect to a primary PC in Settings › Connections" : "Run this worker on the primary PC";
         (primary?.IsChecked == true ? ConnectionRemote : ConnectionLocal).IsChecked = true;
     }
 

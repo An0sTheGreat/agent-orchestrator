@@ -101,7 +101,6 @@ public partial class MainWindow
     {
         SandboxNetworkToggle.IsChecked = _settings.SandboxNetwork;
         FullAccessToggle.IsChecked = _settings.FullAccess;
-        SuperAccessToggle.IsChecked = _settings.SuperAccess;
         SandboxSetupStatus.Text = "Needed before commands run: hides your environment variables (API keys) from the sandbox. " +
             "Then, as administrator once, lets it list drive roots (PowerShell needs it) and read installed tools such as Node.js and Python.";
     }
@@ -109,12 +108,6 @@ public partial class MainWindow
     private void FullAccess_Click(object sender, RoutedEventArgs e)
     {
         _settings.FullAccess = FullAccessToggle.IsChecked == true;
-        _settings.Save();
-    }
-
-    private void SuperAccess_Click(object sender, RoutedEventArgs e)
-    {
-        _settings.SuperAccess = SuperAccessToggle.IsChecked == true;
         _settings.Save();
     }
 

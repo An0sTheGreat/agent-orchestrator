@@ -7,7 +7,7 @@ using Microsoft.Win32;
 
 namespace AgentOrchestrator;
 
-// Settings > Model runtime: llama.cpp's llama-server (downloaded into <data>\llama.cpp), which the
+// Settings > System > Model runtime: llama.cpp's llama-server (downloaded into <data>\llama.cpp), which the
 // engine starts itself and records in LauncherLogic.LlamaStateFile; the launcher stops it where it unloads chat models.
 public partial class MainWindow
 {
@@ -168,7 +168,7 @@ public partial class MainWindow
         }
     }
 
-    // Settings > Models > Model runtime: the Models folders, each with Remove, and Add models folder… (AppSettings.ModelsFolder
+    // Settings > System > Model runtime: the Models folders, each with Remove, and Add models folder… (AppSettings.ModelsFolder
     // holds them joined by ';').
     private void ModelsFolder_Click(object sender, RoutedEventArgs e)
     {

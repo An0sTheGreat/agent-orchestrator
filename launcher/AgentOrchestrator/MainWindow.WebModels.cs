@@ -421,7 +421,7 @@ public partial class MainWindow
             return dirty;
         if (model.Length == 0)
             return (400, new { error = "Send the model's id" });
-        return ApplyRemoteRole(card, new(ModelShare.ChatUrl(host), model, ModelShare.KeyEnv, ""), "in Settings › Models") is { } problem ? (400, new { error = problem }) : (200, "");
+        return ApplyRemoteRole(card, new(ModelShare.ChatUrl(host), model, ModelShare.KeyEnv, ""), "in Settings › Connections") is { } problem ? (400, new { error = problem }) : (200, "");
     }
 
     // ApplyRemoteRole rebuilds the worker tab, discarding its edits: the desktop asks first (DiscardWorkerEdits), the phone refuses.

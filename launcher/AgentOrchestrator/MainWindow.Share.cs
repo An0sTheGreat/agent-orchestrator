@@ -11,7 +11,7 @@ using System.Windows.Media;
 
 namespace AgentOrchestrator;
 
-// Settings > Models > Share models with my other PCs (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md).
+// Settings > Connections > Share models with my other PCs (ModelShare.cs, docs/superpowers/specs/2026-11-19-share-models-design.md).
 // Primary PC: the switch starts llama-server in router mode on 127.0.0.1:ModelShare.ChatPort (the share key from ApiKeys
 // under ModelShare.OwnKeyEnv), with <data>\share\models.ini written from the local chat GGUFs on each start, and the ImageShare
 // server on ModelShare.ImagePort (which proxies /v1/ to llama-server). ImageShare binds this PC's Tailscale IPv4 and the code
@@ -394,7 +394,7 @@ public partial class MainWindow
     {
         if (ModelShare.ParseCode(ShareCodeInput.Text) is not var (host, key))
         {
-            ShareNote("That is not a connection code: copy it from Settings > Models on the primary PC (it starts with ao-share://).", error: true);
+            ShareNote("That is not a connection code: copy it from Settings > Connections on the primary PC (it starts with ao-share://).", error: true);
             return;
         }
         ShareConnectButton.IsEnabled = false;
@@ -469,7 +469,7 @@ public partial class MainWindow
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: share models: {what}"); return false; }
         if (SettingsPageOf(ShareToggle) is null)
-            return Fail("the Share section is not in Settings > Models");
+            return Fail("the Share section is not in Settings > Connections");
         var host = _settings.ShareHost;
         ShareCodeInput.Text = "ao-share://100.64.0.1.evil.com?key=nope";
         ShareConnectButton.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
@@ -487,7 +487,7 @@ public partial class MainWindow
         _settings.ShareHost = "";
         ShowImageSource();
         _settings.ShareHost = host;
-        if (connected != true || remotePc!.IsEnabled || remotePc.ToolTip as string != "Connect to a primary PC in Settings › Models")
+        if (connected != true || remotePc!.IsEnabled || remotePc.ToolTip as string != "Connect to a primary PC in Settings › Connections")
             return Fail($"Remote PC is enabled {connected} connected and {remotePc?.IsEnabled} not");
         ShowImageSource();
         return true;
@@ -496,7 +496,7 @@ public partial class MainWindow
     private static StackPanel? SettingsPageOf(DependencyObject element)
     {
         for (var at = element; at is not null; at = VisualTreeHelper.GetParent(at) ?? LogicalTreeHelper.GetParent(at))
-            if (at is StackPanel { Tag: "Models" } panel)
+            if (at is StackPanel { Tag: "Connections" } panel)
                 return panel;
         return null;
     }

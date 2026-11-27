@@ -266,7 +266,7 @@ public partial class MainWindow
         _imgRemoteProvidersButton = SourceButton("", "ImagesRemoteProvidersButton", ChooseImageProviders);
         (_imgRemoteModelButton.Margin, _imgRemoteModelButton.FontSize, _imgRemoteProvidersButton.FontSize) = (new Thickness(0), 12, 12);
         _imgRemotePanel = new StackPanel { Visibility = Visibility.Collapsed, Orientation = Orientation.Horizontal, Children = { _imgRemoteModelButton, _imgRemoteProvidersButton } };
-        _imgSharedModel = new ComboBox { Tag = "ImagesSharedModel", ToolTip = "Runs on the primary PC this PC is connected to (Settings > Models)" };
+        _imgSharedModel = new ComboBox { Tag = "ImagesSharedModel", ToolTip = "Runs on the primary PC this PC is connected to (Settings > Connections)" };
         _imgSharedModel.SelectionChanged += (_, _) =>
         {
             if (_imgApplying || _imgSharedModel.SelectedIndex < 0)
@@ -785,7 +785,7 @@ public partial class MainWindow
         // the pill: neither segment in OpenRouter mode (LOCAL leaves it); both off while a job runs
         _imgConnLocal.IsEnabled = !ImageBusy;
         _imgConnRemote.IsEnabled = !ImageBusy && _settings.ShareHost.Length > 0;
-        _imgConnRemote.ToolTip = _settings.ShareHost.Length > 0 ? $"Generate on the primary PC ({_settings.ShareHost})" : "Connect to a primary PC in Settings › Models";
+        _imgConnRemote.ToolTip = _settings.ShareHost.Length > 0 ? $"Generate on the primary PC ({_settings.ShareHost})" : "Connect to a primary PC in Settings › Connections";
         _imgConnLocal.IsChecked = !_imgSharedMode && !_imgRemoteMode;
         _imgConnRemote.IsChecked = _imgSharedMode;
         _imgVramHintRow.Visibility = Shown(!_imgRemoteMode && !_imgSharedMode);
@@ -1922,7 +1922,7 @@ public partial class MainWindow
     private async Task GenerateSharedAsync(ImageSettings run, List<(string Written, string Final, long Seed)> files, CancellationToken ct)
     {
         if (_settings.ShareHost.Length == 0)
-            throw new InvalidOperationException("Not connected to a primary PC: paste its connection code under Settings > Models");
+            throw new InvalidOperationException("Not connected to a primary PC: paste its connection code under Settings > Connections");
         ImageStatus($"Generating on {_settings.ShareHost}…", indeterminate: true);
         using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
         var shown = new Progress<ImageShare.ProgressLine>(p => ImageStatus($"Primary PC: {p.Status} · {p.Progress * 100:0}%", p.Progress)); // posts to the UI thread

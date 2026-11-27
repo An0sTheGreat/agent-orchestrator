@@ -10,7 +10,7 @@ const GET = {
     accents: [{ key: 'gray', name: 'Light gray', color: '#C0C0C0' }, { key: 'clay', name: 'Clay', color: '#C15F3C' }],
     centerChat: true, readingSize: 'comfortable', emoji: 'less', contextPercent: true },
   models: { keepLoaded: true, multiModel: 'fit', share: { on: false } },
-  agents: { workflow: 'dual', codeEngine: '', fullAccess: false, superAccess: true, sandboxNetwork: false },
+  agents: { workflow: 'dual', codeEngine: '', fullAccess: true, sandboxNetwork: false },
   plugins: { ponytail: 'full' },
   about: { version: '1.9.4', pc: 'DESKTOP' },
 };
@@ -34,10 +34,10 @@ test('every writable key of the contract has exactly one row, on the page of its
   const keys = ['general', 'appearance', 'models', 'agents', 'plugins'].flatMap(p => writable(p).map(r => r.key));
   assert.deepEqual(keys.sort(), ['accent', 'centerChat', 'codeEngine', 'computerUse', 'contextPercent', 'emoji', 'followTabs', 'fullAccess',
     'keepLoaded', 'linkOpen', 'multiModel', 'notifyWhenDone', 'ponytail', 'readingSize', 'sandboxNetwork', 'share.on',
-    'startWithWindows', 'superAccess', 'theme', 'workflow'].sort());
+    'startWithWindows', 'theme', 'workflow'].sort());
   assert.equal(byKey('general', 'linkOpen').value, 'app');
   assert.equal(byKey('general', 'followTabs').value, 11);
-  assert.equal(byKey('agents', 'superAccess').value, true);
+  assert.equal(byKey('agents', 'fullAccess').value, true);
   assert.equal(byKey('plugins', 'ponytail').value, 'full');
   assert.equal(writable('about').length, 0);
 });
@@ -107,11 +107,10 @@ test("accent tokens: the colour, 40% toward white, dark text on a light accent; 
   for (const bad of [undefined, '', 'red', '#12345', 'url(x)']) assert.equal(accentTokens(bad), null, String(bad));
 });
 
-test('the phone confirms Full access and Super access going on (naming the sandbox isolation) and Reset usage stats, nothing else', () => {
-  for (const key of ['fullAccess', 'superAccess']) {
-    assert.match(confirmFor(key, true).text, /isolation/);
-    assert.equal(confirmFor(key, false), null);
-  }
+test('the phone confirms Full access going on (naming the sandbox isolation and every folder) and Reset usage stats, nothing else', () => {
+  assert.match(confirmFor('fullAccess', true).text, /isolation.*every folder/s);
+  assert.equal(confirmFor('fullAccess', false), null);
+  assert.equal(confirmFor('superAccess', true), null); // no Super access switch: Full access gives it
   assert.ok(confirmFor('resetStats', true));
   for (const key of ['sandboxNetwork', 'computerUse', 'theme']) assert.equal(confirmFor(key, true), null);
 });

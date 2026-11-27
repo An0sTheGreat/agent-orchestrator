@@ -35,7 +35,7 @@ public partial class MainWindow
         models = new { keepLoaded = _settings.ChatKeepLoaded, multiModel = _settings.MultiModel, share = new { on = _settings.ShareModels } },
         agents = new
         {
-            workflow = _settings.WorkflowMode, codeEngine = _settings.CodeEngine, fullAccess = _settings.FullAccess, superAccess = _settings.SuperAccess,
+            workflow = _settings.WorkflowMode, codeEngine = _settings.CodeEngine, fullAccess = _settings.FullAccess,
             sandboxNetwork = _settings.SandboxNetwork,
         },
         plugins = new { ponytail = _settings.Ponytail },
@@ -112,7 +112,6 @@ public partial class MainWindow
                     : text == "pi" ? EnginePiRadio : EngineBuiltinRadio).IsChecked = true;
                 return Ok();
             case "fullAccess": return Press(FullAccessToggle);
-            case "superAccess": return Press(SuperAccessToggle);
             case "sandboxNetwork": return Press(SandboxNetworkToggle);
             case "ponytail": return Choose(["", "lite", "full", "ultra"], t => Radio(PonytailLevels, t));
             default: return (400, new { error = $"Unknown setting {key}" });

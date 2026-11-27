@@ -55,9 +55,8 @@ export function duration(sec) {
 // The phone asks before these go on (the desktop's own switches do not ask; the phone is a step further from the PC).
 const CONFIRMS = {
   fullAccess: { title: 'Turn on Full access', yes: 'Turn on', text: "This turns off the command sandbox's isolation: commands run " +
-    'as you, with your rights, anywhere on this PC and with the network, in Code and in normal chats.' },
-  superAccess: { title: 'Turn on Super access', yes: 'Turn on', text: "This turns off the sandbox's folder isolation for the model's " +
-    'file tools: they read and write every folder on this PC except System32, not only the conversation\'s folders.' },
+    "as you, with your rights, anywhere on this PC and with the network, and the model's file tools read and write every folder " +
+    'except Windows\\System32, in Code and in normal chats.' },
   resetStats: { title: 'Reset usage stats', yes: 'Reset', text: "Set lifetime tokens, peak tokens, longest task and streaks back to zero? This can't be undone." },
 };
 export const confirmFor = (key, value) => value === true ? CONFIRMS[key] || null : null;
@@ -101,8 +100,7 @@ export function rows(page, s) {
         ['tri', 'Lead + Implementer + Reviewer', 'The lead plans, the implementer writes'], ['solo', 'Lead only', 'No independent check']]),
       head('Code engine'), radio('codeEngine', ag.codeEngine, [['', 'Built-in', "The app's own agent loop and tools"], ['pi', 'Pi', 'pi.dev agent harness']]),
       head('Command sandbox'),
-      sw('fullAccess', ag.fullAccess, 'Full access', 'Commands run outside the sandbox, as you, with the network.'),
-      sw('superAccess', ag.superAccess, 'Super access', "The model's file tools reach every folder except System32."),
+      sw('fullAccess', ag.fullAccess, 'Full access', "Commands run outside the sandbox, as you, with the network; the model's file tools reach every folder except System32."),
       sw('sandboxNetwork', ag.sandboxNetwork, 'Commands may use the network without asking'),
       note('Installing Pi and setting up sandbox access stay on the PC.')];
     case 'plugins': return [

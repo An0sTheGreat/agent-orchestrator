@@ -355,7 +355,7 @@ internal static class LauncherLogic
     // title: ask the answering model for a short conversation title after the reply (a new conversation's first message).
     // effort: thinking effort for every model call of the turn ("" = the model's default; off, low, medium, high, max).
     // summary: the engine's stored summary of the first summaryCovers messages, which are then left out ("": none).
-    // permissions, fullAccess, superAccess: Settings > Command sandbox, as in Code; on, the chat model reaches the PC
+    // permissions, fullAccess, superAccess: Settings > System > Command sandbox (superAccess follows Full access), as in Code; on, the chat model reaches the PC
     // (orchestrator.chat_pc_access: Full access runs commands as the user, either one opens the file tools on every drive).
     public static string BuildChatRequest(string worker, IEnumerable<ChatMessage> messages, Extras? extras = null, bool title = false,
         string effort = "", string summary = "", int summaryCovers = 0, string permissions = "safe", bool fullAccess = false, bool superAccess = false, bool voice = false) =>

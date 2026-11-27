@@ -158,7 +158,7 @@ public partial class MainWindow
         var buttons = new WrapPanel();
         if (Tailscale.Exe is null)
         {
-            panel.Children.Add(Text("Sign in to Tailscale with the same account on each PC and they connect by themselves: the one sharing its models (Settings > Models) serves the others."));
+            panel.Children.Add(Text("Sign in to Tailscale with the same account on each PC and they connect by themselves: the one sharing its models (Settings > Connections) serves the others."));
             buttons.Children.Add(Action("Install Tailscale", async () =>
             {
                 Toast("Installing Tailscale…");
@@ -168,7 +168,7 @@ public partial class MainWindow
         }
         else if (_tailnet is not { SignedIn: true } state)
         {
-            panel.Children.Add(Text("Sign in with the same account on each PC and they connect by themselves: the one sharing its models (Settings > Models) serves the others."));
+            panel.Children.Add(Text("Sign in with the same account on each PC and they connect by themselves: the one sharing its models (Settings > Connections) serves the others."));
             buttons.Children.Add(Action("Sign in with Tailscale", SignInTailnetAsync));
         }
         else
@@ -195,7 +195,7 @@ public partial class MainWindow
             {
                 await TailnetTickAsync();
                 if (!_settings.ShareModels && !await SharedHostAnswersAsync())
-                    Toast("No PC on this account is sharing its models: turn on sharing in Settings > Models on the primary PC", "#FF667A");
+                    Toast("No PC on this account is sharing its models: turn on sharing in Settings > Connections on the primary PC", "#FF667A");
             }));
             buttons.Children.Add(Action("Sign out", async () =>
             {

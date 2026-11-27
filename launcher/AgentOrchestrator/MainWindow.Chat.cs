@@ -810,7 +810,7 @@ public partial class MainWindow
         var (said, images) = ForModel(_chat, text);
         return LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", said!)), CurrentExtras(message: text) with { Images = images }, title: _chatHistory.Count == 0 && !InCall, voice: InCall,
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers,
-            permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.SuperAccess);
+            permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.FullAccess);
     }
 
     // The user's message as the model gets it: the first one after a picture carries it (ImageGen.TakeLastPicture); a command,
