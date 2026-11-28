@@ -948,7 +948,7 @@ public partial class MainWindow
             string? failed;
             try
             {
-                // COMPACTOR following MAIN gets its own copy in the same single write: a refusal or throw writes nothing
+                // VOICE following MAIN gets its own copy in the same single write: a refusal or throw writes nothing
                 failed = WriteConfigs(targets, t => LauncherLogic.WriteRemoteRole(t, card.Role, remote, Path.Combine(_workflowRoot ?? "", "config.json")));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or NullReferenceException or InvalidOperationException)
@@ -1293,7 +1293,7 @@ public partial class MainWindow
 
     // --ui-smoke: the sidebar's Remote API opens the page (the first time with the key help) in place of Code and Chat,
     // lists the (fake) service's models, filters them, shows a model's providers, writes the ticked order on Apply (to a
-    // built-in role, COMPACTOR and a custom worker), refuses bad input and a busy Apply, and New chat leaves it.
+    // built-in role, VOICE and a custom worker), refuses bad input and a busy Apply, and New chat leaves it.
     private async Task<bool> RemoteApiSmoke()
     {
         static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: remote api: {what}"); return false; }
@@ -1539,19 +1539,19 @@ public partial class MainWindow
             if (!Toasted("Wait for the reply or run to finish") || !Unchanged())
                 return Fail("Apply during a reply was not refused");
 
-            // COMPACTOR following MAIN gets its own roles.compactor, then the remote settings.
+            // VOICE following MAIN gets its own roles.voice, then the remote settings.
             foreach (var t in targets)
             {
                 var root = JsonNode.Parse(File.ReadAllText(t))!.AsObject();
-                root["roles"]![LauncherLogic.Compactor] = new JsonObject { ["same_as"] = "planner" };
+                root["roles"]![LauncherLogic.Voice] = new JsonObject { ["same_as"] = "planner" };
                 File.WriteAllText(t, root.ToJsonString());
             }
-            Target(LauncherLogic.Compactor);
+            Target(LauncherLogic.Voice);
             Apply();
-            if (Wrote(LauncherLogic.Compactor, ticked) is { } compactor)
-                return Fail($"Apply to COMPACTOR wrote {compactor}");
-            if (targets.FirstOrDefault(t => !LauncherLogic.CompactorHasOwn(JsonNode.Parse(File.ReadAllText(t))!["roles"] as JsonObject)) is { } follows)
-                return Fail($"COMPACTOR still follows MAIN in {follows}");
+            if (Wrote(LauncherLogic.Voice, ticked) is { } voice)
+                return Fail($"Apply to VOICE wrote {voice}");
+            if (targets.FirstOrDefault(t => LauncherLogic.FollowsLead(LauncherLogic.Voice, JsonNode.Parse(File.ReadAllText(t))!["roles"] as JsonObject)) is { } follows)
+                return Fail($"VOICE still follows MAIN in {follows}");
             Reset();
 
             // A custom worker keeps its remote settings on the card (and in the saved workers).

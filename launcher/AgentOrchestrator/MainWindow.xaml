@@ -1145,11 +1145,11 @@
                 <!-- The open chat's title, like other chat apps; its menu is the sidebar row's (RefreshTitleChat). -->
                 <!-- The Code view's Start button sits right of the title; it slides over when the title appears (MainWindow.Landing.cs). -->
                 <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0">
-                <!-- Load models: a menu to load one role's model now (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR) or unload all,
+                <!-- Load models: a menu to load one role's model now (LEAD, IMPLEMENTER, REVIEWER, VOICE) or unload all,
                      here and on the primary PC this PC is connected to (LoadModels_Click) -->
                 <Button x:Name="LoadModelsButton" Style="{StaticResource GhostButton}" VerticalAlignment="Center" Margin="0,0,8,0" Padding="7,3"
                         FontSize="11" Click="LoadModels_Click" IsEnabled="False" AutomationProperties.Name="Load models"
-                        ToolTipService.ShowOnDisabled="True" ToolTip="Load a worker's model now (Lead, Implementer, Reviewer or Compactor), or unload them all">
+                        ToolTipService.ShowOnDisabled="True" ToolTip="Load a worker's model now (Lead, Implementer, Reviewer or Voice), or unload them all">
                     <Grid><StackPanel Orientation="Horizontal"><TextBlock Text="&#xE896;" Style="{StaticResource RailGlyph}" FontSize="11" Margin="0,0,6,0" /><TextBlock x:Name="LoadModelsText" Text="Load models" />
                         <TextBlock Text="&#xE70D;" Style="{StaticResource RailGlyph}" FontSize="9" Margin="6,1,0,0" /></StackPanel>
                         <!-- shown while a model loads, filling at the pace of the role's last load (LoadRoleAsync) -->

@@ -24,8 +24,8 @@ namespace AgentOrchestrator;
 
 public partial class MainWindow : Window
 {
-    // COMPACTOR (the compactor role) is always shown and summarizes on MAIN's model until it has its own (FollowsMain). VOICE (the voice role) likewise: the chat model of calls.
-    private static readonly string[] Roles = ["planner", "implementer", "reviewer", "compactor", "voice"];
+    // VOICE (the voice role, the chat model of calls) is always shown and runs on MAIN's model until it has its own (FollowsMain).
+    private static readonly string[] Roles = ["planner", "implementer", "reviewer", "voice"];
 
     private Process? _process;
     private string? _workflowRoot; // not readonly: --ui-smoke (WebAppSmoke) points it at a stand-in engine
@@ -1104,7 +1104,7 @@ public partial class MainWindow : Window
         static Task Settle() => Task.Delay(400);
         _llamaStateFile = Path.Combine(AppSettings.DataRoot, "llama-state.json"); // never the real server's record
         // Chat shows every agent the checks use (it shows LEAD alone by default: checked on its own)
-        _settings.ChatCards = ["implementer", "reviewer", "compactor", "smoke-chat-custom"];
+        _settings.ChatCards = ["implementer", "reviewer", "smoke-chat-custom"];
         _settingsShow = window => { window.ShowActivated = false; window.Show(); }; // ShowDialog would block the run
         _dialogsQuiet = true;
         // AGENT_ORCHESTRATOR_SNAPSHOTS=<folder> also saves a picture of each state (rendered without a screen).
@@ -1131,7 +1131,7 @@ public partial class MainWindow : Window
             return Fail();
         // Dual by default (Lead + Reviewer): IMPLEMENTER is hidden and runs as LEAD (its activity lights LEAD), "+" adds only
         // custom workers; tri (Settings > Models & Agents) shows it with its own config entry. The run's request carries the mode, and the
-        // cards go ALWAYS ON (LEAD, COMPACTOR), then HELPERS (IMPLEMENTER, REVIEWER), then the custom workers in the order added.
+        // cards go ALWAYS ON (LEAD, VOICE), then HELPERS (IMPLEMENTER, REVIEWER), then the custom workers in the order added.
         // Chat shows the same cards (one set for every conversation, checked below).
         OpenModelSettings(); // the worker tabs are made when the page is first laid out
         await Settle();
@@ -1150,10 +1150,10 @@ public partial class MainWindow : Window
             string? RunMode() => (string?)JsonNode.Parse(RunRequest(@"Y:\smoke"))!["workflow"];
             if (_settings.WorkflowMode != "dual" || WorkflowDualRadio.IsChecked != true || !implementer.Hidden || reviewer.Hidden || main.Hidden || TabShown(implementer) ||
                 Shown(implementer) || ListedWorkers(_chat).Contains(implementer) || !Shown(reviewer) || !Shown(main) || main.Covers != "Planner · Implementer" || Plus() is not ["Custom worker…"] ||
-                Order() != "LEAD,COMPACTOR,VOICE,REVIEWER" || RunMode() != "dual")
+                Order() != "LEAD,VOICE,REVIEWER" || RunMode() != "dual")
                 return Fail();
-            // The groups: the Target agent track's line before the first helper shown (REVIEWER), none before LEAD or COMPACTOR
-            if (main.GroupStart || CardFor("compactor")!.GroupStart || !reviewer.GroupStart)
+            // The groups: the Target agent track's line before the first helper shown (REVIEWER), none before LEAD or VOICE
+            if (main.GroupStart || CardFor("voice")!.GroupStart || !reviewer.GroupStart)
                 return Fail();
             // Chat shows Code's cards, and its "+" adds only custom workers (no Chat-only agent list)
             var chatCards = _settings.ChatCards.ToList();
@@ -1163,7 +1163,7 @@ public partial class MainWindow : Window
             var chatPlus = Plus();
             _settings.ChatCards = chatCards;
             ShowView();
-            if (chatDefault != "LEAD,COMPACTOR,VOICE,REVIEWER" || chatPlus is not ["Custom worker…"] || Order() != "LEAD,COMPACTOR,VOICE,REVIEWER")
+            if (chatDefault != "LEAD,VOICE,REVIEWER" || chatPlus is not ["Custom worker…"] || Order() != "LEAD,VOICE,REVIEWER")
                 return Fail();
             foreach (var json in new[] { """{"e":"delta","role":"implementer","kind":"text","text":"tok "}""", """{"e":"usage","role":"implementer","prompt":7,"completion":3,"tps":21}""" })
                 _lines.Enqueue(LauncherLogic.EventPrefix + json);
@@ -1177,35 +1177,36 @@ public partial class MainWindow : Window
             await Settle();
             if (_settings.WorkflowMode != "tri" || AppSettings.Load().WorkflowMode != "tri" || implementer.Hidden || !Shown(implementer) || main.HasCovers ||
                 RoleConfig("implementer")?["same_as"] is not null || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,COMPACTOR,VOICE,IMPLEMENTER,REVIEWER" || RunMode() != "tri")
+                Order() != "LEAD,VOICE,IMPLEMENTER,REVIEWER" || RunMode() != "tri")
                 return Fail();
             SelectWorker(implementer);
             WorkflowDualRadio.IsChecked = true;
             await Settle();
             if (_settings.WorkflowMode != "dual" || !implementer.Hidden || TabShown(implementer) || ListedWorkers(_chat).Contains(implementer) || _shownWorker != main ||
                 (string?)RoleConfig("implementer")?["same_as"] != "planner" || RoleConfig("reviewer")?["same_as"] is not null ||
-                Order() != "LEAD,COMPACTOR,VOICE,REVIEWER" || RunMode() != "dual")
+                Order() != "LEAD,VOICE,REVIEWER" || RunMode() != "dual")
                 return Fail();
             WorkflowSoloRadio.IsChecked = true; // Lead only: no Implementer or Reviewer, the run asks for "solo"
             await Settle();
-            if (_settings.WorkflowMode != "solo" || AppSettings.Load().WorkflowMode != "solo" || !implementer.Hidden || !reviewer.Hidden || Order() != "LEAD,COMPACTOR,VOICE" ||
+            if (_settings.WorkflowMode != "solo" || AppSettings.Load().WorkflowMode != "solo" || !implementer.Hidden || !reviewer.Hidden || Order() != "LEAD,VOICE" ||
                 RunMode() != "solo" || (string?)RoleConfig("reviewer")?["same_as"] != "planner")
                 return Fail();
             WorkflowDualRadio.IsChecked = true;
             await Settle();
-            if (_settings.WorkflowMode != "dual" || reviewer.Hidden || RunMode() != "dual" || Order() != "LEAD,COMPACTOR,VOICE,REVIEWER")
+            if (_settings.WorkflowMode != "dual" || reviewer.Hidden || RunMode() != "dual" || Order() != "LEAD,VOICE,REVIEWER")
                 return Fail();
             Snap("0-dual");
-            // The checks below use all three built-ins. Saved workers with a custom one before COMPACTOR load in the fixed order.
+            // The checks below use all three built-ins. Saved workers with a custom one before VOICE load in the fixed order; a stored
+            // card of the removed COMPACTOR is dropped.
             SetWorkflow("tri");
             var savedWorkers = _settings.Workers;
             void Reload(List<WorkerSetting> workers) => HoldWorkerTab(() =>
                 { _settings.Workers = workers; _cards.Clear(); LoadWorkers(); PrefillCards(); SelectWorker(CardFor("planner")); });
-            Reload([new() { Id = "planner" }, new() { Id = "smoke-order", Title = "ORDER W", Custom = true }, new() { Id = "reviewer" }]);
+            Reload([new() { Id = "planner" }, new() { Id = "compactor" }, new() { Id = "smoke-order", Title = "ORDER W", Custom = true }, new() { Id = "reviewer" }]);
             var ordered = Order();
             Reload(savedWorkers);
             await Settle();
-            if (ordered != "LEAD,COMPACTOR,VOICE,IMPLEMENTER,REVIEWER,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
+            if (ordered != "LEAD,VOICE,IMPLEMENTER,REVIEWER,ORDER W" || _cards.Any(c => c.Hidden) || !TabShown(CardFor("implementer")!) ||
                 !TabShown(CardFor("reviewer")!) || CardFor("planner")!.HasCovers || _shownWorker != CardFor("planner"))
                 return Fail();
         }
@@ -1445,7 +1446,7 @@ public partial class MainWindow : Window
             }
             if (!await UiTweaksSmoke(Snap))
                 return Fail();
-            if (!await CompactorSmoke(presetConfig, Snap))
+            if (!await WorkerTabSmoke(presetConfig, Snap))
                 return Fail();
 
             // Dialogs are built without ShowDialog (it would block), shown off-screen, and closed.
@@ -5102,10 +5103,10 @@ public partial class MainWindow : Window
     // Saved order and user-created workers; the three built-in workers are always present.
     private void LoadWorkers()
     {
-        // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, COMPACTOR), then the custom workers in the order added.
+        // Built-ins first in Roles order (LEAD, IMPLEMENTER, REVIEWER, VOICE), then the custom workers in the order added.
         var saved = _settings.Workers.Where(w => w.Id.Length > 0 && (w.Custom || Roles.Contains(w.Id))).ToList();
-        // the test build groups them: LEAD and COMPACTOR (always on), then the helpers
-        string[] order = AppSettings.Unified ? ["planner", "compactor", "voice", "implementer", "reviewer"] : Roles;
+        // the test build groups them: LEAD and VOICE (always on), then the helpers
+        string[] order = AppSettings.Unified ? ["planner", "voice", "implementer", "reviewer"] : Roles;
         foreach (var w in order.Select(r => saved.FirstOrDefault(x => x.Id == r && !x.Custom) ?? new WorkerSetting { Id = r }).Concat(saved.Where(x => x.Custom)))
         {
             var card = new RoleCard(w.Id, w.Custom ? w.Title : null, w.Custom) { ModelId = w.ModelId, ModelVariant = w.ModelVariant, Config = w.Clone() };

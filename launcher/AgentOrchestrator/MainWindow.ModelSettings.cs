@@ -39,10 +39,9 @@ public partial class MainWindow
                           ("Start project: Lead + Reviewer", "lead_project_dual.txt", () => _settings.WorkflowMode is not ("tri" or "solo")),
                           ("Start project: Lead + Implementer + Reviewer", "lead_project_tri.txt", () => _settings.WorkflowMode == "tri"),
                           ("Start project: Lead only", "lead_project_solo.txt", () => _settings.WorkflowMode == "solo"),
-                          ("Step-by-step pipeline", "planner.txt", always)],
+                          ("Step-by-step pipeline", "planner.txt", always), ("Summaries", "compactor.txt", always)], // compaction runs on LEAD's model
             "implementer" => [("Delegated tasks", "sub_implementer.txt", always), ("Step-by-step pipeline", "implementer.txt", always)],
             "reviewer" => [("Delegated reviews", "sub_reviewer.txt", always), ("Step-by-step pipeline", "reviewer.txt", always)],
-            "compactor" => [("Summaries", "compactor.txt", always)],
             _ => [],
         };
     }
@@ -220,7 +219,7 @@ public partial class MainWindow
         var path = card.IsCustom ? "" : ActiveConfigPath();
         JsonObject? role = null;
         var remoteNow = card.IsCustom ? card.Config.Remote : null; // set on the Remote API page; Save keeps it as it is
-        var followsMain = false; // COMPACTOR on MAIN's model: MAIN's settings show, and Save gives it its own only when they change
+        var followsMain = false; // VOICE on MAIN's model: MAIN's settings show, and Save gives it its own only when they change
         if (!card.IsCustom)
         {
             if (!File.Exists(path))
@@ -598,16 +597,11 @@ public partial class MainWindow
             // (the multi-agent workflow depends on them). ApplyPromptView shows the one for the view on screen.
             chatPrompt = Box(followsMain ? "" : (string?)role!["chat_system_prompt"] ?? "", "ChatSystemPrompt", 120);
             chatPrompt.FontFamily = AppFonts.Mono;
-            if (card.Role != LauncherLogic.Compactor) // COMPACTOR never chats
-            {
-                var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
-                chat.Tag = card.Role == LauncherLogic.Voice ? "PromptSection" : "ChatPromptSection"; // VOICE's shows in both views
-                chat.Children.Add(chatPrompt);
-            }
-            var workflow = Section("System prompt (workflow)", card.Role == LauncherLogic.Compactor
-                ? "The instructions COMPACTOR follows when it summarizes a conversation or an agent's steps."
-                : "The instructions this worker follows in Code conversations and project runs.");
-            workflow.Tag = card.Role == LauncherLogic.Compactor ? "PromptSection" : "WorkflowPromptSection"; // COMPACTOR's shows in both views
+            var chat = Section("System prompt (Chat)", "Optional: added to this worker's instructions in the Chat view (roles." + card.Role + ".chat_system_prompt). Empty = none.");
+            chat.Tag = card.Role == LauncherLogic.Voice ? "PromptSection" : "ChatPromptSection"; // VOICE's shows in both views
+            chat.Children.Add(chatPrompt);
+            var workflow = Section("System prompt (workflow)", "The instructions this worker follows in Code conversations and project runs.");
+            workflow.Tag = "WorkflowPromptSection";
             // Collapsed until its header is clicked (the prompts are long); the choice is kept (PromptsExpanded).
             var promptBody = new StackPanel { Tag = "PromptBody", Visibility = _settings.PromptsExpanded ? Visibility.Visible : Visibility.Collapsed };
             promptBody.Children.Add(Muted("The edit button unlocks a prompt and the reset button restores the default; Save keeps the change, for every project."));
@@ -915,18 +909,16 @@ public partial class MainWindow
         var advancedRow = new StackPanel { Orientation = Orientation.Horizontal, Children = { advancedLabel, advanced }, ToolTip = "Memory, speed, output and server options" };
         DockPanel.SetDock(advancedRow, Dock.Right);
         settingsHead.Children.Insert(0, advancedRow);
-        // COMPACTOR and VOICE: whether it follows LEAD's model, and the way back to it.
+        // VOICE: whether it follows LEAD's model, and the way back to it.
         StackPanel? follow = null;
         if (LauncherLogic.FollowerRoles.Contains(card.Role))
         {
-            var voice = card.Role == LauncherLogic.Voice;
-            follow = new StackPanel { Margin = new Thickness(0, 8, 0, 0), Tag = "CompactorSource" };
+            follow = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
             if (followsMain)
-                follow.Children.Add(Muted($"Same as LEAD: {(voice ? "calls talk" : "compaction runs")} on LEAD's model and follow{(voice ? "" : "s")} its changes. Pick a model (or change a setting) and Save to give {card.Title} its own."));
+                follow.Children.Add(Muted($"Same as LEAD: calls talk on LEAD's model and follow its changes. Pick a model (or change a setting) and Save to give {card.Title} its own."));
             else
             {
-                follow.Children.Add(Muted(voice ? "VOICE has its own model: calls load it, so LEAD can stay a bigger model."
-                    : "COMPACTOR has its own model: summaries load it, then LEAD's model loads again."));
+                follow.Children.Add(Muted("VOICE has its own model: calls load it, so LEAD can stay a bigger model."));
                 var back = new Button { Content = "Use LEAD's model", Tag = "UseMainModel", Style = (Style)FindResource("GhostButton"), Padding = new Thickness(12, 4, 12, 4),
                     HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 6, 0, 0) };
                 back.Click += (_, _) =>
@@ -982,7 +974,7 @@ public partial class MainWindow
         favHint.Margin = new Thickness(0, 4, 0, 0);
         var favBlock = new StackPanel { Tag = "LocalFavoritesBlock", Children = { favLabel, favBox, favHint } };
         // The concept's grid, row by row: Model | Favorite models | Model source; Run on the primary PC | API Model | the primary
-        // PC's note; the source buttons (and COMPACTOR's) under the switch. One column, in the same order, in a card narrower
+        // PC's note; the source buttons (and VOICE's) under the switch. One column, in the same order, in a card narrower
         // than threeColumnCard. Then the memory estimate, the context length and the Advanced switch, full width.
         var cells = new (FrameworkElement Cell, int Row, int Column)[]
         {
@@ -1542,7 +1534,7 @@ public partial class MainWindow
                 ShowErrors(new() { [""] = "A prompt could not be saved: see the log." });
                 return false;
             }
-            // COMPACTOR on MAIN's model keeps following it until a model or option of its own is saved.
+            // VOICE on MAIN's model keeps following it until a model or option of its own is saved.
             if (followsMain && choice is null && !toLocal && editors.Values.Select(StateOf).SequenceEqual(clean.Take(editors.Count)))
             {
                 SavedToast(card.Title);
@@ -1657,7 +1649,7 @@ public partial class MainWindow
 
     // A worker's Save, its data part (ModelSettingsBody's Save and the phone's): every field checked before anything is
     // written, then a built-in role written to config.json (path, the config it was read from, first, then the worker config;
-    // COMPACTOR on MAIN's model gets its own copy first) and a custom worker to its WorkerSetting and config.json, and the card
+    // VOICE on MAIN's model gets its own copy first) and a custom worker to its WorkerSetting and config.json, and the card
     // updated. role: the built-in role's roles.<role> as read from path; remote: the API the worker stays on (null: local, a
     // switch to Local when remoteNow is set); inherits: what an empty field means (a custom worker stores only the values
     // that differ); custom: a custom worker's own fields; chatPrompt: a built-in role's Chat system prompt ("" removes it).
@@ -2183,32 +2175,39 @@ public partial class MainWindow
     // Planner's tab: its model list loads on the first open (the GGUFs on disk, llama.cpp runtime), a model's defaults never
     // replace an edit, Save writes the role and keeps the tab, Revert and an invalid value write nothing, and the chat system
     // prompt is saved and removed when blank. config: the active config.json, holding roles.planner.
-    // --ui-smoke: COMPACTOR's tab (always shown, Same as MAIN, never a chat target), the Model group beside the prompts in a
-    // wide column, a prompt edited, saved and reset (<data>\prompts), and "+ New preset" applying the default workers.
-    private async Task<bool> CompactorSmoke(string config, Action<string, FrameworkElement?> snap)
+    // --ui-smoke: VOICE's tab (always shown, Same as LEAD, never a chat target) and no COMPACTOR; LEAD's tab in the Code view:
+    // the Model group beside the prompts in a wide column, the summary prompt edited, saved and reset (<data>\prompts), and
+    // "+ New preset" applying the default workers.
+    private async Task<bool> WorkerTabSmoke(string config, Action<string, FrameworkElement?> snap)
     {
         static Task Idle() => Task.Delay(400);
-        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: compactor: {what}"); return false; }
-        var (planner, compactor) = (CardFor("planner")!, CardFor(LauncherLogic.Compactor));
+        static bool Fail(string what) { Console.Error.WriteLine($"ui-smoke: worker tab: {what}"); return false; }
+        var (planner, voice) = (CardFor("planner")!, CardFor(LauncherLogic.Voice));
         var (chatWorker, ask, expanded, chat) = (_settings.ChatWorker, _codeChoice, _settings.PromptsExpanded, NavChat.IsChecked == true);
         _settings.PromptsExpanded = false;
         _codeChoice = _ => null;
         var overridden = PromptOverridePath("compactor.txt");
         try
         {
-            if (compactor is null || compactor.Hidden || !compactor.FollowsMain || compactor.ModelName != planner.ModelName || compactor.Title != "COMPACTOR")
+            if (voice is null || voice.Hidden || !voice.FollowsMain || voice.GroupStart || voice.ModelName != planner.ModelName || voice.Title != "VOICE" || CardFor("compactor") is not null)
                 return Fail("the card");
-            _settings.ChatWorker = LauncherLogic.Compactor;
-            if (ListedWorkers(_chat).Contains(compactor) || ListedWorkers(_chat).Contains(CardFor(LauncherLogic.Voice)!) || CardFor(LauncherLogic.Voice) is not { Hidden: false, FollowsMain: true, GroupStart: false } || ChatTarget() != planner ||
-                BuildAddWorkerMenu(PresetsButton).Items.OfType<MenuItem>().Any(i => i.Tag as string == LauncherLogic.Compactor))
-                return Fail("COMPACTOR is listed to chat with or to add");
+            _settings.ChatWorker = LauncherLogic.Voice;
+            if (ListedWorkers(_chat).Contains(voice) || ChatTarget() != planner ||
+                BuildAddWorkerMenu(PresetsButton).Items.OfType<MenuItem>().Any(i => i.Tag as string is LauncherLogic.Voice or "compactor"))
+                return Fail("VOICE is listed to chat with or to add");
             _settings.ChatWorker = chatWorker;
 
+            ShowView(); // LEAD's workflow prompts show in the Code view
             OpenModelSettings();
             ModelSettingsPage.Width = 900; // Model on top, the prompts under it, the options below the line
-            SmokeClickTab(compactor);
+            SmokeClickTab(voice);
             await Idle();
-            if (WorkerTabsScroll.ScrollableWidth > 1) // all five fit (LEAD, COMPACTOR, VOICE and the two helpers)
+            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as LEAD:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
+                SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not { IsVisible: true })
+                return Fail("VOICE: Same as LEAD, its chat prompt in the Code view");
+            SmokeClickTab(planner);
+            await Idle();
+            if (WorkerTabsScroll.ScrollableWidth > 1) // all four fit (LEAD, VOICE and the two helpers)
                 return Fail($"the Target agent segments scroll: {WorkerTabsScroll.ScrollableWidth}");
             TextBlock? Header(string text) => SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.EndsWith(text) && t.IsVisible);
             if (Header("MODEL") is not { } model || Header("SYSTEM PROMPT (WORKFLOW)") is not { } prompts || Header("SAMPLING") is not { } sampling)
@@ -2325,14 +2324,11 @@ public partial class MainWindow
                 sampling.TranslatePoint(new Point(), WorkerSettingsHost));
             if (Math.Abs(m.X - p.X) > 2 || p.Y <= m.Y + 100 || s.Y <= p.Y + 20)
                 return Fail($"the layout: model {m}, prompts {p}, sampling {s}");
-            if (SmokeFind<TextBlock>(WorkerSettingsHost, t => t.Text.StartsWith("Same as LEAD:") && t.IsVisible) is null || SmokeButton("Remove") is not null ||
-                SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "ChatSystemPrompt") is not null)
-                return Fail("Same as LEAD, no chat prompt");
             TextBox Box() => SmokeFind<TextBox>(WorkerSettingsHost, t => t.Tag as string == "Prompt:compactor.txt")!;
-            Button Icon(string tag) => SmokeFind<Button>(WorkerSettingsHost, b => b.Tag as string == tag)!;
+            Button Icon(string tag) => SmokeFind<Button>((DependencyObject)Box().Parent, b => b.Tag as string == tag)!; // the summary prompt's own
             var original = DefaultPromptText("compactor.txt");
-            if (original.Length == 0 || Box().Text != original || !Box().IsReadOnly)
-                return Fail("the compactor prompt");
+            if (original.Length == 0 || Box() is not { IsVisible: true } || Box().Text != original || !Box().IsReadOnly)
+                return Fail("LEAD's summary prompt");
             // the buttons sit above the box: they never cover its text
             if (Icon("EditPrompt").TranslatePoint(new Point(0, Icon("EditPrompt").ActualHeight), WorkerSettingsHost).Y > Box().TranslatePoint(new Point(), WorkerSettingsHost).Y + 1)
                 return Fail("the buttons cover the prompt");
@@ -2345,7 +2341,7 @@ public partial class MainWindow
             SmokeClick(SmokeButton("Save"));
             await Idle();
             var configNow = JsonNode.Parse(File.ReadAllText(config))!["roles"] as JsonObject;
-            if (!File.Exists(overridden) || File.ReadAllText(overridden).Trim() != "Summarize in haiku." || LauncherLogic.CompactorHasOwn(configNow) ||
+            if (!File.Exists(overridden) || File.ReadAllText(overridden).Trim() != "Summarize in haiku." || !LauncherLogic.FollowsLead(LauncherLogic.Voice, configNow) ||
                 Box().Text != "Summarize in haiku." || !Box().IsReadOnly)
                 return Fail("a saved prompt");
             SmokeClick(Icon("ResetPrompt"));
@@ -2356,7 +2352,7 @@ public partial class MainWindow
             if (File.Exists(overridden))
                 return Fail("a reset prompt keeps its file");
 
-            // "+ New preset": the default workers (no custom ones, the workflow mode kept), the template's settings, COMPACTOR on LEAD.
+            // "+ New preset": the default workers (no custom ones, the workflow mode kept), the template's settings, VOICE on LEAD.
             if (BuildPresetsMenu().Items.OfType<MenuItem>().FirstOrDefault()?.Header as string != "+ New preset…")
                 return Fail("the menu item");
             SavePreset("smoke-before");
@@ -2367,7 +2363,7 @@ public partial class MainWindow
             var now = JsonNode.Parse(File.ReadAllText(config))!["roles"]!;
             if (_settings.Presets.FirstOrDefault(x => x.Name == "smoke-fresh") is not { } fresh || fresh.Workers.Any(w => w.Custom) || _settings.WorkflowMode != mode ||
                 _cards.Any(c => c.IsCustom) || !JsonNode.DeepEquals(now["planner"]?["auto_load"], template["planner"]?["auto_load"]) ||
-                (string?)now[LauncherLogic.Compactor]?["same_as"] != "planner")
+                (string?)now[LauncherLogic.Voice]?["same_as"] != "planner")
                 return Fail("the fresh preset");
             ApplyPreset(_settings.Presets.First(x => x.Name == "smoke-before"));
             // "Save to current preset": the preset just applied is the current one; its header button names it and overwrites it in place
@@ -2393,8 +2389,8 @@ public partial class MainWindow
             }
             var (builtinDual, piSolo, builtinTri) = (Used("", "dual"), Used("pi", "solo"), Used("", "tri"));
             (_settings.CodeEngine, _settings.WorkflowMode) = (engine, flow);
-            if (builtinDual != "lead,lead_project,lead_project_dual,planner" || piSolo != "lead_pi,lead_project,lead_project_solo,planner" ||
-                builtinTri != "lead,lead_project,lead_project_tri,planner")
+            if (builtinDual != "lead,lead_project,lead_project_dual,planner,compactor" || piSolo != "lead_pi,lead_project,lead_project_solo,planner,compactor" ||
+                builtinTri != "lead,lead_project,lead_project_tri,planner,compactor")
                 return Fail($"the lead prompts used: {builtinDual} | {piSolo} | {builtinTri}");
             return true;
         }

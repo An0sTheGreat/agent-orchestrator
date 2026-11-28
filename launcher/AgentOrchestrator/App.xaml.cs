@@ -95,6 +95,7 @@ public partial class App : Application
         {
             var data = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"AgentOrchestrator-smoke-{Guid.NewGuid():N}");
             Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", data);
+            new AppSettings { RolesMigrated = true }.Save(); // the smokes start in "dual" (a new install's settings would be Lead only)
             var failed = false;
             DispatcherUnhandledException += (_, args) =>
             {

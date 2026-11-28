@@ -161,7 +161,7 @@ public partial class MainWindow
         RefreshChatInput();
     }
 
-    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) is { Hidden: false, Role: not ("compactor" or "voice") } target ? target : CardFor("planner");
+    private RoleCard? ChatTarget() => CardFor(_settings.ChatWorker) is { Hidden: false, Role: not "voice" } target ? target : CardFor("planner");
 
     private static string ChatName(RoleCard? card, string role) =>
         card is { IsCustom: true } ? card.Title : role == "planner" ? "Lead" : RoleName(role);
@@ -189,7 +189,7 @@ public partial class MainWindow
         var chat = ChatShown; // Chat shows LEAD and the agents added to it; Code follows the workflow mode
         foreach (var card in _cards)
             card.Hidden = chat ? card.Role != "planner" && !_settings.ChatCards.Contains(card.Role)
-                : card.IsBuiltIn && card.Role is not ("planner" or "compactor" or "voice") && !_settings.AddedRoles.Contains(card.Role);
+                : card.IsBuiltIn && card.Role is not ("planner" or "voice") && !_settings.AddedRoles.Contains(card.Role);
         if (CardFor("planner") is { } main)
         {
             var covered = Roles.Where(r => r == "planner" || !LauncherLogic.FollowerRoles.Contains(r) && CardFor(r) is not { Hidden: false }).Select(RoleName).ToList();
@@ -197,12 +197,12 @@ public partial class MainWindow
         }
         if (_shownWorker is { Hidden: true })
             SelectWorker(CardFor("planner"));
-        // The groups: LEAD, COMPACTOR and VOICE always work; the Implementer, Reviewer and custom workers only when the workflow or
+        // The groups: LEAD and VOICE always work; the Implementer, Reviewer and custom workers only when the workflow or
         // the lead calls them. A line in the Target agent track starts the helpers, which are a little fainter.
         var firstHelper = true;
         foreach (var card in _cards.Where(c => !c.Hidden))
         {
-            var core = card.Role is "planner" or "compactor" or "voice";
+            var core = card.Role is "planner" or "voice";
             card.GroupStart = !core && firstHelper;
             card.GroupOpacity = core ? 1 : 0.82;
             firstHelper &= core;
@@ -214,7 +214,7 @@ public partial class MainWindow
 
     // The workers c's target chip lists below Options…: none for Code (always the lead); for Chat LEAD, the shown roles and
     // the custom workers.
-    private List<RoleCard> ListedWorkers(Conversation c) => c.IsCode ? [] : _cards.Where(k => !k.Hidden && !LauncherLogic.FollowerRoles.Contains(k.Role)).ToList(); // COMPACTOR only summarizes; VOICE only talks in calls
+    private List<RoleCard> ListedWorkers(Conversation c) => c.IsCode ? [] : _cards.Where(k => !k.Hidden && !LauncherLogic.FollowerRoles.Contains(k.Role)).ToList(); // VOICE only talks in calls
 
     // Send, the stop icon beside it while a reply or a project run is using the models, the lock while a reply streams,
     // and why sending is unavailable. A turn of either kind locks both.
@@ -445,7 +445,7 @@ public partial class MainWindow
         foreach (var role in Roles)
         {
             var card = CardFor(role);
-            // a worker not set up (its tab hidden) or a Compactor on the Lead's model has nothing of its own to load
+            // a worker not set up (its tab hidden) or VOICE on the Lead's model has nothing of its own to load
             var shared = role != "planner" && (card is null || card.Hidden || LauncherLogic.FollowerRoles.Contains(role) && card.FollowsMain);
             var item = new MenuItem { Header = $"Load {card?.Title ?? role.ToUpperInvariant()}" + (shared ? " (uses the Lead's model)" : ""), IsEnabled = !shared };
             item.Click += (_, _) => Forget(LoadRoleAsync(role, card?.Title ?? role.ToUpperInvariant()));

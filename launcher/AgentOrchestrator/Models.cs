@@ -27,7 +27,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     public string Covers { get => _covers; set { if (_covers != value) { _covers = value; Raise(nameof(Covers)); Raise(nameof(HasCovers)); Raise(nameof(TabTip)); } } }
     public bool HasCovers => _covers.Length > 0;
 
-    // COMPACTOR's tab while compaction runs on MAIN's model (roles.compactor absent or "same_as": "planner").
+    // VOICE's tab while calls run on MAIN's model (roles.voice absent or "same_as": "planner").
     private bool _followsMain;
     public bool FollowsMain { get => _followsMain; set { if (_followsMain != value) { _followsMain = value; Raise(nameof(FollowsMain)); Raise(nameof(TabTip)); } } }
 
@@ -40,7 +40,7 @@ internal sealed class RoleCard : INotifyPropertyChanged
     // Collapsed in the worker panel (MainWindow.RefreshCardVisibility: an implementer or reviewer not added).
     private bool _hidden;
     public bool Hidden { get => _hidden; set => Set(ref _hidden, value); }
-    // The card groups (MainWindow.RefreshCardVisibility): LEAD and COMPACTOR always on, the others helpers. The first helper
+    // The card groups (MainWindow.RefreshCardVisibility): LEAD and VOICE always on, the others helpers. The first helper
     // has a line before it in the Target agent track; helpers are a little fainter.
     private bool _groupStart;
     public bool GroupStart { get => _groupStart; set => Set(ref _groupStart, value); }
@@ -382,7 +382,7 @@ internal sealed class AppSettings
     public static AppSettings Load()
     {
         if (!File.Exists(FilePath))
-            return new() { RolesMigrated = true }; // a new user: nothing to migrate
+            return new() { RolesMigrated = true, WorkflowMode = "solo" }; // a new user: nothing to migrate, and Lead only
         try
         {
             return Parse(File.ReadAllText(FilePath));
@@ -397,6 +397,10 @@ internal sealed class AppSettings
         var settings = JsonSerializer.Deserialize<AppSettings>(json) ?? new();
         if (settings.OldAddedRoles is { } old)
             (settings.WorkflowMode, settings.OldAddedRoles) = (old.Contains("implementer") ? "tri" : "dual", null);
+        // the removed COMPACTOR worker (compaction runs on the chat's own model): its keyed settings go (its card is never loaded)
+        settings.ActiveModelPresets.Remove("compactor");
+        settings.LoadSeconds.Remove("compactor");
+        settings.ChatCards.Remove("compactor");
         if (!ModelShare.IsTailscaleHost(settings.ShareHost))
             settings.ShareHost = "";
         return settings;

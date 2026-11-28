@@ -1342,7 +1342,7 @@ internal static class LauncherLogic
     }
 
     // The same on a config.json already in memory (root is changed; the caller writes it once, or drops it on an error or throw).
-    // COMPACTOR following MAIN gets its own roles.compactor first, so Switch to Local restores its copy of MAIN's.
+    // VOICE following MAIN gets its own roles.voice first, so Switch to Local restores its copy of MAIN's.
     public static string? WriteRemoteRole(JsonObject root, string role, RemoteRole? remote, string templatePath)
     {
         if (remote is not null && ValidateRemoteRole(remote) is { } problem)
@@ -1551,21 +1551,14 @@ internal static class LauncherLogic
 
     public static readonly string[] BuiltInRoles = ["planner", "implementer", "reviewer"];
 
-    // roles.compactor (orchestrator.py's compactor role): absent or {"same_as": "planner"} summarizes on MAIN's model.
-    public const string Compactor = "compactor";
-    public static bool CompactorHasOwn(JsonElement roles) =>
-        roles.TryGetProperty(Compactor, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _);
-    public static bool CompactorHasOwn(JsonObject? roles) => roles?[Compactor] is JsonObject c && c["same_as"] is null;
-
-    // roles.voice (the chat model of calls): like COMPACTOR, absent or {"same_as": "planner"} runs on MAIN's model.
+    // roles.voice (the chat model of calls): absent or {"same_as": "planner"} runs on MAIN's model.
     public const string Voice = "voice";
-    public static readonly string[] FollowerRoles = [Compactor, Voice];
+    public static readonly string[] FollowerRoles = [Voice];
     public static bool FollowsLead(string role, JsonObject? roles) => FollowerRoles.Contains(role) && !(roles?[role] is JsonObject c && c["same_as"] is null);
     public static bool FollowsLead(string role, JsonElement roles) => FollowerRoles.Contains(role) &&
         !(roles.TryGetProperty(role, out var c) && c.ValueKind == JsonValueKind.Object && !c.TryGetProperty("same_as", out _));
 
-    // COMPACTOR (or VOICE) on MAIN's model gets its own roles.<role> from here on: MAIN's settings to start (not MAIN's chat prompt).
-    public static void GiveCompactorOwn(JsonObject root) => GiveOwn(root, Compactor);
+    // VOICE on MAIN's model gets its own roles.<role> from here on: MAIN's settings to start (not MAIN's chat prompt).
     public static void GiveOwn(JsonObject root, string role)
     {
         var copy = (JsonObject)root["roles"]!["planner"]!.DeepClone();
@@ -1634,6 +1627,7 @@ internal static class LauncherLogic
             ?? throw new InvalidOperationException("config.json is not a JSON object.");
         var roles = (root["roles"] ??= new JsonObject()).AsObject();
         var before = roles.ToJsonString();
+        roles.Remove("compactor"); // the removed Compactor role of older configs: compaction runs on the role's own model
         var kept = new List<string>();
         foreach (var name in BuiltInRoles.Skip(1))
         {
@@ -1742,7 +1736,7 @@ internal static class LauncherLogic
         return tight.Count == 0 ? null : $"{files} files per task may not fit {string.Join(" or ", tight)} context";
     }
 
-    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "LEAD", "COMPACTOR", "VOICE"];
+    public static readonly string[] ReservedTitles = ["PLANNER", "IMPLEMENTER", "REVIEWER", "MAIN", "LEAD", "VOICE"];
 
     // Why a custom worker cannot have this title (reserved, empty or already used by another worker), or null.
     public static string? TitleProblem(string title, string selfId, IEnumerable<WorkerSetting> workers)
@@ -2731,14 +2725,14 @@ internal static class LauncherLogic
             foreach (var bad in new[] { remote with { BaseUrl = "openrouter.ai" }, remote with { Model = " " }, remote with { KeyEnv = "sk-abc 123" }, remote with { Timeout = "0" } })
                 if (WriteRemoteRole(remoteConfig, "planner", bad, remoteTemplate) is null)
                     throw new InvalidOperationException($"Remote role: invalid input was accepted: {bad}");
-            // COMPACTOR following MAIN: a refused write leaves the file byte for byte; an accepted one gives it MAIN's copy, then remote.
-            File.WriteAllText(remoteConfig, $"{{\"roles\":{{\"planner\":{localPlanner},\"compactor\":{{\"same_as\":\"planner\"}}}}}}");
+            // VOICE following MAIN: a refused write leaves the file byte for byte; an accepted one gives it MAIN's copy, then remote.
+            File.WriteAllText(remoteConfig, $"{{\"roles\":{{\"planner\":{localPlanner},\"voice\":{{\"same_as\":\"planner\"}}}}}}");
             var followingBytes = File.ReadAllBytes(remoteConfig);
-            JsonNode CompactorNow() => JsonNode.Parse(File.ReadAllText(remoteConfig))!["roles"]![Compactor]!;
-            if (WriteRemoteRole(remoteConfig, Compactor, remote with { Model = " " }, remoteTemplate) is null || !File.ReadAllBytes(remoteConfig).SequenceEqual(followingBytes) ||
-                WriteRemoteRole(remoteConfig, Compactor, remote, remoteTemplate) is not null || (string?)CompactorNow()["model"] != "vendor/model-x" ||
-                (string?)CompactorNow()["local_settings"]?["auto_load"]?["model_path"] != "u/Q" || !JsonNode.DeepEquals(Planner(), JsonNode.Parse(localPlanner)))
-                throw new InvalidOperationException($"Remote role: COMPACTOR following MAIN was half-written or not given its own: {File.ReadAllText(remoteConfig)}");
+            JsonNode VoiceNow() => JsonNode.Parse(File.ReadAllText(remoteConfig))!["roles"]![Voice]!;
+            if (WriteRemoteRole(remoteConfig, Voice, remote with { Model = " " }, remoteTemplate) is null || !File.ReadAllBytes(remoteConfig).SequenceEqual(followingBytes) ||
+                WriteRemoteRole(remoteConfig, Voice, remote, remoteTemplate) is not null || (string?)VoiceNow()["model"] != "vendor/model-x" ||
+                (string?)VoiceNow()["local_settings"]?["auto_load"]?["model_path"] != "u/Q" || !JsonNode.DeepEquals(Planner(), JsonNode.Parse(localPlanner)))
+                throw new InvalidOperationException($"Remote role: VOICE following MAIN was half-written or not given its own: {File.ReadAllText(remoteConfig)}");
             File.WriteAllText(remoteConfig, "{\"roles\":{\"planner\":{\"base_url\":\"https://r/v1\",\"model\":\"r/m\",\"api_key_env\":\"K\",\"sampling\":{}}}}");
             if (WriteRemoteRole(remoteConfig, "planner", null, remoteTemplate) is not null || (string?)Planner()["base_url"] != "http://t/v1" ||
                 (string?)Planner()["auto_load"]?["model_path"] != "t/M" || Planner()["model"] is not null || !File.ReadAllBytes(remoteTemplate).SequenceEqual(templateBytes))
@@ -2797,6 +2791,7 @@ internal static class LauncherLogic
             var preset = CapturePreset("p", configA, workersA);
             if (preset.Workers.Count != 2 || preset.Workers[1].Title != "MINE" || preset.Workers[1].ModelVariant != "Q4" || preset.Roles.Count != 3)
                 throw new InvalidOperationException("Preset capture failed.");
+            preset.Roles["compactor"] = "{\"model\":\"c\"}"; // an older preset's removed COMPACTOR role is not applied
             var bBefore = File.ReadAllText(configB);
             if (CapturePreset("none", Path.Combine(testArea, "missing.json"), workersA).Roles.Count != 0 ||
                 !ApplyPresetRoles(configB, new WorkerPreset { Name = "none" }) || File.ReadAllText(configB) != bBefore ||
@@ -2807,17 +2802,18 @@ internal static class LauncherLogic
             var rolesA = JsonNode.Parse(File.ReadAllText(configA))!["roles"]!;
             var presetApplied = JsonNode.Parse(File.ReadAllText(configB))!;
             if (BuiltInRoles.Any(r => presetApplied["roles"]![r]!.ToJsonString() != rolesA[r]!.ToJsonString()) ||
-                presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1)
+                presetApplied["validation_commands"]![0]!.ToString() != "b" || (int)presetApplied["roles"]!["extra"]!["x"]! != 1 || presetApplied["roles"]!["compactor"] is not null)
                 throw new InvalidOperationException("Applying a preset must replace the three roles and nothing else.");
             // Role fallbacks: a role not added gets same_as (its keys kept); an added one loses it, and an empty one copies the planner.
             var fallbacks = Path.Combine(testArea, "fallbacks.json");
-            File.WriteAllText(fallbacks, "{\"keep\":1,\"roles\":{\"planner\":{\"base_url\":\"u\",\"auto_load\":{\"model_path\":\"P\"}},\"implementer\":{\"base_url\":\"u\",\"display_name\":\"I\",\"auto_load\":{\"model_path\":\"I\"}},\"reviewer\":{\"same_as\":\"planner\",\"chat_system_prompt\":\"x\"}}}");
+            File.WriteAllText(fallbacks, "{\"keep\":1,\"roles\":{\"planner\":{\"base_url\":\"u\",\"auto_load\":{\"model_path\":\"P\"}},\"implementer\":{\"base_url\":\"u\",\"display_name\":\"I\",\"auto_load\":{\"model_path\":\"I\"}},\"reviewer\":{\"same_as\":\"planner\",\"chat_system_prompt\":\"x\"},\"compactor\":{\"model\":\"c\"}}}");
             WriteRoleFallbacks(fallbacks, ["reviewer"]);
             var fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
             if ((string?)fb["roles"]!["implementer"]!["same_as"] != "planner" || (string?)fb["roles"]!["implementer"]!["display_name"] != "I" ||
                 fb["roles"]!["reviewer"]!["same_as"] is not null || (string?)fb["roles"]!["reviewer"]!["chat_system_prompt"] != "x" ||
-                ModelKey(fb["roles"]!["reviewer"]) != ModelKey(fb["roles"]!["planner"]) || (string?)fb["roles"]!["reviewer"]!["base_url"] != "u" || (int)fb["keep"]! != 1)
-                throw new InvalidOperationException("Role fallbacks: a not-added role must get same_as, an added empty one the planner's settings.");
+                ModelKey(fb["roles"]!["reviewer"]) != ModelKey(fb["roles"]!["planner"]) || (string?)fb["roles"]!["reviewer"]!["base_url"] != "u" || (int)fb["keep"]! != 1 ||
+                fb["roles"]!["compactor"] is not null)
+                throw new InvalidOperationException("Role fallbacks: a not-added role must get same_as, an added empty one the planner's settings, the removed COMPACTOR goes.");
             WriteRoleFallbacks(fallbacks, ["implementer", "reviewer"]);
             fb = JsonNode.Parse(File.ReadAllText(fallbacks))!;
             if (fb["roles"]!["implementer"]!["same_as"] is not null || ModelKey(fb["roles"]!["implementer"]) == ModelKey(fb["roles"]!["planner"]))
@@ -2871,6 +2867,13 @@ internal static class LauncherLogic
                     Mode("""{"WorkflowMode":"tri"}""") != "tri|tri" || File.ReadAllText(settingsFile).Contains("AddedRoles") ||
                     string.Join(",", AppSettings.Load().AddedRoles) != "implementer,reviewer")
                     throw new InvalidOperationException("The workflow mode was not migrated from the added roles.");
+                // A brand-new data folder (no settings.json) starts in Lead only; an old file's COMPACTOR keys are dropped.
+                File.Delete(settingsFile);
+                if (AppSettings.Load() is not { WorkflowMode: "solo", RolesMigrated: true })
+                    throw new InvalidOperationException("A new install must start in Lead only.");
+                File.WriteAllText(settingsFile, """{"ActiveModelPresets":{"compactor":"p","planner":"q"},"LoadSeconds":{"compactor":9},"ChatCards":["compactor","reviewer"]}""");
+                if (AppSettings.Load() is not { ActiveModelPresets.Count: 1, LoadSeconds.Count: 0, ChatCards: ["reviewer"] })
+                    throw new InvalidOperationException("The removed COMPACTOR's settings were not dropped.");
             }
             finally { Environment.SetEnvironmentVariable("AGENT_ORCHESTRATOR_DATA", dataBefore); }
             // Task limits: read and write; an empty field removes its key, then the empty task_limits; other keys stay.

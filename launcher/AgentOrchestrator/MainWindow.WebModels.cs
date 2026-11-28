@@ -16,7 +16,7 @@ public partial class MainWindow
     private const string WebBusyText = "Wait for the reply or run to finish";
     private const string WebLoadNote = "Takes effect from the next load";
 
-    // A worker as its tab reads it: Path/Role the built-in role's config.json and roles.<role> (the planner's while COMPACTOR
+    // A worker as its tab reads it: Path/Role the built-in role's config.json and roles.<role> (the planner's while VOICE
     // follows MAIN), Current its configured values, Load its auto_load (for its GGUF), Inherited a custom worker's Implementer values.
     private sealed record WebWorkerState(RoleCard Card, string Path, JsonObject? Role, bool FollowsMain, LauncherLogic.RemoteRole? Remote,
         Dictionary<string, string> Current, JsonObject? Load, Dictionary<string, string>? Inherited, string Folder, string Hub, int Version);
@@ -263,7 +263,7 @@ public partial class MainWindow
             if (edit.Kind is not ("specialist" or "reviewer"))
                 return (400, new { errors = new Dictionary<string, string> { ["Kind"] = "Kind is specialist or reviewer" } });
         }
-        // COMPACTOR on MAIN's model keeps following it until a value of its own is saved
+        // VOICE on MAIN's model keeps following it until a value of its own is saved
         else if (s.FollowsMain && fields.All(p => shown[p.Key] == p.Value))
             return (200, ModelsWorking ? WebLoadNote : "");
         Dictionary<string, string> errors;
@@ -761,9 +761,9 @@ public partial class MainWindow
             if (list.Status != 200 || list.Body?["busy"] is null || list.Body["workers"]?.AsArray() is not [{ } lead, ..] || lead["role"]?.ToString() != "planner" ||
                 lead["shown"]?.GetValue<bool>() != true || lead["source"] is null || lead["model"] is null || lead["problem"] is null)
                 return Fail($"list: {list.Status} {list.Body}");
-            // VOICE, the calls' agent, comes right after COMPACTOR, and its page answers
+            // VOICE, the calls' agent, comes right after LEAD (no COMPACTOR), and its page answers
             var roles = list.Body["workers"]!.AsArray().Select(x => x?["role"]?.ToString()).ToList();
-            if (roles.IndexOf("compactor") < 0 || roles.IndexOf("voice") != roles.IndexOf("compactor") + 1 ||
+            if (roles.Contains("compactor") || roles.IndexOf("voice") != roles.IndexOf("planner") + 1 ||
                 await Send("/api/worker/voice") is not { Status: 200, Body: { } voiceWorker } || voiceWorker["options"] is not JsonArray)
                 return Fail($"voice in the list: {string.Join(",", roles)}");
 
