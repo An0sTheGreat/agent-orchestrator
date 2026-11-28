@@ -50,6 +50,39 @@ public partial class MainWindow
             SelectWorker(card);
     }
 
+    // Right-click a custom worker's segment: Remove worker (as its Worker section's button; built-in roles have none).
+    private void WorkerTab_RightClick(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { DataContext: RoleCard { IsCustom: true } card } tab)
+            return;
+        e.Handled = true;
+        WorkerTabMenu(tab, card).IsOpen = true;
+    }
+
+    private ContextMenu WorkerTabMenu(FrameworkElement tab, RoleCard card)
+    {
+        var remove = new MenuItem { Header = "Remove worker", Tag = "RemoveWorker", IsEnabled = !ModelsWorking };
+        remove.Click += (_, _) =>
+        {
+            if (AskDialog("Remove worker", $"Remove {card.Title}? Its settings are deleted.", "Remove") is not null)
+                RemoveWorkerNow(card);
+        };
+        return new ContextMenu { PlacementTarget = tab, Items = { remove } };
+    }
+
+    // As the phone's remove: a removed tab that was shown gives way to LEAD's.
+    private void RemoveWorkerNow(RoleCard card)
+    {
+        HoldWorkerTab(() =>
+        {
+            var selected = card.IsSelected;
+            RemoveWorker(card);
+            if (selected)
+                SelectWorker(CardFor("planner"));
+        });
+        Log($"{card.Title}: removed");
+    }
+
     private void RailCardSettings_Click(object sender, RoutedEventArgs e)
     {
         RailPopup.IsOpen = false;

@@ -1429,6 +1429,20 @@ public partial class MainWindow : Window
                 return Fail();
             if (!await ModelConfigSmoke(presetConfig, Snap))
                 return Fail();
+            // Right-click a Target agent segment: a custom worker's offers Remove worker (removing the shown one shows LEAD); a built-in's nothing
+            {
+                SelectWorker(planner);
+                await Task.Delay(200);
+                var segment = SmokeVisuals(SmokeTab(planner)!).OfType<Button>().First(b => b.Tag as string == "WorkerTab");
+                var builtInClick = new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Right) { RoutedEvent = MouseRightButtonUpEvent };
+                WorkerTab_RightClick(segment, builtInClick);
+                var extra = AddCustomWorker();
+                if (builtInClick.Handled || WorkerTabMenu(segment, extra).Items.OfType<MenuItem>().SingleOrDefault(i => i.Tag as string == "RemoveWorker") is not { IsEnabled: true })
+                    return Fail();
+                RemoveWorkerNow(extra);
+                if (_cards.Contains(extra) || _settings.Workers.Any(w => w.Id == extra.Role) || !planner.IsSelected)
+                    return Fail();
+            }
             if (!await UiTweaksSmoke(Snap))
                 return Fail();
             if (!await CompactorSmoke(presetConfig, Snap))

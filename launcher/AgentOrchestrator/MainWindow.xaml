@@ -1031,7 +1031,7 @@
         <DataTemplate x:Key="WorkerTabTemplate">
             <StackPanel Orientation="Horizontal">
             <Border Width="1" Margin="3,5" Background="{DynamicResource Border}" Visibility="{Binding GroupStart, Converter={StaticResource BoolVis}}" />
-            <Button Tag="WorkerTab" Click="WorkerTab_Click" Cursor="Hand" FocusVisualStyle="{x:Null}" FontSize="11" Padding="8,4,12,4" Opacity="{Binding GroupOpacity}"
+            <Button Tag="WorkerTab" Click="WorkerTab_Click" MouseRightButtonUp="WorkerTab_RightClick" Cursor="Hand" FocusVisualStyle="{x:Null}" FontSize="11" Padding="8,4,12,4" Opacity="{Binding GroupOpacity}"
                     Foreground="{DynamicResource Muted}" AutomationProperties.Name="{Binding Title}" ToolTip="{Binding TabTip}">
                 <Button.Template>
                     <ControlTemplate TargetType="Button">
