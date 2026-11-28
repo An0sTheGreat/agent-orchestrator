@@ -1760,10 +1760,15 @@ public partial class MainWindow
 
     // Answer text that streamed before a tool call or a new section stays where it is; text after them starts a new answer
     // below, so the reply reads in the order it happened. The final reply replaces only that last answer.
-    private static void DetachAnswer(ChatReply r)
+    private void DetachAnswer(ChatReply r)
     {
         if (r.Answer is null || r.Final is not null)
             return;
+        if (r == _reply) // a call: this answer's last sentence is read now, and the next answer's sentences count from its start
+        {
+            CallHandOver(r.AnswerText.ToString(), final: true);
+            _callQueued = 0;
+        }
         if (r.AnswerText.ToString().Trim() is { Length: > 0 } shown)
             r.Earlier.Add(shown);
         (r.Answer, r.Rendered) = (null, null);

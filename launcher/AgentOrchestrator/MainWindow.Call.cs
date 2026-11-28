@@ -298,7 +298,7 @@ public partial class MainWindow
             foreach (var samples in queue.GetConsumingEnumerable())
             {
                 // read off the UI thread: a stale read costs one 50 ms buffer. Interrupt by talking listens over the speech too.
-                var over = _callNow == CallState.Speaking && _settings.Tts.CallBargeIn;
+                var over = _callNow == CallState.Speaking && _settings.Tts.CallBargeIn && !_callMuted; // muted: never heard, not even to interrupt
                 if (_callNow != CallState.Listening && !over)
                 {
                     Drop();
@@ -480,6 +480,7 @@ public partial class MainWindow
             return;
         _callMuted = !_callMuted;
         CallFire(_callMuted ? CallEvent.Mute : CallEvent.Unmute);
+        ShowCallState(_callNow); // thinking or speaking keep their state (the turn goes on): the button still shows the change
     }
 
     private void StopCallSpeech()
@@ -625,10 +626,19 @@ public partial class MainWindow
             lastRequest = ChatRequest(CallCard()!.Role, text);
             StartTurn(_chat, text, CallCard()!.Role);
             FreeGpuForChat();
-            foreach (var word in reply.Split(' '))
-                _lines.Enqueue(Ev($$"""{"e":"delta","role":"voice","kind":"text","text":"{{word}} "}"""));
+            var parts = reply.Split('|'); // "|": a tool call between the parts of the reply, as a reply that works between its sentences
+            for (var i = 0; i < parts.Length; i++)
+            {
+                foreach (var word in parts[i].Split(' '))
+                    _lines.Enqueue(Ev($$"""{"e":"delta","role":"voice","kind":"text","text":"{{word}} "}"""));
+                if (i == parts.Length - 1)
+                    break;
+                _lines.Enqueue(Ev("""{"e":"delta","role":"voice","kind":"tool","index":0,"name":"read_file","text":"{\"path\":\"a.js\"}"}"""));
+                _lines.Enqueue(Ev("""{"e":"done","role":"voice","final":false}"""));
+                _lines.Enqueue(Ev("""{"e":"tool","role":"voice","name":"read_file","args":"{\"path\":\"a.js\"}","result":"OK"}"""));
+            }
             DrainLines();
-            _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"voice","text":"{{reply}}"}"""));
+            _lines.Enqueue(Ev($$"""{"e":"chat_reply","role":"voice","text":"{{parts[^1]}}"}"""));
             DrainLines();
             generating = false;
             FinishChatTurn(0, false, null);
@@ -693,7 +703,9 @@ public partial class MainWindow
             {
                 lock (spoken)
                     spoken.Add("cb:" + text);
-                return new float[Tts.Rate / 2];
+                if (text == "Second muted sentence.")
+                    Thread.Sleep(1000); // made while the first one is heard: Speaking long enough to mute in it
+                return text == "First muted sentence." ? Enumerable.Repeat(0.3f, Tts.Rate / 2).ToArray() : new float[Tts.Rate / 2];
             }, () => overlap |= generating)); // a warm-up while the model generates: they would contend on the GPU
             _modelsLoadedStub = () => modelLoaded;
             _callLoadStub = async () => { lock (order) order.Add("load"); await Task.Delay(50); modelLoaded = true; };
@@ -805,8 +817,23 @@ public partial class MainWindow
             if (asked["messages"]!.AsArray() is not { Count: 7 } askedMessages || askedMessages[^1]!["content"]!.GetValue<string>() != "/compact" || asked["worker"]!.GetValue<string>() != worker
                 || sent["summary"]!.GetValue<string>() != "Earlier: birds." || sent["summary_covers"]!.GetValue<int>() != 6 || sent["messages"]!.AsArray().Count != 1 || sent["worker"]!.GetValue<string>() != LauncherLogic.Voice)
                 return Fail($"a call in a longer chat: the summary asked {asked.ToJsonString()}; the first call request {sent.ToJsonString()}");
+            // mute while the reply speaks: the button shows it at once, the reply goes on to its end, then the call waits muted.
+            // A tool call between its sentences: what it says after the work is read too.
+            reply = "First muted sentence.|Second muted sentence.";
+            await Task.Run(Phrase);
+            if (!await Until(() => CallNow == CallState.Speaking))
+                return Fail($"the muted reply did not start speaking: {CallNow}");
+            ToggleCallMute();
+            if (CallNow != CallState.Speaking || CallMuteButton.ToolTip as string != "Unmute the microphone")
+                return Fail($"mute while speaking: {CallNow}, button \"{CallMuteButton.ToolTip}\"");
+            if (!await Until(() => CallNow == CallState.Paused) || !Spoken().Any(s => s.EndsWith("Second muted sentence."))
+                || Spoken().Count(s => s.EndsWith("First muted sentence.")) != 1)
+                return Fail($"muted mid-reply: {CallNow}, spoken [{string.Join("|", Spoken())}]");
+            ToggleCallMute();
+            if (CallNow != CallState.Listening || CallMuteButton.ToolTip as string != "Mute the microphone")
+                return Fail($"unmute after the reply: {CallNow}, button \"{CallMuteButton.ToolTip}\"");
             EndCall();
-            if (_store.Get(id) is not { Messages.Count: 8, Summary: "Earlier: birds.", SummaryCovers: 6 } longChat || longChat.Title != title || !Ended())
+            if (_store.Get(id) is not { Messages.Count: 10, Summary: "Earlier: birds.", SummaryCovers: 6 } longChat || longChat.Title != title || !Ended())
                 return Fail($"a call in a longer chat: {_store.Get(id)?.Messages.Count} saved messages, summary {_store.Get(id)?.Summary}, title {_store.Get(id)?.Title}");
             return true;
         }
