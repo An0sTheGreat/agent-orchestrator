@@ -451,6 +451,16 @@ public partial class MainWindow
             item.Click += (_, _) => Forget(LoadRoleAsync(role, card?.Title ?? role.ToUpperInvariant()));
             menu.Items.Add(item);
         }
+        // custom workers: the engine's --load-role takes a custom worker id as well
+        var custom = _cards.Where(c => c.IsCustom).ToList();
+        if (custom.Count > 0)
+            menu.Items.Add(new Separator());
+        foreach (var card in custom)
+        {
+            var item = new MenuItem { Header = $"Load {card.Title}" };
+            item.Click += (_, _) => Forget(LoadRoleAsync(card.Role, card.Title));
+            menu.Items.Add(item);
+        }
         menu.Items.Add(new Separator());
         var unload = new MenuItem { Header = "Unload all models", IsEnabled = ModelsLoaded || _settings.ShareHost.Length > 0
             || Chatterbox.Loaded || Tts.Loaded || Speech.Loaded }; // the primary PC's state is not known here
