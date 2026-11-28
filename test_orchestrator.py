@@ -3185,9 +3185,31 @@ class CodeTests(unittest.TestCase):
             code, log, events, _ = self.code({"action": "chat", "messages": history, "image_gen": self.IMAGE_GEN},
                                              {"planner": [line, self.image_call(prompt="a fox")]})
         self.assertEqual((code, len(log)), (0, 2))
-        self.assertEqual(log[0]["messages"][-2]["content"], f"(I called generate_image; its result: {line})")  # the past picture told as the call it was
+        # the past picture as the tool call it was: the model's generate_image call with its prompt, then the tool's result
+        call, result = log[0]["messages"][-3], log[0]["messages"][-2]
+        self.assertEqual((call["role"], call["tool_calls"][0]["function"]["name"], json.loads(call["tool_calls"][0]["function"]["arguments"])),
+                         ("assistant", "generate_image", {"prompt": "a fox"}))
+        self.assertEqual((result["role"], result["tool_call_id"], result["content"]), ("tool", call["tool_calls"][0]["id"], line))
         self.assertEqual(log[1]["messages"][-1]["content"], orchestrator.FAKE_PICTURE)
         self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+
+    def test_image_gen_the_old_picture_note_written_as_text_is_sent_back_to_call_the_tool(self):
+        line = "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 7. Prompt: a fox"
+        note = f"(I called generate_image; its result: {line})"  # what the model copied after a few pictures
+        with patch.object(orchestrator, "launcher_call", lambda event, **d: {"result": line, "image": ""}):
+            code, log, events, _ = self.code({"action": "chat", "messages": self.MSGS, "image_gen": self.IMAGE_GEN},
+                                             {"planner": [note, self.image_call(prompt="a fox")]})
+        self.assertEqual((code, len(log)), (0, 2))
+        self.assertEqual(log[1]["messages"][-1]["content"], orchestrator.FAKE_PICTURE)
+        self.assertEqual([d["text"] for e, d in events if e == "code_reply"], [line])
+
+    def test_picture_turns_without_tools_are_told_as_a_note(self):
+        line = "Image generated and shown to the user. Model: m. Size: 1x1. Seed: 7. Prompt: a fox"
+        history = orchestrator.chat_messages({"messages": [{"role": "user", "content": "a fox"}, {"role": "assistant", "content": line},
+                                                           {"role": "user", "content": "thanks"}]})
+        self.assertEqual([m["role"] for m in history], ["user", "assistant", "tool", "user"])
+        self.assertEqual(orchestrator.plain_pictures(history)[1], {"role": "assistant", "content": f"(I called generate_image; its result: {line})"})
+        self.assertEqual([m["role"] for m in orchestrator.chat_messages({"messages": [{"role": "assistant", "content": line}]}, pictures_as_calls=False)], ["assistant"])
 
     def test_image_gen_unload_chat_stops_the_model_before_painting_and_loads_it_after(self):
         order = []

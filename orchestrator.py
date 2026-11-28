@@ -3949,7 +3949,19 @@ def chat_call(config: dict[str, Any], role: str, stage: str, system: str, messag
     if extras[0]:
         return code_loop(config, role, system + extras[2], messages, extras[0], extras[1], steers=steers)
     model = client.ensure_model(role, False)
-    return final_reply(client, client.complete(model, [{"role": "system", "content": system}, *messages], sampling))
+    return final_reply(client, client.complete(model, [{"role": "system", "content": system}, *plain_pictures(messages)], sampling))
+
+
+def plain_pictures(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """picture_call's call and result as one assistant note, for a request without tools (some APIs refuse tool calls in
+    the history then; with no generate_image to call there is nothing for the model to imitate)."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") == "tool" and str(m.get("tool_call_id") or "").startswith("picture-"):
+            out[-1] = {"role": "assistant", "content": f"(I called generate_image; its result: {m['content']})"}
+        else:
+            out.append(m)
+    return out
 
 
 PICTURE_LINE = "Image generated and shown to the user. "  # the launcher's ImageGen.ChatResult: a picture turn's saved reply
@@ -3957,15 +3969,38 @@ FAKE_PICTURE = ("No picture was made: you wrote the picture's details line yours
                 "Call generate_image now to make the picture.")
 
 
-def chat_messages(request: dict[str, Any]) -> list[dict[str, str]]:
-    """The conversation; a picture turn's saved reply (the bare details line) is told as the tool call it was, so the
-    model never learns to answer a picture request by writing that line."""
-    return [
-        {"role": m["role"], "content": f"(I called generate_image; its result: {m['content']})"
-         if m.get("role") == "assistant" and str(m["content"]).startswith(PICTURE_LINE) else str(m["content"])}
-        for m in request.get("messages") or []
-        if isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()
-    ]
+def fake_picture(content: str) -> bool:
+    """A reply that only writes out a picture's details (the details line, or the note a past picture was once told as)
+    instead of calling generate_image: no picture exists."""
+    text = content.lstrip().lstrip("(").lstrip()
+    return text.startswith(PICTURE_LINE) or text.startswith("I called generate_image")
+
+
+def picture_call(index: int, line: str) -> list[dict[str, Any]]:
+    """A picture turn's saved reply (the details line) as the tool call it was: the model's generate_image call with its
+    prompt, then the tool's result. Any text standing in for it (the bare line, or "(I called generate_image; ...)") was
+    copied by the model after a few pictures: it wrote the text and made no picture."""
+    prompt = line.rsplit("Prompt: ", 1)[1] if "Prompt: " in line else line
+    call_id = f"picture-{index}"
+    return [{"role": "assistant", "content": "", "tool_calls": [{"id": call_id, "type": "function", "function": {
+                "name": "generate_image", "arguments": json.dumps({"prompt": prompt}, ensure_ascii=False)}}]},
+            {"role": "tool", "tool_call_id": call_id, "content": line}]
+
+
+def chat_messages(request: dict[str, Any], pictures_as_calls: bool = True) -> list[dict[str, Any]]:
+    """The conversation; a picture turn's saved reply is told as the tool call it was (picture_call). Pi's sessions keep
+    plain text messages: there it stays "(I called generate_image; its result: ...)"."""
+    out: list[dict[str, Any]] = []
+    for m in request.get("messages") or []:
+        if not (isinstance(m, dict) and m.get("role") in ("user", "assistant") and str(m.get("content") or "").strip()):
+            continue
+        content = str(m["content"])
+        if m["role"] == "assistant" and content.startswith(PICTURE_LINE):
+            out += picture_call(len(out), content) if pictures_as_calls else [
+                {"role": "assistant", "content": f"(I called generate_image; its result: {content})"}]
+        else:
+            out.append({"role": m["role"], "content": content})
+    return out
 
 
 def chat_worker(config: dict[str, Any], role: str) -> dict[str, Any] | None:
@@ -4360,7 +4395,7 @@ def code_loop(config: dict[str, Any], role: str, system: str, messages: list[dic
             messages.append({"role": "user", "content": "Your reply was cut off at the output limit, so its tool call was NOT executed. Use replace_text for smaller edits, or write files in smaller pieces."})
             continue
         cutoffs = 0
-        if not calls and "generate_image" in handlers and content.lstrip().startswith(PICTURE_LINE) and nudges < 1:
+        if not calls and "generate_image" in handlers and fake_picture(content) and nudges < 1:
             nudges += 1  # the details line written as text: no picture exists; once, then the reply stands
             messages.append({"role": "user", "content": FAKE_PICTURE})
             continue
@@ -6258,7 +6293,7 @@ def run_code(config: dict[str, Any], request_path: Path) -> int:
     action = request.get("action")
     if action not in ("chat", "write_project"):
         raise WorkflowError(f"Unknown code action {action!r}")
-    messages = chat_messages(request)
+    messages = chat_messages(request, pictures_as_calls=request.get("engine") != "pi")
     if action == "chat" and (not messages or messages[-1]["role"] != "user"):
         raise WorkflowError("Code request needs messages ending with a user message")
     role = str(request.get("worker") or "planner")
