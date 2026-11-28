@@ -1388,8 +1388,9 @@
                             <StackPanel VerticalAlignment="Center">
                                 <TextBlock Text="TARGET AGENT" Style="{StaticResource SectionHeader}" FontSize="9" Margin="4,0,0,3" />
                                 <Border BorderBrush="{DynamicResource Border}" BorderThickness="1" CornerRadius="{DynamicResource ControlRadius}" Padding="2" HorizontalAlignment="Left">
-                                    <!-- one segment per shown worker (MainWindow.WorkerTabs.cs); too many for the pill, they scroll (the wheel too) -->
-                                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Hidden" VerticalScrollBarVisibility="Disabled" PreviewMouseWheel="WorkerTabs_MouseWheel">
+                                    <!-- one segment per shown worker (MainWindow.WorkerTabs.cs); too many for the pill, they scroll: a thin bar
+                                         under them to drag, and the wheel -->
+                                    <ScrollViewer x:Name="WorkerTabsScroll" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" PreviewMouseWheel="WorkerTabs_MouseWheel">
                                         <ItemsControl x:Name="WorkerTabs" ItemTemplate="{StaticResource WorkerTabTemplate}">
                                             <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
                                             <ItemsControl.ItemContainerStyle>
