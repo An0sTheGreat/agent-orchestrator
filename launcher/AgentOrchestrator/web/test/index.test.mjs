@@ -13,3 +13,7 @@ for (const id of ['view-chat', 'view-code'])
     assert.match(v, /class="[^"]*\bctxring\b/);
     assert.match(v, /class="[^"]*\bqueue\b/);
   });
+
+test('#view-chat has the suggestion chip chat.js draws, hidden until a suggestion comes', () => {
+  assert.match(section('view-chat'), /<button class="suggest hidden" data-suggest>/);
+});

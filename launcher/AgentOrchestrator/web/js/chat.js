@@ -11,7 +11,8 @@ import { speakButton, stopSpeech, autoSpeak } from './speak.js';
 // parts, in order: {t:'text'|'thinking', text}, {t:'tool', name, args, result}, {t:'image', src}, {t:'stage', title}.
 // The engine's deltas carry no section breaks: a text delta after a tool row (or anything not text) starts a new section.
 // refetch: load the conversation again. reopen: close the stream and open it again (a fresh hello replaces the parts).
-export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, status: '', parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0 });
+// suggestion: the last reply's suggested next message (the chip above the box), '' when none; a turn running clears it.
+export const emptyLive = () => ({ busy: false, queued: 0, prompt: null, status: '', parts: [], context: null, refetch: false, reopen: false, turn: 0, epoch: 0, suggestion: '' });
 
 const picture = path => '/api/file?path=' + encodeURIComponent(path);
 // The PC path of a generated picture's URL (one in an images folder), which a long press may delete; null for the user's photos
@@ -36,10 +37,13 @@ export function applyEvent(s, ev) {
     case 'hello': { // refetch too: a turn saved between the first GET and the subscription is in neither, and no `saved` follows
       const parts = ev.reply?.text ? [{ t: 'text', text: ev.reply.text, turn: 0 }] : [];
       if (ev.picture) parts.push({ ...card(ev.picture), turn: 0 }); // a picture in progress: its card at once
-      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.reply?.status || '', parts, turn: 0, epoch: s.epoch + 1 };
+      return { ...s, refetch: true, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.reply?.status || '', parts, turn: 0, epoch: s.epoch + 1,
+        suggestion: ev.busy ? '' : s.suggestion };
     }
     case 'state':
-      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.status || '' };
+      return { ...s, busy: !!ev.busy, queued: ev.queued || 0, prompt: ev.prompt || null, status: ev.status || '', suggestion: ev.busy ? '' : s.suggestion };
+    case 'suggestion': // after the reply (MainWindow.Chat.cs SuggestionLine): one, until the next turn
+      return { ...s, suggestion: String(ev.text || '').trim() };
     case 'delta':
       return ev.kind === 'text' || ev.kind === 'thinking' ? append(ev.kind, ev.text || '') : s; // 'tool': a call's arguments streaming
     case 'picture': {
@@ -84,6 +88,18 @@ export const freshLoad = (applied, seq) => seq > applied;
 export const landLoad = (applied, seq, conv, context) => !freshLoad(applied, seq) ? null : {
   messages: conv.messages, context: conv.context ?? context, title: conv.title || 'Chat',
   sub: conv.worker ? `${conv.kind === 'code' ? 'Code' : 'Chat'} · to ${conv.worker}` : '' };
+// The suggestion chip shows the suggestion while the box is empty and no turn runs (null: hidden); typing hides it, emptying
+// the box shows it again.
+export const suggestionShown = (s, boxText) => !s.busy && !boxText && s.suggestion ? s.suggestion : null;
+// A tap on the chip fills the box (not sent), caret at the end; the input event lets the composer and the chip follow.
+export function takeSuggestion(s, box) {
+  const text = suggestionShown(s, box.value);
+  if (!text) return;
+  box.value = text;
+  box.focus();
+  box.setSelectionRange?.(text.length, text.length);
+  box.dispatchEvent(new Event('input'));
+}
 // The approval card the user answered stays done across redraws, until a new prompt (new nonce) arrives.
 export const approvalDone = (answered, prompt) => answered != null && answered === prompt.nonce;
 
@@ -331,7 +347,15 @@ if (typeof document !== 'undefined') {
       h('li', { class: color ? null : 'free' }, swatch(color), h('span', null, name), h('b', null, fmt(n)), h('small', null, share(n)))));
   }
 
+  function drawSuggestion() { // the Chat screen's chip (the Code screen has none)
+    const chip = view.querySelector('[data-suggest]'), text = chip && suggestionShown(live, $('#chatbox').value);
+    if (!chip) return;
+    chip.classList.toggle('hidden', !text);
+    if (text && chip.textContent !== text) chip.textContent = text;
+  }
+
   function drawState() {
+    drawSuggestion();
     view.querySelector('[data-stop]').classList.toggle('hidden', !live.busy);
     const n = live.queued, queue = view.querySelector('.queue');
     queue.classList.toggle('hidden', !n);
@@ -433,6 +457,8 @@ if (typeof document !== 'undefined') {
 
   outgoing = (to, text, paths) => {
     stopSpeech(); // a new send
+    live = { ...live, suggestion: '' }; // sent: the box empties next, and the old suggestion stays gone
+    drawSuggestion();
     if (!to || to !== id) return; // a new chat: the follow to it loads the message
     outbox = { message: { role: 'user', text, time: new Date().toISOString(), images: paths.map(picture) }, after: saved.length };
     draw(true);
@@ -502,6 +528,9 @@ if (typeof document !== 'undefined') {
 
   // Bound once at load, not in the Chat screen's mount: the Code screen shares these buttons and may be visited first.
   document.querySelectorAll('[data-stop]').forEach(b => b.addEventListener('click', () => api.post('/api/stop', { id }).catch(fail)));
+  const chatBox = $('#chatbox');
+  chatBox.addEventListener('input', drawSuggestion);
+  $('[data-suggest]').addEventListener('click', () => takeSuggestion(live, chatBox));
   document.querySelectorAll('.ctxring[data-ctx]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); pop.hidden = !pop.hidden; }));
   document.addEventListener('click', e => { if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true; });
 

@@ -449,6 +449,12 @@ body.landscape .drawer { padding-top: 0; }
 .queue .dot { animation: pulse 1.4s ease-in-out infinite; }
 
 .attachrow { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+/* the suggested next message (chat.js drawSuggestion): a gray chip above the box; a tap fills the box */
+.suggest {
+  display: block; max-width: 100%; margin-bottom: 6px; padding: 5px 10px; border-radius: 14px;
+  background: var(--field); border: 1px solid var(--border); color: var(--muted);
+  font-size: 12.5px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .attachrow .x { margin-left: 2px; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1; }
 .skillpop { position: absolute; left: 12px; right: 12px; bottom: calc(100% - 4px); background: var(--card); border: 1px solid var(--border); border-radius: var(--r-panel); padding: 7px; box-shadow: 0 12px 30px rgba(0, 0, 0, .5); z-index: 5; max-height: 45vh; overflow-y: auto; }
 .skillpop-head { font-size: 10px; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); margin: 4px 6px 6px; }

@@ -964,11 +964,13 @@ public partial class MainWindow
     private string? _suggestion; // shown gray in the empty Chat box until a new turn or another conversation
     private Process? _suggestProcess; // a finished turn's engine, still making the suggestion
     private TaskCompletionSource? _suggesting; // the running turn's: "suggesting" ends it (RunTurn)
+    private string? _suggestWebId; // the conversation the latest turn's suggestion belongs to (its phone chip)
 
     private string? ShownSuggestion(Conversation c) => !c.IsCode && !_chatBusy && _process is null ? _suggestion : null;
 
     // A turn's engine line (any thread): true when it was the suggestion, which then shows if its turn is still the latest
-    // and its conversation still the one shown (tag: _turnId, the conversation and its Opened when the turn started).
+    // and its conversation still the one shown (tag: _turnId, the conversation and its Opened when the turn started). The
+    // phone's chip gets it whatever the desktop shows (a newer turn anywhere drops it, as StartTurn stops its process).
     private bool SuggestionLine(string line, (int Turn, Conversation Conv, int Opened) tag)
     {
         if (LauncherLogic.TryParseEvent(line) is not { } ev || Str(ev, "e") != "suggestion")
@@ -976,7 +978,10 @@ public partial class MainWindow
         var text = Str(ev, "text").Trim();
         Dispatcher.BeginInvoke(() =>
         {
-            if (tag.Turn != _turnId || tag.Conv != _chat || tag.Conv.Opened != tag.Opened || !_settings.SuggestNext || text.Length == 0)
+            if (tag.Turn != _turnId || !_settings.SuggestNext || text.Length == 0)
+                return;
+            PublishWebEvent(_suggestWebId, JsonSerializer.Serialize(new { e = "suggestion", text }));
+            if (tag.Conv != _chat || tag.Conv.Opened != tag.Opened)
                 return;
             _suggestion = text;
             RefreshChatInput();
@@ -1439,6 +1444,7 @@ public partial class MainWindow
                 _turnTitle = Str(ev, "text");
                 break;
             case "suggesting": // the reply is complete: RunTurn ends the turn, the suggestion arrives on its own (SuggestionLine)
+                _suggestWebId = RunningId; // the phone's stream it goes to, whatever the desktop shows by then
                 _suggesting?.TrySetResult();
                 break;
             // A Send now message reached the model: the reply so far closes, the message shows as the user's and the reply

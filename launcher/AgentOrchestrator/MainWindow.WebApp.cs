@@ -1067,6 +1067,28 @@ public partial class MainWindow
             if (_store.Get(id)?.Messages.LastOrDefault()?.Content != "One two\n\nthree four")
                 return Fail($"saved before the reply was: {_store.Get(id)?.Messages.LastOrDefault()?.Content}");
 
+            // the suggested next message reaches the phone's stream of its conversation (the desktop showing another), not with the setting off
+            var suggestOn = _settings.SuggestNext;
+            try
+            {
+                _suggestWebId = id;
+                var marked = Dispatcher.InvokeAsync(() =>
+                {
+                    _settings.SuggestNext = false;
+                    SuggestionLine("""@@AO {"e":"suggestion","text":"Off"}""", (_turnId, _code, 0));
+                    Dispatcher.BeginInvoke(() =>
+                    {
+                        _settings.SuggestNext = true;
+                        SuggestionLine("""@@AO {"e":"suggestion","text":"Add tests"}""", (_turnId, _code, 0));
+                    });
+                });
+                await marked;
+                var suggested = await ReadTo(a, "the suggestion", n => E(n) == "suggestion");
+                if (suggested.Count(n => E(n) == "suggestion") != 1 || suggested[^1]["text"]?.ToString() != "Add tests")
+                    return Fail($"the suggestion: {string.Join(" ", suggested.Select(n => n.ToJsonString()))}");
+            }
+            finally { _settings.SuggestNext = suggestOn; }
+
             // the gates: no owner, another account, a cross-site page
             foreach (var (login, site) in new[] { ((string?)null, (string?)null), ("other@example.com", null), ("smoke@example.com", "cross-site") })
             {

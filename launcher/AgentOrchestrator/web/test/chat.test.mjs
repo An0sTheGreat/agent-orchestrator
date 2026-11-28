@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture, chatMenu, lastReply, workSummary, isWork } from '../js/chat.js';
+import { applyEvent, ringColor, emptyLive, cutOf, landSaved, freshLoad, approvalDone, landLoad, deletablePicture, chatMenu, lastReply, workSummary, isWork, suggestionShown, takeSuggestion } from '../js/chat.js';
 
 test('deletablePicture: a generated picture in images, not a photo in pasted, a screenshot or another URL', () => {
   const url = p => '/api/file?path=' + encodeURIComponent(p);
@@ -204,4 +204,32 @@ test("state and hello carry the desktop's status line", () => {
   assert.equal(run({ e: 'state', busy: true, status: 'Writing run_command… 598 characters' }).status, 'Writing run_command… 598 characters');
   assert.equal(run({ e: 'state', busy: true, status: 'x' }, { e: 'state', busy: true }).status, '');
   assert.equal(run({ e: 'hello', busy: true, reply: { text: '', status: 'Lead is working…' } }).status, 'Lead is working…');
+});
+
+test('the suggestion chip: shown while the box is empty, hidden while typing, back when the box is emptied', () => {
+  const s = run({ e: 'state', busy: false }, { e: 'suggestion', text: ' Add unit tests ' });
+  assert.equal(suggestionShown(s, ''), 'Add unit tests');
+  assert.equal(suggestionShown(s, 'A'), null);
+  assert.equal(suggestionShown(s, ''), 'Add unit tests');
+});
+
+test('a tap on the suggestion chip fills the box (not sent) and tells the composer', () => {
+  const s = run({ e: 'suggestion', text: 'Add unit tests' });
+  const box = Object.assign(new EventTarget(), { value: '', focused: false, focus() { this.focused = true; } });
+  let inputs = 0;
+  box.addEventListener('input', () => inputs++);
+  takeSuggestion(s, box);
+  assert.deepEqual([box.value, box.focused, inputs], ['Add unit tests', true, 1]);
+  takeSuggestion(s, Object.assign(box, { value: 'typed' })); // the box is not empty: the chip is hidden, nothing changes
+  assert.deepEqual([box.value, inputs], ['typed', 1]);
+});
+
+test('a new turn clears the suggestion; another chat starts without one; no suggestion event, no chip', () => {
+  const shown = run({ e: 'suggestion', text: 'Add unit tests' });
+  assert.equal(suggestionShown(applyEvent(shown, { e: 'state', busy: true }), ''), null);
+  assert.equal(applyEvent(applyEvent(shown, { e: 'state', busy: true }), { e: 'state', busy: false }).suggestion, '');
+  assert.equal(suggestionShown(applyEvent(shown, { e: 'hello', busy: true }), ''), null);
+  assert.equal(suggestionShown(applyEvent(shown, { e: 'hello', busy: false }), ''), 'Add unit tests'); // a reconnect keeps it
+  assert.equal(suggestionShown(emptyLive(), ''), null);
+  assert.equal(suggestionShown(run({ e: 'saved' }, { e: 'state', busy: false }), ''), null); // the setting off: the PC sends none
 });
