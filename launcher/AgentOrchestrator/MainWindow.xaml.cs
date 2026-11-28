@@ -1879,8 +1879,52 @@ public partial class MainWindow : Window
             RemoveWorker(visible);
             File.WriteAllText(effortConfig, configBefore);
 
+            // The suggested next message (the engine's side call after the reply): the empty box shows it gray, Tab fills it in,
+            // typing hides it and clearing shows it again; a stale one, a new turn or the setting off shows none.
+            bool Suggests(bool on) => JsonNode.Parse(ChatRequest("reviewer", "x"))!["suggest"]!.GetValue<bool>() == on;
+            void Press(Key key) => ChatInput.RaiseEvent(new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(ChatInput)!, 0, key) { RoutedEvent = Keyboard.PreviewKeyDownEvent });
+            const string suggested = "Add unit tests for the cache class";
+            var plainHint = ChatHint.Text;
+            var suggestTag = (_turnId, _chat, _chat.Opened);
+            if (!Suggests(true) || SuggestionLine(Ev("""{"e":"chat_title","text":"Not one"}"""), suggestTag) ||
+                !SuggestionLine(Ev("""{"e":"suggestion","text":"Too late"}"""), (_turnId - 1, _chat, _chat.Opened)) ||
+                !SuggestionLine(Ev($$"""{"e":"suggestion","text":"{{suggested}}"}"""), suggestTag))
+                return Fail();
+            await Settle();
+            if (ChatHint.Text != suggested || ChatHint.Visibility != Visibility.Visible)
+                return Fail();
+            Snap("15-chat-suggestion");
+            ChatInput.Focus();
+            Press(Key.Tab);
+            if (ChatInput.Text != suggested || ChatInput.CaretIndex != suggested.Length || ChatHint.Visibility == Visibility.Visible || !ChatSend.IsEnabled)
+                return Fail();
+            ChatInput.Text = "Something else";
+            Press(Key.Tab); // not empty: Tab is left alone
+            if (ChatInput.Text != "Something else" || ChatHint.Visibility == Visibility.Visible)
+                return Fail();
+            ChatInput.Clear();
+            if (ChatHint.Text != suggested || ChatHint.Visibility != Visibility.Visible)
+                return Fail();
+            Press(Key.Tab);
+            var sent = ChatInput.Text;
+            ChatInput.Clear(); // as RunTurn does when Enter sends it
+            if (sent != suggested || !await Turn(sent, [], "Suggested reply") || _chatHistory[^2].Content != suggested || ChatHint.Text != plainHint)
+                return Fail();
+            SuggestNextToggle.IsChecked = false;
+            SuggestNext_Click(SuggestNextToggle, new RoutedEventArgs());
+            SuggestionLine(Ev("""{"e":"suggestion","text":"Off"}"""), (_turnId, _chat, _chat.Opened));
+            await Settle();
+            if (_settings.SuggestNext || !Suggests(false) || ChatHint.Text != plainHint)
+                return Fail();
+            SuggestNextToggle.IsChecked = true;
+            SuggestNext_Click(SuggestNextToggle, new RoutedEventArgs());
+            SuggestionLine(Ev($$"""{"e":"suggestion","text":"{{suggested}}"}"""), (_turnId, _chat, _chat.Opened));
+            await Settle();
+            if (ChatHint.Text != suggested) // on again
+                return Fail();
+
             NewChat_Click(ChatSend, new RoutedEventArgs());
-            if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0)
+            if (_chatHistory.Count != 0 || ChatPanel.Children.Count != 0 || ChatHint.Text != plainHint) // another conversation: the suggestion goes
                 return Fail();
 
             // Stop landing as the reply completes keeps the answer (exit 0 + chat_reply); a real stop keeps the message with what
@@ -6263,6 +6307,7 @@ public partial class MainWindow : Window
             chat.Kill(entireProcessTree: true);
             chat.WaitForExit(2000);
         }
+        DropSuggestion(); // one still being made
         CleanupChatTemp(); // a reply cut off by closing leaves its conversation and temp config behind otherwise
         DrainLines(); // a loading event that arrived just before the kill still counts
         _llamaDownload?.Cancel();

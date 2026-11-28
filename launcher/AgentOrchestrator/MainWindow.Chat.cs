@@ -146,6 +146,7 @@ public partial class MainWindow
         RefreshMultiModel();
         CenterChatToggle.IsChecked = _settings.CenterChat;
         ContextPercentToggle.IsChecked = _settings.ContextPercent;
+        SuggestNextToggle.IsChecked = _settings.SuggestNext;
         ChatThinkingToggle.IsChecked = CodeThinkingToggle.IsChecked = _settings.ViewThinking;
         CodeReviewerToggle.IsChecked = _settings.ReviewEveryTurn;
         ShowFooterPath();
@@ -241,7 +242,7 @@ public partial class MainWindow
             c.Busy.ToolTip = status;
             c.Busy.Visibility = status.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
             // Placeholder, as Claude's: in the empty box only, saying what Enter does now.
-            c.Hint.Text = runActive ? "" : _chatBusy ? "Enter to queue for later, Shift+Enter for a new line" : "Enter to send, Shift+Enter for a new line";
+            c.Hint.Text = runActive ? "" : _chatBusy ? "Enter to queue for later, Shift+Enter for a new line" : ShownSuggestion(c) ?? "Enter to send, Shift+Enter for a new line";
             c.Hint.Visibility = c.Input.Text.Length == 0 && c.Hint.Text.Length > 0 && _dictationBox != c.Input ? Visibility.Visible : Visibility.Collapsed;
         }
         ChatKeepToggle.IsEnabled = !_chatBusy;
@@ -323,6 +324,13 @@ public partial class MainWindow
         Markdown.Roomy = _settings.ReadingSize != "compact";
         foreach (var part in new FrameworkElement?[] { _chat.Panel, _parked?.Panel, CodePanel, ChatComposer, CodeComposer }.OfType<FrameworkElement>())
             part.MaxWidth = _settings.CenterChat ? ChatWidth : double.PositiveInfinity;
+    }
+
+    private void SuggestNext_Click(object sender, RoutedEventArgs e)
+    {
+        _settings.SuggestNext = SuggestNextToggle.IsChecked == true;
+        _settings.Save();
+        DropSuggestion(); // off: the one shown goes too; on: the next reply brings one
     }
 
     private void ContextPercent_Click(object sender, RoutedEventArgs e)
@@ -616,6 +624,13 @@ public partial class MainWindow
             e.Handled = true;
             return;
         }
+        if (e.Key == Key.Tab && Keyboard.Modifiers == ModifierKeys.None && sender is TextBox { Text.Length: 0 } box && ShownSuggestion(ConvOf(sender)) is { } suggested)
+        {
+            box.Text = suggested; // real, editable text; the gray one shows again whenever the box is empty
+            box.CaretIndex = suggested.Length;
+            e.Handled = true;
+            return;
+        }
         if (e.Key == Key.Enter && RevealDictation())
         {
             e.Handled = true; // any Enter while listening (Shift+Enter too) only stops it and shows the text
@@ -789,6 +804,8 @@ public partial class MainWindow
     private void ClearConversation(Conversation c)
     {
         Unqueue(c); // queued for the conversation being closed: back to the input, not sent into the next one
+        if (!c.IsCode)
+            DropSuggestion();
         c.Opened++;
         c.Panel.Children.Clear();
         c.History.Clear();
@@ -819,6 +836,7 @@ public partial class MainWindow
     {
         var (said, images) = ForModel(_chat, text);
         return LauncherLogic.BuildChatRequest(role, _chatHistory.Append(new LauncherLogic.ChatMessage("user", said!)), CurrentExtras(message: text) with { Images = images }, title: _chatHistory.Count == 0 && !InCall, voice: InCall,
+            suggest: _settings.SuggestNext && !InCall && _settings.ChatKeepLoaded, // keep-loaded off stops the server at the turn's end, under the side call
             effort: EffortFor(CardFor(role)), summary: _chat.Summary ?? "", summaryCovers: _chat.SummaryCovers,
             permissions: _settings.CommandPermissions, fullAccess: _settings.FullAccess, superAccess: _settings.FullAccess);
     }
@@ -861,6 +879,8 @@ public partial class MainWindow
         string? failure = null;
         StartTurn(c, text, role, queued);
         var turn = ++_turnId;
+        var suggesting = _suggesting = new TaskCompletionSource();
+        var handedOver = false;
         if (text is not null && !queued)
             c.Input.Clear();
         try
@@ -880,16 +900,30 @@ public partial class MainWindow
             FreeGpuForChat();
             ApplyRuntime(startInfo);
             var process = _chatProcess = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            process.OutputDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
-            process.ErrorDataReceived += (_, args) => { if (args.Data is not null) _lines.Enqueue(args.Data); };
+            // Once the turn has ended at "suggesting" the process only brings the suggestion: its other lines never reach a later turn.
+            var tag = (turn, c, c.Opened);
+            void Read(string? line)
+            {
+                if (line is not null && !SuggestionLine(line, tag) && !handedOver)
+                    _lines.Enqueue(line);
+            }
+            process.OutputDataReceived += (_, args) => Read(args.Data);
+            process.ErrorDataReceived += (_, args) => Read(args.Data);
             Log($"{label} in {folder}");
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
             _poll.Start(); // live speed from llama-server's /slots
             _pump.Start();
-            await process.WaitForExitAsync();
-            exitCode = process.ExitCode;
+            var exited = process.WaitForExitAsync();
+            if (await Task.WhenAny(exited, suggesting.Task) == exited)
+                exitCode = process.ExitCode;
+            else // "suggesting": the reply is done; the turn ends now and the process goes on to the suggestion alone
+            {
+                (exitCode, handedOver) = (0, true);
+                _suggestProcess = process;
+                Forget(EndSuggestion(process));
+            }
         }
         catch (Exception exception)
         {
@@ -900,7 +934,9 @@ public partial class MainWindow
         {
             _poll.Stop();
             _pump.Stop();
-            _chatProcess?.Dispose();
+            _suggesting = null;
+            if (!handedOver)
+                _chatProcess?.Dispose();
             _chatProcess = null;
             CleanupChatTemp();
         }
@@ -921,6 +957,55 @@ public partial class MainWindow
             if (_turnId == turn)
                 AfterTurn(completed); // the next queued message, or the queue back into the input
         }
+    }
+
+    // ---- the suggested next message (Chat): the engine's side call after the reply (orchestrator.chat_suggestion)
+
+    private string? _suggestion; // shown gray in the empty Chat box until a new turn or another conversation
+    private Process? _suggestProcess; // a finished turn's engine, still making the suggestion
+    private TaskCompletionSource? _suggesting; // the running turn's: "suggesting" ends it (RunTurn)
+
+    private string? ShownSuggestion(Conversation c) => !c.IsCode && !_chatBusy && _process is null ? _suggestion : null;
+
+    // A turn's engine line (any thread): true when it was the suggestion, which then shows if its turn is still the latest
+    // and its conversation still the one shown (tag: _turnId, the conversation and its Opened when the turn started).
+    private bool SuggestionLine(string line, (int Turn, Conversation Conv, int Opened) tag)
+    {
+        if (LauncherLogic.TryParseEvent(line) is not { } ev || Str(ev, "e") != "suggestion")
+            return false;
+        var text = Str(ev, "text").Trim();
+        Dispatcher.BeginInvoke(() =>
+        {
+            if (tag.Turn != _turnId || tag.Conv != _chat || tag.Conv.Opened != tag.Opened || !_settings.SuggestNext || text.Length == 0)
+                return;
+            _suggestion = text;
+            RefreshChatInput();
+        });
+        return true;
+    }
+
+    private async Task EndSuggestion(Process process)
+    {
+        await process.WaitForExitAsync();
+        if (_suggestProcess == process)
+            _suggestProcess = null;
+        process.Dispose();
+    }
+
+    // A new turn, another conversation, the setting off or the app closing: the suggestion goes, and one still being made is
+    // stopped (never the llama-server it talks to).
+    private void DropSuggestion()
+    {
+        if (_suggestion is not null)
+        {
+            _suggestion = null;
+            RefreshChatInput();
+        }
+        if (_suggestProcess is not { } p)
+            return;
+        _suggestProcess = null;
+        try { LauncherLogic.KillTreeExceptLlama(p); }
+        catch (InvalidOperationException) { } // already gone
     }
 
     private int _turnId; // RunTurn's count: tells a turn's own cleanup from one a follow-up turn (StartCodeProject) started
@@ -977,6 +1062,7 @@ public partial class MainWindow
         _pendingUser = text;
         _codeStartRequested = false;
         _turnTitle = null; // a title from an earlier, unsaved turn never lands on this one
+        DropSuggestion(); // sent (or another turn): the last reply's suggestion is over
         _pendingUserTime = Now();
         _turnBegan = DateTime.UtcNow; // the wall clock (Now() can be a test's): files made after it are the turn's (CreatedNote)
         _turnUserImages = text is null ? [] : _turnImages.ToList();
@@ -1351,6 +1437,9 @@ public partial class MainWindow
                 break;
             case "chat_title":
                 _turnTitle = Str(ev, "text");
+                break;
+            case "suggesting": // the reply is complete: RunTurn ends the turn, the suggestion arrives on its own (SuggestionLine)
+                _suggesting?.TrySetResult();
                 break;
             // A Send now message reached the model: the reply so far closes, the message shows as the user's and the reply
             // goes on below it, as a reopened conversation shows it.

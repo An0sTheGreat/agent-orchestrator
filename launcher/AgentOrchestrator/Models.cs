@@ -265,6 +265,8 @@ internal sealed class AppSettings
     public Dictionary<string, string> ActiveModelPresets { get; set; } = new(); // per worker id: the model preset it last applied or saved
     // true: chat models stay loaded until the app closes; false: each turn unloads the models it loaded.
     public bool ChatKeepLoaded { get; set; } = true;
+    // After a Chat reply the model suggests the user's next message (gray in the empty box, Tab fills it).
+    public bool SuggestNext { get; set; } = true;
     // Several models at once (the engine's AGENT_ORCHESTRATOR_MULTI_MODEL): "never" (loading one unloads the other), "fit"
     // (side by side while they fit in free GPU memory, the oldest unloaded first) or "always" (the rest spills into RAM).
     public string MultiModel { get; set; } = "never";

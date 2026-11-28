@@ -2095,6 +2095,14 @@
                         </DockPanel>
                         <TextBlock Text="The Context card shows how full the context is as a number (e.g. 34%) beside its ring."
                         TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
+                        <Border Style="{StaticResource SettingsDivider}" />
+                        <DockPanel Margin="0,14,0,0">
+                        <ToggleButton x:Name="SuggestNextToggle" DockPanel.Dock="Right" Style="{StaticResource ToggleSwitch}" Click="SuggestNext_Click" VerticalAlignment="Center"
+                        AutomationProperties.Name="Suggest a next message" />
+                        <TextBlock Text="Suggest a next message" VerticalAlignment="Center" />
+                        </DockPanel>
+                        <TextBlock Text="After a Chat reply the model suggests what you might send next: it shows gray in the empty message box, and Tab fills it in. Needs Keep models loaded."
+                        TextWrapping="Wrap" Style="{StaticResource SettingHint}" Margin="0,8,0,0" />
                     </StackPanel>
                     <StackPanel Tag="Models" Visibility="Collapsed">
                         <TextBlock Text="Models &amp; Agents" FontFamily="{StaticResource DisplayFont}" FontSize="26" FontWeight="SemiBold" Margin="0,0,0,22" />
