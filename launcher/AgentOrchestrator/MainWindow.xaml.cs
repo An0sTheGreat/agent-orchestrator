@@ -1096,6 +1096,100 @@ public partial class MainWindow : Window
         WriteLogFile(line);
     }
 
+    // --ui-smoke: a long reply that is mostly one code block (~3,500 chunks, ~350 lines of Python) streams through the real
+    // path (delta lines, DrainLines, AppendChatDelta, a frame and a layout per 60 Hz tick) at 120 chunks a second, timed on
+    // a stepped clock. The UI must keep up: its time for the whole stream well under the stream's own, and the last tenth
+    // of the chunks not much dearer than the first (no work that grows with the reply per chunk or per frame). The result
+    // must match a full render, and the block's Copy must copy its code.
+    private async Task<bool> LongCodeStreamSmoke(Func<string, string> ev)
+    {
+        var code = new StringBuilder();
+        for (var n = 0; code.Length < 14_000; n++)
+            code.Append($"def handle_{n}(items, limit={n * 3}):\n" +
+                        $"    # Keep every {n % 7 + 2}th item whose score passes the limit, best first.\n" +
+                        "    kept = []\n" +
+                        "    for index, item in enumerate(items):\n" +
+                        $"        if item.score > limit and index % {n % 7 + 2} == 0:\n" +
+                        $"            kept.append({{\"name\": item.name, \"score\": item.score * {n}.5}})\n" +
+                        $"    return sorted(kept, key=lambda k: k[\"score\"])[:{n + 10}]\n\n");
+        var reply = "Here is the module. Each handler filters its items and returns the best ones.\n\n```python\n" + code + "```\n\n" +
+                    "Every handler is independent, so you can call them in any order.";
+        var chunks = System.Text.RegularExpressions.Regex.Matches(reply, @"\s*\S{1,4}").Select(m => m.Value).ToList();
+        if (string.Concat(chunks) != reply)
+            return false;
+        string Delta(string text) => ev($$"""{"e":"delta","role":"reviewer","kind":"text","text":{{JsonSerializer.Serialize(text)}}}""");
+
+        ShowView(chat: true);
+        var realClock = _clockMs;
+        var fakeMs = 1000.0;
+        _clockMs = () => fakeMs;
+        var (drainMs, frameMs, layoutMs) = (new double[10], new double[10], new double[10]);
+        var watch = new Stopwatch();
+        double Time(Action work)
+        {
+            watch.Restart();
+            work();
+            return watch.Elapsed.TotalMilliseconds;
+        }
+        try
+        {
+            StartChatTurn("Long code");
+            _lines.Enqueue(ev("""{"e":"chat_stage","role":"reviewer","stage":"answer","title":"Reviewer"}"""));
+            DrainLines();
+            for (var i = 0; i < chunks.Count; i++)
+            {
+                _lines.Enqueue(Delta(chunks[i]));
+                fakeMs += 1000.0 / 120;
+                if (i % 2 == 0 && i < chunks.Count - 1)
+                    continue; // a 60 Hz tick takes in two chunks
+                var tenth = i * 10 / chunks.Count;
+                drainMs[tenth] += Time(DrainLines);
+                frameMs[tenth] += Time(MarkdownFrame);
+                layoutMs[tenth] += Time(() => Dispatcher.Invoke(UpdateLayout, DispatcherPriority.Background)); // layout, and idle work queued meanwhile
+            }
+            var view = _reply!.Rendered!;
+            var s = (MarkdownState)view.Tag;
+            for (var frames = 0; s.Shown < s.Raw.Text.Length && frames < 200; frames++)
+            {
+                fakeMs += 16;
+                MarkdownFrame();
+            }
+            static string Structure(System.Windows.Documents.FlowDocument doc) => string.Join(",", doc.Blocks.Select(b => b.GetType().Name)) + "|" + Markdown.PlainText(doc);
+            var shownAll = s.Shown == reply.Length && s.Raw.Text == reply && Structure(view.Document) == Structure(Markdown.ToDocument(reply, s.Raw.FontSize));
+            string? copied = null;
+            if (Markdown.CodeBlocks(view.Document.Blocks).SingleOrDefault() is { } card)
+            {
+                _copyCodeHook = c => copied = c;
+                CopyButtonOf(card).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                _copyCodeHook = null;
+            }
+            var total = drainMs.Sum() + frameMs.Sum() + layoutMs.Sum();
+            var stream = chunks.Count * 1000.0 / 120;
+            double Tenth(int t) => drainMs[t] + frameMs[t] + layoutMs[t];
+            var report = $"long code stream: {chunks.Count:N0} chunks, {stream / 1000:0.0} s of stream, UI {total / 1000:0.00} s " +
+                         $"(drain {drainMs.Sum() / 1000:0.00}, frames {frameMs.Sum() / 1000:0.00}, layout {layoutMs.Sum() / 1000:0.00}); per tenth ms: " +
+                         string.Join(" ", Enumerable.Range(0, 10).Select(t => $"{drainMs[t]:0}/{frameMs[t]:0}/{layoutMs[t]:0}"));
+            Log(report);
+            var copyRight = copied == code.ToString()[..^1]; // the block's code: its last line's newline is the fence's
+            // The UI keeps up: at most twice the stream's own time. Before the fix this stream took ~322 s of UI time (layout
+            // re-ran over the whole open listing every frame); with it 6-29 s, swinging with how many render ticks a run gets.
+            // ponytail: a loose bound that catches the per-frame O(listing) regression; the remaining growth (the hidden raw
+            // TextBox's AppendText, WPF's render pass) needs a tighter, steadier measure before it can be pinned.
+            if (!shownAll || !copyRight || total > stream * 2)
+            {
+                Console.Error.WriteLine($"ui-smoke: {report}; shown in full {shownAll}, copy {(copyRight ? "right" : "wrong")}");
+                return false;
+            }
+            FinishChatTurn(-1, true, null);
+            await Task.Delay(100);
+            return true;
+        }
+        finally
+        {
+            _clockMs = realClock;
+        }
+    }
+
     // --ui-smoke: stream a fake turn and flip every animated state, so a broken template or storyboard fails a
     // check instead of the user. Hover and press storyboards need real pointer input and are not covered.
     internal async Task<bool> RunUiSmokeAsync()
@@ -1865,9 +1959,9 @@ public partial class MainWindow : Window
                 var openCard = Markdown.CodeBlocks(answerView.Document.Blocks).SingleOrDefault();
                 if (openCard is null || !_codeBlocks.Contains(openCard))
                     return Fail();
-                // more code into the open block: each frame shows what arrived (appended plain to the same card, its Copy up to date),
-                // and the card is rebuilt and coloured only every ColourEveryMs
-                var (appended, recoloured, liveCard) = (0, 0, openCard);
+                // more code into the open block: each frame shows what arrived on the same card (appended plain, its Copy up to date),
+                // and every ColourEveryMs the new lines are coloured in place (print( is a call): the card is never rebuilt while open
+                var (appended, colourings, colouredLines) = (0, 0, 0);
                 AppendChatDelta("reviewer", "text", string.Concat(Enumerable.Range(13, 40).Select(n => $"print({n})\n")));
                 for (var frames = 0; answer.Shown < answer.Raw.Text.Length; frames++)
                 {
@@ -1876,15 +1970,21 @@ public partial class MainWindow : Window
                         return Fail();
                     var card = Markdown.CodeBlocks(answerView.Document.Blocks).Single();
                     var shownCode = answer.Raw.Text[(answer.Raw.Text.IndexOf("```python\n", StringComparison.Ordinal) + 10)..answer.Shown];
-                    if (CodeTextOf(card) is not { } liveText || string.Concat(liveText.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text)) != shownCode || (string)CopyButtonOf(card).Tag != shownCode)
+                    string? liveCopy = null;
+                    _copyCodeHook = c => liveCopy = c;
+                    CopyButtonOf(card).RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                    _copyCodeHook = null;
+                    if (card != openCard || ((Border)((StackPanel)((Grid)card.Child).Children[0]).Children[1]).Child is not Panel liveLines || liveCopy != shownCode ||
+                        string.Join("\n", liveLines.Children.OfType<TextBlock>().Select(t => string.Concat(t.Inlines.OfType<System.Windows.Documents.Run>().Select(r => r.Text)))) != shownCode)
                         return Fail();
-                    if (card != liveCard)
-                        recoloured++;
+                    var coloured = liveLines.Children.OfType<TextBlock>().Count(t => t.Inlines.Any(r => r.ReadLocalValue(System.Windows.Documents.TextElement.ForegroundProperty) != DependencyProperty.UnsetValue));
+                    if (coloured > colouredLines)
+                        colourings++;
                     else if (answer.Shown > before)
                         appended++;
-                    liveCard = card;
+                    colouredLines = coloured;
                 }
-                if (appended < 3 || recoloured < 2)
+                if (appended < 3 || colourings < 2 || colouredLines < 40)
                     return Fail();
                 code = string.Join("\n", Enumerable.Range(1, 52).Select(n => $"print({n})"));
                 AppendChatDelta("reviewer", "text", "```\n\n" + string.Join("\n\n", Enumerable.Range(1, 30).Select(n => $"After {n}")) + "\n\n- one\n- two 😀😀😀");
@@ -1912,6 +2012,9 @@ public partial class MainWindow : Window
             {
                 _clockMs = realClock;
             }
+            NewChat_Click(ChatSend, new RoutedEventArgs());
+            if (!await LongCodeStreamSmoke(Ev))
+                return Fail();
             NewChat_Click(ChatSend, new RoutedEventArgs());
 
             // Chatterbox mid-sentence (a stub engine whose sentence takes 5 s): FreeGpuForChat does not wait for it, the read

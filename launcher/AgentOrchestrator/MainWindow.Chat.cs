@@ -1718,7 +1718,8 @@ public partial class MainWindow
         if (block.Expander is null)
         {
             r.AnswerText.Append(text);
-            CallDelta(r.AnswerText.ToString());
+            if (_callSentences is not null) // a call reads it; the whole answer each time is no cost to pay without one
+                CallDelta(r.AnswerText.ToString());
         }
         else if (block.Preview is not null && block.Text.Length <= 300)
             block.Preview.Text = PreviewFor(block);
@@ -1823,15 +1824,16 @@ public partial class MainWindow
         public required TextBox Raw;
         public int Shown; // characters of Raw.Text on screen
         public int Stable, StableBlocks; // the kept prefix (Markdown.StableLength) and the document blocks rendered from it
-        // A code block still open at the tail: between colourings (ColourEveryMs) new code is appended to its text plain
-        public TextBlock? OpenCode; // null: none, or rebuild the tail next frame
-        public Button? OpenCopy;
+        // A code block still open at the tail: new code is appended to its lines plain, and coloured every ColourEveryMs
+        public Panel? OpenCode; // its listing, a text block per line; null: none, or rebuild the tail next frame
+        public string OpenFence = "", OpenLanguage = "";
         public int OpenCodeAt, OpenShown; // where its code starts in the text; the characters on screen when last appended to
-        public double ColouredAt; // when the tail was last rendered (and the block coloured)
+        public int Coloured, ColourFrom; // its lines coloured for good (from the top), and where the next line starts in the text
+        public double ColouredAt; // when the block was last coloured
     }
 
-    // An unfinished code block is rebuilt (and coloured) at most about 9 times a second; the frames between only append the new code
-    // uncoloured, so a long listing streams as fast as text does without being rebuilt every frame.
+    // An unfinished code block's new lines are coloured at most about 9 times a second; the frames between only append the
+    // new code uncoloured, so a long listing streams as fast as text does. Neither touches the lines already coloured.
     private const double ColourEveryMs = 110;
 
     private readonly HashSet<RichTextBox> _markdownDirty = new(); // views still revealing
@@ -1880,16 +1882,20 @@ public partial class MainWindow
 
     // The first `shown` characters: the previous tail's blocks go, newly finished blocks are rendered once and kept, and
     // the unfinished tail is rendered again.
-    private void RenderShown(RichTextBox view, MarkdownState s, string shown)
+    // text: the raw text, of which s.Shown characters show. Nothing here may cost more as the reply grows, but for a finished
+    // block (rendered once) and the tail after it: an open code block takes only its new code, without the whole text.
+    private void RenderShown(RichTextBox view, MarkdownState s, string text)
     {
         var now = _clockMs();
-        if (s.OpenCode is { } open && now - s.ColouredAt < ColourEveryMs && shown.Length > s.OpenShown && Markdown.StableLength(shown, s.Stable) == s.Stable)
+        if (s.OpenCode is { } open && s.Shown > s.OpenShown && !ClosesFence(s, text))
         {
-            open.Inlines.Add(new Run(shown[s.OpenShown..].Replace("\r", ""))); // the block's code colour until the next colouring
-            s.OpenShown = shown.Length;
-            s.OpenCopy!.Tag = shown[s.OpenCodeAt..].Replace("\r\n", "\n");
+            AppendCode(open, text[s.OpenShown..s.Shown]);
+            s.OpenShown = s.Shown;
+            if (now - s.ColouredAt >= ColourEveryMs)
+                ColourCode(s, open, text, now);
             return;
         }
+        var shown = text[..s.Shown];
         var blocks = view.Document.Blocks;
         while (blocks.Count > s.StableBlocks)
         {
@@ -1908,7 +1914,67 @@ public partial class MainWindow
         s.OpenCode = null;
         if (Markdown.OpenCodeStart(shown, stable) is { } at && blocks.LastBlock is BlockUIContainer { Child: Border openCard } && Markdown.CodeBlocks([blocks.LastBlock]).Any() &&
             CodeTextOf(openCard) is { } code)
-            (s.OpenCode, s.OpenCopy, s.OpenCodeAt, s.OpenShown, s.ColouredAt) = (code, CopyButtonOf(openCard), at, shown.Length, now);
+        {
+            (s.OpenFence, s.OpenLanguage) = Markdown.FenceOf(shown[(shown.LastIndexOf('\n', at - 2) + 1)..(at - 1)]);
+            (s.OpenCode, s.OpenCodeAt, s.OpenShown, s.Coloured, s.ColourFrom, s.ColouredAt) = (code, at, shown.Length, 0, at, now);
+            // the code it copies is cut from the text when clicked (its Tag, which the document may serialize, stays a string):
+            // rebuilding it on every frame would cost more as it grows
+            OpenCopies.AddOrUpdate(CopyButtonOf(openCard), () => s.Raw.Text[s.OpenCodeAt..s.OpenShown].Replace("\r\n", "\n"));
+        }
+    }
+
+    // Whether the lines completed since the open block last grew close it (all before them were checked as they came).
+    private static bool ClosesFence(MarkdownState s, string text)
+    {
+        for (int at = text.LastIndexOf('\n', s.OpenShown - 1) + 1, end; at < s.Shown && (end = text.IndexOf('\n', at, s.Shown - at)) >= 0; at = end + 1)
+            if (text.AsSpan(at, end - at).TrimStart().StartsWith(s.OpenFence))
+                return true;
+        return false;
+    }
+
+    // New code onto the open block's last line, and new lines below it, in the block's plain code colour.
+    private static void AppendCode(Panel listing, string code)
+    {
+        var parts = code.Replace("\r", "").Split('\n');
+        for (var i = 0; i < parts.Length; i++)
+        {
+            if (i > 0)
+                listing.Children.Add(Markdown.CodeLine());
+            if (parts[i].Length > 0)
+                ((TextBlock)listing.Children[^1]).Inlines.Add(new Run(parts[i]));
+        }
+    }
+
+    // Colours the open block's lines from the first one not coloured for good: highlighting the code from there gives what
+    // highlighting all of it would, as long as no token runs across that line's start. The lines before the last (which may
+    // still grow) are kept, but from a line where a token that can span lines (a block comment, a template string, a string
+    // continued by a backslash) may have opened without closing, or one that runs into the last line.
+    // ponytail: an opener that never closes keeps colouring from its line on each tick (as all of the block was before).
+    private static void ColourCode(MarkdownState s, Panel listing, string text, double now)
+    {
+        s.ColouredAt = now;
+        var pieces = Markdown.Highlight(text[s.ColourFrom..s.Shown].Replace("\r", ""), s.OpenLanguage);
+        var lines = Markdown.CodeLines(pieces);
+        for (var i = 0; i < lines.Count && s.Coloured + i < listing.Children.Count; i++)
+            Markdown.SetCodeLine((TextBlock)listing.Children[s.Coloured + i], lines[i]);
+        var keep = lines.Count - 1;
+        var line = 0;
+        var spans = new List<(int First, int Last)>(); // the lines of tokens that span lines
+        foreach (var (piece, color) in pieces)
+        {
+            var breaks = piece.Count(c => c == '\n');
+            if (color is null && (piece.Contains("/*") || piece.Contains("<!--") || piece.Contains('`') || piece.Contains("\\\n")))
+                keep = Math.Min(keep, line);
+            else if (color is not null && breaks > 0)
+                spans.Add((line, line + breaks));
+            line += breaks;
+        }
+        for (var i = spans.Count - 1; i >= 0; i--)
+            if (spans[i].Last >= keep)
+                keep = Math.Min(keep, spans[i].First);
+        for (var i = 0; i < keep; i++)
+            s.ColourFrom = text.IndexOf('\n', s.ColourFrom) + 1;
+        s.Coloured += keep;
     }
 
     private int AddBlocks(RichTextBox view, MarkdownState s, string markdown)
@@ -1930,14 +1996,15 @@ public partial class MainWindow
 
     private readonly HashSet<Border> _codeBlocks = new(); // rendered code blocks currently loaded
     private Action<string>? _copyCodeHook; // --ui-smoke: receives the copied code instead of the clipboard
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Button, Func<string>> OpenCopies = new(); // open blocks' Copy
 
     private static Button CopyButtonOf(Border card) => (Button)((Grid)card.Child).Children[1];
-    // An unfinished block's code text (Markdown.CodeText under its header); null for a closed block's listing.
-    private static TextBlock? CodeTextOf(Border card) => ((Border)((StackPanel)((Grid)card.Child).Children[0]).Children[1]).Child as TextBlock;
+    // An unfinished block's listing (Markdown.OpenListing under its header); null for a closed block's.
+    private static Panel? CodeTextOf(Border card) => ((Border)((StackPanel)((Grid)card.Child).Children[0]).Children[1]).Child as Panel;
 
     private void CopyCode(Button copy)
     {
-        var code = (string)copy.Tag;
+        var code = OpenCopies.TryGetValue(copy, out var cut) ? cut() : (string)copy.Tag;
         if (_copyCodeHook is { } hook)
             hook(code);
         else
@@ -1995,7 +2062,7 @@ public partial class MainWindow
                 s.Shown += Math.Clamp((int)Math.Ceiling(backlog * dt / 120), 1, backlog);
                 if (s.Shown < text.Length && char.IsHighSurrogate(text[s.Shown - 1]))
                     s.Shown++; // never half an emoji
-                RenderShown(view, s, text[..s.Shown]);
+                RenderShown(view, s, text);
             }
             if (s.Shown >= text.Length)
                 _markdownDirty.Remove(view);
@@ -2091,4 +2158,5 @@ public partial class MainWindow
         c.Scroll.ScrollToEnd();
         Reveal(c.Jump, false, slide: 10);
     }
+
 }

@@ -365,6 +365,9 @@ internal static class Markdown
         return fence is null ? null : start;
     }
 
+    // A fence line's marker (``` or ~~~) and language.
+    public static (string Fence, string Language) FenceOf(string line) => Fence.Match(line) is { Success: true } m ? (m.Groups[1].Value, m.Groups[2].Value) : ("", "");
+
     // A reply's first block starts right under its header: a heading's or a rule's room above goes.
     public static void NoTopMargin(Block? first)
     {
@@ -397,7 +400,7 @@ internal static class Markdown
         }
         var lineCount = code.Count(c => c == (char)10) + 1;
         // selectable (and numbered, unless one line or huge) once the block is closed: a streaming one is re-rendered every frame
-        UIElement body = closed ? SelectableCode(pieces, numbered: lineCount is >= 2 and <= MaxNumbered) : CodeText(pieces, gutter: false);
+        UIElement body = closed ? SelectableCode(pieces, numbered: lineCount is >= 2 and <= MaxNumbered) : OpenListing(pieces);
         var copyText = new TextBlock { FontSize = 12, FontWeight = FontWeights.Medium };
         CopyLabel(copyText, copied: false);
         var copy = new Button
@@ -444,28 +447,43 @@ internal static class Markdown
         label.SetResourceReference(TextBlock.ForegroundProperty, copied ? "CodeComment" : "Muted");
     }
 
-    private static TextBlock CodeText(IEnumerable<(string Text, string? Color)> pieces, bool gutter = true)
+    // A streaming block's listing: a text block per line, so new code lays out again only the lines it reaches (one text
+    // block of the whole listing is laid out again on every frame, which slows a long listing down to a crawl).
+    private static StackPanel OpenListing(List<(string Text, string? Color)> pieces)
     {
-        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = CodeFontSize, TextWrapping = TextWrapping.Wrap, Tag = "codetext",
-            Margin = new Thickness(gutter ? 10 : 14, 1, 14, 1) };
+        var listing = new StackPanel { Margin = new Thickness(14, 1, 14, 1), Tag = "codetext" };
+        foreach (var line in CodeLines(pieces))
+        {
+            var text = CodeLine();
+            SetCodeLine(text, line);
+            listing.Children.Add(text);
+        }
+        return listing;
+    }
+
+    public static TextBlock CodeLine()
+    {
+        var text = new TextBlock { FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = CodeFontSize, TextWrapping = TextWrapping.Wrap };
         text.SetResourceReference(TextBlock.ForegroundProperty, "CodeText");
         if (Roomy)
             text.LineHeight = 20.5;
+        return text;
+    }
+
+    public static void SetCodeLine(TextBlock line, List<(string Text, string? Color)> pieces)
+    {
+        line.Inlines.Clear();
         foreach (var (piece, color) in pieces)
         {
             var run = new Run(piece);
             if (color is not null)
                 run.SetResourceReference(TextElement.ForegroundProperty, color);
-            text.Inlines.Add(run);
+            line.Inlines.Add(run);
         }
-        return text;
     }
 
-    // A listing as selectable read-only text (drag to select, Ctrl+C; the Copy button stays), its syntax colours kept. The
-    // highlighted pieces are cut at line ends (a block comment can span lines, so the code is highlighted whole first): one
-    // paragraph per line, wrapping under itself. numbered: each line's number is a UI element hanging in a muted gutter with
-    // a hairline down its right edge, so it is never part of a selection; Copy takes the selected code only (SelectedCode).
-    private static FrameworkElement SelectableCode(List<(string Text, string? Color)> pieces, bool numbered)
+    // Highlighted pieces cut at line ends: a list of pieces per line.
+    public static List<List<(string Text, string? Color)>> CodeLines(List<(string Text, string? Color)> pieces)
     {
         var lines = new List<List<(string Text, string? Color)>> { new() };
         foreach (var (piece, color) in pieces)
@@ -479,6 +497,16 @@ internal static class Markdown
                     lines[^1].Add((parts[i], color));
             }
         }
+        return lines;
+    }
+
+    // A listing as selectable read-only text (drag to select, Ctrl+C; the Copy button stays), its syntax colours kept. The
+    // highlighted pieces are cut at line ends (a block comment can span lines, so the code is highlighted whole first): one
+    // paragraph per line, wrapping under itself. numbered: each line's number is a UI element hanging in a muted gutter with
+    // a hairline down its right edge, so it is never part of a selection; Copy takes the selected code only (SelectedCode).
+    private static FrameworkElement SelectableCode(List<(string Text, string? Color)> pieces, bool numbered)
+    {
+        var lines = CodeLines(pieces);
         var gutter = numbered ? GutterWidth(lines.Count) : 0;
         var indent = numbered ? gutter + 10 : 14; // a code block's text sits 10 px right of the gutter, or 14 px in from the edge
         var document = new FlowDocument { PagePadding = new Thickness(0, 1, 0, 1), FontFamily = AppFonts.Mono, FontWeight = TextWeight, FontSize = CodeFontSize };
