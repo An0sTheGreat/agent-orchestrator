@@ -346,7 +346,6 @@ class ApiClient:
         self.slimmed: int | None = None  # results the last request left out (slim_notice); None before the first
         self.llama_port = 0  # set by role_settings when this role runs on our llama-server (a role with auto_load)
         self.llama_base = 0  # the configured llama_port; llama_ensure moves llama_port to the server that serves the role
-        self.compactor = None  # set by role_settings: () -> (client, sampling) of a separate Compactor role
 
     def _request_at(self, base_url: str, method: str, route: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -489,8 +488,8 @@ class ApiClient:
                  tools: list[dict[str, Any]] | None, force: bool = False) -> bool:
         """Shrink a history that no longer fits, in place (the caller's loop keeps appending to it): keep the system
         message, the first user message (the task) and a recent tail that starts at an assistant message (so tool calls
-        keep their results); summarize the middle with one quiet call (on this model, or on a separate Compactor's, after
-        which this model is loaded again) and merge the summary into the first user message. False (nothing changed) when there is no middle to drop or, unless forced by a context error,
+        keep their results); summarize the middle with one quiet call on this model (its prompt cache already holds the history)
+        and merge the summary into the first user message. False (nothing changed) when there is no middle to drop or, unless forced by a context error,
         when dropping it would free under 20% of the room (so a large task does not compact on every step)."""
         global EVENTS
         first = next((i for i, m in enumerate(messages) if m.get("role") == "user"), None)
@@ -510,27 +509,18 @@ class ApiClient:
             return False
         head = f"TASK\n{clip(task)}\n\n" + (f"EARLIER SUMMARY\n{earlier.strip()}\n\n" if earlier else "") + "STEPS SO FAR\n"
         system = summary_system(COMPACT_PROMPT)
-        helper = None
         try:
-            summarizer, summary_model, summary_sampling, fit = self, model, sampling, room
-            if self.compactor:  # a separate Compactor model: loading it unloads this one (one model at a time locally)
-                helper, summary_sampling = self.compactor()
-                summary_model = helper.ensure_model("compactor", False)  # with events: the launcher records the load
-                summarizer, fit = helper, min(room, helper.context_size() or room)
-            # the earlier summary goes in whole: its own call capped it; the call must fit the summarizing model too
-            render = fit_render(render_history(middle), fit, len(system) + len(head))
+            # the earlier summary goes in whole: its own call capped it
+            render = fit_render(render_history(middle), room, len(system) + len(head))
             prompt = [{"role": "system", "content": system}, {"role": "user", "content": head + render}]
-            quiet = {key: value for key, value in summary_sampling.items() if key != "reasoning_effort"}  # effort would spend the summary on thinking
+            quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}  # effort would spend the summary on thinking
             events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
             try:
-                summary = answer_text(summarizer.complete(summary_model, prompt, {**quiet, "max_tokens": summary_tokens(fit), "enable_thinking": False}))
+                summary = answer_text(self.complete(model, prompt, {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False}))
             finally:
                 EVENTS = events
         except (WorkflowError, OSError, ValueError):
             summary = ""
-        finally:
-            if helper is not None:
-                self.ensure_model(self.role, False)  # this role's model back before the agent loop goes on
         if not summary:  # mechanical fallback; an earlier summary is kept
             summary = (earlier.strip() + "\n\n" if earlier else "") + tool_call_note(middle)
         messages[:] = messages[:first] + [{**messages[first], "content": task + COMPACT_MARK + summary}] + messages[cut:]
@@ -785,7 +775,7 @@ def context_parts(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | 
 
 COMPACT_MARK = "\n\nSummary of the earlier steps:\n"
 # Compaction starts when the prompt passes this share of the context window, leaving the reply at least REPLY_FLOOR
-# tokens (its max_tokens if smaller). Shared by the pre-turn conversation summary, the in-request compactor and Pi.
+# tokens (its max_tokens if smaller). Shared by the pre-turn conversation summary, the in-request compaction and Pi.
 COMPACT_AT = 0.9
 REPLY_FLOOR = 4096
 
@@ -973,7 +963,7 @@ SUMMARY_PREFIX = "Earlier in this conversation (summary):\n"
 
 
 def summary_system(task: str) -> str:
-    """A summary call's system prompt: the Compactor's standing instructions, then the task's format (COMPACT_PROMPT or
+    """A summary call's system prompt: the standing summary instructions (prompts/compactor.txt), then the task's format (COMPACT_PROMPT or
     CONVERSATION_PROMPT)."""
     return prompt_text("compactor.txt").strip() + "\n\n" + task
 
@@ -1033,27 +1023,19 @@ def compact_conversation(config: dict[str, Any], roles: tuple[str, ...], system:
         return full
     head = (f"EARLIER SUMMARY\n{summary.strip()}\n\n" if summary else "") + "CONVERSATION\n"
     prompt = summary_system(CONVERSATION_PROMPT + (f" Focus especially on: {focus.strip()}" if focus.strip() else ""))
-    summarizer, summarizer_role, summary_sampling, fit = client, role, sampling, room
-    try:
-        if separate_compactor(config):  # the Compactor's model summarizes; the call must fit its window too
-            summarizer, summary_sampling = role_settings(config, "compactor")
-            summarizer_role = "compactor"
-            fit = min(room, getattr(summarizer, "window_before_load", lambda: None)() or room)
-        render = fit_render(render_history(earlier), fit, len(prompt) + len(head))
-        quiet = {key: value for key, value in summary_sampling.items() if key != "reasoning_effort"}
-        model = summarizer.ensure_model(summarizer_role, False)  # with events: the launcher records a load, to unload it later
+    try:  # the role's own model summarizes: its prompt cache already holds the history
+        render = fit_render(render_history(earlier), room, len(prompt) + len(head))
+        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}
+        model = client.ensure_model(role, False)  # with events: the launcher records a load, to unload it later
         events, EVENTS = EVENTS, False  # quiet: nothing streams into the reply
         try:
-            text = answer_text(summarizer.complete(model, [{"role": "system", "content": prompt}, {"role": "user", "content": head + render}],
-                                                   {**quiet, "max_tokens": summary_tokens(fit), "enable_thinking": False})).strip()
+            text = answer_text(client.complete(model, [{"role": "system", "content": prompt}, {"role": "user", "content": head + render}],
+                                               {**quiet, "max_tokens": summary_tokens(room), "enable_thinking": False})).strip()
         finally:
             EVENTS = events
     except (WorkflowError, OSError, ValueError):
         text = ""
-    finally:
-        if summarizer is not client and not force:
-            client.ensure_model(role, False)  # the turn goes on on its own model (a /compact has no turn after it)
-    if not text:  # the full history goes as it is; the in-request compactor or a context error follows
+    if not text:  # the full history goes as it is; the in-request compaction or a context error follows
         print(f"[{client.title or role}] the conversation summary failed; sending the full history")
         return full
     compacted = with_summary(kept, text)
@@ -1743,18 +1725,12 @@ def display_name(config: dict[str, Any], role: str) -> str:
 
 
 def role_config(config: dict[str, Any], role: str) -> dict[str, Any] | None:
-    """A built-in role's settings: the Implementer/Reviewer (and the Compactor and Voice) fall back to the Planner (the base model)
+    """A built-in role's settings: the Implementer/Reviewer (and Voice) fall back to the Planner (the base model)
     when missing from config roles or marked "same_as": "planner"; None when neither is configured."""
     roles = config.get("roles") or {}
-    if role in ("implementer", "reviewer", "compactor", "voice") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
+    if role in ("implementer", "reviewer", "voice") and (role not in roles or (roles[role] or {}).get("same_as") == "planner"):
         role = "planner"
     return roles.get(role)
-
-
-def separate_compactor(config: dict[str, Any]) -> bool:
-    """Whether config roles has its own Compactor (not absent or "same_as": "planner"): it does every summary then."""
-    compactor = (config.get("roles") or {}).get("compactor")
-    return isinstance(compactor, dict) and compactor.get("same_as") != "planner"
 
 
 def request_defaults(client: ApiClient, sampling: dict[str, Any]) -> dict[str, Any]:
@@ -1778,7 +1754,7 @@ def request_defaults(client: ApiClient, sampling: dict[str, Any]) -> dict[str, A
 
 def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[str, Any]]:
     """Client + sampling for a built-in role (with the Planner fallback), or for a custom worker when `role` is its id."""
-    settings = role_config(config, role) if role in (*BUILTIN_ROLES, "compactor", "voice") else (config.get("roles") or {}).get(role)
+    settings = role_config(config, role) if role in (*BUILTIN_ROLES, "voice") else (config.get("roles") or {}).get(role)
     if settings is None:
         settings = next((w for w in custom_workers(config) if w["id"] == role), None)
     if settings is None:
@@ -1796,8 +1772,6 @@ def role_settings(config: dict[str, Any], role: str) -> tuple[ApiClient, dict[st
     client.llama_port = client.llama_base = port
     client.role = role
     client.title = display_name(config, role)
-    if role != "compactor" and separate_compactor(config):
-        client.compactor = lambda: role_settings(config, "compactor")
     return client, sampling
 
 
@@ -5930,11 +5904,8 @@ def pi_lead_turn(config: dict[str, Any], folders: list[dict[str, str]], messages
     results; a new session gets the earlier messages as text once. Pi's events become the usual @@AO events. A steer from
     the launcher (stdin_lines) goes to Pi while the prompt runs; "steered" reports its delivery (Pi's next user message)."""
     focus = compact_command(messages) if pi_session(request) and pi_seeded(request).is_file() else None  # /compact in a Pi session
-    # Pi summarizes on the model it runs: a /compact runs it on a separate Compactor's (Pi's own mid-turn compaction stays
-    # on the lead's), and no lead turn follows, so the lead's model is not loaded for it
-    model_role = "compactor" if focus is not None and separate_compactor(config) else role
-    client, sampling = role_settings(config, model_role)
-    model = client.ensure_model(model_role, False)
+    client, sampling = role_settings(config, role)  # Pi summarizes (a /compact and its own compaction) on the model it runs
+    model = client.ensure_model(role, False)
     n_ctx = client.context_size() or int((client.auto_load or {}).get("max_seq_length") or 32768)
     if isinstance(request.get("image_gen"), dict) and request["image_gen"].get("unload_chat") is True and client.llama_port:
         request = {**request, "image_gen": None}  # Pi talks to this llama-server itself: it is never stopped mid-turn for a picture
@@ -6345,7 +6316,7 @@ def _run() -> int:
     parser.add_argument("--request", type=Path, help="Lead project run: a Code request JSON (folders, search, tools, skills, sandbox, "
                         "session, effort) for the run's tools")
     parser.add_argument("--unload-local", action="store_true", help="Stop the llama-servers this app started, then exit")
-    parser.add_argument("--load-role", help="Load this role's model (planner, implementer, reviewer, compactor or a custom worker id) "
+    parser.add_argument("--load-role", help="Load this role's model (planner, implementer, reviewer or a custom worker id) "
                         "with the project's config.json and leave it loaded, then exit")
     parser.add_argument("--api-target", help="Make this role's worker ready for the local API and print its target as JSON "
                         "(base_url, model, key_env, defaults) as the last line")

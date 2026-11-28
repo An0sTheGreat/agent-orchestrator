@@ -895,9 +895,10 @@ class OrchestratorTests(unittest.TestCase):
         messages += [{"role": "tool", "tool_call_id": f"d{i}", "content": "y" * 100} for i in range(2)]
         return messages
 
-    def _compacting_client(self, n_ctx, summary, main):
-        """A client with context size n_ctx; summary calls get `summary` (raised if an exception), others call main(n)."""
-        client = orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
+    def _compacting_client(self, n_ctx, summary, main, config=None):
+        """A client with context size n_ctx (the implementer of `config` when given); summary calls get `summary` (raised if
+        an exception), others call main(n)."""
+        client = orchestrator.role_settings(config, "implementer")[0] if config else orchestrator.ApiClient({"base_url": "http://x/v1", "api_key": "k"})
         client.role, client.context_size = "implementer", lambda: n_ctx
         self.enterContext(patch.object(orchestrator, "STUB_OVER", 10**9))  # compaction alone: no older results sent as notes
         sent = []
@@ -1075,61 +1076,25 @@ class OrchestratorTests(unittest.TestCase):
         for task in (orchestrator.COMPACT_PROMPT, orchestrator.CONVERSATION_PROMPT):
             self.assertEqual(orchestrator.summary_system(task), bundled + "\n\n" + task)
 
-    def test_compactor_role_is_attached_only_when_separate(self):
-        planner = {"base_url": "http://p/v1", "api_key": "k"}
-        for compactor in (None, {"same_as": "planner"}):
-            config = {"roles": {"planner": planner, **({"compactor": compactor} if compactor else {})}}
-            client, _ = orchestrator.role_settings(config, "implementer")
-            self.assertIsNone(client.compactor)
-            self.assertEqual(orchestrator.role_settings(config, "compactor")[0].base_url, "http://p/v1")  # the planner's
-        config = {"roles": {"planner": planner, "compactor": {"base_url": "http://c/v1", "api_key": "k", "sampling": {"temperature": 0.2}}}}
-        helper, sampling = orchestrator.role_settings(config, "planner")[0].compactor()
-        self.assertEqual((helper.base_url, helper.role, sampling, helper.compactor), ("http://c/v1", "compactor", {"temperature": 0.2}, None))
-
-    def test_separate_compactor_summarizes_then_the_role_model_is_loaded_again(self):
-        order, helper_calls = [], []
-
-        class Helper:
-            reply = "HELPER SUMMARY"
-
-            def ensure_model(self, role, interactive):
-                order.append(("ensure", role))
-                return "c-model"
-
-            def context_size(self):
-                return 3000
-
-            def complete(self, model, messages, sampling, tools=None):
-                order.append(("summary", model))
-                helper_calls.append((messages, sampling))
-                if isinstance(self.reply, Exception):
-                    raise self.reply
-                return {"content": self.reply}
-
-        for reply in ("HELPER SUMMARY", orchestrator.WorkflowError("API 500")):
-            order.clear()
-            helper_calls.clear()
-            messages = self._long_history()
-            messages[1]["content"] = "z" * 5000
-            messages[2:2] = json.loads(json.dumps(messages[2:12]))  # ten big steps
-            client, sent = self._compacting_client(4100, "OWN SUMMARY", lambda n: self.OK_REPLY)  # room 4000
-            helper = Helper()
-            helper.reply = reply
-            client.compactor = lambda: (helper, {"temperature": 0.2, "reasoning_effort": "high"})
-            client.ensure_model = lambda role, interactive: order.append(("ensure", role)) or "m"
-            with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
-                client.complete("m", messages, {"max_tokens": 100, "temperature": 0.9})
-            self.assertEqual(order, [("ensure", "compactor"), ("summary", "c-model"), ("ensure", "implementer")])
-            self.assertEqual(len(sent), 1)  # the role's own client made no summary call
-            prompt, sampling = helper_calls[0]
-            self.assertEqual(prompt[0]["content"], orchestrator.summary_system(orchestrator.COMPACT_PROMPT))
-            self.assertEqual(sampling, {"temperature": 0.2, "max_tokens": orchestrator.summary_tokens(3000), "enable_thinking": False})
-            self.assertLessEqual(sum(len(m["content"]) for m in prompt), 0.5 * 3000 * 3.5 + 50)  # fits the Compactor's window
-            summary = messages[1]["content"].partition(orchestrator.COMPACT_MARK)[2]
-            if isinstance(reply, str):
-                self.assertEqual(summary, "HELPER SUMMARY")
-            else:
-                self.assertIn("Tool calls made", summary)  # the mechanical fallback
+    def test_a_compactor_role_in_an_old_config_is_ignored_by_compaction(self):
+        # Compaction always runs on the role's own model (its prompt cache holds the history); a roles.compactor with its
+        # own model, left in an older config.json, loads nothing and summarizes nothing.
+        config = {"roles": {"planner": {"base_url": "http://x/v1", "api_key": "k"},
+                            "compactor": {"base_url": "http://c/v1", "api_key": "k", "model": "c-model", "sampling": {"temperature": 0.2}}}}
+        ensured = []
+        messages = self._long_history()
+        messages[1]["content"] = "z" * 5000
+        messages[2:2] = json.loads(json.dumps(messages[2:12]))  # ten big steps
+        client, sent = self._compacting_client(4100, "OWN SUMMARY", lambda n: self.OK_REPLY, config)  # room 4000
+        client.ensure_model = lambda role, interactive: ensured.append(role) or "m"
+        with patch.object(orchestrator, "EVENTS", False), contextlib.redirect_stdout(io.StringIO()):
+            client.complete("m", messages, {"max_tokens": 100, "temperature": 0.9, "reasoning_effort": "high"})
+        self.assertEqual(ensured, [])  # no other model loaded, so none to load back
+        summaries = [b for _, b in sent if b["messages"][0]["content"] == orchestrator.summary_system(orchestrator.COMPACT_PROMPT)]
+        self.assertEqual(len(summaries), 1)
+        self.assertEqual((summaries[0]["model"], summaries[0]["temperature"], summaries[0]["max_tokens"], "reasoning_effort" in summaries[0]),
+                         ("m", 0.9, orchestrator.summary_tokens(4000), False))
+        self.assertEqual(messages[1]["content"].partition(orchestrator.COMPACT_MARK)[2], "OWN SUMMARY")
 
     def _scripted_agent(self, replies, folder, allowed, config=None):
         """Run the writable implementer against scripted replies; returns (result, client)."""
@@ -3952,25 +3917,24 @@ class CodeTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(orchestrator.EMOJI_NOTES["none"], log[0]["system"])
 
-    def test_a_separate_compactor_writes_the_conversation_summary(self):
-        # /compact and a long turn's summary go to the Compactor's model (its window bounds the call); the long turn's role
-        # is loaded again for its turn, a /compact's is not (no turn follows); the event still names the turn's role.
+    def test_a_compactor_role_in_an_old_config_does_not_write_the_conversation_summary(self):
+        # /compact and a long turn's summary run on the turn's own model (the lead's); a roles.compactor with its own model,
+        # left in an older config.json, is ignored.
         self.config["roles"]["compactor"] = {"base_url": "http://c", "expected_model_contains": "c-model", "n_ctx": 3000}
         msgs = [{"role": "user", "content": "Build a todo app in plain JS."}, {"role": "assistant", "content": "Done: index.html."},
                 {"role": "user", "content": "/compact keep the colour choices"}]
-        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, {"compactor": ["SHORT"], "planner": []})
-        self.assertEqual((code, [c["role"] for c in log]), (0, ["compactor"]))
+        code, log, events, _ = self.code({"action": "chat", "messages": msgs}, {"planner": ["SHORT"]})
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner"]))
         self.assertEqual(log[0]["system"], orchestrator.summary_system(orchestrator.CONVERSATION_PROMPT + " Focus especially on: keep the colour choices"))
-        self.assertEqual(self.ensured[-1], "compactor")
+        self.assertNotIn("compactor", self.ensured)
         history = []
         for i in range(4):
             history += [{"role": "user", "content": f"Change {i}"}, {"role": "assistant", "content": f"DIFF{i} " + "line " * 2000}]
         code, log, events, _ = self.code({"action": "chat", "messages": history + self.MSGS},
-                                         {"compactor": ["SUMMARY TEXT"], "planner": ["done"]}, n_ctx=8192)
-        self.assertEqual((code, [c["role"] for c in log]), (0, ["compactor", "planner"]))
-        self.assertEqual(log[0]["sampling"]["max_tokens"], orchestrator.summary_tokens(3000))
-        self.assertLessEqual(len(log[0]["messages"][0]["content"]), 0.5 * 3000 * 3.5 + 50)
-        self.assertEqual(self.ensured[self.ensured.index("compactor") + 1], "planner")
+                                         {"planner": ["SUMMARY TEXT", "done"]}, n_ctx=8192)
+        self.assertEqual((code, [c["role"] for c in log]), (0, ["planner", "planner"]))
+        self.assertEqual(log[0]["system"], orchestrator.summary_system(orchestrator.CONVERSATION_PROMPT))
+        self.assertNotIn("compactor", self.ensured)
         self.assertEqual([(d["role"], d["summary"]) for e, d in events if e == "history_compacted"], [("planner", "SUMMARY TEXT")])
 
     PROJECT = "# Project\n\n## Project Goal\n\nA todo app.\n"
@@ -4519,7 +4483,7 @@ class PiEngineTests(unittest.TestCase):
         self.addCleanup(fake.close)
         config = {"roles": {"planner": {"base_url": fake.url, "api_key": "k", "model": "fake-model",
                                         "sampling": {"temperature": 0.3, "max_tokens": 2000}, **(role_extra or {})}}}
-        if compactor:  # a separate Compactor on its own model
+        if compactor:  # an older config's Compactor on its own model (ignored)
             config["roles"]["compactor"] = {"base_url": fake.url, "api_key": "k", "model": compactor}
         (self.cfg / "config.json").write_text(json.dumps(config), encoding="utf-8")
         req = self.cfg / "request.json"
@@ -4943,9 +4907,9 @@ class PiSteerTests(unittest.TestCase):
         with self.assertRaisesRegex(orchestrator.WorkflowError, "the model failed"):
             self.steered(steps, {"steer": "and the docs", "key": "k1"})
 
-    def test_a_compact_in_a_pi_session_runs_pi_on_the_compactors_model(self):
-        # The user's /compact in a seeded Pi session: Pi starts on the separate Compactor's model and compacts; the lead's
-        # model is never asked for (no lead turn follows). Without a separate Compactor, Pi compacts on the lead's.
+    def test_a_compact_in_a_pi_session_runs_pi_on_the_leads_model(self):
+        # The user's /compact in a seeded Pi session: Pi compacts on the lead's model, also when an older config.json still
+        # names a Compactor on its own model.
         script, argv = self.cfg / "fake_pi.py", self.cfg / "argv.json"
         script.write_text(FAKE_PI, encoding="utf-8")
         session = f"conv-{uuid.uuid4().hex[:8]}"
@@ -4953,7 +4917,7 @@ class PiSteerTests(unittest.TestCase):
         seeded.parent.mkdir(parents=True, exist_ok=True)
         seeded.touch()
         msgs = [{"role": "user", "content": "build it"}, {"role": "assistant", "content": "Built."}, {"role": "user", "content": "/compact"}]
-        for compactor, expected in (("compact-model", "compact-model"), (None, "fake-model")):
+        for compactor in ("compact-model", None):
             ensured = []
             real = orchestrator.ApiClient.ensure_model
             with patch.object(orchestrator, "pi_command", lambda: [sys.executable, str(script)]), \
@@ -4962,8 +4926,8 @@ class PiSteerTests(unittest.TestCase):
                 code, events, _ = self.turn([], msgs, compactor=compactor, session=session)
             self.assertEqual(code, 0)
             command = json.loads(argv.read_text(encoding="utf-8"))
-            self.assertEqual(command[command.index("--model") + 1], expected)
-            self.assertEqual(ensured, ["compactor" if compactor else "planner"])
+            self.assertEqual(command[command.index("--model") + 1], "fake-model")
+            self.assertEqual(ensured, ["planner"])
             self.assertTrue([d["text"] for e, d in events if e == "code_reply"][0].startswith("Conversation compacted: about 900"))
 
     def test_a_steer_with_images_the_role_cannot_see_is_not_sent(self):
