@@ -2626,6 +2626,8 @@ class ChatTests(unittest.TestCase):
                 log.append({"model": self.settings["expected_model_contains"], "system": messages[0]["content"],
                             "input": "\n".join(m["content"] for m in messages[1:]), "sampling": sampling, "tools": tools})
                 reply = replies[self.role].pop(0) if replies.get(self.role) else f"{self.role} text"
+                if isinstance(reply, Exception):  # a failed call
+                    raise reply
                 return reply if isinstance(reply, dict) else {"role": "assistant", "content": reply}
 
         with tempfile.TemporaryDirectory() as folder:
@@ -6305,6 +6307,29 @@ class ExtrasTests(unittest.TestCase):
         self.assertEqual((len(log), [e for e, _ in events if e == "chat_title"]), (1, []))
         code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", "  "]})
         self.assertEqual([e for e, _ in events if e == "chat_title"], [])
+
+    def test_suggest_asks_the_answering_model_for_the_next_message_after_the_reply(self):
+        request = {"mode": "single", "worker": "implementer", "messages": ChatTests.MSGS, "suggest": True, "effort": "high"}
+        code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", '**"Add unit tests for X."**\nmore']})
+        self.assertEqual((code, len(log)), (0, 2))
+        turn, ask = log
+        # the turn's prompt (system, tools, messages) then the reply and the instruction: the prompt cache holds the start
+        self.assertEqual((ask["system"], ask["tools"]), (turn["system"], turn["tools"]))
+        self.assertEqual(ask["input"], turn["input"] + "\nthe answer\n" + orchestrator.SUGGEST_PROMPT)
+        self.assertEqual((ask["sampling"]["max_tokens"], ask["sampling"]["enable_thinking"], "reasoning_effort" in ask["sampling"]),
+                         (40, False, False))
+        self.assertEqual(events[-3:], [("chat_reply", {"role": "implementer", "text": "the answer"}), ("suggesting", {}),
+                                       ("suggestion", {"text": "Add unit tests for X."})])
+        # nothing usable (empty, too long) or a failed call: no suggestion event
+        for bad in ["  ", "x" * (orchestrator.SUGGEST_MAX + 1), orchestrator.WorkflowError("down")]:
+            with self.subTest(bad=str(bad)[:10]):
+                code, log, events, *_ = ChatTests().chat(request, {"implementer": ["the answer", bad]})
+                self.assertEqual((code, [e for e, _ in events if e == "suggestion"]), (0, []))
+        # the setting off, or a call: no extra request
+        for off in [{"suggest": False}, {"voice": True}]:
+            with self.subTest(off=off):
+                code, log, events, *_ = ChatTests().chat({**request, **off}, {"implementer": ["the answer"]})
+                self.assertEqual((code, len(log), [e for e, _ in events if e.startswith("suggest")]), (0, 1, []))
 
     def test_chat_and_code_get_the_extras(self):
         code, log, *_ = ChatTests().chat({"messages": ChatTests.MSGS, "tools": True})

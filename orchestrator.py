@@ -4045,6 +4045,34 @@ def chat_title(config: dict[str, Any], role: str, messages: list[dict[str, str]]
     return line[:60].rstrip(" .:;,")
 
 
+SUGGEST_PROMPT = ("Write the message the user is most likely to send next: a few words to one sentence, in the user's own voice "
+                  "(for example: Add unit tests for the cache class). Reply with that message only: no quotes, no explanation.")
+SUGGEST_MAX = 150  # characters; a longer line is no suggestion
+
+
+def chat_suggestion(config: dict[str, Any], role: str, system: str, messages: list[dict[str, str]],
+                    tools: list[dict[str, Any]], reply: str) -> str:
+    """The user's likely next message, shown gray in the launcher's empty chat box. The turn's own prompt (system, tools,
+    messages) with the reply and one instruction after it, so the server's prompt cache already holds all but the reply
+    (the turn's tool steps are not replayed). Quiet. "" when the model fails, calls a tool, or writes nothing usable."""
+    global EVENTS
+    prompt = [{"role": "system", "content": system}, *messages, {"role": "assistant", "content": reply},
+              {"role": "user", "content": SUGGEST_PROMPT}]
+    events, EVENTS = EVENTS, False
+    try:
+        client, sampling = role_settings(config, role)
+        model = client.ensure_model(role, False)
+        quiet = {key: value for key, value in sampling.items() if key != "reasoning_effort"}
+        text = answer_text(client.complete(model, prompt, {**quiet, "max_tokens": 40, "enable_thinking": False}, tools or None))
+    except (WorkflowError, OSError, ValueError):
+        return ""
+    finally:
+        EVENTS = events
+    line = next((l for l in text.splitlines() if l.strip()), "")
+    line = re.sub(r"[*_`#>]", "", line).strip().lstrip("-• ").strip().strip("\"'“”‘’").strip()
+    return line if len(line) <= SUGGEST_MAX else ""
+
+
 VOICE_NOTE = ("\n\nSPOKEN CALL\nYou are in a spoken call: your reply is read aloud. Answer in a few natural spoken sentences, with no "
               "markdown, lists, code or links; ask a short question back when it helps. When the user asks you to do something "
               "(make or change a file, run something, look something up, hand work to a worker), you MUST first write one short "
@@ -4094,6 +4122,10 @@ def run_chat(config: dict[str, Any], request_path: Path) -> int:
     emit("chat_reply", role=role, text=text)
     if request.get("title") and (title := chat_title(config, role, messages, text)):
         emit("chat_title", text=title)
+    if request.get("suggest") and not request.get("voice"):  # Settings → Suggest a next message; never in a call
+        emit("suggesting")  # the launcher ends the turn here: the suggestion must not hold up the next message
+        if line := chat_suggestion(config, role, system + extras[2], messages, extras[0], text):
+            emit("suggestion", text=line)
     return 0
 
 
